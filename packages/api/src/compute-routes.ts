@@ -156,6 +156,7 @@ import {
 	UpdateSandboxBody,
 	UpdateTemplateBody,
 	UpdateWebhookBody,
+	UpgradeSandboxBody,
 	UploadBundleQuery,
 	UsageQuery,
 	ViewAccessBody,
@@ -570,6 +571,30 @@ export const forkSandbox = defineRoute({
 	errors: [...lifecycleErrors, "exhausted"],
 });
 
+export const upgradeSandbox = defineRoute({
+	operationId: "upgradeSandbox",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/upgrade",
+	tag: "sandboxes",
+	summary: "Upgrade an isolate to a microVM",
+	description: describe(
+		"Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress",
+		"grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and",
+		"`/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a",
+		"running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`,",
+		"Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a",
+		"microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was.",
+		"Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the",
+		"upgrade; a `sandbox.upgraded` event records it.",
+		scope("sandboxes:write"),
+	),
+	params: SandboxPath,
+	body: UpgradeSandboxBody,
+	idempotent: true,
+	answer: { status: 200, description: "The sandbox, now a microVM.", schema: Sandbox },
+	errors: [...lifecycleErrors, "exhausted"],
+});
+
 export const recoverSandbox = defineRoute({
 	operationId: "recoverSandbox",
 	method: "POST",
@@ -675,6 +700,7 @@ export const sandboxRoutes = {
 	stopSandbox,
 	resumeSandbox,
 	forkSandbox,
+	upgradeSandbox,
 	recoverSandbox,
 	restartSandboxOnLatest,
 	deleteSandbox,

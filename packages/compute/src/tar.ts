@@ -438,3 +438,87 @@ export async function gunzipIfGzipped(body: ReadableStream<Uint8Array>): Promise
 	if (head[0] !== 0x1f || head[1] !== 0x8b) return whole;
 	return whole.pipeThrough(new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
 }
+
+/** One entry for `writeTar`: a directory, a file with its bytes, or a symbolic link, named relative to the tar's top. */
+export type TarEntry =
+	| { readonly kind: "directory"; readonly name: string; readonly mode?: number }
+	| { readonly kind: "file"; readonly name: string; readonly mode?: number; readonly bytes: Uint8Array }
+	| { readonly kind: "symlink"; readonly name: string; readonly target: string };
+
+const encoder = new TextEncoder();
+
+/** `value` in octal, `width - 1` digits and a NUL, at `offset` of `block`. */
+function octal(block: Uint8Array, offset: number, width: number, value: number): void {
+	block.set(encoder.encode(`${value.toString(8).padStart(width - 1, "0")}\0`), offset);
+}
+
+/** A ustar header block, its checksum filled in. */
+function headerBlock(name: string, type: string, mode: number, size: number, link: string, at: number): Uint8Array {
+	const block = new Uint8Array(BLOCK);
+	block.set(encoder.encode(name).subarray(0, 100), 0);
+	octal(block, 100, 8, mode);
+	octal(block, 108, 8, 0);
+	octal(block, 116, 8, 0);
+	octal(block, 124, 12, size);
+	octal(block, 136, 12, Math.floor(at / 1000));
+	block.fill(0x20, 148, 156);
+	block[156] = type.charCodeAt(0);
+	block.set(encoder.encode(link).subarray(0, 100), 157);
+	block.set(encoder.encode("ustar\0"), 257);
+	block.set(encoder.encode("00"), 263);
+	let sum = 0;
+	for (const byte of block) sum += byte;
+	block.set(encoder.encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
+	return block;
+}
+
+/** A pax record, `<length> <key>=<value>\n`, its length counting itself. */
+function paxRecord(key: string, value: string): string {
+	const body = ` ${key}=${value}\n`;
+	const bodyLength = encoder.encode(body).length;
+	let length = bodyLength;
+	while (bodyLength + String(length).length !== length) length = bodyLength + String(length).length;
+	return `${length}${body}`;
+}
+
+/**
+ * A tar (pax) of `entries`, in their order (a directory before what is in it), as `TarCheck` and kantel-host's guest
+ * agent read them: a name or link target past ustar's 100 bytes goes in a pax header. Held whole: for archives of a
+ * bounded size (`UPGRADE_MOVE_LIMITS`).
+ */
+export function writeTar(entries: readonly TarEntry[], at: number = Date.now()): Uint8Array {
+	const blocks: Uint8Array[] = [];
+	for (const entry of entries) {
+		const name = entry.kind === "directory" && !entry.name.endsWith("/") ? `${entry.name}/` : entry.name;
+		const link = entry.kind === "symlink" ? entry.target : "";
+		const records =
+			(encoder.encode(name).length > 100 ? paxRecord("path", name) : "") +
+			(encoder.encode(link).length > 100 ? paxRecord("linkpath", link) : "");
+		if (records !== "") {
+			const pax = encoder.encode(records);
+			blocks.push(headerBlock("PaxHeader", "x", 0o644, pax.length, "", at), pad(pax));
+		}
+		if (entry.kind === "file") {
+			blocks.push(headerBlock(name, "0", entry.mode ?? 0o644, entry.bytes.length, "", at), pad(entry.bytes));
+		} else if (entry.kind === "directory") {
+			blocks.push(headerBlock(name, "5", entry.mode ?? 0o755, 0, "", at));
+		} else {
+			blocks.push(headerBlock(name, "2", 0o777, 0, link, at));
+		}
+	}
+	blocks.push(new Uint8Array(BLOCK * 2));
+	const out = new Uint8Array(blocks.reduce((sum, block) => sum + block.length, 0));
+	let offset = 0;
+	for (const block of blocks) {
+		out.set(block, offset);
+		offset += block.length;
+	}
+	return out;
+}
+
+/** `bytes` padded with zeros to a whole number of blocks. */
+function pad(bytes: Uint8Array): Uint8Array {
+	const padded = new Uint8Array(Math.ceil(bytes.length / BLOCK) * BLOCK);
+	padded.set(bytes);
+	return padded;
+}

@@ -92,8 +92,8 @@ const STAGES: readonly PlacementReason[] = [
 /**
  * What an isolate books on its host. Isolates share their owner's VM, which the host counts in its free memory once it
  * runs, so an isolate books only this much, whatever memory it asked for (128 to 512 MB): booking what it asked for
- * would have a host full of small isolates look full long before its VMs are. The memory it asked for goes to the host
- * and is recorded, not enforced (workerd has no per-isolate memory limit).
+ * would have a host full of small isolates look full long before its VMs are. The memory it asked for goes to the host,
+ * whose runtime enforces it per isolate where it says `memoryEnforced` (`HostIsolateRuntime`).
  */
 export const ISOLATE_SIZE: HostSize = { name: "isolate", vcpus: 0, memoryMiB: 64, diskGiB: 0 };
 

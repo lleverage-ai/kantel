@@ -270,6 +270,10 @@ A resume also works on a sandbox in `error`, from its newest snapshot.
 
 A running sandbox is recovered too, so a retry would restart it again and end what had started since. Send an `Idempotency-Key` to make a retry answer the first recover instead.
 
+## Upgrade an isolate
+
+`POST /v1/sandboxes/{id}/upgrade` (`kantel upgrade <id>`) turns a running or stopped isolate into a microVM with the same ID, files and settings: see [Upgrade an isolate to a microVM](/sandboxes/types/#upgrade-an-isolate-to-a-microvm). `autoUpgrade` on a create or a `PATCH` has an isolate do it by itself when a command needs a microVM.
+
 ## Delete permanently
 
 Deleting a sandbox erases it and its automatic snapshots for good. It can't be undone. [Saved snapshots](/snapshots/saved/) taken from it stay. The key needs `sandboxes:delete`, which the `agent` preset leaves out on purpose.

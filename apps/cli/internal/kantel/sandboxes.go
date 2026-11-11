@@ -58,7 +58,7 @@ func hostedPort(value string) (api.ExposePortBody, error) {
 	return body, nil
 }
 
-var lifecycleDoing = map[string]string{"start": "Starting", "stop": "Stopping", "resume": "Resuming", "recover": "Recovering"}
+var lifecycleDoing = map[string]string{"start": "Starting", "stop": "Stopping", "resume": "Resuming", "recover": "Recovering", "upgrade": "Upgrading"}
 
 // lifecycle is the start, stop, resume and recover commands, alike but for the call.
 func lifecycle(verb, summary string, flags []cli.Flag, examples []cli.Example,
@@ -170,6 +170,7 @@ func sandboxes() cli.Section {
 			func(c *cli.Context, client *api.Client, id string, raw *json.RawMessage) (*api.Sandbox, error) {
 				return client.RecoverSandbox(c.Ctx, id, api.Raw(raw))
 			}),
+		upgradeCommand(),
 		{
 			Name: "fork", Summary: "Copy a sandbox into new ones", Args: IDArg,
 			Flags: []cli.Flag{
@@ -346,9 +347,13 @@ func newCommand() *cli.Command {
 			{Name: "host", Type: cli.String, Multiple: true, Value: "<port[:public]>", Description: "Give this port an HTTPS URL once it runs; repeat it"},
 			{Name: "on", Type: cli.String, Value: "<host>", Description: "Run it on this host, its name or ID (kantel hosts list shows them)"},
 			{Name: "host-label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "Run it only on a host with this label; repeat for more"},
+			{Name: "auto-upgrade", Type: cli.Bool, Description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again"},
 			noWaitFlag,
 		},
-		Details: "--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
+		Details: "--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command\n" +
+			"needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that\n" +
+			"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n\n" +
+			"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 			"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
 			"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
 			"Give --env <env> more than once for several environments, in order (up to 10): where two set the same\n" +
@@ -442,6 +447,12 @@ func runNew(c *cli.Context) error {
 	}
 	if len(hosts) > 0 && c.Bool("no-wait") {
 		return cli.Usage("--host needs the sandbox running")
+	}
+	if c.Bool("auto-upgrade") {
+		if typ == "microvm" {
+			return cli.Usage("--auto-upgrade is an isolate's: a microVM is one already")
+		}
+		body.AutoUpgrade = api.Ptr(true)
 	}
 	// A variable has an =; an environment's name or ID never does.
 	var vars, environments []string
@@ -689,4 +700,89 @@ func accountLabel(a api.Account) string {
 		return "your personal account (" + a.ID + ")"
 	}
 	return a.Name + " (" + a.ID + ")"
+}
+
+// upgradeCommand is kantel upgrade: an isolate made a microVM with the same ID, files and settings.
+func upgradeCommand() *cli.Command {
+	return &cli.Command{
+		Name: "upgrade", Summary: "Turn an isolate into a microVM, with the same ID, files and settings", Args: IDArg,
+		Flags: []cli.Flag{
+			sizeFlag,
+			{Name: "vcpus", Type: cli.String, Value: "<n>", Description: "The microVM's vCPUs, in place of --size; with --memory"},
+			{Name: "memory", Type: cli.String, Value: "<GB>", Description: "The microVM's memory in GB, in place of --size; with --vcpus"},
+			{Name: "disk", Type: cli.String, Value: "<GB>", Description: "The microVM's disk in GB (default: its size's)"},
+			{Name: "image", Type: cli.String, Value: "<image>", Description: "The microVM's base image"},
+			{Name: "wait", Type: cli.Bool, Description: "Answer once the microVM runs (the default)"},
+			noWaitFlag,
+		},
+		Details: "Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip\n" +
+			"packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
+			"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
+			"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
+			"isolate is left as it was. Commands sent meanwhile wait for it.",
+		Examples: []cli.Example{
+			{What: "Make an isolate a microVM of the default size", Line: "kantel upgrade sbx_4kq9x2mt"},
+			{What: "A bigger one", Line: "kantel upgrade sbx_4kq9x2mt --vcpus 8 --memory 16"},
+		},
+		Run: func(c *cli.Context) error {
+			vcpus, err := Whole(c, "vcpus", 1)
+			if err != nil {
+				return err
+			}
+			var memoryMb *int64
+			if memory, ok := c.Str("memory"); ok {
+				gb, err := strconv.ParseFloat(memory, 64)
+				if !memoryGB.MatchString(memory) || err != nil || gb <= 0 {
+					return cli.Usage(`--memory is in GB, such as 16 or 0.5, not "` + memory + `"`)
+				}
+				mb := int64(gb*1024 + 0.5)
+				memoryMb = &mb
+			}
+			if (vcpus == nil) != (memoryMb == nil) {
+				return cli.Usage("give --vcpus and --memory together")
+			}
+			if _, ok := c.Str("size"); ok && vcpus != nil {
+				return cli.Usage("give --size or --vcpus and --memory, not both")
+			}
+			if c.Bool("wait") && c.Bool("no-wait") {
+				return cli.Usage("give --wait or --no-wait, not both")
+			}
+			disk, err := Whole(c, "disk", 1)
+			if err != nil {
+				return err
+			}
+			body := api.UpgradeSandboxBody{Image: StrPtr(c, "image"), Wait: api.Ptr(!c.Bool("no-wait"))}
+			if body.Size, err = sizeOf(c); err != nil {
+				return err
+			}
+			if disk != nil || vcpus != nil {
+				body.Resources = &api.SandboxShapeInput{VCPUs: vcpus, MemoryMb: memoryMb, DiskGb: disk}
+			}
+			client, err := Client(c)
+			if err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			var sandbox *api.Sandbox
+			err = c.Spin("Upgrading "+c.Arg(0)+" to a microVM…", func() error {
+				sandbox, err = client.UpgradeSandbox(c.Ctx, c.Arg(0), body, api.Raw(&raw))
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			c.Emit(raw, sandbox, func() string {
+				if sandbox.State != api.SandboxStateRunning {
+					return sandbox.ID + " " + c.Style.State(StateOf(*sandbox))
+				}
+				return "Upgraded " + sandbox.ID + " (" + sandbox.Name + ") to a microVM, " + c.Style.State(StateOf(*sandbox)) + ".\n" +
+					"  Its files:      /home/user/workspace (/workspace links there)\n" +
+					"  Run a command:  kantel exec " + sandbox.ID + " -- ls /workspace"
+			})
+			if sandbox.State == api.SandboxStateError {
+				return cli.ExitCode(cli.ExitFailed)
+			}
+			return nil
+		},
+	}
 }

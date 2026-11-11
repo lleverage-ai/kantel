@@ -146,7 +146,7 @@ Created sbx_g2yy5jhyqr (fix-login-bug): microvm default, running.
   Stop it:        kantel stop sbx_g2yy5jhyqr
 ```
 
-It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, `--env <env>` starts it from an [environment](#environments-and-protected-variables), and `--host 3000` gives a port a URL as soon as it runs.
+It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `kantel upgrade <id>` turns an isolate into a microVM with the same ID and files when the work needs one, and `kantel new --auto-upgrade` makes an isolate that does it by itself when a command needs it. `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, `--env <env>` starts it from an [environment](#environments-and-protected-variables), and `--host 3000` gives a port a URL as soon as it runs.
 
 A microVM's machine is a named size (`--size large`) or a shape of its own (`--vcpus 8 --memory 16`, in GB). Which sizes there are, and what each holds, is up to the hosts: `kantel sizes` lists them, with the most `--vcpus` and `--memory` may ask for. On app.kantel.dev the sizes are `small`, `default` and `large` (4 vCPU, 8 GB); a large monorepo's type-check needs about 16 GB, so ask for that shape. From a snapshot, a sandbox is the machine the snapshot was taken of, unless you give `--size` or `--vcpus` and `--memory`: a snapshot of the disk alone (what `kantel snapshot save` keeps unless you add `--memory`) starts at any of them, as in `kantel new --from monorepo-ci --vcpus 8 --memory 16`. A snapshot that holds its sandbox's memory has that sandbox's machine, and Kantel refuses another before it makes anything.
 
@@ -262,14 +262,14 @@ Both push and scp go through Kantel's files API, so they work on isolates as wel
 ```sh
 kantel host sbx_g2yy5jhyqr 3000          # an HTTPS URL for port 3000, with a token in it
 kantel host sbx_g2yy5jhyqr 3000 --public # one anyone can open
-kantel ssh sbx_g2yy5jhyqr                # a shell (microVMs)
-kantel ssh sbx_g2yy5jhyqr -- uname -a    # one command over SSH, with its exit code
+kantel ssh sbx_g2yy5jhyqr                # a shell: SSH in a microVM, a pseudo-shell in an isolate
+kantel ssh sbx_g2yy5jhyqr -- uname -a    # one command, with its exit code
 kantel desktop sbx_g2yy5jhyqr            # opens its desktop in your browser
 kantel browser sbx_g2yy5jhyqr            # starts Chromium: opens its live view, prints its CDP URL
 ```
 
 - `host` prints the port's [URL](/sandboxes/public-ports/). Unless `--public`, it carries a token: anyone with the whole URL can open it. `kantel port list <id>` shows a sandbox's ports and `kantel port hide <id> <port>` stops one working.
-- `ssh` makes a key pair the first time and keeps it under `~/.config/kantel/ssh/`. After `--` it runs that command instead of a shell; `--print` prints the `ssh` command that connects instead of running it. `--public-key ~/.ssh/id_ed25519.pub` lets in your own key. See [SSH](/sandboxes/ssh/).
+- `ssh` makes a key pair the first time and keeps it under `~/.config/kantel/ssh/`. After `--` it runs that command instead of a shell; `--print` prints the `ssh` command that connects instead of running it. `--public-key ~/.ssh/id_ed25519.pub` lets in your own key. An isolate has no SSH, so there `ssh` is a pseudo-shell over the commands API that upgrades to a microVM and SSH when a command needs one. See [SSH](/sandboxes/ssh/).
 - `desktop` and `browser` open their page when you're at a terminal, and only print it otherwise or with `--print`. The URLs carry short-lived tokens. Drive the browser with [Playwright](/sandboxes/desktop-and-browser/#drive-it-with-playwright) and the CDP URL `browser` prints.
 
 ## Environments and protected variables

@@ -39,10 +39,11 @@ import {
 	type SandboxTemplateBoot,
 	type TakenSnapshot,
 	type TemplateRuntime,
+	type UpgradedPlacement,
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
-import { parseMountsAt, parseStartPhases, withoutAdmission } from "./facts.ts";
+import { isolateRuntime, parseMountsAt, parseStartPhases, withoutAdmission } from "./facts.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -59,6 +60,7 @@ import {
 	type HostExecResult,
 	type HostExecStatus,
 	type HostGuest,
+	type HostIsolateRuntime,
 	HostMethods,
 	type HostMount,
 	type HostMountStatus,
@@ -142,11 +144,25 @@ export const OLD_HOST_KILL =
 
 /** A host's `sandbox.exec` answer as the compute API takes it. */
 function execResult(result: HostExecResult): ExecResult {
+	const needs = result.needsMicrovm;
+	const terminated = result.terminated;
 	return {
 		exitCode: result.exitCode,
 		stdout: result.stdout,
 		stderr: result.stderr,
 		timedOut: result.timedOut === true,
+		// From an isolate, as its host said: what it needed a microVM for, and why its runtime stopped it. One the host only
+		// inferred from the shell's answer stays inferred: a hint, which autoUpgrade never acts on.
+		...(needs !== undefined && typeof needs.command === "string" && typeof needs.reason === "string"
+			? {
+					needsMicrovm: {
+						command: needs.command,
+						reason: needs.reason,
+						...(needs.inferred === true ? { inferred: true as const } : {}),
+					},
+				}
+			: {}),
+		...(terminated === "cpu" || terminated === "memory" || terminated === "wall" ? { terminated } : {}),
 	};
 }
 
@@ -403,14 +419,25 @@ export function fileStreamEnd(reason: string): { readonly size: number } | Kante
  * What a sandbox can do. A microVM's guest report, where its host sent one, says what its image has: an image without
  * a desktop, a browser or Docker can't offer them, and `/dev/kvm` must open inside for nesting. With no report (a host
  * from before the guest agent said), a microVM is Kantel's own image, which has them all. The browser alone
- * (`browserSurface`) only where the report says so: images from before it show the browser on the desktop.
+ * (`browserSurface`) only where the report says so: images from before it show the browser on the desktop. A microVM
+ * runs JavaScript and Python (Node and Python are in Kantel's image, and any image can install them); an isolate only
+ * where its runtime says its shell has `node` and `python` (`HostIsolateRuntime`), none from a host from before.
  */
-export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean, guest?: HostGuest) {
+export function capabilitiesOf(
+	tier: SandboxTier,
+	nested: boolean,
+	ports: boolean,
+	guest?: HostGuest,
+	isolate?: HostIsolateRuntime,
+) {
 	const vm = tier === "microvm";
 	const report = vm ? guest : undefined;
+	const runtime = vm ? undefined : isolateRuntime(isolate);
 	return {
 		exec: true,
 		files: true,
+		javascript: vm || runtime?.javascript === true,
+		python: vm || runtime?.python === true,
 		ssh: vm,
 		desktop: vm && (report?.desktop.available ?? true),
 		browser: vm && (report?.browser.available ?? true),
@@ -512,7 +539,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
+			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest, sandbox.isolate),
 			...(sandbox.base === undefined || sandbox.base === ""
 				? {}
 				: {
@@ -829,6 +856,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
 					features: [...host.features],
+					...(host.isolate === undefined
+						? {}
+						: {
+								isolate: {
+									javascript: host.isolate.javascript,
+									python: host.isolate.python,
+									memoryEnforced: host.isolate.memoryEnforced,
+								},
+							}),
 					capacity: { ...host.capacity },
 					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
 					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
@@ -953,6 +989,35 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}
 			return out;
+		},
+		// On its own host where it can (the files never leave it), else on another the files are moved to.
+		async upgrade(sandboxId, spec, operationId): Promise<UpgradedPlacement> {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "isolate") throw new KantelError("conflict", "The sandbox is a microVM already");
+			const { sandbox, hostId, path, files, bytes, ...known } = await hosts.sandboxes.upgrade(sandboxId, {
+				...(spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+				...(spec.shape === undefined
+					? {}
+					: {
+							shape: {
+								vcpus: spec.shape.vcpus,
+								memoryMiB: spec.shape.memoryMb,
+								...(spec.shape.diskGb === undefined ? {} : { diskGiB: spec.shape.diskGb }),
+							},
+						}),
+				owner: spec.accountId,
+				env: spec.env,
+				hostIds: spec.eligibleHosts,
+				...egressOf(spec.egress),
+				operationId,
+			});
+			return { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes };
+		},
+		async settleUpgrade(sandboxId, operationId) {
+			const outcome = await hosts.sandboxes.settleUpgrade(sandboxId, operationId);
+			if (outcome.state === "failed") return outcome;
+			const { sandbox, hostId, path, files, bytes, ...known } = outcome.upgraded;
+			return { state: "done", placement: { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes } };
 		},
 		async destroy(sandboxId) {
 			await options.ports?.forget(sandboxId);

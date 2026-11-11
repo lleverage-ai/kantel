@@ -301,7 +301,7 @@ func share(avg10 *float64) *float64 {
 
 // isolates shares out an account's runtime among its running sandboxes: CPU by the time each spent running commands
 // over the interval (usage.Attribute), as a share of one CPU (sh.CPUs); memory evenly, the runtime's resident memory
-// and its limit alike, since workerd says nothing of an isolate's own.
+// and its limit alike, since the runtime reports no isolate's own.
 func (s *usageSampler) isolates(mem usage.Memory, sh usage.Shared) []proto.SandboxUsage {
 	for _, id := range sh.Held {
 		s.counters.Keep("isolate-busy/" + id)

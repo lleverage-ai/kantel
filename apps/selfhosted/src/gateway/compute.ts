@@ -7,7 +7,7 @@
  *   - `hosts` (the default wherever the gateway knows the address hosts reach it at, as the Compose stack does):
  *     machines running `kantel-host` (`@kantel/hosts`, apps/host). A host joins with a token the API mints
  *     (`POST /v1/admin/hosts/join-tokens`), registers at `POST /v1/hosts/register`, dials out to `GET /v1/hosts/connect`
- *     and runs the sandboxes the scheduler places on it: Firecracker microVMs and workerd isolates. The registry of
+ *     and runs the sandboxes the scheduler places on it: Firecracker microVMs and V8 isolates. The registry of
  *     hosts and placements is in Postgres with a database, in memory otherwise.
  *   - `stub` (the default with no such address, as under `pnpm dev`): a just-bash shell over files in memory, to try
  *     the API with no machine of your own. `KANTEL_COMPUTE_BACKEND=stub` picks it anywhere.

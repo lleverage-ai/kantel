@@ -101,6 +101,24 @@ export interface HostFacts {
 	readonly guestKernel?: string;
 	/** What the host boots new sandboxes on, and its image settings; present with `image-patching`. */
 	readonly images?: HostImages;
+	/**
+	 * What its isolate runtime (kantel-isolate) says it can do, as the host last read it. Absent on a host without the
+	 * isolate tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
+	 */
+	readonly isolate?: HostIsolateRuntime;
+}
+
+/**
+ * The isolate runtime's report of itself (`IsolateRuntime` in proto.go): whether its shell runs `node` and `python`, and
+ * whether an isolate's `memoryMiB` is a hard limit rather than recorded only.
+ */
+export interface HostIsolateRuntime {
+	/** Such as `deno_core`. */
+	readonly runtime?: string;
+	readonly version?: string;
+	readonly javascript: boolean;
+	readonly python: boolean;
+	readonly memoryEnforced: boolean;
 }
 
 /** A host's images: the version new sandboxes start on, and how it takes new ones. */
@@ -165,7 +183,7 @@ export const HOST_FEATURES = {
 	filesExtract: "files-extract",
 	/**
 	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
-	 * scratch), and an isolate's `memoryMiB` (recorded, not enforced).
+	 * scratch), and an isolate's `memoryMiB` (enforced where the host's runtime says `memoryEnforced`).
 	 */
 	customShapes: "custom-shapes",
 	/**
@@ -249,6 +267,20 @@ export const HOST_FEATURES = {
 	 * boot.
 	 */
 	sandboxEnv: "sandbox-env",
+	/**
+	 * `sandbox.upgrade` (`HostMethods.upgrade`): a microVM made from one of the host's isolates, with its sandbox ID, as
+	 * `sandbox.create` would make it, the isolate's `/workspace` files put in it at `/home/user/workspace` from the host's
+	 * own blob store (with `/workspace` a link to them), and the isolate let go only once the microVM runs with them;
+	 * a failure leaves the isolate as it was. Reported by a host that runs both tiers. Without it, an upgrade makes the
+	 * microVM on another host and Kantel moves the files.
+	 */
+	isolateUpgrade: "isolate-upgrade",
+	/**
+	 * `sandbox.upgrade.freeze` and `sandbox.upgrade.thaw` (`{ sandboxId, operationId, waitMs? }`): one of the host's
+	 * isolates held still (what was under way ended, every later command and file write refused) while Kantel copies its
+	 * files to a microVM on another host, and let go if that upgrade rolls back.
+	 */
+	isolateFreeze: "isolate-freeze",
 } as const;
 
 /** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
@@ -325,6 +357,13 @@ export interface HostExecResult {
 	readonly truncated?: boolean;
 	readonly timedOut?: boolean;
 	readonly durationMs?: number;
+	/**
+	 * From an isolate: it failed because it ran something an isolate doesn't have. `inferred`: the host read it from the
+	 * shell's answer (exit 127 and its message), the runtime didn't say it; a hint only, never acted on (`autoUpgrade`).
+	 */
+	readonly needsMicrovm?: { readonly command: string; readonly reason: string; readonly inferred?: boolean };
+	/** From an isolate: its runtime stopped it, for `cpu`, `memory` or `wall` time. */
+	readonly terminated?: string;
 }
 
 /** `sandbox.exec.get`'s and `sandbox.exec.kill`'s params: a command by Kantel's ID. */
@@ -624,6 +663,8 @@ export interface HostSandbox {
 	readonly mountsAt?: number;
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
+	/** For an isolate, what its runtime can do (`HostFacts.isolate`); absent from a host too old to say. */
+	readonly isolate?: HostIsolateRuntime;
 	/**
 	 * `unresponsive` while a running microVM's guest agent doesn't answer (`HOST_FEATURES.guestHealth`), with
 	 * `healthReason` saying why in words; absent while it answers, and from a host without the feature.
@@ -632,6 +673,8 @@ export interface HostSandbox {
 	readonly healthReason?: string;
 	/** When its `health` last changed (the host's clock, ms), which orders reports of it; absent: it never has. */
 	readonly healthAt?: number;
+	/** In `sandbox.upgrade`'s answer: what of the isolate went into the microVM, its entries and its files' bytes. */
+	readonly moved?: { readonly files: number; readonly bytes: number };
 }
 
 /** One thing a microVM's image has or lacks. */
@@ -961,6 +1004,10 @@ export const HostMethods = {
 	fork: "sandbox.fork",
 	/** Replaces a sandbox's egress: `{ sandboxId, egress }` (null for the host's default). */
 	egress: "sandbox.egress",
+	/**
+	 * `{ sandboxId, keepSnapshots? }`: the sandbox and its automatic snapshots go. With `keepSnapshots` (the isolate an
+	 * upgrade left once its microVM runs on another host) its snapshots stay, the sandbox's still.
+	 */
 	delete: "sandbox.delete",
 	get: "sandbox.get",
 	list: "sandbox.list",
@@ -1011,6 +1058,19 @@ export const HostMethods = {
 	envFetch: "env.fetch",
 	/** A file's bytes on a port stream, `HostFileOpen`; answered `{ size? }` once it is open. */
 	fileOpen: "sandbox.files.open",
+	/**
+	 * `HOST_FEATURES.isolateUpgrade`: a create's params (`tier` `microvm`) for one of the host's isolates, which becomes
+	 * that microVM with its files. Answered with the microVM's `HostSandbox` and its `moved`.
+	 */
+	upgrade: "sandbox.upgrade",
+	/** `HOST_FEATURES.isolateFreeze`: `{ sandboxId, operationId, waitMs? }`, answered `{ ok }`. */
+	upgradeFreeze: "sandbox.upgrade.freeze",
+	upgradeThaw: "sandbox.upgrade.thaw",
+	/**
+	 * `HOST_FEATURES.isolateUpgrade`: `{ sandboxId, operationId }`, answered `{ state: "done", sandbox }` or
+	 * `{ state: "failed", error }` once any upgrade of it under way has ended; one never finished is rolled back.
+	 */
+	upgradeSettle: "sandbox.upgrade.settle",
 	/**
 	 * `{ sandboxId, archive, target }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into the directory
 	 * `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted. Answered `{}`.

@@ -1,0 +1,86 @@
+# kantel-isolate, the isolate runtime (apps/host/isolate-runtime), in the isolate VM. Replaces kantel-workerd.service.
+# The VM is one account's; this unit confines the runtime inside it as a second layer behind the process's own
+# hardening (hardening/: privilege checks, Landlock and seccomp), so a V8 bug that reaches native code is still
+# boxed in here. See ../SECURITY.md. This is the only copy: apps/host/guest/isolate.Dockerfile installs it.
+#
+# Install (apps/host/guest/isolate.Dockerfile): copy to /etc/systemd/system/, `useradd --system --no-create-home
+# --shell /usr/sbin/nologin kantel-isolate` (or rely on DynamicUser below), and `systemctl enable kantel-isolate.service`.
+[Unit]
+Description=Kantel's isolate runtime (kantel-isolate on deno_core)
+After=kantel-guest.service
+Wants=kantel-guest.service
+
+# --require-landlock makes the runtime exit if Landlock enforces nothing, so a kernel without it fails closed instead
+# of running unconfined. ABI 1 (Linux 5.13) is the minimum, for the file-system rules; the isolate VM's Linux 6.1 has
+# ABI 2, so the TCP-port rules (ABI 4) and scoping (ABI 6) don't apply there, which the runtime logs as a warning: the
+# VM has no network device, and IPAddressAllow below is a second fence. The runtime's seccomp filter is on by default
+# (--seccomp enforce).
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kantel-isolate serve --listen 127.0.0.1:8080 --store http://127.0.0.1:7001 --egress http://127.0.0.1:7002 --assets /opt/kantel-isolate --require-landlock
+WorkingDirectory=/opt/kantel-isolate
+Restart=always
+RestartSec=200ms
+
+# Its own unprivileged user, no capabilities, no way to gain any.
+DynamicUser=yes
+User=kantel-isolate
+Group=kantel-isolate
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SecureBits=noroot-locked
+RestrictSUIDSGID=yes
+
+# File system: everything read-only, /home and /root invisible, its own private /tmp (the process's temp dir) and
+# nothing else writable. --assets is read-only by ProtectSystem=strict; the process's Landlock rules narrow reads
+# further.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+ReadOnlyPaths=/opt/kantel-isolate
+InaccessiblePaths=-/var/lib/kantel -/run/kantel
+
+# Kernel and system state it never touches.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+KeyringMode=private
+# V8 writes and executes JIT code, so MemoryDenyWriteExecute must stay off.
+MemoryDenyWriteExecute=no
+# System calls: a deny-list as a second layer behind the runtime's own allow-list (hardening/seccomp.rs), which is
+# the precise one. Only native-architecture calls.
+SystemCallArchitectures=native
+SystemCallFilter=~@mount @privileged @reboot @swap @module @raw-io @obsolete @cpu-emulation @debug @clock
+SystemCallErrorNumber=EPERM
+
+# Network: TCP over IPv4 to the guest agent's bridges on 127.0.0.1 (7001 store, 7002 egress) and its own listener.
+# AF_UNIX stays for the runtime's own socketpairs. The VM has no network device; IPAddressAllow is a second fence.
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+SocketBindAllow=tcp:8080
+SocketBindDeny=any
+
+# Resources: the VM's memory is the account's isolate budget; leave the guest agent and systemd room. V8's sandbox
+# reserves about 1 TiB of address space (not memory), so never limit address space (LimitAS) — only memory.
+MemoryMax=90%
+MemorySwapMax=0
+TasksMax=4096
+LimitNOFILE=65536
+LimitCORE=0
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

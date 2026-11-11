@@ -4,11 +4,12 @@
  * directory as options, so tests drive it with no globals.
  */
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import {
 	type Account,
 	type ApiKey,
@@ -31,6 +32,7 @@ import {
 	type SandboxSizeName,
 	type SandboxType,
 	type Snapshot,
+	type SshAccess,
 } from "@kantel/api/sdk";
 import {
 	AGENTS_BLOCK,
@@ -95,6 +97,18 @@ import {
 	waitForLogin,
 } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
+import {
+	applyTrailer,
+	cloneShellState,
+	loginShellIn,
+	microvmPath,
+	readTrailer,
+	SHELL_HELP,
+	type ShellState,
+	shellMarker,
+	shellScript,
+	shownLength,
+} from "./shell.ts";
 import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } from "./ssh-proxy.ts";
 import { checkoutPath, defaultCheckout, repositoryTop, syncGit } from "./sync.ts";
 import {
@@ -164,6 +178,8 @@ export interface RunOptions {
 	readonly script?: string;
 	/** Runs a release's installer, for `update`; default `sh` with this process's output. */
 	readonly runInstaller?: RunInstaller;
+	/** Runs the system's ssh with these arguments, and more environment, in this terminal; default `ssh` itself. */
+	readonly runSsh?: RunSsh;
 }
 
 interface Io {
@@ -180,7 +196,11 @@ interface Io {
 	readonly self: readonly string[] | undefined;
 	readonly script: string | undefined;
 	readonly runInstaller: RunInstaller;
+	readonly runSsh: RunSsh;
 }
+
+/** Runs ssh in this terminal and answers its exit code. */
+export type RunSsh = (args: readonly string[], env?: Readonly<Record<string, string>>) => Promise<number>;
 
 /** Whether an executable `name` is in one of the PATH's directories. */
 export async function onPath(name: string, env: Env): Promise<boolean> {
@@ -302,6 +322,7 @@ const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.degraded",
 	"sandbox.recovered",
 	"sandbox.oom_kill",
+	"sandbox.upgraded",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
@@ -965,18 +986,374 @@ function makeClient(io: Io, config: ResolvedConfig): KantelClient {
 	});
 }
 
-function runSsh(args: readonly string[], io: Io, env?: Readonly<Record<string, string>>): Promise<number> {
+function spawnSsh(args: readonly string[], stderr: Output, env?: Readonly<Record<string, string>>): Promise<number> {
 	return new Promise((done) => {
 		const child = spawn("ssh", [...args], {
 			stdio: "inherit",
 			...(env === undefined ? {} : { env: { ...process.env, ...env } }),
 		});
 		child.once("error", (error) => {
-			io.stderr.write(`kantel: couldn't run ssh: ${error.message}\n`);
+			stderr.write(`kantel: couldn't run ssh: ${error.message}\n`);
 			done(127);
 		});
 		child.once("exit", (code) => done(code ?? 1));
 	});
+}
+
+/** Asks Kantel to let a key in to a microVM's SSH: `--public-key`'s, else a key pair Kantel makes. */
+async function openSshAccess(ctx: Context, client: KantelClient, sandboxId: string): Promise<SshAccess> {
+	const keyPath = ctx.string("public-key");
+	const publicKey = keyPath === undefined ? undefined : (await readFile(resolve(ctx.io.cwd, keyPath), "utf8")).trim();
+	return client.openSsh(sandboxId, { publicKey, ttlMinutes: whole(ctx.string("ttl"), "--ttl") });
+}
+
+/**
+ * Connects to a microVM's SSH with the access Kantel gave, running `remote` there when given (with a terminal when
+ * `tty`), or prints the ssh command that connects (`print`).
+ */
+async function connectSsh(
+	ctx: Context,
+	sandboxId: string,
+	access: SshAccess,
+	remote: readonly string[],
+	options: { readonly print?: boolean; readonly tty?: boolean } = {},
+): Promise<number> {
+	const print = options.print === true;
+	// ssh joins its command's words with spaces for the remote shell, so each is quoted to arrive as it is.
+	const remoteArgs = remote.length === 0 ? [] : ["--", commandLine(remote)];
+	const tty = options.tty === true ? ["-t"] : [];
+	// A key pair Kantel made is shown once: keep its private half where ssh can use it.
+	let identityFile: string | undefined;
+	if (access.privateKey !== undefined) {
+		const directory = join(ctx.io.configDir, "ssh");
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		identityFile = join(directory, sandboxId.replace(/[^\w.-]/g, "_"));
+		const privateKey = access.privateKey.endsWith("\n") ? access.privateKey : `${access.privateKey}\n`;
+		await writeFile(identityFile, privateKey, { mode: 0o600 });
+		await chmod(identityFile, 0o600);
+	}
+	if (access.proxyUrl !== undefined) {
+		// No SSH gateway: through the relay, with this CLI as ssh's ProxyCommand (ssh-proxy.ts).
+		const tunnel = { user: access.user, proxyUrl: access.proxyUrl };
+		const options = {
+			self: [process.execPath, ...process.execArgv, process.argv[1] ?? "kantel"],
+			sandboxId,
+			knownHosts: join(ctx.io.configDir, "ssh", "known_hosts"),
+			...(identityFile === undefined ? {} : { identityFile }),
+		};
+		await mkdir(join(ctx.io.configDir, "ssh"), { recursive: true, mode: 0o700 });
+		if (!print) {
+			return ctx.io.runSsh([...tty, ...tunnelSshArgs(tunnel, options), ...remoteArgs], {
+				[SSH_URL_ENV]: access.proxyUrl,
+			});
+		}
+		const command = tunnelSshCommand(tunnel, { ...options, self: ["kantel"] });
+		const shown = { user: access.user, command, identityFile, hostKeyFingerprint: access.hostKeyFingerprint };
+		ctx.emit({ ...shown, expiresAt: access.expiresAt }, () =>
+			[command, `(start it by ${timestamp(access.expiresAt)}; once connected it stays open)`].join("\n"),
+		);
+		return 0;
+	}
+	const args = [
+		...(identityFile === undefined ? [] : ["-i", identityFile, "-o", "IdentitiesOnly=yes"]),
+		"-p",
+		String(access.port),
+		`${access.user}@${access.host}`,
+	];
+	const command = identityFile === undefined ? access.command : ["ssh", ...args].map(shellQuote).join(" ");
+	if (!print) return ctx.io.runSsh([...tty, ...args, ...remoteArgs]);
+	// The private key stays in its file, out of the output.
+	const shown = {
+		host: access.host,
+		port: access.port,
+		user: access.user,
+		command,
+		identityFile,
+		hostKeyFingerprint: access.hostKeyFingerprint,
+		expiresAt: access.expiresAt,
+	};
+	ctx.emit(shown, () => `${command}\n(it works until ${timestamp(access.expiresAt)})`);
+	return 0;
+}
+
+/** How long one line of the pseudo-shell may run, in seconds: an isolate's longest. Ctrl-C stops it sooner. */
+const SHELL_LIMIT_SECONDS = 600;
+
+/** Where the pseudo-shell reads its lines. */
+interface Lines {
+	/** The next line, after showing `prompt`; undefined at the end of the input (Ctrl-D). */
+	read(prompt: string): Promise<string | undefined>;
+}
+
+/** Lines from a terminal, with line editing and history (Node's readline), let go of between lines. */
+function terminalLines(input: NodeJS.ReadStream, output: NodeJS.WriteStream): Lines {
+	const history: string[] = [];
+	return {
+		read(prompt) {
+			return new Promise((done) => {
+				// A readline only while it reads, so the terminal is its own again while a command runs: Ctrl-C a signal.
+				const rl = createInterface({ input, output, terminal: true, history, historySize: 1000 });
+				let answered = false;
+				const finish = (line: string | undefined): void => {
+					if (answered) return;
+					answered = true;
+					rl.close();
+					done(line);
+				};
+				// Ctrl-C at the prompt drops the line, as a shell does.
+				rl.on("SIGINT", () => {
+					output.write("\n");
+					finish("");
+				});
+				rl.on("close", () => finish(undefined));
+				rl.question(prompt, (line) => finish(line));
+			});
+		},
+	};
+}
+
+/** Lines from a pipe, or from a test's input, with the prompt written to `prompts` when given. */
+function streamLines(input: Input, prompts: Output | undefined): Lines {
+	const chunks = input[Symbol.asyncIterator]();
+	const decoder = new TextDecoder();
+	let buffered = "";
+	let ended = false;
+	return {
+		async read(prompt) {
+			if (prompt !== "") prompts?.write(prompt);
+			for (;;) {
+				const at = buffered.indexOf("\n");
+				if (at >= 0) {
+					const line = buffered.slice(0, at).replace(/\r$/, "");
+					buffered = buffered.slice(at + 1);
+					return line;
+				}
+				if (ended) {
+					const line = buffered === "" ? undefined : buffered;
+					buffered = "";
+					return line;
+				}
+				const next = await chunks.next();
+				if (next.done === true) ended = true;
+				else buffered += typeof next.value === "string" ? next.value : decoder.decode(next.value, { stream: true });
+			}
+		},
+	};
+}
+
+function isTerminal(input: Input): input is Input & NodeJS.ReadStream {
+	return input.isTTY === true && typeof (input as { setRawMode?: unknown }).setRawMode === "function";
+}
+
+/**
+ * `kantel ssh` to an isolate, which has no SSH. With a command, it runs as `kantel exec` runs it. Without one, a
+ * pseudo-shell over the commands API: each line is a command, run in the directory and with the exported variables
+ * the last one left (shell.ts). From a terminal it has a prompt; from a pipe it runs the lines in order and exits with
+ * the last one's status. When a command needs a microVM it upgrades (by itself with autoUpgrade, else when asked),
+ * runs the command again, and at a terminal switches to SSH on the microVM, in the same directory.
+ */
+async function isolateShell(
+	ctx: Context,
+	client: KantelClient,
+	sandbox: Sandbox,
+	remote: readonly string[],
+): Promise<number> {
+	const sandboxId = sandbox.id;
+	const rerunNote = (command: Command): string => {
+		const what = command.needsMicrovm === undefined ? "" : ` (${command.needsMicrovm.command})`;
+		return `This needed a microVM${what}: the sandbox has been upgraded, and the command ran again there.`;
+	};
+	if (remote.length > 0) {
+		// One command, as exec runs it, with its limit.
+		const started = await client.runCommand(sandboxId, {
+			command: commandLine(remote),
+			timeoutMs: EXEC_DEFAULT_SECONDS * 1000,
+			detached: true,
+		});
+		return follow(ctx, client, sandboxId, started.id, started, {
+			limitSeconds: EXEC_DEFAULT_SECONDS,
+			onRerun: (command) => ctx.note(rerunNote(command)),
+		});
+	}
+	if (sandbox.state !== "running" && sandbox.state !== "starting") {
+		const resume = `kantel resume ${sandboxId}`;
+		const then = `kantel ssh ${sandboxId}`;
+		const hint =
+			sandbox.state === "stopping"
+				? `Once it has stopped, resume it with ${resume}, then run ${then} again.`
+				: sandbox.state === "stopped" || sandbox.state === "paused" || sandbox.state === "error"
+					? `Resume it with ${resume}, then run ${then} again.`
+					: "";
+		ctx.note(`kantel: ${sandbox.name} (${sandboxId}) is ${sandbox.state}.${hint === "" ? "" : ` ${hint}`}`);
+		return 1;
+	}
+	const stdin = ctx.io.stdin();
+	const interactive = stdin.isTTY === true;
+	const lines = isTerminal(stdin)
+		? terminalLines(stdin, process.stderr)
+		: streamLines(stdin, interactive ? ctx.io.stderr : undefined);
+	const marker = shellMarker(randomBytes(8));
+	let state: ShellState = { vars: new Map(), unset: new Set() };
+	let status = 0;
+	let microvm = false;
+	/** The command a Ctrl-C stops. */
+	let running: string | undefined;
+	let upgrading = false;
+
+	/** Runs a line: its exit code, the command it came to, and whether the sandbox upgraded itself to run it again. */
+	const runLine = async (line: string): Promise<{ code: number; command?: Command; rerun: boolean }> => {
+		let final: Command | undefined;
+		let rerun = false;
+		try {
+			const started = await client.runCommand(sandboxId, {
+				command: shellScript(line, marker, state),
+				timeoutMs: SHELL_LIMIT_SECONDS * 1000,
+				detached: true,
+			});
+			running = started.id;
+			const code = await follow(ctx, client, sandboxId, started.id, started, {
+				limitSeconds: SHELL_LIMIT_SECONDS,
+				marker,
+				quietNeedsMicrovm: interactive,
+				onRerun: (command) => {
+					rerun = true;
+					running = command.rerunAs;
+					ctx.note(rerunNote(command));
+				},
+				onEnd: (command) => {
+					final = command;
+				},
+			});
+			const trailer = final === undefined ? undefined : readTrailer(final.stdout, marker);
+			if (trailer !== undefined) applyTrailer(state, trailer);
+			return { code, ...(final === undefined ? {} : { command: final }), rerun };
+		} catch (error) {
+			// Said, with how to resume a sandbox that stopped; the session goes on.
+			report(error, ctx.io);
+			return { code: 1, rerun };
+		} finally {
+			running = undefined;
+		}
+	};
+
+	const upgrade = async (): Promise<boolean> => {
+		ctx.note(`Upgrading ${sandboxId} to a microVM…`);
+		const from = Date.now();
+		upgrading = true;
+		try {
+			const upgraded = await client.upgradeSandbox(sandboxId, { wait: true });
+			if (upgraded.state !== "running") {
+				ctx.note(`kantel: the upgrade left ${sandboxId} ${upgraded.state}`);
+				return false;
+			}
+		} catch (error) {
+			report(error, ctx.io);
+			return false;
+		} finally {
+			upgrading = false;
+		}
+		microvm = true;
+		ctx.note(
+			`Upgraded to a microVM in ${duration((Date.now() - from) / 1000)}. Its files are in /home/user/workspace, and /workspace links there.`,
+		);
+		return true;
+	};
+
+	const switchToSsh = async (): Promise<number> => {
+		const dir = microvmPath(state.cwd);
+		ctx.note(`Switching to SSH on the microVM, in ${dir}.`);
+		try {
+			return await connectSsh(ctx, sandboxId, await openSshAccess(ctx, client, sandboxId), [loginShellIn(dir)], {
+				tty: true,
+			});
+		} catch (error) {
+			report(error, ctx.io);
+			ctx.note(`kantel ssh ${sandboxId} connects to it.`);
+			return 1;
+		}
+	};
+
+	// At a terminal, Ctrl-C stops the running command, not this.
+	const interrupt = (): void => {
+		if (upgrading) ctx.note("kantel: the upgrade carries on; it can't be stopped part way");
+		else if (running !== undefined) {
+			client.killCommand(sandboxId, running).catch((error: unknown) => report(error, ctx.io));
+		}
+	};
+	if (isTerminal(stdin)) process.on("SIGINT", interrupt);
+	try {
+		if (interactive) {
+			ctx.note(
+				[
+					`${sandbox.name} (${sandboxId}) is an isolate, which has no SSH: this is a pseudo-shell over Kantel's commands API.`,
+					"It isn't a terminal: each line runs as one command, and full-screen programs such as vim or top don't work.",
+					"node and python work.",
+					sandbox.autoUpgrade === true
+						? "Auto-upgrade is on: a command that needs a microVM (git, npm, a build) upgrades the sandbox and runs again there, and you're switched to SSH on it."
+						: "Auto-upgrade is off: when a command needs a microVM you're asked whether to upgrade, and upgrade does it now.",
+					"Type help for the built-in commands, and exit or Ctrl-D to leave.",
+				].join("\n"),
+			);
+		}
+		// Where the shell starts, and the sandbox's own variables, for the next lines to compare with.
+		await runLine(":");
+		for (;;) {
+			const prompt = `${status === 0 ? "" : `[${status}] `}user@${sandbox.name}:${state.cwd ?? "~"}$ `;
+			const line = await lines.read(interactive ? prompt : "");
+			if (line === undefined) {
+				if (interactive) ctx.io.stderr.write("\n");
+				return status;
+			}
+			const word = line.trim();
+			if (word === "") continue;
+			const exit = /^exit(?:\s+(\d+))?$/.exec(word);
+			if (exit !== null) return exit[1] === undefined ? status : Number(exit[1]) & 255;
+			if (word === "help") {
+				ctx.note(SHELL_HELP);
+				status = 0;
+				continue;
+			}
+			if (word === "upgrade") {
+				if (microvm) {
+					ctx.note(`kantel: ${sandboxId} is a microVM already`);
+					status = 0;
+					continue;
+				}
+				if (!(await upgrade())) {
+					status = 1;
+					continue;
+				}
+				if (interactive) return await switchToSsh();
+				status = 0;
+				continue;
+			}
+			// Where the line starts: a retry in the microVM starts there too, not where the refused attempt left it.
+			const before = cloneShellState(state);
+			const ran = await runLine(line);
+			status = ran.code;
+			if (ran.rerun) {
+				microvm = true;
+				if (interactive) return await switchToSsh();
+				continue;
+			}
+			const needs = ran.command?.needsMicrovm;
+			if (needs === undefined || !interactive || microvm) continue;
+			const answer = await lines.read(
+				`${needs.reason.replace(/\.$/, "")}. Upgrade this sandbox to a microVM now? [y/N] `,
+			);
+			if (answer === undefined) return status;
+			if (!/^y(es)?$/i.test(answer.trim())) {
+				ctx.note(`Not upgraded. Type upgrade, or run kantel upgrade ${sandboxId}, when you want it.`);
+				continue;
+			}
+			if (!(await upgrade())) continue;
+			state = before;
+			status = (await runLine(line)).code;
+			return await switchToSsh();
+		}
+	} finally {
+		process.off("SIGINT", interrupt);
+	}
 }
 
 // Flags.
@@ -1065,6 +1442,8 @@ function printOutput(ctx: Context, command: Command): void {
 	if (command.stderr !== "") ctx.io.stderr.write(command.stderr);
 	if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
 	if (command.state === "killed") ctx.note("kantel: the command was killed");
+	if (command.terminated !== undefined) ctx.note(`kantel: the isolate stopped it: too much ${command.terminated} time`);
+	noteNeedsMicrovm(ctx, command.sandboxId, command);
 }
 
 /** `kantel exec --status`: the command as JSON, or its state and output so far. */
@@ -1103,6 +1482,14 @@ interface FollowOptions {
 	readonly announce?: boolean;
 	/** Its limit in seconds, said when it timed out. */
 	readonly limitSeconds?: number;
+	/** Its stdout is shown up to this marker, and what follows held back (the pseudo-shell's trailer, shell.ts). */
+	readonly marker?: string;
+	/** Its sandbox upgraded itself and ran it again: said by the caller rather than here. */
+	readonly onRerun?: (command: Command) => void;
+	/** Say nothing of a command that needed a microVM: the caller asks about it. */
+	readonly quietNeedsMicrovm?: boolean;
+	/** Given the command it came to, once it ends. */
+	readonly onEnd?: (command: Command) => void;
 }
 
 /**
@@ -1181,17 +1568,30 @@ async function follow(
 	}
 	for (;;) {
 		if (!ctx.json) {
-			const out = command.stdout.slice(shown.stdout);
+			const end = options.marker === undefined ? command.stdout.length : shownLength(command.stdout, options.marker);
+			const out = command.stdout.slice(shown.stdout, end);
 			const err = command.stderr.slice(shown.stderr);
 			if (out !== "") ctx.io.stdout.write(out);
 			if (err !== "") ctx.io.stderr.write(err);
-			shown = { stdout: command.stdout.length, stderr: command.stderr.length };
+			shown = { stdout: Math.max(shown.stdout, end), stderr: command.stderr.length };
 		}
 		if (command.state !== "running") break;
 		await ctx.io.sleep(wait);
 		wait = Math.min(wait * 2, 1000);
 		command = await fetch();
 	}
+	// Its isolate upgraded itself to a microVM (`autoUpgrade`) and ran it again there: that one is what it came to.
+	if (command.rerunAs !== undefined) {
+		if (options.onRerun !== undefined) options.onRerun(command);
+		else if (!ctx.json) {
+			const what = command.needsMicrovm === undefined ? "" : ` (${command.needsMicrovm.command})`;
+			ctx.note(
+				`kantel: it needed a microVM${what}; ${sandboxId} is one now, and it runs again there as ${command.rerunAs}`,
+			);
+		}
+		return follow(ctx, client, sandboxId, command.rerunAs, undefined, options);
+	}
+	options.onEnd?.(command);
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {
 		if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
@@ -1199,8 +1599,20 @@ async function follow(
 			const after = options.limitSeconds === undefined ? "" : ` after ${options.limitSeconds} s`;
 			ctx.note(`kantel: the command timed out${after} and was killed`);
 		} else if (command.state === "killed") ctx.note("kantel: the command was killed");
+		if (command.terminated !== undefined)
+			ctx.note(`kantel: the isolate stopped it: too much ${command.terminated} time`);
+		if (options.quietNeedsMicrovm !== true) noteNeedsMicrovm(ctx, sandboxId, command);
 	}
 	return exitCodeOf(command);
+}
+
+/** An isolate's command that needed a microVM: what to do about it. */
+function noteNeedsMicrovm(ctx: Context, sandboxId: string, command: Command): void {
+	if (command.needsMicrovm === undefined) return;
+	ctx.note(
+		`kantel: ${command.needsMicrovm.command} needs a microVM. kantel upgrade ${sandboxId} turns this isolate into one, ` +
+			"its files and settings kept; then run it again",
+	);
 }
 
 /** `--host 3000` or `--host 8080:public`. */
@@ -1606,9 +2018,16 @@ const SECTIONS: readonly Section[] = [
 						value: "<k=v>",
 						description: "Run it only on a host with this label; repeat for more",
 					},
+					"auto-upgrade": {
+						type: "boolean",
+						description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again",
+					},
 					"no-wait": noWait,
 				},
 				details:
+					"--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command\n" +
+					"needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that\n" +
+					"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n\n" +
 					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
 					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
@@ -1657,6 +2076,9 @@ const SECTIONS: readonly Section[] = [
 						// one that holds its sandbox's memory, which has that sandbox's machine, before it makes anything.
 					}
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
+					if (ctx.boolean("auto-upgrade") && type === "microvm") {
+						throw new UsageError("--auto-upgrade is an isolate's: a microVM is one already");
+					}
 					// A variable has an =; an environment's name or ID never does.
 					const envs = ctx.list("env");
 					const environments = envs.filter((item) => !item.includes("="));
@@ -1688,6 +2110,7 @@ const SECTIONS: readonly Section[] = [
 						),
 						host: ctx.string("on"),
 						hostLabels: pairs(ctx.list("host-label"), "--host-label"),
+						...(ctx.boolean("auto-upgrade") ? { autoUpgrade: true } : {}),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
@@ -1814,6 +2237,72 @@ const SECTIONS: readonly Section[] = [
 			lifecycle("recover", "Restart the machine of a sandbox that is stuck or in error", {}, (client, sandboxId) =>
 				client.recoverSandbox(sandboxId),
 			),
+			{
+				name: "upgrade",
+				summary: "Turn an isolate into a microVM, with the same ID, files and settings",
+				args: ID_ARG,
+				flags: {
+					size: sizeFlag,
+					vcpus: {
+						type: "string",
+						value: "<n>",
+						description: "The microVM's vCPUs, in place of --size; with --memory",
+					},
+					memory: {
+						type: "string",
+						value: "<GB>",
+						description: "The microVM's memory in GB, in place of --size; with --vcpus",
+					},
+					disk: { type: "string", value: "<GB>", description: "The microVM's disk in GB (default: its size's)" },
+					image: { type: "string", value: "<image>", description: "The microVM's base image" },
+					wait: { type: "boolean", description: "Answer once the microVM runs (the default)" },
+					"no-wait": noWait,
+				},
+				details:
+					"Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip\n" +
+					"packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
+					"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
+					"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
+					"isolate is left as it was. Commands sent meanwhile wait for it.",
+				async run(ctx) {
+					const vcpus = whole(ctx.string("vcpus"), "--vcpus");
+					const memory = ctx.string("memory");
+					if (memory !== undefined && !(/^\d+(\.\d+)?$/.test(memory) && Number(memory) > 0)) {
+						throw new UsageError(`--memory is in GB, such as 16 or 0.5, not "${memory}"`);
+					}
+					const memoryMb = memory === undefined ? undefined : Math.round(Number(memory) * 1024);
+					if ((vcpus === undefined) !== (memoryMb === undefined))
+						throw new UsageError("give --vcpus and --memory together");
+					if (vcpus !== undefined && ctx.string("size") !== undefined) {
+						throw new UsageError("give --size or --vcpus and --memory, not both");
+					}
+					if (ctx.boolean("wait") && ctx.boolean("no-wait")) throw new UsageError("give --wait or --no-wait, not both");
+					const diskGb = whole(ctx.string("disk"), "--disk");
+					const sandbox = await (await ctx.client()).upgradeSandbox(ctx.arg(0), {
+						size: sizeOf(ctx.string("size")),
+						...(vcpus === undefined && diskGb === undefined
+							? {}
+							: {
+									resources: {
+										...(vcpus === undefined ? {} : { vcpus, memoryMb }),
+										...(diskGb === undefined ? {} : { diskGb }),
+									},
+								}),
+						image: ctx.string("image"),
+						wait: !ctx.boolean("no-wait"),
+					});
+					ctx.emit(sandbox, () =>
+						sandbox.state === "running"
+							? [
+									`Upgraded ${sandbox.id} (${sandbox.name}): ${kindOf(sandbox)}${diskOf(sandbox)}, ${stateOf(sandbox)}.`,
+									"  Its files:      /home/user/workspace (/workspace links there)",
+									`  Run a command:  kantel exec ${sandbox.id} -- git status`,
+								].join("\n")
+							: `${sandbox.id} ${stateOf(sandbox)}`,
+					);
+					return sandbox.state === "error" ? 1 : 0;
+				},
+			},
 			{
 				name: "fork",
 				summary: "Copy a sandbox into new ones",
@@ -2419,7 +2908,7 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "ssh",
-				summary: "SSH into a microVM, or run one command there over SSH",
+				summary: "A shell in a sandbox: SSH into a microVM, a pseudo-shell in an isolate; or run one command",
 				args: ID_ARG,
 				rest: "command…",
 				restOptional: true,
@@ -2441,72 +2930,28 @@ const SECTIONS: readonly Section[] = [
 				details:
 					"Connects in this terminal, through the control plane's relay when the sandbox is on its own hosts. After --,\n" +
 					"a command runs there instead of a shell, and kantel exits with its exit code: kantel ssh <id> -- uname -a.\n" +
-					"--print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry.",
+					"--print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry.\n" +
+					"An isolate has no SSH: there it is a pseudo-shell over the commands API, each line one command, keeping\n" +
+					"the directory and exported variables. When a command needs a microVM it is run again there (autoUpgrade),\n" +
+					"or you're asked whether to upgrade, and then it switches to SSH on the microVM. Lines piped in run in order.",
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
 					const remote = ctx.rest ?? [];
 					const print = ctx.boolean("print") || ctx.json;
 					if (print && remote.length > 0) throw new UsageError("--print prints the ssh command; give it no command");
-					// ssh joins its command's words with spaces for the remote shell, so each is quoted to arrive as it is.
-					const remoteArgs = remote.length === 0 ? [] : ["--", commandLine(remote)];
-					const keyPath = ctx.string("public-key");
-					const publicKey =
-						keyPath === undefined ? undefined : (await readFile(resolve(ctx.io.cwd, keyPath), "utf8")).trim();
-					const access = await (await ctx.client()).openSsh(sandboxId, {
-						publicKey,
-						ttlMinutes: whole(ctx.string("ttl"), "--ttl"),
-					});
-					// A key pair Kantel made is shown once: keep its private half where ssh can use it.
-					let identityFile: string | undefined;
-					if (access.privateKey !== undefined) {
-						const directory = join(ctx.io.configDir, "ssh");
-						await mkdir(directory, { recursive: true, mode: 0o700 });
-						identityFile = join(directory, sandboxId.replace(/[^\w.-]/g, "_"));
-						const privateKey = access.privateKey.endsWith("\n") ? access.privateKey : `${access.privateKey}\n`;
-						await writeFile(identityFile, privateKey, { mode: 0o600 });
-						await chmod(identityFile, 0o600);
-					}
-					if (access.proxyUrl !== undefined) {
-						// No SSH gateway: through the relay, with this CLI as ssh's ProxyCommand (ssh-proxy.ts).
-						const tunnel = { user: access.user, proxyUrl: access.proxyUrl };
-						const options = {
-							self: [process.execPath, ...process.execArgv, process.argv[1] ?? "kantel"],
-							sandboxId,
-							knownHosts: join(ctx.io.configDir, "ssh", "known_hosts"),
-							...(identityFile === undefined ? {} : { identityFile }),
-						};
-						await mkdir(join(ctx.io.configDir, "ssh"), { recursive: true, mode: 0o700 });
-						if (!print) {
-							return runSsh([...tunnelSshArgs(tunnel, options), ...remoteArgs], ctx.io, {
-								[SSH_URL_ENV]: access.proxyUrl,
-							});
+					const client = await ctx.client();
+					let access: SshAccess;
+					try {
+						access = await openSshAccess(ctx, client, sandboxId);
+					} catch (error) {
+						// An isolate has no SSH: a pseudo-shell over the commands API stands in for it.
+						if (!print && error instanceof KantelApiError && error.code === "not_supported") {
+							const sandbox = await client.getSandbox(sandboxId);
+							if (sandbox.type === "isolate") return isolateShell(ctx, client, sandbox, remote);
 						}
-						const command = tunnelSshCommand(tunnel, { ...options, self: ["kantel"] });
-						const shown = { user: access.user, command, identityFile, hostKeyFingerprint: access.hostKeyFingerprint };
-						ctx.emit({ ...shown, expiresAt: access.expiresAt }, () =>
-							[command, `(start it by ${timestamp(access.expiresAt)}; once connected it stays open)`].join("\n"),
-						);
-						return 0;
+						throw error;
 					}
-					const args = [
-						...(identityFile === undefined ? [] : ["-i", identityFile, "-o", "IdentitiesOnly=yes"]),
-						"-p",
-						String(access.port),
-						`${access.user}@${access.host}`,
-					];
-					const command = identityFile === undefined ? access.command : ["ssh", ...args].map(shellQuote).join(" ");
-					if (!print) return runSsh([...args, ...remoteArgs], ctx.io);
-					// The private key stays in its file, out of the output.
-					const shown = {
-						host: access.host,
-						port: access.port,
-						user: access.user,
-						command,
-						identityFile,
-						hostKeyFingerprint: access.hostKeyFingerprint,
-						expiresAt: access.expiresAt,
-					};
-					ctx.emit(shown, () => `${command}\n(it works until ${timestamp(access.expiresAt)})`);
+					return connectSsh(ctx, sandboxId, access, remote, { print });
 				},
 			},
 			{
@@ -4476,6 +4921,7 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 		self: options.self ?? thisCli(),
 		script: options.script ?? process.argv[1],
 		runInstaller: options.runInstaller ?? runInstaller,
+		runSsh: options.runSsh ?? ((args, extra) => spawnSsh(args, options.stderr ?? process.stderr, extra)),
 	};
 	try {
 		return await dispatch(argv, io);

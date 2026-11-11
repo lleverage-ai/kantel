@@ -378,6 +378,20 @@ The personal access token the call was signed in with, when it was one, and its 
 | `startedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `endedAt` | integer | no | Epoch milliseconds, UTC. |
 | `durationMs` | integer | no |  |
+| `needsMicrovm` | [CommandNeedsMicrovm](/api/reference/types/#commandneedsmicrovm) | no |  |
+| `terminated` | [CommandTermination](/api/reference/types/#commandtermination) | no |  |
+| `rerunAs` | string | no | It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run again in the microVM. |
+| `rerunOf` | string | no | It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the command that answered `needsMicrovm` in the isolate. |
+
+### CommandNeedsMicrovm
+
+In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | string | yes | What it ran that an isolate doesn't have, such as `tar`. |
+| `reason` | string | yes | Why, in one sentence. |
+| `inferred` | boolean | no | Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it. |
 
 ### CommandPage
 
@@ -389,6 +403,12 @@ The personal access token the call was signed in with, when it was one, and its 
 ### CommandState
 
 One of: `"running"` or `"exited"` or `"killed"` or `"timed_out"`.
+
+### CommandTermination
+
+In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`).
+
+One of: `"cpu"` or `"memory"` or `"wall"`.
 
 ### Cost
 
@@ -523,6 +543,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
 | `host` | string | no | Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
+| `autoUpgrade` | boolean | no | For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
 
 ### CreateTemplateBody
@@ -750,6 +771,12 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `attached` | string | no | `sandbox.environments_changed`: the environment attached. |
 | `detached` | string | no | `sandbox.environments_changed`: the environment detached. |
 | `environmentIds` | string[] | no | `sandbox.environments_changed`: the sandbox's environments now, in order. |
+| `from` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
+| `to` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
+| `path` | `"host"` or `"control-plane"` | no | `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them. |
+| `files` | integer | no | `sandbox.upgraded`: the files, links and directories moved. (minimum 0) |
+| `bytes` | integer | no | `sandbox.upgraded`: the files' bytes. (minimum 0) |
+| `durationMs` | integer | no | `sandbox.upgraded`: how long the upgrade took. (minimum 0) |
 
 ### EventPage
 
@@ -760,9 +787,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
-One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.oom_kill"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.oom_kill"` or `"sandbox.upgraded"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
 ### ExposedPort
 
@@ -1205,7 +1232,7 @@ A way into an organisation: whoever joins with its code becomes a member.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
-| `enforced` | boolean | yes | Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. |
+| `enforced` | boolean | yes | Whether an isolate's memory is a hard limit (its heap, ArrayBuffers and WebAssembly memory together): true when every host the account's isolates may run on says its isolate runtime enforces it. Otherwise the runtime records it, and the account VM's memory, shared by its isolates, is the limit. |
 
 ### IssuedApiKey
 
@@ -1505,6 +1532,8 @@ A bucket mount as the sandbox shows it after a refresh.
 | `idleStopMinutes` | integer or null | no | How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, and its hosted ports. Stopping keeps its disk, as any stop does. |
 | `lastActiveAt` | integer | no | When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds. |
 | `idleStopsAt` | integer | no | When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. |
+| `autoUpgrade` | boolean | no | An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. |
+| `upgradedFrom` | [SandboxUpgrade](/api/reference/types/#sandboxupgrade) | no |  |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
@@ -1564,6 +1593,8 @@ What this sandbox can do, from its type and its host, and for a microVM from wha
 | --- | --- | --- | --- |
 | `exec` | boolean | yes |  |
 | `files` | boolean | yes |  |
+| `javascript` | boolean | yes | Whether its commands can run JavaScript with `node`: always in a microVM; in an isolate, where its host's isolate runtime has it (each run a fresh V8 isolate, with no npm packages). |
+| `python` | boolean | yes | Whether its commands can run Python with `python` (`python3`): always in a microVM; in an isolate, where its host's isolate runtime has it (Pyodide, with the packages it ships, none installed from the internet). |
 | `ssh` | boolean | yes |  |
 | `desktop` | boolean | yes |  |
 | `browser` | boolean | yes |  |
@@ -1804,9 +1835,18 @@ The template a sandbox was made from.
 
 ### SandboxType
 
-`isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
+`isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
 
 One of: `"isolate"` or `"microvm"`.
+
+### SandboxUpgrade
+
+A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
 
 ### SandboxUsage
 
@@ -2338,6 +2378,7 @@ A template version's definition, never changed once made. Answered with every de
 | `extendMinutes` | integer | no | Move `stopsAt` to this long from now. (minimum 1, maximum 43200) |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |
+| `autoUpgrade` | boolean | no | Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade. |
 
 ### UpdateTemplateBody
 
@@ -2357,6 +2398,17 @@ A `spec` that differs from the current one makes a new version.
 | `url` | string | no |  |
 | `events` | [EventType](/api/reference/types/#eventtype)[] | no |  |
 | `enabled` | boolean | no |  |
+
+### UpgradeSandboxBody
+
+The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxShapeInput](/api/reference/types/#sandboxshapeinput) | no |  |
+| `image` | string | no | The microVM's base image. Default: the deployment's. |
+| `wait` | boolean | no | Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was. |
 
 ### UsageSparklines
 

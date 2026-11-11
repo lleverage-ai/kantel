@@ -4,8 +4,9 @@
 #
 #   apps/host/guest/rootfs.sh <out-dir> [sandbox|isolate] [amd64|arm64]
 #
-# Needs Docker and Go. Writes <out-dir>/<kind>-<arch>.ext4. The image is read-only to every sandbox, so it's sized
-# to its contents plus a little room.
+# Needs Docker and Go, and for the isolate image what guest/isolate-runtime.sh needs. Writes
+# <out-dir>/<kind>-<arch>.ext4. The image is read-only to every sandbox, so it's sized to its contents plus a little
+# room.
 #
 # KANTEL_GUEST_DOCKERFILE=<path> builds a custom image instead: a Dockerfile that starts `FROM kantel-guest-sandbox:<arch>`
 # (the default image, which this script tags) and adds to it. Build the default image first. See README.md.
@@ -34,13 +35,8 @@ mkdir -p "$MODULE/dist"
 	-ldflags "-s -w -X main.version=$VERSION" -o "dist/kantel-guest-$ARCH" ./cmd/kantel-guest)
 
 if [ "$KIND" = isolate ]; then
-	# The isolate worker, and workerd's own binary from npm (the same version the worker is built against).
-	(cd "$MODULE/isolate" && bun install --frozen-lockfile && bun run build.ts)
-	case "$ARCH" in amd64) WORKERD_PKG=workerd-linux-64 ;; arm64) WORKERD_PKG=workerd-linux-arm64 ;; esac
-	WORKERD_VERSION=$(node -p 'require(process.argv[1]).version' "$MODULE/isolate/node_modules/workerd/package.json")
-	curl -fsSL "https://registry.npmjs.org/@cloudflare/$WORKERD_PKG/-/$WORKERD_PKG-$WORKERD_VERSION.tgz" |
-		tar -xzO package/bin/workerd >"$MODULE/dist/workerd-$ARCH"
-	chmod 0755 "$MODULE/dist/workerd-$ARCH"
+	# The isolate runtime and its assets (guest/isolate-runtime.sh says how, and how to stand in for either).
+	"$HERE/isolate-runtime.sh" "$ARCH"
 fi
 
 TAG="kantel-guest-$KIND:$ARCH"

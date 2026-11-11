@@ -104,6 +104,30 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.getPlacement("s1")).toBeUndefined();
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
 	});
+
+	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {
+		const store = await open();
+		await store.putPlacement(placement("s1", "host_a", 1));
+		// The sandbox moved to host_b; a report from host_a, applied to what is stored, writes nothing.
+		await store.putPlacement({ ...placement("s1", "host_b", 1), tier: "microvm" });
+		const fromA = (latest: PlacementRecord) =>
+			latest.hostId === "host_a" ? { ...latest, state: "stopped" } : undefined;
+		expect(await store.updatePlacement("s1", fromA)).toBeUndefined();
+		expect(await store.removePlacementIf("s1", (latest) => latest.hostId === "host_a")).toBe(false);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_b", state: "running" });
+		// One from host_b is applied, its other fields as they are now; its host moves the row in placementsOn too.
+		const written = await store.updatePlacement("s1", (latest) => ({ ...latest, state: "paused" }));
+		expect(written).toMatchObject({ hostId: "host_b", state: "paused" });
+		expect((await store.placementsOn("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		await Promise.all([
+			store.updatePlacement("s1", (latest) => ({ ...latest, size: "large" })),
+			store.updatePlacement("s1", (latest) => ({ ...latest, state: "running" })),
+		]);
+		expect(await store.getPlacement("s1")).toMatchObject({ size: "large", state: "running" });
+		expect(await store.updatePlacement("nope", (latest) => latest)).toBeUndefined();
+		expect(await store.removePlacementIf("s1", (latest) => latest.hostId === "host_b")).toBe(true);
+		expect(await store.getPlacement("s1")).toBeUndefined();
+	});
 }
 
 describe("memory", () => {

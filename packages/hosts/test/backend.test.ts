@@ -6,7 +6,7 @@ import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/com
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BROWSER_DISPLAY_RECORD, BROWSER_SURFACE_MARK, createHostBackend } from "../src/backend.ts";
 import { createPortRouter } from "../src/ports.ts";
-import type { HostFacts, HostGuest, HostMessage, HostSandbox } from "../src/protocol.ts";
+import type { HostFacts, HostGuest, HostIsolateRuntime, HostMessage, HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -44,6 +44,8 @@ class FakeHost {
 	images?: string;
 	/** What its images' guest agent reports; absent, a host from before the guest agent said. */
 	guest: HostGuest | undefined;
+	/** What its isolate runtime says it can do, with each isolate; absent, a host from before kantel-isolate. */
+	isolate: HostIsolateRuntime | undefined;
 	/** Whether its machines run Chromium on its own display now (kantel-browser's record says :2, the display up). */
 	ownBrowserDisplay = false;
 	/** What its hello says it is: the features it reports, say. */
@@ -102,7 +104,8 @@ class FakeHost {
 			size: s.size,
 			state: s.state,
 			createdAt: 1,
-			...(this.guest === undefined ? {} : { guest: this.guest }),
+			...(this.guest === undefined || s.tier !== "microvm" ? {} : { guest: this.guest }),
+			...(this.isolate === undefined || s.tier !== "isolate" ? {} : { isolate: this.isolate }),
 			...(this.phases === undefined ? {} : { phases: this.phases }),
 		});
 		switch (message.method) {
@@ -534,6 +537,45 @@ describe("the compute API on kantel-host hosts", () => {
 		expect((await root.listPorts(sandbox.id)).items).toEqual([]);
 		expect(await relay.exposuresOf(sandbox.id)).toEqual([]);
 		expect((await ports?.fetch(new Request(open.url)))?.status).toBe(404);
+	});
+
+	it("runs node and python in an isolate where its host's runtime says so, and says memory is enforced where every host's is", async () => {
+		const { service, root } = setup();
+		const runtime: HostIsolateRuntime = {
+			runtime: "deno_core",
+			version: "0.1.0",
+			javascript: true,
+			python: true,
+			memoryEnforced: true,
+		};
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts: { ...facts, isolate: runtime } });
+		const host = new FakeHost(service, hostId);
+		host.facts = { ...facts, isolate: runtime };
+		host.isolate = runtime;
+		host.connect();
+		const isolate = await root.createSandbox({ type: "isolate", wait: true });
+		expect(isolate.capabilities).toMatchObject({ javascript: true, python: true, ssh: false });
+		const vm = await root.createSandbox({ type: "microvm", wait: true });
+		expect(vm.capabilities).toMatchObject({ javascript: true, python: true });
+		expect((await root.getSandboxShapes()).isolate.enforced).toBe(true);
+		const hosts = await service.list();
+		expect(hosts.find((view) => view.id === hostId)?.isolate).toEqual(runtime);
+
+		// A second host from before kantel-isolate: an isolate may land there, so memory isn't enforced everywhere.
+		const older = await root.createHostJoinToken({});
+		const second = await service.register({ token: older.token, facts });
+		new FakeHost(service, second.hostId).connect();
+		expect((await root.getSandboxShapes()).isolate.enforced).toBe(false);
+	});
+
+	it("runs neither node nor python in an isolate on a host from before kantel-isolate", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({});
+		new FakeHost(service, (await service.register({ token: token.token, facts })).hostId).connect();
+		const isolate = await root.createSandbox({ type: "isolate", wait: true });
+		expect(isolate.capabilities).toMatchObject({ javascript: false, python: false });
+		expect((await root.getSandboxShapes()).isolate.enforced).toBe(false);
 	});
 
 	it("shows the browser alone where the image's guest reports a browser surface, view-only kept in the ticket", async () => {

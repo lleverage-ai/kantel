@@ -117,6 +117,20 @@ type Facts struct {
 	// the same two, so they are part of its cache key. Empty on a host without the microVM tier.
 	Firecracker string `json:"firecracker,omitempty"`
 	GuestKernel string `json:"guestKernel,omitempty"`
+	// Isolate is what the isolate tier's runtime says it can do, as the host last read it from the runtime; absent on
+	// a host without the tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
+	Isolate *IsolateRuntime `json:"isolate,omitempty"`
+}
+
+// IsolateRuntime is what the isolate tier's runtime (kantel-isolate) says it is in its /healthz: which runtime and
+// version, whether its shell has `node` (JavaScript) and `python` (Pyodide), and whether an isolate's memoryMiB is a
+// hard limit (its heap, ArrayBuffers and wasm memory together) rather than recorded only.
+type IsolateRuntime struct {
+	Runtime        string `json:"runtime,omitempty"`
+	Version        string `json:"version,omitempty"`
+	JavaScript     bool   `json:"javascript"`
+	Python         bool   `json:"python"`
+	MemoryEnforced bool   `json:"memoryEnforced"`
 }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
@@ -263,6 +277,45 @@ const FeatureExitStamps = "exit-stamps"
 // (/etc/kantel/env, which its shells and commands read) rewritten at once. Without it a sandbox gets a new env only
 // with its next boot.
 const FeatureSandboxEnv = "sandbox-env"
+
+// FeatureIsolateUpgrade (HOST_FEATURES.isolateUpgrade): the host takes sandbox.upgrade (CreateParams, Tier "microvm"):
+// it makes a microVM with an isolate's sandbox ID, as sandbox.create would make it, puts the isolate's /workspace files
+// in it at UpgradeWorkspace (from its own blob store, never through Kantel) with /workspace a link to them, and lets the
+// isolate go only once the microVM runs with them. A failure leaves the isolate as it was. Answered with the microVM's
+// SandboxInfo and Moved. Reported by a host that runs both tiers.
+const FeatureIsolateUpgrade = "isolate-upgrade"
+
+// FeatureIsolateFreeze (HOST_FEATURES.isolateFreeze): the host takes sandbox.upgrade.freeze and sandbox.upgrade.thaw
+// (UpgradeRef) for its isolates, so Kantel can copy one version of an isolate's files to a microVM on another host
+// while nothing writes to them. Reported by a host with the isolate tier.
+const FeatureIsolateFreeze = "isolate-freeze"
+
+// UpgradeParams is sandbox.upgrade's: the microVM's create params (Tier "microvm"), and Kantel's ID for the upgrade.
+// The host does one upgrade per OperationID: sent again (an answer lost), it answers the first's outcome.
+type UpgradeParams struct {
+	CreateParams
+	OperationID string `json:"operationId"`
+}
+
+// UpgradeRef is sandbox.upgrade.freeze's, .thaw's and .settle's params: an upgrade of a sandbox by its operation ID.
+// WaitMs, for a freeze, is how long it waits for a command or write under way to end (default 2 minutes).
+type UpgradeRef struct {
+	SandboxID   string `json:"sandboxId"`
+	OperationID string `json:"operationId"`
+	WaitMs      int64  `json:"waitMs,omitempty"`
+}
+
+// UpgradeOutcome is sandbox.upgrade.settle's answer: "done" with the microVM, or "failed" (rolled back: the isolate
+// as it was, any microVM made for it deleted), with why. Settling waits for the upgrade if it is under way, and an
+// upgrade the host never saw is settled failed, so it can't start after.
+type UpgradeOutcome struct {
+	State   string       `json:"state"`
+	Sandbox *SandboxInfo `json:"sandbox,omitempty"`
+	Error   string       `json:"error,omitempty"`
+}
+
+// UpgradeWorkspace is where an upgraded isolate's /workspace files are in its microVM.
+const UpgradeWorkspace = "/home/user/workspace"
 
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
@@ -439,6 +492,8 @@ type SandboxInfo struct {
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner).
 	Owner string `json:"owner,omitempty"`
+	// Moved, in sandbox.upgrade's answer: what of the isolate went into the microVM.
+	Moved *Moved `json:"moved,omitempty"`
 	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
 	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
 	Base string `json:"base,omitempty"`
@@ -448,6 +503,9 @@ type SandboxInfo struct {
 	BaseAt int64 `json:"baseAt,omitempty"`
 	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
 	Guest *GuestCapabilities `json:"guest,omitempty"`
+	// Isolate is, for an isolate, what its runtime can do (Facts.Isolate, from the runtime that runs it): absent from a
+	// host from before kantel-isolate, or before it has read its runtime.
+	Isolate *IsolateRuntime `json:"isolate,omitempty"`
 	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts, FeatureBundleMounts).
 	Mounts []MountStatus `json:"mounts,omitempty"`
 	// MountsAt, with Mounts, is when the host last set them (unix milliseconds, the host's clock, and always later
@@ -814,8 +872,8 @@ type CreateParams struct {
 	// VCPUs, MemoryMiB and DiskGiB are, for a microVM, a shape off the host's named sizes (all three set, Size
 	// empty), which cold-boots: no size template is kept for it (one made from a Template restores that template's
 	// snapshot when it was built as this shape). For an isolate, MemoryMiB is the memory asked
-	// for, recorded and passed to the runtime but not enforced per isolate (workerd has no per-isolate memory limit;
-	// the account VM's memory is the bound).
+	// for, passed to the runtime, which enforces it per isolate where its IsolateRuntime says MemoryEnforced (the
+	// account VM's memory, shared by its isolates, is the bound besides).
 	VCPUs     int `json:"vcpus,omitempty"`
 	MemoryMiB int `json:"memoryMiB,omitempty"`
 	DiskGiB   int `json:"diskGiB,omitempty"`
@@ -902,6 +960,14 @@ type TemplateDeleteParams struct {
 
 type SandboxRef struct {
 	SandboxID string `json:"sandboxId"`
+}
+
+// DeleteParams is sandbox.delete. KeepSnapshots is for the isolate an upgrade left once its microVM runs on another
+// host: it goes as on the upgrade's own host (isolate.Manager.Dispose), its automatic snapshots kept, since the sandbox
+// lives on and Kantel keeps them as its. A host from before it deletes them as a delete does.
+type DeleteParams struct {
+	SandboxID     string `json:"sandboxId"`
+	KeepSnapshots bool   `json:"keepSnapshots,omitempty"`
 }
 
 // StopParams is sandbox.stop.
@@ -1023,6 +1089,27 @@ type ExecResult struct {
 	TimedOut   bool   `json:"timedOut,omitempty"`
 	DurationMs int64  `json:"durationMs"`
 	Pid        int    `json:"pid,omitempty"`
+	// NeedsMicrovm, from an isolate: the command failed because it ran something an isolate doesn't have (its runtime's
+	// say, or the host's reading of the shell's answer for a runtime that doesn't say).
+	NeedsMicrovm *NeedsMicrovm `json:"needsMicrovm,omitempty"`
+	// Terminated, from an isolate: its runtime stopped the command, for "cpu", "memory" or "wall" time.
+	Terminated string `json:"terminated,omitempty"`
+}
+
+// NeedsMicrovm is what an isolate's command needed a microVM for: the program, and why in one sentence.
+type NeedsMicrovm struct {
+	Command string `json:"command"`
+	Reason  string `json:"reason"`
+	// Inferred: the host read it from the shell's answer (exit 127 and its message), the runtime didn't say it. A hint
+	// only: Kantel's autoUpgrade acts on what a runtime says, never on text a command could print.
+	Inferred bool `json:"inferred,omitempty"`
+}
+
+// Moved is what an upgrade (sandbox.upgrade) moved into the microVM: its entries (files, links and directories) and
+// its files' bytes.
+type Moved struct {
+	Files int   `json:"files"`
+	Bytes int64 `json:"bytes"`
 }
 
 // FileParams is sandbox.files.read/write/delete/list. Data is base64. A read with a Length reads at most that many
@@ -1199,8 +1286,8 @@ type SandboxUsage struct {
 	// memory. A VM without the balloon's statistics (one restored from a snapshot made before them, or a kernel
 	// without the driver) gets its Firecracker process's resident memory instead (MemSource "rss"): the guest memory the
 	// VM has touched, page cache included, which never falls, and the VMM's own. MemLimitBytes is its size's memory. An
-	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; workerd says nothing of
-	// an isolate's own).
+	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; the runtime reports no
+	// isolate's own).
 	MemUsedBytes  int64 `json:"memUsedBytes"`
 	MemLimitBytes int64 `json:"memLimitBytes"`
 	// MemSource is where MemUsedBytes came from, MemSourceGuest or MemSourceRSS. A host that predates it sends none
@@ -1236,14 +1323,21 @@ const (
 // Methods.
 const (
 	MethodCreate = "sandbox.create"
-	MethodStop   = "sandbox.stop"
-	MethodResume = "sandbox.resume"
-	MethodStart  = "sandbox.start"
-	MethodFork   = "sandbox.fork"
-	MethodDelete = "sandbox.delete"
-	MethodGet    = "sandbox.get"
-	MethodList   = "sandbox.list"
-	MethodExec   = "sandbox.exec"
+	// MethodUpgrade makes an isolate a microVM with the same ID (FeatureIsolateUpgrade).
+	MethodUpgrade = "sandbox.upgrade"
+	// MethodUpgradeFreeze, MethodUpgradeThaw (FeatureIsolateFreeze) and MethodUpgradeSettle (FeatureIsolateUpgrade):
+	// UpgradeRef.
+	MethodUpgradeFreeze = "sandbox.upgrade.freeze"
+	MethodUpgradeThaw   = "sandbox.upgrade.thaw"
+	MethodUpgradeSettle = "sandbox.upgrade.settle"
+	MethodStop          = "sandbox.stop"
+	MethodResume        = "sandbox.resume"
+	MethodStart         = "sandbox.start"
+	MethodFork          = "sandbox.fork"
+	MethodDelete        = "sandbox.delete"
+	MethodGet           = "sandbox.get"
+	MethodList          = "sandbox.list"
+	MethodExec          = "sandbox.exec"
 	// MethodExecGet (Kantel → host, ExecRef; FeatureExecControl) answers a command's ExecStatus by its CommandID.
 	MethodExecGet = "sandbox.exec.get"
 	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its

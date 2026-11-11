@@ -12,7 +12,7 @@ sidebar:
 Every command of `kantel` as `kantel help <command>` shows it. [Command line](/tools/cli/) explains signing in and how the commands fit together. `kantel help --json` prints the same as JSON, for a script or a coding agent, and needs no sign-in.
 
 - **Signing in:** [`login`](#kantel-login), [`logout`](#kantel-logout), [`whoami`](#kantel-whoami)
-- **Sandboxes:** [`new`](#kantel-new), [`sizes`](#kantel-sizes), [`list`](#kantel-list), [`info`](#kantel-info), [`start`](#kantel-start), [`stop`](#kantel-stop), [`resume`](#kantel-resume), [`recover`](#kantel-recover), [`fork`](#kantel-fork), [`delete`](#kantel-delete), [`extend`](#kantel-extend), [`usage`](#kantel-usage)
+- **Sandboxes:** [`new`](#kantel-new), [`sizes`](#kantel-sizes), [`list`](#kantel-list), [`info`](#kantel-info), [`start`](#kantel-start), [`stop`](#kantel-stop), [`resume`](#kantel-resume), [`recover`](#kantel-recover), [`upgrade`](#kantel-upgrade), [`fork`](#kantel-fork), [`delete`](#kantel-delete), [`extend`](#kantel-extend), [`usage`](#kantel-usage)
 - **Commands and files:** [`exec`](#kantel-exec), [`attach`](#kantel-attach), [`ps`](#kantel-ps), [`kill`](#kantel-kill), [`files ls`](#kantel-files-ls), [`files cat`](#kantel-files-cat), [`files put`](#kantel-files-put), [`files get`](#kantel-files-get), [`files rm`](#kantel-files-rm), [`scp`](#kantel-scp), [`push`](#kantel-push), [`sync`](#kantel-sync)
 - **Ports, SSH, desktop and browser:** [`host`](#kantel-host), [`port list`](#kantel-port-list), [`port hide`](#kantel-port-hide), [`ssh`](#kantel-ssh), [`desktop`](#kantel-desktop), [`browser`](#kantel-browser)
 - **Snapshots:** [`snapshot list`](#kantel-snapshot-list), [`snapshot info`](#kantel-snapshot-info), [`snapshot take`](#kantel-snapshot-take), [`snapshot save`](#kantel-snapshot-save), [`snapshot files`](#kantel-snapshot-files), [`snapshot rm`](#kantel-snapshot-rm)
@@ -112,6 +112,8 @@ kantel new [flags]
 
 Also: `kantel create`, `kantel sandbox create`, `kantel sandbox new`.
 
+--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that command again there, once. Without it the command says it needs a microVM, and the isolate stays one.
+
 --env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.
 
 Give --env &lt;env&gt; more than once for several environments, in order (up to 10): where two set the same variable, secret file or repo path, the later one wins, and the K=V variables win over them all. Their grants add up. kantel env attach and kantel env detach change a sandbox's environments later.
@@ -143,6 +145,7 @@ Give --env &lt;env&gt; more than once for several environments, in order (up to 
 | `--host <port[:public]>` | Give this port an HTTPS URL once it runs; repeat it |
 | `--on <host>` | Run it on this host, its name or ID (kantel hosts list shows them) |
 | `--host-label <k=v>` | Run it only on a host with this label; repeat for more |
+| `--auto-upgrade` | An isolate that becomes a microVM by itself when a command needs one, and runs it again |
 | `--no-wait` | Answer at once rather than once it runs |
 
 ```sh
@@ -270,6 +273,34 @@ Restart the machine of a sandbox that is stuck or in error.
 
 ```sh
 kantel recover <id> [flags]
+```
+
+### kantel upgrade
+
+Turn an isolate into a microVM, with the same ID, files and settings.
+
+```sh
+kantel upgrade <id> [flags]
+```
+
+Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the isolate is left as it was. Commands sent meanwhile wait for it.
+
+| Flag | What it does |
+| --- | --- |
+| `--size <size>` | A microVM's named size, such as small, default or large (kantel sizes lists the hosts') |
+| `--vcpus <n>` | The microVM's vCPUs, in place of --size; with --memory |
+| `--memory <GB>` | The microVM's memory in GB, in place of --size; with --vcpus |
+| `--disk <GB>` | The microVM's disk in GB (default: its size's) |
+| `--image <image>` | The microVM's base image |
+| `--wait` | Answer once the microVM runs (the default) |
+| `--no-wait` | Answer at once rather than once it runs |
+
+```sh
+# Make an isolate a microVM of the default size
+kantel upgrade sbx_4kq9x2mt
+
+# A bigger one
+kantel upgrade sbx_4kq9x2mt --vcpus 8 --memory 16
 ```
 
 ### kantel fork
@@ -583,13 +614,13 @@ kantel port hide <id> <port> [flags]
 
 ### kantel ssh
 
-SSH into a microVM, or run one command there over SSH.
+A shell in a sandbox: SSH into a microVM, a pseudo-shell in an isolate; or run one command.
 
 ```sh
 kantel ssh <id> [-- <command…>] [flags]
 ```
 
-Connects in this terminal, through the control plane's relay when the sandbox is on its own hosts. After --, a command runs there instead of a shell, and kantel exits with its exit code: kantel ssh &lt;id&gt; -- uname -a. --print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry.
+Connects in this terminal, through the control plane's relay when the sandbox is on its own hosts. After --, a command runs there instead of a shell, and kantel exits with its exit code: kantel ssh &lt;id&gt; -- uname -a. --print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry. An isolate has no SSH: there it is a pseudo-shell over the commands API, each line one command, keeping the directory and exported variables. When a command needs a microVM it is run again there (autoUpgrade), or you're asked whether to upgrade, and then it switches to SSH on the microVM. Lines piped in run in order.
 
 | Flag | What it does |
 | --- | --- |
@@ -606,6 +637,9 @@ kantel ssh sbx_4kq9x2mt -- docker ps
 
 # The ssh command, for an editor's remote setup
 kantel ssh sbx_4kq9x2mt --print
+
+# Lines piped to an isolate's pseudo-shell
+printf 'cd app\nnode test.js\n' | kantel ssh sbx_4kq9x2mt
 ```
 
 ### kantel desktop
@@ -1259,7 +1293,7 @@ Send the account's events to a URL; its signing secret is shown once.
 kantel webhook create <url> [flags]
 ```
 
-Events: sandbox.created, sandbox.running, sandbox.stopped, sandbox.paused, sandbox.error, sandbox.degraded, sandbox.recovered, sandbox.environments_changed, sandbox.oom_kill, sandbox.deleted, snapshot.saved, snapshot.deleted.
+Events: sandbox.created, sandbox.running, sandbox.stopped, sandbox.paused, sandbox.error, sandbox.degraded, sandbox.recovered, sandbox.environments_changed, sandbox.oom_kill, sandbox.upgraded, sandbox.deleted, snapshot.saved, snapshot.deleted.
 
 | Flag | What it does |
 | --- | --- |
