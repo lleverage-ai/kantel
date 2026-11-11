@@ -87,6 +87,8 @@ fn arch() -> Result<TargetArch> {
 
 /// The calls that kill the process. None of them is made by the runtime after start-up.
 fn kill_list() -> Vec<i64> {
+    // Mutable for x86_64's extra calls below; aarch64 has none of them.
+    #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
     let mut calls = vec![
         libc::SYS_execve,
         libc::SYS_execveat,

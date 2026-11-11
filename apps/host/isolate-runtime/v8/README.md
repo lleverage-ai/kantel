@@ -71,16 +71,45 @@ caps the JS heap of all of an account's isolates together at about 4 GiB. ArrayB
 cage, in the 1 TiB sandbox reservation. The reservation is address space, not memory: never set `LimitAS`/`RLIMIT_AS`
 on the process.
 
-## CI and release (W3)
+## Builds, release and CI (W3)
 
-There is no prebuilt sandbox build anywhere. The plan is to build once per `v8` version and patch revision, publish
-the files as a prerelease of this repository, and have CI download them, check them, and cache them.
+denoland/rusty_v8 publishes no sandbox build, so Kantel builds one per `v8` crate version and patch revision and
+publishes the files as a prerelease of this repository, `rusty-v8-sandbox-v<version>-<revision>` (now
+`rusty-v8-sandbox-v150.4.0-1`). `fetch-v8-sandbox.sh` pins each file's SHA-256 and downloads from there.
 
-1. **Publish** (once per bump, by hand or with the workflow below):
-   `build-v8-sandbox.sh out && gh release create rusty-v8-sandbox-v150.4.0-1 --prerelease out/*`. Then copy the
-   SHA-256s from `out/SHA256SUMS` into `fetch-v8-sandbox.sh` in the same PR. The build is reproducible only up to the
-   toolchain downloads, so the pinned checksums are what make it trustworthy, not a rebuild.
-2. **Use** in any job that builds kantel-isolate:
+| Target | Built | Proven |
+| --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | natively on an x86_64 host, about 17 minutes at 20 jobs | kantel-isolate's test and integration suites |
+| `aarch64-unknown-linux-gnu` | cross-compiled on an x86_64 host (`TARGET=aarch64-unknown-linux-gnu`), about 36 minutes at 16 jobs | under QEMU user emulation: `version` reports `"v8Sandbox": true`, and a shell, `node -e` and `python -c` run. Not yet on arm64 hardware. |
+
+Both build on x86_64 only. rusty_v8's build script downloads Chromium's clang, and Chromium publishes no Linux arm64
+clang, so aarch64 is cross-compiled, as rusty_v8's own CI does: V8 against Chromium's debian_sid arm64 sysroot, and
+bindgen against Debian's aarch64 glibc headers. The bindings (`src_binding_*.rs`) come out byte-identical for the two
+targets.
+
+`apps/host/guest/isolate-runtime.sh <amd64|arm64>` with `KANTEL_V8_SANDBOX=1` fetches the target's files
+(`KANTEL_V8_TARGET` tells `fetch-v8-sandbox.sh` which, when it isn't this machine's) and links them, for the isolate
+VM's image on either architecture.
+
+### Rebuild (a `v8` bump or a patch change)
+
+1. Bump the revision in `fetch-v8-sandbox.sh`'s `TAG` (or `V8_CRATE_VERSION`, with `build-v8-sandbox.sh`'s pins): a
+   rebuild isn't bit-for-bit reproducible (the toolchain downloads), so new files never replace pinned ones in place.
+2. Build both targets, with the workflow or by hand:
+   - **Workflow** (`.github/workflows/rusty-v8-sandbox.yml`, run by hand): builds both targets on the self-hosted
+     runners and uploads them with a combined `SHA256SUMS` to the release named by its `tag` input, creating the
+     prerelease if it's missing. It doesn't overwrite an existing file unless `replace` is set. GitHub runs a
+     `workflow_dispatch` workflow only once the file is on the default branch, so it can't be run until it's merged to
+     `main` (until then, build by hand).
+   - **By hand**: `build-v8-sandbox.sh out-x64` and `TARGET=aarch64-unknown-linux-gnu build-v8-sandbox.sh out-arm64`,
+     then `gh release create <tag> --prerelease` and `gh release upload <tag>` the `.a.gz`, `.rs` and `.gn` files
+     with one `SHA256SUMS` covering both (each out dir's own `SHA256SUMS` has the same name, so combine them).
+3. Copy the SHA-256s into `fetch-v8-sandbox.sh` in the same PR. The pinned checksums are what make a download
+   trustworthy, not a rebuild.
+
+### Use in CI
+
+Any job that builds kantel-isolate:
 
 ```yaml
       - uses: actions/cache@v4
@@ -93,26 +122,5 @@ the files as a prerelease of this repository, and have CI download them, check t
         working-directory: apps/host/isolate-runtime
 ```
 
-3. **Build workflow** (`.github/workflows/rusty-v8-sandbox.yml`, manual):
-
-```yaml
-name: rusty-v8-sandbox
-on: workflow_dispatch
-permissions: { contents: write }
-jobs:
-  build:
-    strategy: { matrix: { runner: [ubuntu-24.04, ubuntu-24.04-arm] } }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 300
-    steps:
-      - uses: actions/checkout@v4
-      - run: JOBS=$(nproc) apps/host/isolate-runtime/v8/build-v8-sandbox.sh out
-      - run: |
-          tag=rusty-v8-sandbox-v150.4.0-1
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --prerelease --title "$tag" --notes "Sandboxed rusty_v8 for kantel-isolate (apps/host/isolate-runtime/v8)"
-          gh release upload "$tag" out/*.gz out/*.rs out/*.gn --clobber
-        env: { GH_TOKEN: "${{ github.token }}" }
-```
-
-The x86_64 build is proven. The arm64 one is not, and `fetch-v8-sandbox.sh` refuses arm64 until its checksums are
-added. `RUSTY_V8_MIRROR` doesn't fit this setup, because it expects rusty_v8's own `v<version>/` tag layout.
+or, as ci.yml and sandbox-image.yml do, `KANTEL_V8_SANDBOX=1 apps/host/guest/isolate-runtime.sh <arch>`.
+`RUSTY_V8_MIRROR` doesn't fit this setup, because it expects rusty_v8's own `v<version>/` tag layout.
