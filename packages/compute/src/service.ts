@@ -4640,6 +4640,62 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * `killCommand`: a running command marked killed and its kill sent to its backend; one ended is answered with its end.
+	 * A command its sandbox's upgrade runs again (`autoUpgrade`) has its run again killed with it, whether the kill finds
+	 * it running with its run again starting (`rerunStarting`), or ended naming its run again (`rerunAs`): a kill never
+	 * leaves its run again running.
+	 */
+	async function killStored(sandboxId: string, stored: StoredCommand): Promise<StoredCommand> {
+		// Killed before, but its kill never reached its backend: sent again.
+		if (stored.state === "killed" && stored.killPending === true) {
+			return reachRerun(sandboxId, await deliverKill(sandboxId, stored));
+		}
+		// One that ended where no gateway here saw it is answered with its end, not killed.
+		const command = await fetchedCommand(stored);
+		if (command.state !== "running") return reachRerun(sandboxId, command);
+		noteActivity(sandboxId);
+		const at = now();
+		// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
+		// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
+		// kill is pending from then until its backend takes it, so a gateway that dies before sending it, or a send
+		// that fails, leaves it for the next kill to send.
+		const killed = await settleCommand(command.id, (latest) => ({
+			...latest,
+			state: "killed",
+			exitCode: 137,
+			endedAt: at,
+			durationMs: at - latest.startedAt,
+			...(backend.killCommand === undefined ? {} : { killPending: true }),
+		}));
+		if (killed === undefined) return reachRerun(sandboxId, (await store.commands.get(command.id)) ?? command);
+		runningCommands.get(command.id)?.abort();
+		runningCommands.delete(command.id);
+		// Its process, which the gateway that started it may not be: the kill goes to its host whichever it is.
+		return reachRerun(sandboxId, await deliverKill(sandboxId, killed));
+	}
+
+	/**
+	 * A killed or ended command's run again (`autoUpgrade`), killed too while it runs. One whose run again isn't recorded
+	 * yet is left to that run's start, which runs it only while this one still runs (`runCommandOnce`). A killed one gets
+	 * the `rerunAs` its owner can no longer record.
+	 */
+	async function reachRerun(sandboxId: string, command: StoredCommand): Promise<StoredCommand> {
+		const rerunId = command.rerunAs ?? (command.state === "killed" ? command.rerunStarting : undefined);
+		if (rerunId === undefined) return command;
+		const rerun = await store.commands.get(rerunId);
+		if (rerun === undefined || rerun.sandboxId !== sandboxId) return command;
+		if (rerun.state === "running" || (rerun.state === "killed" && rerun.killPending === true)) {
+			await killStored(sandboxId, rerun);
+		}
+		if (command.rerunAs !== undefined) return command;
+		return (
+			(await store.commands.update(command.id, (latest) =>
+				latest.rerunAs === undefined ? { ...latest, rerunAs: rerunId } : undefined,
+			)) ?? command
+		);
+	}
+
+	/**
 	 * Sends a killed command's kill to its backend (`killCommand`), the record's `killPending` until it is done: the
 	 * backend took it, or can't ever (`not_supported`, an older host). One that failed otherwise (its host out of reach)
 	 * stays pending, its stderr saying so, and the next kill of it, on any gateway, sends it again.
@@ -8122,7 +8178,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						// The isolate is as it was: the command's answer stands, saying why it wasn't upgraded.
 						return { note: `kantel: the isolate couldn't be upgraded to a microVM: ${messageOf(error)}\n` };
 					}
-					rerun = await runCommandOnce(principal, sandbox.id, { ...body, cwd: command.cwd }, { rerunOf: command.id });
+					// Run again only if it wasn't killed while its sandbox upgraded (the upgrade stands either way): its run
+					// again's ID is written first, while it still runs, so a kill from then on reaches that run too.
+					const rerunId = randomId("cmd");
+					const fenced = await store.commands.update(command.id, (stored) =>
+						stored.state === "running" ? { ...stored, rerunStarting: rerunId } : undefined,
+					);
+					if (fenced?.rerunStarting !== rerunId) return undefined;
+					rerun = await runCommandOnce(
+						principal,
+						sandbox.id,
+						{ ...body, cwd: command.cwd },
+						{ rerunOf: command.id, id: rerunId },
+					);
 					return { rerunAs: rerun.id };
 				};
 				const first = await runCommandOnce(principal, sandbox.id, body, { beforeEnd });
@@ -8160,34 +8228,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const stored = await store.commands.get(params.commandId);
 			if (stored === undefined || stored.sandboxId !== sandbox.id) throw notFound("command");
-			// Killed before, but its kill never reached its backend: sent again.
-			if (stored.state === "killed" && stored.killPending === true) {
-				return commandView(await deliverKill(sandbox.id, stored));
-			}
-			// One that ended where no gateway here saw it is answered with its end, not killed.
-			const command = await fetchedCommand(stored);
-			if (command.state !== "running") return commandView(command);
-			noteActivity(sandbox.id);
-			const at = now();
-			// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
-			// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
-			// kill is pending from then until its backend takes it, so a gateway that dies before sending it, or a send
-			// that fails, leaves it for the next kill to send.
-			const killed = await settleCommand(command.id, (latest) => ({
-				...latest,
-				state: "killed",
-				exitCode: 137,
-				endedAt: at,
-				durationMs: at - latest.startedAt,
-				...(backend.killCommand === undefined ? {} : { killPending: true }),
-			}));
-			if (killed === undefined) return commandView((await store.commands.get(command.id)) ?? command);
-			runningCommands.get(command.id)?.abort();
-			runningCommands.delete(command.id);
-			// Its process, which the gateway that started it may not be: the kill goes to its host whichever it is.
-			return commandView(await deliverKill(sandbox.id, killed));
+			return commandView(await killStored(sandbox.id, stored));
 		},
-
 		readFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
@@ -9563,6 +9605,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		body: computeSchema.RunCommandBody,
 		how: {
 			readonly rerunOf?: string;
+			/** Its ID, given beforehand (a run again's, `rerunStarting`). */
+			readonly id?: string;
 			readonly beforeEnd?: (
 				command: StoredCommand,
 				result: ExecResult,
@@ -9574,7 +9618,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
 		const detached = body.detached === true;
 		const command: StoredCommand = {
-			id: randomId("cmd"),
+			id: how.id ?? randomId("cmd"),
 			sandboxId: current.id,
 			accountId: current.accountId,
 			command: body.command,
@@ -9597,6 +9641,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		const controller = new AbortController();
 		runningCommands.set(command.id, controller);
+		// A run again starts only while the command it runs again still runs: one killed meanwhile (the kill found no run
+		// again recorded to reach, `reachRerun`) has it killed before it starts, as one killed since is.
+		if (rerunOf !== undefined) {
+			const original = await store.commands.get(rerunOf);
+			if (original?.state !== "running") {
+				runningCommands.delete(command.id);
+				const at = now();
+				const unrun = await settleCommand(command.id, (latest) => ({
+					...latest,
+					state: "killed",
+					exitCode: 137,
+					stderr: "kantel: not run again: the command it runs again was killed while its sandbox upgraded\n",
+					endedAt: at,
+					durationMs: at - latest.startedAt,
+				}));
+				return unrun ?? (await store.commands.get(command.id)) ?? command;
+			}
+		}
 		// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a
 		// long build isn't stopped under them. A detached one counts only while it is followed (`getCommand`).
 		const using: ReturnType<typeof setInterval> | undefined = detached

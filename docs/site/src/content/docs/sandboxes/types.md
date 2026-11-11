@@ -131,6 +131,7 @@ Switching to SSH on the microVM, in /home/user/workspace.
 Without `autoUpgrade`, the pseudo-shell asks whether to upgrade instead.
 
 - **The whole command runs again**, not just the step that failed: in `curl -o data.json $URL && tar -xf a.tar`, the download happens twice. Write commands that can run again, or upgrade first.
+- **A kill stops the run again too.** Kill the command while the isolate upgrades and it isn't run again (the upgrade still finishes). Kill it once its run again has started, while it runs or after it ends naming it in `rerunAs`, and its run again is killed with it.
 - **Only what the isolate's runtime says counts.** Where the runtime doesn't say (an older host), Kantel reads `needsMicrovm` from the shell's answer and marks it `"inferred": true`. That is a hint for you: a command can print the same text itself, so `autoUpgrade` never acts on it.
 - **Who may cause it:** turning `autoUpgrade` on needs `sandboxes:write` (a create or a `PATCH`). Once it is on, any key that may run commands in the sandbox (`exec`) may cause the upgrade, and with it the microVM's cost: the opt-in hands that decision over. A command that an isolate's runtime stopped for using too much CPU time, memory or wall time says which in `terminated` (`cpu`, `memory` or `wall`).
 

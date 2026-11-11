@@ -57,6 +57,8 @@ interface Options {
 	readonly updateEgress?: (sandboxId: string, egress: BackendEgress | undefined, revision?: number) => Promise<void>;
 	/** Answers commands' results by their ID, as a host that keeps them does. */
 	readonly results?: Map<string, ExecResult>;
+	/** Takes a command's kill, as a host does, after the stub's. */
+	readonly kill?: (sandboxId: string, commandId: string) => void;
 	readonly now?: () => number;
 	readonly store?: ComputeStore;
 }
@@ -85,6 +87,14 @@ function setup(options: Options = {}) {
 			return stub.settleUpgrade(sandboxId, operationId);
 		},
 		...(options.updateEgress === undefined ? {} : { updateEgress: options.updateEgress }),
+		...(options.kill === undefined
+			? {}
+			: {
+					killCommand: async (sandboxId: string, commandId: string) => {
+						await stub.killCommand?.(sandboxId, commandId);
+						options.kill?.(sandboxId, commandId);
+					},
+				}),
 		...(options.results === undefined
 			? {}
 			: { commandResult: async (_sandboxId: string, commandId: string) => options.results?.get(commandId) }),
@@ -450,6 +460,128 @@ describe("a command that needs a microVM", () => {
 		expect(answer.stderr).toContain("couldn't be upgraded to a microVM: No host runs microvm sandboxes");
 		expect((await tom.getSandbox(sandbox.id)).type).toBe("isolate");
 		expect((await tom.updateSandbox(sandbox.id, { autoUpgrade: false })).autoUpgrade).toBeUndefined();
+	});
+});
+
+describe("a command killed while autoUpgrade runs it again", () => {
+	/** A sandbox with autoUpgrade whose `tar` needs a microVM, its upgrade held until `release`, and its runs in the microVM. */
+	function held(options: { readonly holdRerun?: boolean; readonly store?: ComputeStore } = {}) {
+		let upgraded = false;
+		let release = (): void => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const reruns: string[] = [];
+		const kills: string[] = [];
+		const rerunsKilled = new Map<string, () => void>();
+		const made = setup({
+			exec: (_id, request) => {
+				if (!request.command.startsWith("tar ")) return undefined;
+				if (!upgraded) return { ...NEEDS_TAR, timedOut: false };
+				reruns.push(request.commandId ?? "");
+				if (options.holdRerun !== true) return { exitCode: 0, stdout: "tar\n", stderr: "", timedOut: false };
+				// Runs until it is killed.
+				return new Promise<ExecResult>((resolve) =>
+					rerunsKilled.set(request.commandId ?? "", () =>
+						resolve({ exitCode: 137, stdout: "", stderr: "", timedOut: false }),
+					),
+				);
+			},
+			upgrade: async (sandboxId, spec, operationId) => {
+				await gate;
+				const placed = await (made.stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+			kill: (_id, commandId) => {
+				kills.push(commandId);
+				rerunsKilled.get(commandId)?.();
+			},
+			...(options.store === undefined ? {} : { store: options.store }),
+		});
+		return { ...made, release: () => release(), reruns, kills };
+	}
+
+	const until = async (check: () => Promise<boolean> | boolean) => {
+		for (let tries = 0; tries < 300 && !(await check()); tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		expect(await check()).toBe(true);
+	};
+
+	it("isn't run again when it is killed while its isolate upgrades, attached or detached", async () => {
+		for (const detached of [false, true]) {
+			const { tom, upgrades, release, reruns } = held();
+			const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+			const answer = tom.runCommand(sandbox.id, { command: "tar -xf a.tar", detached });
+			await until(() => upgrades.length === 1);
+			const [first] = (await tom.listCommands(sandbox.id)).items;
+			if (first === undefined) throw new Error("no command");
+			expect((await tom.killCommand(sandbox.id, first.id)).state).toBe("killed");
+			release();
+			// The upgrade itself is done; the command isn't run again.
+			await until(async () => (await tom.getSandbox(sandbox.id)).type === "microvm");
+			const answered = await answer;
+			if (!detached) expect(answered).toMatchObject({ id: first.id, state: "killed" });
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect(reruns).toEqual([]);
+			const commands = (await tom.listCommands(sandbox.id)).items;
+			expect(commands.map((command) => command.id)).toEqual([first.id]);
+			expect(commands[0]).toMatchObject({ state: "killed" });
+			expect(commands[0]?.rerunAs).toBeUndefined();
+		}
+	});
+
+	it("isn't run again when the kill lands as its run again is being recorded", async () => {
+		for (const detached of [false, true]) {
+			// The kill lands after the first was given its run again's ID, before that run is recorded.
+			const store = createMemoryStore();
+			const put = store.commands.put.bind(store.commands);
+			let killing: Promise<unknown> | undefined;
+			store.commands.put = async (record) => {
+				if (record.rerunOf !== undefined && killing === undefined) {
+					killing = made.tom.killCommand(record.sandboxId, record.rerunOf);
+					await killing;
+				}
+				return put(record);
+			};
+			const made = held({ store });
+			const { tom, release, reruns } = made;
+			const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+			const answer = tom.runCommand(sandbox.id, { command: "tar -xf a.tar", detached });
+			release();
+			await until(() => killing !== undefined);
+			const answered = await answer;
+			await until(async () => (await tom.listCommands(sandbox.id)).items.every((each) => each.state !== "running"));
+			expect(reruns).toEqual([]);
+			const commands = (await tom.listCommands(sandbox.id)).items;
+			const first = commands.find((command) => command.rerunOf === undefined);
+			const rerun = commands.find((command) => command.rerunOf !== undefined);
+			expect(first).toMatchObject({ state: "killed" });
+			expect(rerun).toMatchObject({ state: "killed", rerunOf: first?.id });
+			if (!detached) expect(answered).toMatchObject({ id: rerun?.id, state: "killed" });
+		}
+	});
+
+	it("has its kill reach its run again once that has started, attached or detached", async () => {
+		for (const detached of [false, true]) {
+			const { tom, release, reruns, kills } = held({ holdRerun: true });
+			const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+			const answer = tom.runCommand(sandbox.id, { command: "tar -xf a.tar", detached });
+			release();
+			await until(() => reruns.length === 1);
+			const first = (await tom.listCommands(sandbox.id)).items.find((command) => command.rerunOf === undefined);
+			if (first === undefined) throw new Error("no command");
+			const killed = await tom.killCommand(sandbox.id, first.id);
+			// Killed whichever it was when the kill came: the first still running, or ended naming its run again.
+			const rerunId = killed.rerunAs ?? (await tom.getCommand(sandbox.id, first.id)).rerunAs;
+			expect(rerunId).toBe(reruns[0]);
+			expect(kills).toContain(reruns[0]);
+			await until(async () => (await tom.getCommand(sandbox.id, rerunId as string)).state === "killed");
+			const answered = await answer;
+			if (!detached) expect(answered).toMatchObject({ id: rerunId, state: "killed" });
+			expect((await tom.listCommands(sandbox.id)).items.filter((command) => command.state === "running")).toEqual([]);
+		}
 	});
 });
 
