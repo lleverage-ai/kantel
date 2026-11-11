@@ -9975,26 +9975,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (latest === undefined || upgrading?.operationId !== operationId) return latest;
 		const environments = await environmentsOf(latest);
 		const work = environments.flatMap(workFor);
+		const becomes = () => ({
+			type: "microvm" as const,
+			size: upgrading.size,
+			shape: upgrading.shape,
+			image: upgrading.image,
+			upgradedFrom: { type: "isolate" as const, at: upgrading.at },
+			upgrading: undefined,
+			// The isolate's snapshots stay theirs, an isolate's: the microVM's own come with its first stop.
+			latestSnapshotId: undefined,
+			latestSnapshotAt: undefined,
+			ports: [],
+			// Its environments' files and repositories, where a microVM keeps them, once it runs.
+			...(work.length > 0 ? { pendingProvision: work } : {}),
+		});
 		const committed = await boot(
 			sandboxId,
 			async () => placement,
 			undefined,
 			{ egressRevision: upgrading.egressRevision },
-			() => ({
-				type: "microvm",
-				size: upgrading.size,
-				shape: upgrading.shape,
-				image: upgrading.image,
-				upgradedFrom: { type: "isolate", at: upgrading.at },
-				upgrading: undefined,
-				// The isolate's snapshots stay theirs, an isolate's: the microVM's own come with its first stop.
-				latestSnapshotId: undefined,
-				latestSnapshotAt: undefined,
-				ports: [],
-				// Its environments' files and repositories, where a microVM keeps them, once it runs.
-				...(work.length > 0 ? { pendingProvision: work } : {}),
-			}),
+			becomes,
 		);
+		// Its host revoked after it replaced the isolate but before the microVM was published: the revocation put the record
+		// in error (strandOn) while it still said isolate, and boot found it no longer starting. The isolate is gone all the
+		// same, so the record says what replaced it, still in error (and not published: no ports, no set-up below).
+		if (committed === undefined) {
+			await store.sandboxes.update(sandboxId, (current) =>
+				current.state === "error" && current.upgrading?.operationId === operationId
+					? { ...current, ...becomes(), pendingProvision: undefined }
+					: undefined,
+			);
+		}
 		const upgraded = (sandbox: StoredSandbox) =>
 			emit("sandbox.upgraded", sandbox.accountId, {
 				sandbox,

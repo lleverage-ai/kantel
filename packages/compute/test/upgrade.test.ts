@@ -18,15 +18,16 @@ import {
 } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { needsMicrovmOf } from "../src/needs-microvm.ts";
-import { PLACEHOLDER_RATES, UPGRADE_STALE_MS } from "../src/service.ts";
+import { HOST_REVOKED_REASON, PLACEHOLDER_RATES, UPGRADE_STALE_MS } from "../src/service.ts";
 import { type ComputeStore, createMemoryStore } from "../src/store.ts";
-import { createStubBackend } from "../src/stub-backend.ts";
+import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { TarCheck, writeTar } from "../src/tar.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
 const BASE_URL = "http://compute.test/v1";
 const PEOPLE: { readonly [token: string]: PersonIdentity } = {
 	"tom-token": { userId: "usr_tom", name: "Tom", email: "tom@example.com" },
+	"root-token": { userId: "usr_root", name: "Root", email: "root@example.com", superAdmin: true },
 };
 const KEY = bytesToBase64(new Uint8Array(32).fill(7));
 /** A command's answer when the isolate's runtime says it needs a microVM. */
@@ -736,6 +737,29 @@ describe("an upgrade's egress and billing", () => {
 		// Sent to the microVM, without the grant, while it was still starting: it never ran with the old one.
 		expect(updates.at(0)).toMatchObject({ hosts: [], state: "starting", revision: stored?.egressRevision });
 		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("says it is the microVM it became when its host is revoked after replacing the isolate, before it is published", async () => {
+		let root: KantelClient | undefined;
+		const { tom, stub, api, client } = setup({
+			// The host replaces the isolate, then is revoked before the control plane publishes the microVM.
+			upgrade: async (sandboxId, spec, operationId) => {
+				const placed = await (stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				await root?.revokeHost(STUB_HOST_ID);
+				return placed;
+			},
+		});
+		root = client("root-token");
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.upgradeSandbox(sandbox.id, {}).catch(() => undefined);
+		const after = await tom.getSandbox(sandbox.id);
+		expect(after).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON, type: "microvm" });
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored?.upgrading).toBeUndefined();
+		expect(stored?.upgradedFrom).toMatchObject({ type: "isolate" });
+		expect(stored?.pendingProvision).toBeUndefined();
+		const events = (await tom.listEvents({ sandboxId: sandbox.id })).items.map((event) => event.type);
+		expect(events).toContain("sandbox.upgraded");
 	});
 
 	it("keeps the microVM it became when its egress can't be enforced there and it is stopped instead", async () => {
