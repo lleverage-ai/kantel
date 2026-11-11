@@ -269,3 +269,15 @@ func TestInitAndAgentsHelpPointAtAgentSetup(t *testing.T) {
 		contains(t, name, d.run(t, []string{name, "--help"}, d.env, selfPath).Stdout, "kantel agent setup")
 	}
 }
+
+// The guidance agents read, the skill's description included, never says an isolate runs JavaScript, and says what a
+// microVM is for.
+func TestTheGuidanceDescribesWhatAnIsolateIs(t *testing.T) {
+	for name, text := range map[string]string{"block": agentsBlock, "skill": skillMD, "mcp": mcpInstructions} {
+		notContains(t, name, text, "runs JavaScript")
+		notContains(t, name, text, "JavaScript shell")
+	}
+	description := strings.SplitN(strings.SplitN(skillMD, "description: ", 2)[1], "\n", 2)[0]
+	contains(t, "skill description", description, "an isolate, a quick shell for HTTP calls and text work")
+	contains(t, "skill description", description, "a microVM with root, Docker")
+}

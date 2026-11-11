@@ -205,7 +205,7 @@ const agentsBlock = agentsStart + "\n" +
 // skillMD is the skill Claude Code (.claude/skills), Codex and pi (.agents/skills) load when a task needs a sandbox.
 const skillMD = "---\n" +
 	"name: kantel\n" +
-	"description: Run code in a Kantel sandbox (an isolate, or a microVM with root, Docker, SSH, a desktop and Chromium) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation and long jobs.\n" +
+	"description: Run code in a Kantel sandbox (a microVM with root, Docker, SSH, a desktop and Chromium, or an isolate, a quick shell for HTTP calls and text work) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation, long jobs, and API calls with a token kept out of reach.\n" +
 	"---\n\n" +
 	"# Kantel sandboxes\n\n" +
 	"Kantel gives you sandboxes through the `kantel` command line. `KANTEL_URL` and `KANTEL_API_KEY` are set in the\n" +
