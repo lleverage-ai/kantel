@@ -1789,7 +1789,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const placement = await store.getPlacement(sandboxId);
 		if (placement?.cleanup?.hostId !== hostId) return placement;
 		try {
-			await onHost(hostId, HostMethods.delete, { sandboxId });
+			// Its snapshots kept: the sandbox lives on, and they stay its, an isolate's (a host from before
+			// `keepSnapshots` deletes them as a delete does).
+			await onHost(hostId, HostMethods.delete, { sandboxId, keepSnapshots: true });
 		} catch (error) {
 			if (!(isKantelError(error) && error.code === "not_found")) {
 				const why = error instanceof Error ? error.message : String(error);

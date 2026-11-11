@@ -438,3 +438,36 @@ func TestAThawWaitsForTheFreezeUnderWay(t *testing.T) {
 		t.Fatalf("a write after the thaw: %v", err)
 	}
 }
+
+// The isolate a cross-host upgrade leaves is deleted by Kantel with keepSnapshots: it goes, as it does on the same
+// host (Dispose), and its automatic snapshots stay, Kantel listing them as the upgraded sandbox's; a plain delete still
+// removes them with it.
+func TestDeletingAnUpgradedIsolateKeepsItsSnapshots(t *testing.T) {
+	ctx := context.Background()
+	for _, keep := range []bool{true, false} {
+		const id = "sbx_moved"
+		iso := isolateWithSandbox(t, id)
+		if err := iso.WriteFile(ctx, proto.FileParams{SandboxID: id, Path: "/workspace/a.txt"}, []byte("a\n")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := iso.Stop(ctx, proto.StopParams{SandboxID: id, SnapshotID: "snap_stopped"}); err != nil {
+			t.Fatal(err)
+		}
+		h := newLifecycleHost(t, newLifecycleTier())
+		h.tiers[isolate.Tier] = iso
+		h.order = append(h.order, isolate.Tier)
+		if err := call(t, h, proto.MethodDelete, proto.DeleteParams{SandboxID: id, KeepSnapshots: keep}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := iso.Get(id); err == nil {
+			t.Fatalf("keep %v: the isolate is still there", keep)
+		}
+		data, err := iso.SnapshotRead("snap_stopped", "/workspace/a.txt")
+		switch {
+		case keep && (err != nil || string(data) != "a\n"):
+			t.Fatalf("its snapshot after the upgrade's delete: %q %v", data, err)
+		case !keep && iso.HasSnapshot("snap_stopped"):
+			t.Fatal("a plain delete left its automatic snapshot")
+		}
+	}
+}

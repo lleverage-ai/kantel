@@ -108,10 +108,16 @@ func TestExportTarFailsOnAMissingBlob(t *testing.T) {
 	}
 }
 
-// Dispose lets the isolate go as a delete does, its automatic snapshots too, but says nothing: the sandbox lives on as
-// a microVM.
-func TestDisposeRemovesTheIsolateWithoutAnEvent(t *testing.T) {
+// Dispose lets the isolate go, but says nothing (the sandbox lives on as a microVM) and leaves its snapshots, automatic
+// ones too: Kantel keeps listing them as the sandbox's, an isolate's, and a sandbox is made from one, read or saved as
+// before; they go when they expire or when the sandbox is deleted.
+func TestDisposeRemovesTheIsolateButKeepsItsSnapshots(t *testing.T) {
 	m, events := upgradeManager(t, proto.StateRunning, map[string]string{"a.txt": "a"}, nil, nil)
+	// An automatic snapshot taken as it stops, as before an upgrade of a stopped isolate.
+	if _, err := m.Stop(context.Background(), proto.StopParams{SandboxID: "iso_1", SnapshotID: "snap_stop"}); err != nil {
+		t.Fatal(err)
+	}
+	*events = nil
 	if err := m.Dispose("iso_1"); err != nil {
 		t.Fatal(err)
 	}
@@ -121,10 +127,49 @@ func TestDisposeRemovesTheIsolateWithoutAnEvent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(m.cfg.Root, "sandboxes", "iso_1")); !os.IsNotExist(err) {
 		t.Fatalf("its directory is still there: %v", err)
 	}
+	if len(*events) != 0 {
+		t.Fatalf("it sent %v", *events)
+	}
+	for _, id := range []string{"snap_auto", "snap_stop"} {
+		if !m.HasSnapshot(id) {
+			t.Fatalf("its automatic snapshot %s is gone", id)
+		}
+	}
+	// The one it stopped with is whole: listed, read, made a sandbox from (its manifest, as a create reads it), saved.
+	if list, err := m.SnapshotFiles("snap_stop", "/workspace"); err != nil || len(list) != 1 || list[0].Name != "a.txt" {
+		t.Fatalf("its files: %v %v", list, err)
+	}
+	if data, err := m.SnapshotRead("snap_stop", "/workspace/a.txt"); err != nil || string(data) != "a" {
+		t.Fatalf("read %q %v", data, err)
+	}
+	if man, err := m.snapshotManifest("snap_stop", "acct"); err != nil || man["a.txt"].Kind != "file" {
+		t.Fatalf("its manifest for a create: %v %v", man, err)
+	}
+	if _, err := m.KeepSnapshot(context.Background(), proto.SnapshotParams{SnapshotID: "snap_kept", From: "snap_stop"}); err != nil {
+		t.Fatalf("saving it: %v", err)
+	}
+	// Deleting one is still Kantel's to do (its expiry, or the sandbox's delete).
+	if err := m.DeleteSnapshot("snap_stop"); err != nil || m.HasSnapshot("snap_stop") {
+		t.Fatalf("deleting it: %v", err)
+	}
+}
+
+// A delete, unlike Dispose, removes the sandbox's automatic snapshots with it, and keeps its saved ones.
+func TestDeleteRemovesTheAutomaticSnapshots(t *testing.T) {
+	m, events := upgradeManager(t, proto.StateRunning, map[string]string{"a.txt": "a"}, nil, nil)
+	if _, err := m.SaveSnapshot(context.Background(), proto.SnapshotParams{SandboxID: "iso_1", SnapshotID: "snap_saved"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Delete(context.Background(), "iso_1"); err != nil {
+		t.Fatal(err)
+	}
 	if m.HasSnapshot("snap_auto") {
 		t.Fatal("its automatic snapshot is still there")
 	}
-	if len(*events) != 0 {
+	if !m.HasSnapshot("snap_saved") {
+		t.Fatal("its saved snapshot is gone")
+	}
+	if n := len(*events); n == 0 || (*events)[n-1].State != proto.StateDeleted {
 		t.Fatalf("it sent %v", *events)
 	}
 }

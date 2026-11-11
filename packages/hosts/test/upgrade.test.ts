@@ -493,6 +493,11 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(JSON.stringify(link?.argv)).toContain("ln -sfn /home/user/workspace /workspace");
 		expect([...(files?.keys() ?? [])].some((name) => name.startsWith("/tmp/"))).toBe(false);
 		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		// Deleted keeping its snapshots, which stay the sandbox's, an isolate's.
+		expect(isolates.calls.find((call) => call.method === "sandbox.delete")?.params).toEqual({
+			sandboxId: sandbox.id,
+			keepSnapshots: true,
+		});
 		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: vms.hostId });
 		const event = (await root.listEvents({ sandboxId: sandbox.id })).items.find(
 			(each) => each.type === "sandbox.upgraded",
@@ -804,6 +809,8 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		const deletes = isolates.calls.filter((call) => call.method === "sandbox.delete");
+		expect(deletes.at(-1)?.params).toEqual({ sandboxId: sandbox.id, keepSnapshots: true });
 		for (
 			let tries = 0;
 			tries < 100 && (await service.sandboxes.placement(sandbox.id))?.cleanup !== undefined;

@@ -962,6 +962,14 @@ type SandboxRef struct {
 	SandboxID string `json:"sandboxId"`
 }
 
+// DeleteParams is sandbox.delete. KeepSnapshots is for the isolate an upgrade left once its microVM runs on another
+// host: it goes as on the upgrade's own host (isolate.Manager.Dispose), its automatic snapshots kept, since the sandbox
+// lives on and Kantel keeps them as its. A host from before it deletes them as a delete does.
+type DeleteParams struct {
+	SandboxID     string `json:"sandboxId"`
+	KeepSnapshots bool   `json:"keepSnapshots,omitempty"`
+}
+
 // StopParams is sandbox.stop.
 type StopParams struct {
 	SandboxID string `json:"sandboxId"`

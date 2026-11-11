@@ -170,8 +170,10 @@ func workspaceLink(name, target string) string {
 	return up + rest
 }
 
-// Dispose lets an upgraded sandbox's isolate go: its files' list, its meta and its automatic snapshots, as a delete
-// does, but with no event, since the sandbox lives on as a microVM with its ID. Its saved snapshots stay the account's.
+// Dispose lets an upgraded sandbox's isolate go, its files' list and its meta, with no event, since the sandbox lives
+// on as a microVM with its ID. Its snapshots stay, automatic ones too, unlike a delete's: Kantel keeps them as the
+// sandbox's, an isolate's, to read or make an isolate from, and deletes them (snapshot.delete) when they expire or
+// the sandbox is deleted.
 func (m *Manager) Dispose(id string) error {
 	s, err := m.get(id)
 	if err != nil {
@@ -181,13 +183,6 @@ func (m *Manager) Dispose(id string) error {
 	defer s.exec.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m.autoMu.Lock()
-	for _, snap := range m.snapshotsOf(id) {
-		if snap.Kind == "auto" {
-			_ = os.RemoveAll(m.snapshotDir(snap.ID))
-		}
-	}
-	m.autoMu.Unlock()
 	if err := os.RemoveAll(s.dir); err != nil {
 		return err
 	}
