@@ -563,6 +563,63 @@ describe("commands that need a microVM, at once", () => {
 		expect((await fast).rerunOf).toBeDefined();
 	});
 
+	it("runs one again when its gateway read the isolate just before another's upgrade began", async () => {
+		const store = createMemoryStore();
+		let upgraded = false;
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let answer: () => void = () => undefined;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const exec = async (_id: string, request: { command: string }) => {
+			if (!request.command.startsWith("tar ")) return undefined;
+			if (upgraded) return { exitCode: 0, stdout: `${request.command} in the microVM\n`, stderr: "", timedOut: false };
+			if (request.command === "tar two") await answered;
+			return { ...NEEDS_TAR, timedOut: false };
+		};
+		// One gateway upgrades the isolate for its command, held until released.
+		const a = setup({
+			store,
+			exec,
+			upgrade: async (sandboxId, spec, operationId) => {
+				await gate;
+				const placed = await (a.stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+		});
+		// The other reads the sandbox as the isolate it was until it tries its own upgrade: both read it before either
+		// upgrade began, and this one's begins second, while the first is still starting.
+		const sandbox = await a.tom.createSandbox({ autoUpgrade: true, wait: true });
+		const isolate = await store.sandboxes.get(sandbox.id);
+		let stale = false;
+		const sandboxes = Object.create(store.sandboxes) as typeof store.sandboxes;
+		sandboxes.get = async (id) => (stale && id === sandbox.id ? isolate : store.sandboxes.get(id));
+		sandboxes.update = (id, change) => {
+			if (id === sandbox.id) stale = false;
+			return store.sandboxes.update(id, change);
+		};
+		const b = setup({ store: { ...store, sandboxes }, stub: a.stub, startHoldMs: 30, exec });
+		const two = b.tom.runCommand(sandbox.id, { command: "tar two" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const one = a.tom.runCommand(sandbox.id, { command: "tar one" });
+		for (let tries = 0; tries < 100 && (await store.sandboxes.get(sandbox.id))?.upgrading === undefined; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		stale = true;
+		answer();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(stale).toBe(false);
+		release();
+		expect(await one).toMatchObject({ exitCode: 0, stdout: "tar one in the microVM\n", rerunOf: expect.any(String) });
+		const again = await two;
+		expect(again).toMatchObject({ exitCode: 0, stdout: "tar two in the microVM\n", rerunOf: expect.any(String) });
+		expect(again.stderr).not.toContain("couldn't be upgraded");
+	});
+
 	it("isn't run again once autoUpgrade is turned off, though the sandbox upgraded meanwhile", async () => {
 		const { tom, release, ran } = twoCommands();
 		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });

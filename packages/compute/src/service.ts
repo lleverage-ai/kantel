@@ -8182,14 +8182,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// Only what the isolate's runtime says: an inferred one is text the command may have printed.
 					if (result.needsMicrovm === undefined || result.needsMicrovm.inferred === true) return undefined;
 					if (command.autoUpgrade !== true) return undefined;
-					let latest = await store.sandboxes.get(sandbox.id);
 					// Another command's upgrade under way (on another gateway, whose queue this one doesn't see): its outcome is
 					// waited for as a command's is, start hold after start hold, for up to half the time a reader holds this
 					// command's end for it (`RERUN_CLAIM_MS`), then read again.
-					for (let round = 0; latest?.upgrading !== undefined && round * startHoldMs < RERUN_CLAIM_MS / 2; round++) {
-						await requireRunning(principal, sandbox.id).catch(() => delay(startPollMs).done);
-						latest = await store.sandboxes.get(sandbox.id);
-					}
+					const waitOutUpgrade = async () => {
+						let latest = await store.sandboxes.get(sandbox.id);
+						for (let round = 0; latest?.upgrading !== undefined && round * startHoldMs < RERUN_CLAIM_MS / 2; round++) {
+							await requireRunning(principal, sandbox.id).catch(() => delay(startPollMs).done);
+							latest = await store.sandboxes.get(sandbox.id);
+						}
+						return latest;
+					};
+					const latest = await waitOutUpgrade();
 					if (latest?.autoUpgrade !== true) return undefined;
 					if (latest.type !== "isolate" && latest.upgradedFrom === undefined) return undefined;
 					// Claimed before the upgrade, so another reader of its end leaves it to this one.
@@ -8200,8 +8204,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					try {
 						await upgradeIsolate(principal, role, sandbox.id, {});
 					} catch (error) {
-						// The isolate is as it was: the command's answer stands, saying why it wasn't upgraded.
-						return { note: `kantel: the isolate couldn't be upgraded to a microVM: ${messageOf(error)}\n` };
+						// Another command's upgrade began between the read above and this one's (`conflict` while it starts): its
+						// outcome is waited for, and its microVM, if it made one, runs this command again too, still opted in.
+						const after =
+							error instanceof KantelError && error.code === "conflict" ? await waitOutUpgrade() : undefined;
+						if (after?.type === "isolate" || after?.upgradedFrom === undefined || after.autoUpgrade !== true) {
+							// The isolate is as it was: the command's answer stands, saying why it wasn't upgraded.
+							return { note: `kantel: the isolate couldn't be upgraded to a microVM: ${messageOf(error)}\n` };
+						}
 					}
 					// Run again only if it wasn't killed while its sandbox upgraded (the upgrade stands either way): its run
 					// again's ID is written first, while it still runs, so a kill from then on reaches that run too.
