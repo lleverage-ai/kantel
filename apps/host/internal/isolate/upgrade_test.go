@@ -129,6 +129,79 @@ func TestDisposeRemovesTheIsolateWithoutAnEvent(t *testing.T) {
 	}
 }
 
+// An isolate's links to absolute paths in its /workspace go into the microVM as links relative to where they are,
+// which the guest's extractor takes (it refuses an absolute link) and which point at the same files there, whether
+// reached through /workspace or /home/user/workspace. A link out of the workspace is still refused.
+func TestExportTarMakesWorkspaceLinksRelative(t *testing.T) {
+	links := map[string]string{
+		"abs":           "/workspace/src/a.txt",
+		"src/up":        "/workspace/top.txt",
+		"src/deep/root": "/workspace",
+		"src/dir":       "/workspace/src/deep/",
+		"dotdot":        "/workspace/src/../top.txt",
+		"missing":       "/workspace/nope.txt",
+		"double":        "/workspace//src/a.txt",
+		"rel":           "src/a.txt",
+	}
+	m, _ := upgradeManager(t, proto.StateRunning, map[string]string{"src/a.txt": "a\n", "top.txt": "top\n", "src/deep/x": "x"}, nil, links)
+	var buf bytes.Buffer
+	if _, _, err := m.ExportTar("iso_1", &buf); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "upgrade.tar")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "home", "user", "workspace")
+	if err := guest.ExtractTar(archive, target, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"abs":           "src/a.txt",
+		"src/up":        "../top.txt",
+		"src/deep/root": "../..",
+		"src/dir":       "../src/deep/",
+		"dotdot":        "src/../top.txt",
+		"missing":       "nope.txt",
+		"double":        "src/a.txt",
+		"rel":           "src/a.txt",
+	}
+	for name, link := range want {
+		if got, err := os.Readlink(filepath.Join(target, name)); err != nil || got != link {
+			t.Errorf("%s -> %q (%v), want %q", name, got, err, link)
+		}
+	}
+	read := func(p string) string {
+		data, _ := os.ReadFile(filepath.Join(target, p))
+		return string(data)
+	}
+	for p, content := range map[string]string{"abs": "a\n", "src/up": "top\n", "src/deep/root/top.txt": "top\n", "src/dir/x": "x", "dotdot": "top\n", "double": "a\n"} {
+		if got := read(p); got != content {
+			t.Errorf("%s reads %q, want %q", p, got, content)
+		}
+	}
+	// A link that pointed nowhere still does, at the same name.
+	if _, err := os.Stat(filepath.Join(target, "missing")); !os.IsNotExist(err) {
+		t.Errorf("missing resolves: %v", err)
+	}
+
+	// One out of the workspace, absolute or climbing through it, is left as it was, and the extractor refuses it.
+	for _, out := range []string{"/etc/passwd", "/workspace/../etc/passwd", "/workspaces/x"} {
+		m, _ := upgradeManager(t, proto.StateRunning, nil, nil, map[string]string{"out": out})
+		var buf bytes.Buffer
+		if _, _, err := m.ExportTar("iso_1", &buf); err != nil {
+			t.Fatal(err)
+		}
+		archive := filepath.Join(t.TempDir(), "upgrade.tar")
+		if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := guest.ExtractTar(archive, filepath.Join(t.TempDir(), "w"), os.Getuid(), os.Getgid()); err == nil {
+			t.Errorf("a link to %s was extracted", out)
+		}
+	}
+}
+
 // A command needs a microVM when it ran a program only a microVM has: the shell's refusal, or a microVM program it
 // didn't find. A typo, or another exit code, isn't one.
 func TestNeedsMicrovmReadsTheShellsAnswer(t *testing.T) {

@@ -461,6 +461,11 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		workspace?.set("src/a.txt", { kind: "file", data: enc("hello\n"), mode: 0o644 });
 		workspace?.set("run.sh", { kind: "file", data: enc("#!/bin/sh\n"), mode: 0o755 });
 		workspace?.set("link", { kind: "symlink", target: "src/a.txt" });
+		// Links to absolute paths in the isolate's /workspace, which the microVM's extractor refuses as they are: made
+		// relative to where they are, the rest of the path as it was.
+		workspace?.set("src/up", { kind: "symlink", target: "/workspace/run.sh" });
+		workspace?.set("src/top", { kind: "symlink", target: "/workspace" });
+		workspace?.set("abs", { kind: "symlink", target: "/workspace//src/../src/a.txt" });
 		workspace?.set("d".repeat(60), { kind: "dir" });
 		workspace?.set(long, { kind: "file", data: enc("long\n") });
 		// A big file, read a part at a time.
@@ -473,6 +478,9 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(text(files?.get("/home/user/workspace/src/a.txt")?.data)).toBe("hello\n");
 		expect(files?.get("/home/user/workspace/run.sh")?.mode).toBe(0o755);
 		expect(files?.get("/home/user/workspace/link")).toEqual({ kind: "symlink", target: "src/a.txt" });
+		expect(files?.get("/home/user/workspace/src/up")).toEqual({ kind: "symlink", target: "../run.sh" });
+		expect(files?.get("/home/user/workspace/src/top")).toEqual({ kind: "symlink", target: ".." });
+		expect(files?.get("/home/user/workspace/abs")).toEqual({ kind: "symlink", target: "src/../src/a.txt" });
 		expect(text(files?.get(`/home/user/workspace/${long}`)?.data)).toBe("long\n");
 		expect(files?.get("/home/user/workspace/big.bin")?.data?.length).toBe(big.length);
 		const reads = isolates.calls.filter(
@@ -489,7 +497,7 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		const event = (await root.listEvents({ sandboxId: sandbox.id })).items.find(
 			(each) => each.type === "sandbox.upgraded",
 		);
-		expect(event?.data).toMatchObject({ path: "control-plane", files: 7, bytes: 6 + 10 + 5 + big.length });
+		expect(event?.data).toMatchObject({ path: "control-plane", files: 10, bytes: 6 + 10 + 5 + big.length });
 		// Its commands go to the microVM now.
 		await root.runCommand(sandbox.id, { command: "ls" });
 		expect(vms.calls.filter((call) => call.method === "sandbox.exec")).toHaveLength(2);

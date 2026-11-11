@@ -279,6 +279,22 @@ type WorkspaceEntry =
 			readonly mode: number;
 	  };
 
+/**
+ * The target a link at `name` (relative to `/workspace`) gets in an upgrade's tar, as kantel-host's own upgrade makes
+ * it (`workspaceLink` in apps/host/internal/isolate/upgrade.go): one to `/workspace` or a path under it, which the
+ * isolate resolves in its workspace, made relative to the link's directory (the rest of the path as it was, `..` and
+ * all), so it points at the same file in the microVM and the host's extractor, which refuses an absolute link, takes
+ * it. Any other is left as it was: one out of the workspace is refused there.
+ */
+const workspaceLink = (name: string, target: string): string => {
+	const top = "/workspace";
+	if (target !== top && !target.startsWith(`${top}/`)) return target;
+	const rest = target.slice(top.length).replace(/^\/+/, "");
+	const up = "../".repeat(name.split("/").length - 1);
+	if (rest === "") return up === "" ? "." : up.slice(0, -1);
+	return up + rest;
+};
+
 /** A file of a sandbox, as `sandbox.files.list` answers it. */
 interface ListedFile {
 	readonly path: string;
@@ -1524,7 +1540,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					entries.push({ kind: "directory", name });
 					queue.push(entry.path);
 				} else if (entry.type === "symlink") {
-					entries.push({ kind: "symlink", name, target: entry.target ?? "" });
+					entries.push({ kind: "symlink", name, target: workspaceLink(name, entry.target ?? "") });
 				} else {
 					listedBytes += entry.size;
 					if (listedBytes > moveLimits.bytes) throw tooMuchToMove("too many bytes");
