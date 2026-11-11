@@ -214,13 +214,15 @@ describe("sealing", () => {
 	it("refuses to open a value moved to another place, or under another key, without saying what it was", async () => {
 		const sealer = createSealer(KEY);
 		const sealed = await sealer.seal(SECRET, aad);
+		// Each opening starts only when it's awaited: started together, a later one could reject before anything
+		// handled it, which the runner reports as an unhandled rejection.
 		for (const opening of [
-			sealer.open(sealed, sealedAt("environments", "env_two", "variables.GH_TOKEN")),
-			sealer.open(sealed, sealedAt("environments", "env_one", "variables.OTHER")),
-			createSealer(OTHER_KEY).open(sealed, aad),
-			createEphemeralSealer().open(sealed, aad),
+			() => sealer.open(sealed, sealedAt("environments", "env_two", "variables.GH_TOKEN")),
+			() => sealer.open(sealed, sealedAt("environments", "env_one", "variables.OTHER")),
+			() => createSealer(OTHER_KEY).open(sealed, aad),
+			() => createEphemeralSealer().open(sealed, aad),
 		]) {
-			const error = await opening.then(
+			const error = await opening().then(
 				() => undefined,
 				(reason: unknown) => reason,
 			);
