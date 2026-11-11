@@ -963,7 +963,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return out;
 		},
 		// On its own host where it can (the files never leave it), else on another the files are moved to.
-		async upgrade(sandboxId, spec): Promise<UpgradedPlacement> {
+		async upgrade(sandboxId, spec, operationId): Promise<UpgradedPlacement> {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "isolate") throw new KantelError("conflict", "The sandbox is a microVM already");
 			const { sandbox, hostId, path, files, bytes, ...known } = await hosts.sandboxes.upgrade(sandboxId, {
@@ -981,8 +981,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				env: spec.env,
 				hostIds: spec.eligibleHosts,
 				...egressOf(spec.egress),
+				operationId,
 			});
 			return { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes };
+		},
+		async settleUpgrade(sandboxId, operationId) {
+			const outcome = await hosts.sandboxes.settleUpgrade(sandboxId, operationId);
+			if (outcome.state === "failed") return outcome;
+			const { sandbox, hostId, path, files, bytes, ...known } = outcome.upgraded;
+			return { state: "done", placement: { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes } };
 		},
 		async destroy(sandboxId) {
 			await options.ports?.forget(sandboxId);

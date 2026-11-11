@@ -257,6 +257,12 @@ export const HOST_FEATURES = {
 	 * microVM on another host and Kantel moves the files.
 	 */
 	isolateUpgrade: "isolate-upgrade",
+	/**
+	 * `sandbox.upgrade.freeze` and `sandbox.upgrade.thaw` (`{ sandboxId, operationId, waitMs? }`): one of the host's
+	 * isolates held still (what was under way ended, every later command and file write refused) while Kantel copies its
+	 * files to a microVM on another host, and let go if that upgrade rolls back.
+	 */
+	isolateFreeze: "isolate-freeze",
 } as const;
 
 /** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
@@ -1030,6 +1036,14 @@ export const HostMethods = {
 	 * that microVM with its files. Answered with the microVM's `HostSandbox` and its `moved`.
 	 */
 	upgrade: "sandbox.upgrade",
+	/** `HOST_FEATURES.isolateFreeze`: `{ sandboxId, operationId, waitMs? }`, answered `{ ok }`. */
+	upgradeFreeze: "sandbox.upgrade.freeze",
+	upgradeThaw: "sandbox.upgrade.thaw",
+	/**
+	 * `HOST_FEATURES.isolateUpgrade`: `{ sandboxId, operationId }`, answered `{ state: "done", sandbox }` or
+	 * `{ state: "failed", error }` once any upgrade of it under way has ended; one never finished is rolled back.
+	 */
+	upgradeSettle: "sandbox.upgrade.settle",
 	/**
 	 * `{ sandboxId, archive, target }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into the directory
 	 * `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted. Answered `{}`.
