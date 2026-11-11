@@ -30,7 +30,7 @@ struct Session {
 /// used when the command ends (review finding H6).
 struct Busy {
     inflight: Arc<AtomicUsize>,
-    sessions: Arc<std::sync::Mutex<HashMap<String, Session>>>,
+    sessions: Sessions,
     id: String,
 }
 impl Drop for Busy {
@@ -43,7 +43,7 @@ impl Drop for Busy {
 }
 
 pub struct App {
-    sessions: Arc<std::sync::Mutex<HashMap<String, Session>>>,
+    sessions: Sessions,
     pool: std::sync::Mutex<Vec<ShellHandle>>,
     want: AtomicUsize,
     cfg: Config,
@@ -193,18 +193,38 @@ fn sandbox_id(body: &Value) -> Option<String> {
         .map(String::from)
 }
 
-/// The session's isolate: its own, a pooled one (default memory only), or a fresh one. Returns a 503 error response
-/// when a new sandbox would exceed `--max-sandboxes` and every live sandbox is busy (kantel-host can retry).
+type Sessions = Arc<std::sync::Mutex<HashMap<String, Session>>>;
+
+/// Mark `id`'s session in flight (so it isn't evicted or expired) for as long as the returned guard lives, and get
+/// its handle. Called with the sessions lock held, so no eviction can come between finding a session and marking it.
+fn claim(
+    sessions: &mut HashMap<String, Session>,
+    all: &Sessions,
+    id: &str,
+) -> Option<(Arc<ShellHandle>, Busy)> {
+    let s = sessions.get_mut(id)?;
+    s.last_used = Instant::now();
+    s.inflight.fetch_add(1, Ordering::SeqCst);
+    let busy = Busy {
+        inflight: s.inflight.clone(),
+        sessions: all.clone(),
+        id: id.to_string(),
+    };
+    Some((s.handle.clone(), busy))
+}
+
+/// The session's isolate: its own, a pooled one (default memory only), or a fresh one, already marked in flight for
+/// the request (the guard). Returns a 503 error response when a new sandbox would exceed `--max-sandboxes` and every
+/// live sandbox is busy (kantel-host can retry).
 fn assign(
     app: &App,
     id: &str,
     mem_mib: usize,
-) -> std::result::Result<(Arc<ShellHandle>, &'static str), Box<Response>> {
+) -> std::result::Result<(Arc<ShellHandle>, &'static str, Busy), Box<Response>> {
     expire(app);
     let mut sessions = app.sessions.lock().unwrap();
-    if let Some(s) = sessions.get_mut(id) {
-        s.last_used = Instant::now();
-        return Ok((s.handle.clone(), "session"));
+    if let Some((handle, busy)) = claim(&mut sessions, &app.sessions, id) {
+        return Ok((handle, "session", busy));
     }
     if sessions.len() >= app.cfg.max_sandboxes && !evict_one_idle(&mut sessions) {
         return Err(Box::new(
@@ -226,28 +246,21 @@ fn assign(
     } else {
         (spawn_shell(Arc::from(id), mem_mib, false), "miss")
     };
-    let handle = Arc::new(handle);
     sessions.insert(
         id.to_string(),
         Session {
-            handle: handle.clone(),
+            handle: Arc::new(handle),
             last_used: Instant::now(),
             inflight: Arc::new(AtomicUsize::new(0)),
         },
     );
-    Ok((handle, hit))
-}
-
-/// Mark a session in-flight for a command's lifetime (so it isn't evicted) and get its handle.
-fn begin(app: &App, id: &str) -> Option<Busy> {
-    let sessions = app.sessions.lock().unwrap();
-    let s = sessions.get(id)?;
-    s.inflight.fetch_add(1, Ordering::SeqCst);
-    Some(Busy {
-        inflight: s.inflight.clone(),
-        sessions: app.sessions.clone(),
-        id: id.to_string(),
-    })
+    match claim(&mut sessions, &app.sessions, id) {
+        Some((handle, busy)) => Ok((handle, hit, busy)),
+        None => Err(Box::new(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session vanished",
+        ))),
+    }
 }
 
 async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response {
@@ -259,11 +272,10 @@ async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         Ok(m) => m,
         Err(r) => return *r,
     };
-    let (handle, hit) = match assign(&app, &id, mem_mib) {
+    let (handle, hit, _busy) = match assign(&app, &id, mem_mib) {
         Ok(v) => v,
         Err(r) => return *r,
     };
-    let _busy = begin(&app, &id);
     let (reply, rx) = tokio::sync::oneshot::channel();
     if handle.tx.send(ShellCmd::Load { mem_mib, reply }).is_err() {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "isolate thread stopped");
@@ -285,11 +297,10 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         Ok(m) => m,
         Err(r) => return *r,
     };
-    let (handle, hit) = match assign(&app, &id, mem_mib) {
+    let (handle, hit, _busy) = match assign(&app, &id, mem_mib) {
         Ok(v) => v,
         Err(r) => return *r,
     };
-    let _busy = begin(&app, &id);
     let wall = body["timeoutMs"]
         .as_u64()
         .filter(|t| *t > 0)
@@ -363,4 +374,43 @@ async fn unload(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Va
         .and_then(|id| app.sessions.lock().unwrap().remove(&id))
         .is_some();
     Json(json!({ "ok": removed }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: &str) -> Session {
+        Session {
+            handle: Arc::new(ShellHandle {
+                tx: tokio::sync::mpsc::unbounded_channel().0,
+                mem_mib: DEFAULT_MEMORY_MIB,
+                sandbox_id: Arc::from(id),
+            }),
+            last_used: Instant::now(),
+            inflight: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    #[test]
+    fn a_claimed_session_is_never_evicted_until_its_request_ends() {
+        let all: Sessions = Arc::default();
+        let busy = {
+            let mut sessions = all.lock().unwrap();
+            sessions.insert("a".into(), session("a"));
+            // Claimed under the same lock that found it: in flight before any other request can look.
+            let (_, busy) = claim(&mut sessions, &all, "a").expect("claimed");
+            assert!(!evict_one_idle(&mut sessions), "a busy session was evicted");
+            assert!(sessions.contains_key("a"));
+            busy
+        };
+        drop(busy);
+        let mut sessions = all.lock().unwrap();
+        assert!(
+            evict_one_idle(&mut sessions),
+            "an idle session wasn't evicted"
+        );
+        assert!(sessions.is_empty());
+        assert!(claim(&mut sessions, &all, "a").is_none());
+    }
 }
