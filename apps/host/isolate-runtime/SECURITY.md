@@ -402,6 +402,18 @@ test each (`test/integration.test.ts`, run on both the stock and `v8-sandbox` bu
   allocator's byte count (`kantel__BudgetAllocator__Used`) is read into the same sum; the allocator's own limit
   stays memoryMiB, so no V8 rebuild was needed. The heap limit stays memoryMiB as the backstop. Tested in the shell,
   node and python, heap-then-buffers and the reverse, on both builds.
+  Speed (the spike's bench, B2/B3, two rounds each, before → after, same machine, load 7–10): no cost beyond the
+  noise.
+
+  | ms | stock before | stock after | sandbox before | sandbox after |
+  | --- | --- | --- | --- | --- |
+  | B2 node first | 11.9, 12.8 | 10.8, 11.5 | 13.5, 11.0 | 13.2, 11.9 |
+  | B2 node warm median | 10.8, 9.6 | 12.7, 12.0 | 11.7, 11.7 | 12.1, 10.5 |
+  | B2 file script | 25.4, 21.1 | 22.6, 18.5 | 21.4, 20.3 | 23.4, 23.8 |
+  | B3 python first | 32.7, 39.5 | 34.7, 32.2 | 30.7, 36.6 | 32.2, 27.5 |
+  | B3 python warm (600 ms apart) median | 22.3, 22.8 | 23.8, 23.3 | 22.3, 22.8 | 21.7, 23.4 |
+  | B3 csv | 560, 561 | 594, 562 | 581, 540 | 584, 529 |
+
 - **A terminated shell command could hang `/exec` for good:** when a termination lands in a timer callback or an
   event-loop tick, deno_core swallows it and loses the timer schedule, so the command's promise never settles (seen
   on the earlier build too, e.g. a CPU-limit stop while `wc` read a 120 MB file; the wall deadline didn't help,
