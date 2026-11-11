@@ -86,7 +86,7 @@ Every customer can share the same hosts: the VM per account is what keeps them a
 ## What isn't there yet
 
 - **One runtime per account per host.** An account with very many isolates on one host shares that VM's CPU and memory among them. Placement doesn't yet spread one account's isolates across hosts by load.
-- **Memory limits per isolate** hold the JavaScript heap and the isolate's buffers and WebAssembly memory to its size each, not together, so one isolate can use up to about twice its size at worst.
+- **An isolate's memory limit is checked at allocations and garbage collections**, not continuously: the heap, buffers and WebAssembly memory share one budget, but a run can briefly go over it between collections before it is stopped.
 - **No npm or pip packages in an isolate**, other than Pyodide's own (such as numpy). Code that needs them runs in a microVM.
 
 See [What works today](/what-works-today/) for what has been shown on real machines.

@@ -65,7 +65,7 @@ kantel exec sbx_4kq9x2mt -- "python -c 'import numpy as np; print(np.arange(10).
 
 Each run gets a fresh V8 isolate of its own, started from a snapshot, so a script can't see what another run left, and its limits are its own:
 
-- **Memory:** the isolate's memory, 256 MB by default and from 128 to 512 MB on a create (`resources.memoryMb`). The JavaScript heap and the buffers and WebAssembly memory are each held to it.
+- **Memory:** the isolate's memory, 256 MB by default and from 128 to 512 MB on a create (`resources.memoryMb`), is one budget for the JavaScript heap, its buffers and WebAssembly memory together. A buffer or WebAssembly memory that would take the total over it is refused, and a run still over it at the next garbage collection is stopped. The heap's own figure is the last collection's, so a run can briefly go over between collections before it is stopped.
 - **CPU:** a command's CPU time, its `node` and `python` runs included, is limited, and a run that uses too much is stopped. A command stopped for CPU, memory or time answers exit code 152 (CPU or time) or 137 (memory), and its record has `terminated` saying which.
 - **What's left out:** npm and pip packages (only Pyodide's own, such as numpy), `child_process` and subprocesses, servers and listening sockets, native add-ons, and worker threads. For any of these, [upgrade](#upgrade-an-isolate-to-a-microvm) to a microVM.
 
