@@ -7661,7 +7661,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (snapshot === undefined) throw new KantelError("conflict", "The sandbox has no snapshot to fork from");
 				}
 				const ref = snapshot === undefined ? undefined : readyRef(snapshot);
-				if (current.type === "isolate" && body.size !== undefined) {
+				// What they are: what the snapshot was taken of (an upgraded sandbox's snapshots from before are an isolate's),
+				// or forked live, what the source is now.
+				const type = snapshot?.sandboxType ?? current.type;
+				const sameType = type === current.type;
+				if (type === "isolate" && body.size !== undefined) {
 					throw new KantelError("invalid", "Isolates have no size");
 				}
 				const account = await store.accounts.get(current.accountId);
@@ -7672,7 +7676,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const hosts = requireHosts(
 					await ensureHosts(),
 					current.accountId,
-					current.type,
+					type,
 					current.hostLabels,
 					true,
 					await mayShare(principal),
@@ -7684,7 +7688,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// source's own, whatever `size` says: a host copies the running machine as it is.
 				const copies = snapshot !== undefined && recordsMachine(snapshot) ? snapshot : current;
 				const machine =
-					current.type !== "microvm"
+					type !== "microvm"
 						? undefined
 						: snapshot === undefined
 							? sandboxMachine({ copies: current }, {}, [])
@@ -7709,15 +7713,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								);
 				// What they will be given, where that is the machine they copy: on their records from the start, so a fork never
 				// reads as having no machine (shown as the smallest size) while it starts. Their placements then say what they got.
-				const resources = current.type === "microvm" ? copiedResources(copies, machine) : undefined;
+				const resources = type === "microvm" ? copiedResources(copies, machine) : undefined;
 				// The source's exposed ports, as they are now: each fork gets them once it runs (`copyPorts`).
 				// Only for a caller who may open them (`access`): a port is exposed as its caller, and stops working once they
 				// may not (`stillAllowed`), so one copied for a key without the scope would be listed but refuse everyone. Such a
 				// key still forks; its forks get no ports.
+				const forkCapabilities = sameType ? current.capabilities : ISOLATE_CAPABILITIES;
 				const sourcePorts =
-					current.capabilities.ports && mayUse(principal, "access", role)
-						? current.ports.map((port) => ({ ...port }))
-						: [];
+					forkCapabilities.ports && mayUse(principal, "access", role) ? current.ports.map((port) => ({ ...port })) : [];
 				const grantee = encodeGrantee(principal);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
@@ -7741,17 +7744,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						accountId: current.accountId,
 						name,
 						subdomain: subdomainFor(name),
-						type: current.type,
+						type,
 						size: machine?.size,
 						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
 						...(resources === undefined ? {} : { resources: { ...resources } }),
-						// An isolate asks for its source's memory.
-						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
-						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
-						image: current.image,
+						// An isolate asks for its source's memory, where its source is one.
+						...(type === "isolate" && sameType && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
+						...(type === "isolate" && sameType && current.resources !== undefined
+							? { resources: current.resources }
+							: {}),
+						// An isolate has no image: not the microVM's its source became.
+						image: sameType ? current.image : undefined,
 						state: "starting",
 						visibility: account?.kind === "personal" ? "private" : (body.visibility ?? current.visibility),
-						capabilities: current.capabilities,
+						capabilities: forkCapabilities,
 						labels: body.labels === undefined ? { ...current.labels } : { ...body.labels },
 						autoStopMinutes: current.autoStopMinutes,
 						idleStopMinutes: current.idleStopMinutes ?? null,
@@ -8527,7 +8533,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (existing !== undefined && body.replace !== true) {
 					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
-				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && current.type !== "microvm") {
+				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
+				// own (`keepSnapshot`), since a host prunes automatic snapshots, and removes them with their sandbox. The
+				// entry stays in the sandbox's history, automatic, on its own ref.
+				const source =
+					body.snapshotId !== undefined
+						? await store.snapshots.get(body.snapshotId)
+						: current.state === "running" || current.latestSnapshotId === undefined
+							? undefined
+							: await store.snapshots.get(current.latestSnapshotId);
+				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
+					throw notFound("snapshot of this sandbox");
+				}
+				// What its bytes are of: a copied snapshot's own (an upgraded sandbox's from before are an isolate's), else what
+				// the sandbox is now.
+				const type = source?.sandboxType ?? current.type;
+				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && type !== "microvm") {
 					throw new KantelError("invalid", "Only a microVM's snapshot takes minMemoryMb");
 				}
 				// The least memory a sandbox made from it may have: as given, 0 for none, else the one it replaces keeps its own.
@@ -8551,20 +8572,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let memory = false;
 				// When the bytes were taken: a copied snapshot's own time (its source's, for one saved before this was kept), else now.
 				let takenAt: number | undefined;
-				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
-				let machine = recordedMachine(current);
-				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
-				// own (`keepSnapshot`), since a host prunes automatic snapshots, and removes them with their sandbox. The
-				// entry stays in the sandbox's history, automatic, on its own ref.
-				const source =
-					body.snapshotId !== undefined
-						? await store.snapshots.get(body.snapshotId)
-						: current.state === "running" || current.latestSnapshotId === undefined
-							? undefined
-							: await store.snapshots.get(current.latestSnapshotId);
-				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
-					throw notFound("snapshot of this sandbox");
-				}
+				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one, else the
+				// sandbox's where it is still what they were taken of (an isolate's records none).
+				let machine = type === current.type ? recordedMachine(current) : {};
 				if (source !== undefined) {
 					const from = readyRef(source);
 					await requireSnapshotHostReachable(from);
@@ -8605,7 +8615,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					description: body.description,
 					...(body.labels === undefined ? {} : { labels: body.labels }),
 					sandboxId: current.id,
-					sandboxType: current.type,
+					sandboxType: type,
 					state: "ready",
 					trigger: "save",
 					memory,
@@ -8683,11 +8693,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot.ref);
 			// Its running sandbox's newest moves back to the one before it, by `adopt` (expiry may be deleting that one): the
-			// first still there, else none; a pointer another write moved meanwhile is left as it is.
+			// first still there, else none; a pointer another write moved meanwhile is left as it is. Only one of what the
+			// sandbox is now: an upgraded sandbox's from before are an isolate's, which its microVM never starts from.
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
 				const older = newestFirst(
 					(await store.snapshots.list({ sandboxId: current.id, kind: "automatic" })).filter(
-						(entry) => entry.state === "ready",
+						(entry) => entry.state === "ready" && entry.sandboxType === current.type,
 					),
 				);
 				const pointAt = async (to: StoredSnapshot | undefined, was: string | undefined) =>

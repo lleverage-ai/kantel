@@ -97,7 +97,7 @@ The body takes `size` or `resources`, and `image`, as a [create](/sandboxes/life
 - **While its files move to another host, the isolate is held still.** A command already running in it ends first and its writes go with the files. A command or write after that is refused until the upgrade ends.
 - **Its cost** changes at the upgrade: its time as an isolate ends then, at the isolate's rate, and its time as a microVM begins, at its size's rate. A `sandbox.upgraded` [event and webhook](/monitoring/webhooks/) record it, with what moved (`data.files`, `data.bytes`) and how (`data.path`).
 - **Its environments' secret files and repositories** are set up again in the microVM, where a microVM keeps them, and an exposed port is exposed again on it.
-- Its snapshots from before the upgrade stay, as an isolate's: a sandbox made from one is an isolate.
+- Its snapshots from before the upgrade stay, as an isolate's: a sandbox made or forked from one is an isolate, a saved snapshot copied from one is an isolate's, and the microVM never starts from one.
 
 Where the files go: the isolate's own host makes the microVM when it runs microVMs too and has room, and moves the files from its own store into the microVM, never through Kantel. Otherwise the microVM goes on another host the sandbox may use, and Kantel moves the files there, up to 20,000 files and 256 MiB. Past that the upgrade is refused (`not_supported`), as soon as the files are listed and before a microVM is made, and the isolate stays as it is. If deleting the isolate from its old host fails once the microVM runs, Kantel deletes it when that host next connects.
 

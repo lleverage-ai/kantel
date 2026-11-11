@@ -53,10 +53,7 @@ interface Options {
 	/** Stands in for the backend's settling of an upgrade: undefined lets the stub do it. */
 	readonly settle?: (sandboxId: string, operationId: string) => Promise<UpgradeOutcome> | undefined;
 	/** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
-	readonly exec?: (
-		sandboxId: string,
-		request: ExecRequest,
-	) => ExecResult | undefined | Promise<ExecResult | undefined>;
+	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined | Promise<ExecResult | undefined>;
 	/** Takes egress updates, as a host does; absent, the backend takes none (as the stub). */
 	readonly updateEgress?: (sandboxId: string, egress: BackendEgress | undefined, revision?: number) => Promise<void>;
 	/** Answers commands' results by their ID, as a host that keeps them does. */
@@ -1061,5 +1058,49 @@ describe("autoUpgrade's limits", () => {
 		}
 		expect(ended).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
 		expect(ended.rerunAs).toBeDefined();
+	});
+});
+
+describe("an upgraded sandbox's snapshots from before", () => {
+	it("are an isolate's still: forked or saved from, they make isolates with its files", async () => {
+		const { tom, api } = setup();
+		const sandbox = await isolateWithFiles(tom);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const [automatic] = (await tom.listSnapshots({ sandboxId: sandbox.id })).items;
+		expect(automatic?.sandboxType).toBe("isolate");
+		await tom.startSandbox(sandbox.id, { wait: true });
+		await tom.upgradeSandbox(sandbox.id, {});
+		expect((await tom.getSandbox(sandbox.id)).type).toBe("microvm");
+		const snapshotId = automatic?.id as string;
+
+		const [fork] = (await tom.forkSandbox(sandbox.id, { snapshotId, wait: true })).items;
+		expect(fork).toMatchObject({ type: "isolate", state: "running" });
+		expect((await tom.runCommand(fork?.id as string, { command: "cat src/a.txt" })).stdout).toBe("hello\n");
+		expect((await api.store.sandboxes.get(fork?.id as string))?.image).toBeUndefined();
+
+		const saved = await tom.saveSnapshot({ name: "before-upgrade", sandboxId: sandbox.id, snapshotId });
+		expect(saved.sandboxType).toBe("isolate");
+		const made = await tom.createSandbox({ from: saved.id, wait: true });
+		expect(made.type).toBe("isolate");
+		expect((await tom.runCommand(made.id, { command: "cat src/a.txt" })).stdout).toBe("hello\n");
+
+		// Forked live, it is the microVM it is now.
+		const [live] = (await tom.forkSandbox(sandbox.id, { wait: true })).items;
+		expect(live?.type).toBe("microvm");
+	});
+
+	it("are never what the microVM resumes from once its own newest is deleted", async () => {
+		const { tom, api } = setup();
+		const sandbox = await isolateWithFiles(tom);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		await tom.upgradeSandbox(sandbox.id, {});
+		const taken = await tom.takeSnapshot(sandbox.id, {});
+		expect(taken.sandboxType).toBe("microvm");
+		expect((await api.store.sandboxes.get(sandbox.id))?.latestSnapshotId).toBe(taken.id);
+		await tom.deleteSnapshot(taken.id);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored?.latestSnapshotId).toBeUndefined();
+		expect(stored?.latestSnapshotAt).toBeUndefined();
 	});
 });
