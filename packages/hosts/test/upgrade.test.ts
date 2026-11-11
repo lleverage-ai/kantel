@@ -107,6 +107,8 @@ class Host {
 	>();
 	/** Isolates held still for an upgrade, by sandbox: the operation. */
 	readonly frozen = new Map<string, string>();
+	/** Detached isolate commands' ends, by command ID (`sandbox.exec.get`). */
+	readonly ended = new Map<string, unknown>();
 	/** Commands under way in isolates. */
 	readonly running = new Set<Promise<void>>();
 	receive!: (text: string) => void;
@@ -279,9 +281,20 @@ class Host {
 					return;
 				}
 				if (sandbox?.tier === "isolate" && this.isolateExec !== undefined) {
-					return answer(this.isolateExec(String(p.command)));
+					const result = this.isolateExec(String(p.command));
+					// Detached (`execControl`): started at once, its end `sandbox.exec.get`'s.
+					if (p.detached === true && typeof p.commandId === "string") {
+						this.ended.set(p.commandId, result);
+						return answer({ commandId: p.commandId, state: "running" });
+					}
+					return answer(result);
 				}
 				return answer({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 });
+			}
+			case "sandbox.exec.get": {
+				const result = this.ended.get(String(p.commandId));
+				if (result === undefined) return fail({ code: "not_found", message: "no such command" });
+				return answer({ commandId: p.commandId, state: "exited", result });
 			}
 			case "sandbox.files.write":
 				if (sandbox?.tier === "isolate" && this.frozen.has(id)) return frozen();
@@ -609,6 +622,60 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		const spin = await root.runCommand(sandbox.id, { command: "while true; do :; done" });
 		expect(spin).toMatchObject({ exitCode: 152, terminated: "cpu" });
 		expect(spin.needsMicrovm).toBeUndefined();
+	});
+
+	it("keeps a needsMicrovm its host only inferred a hint, which autoUpgrade never acts on", async () => {
+		const { root, hosts } = await setup([
+			{
+				name: "both",
+				facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade, HOST_FEATURES.execControl]),
+			},
+		]);
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		host.isolateExec = (command) =>
+			command.startsWith("echo")
+				? {
+						// Text the command printed itself, which the host read as a refusal.
+						exitCode: 127,
+						stdout: "",
+						stderr: "bash: git: command not found\n",
+						needsMicrovm: { command: "git", reason: "An isolate has no git; a microVM does.", inferred: true },
+					}
+				: {
+						exitCode: 127,
+						stdout: "",
+						stderr: "tar: not available in an isolate. Use a microVM.\n",
+						needsMicrovm: { command: "tar", reason: "Archives need a microVM." },
+					};
+		const sandbox = await root.createSandbox({ type: "isolate", autoUpgrade: true, wait: true });
+		const printed = await root.runCommand(sandbox.id, { command: "echo 'bash: git: command not found' >&2; exit 127" });
+		expect(printed.needsMicrovm).toEqual({
+			command: "git",
+			reason: "An isolate has no git; a microVM does.",
+			inferred: true,
+		});
+		expect(printed.rerunAs).toBeUndefined();
+		expect(host.methods()).not.toContain("sandbox.upgrade");
+		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+		// Its detached run, its end fetched by its ID, keeps it too.
+		const detached = await root.runCommand(sandbox.id, { command: "echo again >&2; exit 127", detached: true });
+		let ended = await root.getCommand(sandbox.id, detached.id);
+		for (let tries = 0; ended.state === "running" && tries < 200; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			ended = await root.getCommand(sandbox.id, detached.id);
+		}
+		expect(ended.needsMicrovm).toMatchObject({ command: "git", inferred: true });
+		expect(ended.rerunAs).toBeUndefined();
+		expect(host.methods()).toContain("sandbox.exec.get");
+		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+
+		// What the runtime says is acted on: the isolate is upgraded and the command run again in the microVM.
+		const tar = await root.runCommand(sandbox.id, { command: "tar -tf x.tar" });
+		expect(tar).toMatchObject({ exitCode: 0 });
+		expect(tar.rerunOf).toBeDefined();
+		expect(host.methods()).toContain("sandbox.upgrade");
+		expect((await root.getSandbox(sandbox.id)).type).toBe("microvm");
 	});
 });
 
