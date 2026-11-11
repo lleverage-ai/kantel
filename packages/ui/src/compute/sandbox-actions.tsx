@@ -1,5 +1,6 @@
 // What a sandbox's ⋯ menu does, on its page and on its row in the list: Fork, Save snapshot, Auto-stop, Idle stop,
-// Restart on latest base (for one on an outdated base) and Delete, and the dialogs they open. The ways in (Browser, Desktop,
+// Upgrade to microVM (for an isolate), Restart on latest base (for one on an outdated base) and Delete, and the dialogs
+// they open. The ways in (Browser, Desktop,
 // SSH), its logs, egress and snapshots are on its page, not here.
 
 import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
@@ -7,7 +8,7 @@ import { Button } from "../primitives/button.tsx";
 import { CheckboxField, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { ClockIcon, ForkIcon } from "../primitives/icons.tsx";
-import { ReplayIcon, SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { ReplayIcon, ServerIcon, SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
 import type { MenuEntry } from "../primitives/menu.tsx";
 import {
 	type Sandbox,
@@ -92,6 +93,12 @@ export const canRestartOnLatest = (sandbox: Pick<Sandbox, "state" | "base" | "ho
 	sandbox.hostUnreachable !== true &&
 	(sandbox.state === "running" || sandbox.state === "stopped" || sandbox.state === "error");
 
+/** Whether an isolate can be upgraded to a microVM now: it is running or stopped, and its host (its files) is connected. */
+export const canUpgrade = (sandbox: Pick<Sandbox, "kind" | "state" | "hostUnreachable">): boolean =>
+	sandbox.kind === "isolate" &&
+	sandbox.hostUnreachable !== true &&
+	(sandbox.state === "running" || sandbox.state === "stopped");
+
 /** Whether a snapshot of a sandbox can be saved now: it has one to save, and its host (which holds it) is connected. */
 export const canSaveSnapshot = (sandbox: Pick<Sandbox, "snapshot" | "hostUnreachable">): boolean =>
 	sandbox.snapshot !== undefined && sandbox.hostUnreachable !== true;
@@ -107,7 +114,7 @@ export function useSandboxMenu(
 	calls: SandboxMenuCalls,
 ): { entries: readonly MenuEntry[]; dialogs: ReactNode; restartOnLatest?: () => void } {
 	const { source, save, onChange, asked, onNotice } = calls;
-	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "idle-stop" | "restart">();
+	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "idle-stop" | "restart" | "upgrade">();
 	const close = () => setOpen(undefined);
 	const can = sandboxActions(
 		sandbox?.state ?? "stopped",
@@ -178,6 +185,18 @@ export function useSandboxMenu(
 									onSelect: () => setOpen("idle-stop"),
 								},
 							]),
+					...(source.upgrade !== undefined && sandbox.kind === "isolate"
+						? [
+								{
+									kind: "item" as const,
+									id: "upgrade",
+									label: "Upgrade to microVM",
+									icon: <ServerIcon size="sm" />,
+									disabled: !canUpgrade(sandbox),
+									onSelect: () => setOpen("upgrade"),
+								},
+							]
+						: []),
 					...(restartable
 						? [
 								{
@@ -234,6 +253,22 @@ export function useSandboxMenu(
 					sandbox={open === "idle-stop" ? sandbox : undefined}
 					onClose={close}
 					onSet={(box, minutes) => setIdleStop(calls, box.id, minutes)}
+				/>
+			)}
+			{source.upgrade === undefined ? null : (
+				<UpgradeDialog
+					sandbox={open === "upgrade" ? sandbox : undefined}
+					onClose={close}
+					onUpgrade={async (box) => {
+						const since = asked?.(box.id);
+						const upgraded = await source.upgrade?.(box.id);
+						if (upgraded === undefined) return;
+						onChange(upgraded, upgraded.id, since);
+						onNotice({
+							level: "info",
+							text: `${box.name} is a microVM now. Its files are in /home/user/workspace, and /workspace links there.`,
+						});
+					}}
 				/>
 			)}
 			{restartOnLatest === undefined ? null : (
@@ -419,6 +454,63 @@ export function SaveSnapshotDialog({
 					/>
 				) : null}
 			</div>
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+		</Dialog>
+	);
+}
+
+/**
+ * Upgrade to microVM: what it keeps and what changes, then Upgrade. It answers once the microVM runs, so the dialog
+ * stays open, busy, until then; a failure keeps it open with why, the isolate as it was.
+ */
+export function UpgradeDialog({
+	sandbox,
+	onClose,
+	onUpgrade,
+}: {
+	sandbox: Sandbox | undefined;
+	onClose: () => void;
+	onUpgrade: (box: Sandbox) => Promise<void>;
+}) {
+	const { busy, failure, setFailure, run } = useAttempt(onClose);
+	const close = () => {
+		if (busy) return;
+		setFailure(undefined);
+		onClose();
+	};
+	return (
+		<Dialog
+			open={sandbox !== undefined}
+			title="Upgrade to a microVM?"
+			onClose={close}
+			actions={
+				<>
+					<Button onClick={close} disabled={busy}>
+						Cancel
+					</Button>
+					<Button
+						variant="primary"
+						busy={busy}
+						onClick={() => {
+							if (sandbox === undefined) return;
+							run(() => onUpgrade(sandbox), `Kantel couldn't upgrade ${sandbox.name}. Its isolate is as it was.`);
+						}}
+					>
+						{busy ? "Upgrading" : "Upgrade"}
+					</Button>
+				</>
+			}
+		>
+			<p>
+				{sandbox?.name === undefined ? "This isolate" : <strong className="break-all">{sandbox.name}</strong>} becomes a
+				full Linux machine with git, Node, Python, packages, root and Docker, with the same ID, env, environments and
+				grants.
+			</p>
+			<p>
+				Its files move to <span className="font-mono">/home/user/workspace</span>, and{" "}
+				<span className="font-mono">/workspace</span> links there.{" "}
+				{sandbox?.state === "stopped" ? "It comes back running. " : ""}From then on it costs a microVM's rate.
+			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
 	);

@@ -2416,6 +2416,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					settle(forkId, (current) => ({ ...current, state: "running", usage: usageSeries(forkId.length, 0.3) }));
 					return box;
 				}),
+			// As Kantel does: the same sandbox, a microVM now, running once its files are in.
+			upgrade: (id) =>
+				gate(() => {
+					const current = find(sandboxes, id, "sandbox");
+					if (current.kind !== "isolate") return current;
+					const box = put({ ...current, kind: "microvm", state: "running" });
+					return box;
+				}),
 			recover: (id) =>
 				gate(() => {
 					const { error: _, ...current } = find(sandboxes, id, "sandbox");
