@@ -507,7 +507,7 @@ kantel scp <from> <to> [flags]
 
 ```sh
 kantel scp ./report.txt sbx_123:/home/user/      upload a file into a directory
-kantel scp sbx_123:out.zip .                      download one (relative paths are under /home/user)
+kantel scp sbx_123:out.zip .                      download one (relative paths are under a microVM's /home/user, an isolate's /workspace)
 kantel scp -r ./site sbx_123:/srv/site            upload a directory
 ```
 
@@ -537,7 +537,7 @@ In a git repository it sends the files git tracks and the new ones .gitignore do
 
 | Flag | What it does |
 | --- | --- |
-| `--to <path>` | Where in the sandbox (default /home/user/&lt;dir name&gt;) |
+| `--to <path>` | Where in the sandbox (default &lt;dir name&gt;, under a microVM's /home/user or an isolate's /workspace) |
 | `--allow-home` | Push your home directory, or one holding it, leaving Kantel's config out |
 | `--no-default-excludes` | Send credentials, agents' sign-ins and .env files too |
 

@@ -114,7 +114,8 @@ func TestPushSendsADirectorysFilesKeepingTheExecutableBit(t *testing.T) {
 	r := run(t, []string{"push", "sbx_test1", "app"}, o)
 	eq(t, "exit", r.Code, 0)
 	contains(t, "stdout", r.Stdout, "Pushed 3 files")
-	contains(t, "stdout", r.Stdout, "/home/user/app")
+	// An isolate keeps its files in /workspace, so that's where a relative destination lands.
+	contains(t, "stdout", r.Stdout, "to /workspace/app.")
 	var paths []string
 	for p := range byPath {
 		paths = append(paths, p)
@@ -161,6 +162,7 @@ func TestPushSendsAMicroVMOneGzippedTarInParts(t *testing.T) {
 	r := run(t, []string{"push", "sbx_test1", "app"}, o)
 	eq(t, "exit", r.Code, 0)
 	contains(t, "stdout", r.Stdout, "Pushed 4 files")
+	contains(t, "stdout", r.Stdout, "to /home/user/app.")
 	if len(parts) < 2 {
 		t.Fatalf("%d parts", len(parts))
 	}

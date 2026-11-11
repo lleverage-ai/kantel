@@ -704,7 +704,7 @@ func scpCommand() *cli.Command {
 		Args:    []cli.Arg{{Name: "from"}, {Name: "to"}},
 		Flags:   []cli.Flag{{Name: "recursive", Type: cli.Bool, Short: "r", Description: "Copy a directory and everything in it"}},
 		Details: "  kantel scp ./report.txt sbx_123:/home/user/      upload a file into a directory\n" +
-			"  kantel scp sbx_123:out.zip .                      download one (relative paths are under /home/user)\n" +
+			"  kantel scp sbx_123:out.zip .                      download one (relative paths are under a microVM's /home/user, an isolate's /workspace)\n" +
 			"  kantel scp -r ./site sbx_123:/srv/site            upload a directory\n" +
 			"It goes through Kantel's files API, so it works on isolates too. A file over 1 MiB comes down in parts;\n" +
 			"one going up goes in parts that a command joins, which needs a microVM.",
@@ -751,12 +751,12 @@ func runScp(c *cli.Context) error {
 			if err != nil {
 				return err
 			}
-			done, err := uploadTreeTo(c, client, target.SandboxID, local, files, remote, logPath(c))
+			done, where, err := uploadTreeTo(c, client, target.SandboxID, local, files, remote, logPath(c))
 			if err != nil {
 				return err
 			}
-			c.Emit(nil, copiedTo{done, remote}, func() string {
-				return fmt.Sprintf("Copied %s (%s) to %s.", fileCount(done.Files), cli.Bytes(float64(done.Bytes)), remote)
+			c.Emit(nil, copiedTo{done, where}, func() string {
+				return fmt.Sprintf("Copied %s (%s) to %s.", fileCount(done.Files), cli.Bytes(float64(done.Bytes)), where)
 			})
 			return nil
 		}
@@ -834,7 +834,7 @@ func pushCommand() *cli.Command {
 		Summary: "Copy a local directory into a sandbox (in git, the files git would commit)",
 		Args:    []cli.Arg{{Name: "id"}, {Name: "dir", Optional: true}},
 		Flags: []cli.Flag{
-			{Name: "to", Type: cli.String, Value: "<path>", Description: "Where in the sandbox (default /home/user/<dir name>)"},
+			{Name: "to", Type: cli.String, Value: "<path>", Description: "Where in the sandbox (default <dir name>, under a microVM's /home/user or an isolate's /workspace)"},
 			allowHomeFlag("Push your home directory, or one holding it, leaving Kantel's config out"),
 			noDefaultExcludesFlag("Send credentials, agents' sign-ins and .env files too"),
 		},
@@ -897,13 +897,9 @@ func runPush(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	done, err := uploadTreeTo(c, client, sandboxID, root, sent, target, logPath(c))
+	done, where, err := uploadTreeTo(c, client, sandboxID, root, sent, target, logPath(c))
 	if err != nil {
 		return err
-	}
-	where := target
-	if !strings.HasPrefix(target, "/") {
-		where = "/home/user/" + target
 	}
 	c.Emit(nil, struct {
 		copied

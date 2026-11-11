@@ -272,14 +272,22 @@ func TestMCPListsItsTools(t *testing.T) {
 
 func TestMCPCreatesASandboxAndRunsACommand(t *testing.T) {
 	f := newMCPFixture(t, 5*time.Millisecond)
-	created := resultOf(t, f.handle(t, toolCall(6, "sandbox_create", map[string]any{"labels": map[string]any{"task": "T-1"}}), nil))
+	// An agent has to choose a type: the API's default, an isolate, is rarely what one that left it out wants. A null
+	// from is no snapshot either.
+	untyped := resultOf(t, f.handle(t, toolCall(4, "sandbox_create", map[string]any{"labels": map[string]any{"task": "T-1"}}), nil))
+	eq(t, "untyped isError", untyped.isError, true)
+	contains(t, "untyped text", untyped.text, "type is required")
+	nullFrom := resultOf(t, f.handle(t, toolCall(5, "sandbox_create", map[string]any{"from": nil}), nil))
+	eq(t, "null from isError", nullFrom.isError, true)
+	eq(t, "no calls", len(f.fake.Calls()), 0)
+	created := resultOf(t, f.handle(t, toolCall(6, "sandbox_create", map[string]any{"type": "microvm", "labels": map[string]any{"task": "T-1"}}), nil))
 	eq(t, "isError", created.isError, false)
 	eq(t, "id", created.structured["id"], any("sbx_mcp1"))
 	eq(t, "state", created.structured["state"], any("running"))
 	contains(t, "lead", created.text, "Sandbox sbx_mcp1 (calm-heron) is running.")
 	calls := f.fake.Calls()
 	eq(t, "path", calls[0].Method+" "+calls[0].Path, "POST /v1/sandboxes")
-	eq(t, "body", string(calls[0].Raw), `{"labels":{"task":"T-1"},"wait":true}`)
+	eq(t, "body", string(calls[0].Raw), `{"labels":{"task":"T-1"},"type":"microvm","wait":true}`)
 	eq(t, "auth", calls[0].Auth, "Bearer ksk_agent")
 	ran := resultOf(t, f.handle(t, toolCall(7, "sandbox_exec", map[string]any{"sandboxId": "sbx_mcp1", "command": "echo hi"}), nil))
 	eq(t, "isError", ran.isError, false)
@@ -290,6 +298,10 @@ func TestMCPCreatesASandboxAndRunsACommand(t *testing.T) {
 	calls = f.fake.Calls()
 	eq(t, "exec", calls[1].Path, "/v1/sandboxes/sbx_mcp1/commands")
 	eq(t, "exec body", string(calls[1].Raw), `{"command":"echo hi"}`)
+	// One made from a snapshot takes the snapshot's type, so it needs none.
+	fromSnapshot := resultOf(t, f.handle(t, toolCall(8, "sandbox_create", map[string]any{"from": "base"}), nil))
+	eq(t, "from isError", fromSnapshot.isError, false)
+	eq(t, "from body", string(f.fake.Calls()[2].Raw), `{"from":"base","wait":true}`)
 }
 
 func TestMCPSendsANewIdempotencyKeyForEachExec(t *testing.T) {
@@ -708,7 +720,7 @@ func TestKantelMCPRunsOnStdio(t *testing.T) {
 	polls := &atomic.Int64{}
 	r := run(t, []string{"mcp"}, opts{routes: mcpRoutes(polls), stdin: stdioLines(
 		request(1, "initialize", map[string]any{"protocolVersion": "2025-06-18"}),
-		request(2, "tools/call", map[string]any{"name": "sandbox_create", "arguments": map[string]any{}}),
+		request(2, "tools/call", map[string]any{"name": "sandbox_create", "arguments": map[string]any{"type": "isolate"}}),
 	)})
 	eq(t, "exit", r.Code, 0)
 	var answers []map[string]any

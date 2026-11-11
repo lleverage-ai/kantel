@@ -27,10 +27,20 @@ import (
 // protocolVersions are the protocol revisions this server speaks, newest first.
 var protocolVersions = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
 
+// choosingAType is how to choose between an isolate and a microVM, for the instructions and sandbox_create alike.
+const choosingAType = "Choose its type. An isolate starts in milliseconds and costs almost nothing: a shell (just-bash) over files in " +
+	"/workspace with curl, jq, grep, rg, sed, awk, sort, diff and gzip, plus `node` (JavaScript or TypeScript, with " +
+	"fs, path, crypto, fetch and relative imports, but no npm packages) and `python` (Pyodide: the standard library " +
+	"and numpy, but no pip install). Each command runs at most 30 s unless you give a timeoutMs. It has no git, " +
+	"package manager, Docker, browser, ports or SSH. Use one for calling HTTP APIs, working on text, JSON or CSV, and " +
+	"short scripts that need only what's built in, such as reading issues or logs with a token, reshaping an export, " +
+	"or checking many items in forks. Use a microvm, a full Linux with root, Docker, a desktop and a browser, for " +
+	"anything touching a codebase (clone, install, build, test, run), packages, a server or a long job. If unsure, " +
+	"use a microvm."
+
 // mcpInstructions is what initialize tells the agent about using the tools.
 const mcpInstructions = "Kantel gives you sandboxes: machines of your own to run code in, away from the user's computer. Create one with " +
-	"sandbox_create (an isolate starts in milliseconds and runs JavaScript; type microvm is a full Linux with root, " +
-	"Docker, a desktop and a browser) and keep its id. Run commands in it with sandbox_exec, and move files with " +
+	"sandbox_create and keep its id. " + choosingAType + " Run commands in it with sandbox_exec, and move files with " +
 	"file_write, file_read and file_list. port_expose gives a server in it a URL; snapshot_save keeps its state to " +
 	"start new sandboxes from. Stop it with sandbox_stop when you are done: a stopped sandbox keeps its disk and costs " +
 	"nothing to run, and sandbox_resume brings it back. If a command may take longer than your MCP client waits " +
@@ -583,11 +593,10 @@ func accountPtr(account string) *string {
 var mcpTools = []mcpTool{
 	{
 		Name: "sandbox_create",
-		Description: "Create a sandbox and wait until it runs; answers it, with its id. An isolate (the default) starts in " +
-			"milliseconds and runs a JavaScript shell, but no native binaries. A microvm is a full Linux with root, " +
-			"Docker, a desktop, a browser and SSH. Stop it with sandbox_stop when you are done.",
+		Description: "Create a sandbox and wait until it runs; answers it, with its id. " + choosingAType +
+			" Stop it with sandbox_stop when you are done.",
 		Schema: schema(properties{
-			enum("type", "isolate (default) or microvm.", sandboxTypes),
+			enum("type", "isolate or microvm. Needed unless from names a snapshot, whose type it takes.", sandboxTypes),
 			enum("size", "A microVM's size; default the deployment's.", Sizes),
 			str("name", "Default: a generated name."),
 			str("from", "Start from this snapshot: its ID, or a saved snapshot's name."),
@@ -607,7 +616,14 @@ var mcpTools = []mcpTool{
 				Account: accountPtr(t.account), Name: a.optText("name"), From: a.optText("from"), Image: a.optText("image"),
 				Labels: a.optStrings("labels"), Env: a.optStrings("env"), Host: a.optText("host"), Wait: api.Ptr(true),
 			}
-			if v := a.optChoice("type", sandboxTypes); v != nil {
+			// The API makes an isolate when no type is given, which an agent that left it out rarely wants: it has to
+			// choose. A null from is no snapshot either.
+			v := a.optChoice("type", sandboxTypes)
+			if v == nil && body.From == nil {
+				return toolResult{}, &argumentError{"type is required: microvm for anything touching code, a runtime or a server; " +
+					"isolate only for HTTP calls and text or JSON work."}
+			}
+			if v != nil {
 				body.Type = api.Ptr(api.SandboxType(*v))
 			}
 			if v := a.optChoice("size", Sizes); v != nil {

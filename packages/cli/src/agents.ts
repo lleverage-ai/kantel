@@ -133,7 +133,7 @@ ${AGENTS_END}`;
 /** The skill Claude Code (`.claude/skills`), Codex and pi (`.agents/skills`) load when a task needs a sandbox. */
 export const SKILL_MD = `---
 name: kantel
-description: Run code in a Kantel sandbox (a microVM with root, Docker, SSH, a desktop and Chromium, or an isolate, a quick shell for HTTP calls and text work) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation, long jobs, and API calls with a token kept out of reach.
+description: Run code in a Kantel sandbox (a microVM with root, Docker, SSH, a desktop and Chromium, or an isolate, a quick shell with node and python for HTTP calls, data work and short scripts) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation, long jobs, and API calls with a token kept out of reach.
 ---
 
 # Kantel sandboxes
