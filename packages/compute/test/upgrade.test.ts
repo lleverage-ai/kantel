@@ -53,7 +53,10 @@ interface Options {
 	/** Stands in for the backend's settling of an upgrade: undefined lets the stub do it. */
 	readonly settle?: (sandboxId: string, operationId: string) => Promise<UpgradeOutcome> | undefined;
 	/** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
-	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined | Promise<ExecResult>;
+	readonly exec?: (
+		sandboxId: string,
+		request: ExecRequest,
+	) => ExecResult | undefined | Promise<ExecResult | undefined>;
 	/** Takes egress updates, as a host does; absent, the backend takes none (as the stub). */
 	readonly updateEgress?: (sandboxId: string, egress: BackendEgress | undefined, revision?: number) => Promise<void>;
 	/** Answers commands' results by their ID, as a host that keeps them does. */
@@ -461,6 +464,67 @@ describe("a command that needs a microVM", () => {
 		expect(answer.stderr).toContain("couldn't be upgraded to a microVM: No host runs microvm sandboxes");
 		expect((await tom.getSandbox(sandbox.id)).type).toBe("isolate");
 		expect((await tom.updateSandbox(sandbox.id, { autoUpgrade: false })).autoUpgrade).toBeUndefined();
+	});
+});
+
+describe("commands that need a microVM, at once", () => {
+	/** `tar slow` answers, needing a microVM, only once `release`d; `tar fast` at once. Each runs in the microVM. */
+	function twoCommands() {
+		let upgraded = false;
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const ran: string[] = [];
+		const made = setup({
+			exec: async (_id, request) => {
+				if (!request.command.startsWith("tar ")) return undefined;
+				ran.push(request.command);
+				if (upgraded)
+					return { exitCode: 0, stdout: `${request.command} in the microVM\n`, stderr: "", timedOut: false };
+				// Run in the isolate: its answer comes once released, whenever the upgrade happens.
+				if (request.command === "tar slow") await gate;
+				return { ...NEEDS_TAR, timedOut: false };
+			},
+			upgrade: async (sandboxId, spec, operationId) => {
+				const placed = await (made.stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+		});
+		return { ...made, release: () => release(), ran };
+	}
+
+	it("runs each again once in the microVM, though another command's upgrade made it", async () => {
+		const { tom, upgrades, release, ran } = twoCommands();
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		const slow = tom.runCommand(sandbox.id, { command: "tar slow" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const fast = await tom.runCommand(sandbox.id, { command: "tar fast" });
+		expect(fast).toMatchObject({ exitCode: 0, rerunOf: expect.any(String) });
+		expect((await tom.getSandbox(sandbox.id)).type).toBe("microvm");
+		// Its answer comes once the sandbox is a microVM already: it is run again there all the same.
+		release();
+		const answered = await slow;
+		expect(answered).toMatchObject({ state: "exited", exitCode: 0, stdout: "tar slow in the microVM\n" });
+		const first = await tom.getCommand(sandbox.id, answered.rerunOf as string);
+		expect(first).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" }, rerunAs: answered.id });
+		expect(upgrades).toHaveLength(1);
+		expect(ran.filter((command) => command === "tar slow")).toHaveLength(2);
+	});
+
+	it("isn't run again once autoUpgrade is turned off, though the sandbox upgraded meanwhile", async () => {
+		const { tom, release, ran } = twoCommands();
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		const slow = tom.runCommand(sandbox.id, { command: "tar slow" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await tom.runCommand(sandbox.id, { command: "tar fast" });
+		await tom.updateSandbox(sandbox.id, { autoUpgrade: false });
+		release();
+		const answered = await slow;
+		expect(answered).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
+		expect(answered.rerunAs).toBeUndefined();
+		expect(ran.filter((command) => command === "tar slow")).toHaveLength(1);
 	});
 });
 

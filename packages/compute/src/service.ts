@@ -8170,11 +8170,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// An isolate with `autoUpgrade` whose command needed a microVM: upgraded, and the command run again there,
 				// once, where it ran (`/workspace` is the same files in the microVM), before the first is recorded as ended,
 				// with the run again's ID (`rerunAs`). A detached one's run again is detached too, and followed by its ID.
+				// Whichever command's upgrade made the microVM: one that ran in the isolate with it (`command.autoUpgrade`),
+				// whose answer comes once another's upgrade has begun or ended, is run again in that microVM, still opted in.
 				const beforeEnd = async (command: StoredCommand, result: ExecResult) => {
 					// Only what the isolate's runtime says: an inferred one is text the command may have printed.
 					if (result.needsMicrovm === undefined || result.needsMicrovm.inferred === true) return undefined;
-					const latest = await store.sandboxes.get(sandbox.id);
-					if (latest?.type !== "isolate" || latest.autoUpgrade !== true) return undefined;
+					if (command.autoUpgrade !== true) return undefined;
+					let latest = await store.sandboxes.get(sandbox.id);
+					// Another command's upgrade under way (on another gateway, whose queue this one doesn't see): its outcome is
+					// waited for as a command's is, then read again.
+					if (latest?.upgrading !== undefined) {
+						await requireRunning(principal, sandbox.id).catch(() => undefined);
+						latest = await store.sandboxes.get(sandbox.id);
+					}
+					if (latest?.autoUpgrade !== true) return undefined;
+					if (latest.type !== "isolate" && latest.upgradedFrom === undefined) return undefined;
 					// Claimed before the upgrade, so another reader of its end leaves it to this one.
 					const claimed = await store.commands.update(command.id, (stored) =>
 						stored.state === "running" ? { ...stored, rerunPending: stored.rerunPending ?? now() } : undefined,
