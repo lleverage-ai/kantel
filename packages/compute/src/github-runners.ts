@@ -810,9 +810,11 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			if (machine.state === "busy" && t - (machine.checkedAt ?? machine.busyAt ?? t) > JOB_CHECK_EVERY_MS) {
 				const job = jobs.find((candidate) => candidate.jobId === machine.jobId);
 				await store.githubRunnerMachines.update(machine.id, (current) => ({ ...current, checkedAt: t }));
-				if (job !== undefined && record.installationId !== undefined) {
+				// The installation it was registered with: the integration's may have moved to another owner since.
+				const installationId = machine.registration?.installationId ?? record.installationId;
+				if (job !== undefined && installationId !== undefined) {
 					try {
-						const status = await (await appOf(record)).getJob(record.installationId, job.repository, job.jobId);
+						const status = await (await appOf(record)).getJob(installationId, job.repository, job.jobId);
 						if (status === undefined || status.status === "completed") {
 							await completeJob(record, job.jobId, status?.conclusion, machine.id);
 						}
@@ -1070,6 +1072,14 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		if (state === "completed") await completeJob(record, event.job.id, event.job.conclusion, runner);
 	}
 
+	/** Whether a delivery is about a job this integration recorded, or a runner it made: one it follows whoever owns it. */
+	async function followed(record: StoredGithubRunners, event: WorkflowJobEvent): Promise<boolean> {
+		if (event.action === "queued" || event.action === "waiting") return false;
+		if ((await store.githubRunnerJobs.get(jobRecordId(record.id, event.job.id))) !== undefined) return true;
+		const runner = event.job.runnerName;
+		return runner !== undefined && (await store.githubRunnerMachines.get(runner))?.integrationId === record.id;
+	}
+
 	async function webhookSecretOf(record: StoredGithubRunners): Promise<string> {
 		return options.sealer().openText(record.webhookSecret, sealedAt("githubRunners", record.id, "webhookSecret"));
 	}
@@ -1119,12 +1129,20 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			}
 			if (parsed === undefined) return answer(400, "Not a workflow_job delivery");
 			// The App may be installed on other owners too, and its signature says only that GitHub sent it: a delivery about
-			// another owner's repository neither makes demand nor moves the installation this integration uses.
-			if (!ownedBy(record, parsed.repository)) return answer(202, `${parsed.repository} isn't ${record.owner}'s`);
-			const installationId = parsed.installationId;
+			// another owner's repository neither makes demand nor moves the installation this integration uses. One about a
+			// job or runner this integration already has (made before its owner changed) is still followed, to its end.
+			const owned = ownedBy(record, parsed.repository);
+			if (!owned && !(await followed(record, parsed))) {
+				return answer(202, `${parsed.repository} isn't ${record.owner}'s`);
+			}
+			const installationId = owned ? parsed.installationId : undefined;
 			const current = await store.githubRunners.update(record.id, (latest) =>
-				latest.retiringAt === undefined && ownedBy(latest, parsed.repository)
-					? { ...latest, lastWebhookAt: now(), ...(installationId === undefined ? {} : { installationId }) }
+				latest.retiringAt === undefined
+					? {
+							...latest,
+							lastWebhookAt: now(),
+							...(installationId === undefined || !ownedBy(latest, parsed.repository) ? {} : { installationId }),
+						}
 					: undefined,
 			);
 			// Deleted while the body was read: nothing is recorded for it.

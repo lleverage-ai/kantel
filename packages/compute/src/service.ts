@@ -2151,11 +2151,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** Checks a pool list: labels unique, and each template one the account has. */
 	async function checkPools(accountId: string, pools: readonly RunnerPool[]): Promise<void> {
 		const labels = new Set<string>();
+		const capabilities = await backend.capabilities();
+		const presets = [...capabilities.sizes, ...capabilities.hosts.flatMap((host) => host.sizes ?? [])];
 		for (const pool of pools) {
 			if (labels.has(pool.label)) throw new KantelError("invalid", `Two pools have the label ${pool.label}`);
 			labels.add(pool.label);
-			// The constraints a create holds the shape to, so a pool that can never make a runner is refused now.
-			checkShape("microvm", pool.resources);
+			// The constraints a create holds the shape to, its hosts' preset sizes included, so a pool that can never make a
+			// runner is refused now.
+			checkShape("microvm", pool.resources, presets);
 			checkDisk("microvm", pool.resources.diskGb);
 			await templates.templateIn(accountId, pool.template);
 		}

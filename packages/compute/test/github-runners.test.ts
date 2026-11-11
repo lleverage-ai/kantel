@@ -587,6 +587,25 @@ describe("GitHub runners", () => {
 		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
 	});
 
+	it("follows a runner made under the old owner to its end after the owner changes, without moving the installation", async () => {
+		const { job, sandboxes, runners, store } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("in_progress", 1, { runner_name: sandboxId });
+		await store.githubRunners.update("ghr_one", ({ installationId: _installation, ...current }) => ({
+			...current,
+			owner: "new-org",
+		}));
+		expect((await job("completed", 1, { runner_name: sandboxId, conclusion: "success" })).status).toBe(200);
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBeUndefined();
+		// A new job of the old owner is still nobody's.
+		expect((await job("queued", 2)).status).toBe(202);
+	});
+
 	it("binds the installation only from its own owner's deliveries", async () => {
 		const { deliver, store, sandboxes } = await setUp();
 		const from = (owner: string, installation: number) =>
@@ -647,8 +666,23 @@ describe("GitHub runners through the API", () => {
 
 	it("connects an App, answers its signed webhook with a runner made as the integration's key, and disconnects", async () => {
 		const github = fakeGithub();
+		const stub = createStubBackend();
+		// A host offering a 2-vCPU, 768 MB preset: a shape a create takes from it, outside the custom-shape rules.
+		const backend = {
+			...stub,
+			async capabilities() {
+				const capabilities = await stub.capabilities();
+				return {
+					...capabilities,
+					hosts: capabilities.hosts.map((host) => ({
+						...host,
+						sizes: [...(host.sizes ?? capabilities.sizes), { name: "small" as const, vcpus: 2, memoryMb: 768, diskGb: 10 }],
+					})),
+				};
+			},
+		};
 		const api = createComputeApi({
-			backend: createStubBackend(),
+			backend,
 			templates: true,
 			githubRunners: { app: github.app },
 			authenticatePerson: async (request) =>
@@ -716,7 +750,16 @@ describe("GitHub runners through the API", () => {
 			expect(
 				(await tom.listSandboxes()).items.filter((sandbox) => sandbox.state !== "deleted").map((s) => s.id),
 			).toEqual([forged.id]);
-			// A pool no create could make is refused when it's given.
+			// A host's preset shape is a pool's to use; a pool no create could make is refused when it's given.
+			const preset = await tom.createGithubRunners({
+				name: "preset",
+				appId: 1,
+				privateKey: await pem(),
+				owner: "octo-org",
+				runnerGroupId: 7,
+				pools: [{ ...POOL, label: "kantel-tiny", resources: { vcpus: 2, memoryMb: 768 } }],
+			});
+			expect(preset.githubRunners.pools[0]?.resources).toEqual({ vcpus: 2, memoryMb: 768 });
 			await expect(
 				tom.createGithubRunners({
 					name: "bad",
