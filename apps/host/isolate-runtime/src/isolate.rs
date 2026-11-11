@@ -547,6 +547,17 @@ pub fn node_refill() {
     }
 }
 
+/// Drops every ready node and python isolate and starts fresh ones (/reseed, after a VM restore): those in the pools
+/// were made before the template snapshot, so every VM restored from it would give the same Math.random sequence in its
+/// first runs. Dropping a pool entry's sender ends its waiting thread.
+pub fn renew_ready_pools() {
+    NODE_POOL.lock().unwrap().clear();
+    let dropped = PY_POOL.lock().unwrap().drain(..).count();
+    PY_READY.fetch_sub(dropped.min(PY_READY.load(Ordering::Relaxed)), Ordering::Relaxed);
+    node_refill();
+    python_refill();
+}
+
 fn node_dispatch(job: Job) {
     if job.budget_mem == DEFAULT_MEMORY_MIB {
         let ready = NODE_POOL.lock().unwrap().pop_front();

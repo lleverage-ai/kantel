@@ -160,9 +160,14 @@ func TestIsolateVM(t *testing.T) {
 		}
 	}
 	t.Logf("random draws: c %q, d %q", draws["sbx_iso_c"], draws["sbx_iso_d"])
+	// Value by value: a line that differs only in one of its values (a fresh UUID beside a cloned Math.random) mustn't
+	// pass for one whose every value differs.
 	for i := range draws["sbx_iso_c"] {
-		if draws["sbx_iso_c"][i] == draws["sbx_iso_d"][i] {
-			t.Errorf("two VMs restored from one template drew the same numbers: %q", draws["sbx_iso_c"][i])
+		c, d := strings.Fields(draws["sbx_iso_c"][i]), strings.Fields(draws["sbx_iso_d"][i])
+		for j := range c {
+			if j < len(d) && c[j] == d[j] {
+				t.Errorf("two VMs restored from one template drew the same number: %q (in %q)", c[j], draws["sbx_iso_c"][i])
+			}
 		}
 	}
 	// A second sandbox of account a: its VM is already up.

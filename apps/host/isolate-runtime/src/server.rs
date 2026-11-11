@@ -255,6 +255,8 @@ async fn reseed(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Va
     }
     app.sessions.lock().unwrap().clear();
     app.pool.lock().unwrap().clear();
+    // node's and python's ready isolates too: otherwise each restored VM's first runs share their Math.random.
+    crate::isolate::renew_ready_pools();
     let a = app.clone();
     tokio::task::spawn_blocking(move || refill_pool(&a)).await.ok();
     Json(json!({ "ok": true, "idle": app.pool.lock().unwrap().len() }))
