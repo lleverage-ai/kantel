@@ -378,6 +378,10 @@ mod tests {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
+            // No core dump: several tests end the child with SIGSYS on purpose, and a dump would carry this process's
+            // environment into the working directory.
+            let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
             let code = body();
             unsafe { libc::_exit(code) };
         }
