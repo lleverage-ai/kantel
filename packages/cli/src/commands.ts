@@ -2130,7 +2130,7 @@ const SECTIONS: readonly Section[] = [
 				},
 				details:
 					"  kantel scp ./report.txt sbx_123:/home/user/      upload a file into a directory\n" +
-					"  kantel scp sbx_123:out.zip .                      download one (relative paths are under /home/user)\n" +
+					"  kantel scp sbx_123:out.zip .                      download one (relative paths are under a microVM's /home/user, an isolate's /workspace)\n" +
 					"  kantel scp -r ./site sbx_123:/srv/site            upload a directory\n" +
 					"It goes through Kantel's files API, so it works on isolates too. A file over 1 MiB comes down in parts;\n" +
 					"one going up goes in parts that a command joins, which needs a microVM.",
@@ -2202,7 +2202,12 @@ const SECTIONS: readonly Section[] = [
 				summary: "Copy a local directory into a sandbox (in git, the files git would commit)",
 				args: [{ name: "id" }, { name: "dir", optional: true }],
 				flags: {
-					to: { type: "string", value: "<path>", description: "Where in the sandbox (default /home/user/<dir name>)" },
+					to: {
+						type: "string",
+						value: "<path>",
+						description:
+							"Where in the sandbox (default <dir name>, under a microVM's /home/user or an isolate's /workspace)",
+					},
 					"allow-home": {
 						type: "boolean",
 						description: "Push your home directory, or one holding it, leaving Kantel's config out",
