@@ -44,6 +44,7 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 - **Custom sandbox sizes** (the console's vCPU and memory sliders): a real-VM test exists, but wasn't run on VMs for the change. Preset sizes run on real hosts.
 - **The MCP server**: `initialize`, `tools/list` and `tools/call` against the stub backend.
 - **GitHub and Google sign-in**: tested against mock providers.
+- **[GitHub Actions runners](/sandboxes/github-runners/)**: the webhook, the queue and its waits for room, and runners' registration and deletion are tested against stand-ins for GitHub and the hosts. No real job has run on one yet.
 
 ## Not shown yet
 

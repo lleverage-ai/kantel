@@ -12,8 +12,12 @@
  * scratch while that's being made, or when the host keeps templates per size).
  *
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
- * VM); then the most free memory, the least loaded. Hosts keep no warm pools of running sandboxes, so no host is
- * preferred for having one ready: a create restores a snapshot wherever it lands.
+ * VM); then the least full once it is placed (`fullness`): the larger of the share of its memory taken and the share of
+ * its vCPUs booked, so sandboxes spread over hosts of different sizes in proportion, and a host whose CPUs are all booked
+ * by a few large sandboxes isn't picked for having memory left; then the least loaded for its CPUs. vCPUs are only
+ * ranked on, never refused on: a host admits by memory and disk, and a booked vCPU is a share of its CPU time, not a
+ * core of its own. Hosts keep no warm pools of running sandboxes, so no host is preferred for having one ready: a create
+ * restores a snapshot wherever it lands.
  */
 import type { PlacementReason } from "@kantel/contracts";
 import { HOST_FEATURES, type HostCapacity, type HostDiskLimits, type HostSize, type SandboxTier } from "./protocol.ts";
@@ -55,6 +59,11 @@ export interface Candidate {
 	readonly heldMemory?: readonly HeldMemory[];
 	/** Owners with an isolate on the host. */
 	readonly owners: ReadonlySet<string>;
+	/**
+	 * The vCPUs of the microVMs placed on the host that are live (starting, running or stopping), this replica's and every other's (the
+	 * placements are shared). Absent, none are counted: the host ranks by memory alone.
+	 */
+	readonly bookedVcpus?: number;
 }
 
 export interface Placement {
@@ -248,6 +257,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		custom: boolean;
 		free: number;
 		owner: boolean;
+		fullness: number;
 	}[] = [];
 	for (const candidate of candidates) {
 		const { host } = candidate;
@@ -309,6 +319,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			custom: shaped.custom,
 			free: freeMemory,
 			owner: request.owner !== undefined && candidate.owners.has(request.owner),
+			fullness: fullness(candidate, size, freeMemory),
 		});
 	}
 	if (fits.length === 0) {
@@ -318,14 +329,42 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	fits.sort(
 		(a, b) =>
 			Number(b.owner) - Number(a.owner) ||
+			a.fullness - b.fullness ||
 			b.free - a.free ||
-			(a.candidate.host.capacity?.load1 ?? 0) - (b.candidate.host.capacity?.load1 ?? 0) ||
+			loadPerCpu(a.candidate.host) - loadPerCpu(b.candidate.host) ||
 			(a.candidate.host.id < b.candidate.host.id ? -1 : 1),
 	);
 	const best = fits[0];
 	if (best === undefined) return { reason: "No host", code: "no_host" };
 	return { host: best.candidate.host, size: best.size, custom: best.custom };
 }
+
+/**
+ * How full a host would be with `size` placed on it, from 0 (more than 1 when over-booked): the larger of the share of
+ * its memory reserved and the share of its vCPUs booked. Memory is counted in one set of units: what its sandboxes were
+ * given (`HostMemoryReport.reservedMiB`), and what was placed since the report, over what it has for sandboxes
+ * (`capacityMiB`), whichever way it admits them. Free memory as a host reports it is what it would still admit, which
+ * over-commit makes larger than what is unused, so it isn't a share of anything. A host from before memory reports
+ * counts its machine's memory less what it said was free. vCPUs are its CPUs, booked by live microVMs. Rounded to a
+ * hundredth, so two hosts about as full are ranked by what comes next (the most free memory, the least loaded).
+ */
+export function fullness(candidate: Candidate, size: HostSize, freeMemoryMiB: number): number {
+	const { host } = candidate;
+	const report = host.capacity?.memory;
+	const held = candidate.heldMemory?.reduce((sum, entry) => sum + entry.memoryMiB, 0) ?? candidate.reservedMemoryMiB;
+	const memory =
+		report !== undefined && report.capacityMiB > 0
+			? (report.reservedMiB + held + size.memoryMiB) / report.capacityMiB
+			: (host.facts?.memoryMiB ?? 0) > 0
+				? ((host.facts?.memoryMiB ?? 0) - freeMemoryMiB + size.memoryMiB) / (host.facts?.memoryMiB ?? 1)
+				: 0;
+	const cpus = host.facts?.cpus ?? 0;
+	const vcpus = cpus > 0 && candidate.bookedVcpus !== undefined ? (candidate.bookedVcpus + size.vcpus) / cpus : 0;
+	return Math.round(Math.max(memory, vcpus, 0) * 100) / 100;
+}
+
+/** A host's one-minute load for each of its CPUs. */
+const loadPerCpu = (host: HostRecord): number => (host.capacity?.load1 ?? 0) / Math.max(1, host.facts?.cpus ?? 1);
 
 export function isRefusal(value: Placement | Refusal): value is Refusal {
 	return "reason" in value;

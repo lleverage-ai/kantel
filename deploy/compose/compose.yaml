@@ -121,6 +121,9 @@ services:
       KANTEL_BUNDLES_DIR: ${KANTEL_BUNDLES_DIR:-}
       # `experimental` turns templates on (built microVM profiles, snapshot-cached).
       KANTEL_TEMPLATES: ${KANTEL_TEMPLATES:-}
+      # `experimental` turns GitHub Actions runners on (GitHub Apps whose workflow_job webhooks get a microVM runner
+      # each; they need templates and KANTEL_SECRETS_KEY too).
+      KANTEL_GITHUB_RUNNERS: ${KANTEL_GITHUB_RUNNERS:-}
       # `on` deletes automatic snapshots past their expiry (on hosts that keep their own copies). Off by default; with
       # several gateways on one database, turn it on only once every gateway runs a version that has it.
       KANTEL_SNAPSHOT_EXPIRY: ${KANTEL_SNAPSHOT_EXPIRY:-}

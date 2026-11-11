@@ -519,6 +519,29 @@ type CreateEnvironmentBody struct {
 	Name string `json:"name"`
 }
 
+type CreateGithubRunnersBody struct {
+	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
+	Account *string            `json:"account,omitempty"`
+	AppID   int64              `json:"appId"`
+	Name    string             `json:"name"`
+	Owner   string             `json:"owner"`
+	Pools   []GithubRunnerPool `json:"pools"`
+	// The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered.
+	PrivateKey    string   `json:"privateKey"`
+	Repositories  []string `json:"repositories,omitzero"`
+	RunnerGroupID *int64   `json:"runnerGroupId,omitempty"`
+	// Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.
+	Scope *CreateGithubRunnersBodyScope `json:"scope,omitempty"`
+}
+
+// Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.
+type CreateGithubRunnersBodyScope string
+
+const (
+	CreateGithubRunnersBodyScopeOrganization CreateGithubRunnersBodyScope = "organization"
+	CreateGithubRunnersBodyScopeRepository   CreateGithubRunnersBodyScope = "repository"
+)
+
 type CreateHostJoinTokenBody struct {
 	// Default 60.
 	ExpiresInMinutes *int64            `json:"expiresInMinutes,omitempty"`
@@ -1049,6 +1072,145 @@ type ForkSandboxBody struct {
 
 type ForkedSandboxes struct {
 	Items []Sandbox `json:"items"`
+}
+
+type GithubRunnerJob struct {
+	// Epoch milliseconds, UTC.
+	CompletedAt *int64  `json:"completedAt,omitempty"`
+	Conclusion  *string `json:"conclusion,omitempty"`
+	// GitHub's ID for the job.
+	ID     string   `json:"id"`
+	Labels []string `json:"labels"`
+	Name   string   `json:"name"`
+	// The pool whose label it matched.
+	Pool *string `json:"pool,omitempty"`
+	// Epoch milliseconds, UTC.
+	QueuedAt int64 `json:"queuedAt"`
+	// Why it is ignored, or why it still waits.
+	Reason     *string `json:"reason,omitempty"`
+	Repository string  `json:"repository"`
+	RunID      int64   `json:"runId"`
+	// The runner's sandbox that took it.
+	SandboxID *string `json:"sandboxId,omitempty"`
+	// Epoch milliseconds, UTC.
+	StartedAt *int64 `json:"startedAt,omitempty"`
+	// `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for.
+	State GithubRunnerJobState `json:"state"`
+}
+
+type GithubRunnerJobList struct {
+	// The newest 200, newest first.
+	Items []GithubRunnerJob `json:"items"`
+}
+
+// `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for.
+type GithubRunnerJobState string
+
+const (
+	GithubRunnerJobStateQueued     GithubRunnerJobState = "queued"
+	GithubRunnerJobStateInProgress GithubRunnerJobState = "in_progress"
+	GithubRunnerJobStateCompleted  GithubRunnerJobState = "completed"
+	GithubRunnerJobStateIgnored    GithubRunnerJobState = "ignored"
+)
+
+// Runners of one shape, picked by a `runs-on` label.
+type GithubRunnerPool struct {
+	// Environments each runner starts with, IDs or names in the account, such as one holding a cache token.
+	Environments []string `json:"environments,omitzero"`
+	// Run only on hosts with each of these labels.
+	HostLabels map[string]string `json:"hostLabels,omitzero"`
+	// The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.
+	Label string `json:"label"`
+	// The most runners the pool has at once, starting or running. Default 20.
+	MaxRunners *int64                `json:"maxRunners,omitempty"`
+	Resources  GithubRunnerResources `json:"resources"`
+	// The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.
+	RunnerCommand *string `json:"runnerCommand,omitempty"`
+	// The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path.
+	Template string `json:"template"`
+	// How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.
+	TimeoutMinutes *int64 `json:"timeoutMinutes,omitempty"`
+}
+
+type GithubRunnerPoolStatus struct {
+	// Runners running a job.
+	Busy int64 `json:"busy"`
+	// Runners up and waiting for GitHub to give them a job.
+	Idle  int64  `json:"idle"`
+	Label string `json:"label"`
+	// Jobs waiting for a runner.
+	Queued int64 `json:"queued"`
+	// Runners being made or booting.
+	Starting int64 `json:"starting"`
+	// Why the oldest queued job has no runner yet, when it has waited.
+	WaitingFor *string `json:"waitingFor,omitempty"`
+	// Epoch milliseconds, UTC.
+	WaitingSince *int64 `json:"waitingSince,omitempty"`
+}
+
+// A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.
+type GithubRunnerResources struct {
+	DiskGb   *int64 `json:"diskGb,omitempty"`
+	MemoryMb int64  `json:"memoryMb"`
+	VCPUs    int64  `json:"vcpus"`
+}
+
+// A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is.
+type GithubRunners struct {
+	AccountID string `json:"accountId"`
+	// The GitHub App's ID.
+	AppID int64 `json:"appId"`
+	// Epoch milliseconds, UTC.
+	CreatedAt int64 `json:"createdAt"`
+	Enabled   bool  `json:"enabled"`
+	// The runner integration's ID, such as `ghr_3m4n5b`.
+	ID string `json:"id"`
+	// The App's installation, as the first webhook from it named it.
+	InstallationID *int64              `json:"installationId,omitempty"`
+	LastError      *GithubRunnersError `json:"lastError,omitempty"`
+	// Epoch milliseconds, UTC.
+	LastWebhookAt *int64 `json:"lastWebhookAt,omitempty"`
+	Name          string `json:"name"`
+	// The GitHub organization (or user) the App is installed on, such as `octo-org`.
+	Owner string             `json:"owner"`
+	Pools []GithubRunnerPool `json:"pools"`
+	// Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on.
+	Repositories []string `json:"repositories,omitzero"`
+	// The organization's runner group the runners join.
+	RunnerGroupID *int64 `json:"runnerGroupId,omitempty"`
+	// Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.
+	Scope GithubRunnersScope `json:"scope"`
+	// Each pool's queue and runners, on a get.
+	Status []GithubRunnerPoolStatus `json:"status,omitzero"`
+	// Epoch milliseconds, UTC.
+	UpdatedAt int64 `json:"updatedAt"`
+	// Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered.
+	WebhookURL string `json:"webhookUrl"`
+}
+
+// The last failure talking to GitHub or making a runner.
+type GithubRunnersError struct {
+	// Epoch milliseconds, UTC.
+	At      int64  `json:"at"`
+	Message string `json:"message"`
+}
+
+type GithubRunnersList struct {
+	Items []GithubRunners `json:"items"`
+}
+
+// Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.
+type GithubRunnersScope string
+
+const (
+	GithubRunnersScopeOrganization GithubRunnersScope = "organization"
+	GithubRunnersScopeRepository   GithubRunnersScope = "repository"
+)
+
+type GithubRunnersWithSecret struct {
+	GithubRunners GithubRunners `json:"githubRunners"`
+	// The secret to give the GitHub App's webhook. Shown once.
+	WebhookSecret string `json:"webhookSecret"`
 }
 
 type GuestAgent struct {
@@ -2637,6 +2799,27 @@ type UpdateEnvironmentBody struct {
 	Description *string `json:"description,omitempty"`
 	Name        *string `json:"name,omitempty"`
 }
+
+type UpdateGithubRunnersBody struct {
+	AppID         *int64             `json:"appId,omitempty"`
+	Enabled       *bool              `json:"enabled,omitempty"`
+	Name          *string            `json:"name,omitempty"`
+	Owner         *string            `json:"owner,omitempty"`
+	Pools         []GithubRunnerPool `json:"pools,omitzero"`
+	PrivateKey    *string            `json:"privateKey,omitempty"`
+	Repositories  Nullable[[]string] `json:"repositories,omitzero"`
+	RunnerGroupID Nullable[int64]    `json:"runnerGroupId,omitzero"`
+	// Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.
+	Scope *UpdateGithubRunnersBodyScope `json:"scope,omitempty"`
+}
+
+// Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.
+type UpdateGithubRunnersBodyScope string
+
+const (
+	UpdateGithubRunnersBodyScopeOrganization UpdateGithubRunnersBodyScope = "organization"
+	UpdateGithubRunnersBodyScopeRepository   UpdateGithubRunnersBodyScope = "repository"
+)
 
 type UpdateHostBody struct {
 	// Stop placing new sandboxes on it.

@@ -41,6 +41,8 @@ name: Cloudflare deploy
 #            KANTEL_PUBLIC_URL may go without KANTEL_SIGN_IN_FROM, leaving email sign-in off
 #   optional var KANTEL_TEMPLATES: `experimental` turns templates on (microVM profiles built once and restored from a
 #            snapshot); unset or `off`, every template route answers not_supported
+#   optional var KANTEL_GITHUB_RUNNERS: `experimental` turns GitHub Actions runners on (GitHub Apps whose workflow_job
+#            webhooks get an ephemeral microVM runner each); unset or `off`, every runner route answers not_supported
 #   optional var KANTEL_HOST_RELEASES: with account hosts, where the latest kantel-host release is read to flag hosts
 #            that are behind it: an https URL answering {"tag_name"} or {"version"}, or `off`; unset, Kantel's latest
 #            GitHub Release
@@ -128,6 +130,8 @@ jobs:
       KANTEL_ACCOUNT_HOSTS: ${{ vars.KANTEL_ACCOUNT_HOSTS }}
       # Optional, experimental: templates.
       KANTEL_TEMPLATES: ${{ vars.KANTEL_TEMPLATES }}
+      # Optional, experimental: GitHub Actions runners.
+      KANTEL_GITHUB_RUNNERS: ${{ vars.KANTEL_GITHUB_RUNNERS }}
       # Optional: where account hosts' latest kantel-host release is read (a URL, or off); unset, GitHub's latest.
       KANTEL_HOST_RELEASES: ${{ vars.KANTEL_HOST_RELEASES }}
     steps:

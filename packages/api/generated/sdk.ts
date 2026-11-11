@@ -485,6 +485,21 @@ export interface CreateEnvironmentBody {
 	readonly description?: string;
 }
 
+export interface CreateGithubRunnersBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	readonly name: string;
+	readonly appId: number;
+	/** The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered. */
+	readonly privateKey: string;
+	readonly owner: string;
+	/** Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. */
+	readonly scope?: "organization" | "repository";
+	readonly runnerGroupId?: number;
+	readonly repositories?: readonly string[];
+	readonly pools: readonly GithubRunnerPool[];
+}
+
 export interface CreateHostJoinTokenBody {
 	readonly name?: string;
 	readonly labels?: {
@@ -944,6 +959,132 @@ export interface ForkSandboxBody {
 		readonly [key: string]: string;
 	};
 	readonly wait?: boolean;
+}
+
+export interface GithubRunnerJob {
+	/** GitHub's ID for the job. */
+	readonly id: string;
+	readonly runId: number;
+	readonly repository: string;
+	readonly name: string;
+	readonly labels: readonly string[];
+	/** The pool whose label it matched. */
+	readonly pool?: string;
+	/** `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for. */
+	readonly state: "queued" | "in_progress" | "completed" | "ignored";
+	readonly conclusion?: string;
+	/** The runner's sandbox that took it. */
+	readonly sandboxId?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly queuedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly completedAt?: number;
+	/** Why it is ignored, or why it still waits. */
+	readonly reason?: string;
+}
+
+export interface GithubRunnerJobList {
+	/** The newest 200, newest first. */
+	readonly items: readonly GithubRunnerJob[];
+}
+
+/** Runners of one shape, picked by a `runs-on` label. */
+export interface GithubRunnerPool {
+	/** The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. */
+	readonly label: string;
+	/** The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. */
+	readonly template: string;
+	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
+	readonly resources: GithubRunnerResources;
+	/** Run only on hosts with each of these labels. */
+	readonly hostLabels?: {
+		readonly [key: string]: string;
+	};
+	/** Environments each runner starts with, IDs or names in the account, such as one holding a cache token. */
+	readonly environments?: readonly string[];
+	/** The most runners the pool has at once, starting or running. Default 20. */
+	readonly maxRunners?: number;
+	/** How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. */
+	readonly timeoutMinutes?: number;
+	/** The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. */
+	readonly runnerCommand?: string;
+}
+
+export interface GithubRunnerPoolStatus {
+	readonly label: string;
+	/** Jobs waiting for a runner. */
+	readonly queued: number;
+	/** Runners being made or booting. */
+	readonly starting: number;
+	/** Runners up and waiting for GitHub to give them a job. */
+	readonly idle: number;
+	/** Runners running a job. */
+	readonly busy: number;
+	/** Epoch milliseconds, UTC. */
+	readonly waitingSince?: number;
+	/** Why the oldest queued job has no runner yet, when it has waited. */
+	readonly waitingFor?: string;
+}
+
+/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
+export interface GithubRunnerResources {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	readonly diskGb?: number;
+}
+
+/** A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is. */
+export interface GithubRunners {
+	/** The runner integration's ID, such as `ghr_3m4n5b`. */
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	/** The GitHub App's ID. */
+	readonly appId: number;
+	/** The GitHub organization (or user) the App is installed on, such as `octo-org`. */
+	readonly owner: string;
+	/** Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. */
+	readonly scope: "organization" | "repository";
+	/** The organization's runner group the runners join. */
+	readonly runnerGroupId?: number;
+	/** Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on. */
+	readonly repositories?: readonly string[];
+	readonly pools: readonly GithubRunnerPool[];
+	readonly enabled: boolean;
+	/** Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered. */
+	readonly webhookUrl: string;
+	/** The App's installation, as the first webhook from it named it. */
+	readonly installationId?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly lastWebhookAt?: number;
+	/** The last failure talking to GitHub or making a runner. */
+	readonly lastError?: GithubRunnersError;
+	/** Each pool's queue and runners, on a get. */
+	readonly status?: readonly GithubRunnerPoolStatus[];
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+/** The last failure talking to GitHub or making a runner. */
+export interface GithubRunnersError {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	readonly message: string;
+}
+
+export interface GithubRunnersList {
+	readonly items: readonly GithubRunners[];
+}
+
+export interface GithubRunnersWithSecret {
+	/** A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is. */
+	readonly githubRunners: GithubRunners;
+	/** The secret to give the GitHub App's webhook. Shown once. */
+	readonly webhookSecret: string;
 }
 
 export interface GuestAgent {
@@ -2464,6 +2605,19 @@ export interface UpdateEnvironmentBody {
 	readonly description?: string;
 }
 
+export interface UpdateGithubRunnersBody {
+	readonly name?: string;
+	readonly appId?: number;
+	readonly privateKey?: string;
+	readonly owner?: string;
+	/** Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. */
+	readonly scope?: "organization" | "repository";
+	readonly runnerGroupId?: number | null;
+	readonly repositories?: readonly string[] | null;
+	readonly pools?: readonly GithubRunnerPool[];
+	readonly enabled?: boolean;
+}
+
 export interface UpdateHostBody {
 	readonly name?: string;
 	readonly labels?: {
@@ -3238,6 +3392,22 @@ export interface KantelClient {
 		query?: ComputePageQuery,
 		options?: CallOptions,
 	): Promise<WebhookDeliveryPage>;
+	/** List GitHub runner integrations. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`. `GET /github-runners` */
+	listGithubRunners(query?: AccountScopedQuery, options?: CallOptions): Promise<GithubRunnersList>;
+	/** Connect a GitHub App for runners. From then on, each `workflow_job` the App's webhook sends whose `runs-on` labels a pool's label matches gets a runner: a microVM made from the pool's template on the account's hosts, deleted once its job ends. Answers the webhook's URL and secret (shown once) to give the App. Its runners act through an API key it makes, named for it; revoking that key stops them. Needs protected values (`KANTEL_SECRETS_KEY`), as the App's key is kept sealed. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /github-runners` */
+	createGithubRunners(body: CreateGithubRunnersBody, options?: CallOptions): Promise<GithubRunnersWithSecret>;
+	/** Get a GitHub runner integration. With each pool's queue and runners (`status`). A key needs `account:admin`. `GET /github-runners/{githubRunnersId}` */
+	getGithubRunners(githubRunnersId: string, options?: CallOptions): Promise<GithubRunners>;
+	/** Change a GitHub runner integration. Runners already made keep the pool they were made for; disabling it makes no more, and leaves its queue to wait. A key needs `account:admin`. `PATCH /github-runners/{githubRunnersId}` */
+	updateGithubRunners(
+		githubRunnersId: string,
+		body?: UpdateGithubRunnersBody,
+		options?: CallOptions,
+	): Promise<GithubRunners>;
+	/** Disconnect a GitHub App. Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub wait there for another runner. A key needs `account:admin`. `DELETE /github-runners/{githubRunnersId}` */
+	deleteGithubRunners(githubRunnersId: string, options?: CallOptions): Promise<void>;
+	/** List a GitHub runner integration's jobs. The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`. `GET /github-runners/{githubRunnersId}/jobs` */
+	listGithubRunnerJobs(githubRunnersId: string, options?: CallOptions): Promise<GithubRunnerJobList>;
 	/** Get the OpenTelemetry export. Absent: `not_found`. A key needs `account:admin`. `GET /telemetry` */
 	getTelemetry(query?: AccountScopedQuery, options?: CallOptions): Promise<TelemetryExport>;
 	/** Set the OpenTelemetry export. Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`. `PUT /telemetry` */
@@ -3675,6 +3845,26 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "GET", path: `/webhooks/${encodeURIComponent(webhookId)}/deliveries`, query },
+				callOptions,
+			),
+		listGithubRunners: (query, callOptions) =>
+			send(options, { method: "GET", path: "/github-runners", query }, callOptions),
+		createGithubRunners: (body, callOptions) =>
+			send(options, { method: "POST", path: "/github-runners", body, idempotent: true }, callOptions),
+		getGithubRunners: (githubRunnersId, callOptions) =>
+			send(options, { method: "GET", path: `/github-runners/${encodeURIComponent(githubRunnersId)}` }, callOptions),
+		updateGithubRunners: (githubRunnersId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "PATCH", path: `/github-runners/${encodeURIComponent(githubRunnersId)}`, body },
+				callOptions,
+			),
+		deleteGithubRunners: (githubRunnersId, callOptions) =>
+			send(options, { method: "DELETE", path: `/github-runners/${encodeURIComponent(githubRunnersId)}` }, callOptions),
+		listGithubRunnerJobs: (githubRunnersId, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/github-runners/${encodeURIComponent(githubRunnersId)}/jobs` },
 				callOptions,
 			),
 		getTelemetry: (query, callOptions) => send(options, { method: "GET", path: "/telemetry", query }, callOptions),

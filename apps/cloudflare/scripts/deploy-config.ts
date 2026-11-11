@@ -23,6 +23,7 @@
  * - optionally, accounts' own hosts (`KANTEL_ACCOUNT_HOSTS=experimental`, experimental), which dial out to
  *   KANTEL_PUBLIC_URL, as a var of the same name.
  * - optionally, templates (`KANTEL_TEMPLATES=experimental`, experimental), as a var of the same name.
+ * - optionally, GitHub Actions runners (`KANTEL_GITHUB_RUNNERS=experimental`, experimental), as a var of the same name.
  * - optionally, where account hosts' latest kantel-host release is read (`KANTEL_HOST_RELEASES`: an https URL, or
  *   `off`), as a var of the same name; unset, Kantel's latest GitHub Release.
  *
@@ -105,6 +106,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// Experimental: `experimental` turns on templates, versioned microVM profiles whose snapshots are built in the
 	// background (`/v1/templates`). Unset or `off`, it stays off.
 	"KANTEL_TEMPLATES",
+	// Experimental: `experimental` turns on GitHub Actions runners (`/v1/github-runners`): GitHub Apps whose
+	// `workflow_job` webhooks get an ephemeral microVM runner each. Unset or `off`, it stays off.
+	"KANTEL_GITHUB_RUNNERS",
 	// With account hosts: where the latest kantel-host release is read, to flag hosts behind it. An https URL answering
 	// `{"tag_name"}` or `{"version"}`, or `off`. Unset: Kantel's latest GitHub Release.
 	"KANTEL_HOST_RELEASES",
@@ -183,6 +187,7 @@ const OPTIONAL_CHECKS: Readonly<
 	KANTEL_SIGN_IN_DAILY_CAP: { test: (v) => /^\d{1,6}$/.test(v), expect: "a whole number" },
 	KANTEL_ACCOUNT_HOSTS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 	KANTEL_TEMPLATES: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
+	KANTEL_GITHUB_RUNNERS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 	KANTEL_HOST_RELEASES: {
 		test: (v) => v.toLowerCase() === "off" || /^https:\/\/[^/\s]+/i.test(v),
 		expect: "an https:// URL, or off",

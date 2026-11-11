@@ -99,6 +99,9 @@
 		// Experimental: `experimental` turns on templates (`/v1/templates`, src/compute.ts). Anything else: off, and their
 		// routes answer not_supported. The deploy sets it from the repository variable of the same name.
 		"KANTEL_TEMPLATES": "",
+		// Experimental: `experimental` turns on GitHub Actions runners (`/v1/github-runners`, packages/compute's
+		// github-runners.ts). Anything else: off. The deploy sets it from the repository variable of the same name.
+		"KANTEL_GITHUB_RUNNERS": "",
 		// Expiry of automatic snapshots past their expiresAt (packages/compute, expireSnapshots). The deployment runs one
 		// stack object, whose first pass waits 15 minutes after it starts, past a deploy's overlap with the one it replaces.
 		"KANTEL_SNAPSHOT_EXPIRY": "on",

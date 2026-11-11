@@ -93,6 +93,11 @@ function behaves(open: () => Promise<HostStore>) {
 		await store.putPlacement(placement("s1", "host_a", 1));
 		await store.putPlacement(placement("s3", "host_b", 3));
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1", "s2"]);
+		const both = await store.placementsOnHosts(["host_a", "host_b", "host_c"]);
+		expect([...both].map(([host, list]) => [host, list.map((p) => p.sandboxId)])).toEqual([
+			["host_a", ["s1", "s2"]],
+			["host_b", ["s3"]],
+		]);
 		await store.putPlacement({ ...placement("s1", "host_a", 1), state: "stopped" });
 		expect((await store.getPlacement("s1"))?.state).toBe("stopped");
 		await store.removePlacement("s1");

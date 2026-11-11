@@ -28,6 +28,7 @@ import {
 	type ComputeLimits,
 	type ComputeService,
 	createComputeService,
+	type GithubRunnersSettings,
 	type InviteMailing,
 	type RateTable,
 } from "./service.ts";
@@ -46,6 +47,8 @@ const SWEEP_EVERY_MS = 1000;
 const HOST_AGENT_PATH = /^\/hosts\/(?:register|connect)$/;
 /** A signed file URL's path under the base path: its token is one path segment. */
 const FILE_URL = new RegExp(`^${FILE_URL_PATH}/([A-Za-z0-9_-]+)$`);
+/** A GitHub App's webhook for a runner integration: no sign-in, its signature is the check (`githubWebhook`). */
+const GITHUB_WEBHOOK = /^\/github-runners\/(ghr_[a-z0-9]+)\/webhook$/;
 /** The methods a signed file URL answers: a download's GET (and HEAD), an upload's PUT. */
 const FILE_URL_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "PUT"]);
 
@@ -72,6 +75,8 @@ export interface ComputeApiOptions {
 	readonly accountHosts?: boolean;
 	/** Templates' routes (`/v1/templates`, experimental): versioned microVM profiles and their snapshots. Default off. */
 	readonly templates?: boolean;
+	/** GitHub Actions runners (`/v1/github-runners`, experimental; `ComputeServiceOptions.githubRunners`). Default off. */
+	readonly githubRunners?: GithubRunnersSettings;
 	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
@@ -180,6 +185,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
 		...(options.accountHosts === undefined ? {} : { accountHosts: options.accountHosts }),
 		...(options.templates === undefined ? {} : { templates: options.templates }),
+		...(options.githubRunners === undefined ? {} : { githubRunners: options.githubRunners }),
 		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
@@ -225,6 +231,14 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 				}
 				try {
 					return await created.serveFileUrl(fileUrl[1] as string, request);
+				} catch (error) {
+					return computeErrorResponse(error);
+				}
+			}
+			const githubWebhook = GITHUB_WEBHOOK.exec(path);
+			if (githubWebhook !== null) {
+				try {
+					return await created.githubWebhook(githubWebhook[1] as string, request);
 				} catch (error) {
 					return computeErrorResponse(error);
 				}

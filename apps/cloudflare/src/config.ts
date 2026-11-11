@@ -66,6 +66,11 @@ export interface GatewayVars {
 	 */
 	readonly KANTEL_TEMPLATES?: string;
 	/**
+	 * GitHub Actions runners (experimental): `experimental` turns on `/v1/github-runners`, GitHub Apps whose
+	 * `workflow_job` webhooks get an ephemeral microVM runner each. Unset, empty or `off`: off.
+	 */
+	readonly KANTEL_GITHUB_RUNNERS?: string;
+	/**
 	 * Expiry of automatic snapshots: `on` deletes them past their `expiresAt`, on hosts that keep their own copies.
 	 * Unset, empty or `off`: off. The deployment runs one stack object, so it is on (the first pass waits 15 minutes
 	 * after the object starts, past a deploy's overlap with the instance it replaces).
@@ -140,6 +145,8 @@ export interface GatewayConfig {
 	readonly imagePatching?: { readonly indexUrl: string };
 	/** Templates, from KANTEL_TEMPLATES=experimental. Absent, off. */
 	readonly templates?: boolean;
+	/** GitHub Actions runners, from KANTEL_GITHUB_RUNNERS=experimental. Absent, off. */
+	readonly githubRunners?: boolean;
 	/** Expiry of automatic snapshots, from KANTEL_SNAPSHOT_EXPIRY=on. Absent, off. */
 	readonly snapshotExpiry?: boolean;
 	/** KANTEL_SECRETS_KEY, checked: 32 bytes in base64. Absent, protected values and secret files are refused. */
@@ -196,6 +203,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	const accountHosts = accountHostsConfig(vars);
 	const imagePatching = imagePatchingConfig(vars);
 	const templates = templatesSwitch(vars);
+	const githubRunners = experimentalSwitch(vars.KANTEL_GITHUB_RUNNERS, "KANTEL_GITHUB_RUNNERS");
 	const snapshotExpiry = onOffSwitch(vars.KANTEL_SNAPSHOT_EXPIRY, "KANTEL_SNAPSHOT_EXPIRY");
 	const secretsKey = trimmed(vars.KANTEL_SECRETS_KEY);
 	// A key that isn't one is refused here, as the self-hosted gateway refuses to start with it, rather than on the first
@@ -228,6 +236,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		...(accountHosts === undefined ? {} : { accountHosts }),
 		...(imagePatching === undefined ? {} : { imagePatching }),
 		...(templates ? { templates } : {}),
+		...(githubRunners ? { githubRunners } : {}),
 		...(snapshotExpiry ? { snapshotExpiry } : {}),
 		...(secretsKey === "" ? {} : { secretsKey }),
 	};
@@ -243,9 +252,14 @@ function onOffSwitch(raw: string | undefined, name: string): boolean {
 
 /** KANTEL_TEMPLATES: off unless it says `experimental`; a typo is refused rather than leaving templates silently off. */
 function templatesSwitch(vars: GatewayVars): boolean {
-	const value = trimmed(vars.KANTEL_TEMPLATES).toLowerCase();
+	return experimentalSwitch(vars.KANTEL_TEMPLATES, "KANTEL_TEMPLATES");
+}
+
+/** An experimental feature's switch: off unless it says `experimental`; a typo is refused rather than leaving it off. */
+function experimentalSwitch(raw: string | undefined, name: string): boolean {
+	const value = trimmed(raw).toLowerCase();
 	if (value === "" || value === "off") return false;
-	if (value !== "experimental") throw new KantelError("invalid", "KANTEL_TEMPLATES must be `experimental` or `off`");
+	if (value !== "experimental") throw new KantelError("invalid", `${name} must be \`experimental\` or \`off\``);
 	return true;
 }
 

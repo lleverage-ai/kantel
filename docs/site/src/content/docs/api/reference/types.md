@@ -450,6 +450,20 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `name` | string | yes | Unique in the account: lower-case letters, digits and dashes, at most 63. |
 | `description` | string | no |  (at most 500 characters) |
 
+### CreateGithubRunnersBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes |  (at most 100 characters) |
+| `appId` | integer | yes |  (minimum 1) |
+| `privateKey` | string | yes | The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered. (at least 64 characters, at most 16384 characters) |
+| `owner` | string | yes |  (at most 100 characters) |
+| `scope` | `"organization"` or `"repository"` | no | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
+| `runnerGroupId` | integer | no |  (minimum 1) |
+| `repositories` | string[] | no |  (at most 500 items) |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | yes |  (at most 20 items) |
+
 ### CreateHostJoinTokenBody
 
 | Field | Type | Required | Description |
@@ -851,6 +865,113 @@ A short-lived URL for one file of one sandbox, streamed to or from the sandbox's
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `wait` | boolean | no |  |
+
+### GithubRunnerJob
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | GitHub's ID for the job. |
+| `runId` | integer | yes |  |
+| `repository` | string | yes |  |
+| `name` | string | yes |  |
+| `labels` | string[] | yes |  |
+| `pool` | string | no | The pool whose label it matched. |
+| `state` | `"queued"` or `"in_progress"` or `"completed"` or `"ignored"` | yes | `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for. |
+| `conclusion` | string | no |  |
+| `sandboxId` | string | no | The runner's sandbox that took it. |
+| `queuedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `startedAt` | integer | no | Epoch milliseconds, UTC. |
+| `completedAt` | integer | no | Epoch milliseconds, UTC. |
+| `reason` | string | no | Why it is ignored, or why it still waits. |
+
+### GithubRunnerJobList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [GithubRunnerJob](/api/reference/types/#githubrunnerjob)[] | yes | The newest 200, newest first. |
+
+### GithubRunnerPool
+
+Runners of one shape, picked by a `runs-on` label.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `label` | string | yes | The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. |
+| `template` | string | yes | The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. |
+| `resources` | [GithubRunnerResources](/api/reference/types/#githubrunnerresources) | yes |  |
+| `hostLabels` | Record&lt;string, string&gt; | no | Run only on hosts with each of these labels. |
+| `environments` | string[] | no | Environments each runner starts with, IDs or names in the account, such as one holding a cache token. (at most 10 items) |
+| `maxRunners` | integer | no | The most runners the pool has at once, starting or running. Default 20. (minimum 1, maximum 500) |
+| `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
+| `runnerCommand` | string | no | The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
+
+### GithubRunnerPoolStatus
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `label` | string | yes |  |
+| `queued` | integer | yes | Jobs waiting for a runner. |
+| `starting` | integer | yes | Runners being made or booting. |
+| `idle` | integer | yes | Runners up and waiting for GitHub to give them a job. |
+| `busy` | integer | yes | Runners running a job. |
+| `waitingSince` | integer | no | Epoch milliseconds, UTC. |
+| `waitingFor` | string | no | Why the oldest queued job has no runner yet, when it has waited. |
+
+### GithubRunnerResources
+
+A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes |  (minimum 1, maximum 32) |
+| `memoryMb` | integer | yes |  (minimum 512) |
+| `diskGb` | integer | no |  (minimum 1, maximum 4096) |
+
+### GithubRunners
+
+A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The runner integration's ID, such as `ghr_3m4n5b`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `appId` | integer | yes | The GitHub App's ID. |
+| `owner` | string | yes | The GitHub organization (or user) the App is installed on, such as `octo-org`. |
+| `scope` | `"organization"` or `"repository"` | yes | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
+| `runnerGroupId` | integer | no | The organization's runner group the runners join. |
+| `repositories` | string[] | no | Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on. |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | yes |  |
+| `enabled` | boolean | yes |  |
+| `webhookUrl` | string | yes | Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered. |
+| `installationId` | integer | no | The App's installation, as the first webhook from it named it. |
+| `lastWebhookAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastError` | [GithubRunnersError](/api/reference/types/#githubrunnerserror) | no |  |
+| `status` | [GithubRunnerPoolStatus](/api/reference/types/#githubrunnerpoolstatus)[] | no | Each pool's queue and runners, on a get. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### GithubRunnersError
+
+The last failure talking to GitHub or making a runner.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `message` | string | yes |  |
+
+### GithubRunnersList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [GithubRunners](/api/reference/types/#githubrunners)[] | yes |  |
+
+### GithubRunnersWithSecret
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `githubRunners` | [GithubRunners](/api/reference/types/#githubrunners) | yes |  |
+| `webhookSecret` | string | yes | The secret to give the GitHub App's webhook. Shown once. |
 
 ### GuestAgent
 
@@ -2177,6 +2298,20 @@ A template version's definition, never changed once made. Answered with every de
 | --- | --- | --- | --- |
 | `name` | string | no |  |
 | `description` | string | no | Empty clears it. (at most 500 characters) |
+
+### UpdateGithubRunnersBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 100 characters) |
+| `appId` | integer | no |  (minimum 1) |
+| `privateKey` | string | no |  (at least 64 characters, at most 16384 characters) |
+| `owner` | string | no |  (at most 100 characters) |
+| `scope` | `"organization"` or `"repository"` | no | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
+| `runnerGroupId` | integer or null | no |  |
+| `repositories` | string[] or null | no |  |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | no |  (at most 20 items) |
+| `enabled` | boolean | no |  |
 
 ### UpdateHostBody
 

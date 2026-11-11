@@ -80,7 +80,20 @@ export interface HostStore {
 	putPlacement(placement: PlacementRecord): Promise<void>;
 	getPlacement(sandboxId: string): Promise<PlacementRecord | undefined>;
 	placementsOn(hostId: string): Promise<PlacementRecord[]>;
+	/** The placements on each of `hostIds`, in one read: a host with none is absent. */
+	placementsOnHosts(hostIds: readonly string[]): Promise<Map<string, PlacementRecord[]>>;
 	removePlacement(sandboxId: string): Promise<void>;
+}
+
+/** Placements grouped by their host, in the order given. */
+function byHost(placements: readonly PlacementRecord[]): Map<string, PlacementRecord[]> {
+	const grouped = new Map<string, PlacementRecord[]>();
+	for (const placement of placements) {
+		const list = grouped.get(placement.hostId);
+		if (list === undefined) grouped.set(placement.hostId, [placement]);
+		else list.push(placement);
+	}
+	return grouped;
 }
 
 /** Records in memory, for tests and a deployment with no database. */
@@ -141,6 +154,15 @@ export function createMemoryHostStore(): HostStore {
 				.filter((placement) => placement.hostId === hostId)
 				.sort((a, b) => a.createdAt - b.createdAt)
 				.map(copy);
+		},
+		async placementsOnHosts(hostIds) {
+			const wanted = new Set(hostIds);
+			return byHost(
+				[...placements.values()]
+					.filter((placement) => wanted.has(placement.hostId))
+					.sort((a, b) => a.createdAt - b.createdAt)
+					.map(copy),
+			);
 		},
 		async removePlacement(sandboxId) {
 			placements.delete(sandboxId);
@@ -294,6 +316,14 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				[hostId],
 			);
 			return rows.map((row) => parse<PlacementRecord>(row));
+		},
+		async placementsOnHosts(hostIds) {
+			if (hostIds.length === 0) return new Map();
+			const rows = await driver.query(
+				`SELECT data FROM compute_placements WHERE host_id IN (${hostIds.map(() => "?").join(", ")}) ORDER BY created_at, sandbox_id`,
+				[...hostIds],
+			);
+			return byHost(rows.map((row) => parse<PlacementRecord>(row)));
 		},
 		async removePlacement(sandboxId) {
 			await driver.query("DELETE FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);

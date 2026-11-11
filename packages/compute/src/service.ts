@@ -96,6 +96,13 @@ import {
 	secretsVersionOf,
 	shadowedOf,
 } from "./environment-resolution.ts";
+import { createGithubApp, type GithubApp, importAppKey } from "./github-app.ts";
+import {
+	createGithubRunners,
+	newGithubRunnersId,
+	type RunnerPool,
+	type StoredGithubRunners,
+} from "./github-runners.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import {
 	type AskedMachine,
@@ -386,6 +393,21 @@ export interface ComputeServiceOptions {
 	readonly snapshotExpiryDelayMs?: number;
 	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
 	readonly startPollMs?: number;
+	/**
+	 * GitHub Actions runners (experimental, `github-runners.ts`): GitHub Apps whose `workflow_job` webhooks get ephemeral
+	 * microVM runners (`/v1/github-runners`). Absent, off: their routes answer `not_supported`. The gateways turn it on
+	 * with `KANTEL_GITHUB_RUNNERS=experimental`, and only where sandboxes run on hosts.
+	 */
+	readonly githubRunners?: GithubRunnersSettings;
+}
+
+/** How the GitHub runner broker reaches GitHub (`ComputeServiceOptions.githubRunners`). */
+export interface GithubRunnersSettings {
+	/** Default the global `fetch`. */
+	readonly fetch?: typeof fetch;
+	readonly log?: (message: string) => void;
+	/** Makes the App's client; tests give a stand-in. Default `createGithubApp`. */
+	readonly app?: (credentials: { readonly appId: number; readonly privateKey: string }) => GithubApp;
 }
 
 /** One invite to email: the same message as identity's `InviteMessage`, so its mailers send it as they are. */
@@ -528,6 +550,17 @@ export interface ComputeService {
 	 * cache (which notices hosts' runtimes changing).
 	 */
 	sweep(): Promise<void>;
+	/**
+	 * Answers a GitHub App's webhook for a runner integration (`POST /v1/github-runners/{id}/webhook`, no sign-in: its
+	 * signature is the check). `not_supported` while GitHub runners are off.
+	 */
+	githubWebhook(integrationId: string, request: Request): Promise<Response>;
+	/**
+	 * One pass of the GitHub runner broker over every integration: runners made for queued jobs, booted ones registered,
+	 * ended ones deleted. Answers when the next is due (undefined with none, or while it is off): for a deployment that
+	 * wakes for it (`wakeAt`).
+	 */
+	tickGithubRunners(): Promise<number | undefined>;
 	/**
 	 * Carries on every account deletion whose pass is due, waiting for each, and answers when the next is due (undefined
 	 * with none): for a deployment that wakes for them (`wakeAt`).
@@ -987,6 +1020,19 @@ export const IDEMPOTENCY_RENEW_MS = 20_000;
  * nothing they can do about it, so no operator advice. The gateways log that (`secretsKeyMissing`), and the caller says
  * it up front (`Caller.protectedValues`).
  */
+/** How long the sweep leaves between the broker's passes when it has no word of when the next is due. */
+const IDLE_RUNNER_PASS_MS = 60_000;
+/** What GitHub runners' routes answer while they are off. */
+const GITHUB_RUNNERS_OFF =
+	"GitHub runners are off here; the deployment turns them on with KANTEL_GITHUB_RUNNERS=experimental";
+/** What an integration's own key may do: make, run commands in and delete its runners' sandboxes. */
+const GITHUB_RUNNER_SCOPES: readonly computeSchema.ApiKeyScope[] = [
+	"sandboxes:read",
+	"sandboxes:write",
+	"sandboxes:delete",
+	"exec",
+];
+
 export const PROTECTED_VALUES_UNSUPPORTED =
 	"This deployment doesn't support protected variables or secret files; plain variables still work";
 export const BUCKET_CREDENTIALS_UNSUPPORTED = "This deployment doesn't support bucket sources with credentials";
@@ -1988,6 +2034,138 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		await Promise.all(writes);
 	}
+
+	// GitHub Actions runners: the broker, acting through each integration's own key with the handlers below.
+	const runnerSettings = options.githubRunners;
+	/** What an internal call to a handler is given for its request: the broker's calls come from no request. */
+	const internalRequest = () => new Request("http://kantel.internal/github-runners");
+	const answered = <T>(value: T | Response): T => {
+		if (value instanceof Response)
+			throw new KantelError("unavailable", "A handler answered a raw response to the broker");
+		return value;
+	};
+	const githubRunners = createGithubRunners({
+		store,
+		now,
+		sealer: requireSealer,
+		principalOf: (keyId) => liveKeyPrincipal(store, keyId, now()),
+		// Ending runners outlives the key: revoking it stops new runners, not the deletion of those it made.
+		cleanupPrincipalOf: async (keyId) => {
+			const key = await store.apiKeys.get(keyId);
+			return key === undefined ? undefined : keyPrincipal(key);
+		},
+		github:
+			runnerSettings?.app ??
+			((credentials) =>
+				createGithubApp({
+					...credentials,
+					now,
+					...(runnerSettings?.fetch === undefined ? {} : { fetch: runnerSettings.fetch }),
+				})),
+		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
+		...(runnerSettings?.log === undefined ? {} : { log: runnerSettings.log }),
+		sandboxes: {
+			async create(principal, body) {
+				return answered(await handlers.createSandbox(principal, { params: {}, query: {}, body }, internalRequest()));
+			},
+			async get(principal, sandboxId) {
+				try {
+					return answered(
+						await handlers.getSandbox(
+							principal,
+							{ params: { sandboxId }, query: {}, body: undefined },
+							internalRequest(),
+						),
+					);
+				} catch (error) {
+					if (error instanceof KantelError && error.code === "not_found") return undefined;
+					throw error;
+				}
+			},
+			async delete(principal, sandboxId) {
+				answered(
+					await handlers.deleteSandbox(
+						principal,
+						{ params: { sandboxId }, query: {}, body: undefined },
+						internalRequest(),
+					),
+				);
+			},
+			async run(principal, sandboxId, command, env) {
+				const started = answered(
+					await handlers.runCommand(
+						principal,
+						{ params: { sandboxId }, query: {}, body: { command, env, detached: true } },
+						internalRequest(),
+					),
+				);
+				return started.id;
+			},
+			async commandRunning(principal, sandboxId, commandId) {
+				try {
+					const command = answered(
+						await handlers.getCommand(
+							principal,
+							{ params: { sandboxId, commandId }, query: {}, body: undefined },
+							internalRequest(),
+						),
+					);
+					return command.state === "running";
+				} catch (error) {
+					if (error instanceof KantelError && error.code === "not_found") return false;
+					return undefined;
+				}
+			},
+			async listMadeBy(accountId, keyId, labels) {
+				return (await store.sandboxes.list({ accountId }))
+					.filter(
+						(sandbox) =>
+							sandbox.state !== "deleted" &&
+							sandbox.createdBy.kind === "api_key" &&
+							sandbox.createdBy.id === keyId &&
+							Object.entries(labels).every(([key, value]) => sandbox.labels?.[key] === value),
+					)
+					.map((sandbox) => ({ id: sandbox.id, createdAt: sandbox.createdAt }));
+			},
+		},
+	});
+	/** When the sweep next runs the broker's pass (`tickGithubRunners` moves it on). */
+	let runnersDueAt = 0;
+	const requireGithubRunners = (): void => {
+		if (runnerSettings === undefined) throw new KantelError("not_supported", GITHUB_RUNNERS_OFF);
+	};
+	/** The account's integration `id`, for a caller who may administer it; `not_found` for any other. */
+	async function githubRunnersFor(principal: Principal, id: string): Promise<StoredGithubRunners> {
+		requireGithubRunners();
+		const record = await store.githubRunners.get(id);
+		if (record === undefined || record.retiringAt !== undefined) {
+			throw new KantelError("not_found", "No such GitHub runner integration");
+		}
+		const { role } = await actingAccount(store, principal, record.accountId).catch(() => {
+			throw new KantelError("not_found", "No such GitHub runner integration");
+		});
+		requireScope(principal, "account:admin", role);
+		return record;
+	}
+	const githubWebhookUrl = async (request: Request, id: string) =>
+		`${(await publicUrlView(request)).publicUrl}${apiBasePath}/github-runners/${id}/webhook`;
+	/** Checks a pool list: labels unique, and each template one the account has. */
+	async function checkPools(accountId: string, pools: readonly RunnerPool[]): Promise<void> {
+		const labels = new Set<string>();
+		const capabilities = await backend.capabilities();
+		const presets = [...capabilities.sizes, ...capabilities.hosts.flatMap((host) => host.sizes ?? [])];
+		for (const pool of pools) {
+			if (labels.has(pool.label)) throw new KantelError("invalid", `Two pools have the label ${pool.label}`);
+			labels.add(pool.label);
+			// The constraints a create holds the shape to, its hosts' preset sizes included, so a pool that can never make a
+			// runner is refused now.
+			checkShape("microvm", pool.resources, presets);
+			checkDisk("microvm", pool.resources.diskGb);
+			await templates.templateIn(accountId, pool.template);
+		}
+	}
+	/** Forgets an account's GitHub runner records: its sandboxes and keys go with it. */
+	const forgetGithubRunners = (accountId: string): Promise<void> => githubRunners.forgetAccount(accountId);
 
 	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
 	const templates = createTemplateService({
@@ -5508,6 +5686,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const invite of await store.invites.list({ accountId })) await store.invites.delete(invite.id);
 		for (const webhook of await store.webhooks.list({ accountId })) await store.webhooks.delete(webhook.id);
 		for (const delivery of await store.deliveries.list({ accountId })) await store.deliveries.delete(delivery.id);
+		// Its GitHub runners' records: their sandboxes went with the account's.
+		await forgetGithubRunners(accountId);
 		for (const environment of await store.environments.list({ accountId })) {
 			await store.environments.delete(environment.id);
 		}
@@ -6883,6 +7063,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const webhook of await store.webhooks.list({ accountId: account.id })) {
 				await store.webhooks.delete(webhook.id);
 			}
+			await forgetGithubRunners(account.id);
 			await store.telemetry.delete(account.id);
 			await store.proxies.delete(account.id);
 			await store.accounts.delete(account.id);
@@ -9245,6 +9426,144 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return undefined;
 		},
 
+		// GitHub Actions runners.
+
+		listGithubRunners: async (principal, { query }, request) => {
+			requireGithubRunners();
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:admin", role);
+			const records = (await store.githubRunners.list({ accountId: account.id })).filter(
+				(record) => record.retiringAt === undefined,
+			);
+			return {
+				items: await Promise.all(
+					records.map(async (record) => githubRunners.view(record, await githubWebhookUrl(request, record.id), false)),
+				),
+			};
+		},
+
+		createGithubRunners: async (principal, { body, idempotencyKey }, request) => {
+			requireGithubRunners();
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			const scope = body.scope ?? "organization";
+			if (scope === "organization" && body.runnerGroupId === undefined) {
+				throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
+			}
+			await importAppKey(body.privateKey);
+			await checkPools(account.id, body.pools);
+			// Its key acts for runners with what a create, a command and a delete need, and no more.
+			requireGrantable(principal, GITHUB_RUNNER_SCOPES);
+			return once(
+				principal,
+				"createGithubRunners",
+				{ body, idempotencyKey },
+				async () => {
+					const id = newGithubRunnersId();
+					const sealed = await githubRunners.seal(id, body.privateKey);
+					const { prefix, hash } = await newApiKeySecret();
+					const t = now();
+					const key: StoredApiKey = {
+						id: randomId("key"),
+						accountId: account.id,
+						name: `GitHub runners: ${body.name}`.slice(0, 100),
+						prefix,
+						scopes: [...GITHUB_RUNNER_SCOPES],
+						sandboxIds: undefined,
+						createdBy: actorOf(principal),
+						createdAt: t,
+						expiresAt: undefined,
+						// Its secret is never shown: only the broker acts as it, by its ID.
+						secretHash: hash,
+						ownerUserId: principal.userId,
+					};
+					await store.apiKeys.put(key);
+					const record: StoredGithubRunners = {
+						id,
+						accountId: account.id,
+						name: body.name,
+						appId: body.appId,
+						owner: body.owner,
+						scope,
+						...(body.runnerGroupId === undefined ? {} : { runnerGroupId: body.runnerGroupId }),
+						...(body.repositories === undefined ? {} : { repositories: [...body.repositories] }),
+						pools: body.pools.map((pool) => ({ ...pool })),
+						enabled: true,
+						keyId: key.id,
+						privateKey: sealed.privateKey,
+						webhookSecret: sealed.webhookSecret,
+						createdAt: t,
+						updatedAt: t,
+					};
+					await store.githubRunners.put(record);
+					return {
+						githubRunners: await githubRunners.view(record, await githubWebhookUrl(request, id), true),
+						webhookSecret: sealed.secret,
+					};
+				},
+				{ secret: true },
+			);
+		},
+
+		getGithubRunners: async (principal, { params }, request) => {
+			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			return githubRunners.view(record, await githubWebhookUrl(request, record.id), true);
+		},
+
+		updateGithubRunners: async (principal, { params, body }, request) => {
+			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			if (body.privateKey !== undefined) await importAppKey(body.privateKey);
+			if (body.pools !== undefined) await checkPools(record.accountId, body.pools);
+			const resealed =
+				body.privateKey === undefined
+					? undefined
+					: await requireSealer().seal(body.privateKey, sealedAt("githubRunners", record.id, "privateKey"));
+			const updated = await store.githubRunners.update(record.id, (current) => {
+				const scope = body.scope ?? current.scope;
+				const runnerGroupId = body.runnerGroupId === null ? undefined : (body.runnerGroupId ?? current.runnerGroupId);
+				if (scope === "organization" && runnerGroupId === undefined) {
+					throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
+				}
+				const repositories = body.repositories === null ? undefined : (body.repositories ?? current.repositories);
+				// Another owner or App: the installation is found again from that owner's next delivery.
+				const moved =
+					(body.owner !== undefined && body.owner.toLowerCase() !== current.owner.toLowerCase()) ||
+					(body.appId !== undefined && body.appId !== current.appId);
+				const { runnerGroupId: _group, repositories: _repositories, installationId, ...rest } = current;
+				return {
+					...rest,
+					...(moved || installationId === undefined ? {} : { installationId }),
+					...(body.name === undefined ? {} : { name: body.name }),
+					...(body.appId === undefined ? {} : { appId: body.appId }),
+					...(body.owner === undefined ? {} : { owner: body.owner }),
+					...(body.pools === undefined ? {} : { pools: body.pools.map((pool) => ({ ...pool })) }),
+					...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+					...(resealed === undefined ? {} : { privateKey: resealed }),
+					scope,
+					...(runnerGroupId === undefined ? {} : { runnerGroupId }),
+					...(repositories === undefined ? {} : { repositories: [...repositories] }),
+					updatedAt: now(),
+				};
+			});
+			if (updated === undefined) throw new KantelError("not_found", "No such GitHub runner integration");
+			return githubRunners.view(updated, await githubWebhookUrl(request, updated.id), true);
+		},
+
+		deleteGithubRunners: async (principal, { params }) => {
+			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			// Its key first, so nothing makes another runner; the runners it made are still ended with it. The
+			// integration is hidden from now, and kept until its runners have gone, which passes finish if this can't.
+			const key = await store.apiKeys.get(record.keyId);
+			if (key !== undefined && key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+			await githubRunners.retire(record.id);
+			return undefined;
+		},
+
+		listGithubRunnerJobs: async (principal, { params }) => {
+			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			return { items: await githubRunners.jobs(record.id) };
+		},
+
 		rotateWebhookSecret: async (principal, { params, idempotencyKey }) => {
 			const webhook = await webhookFor(principal, params.webhookId);
 			return once(principal, "rotateWebhookSecret", { params, idempotencyKey }, async () => {
@@ -9576,8 +9895,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return nextDeletionDue();
 		},
 
+		async githubWebhook(integrationId, request) {
+			requireGithubRunners();
+			return githubRunners.receive(integrationId, request);
+		},
+
+		async tickGithubRunners() {
+			if (runnerSettings === undefined) return undefined;
+			const next = await githubRunners.tick();
+			runnersDueAt = next ?? now() + IDLE_RUNNER_PASS_MS;
+			return next;
+		},
+
 		async sweep() {
 			const at = now();
+			// The GitHub runner broker's pass, when one is due: in the background, as it calls hosts and GitHub.
+			if (runnerSettings !== undefined && at >= runnersDueAt) {
+				runnersDueAt = at + IDLE_RUNNER_PASS_MS;
+				keepGoing(
+					githubRunners.tick().then(
+						(next) => {
+							runnersDueAt = next ?? now() + IDLE_RUNNER_PASS_MS;
+						},
+						() => undefined,
+					),
+				);
+			}
 			// Account deletions whose next pass is due: carried on in the background, one gateway each.
 			for (const deletion of await store.deletions.list({ stage: "running" })) {
 				if (deletion.dueAt <= at) keepGoing(carryOnDeletion(deletion.id));

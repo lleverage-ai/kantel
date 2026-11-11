@@ -9365,6 +9365,521 @@
 				}
 			}
 		},
+		"/github-runners": {
+			"get": {
+				"operationId": "listGithubRunners",
+				"summary": "List GitHub runner integrations",
+				"description": "`not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The integrations.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunnersList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createGithubRunners",
+				"summary": "Connect a GitHub App for runners",
+				"description": "From then on, each `workflow_job` the App's webhook sends whose `runs-on` labels a pool's label matches gets a runner: a microVM made from the pool's template on the account's hosts, deleted once its job ends. Answers the webhook's URL and secret (shown once) to give the App. Its runners act through an API key it makes, named for it; revoking that key stops them. Needs protected values (`KANTEL_SECRETS_KEY`), as the App's key is kept sealed. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateGithubRunnersBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The integration and its webhook secret.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunnersWithSecret"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/github-runners/{githubRunnersId}": {
+			"get": {
+				"operationId": "getGithubRunners",
+				"summary": "Get a GitHub runner integration",
+				"description": "With each pool's queue and runners (`status`). A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The integration.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunners"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateGithubRunners",
+				"summary": "Change a GitHub runner integration",
+				"description": "Runners already made keep the pool they were made for; disabling it makes no more, and leaves its queue to wait. A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateGithubRunnersBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The integration.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunners"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteGithubRunners",
+				"summary": "Disconnect a GitHub App",
+				"description": "Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub wait there for another runner. A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/github-runners/{githubRunnersId}/jobs": {
+			"get": {
+				"operationId": "listGithubRunnerJobs",
+				"summary": "List a GitHub runner integration's jobs",
+				"description": "The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its jobs.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunnerJobList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/telemetry": {
 			"get": {
 				"operationId": "getTelemetry",
@@ -12961,6 +13476,70 @@
 				},
 				"title": "CreateEnvironmentBody"
 			},
+			"CreateGithubRunnersBody": {
+				"type": "object",
+				"required": ["name", "appId", "privateKey", "owner", "pools"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"appId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"privateKey": {
+						"type": "string",
+						"minLength": 64,
+						"maxLength": 16384,
+						"description": "The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered."
+					},
+					"owner": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"scope": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "organization"
+							},
+							{
+								"type": "string",
+								"const": "repository"
+							}
+						],
+						"description": "Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository."
+					},
+					"runnerGroupId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[^/\\s]+/[^/\\s]+$"
+						},
+						"maxItems": 500
+					},
+					"pools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPool"
+						},
+						"minItems": 1,
+						"maxItems": 20
+					}
+				},
+				"title": "CreateGithubRunnersBody"
+			},
 			"CreateHostJoinTokenBody": {
 				"type": "object",
 				"properties": {
@@ -14279,6 +14858,349 @@
 					}
 				},
 				"title": "ForkSandboxBody"
+			},
+			"GithubRunnerJob": {
+				"type": "object",
+				"required": ["id", "runId", "repository", "name", "labels", "state", "queuedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "GitHub's ID for the job."
+					},
+					"runId": {
+						"type": "integer"
+					},
+					"repository": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"labels": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"pool": {
+						"type": "string",
+						"description": "The pool whose label it matched."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "queued"
+							},
+							{
+								"type": "string",
+								"const": "in_progress"
+							},
+							{
+								"type": "string",
+								"const": "completed"
+							},
+							{
+								"type": "string",
+								"const": "ignored"
+							}
+						],
+						"description": "`queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for."
+					},
+					"conclusion": {
+						"type": "string"
+					},
+					"sandboxId": {
+						"type": "string",
+						"description": "The runner's sandbox that took it."
+					},
+					"queuedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"completedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it is ignored, or why it still waits."
+					}
+				},
+				"title": "GithubRunnerJob"
+			},
+			"GithubRunnerJobList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerJob"
+						},
+						"description": "The newest 200, newest first."
+					}
+				},
+				"title": "GithubRunnerJobList"
+			},
+			"GithubRunnerPool": {
+				"type": "object",
+				"required": ["label", "template", "resources"],
+				"properties": {
+					"label": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case."
+					},
+					"template": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path."
+					},
+					"resources": {
+						"$ref": "#/components/schemas/GithubRunnerResources"
+					},
+					"hostLabels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Run only on hosts with each of these labels."
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"maxItems": 10,
+						"description": "Environments each runner starts with, IDs or names in the account, such as one holding a cache token."
+					},
+					"maxRunners": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 500,
+						"description": "The most runners the pool has at once, starting or running. Default 20."
+					},
+					"timeoutMinutes": {
+						"type": "integer",
+						"minimum": 5,
+						"maximum": 4320,
+						"description": "How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360."
+					},
+					"runnerCommand": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 4096,
+						"description": "The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig \"$KANTEL_RUNNER_JITCONFIG\"`."
+					}
+				},
+				"title": "GithubRunnerPool",
+				"description": "Runners of one shape, picked by a `runs-on` label."
+			},
+			"GithubRunnerPoolStatus": {
+				"type": "object",
+				"required": ["label", "queued", "starting", "idle", "busy"],
+				"properties": {
+					"label": {
+						"type": "string"
+					},
+					"queued": {
+						"type": "integer",
+						"description": "Jobs waiting for a runner."
+					},
+					"starting": {
+						"type": "integer",
+						"description": "Runners being made or booting."
+					},
+					"idle": {
+						"type": "integer",
+						"description": "Runners up and waiting for GitHub to give them a job."
+					},
+					"busy": {
+						"type": "integer",
+						"description": "Runners running a job."
+					},
+					"waitingSince": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"waitingFor": {
+						"type": "string",
+						"description": "Why the oldest queued job has no runner yet, when it has waited."
+					}
+				},
+				"title": "GithubRunnerPoolStatus"
+			},
+			"GithubRunnerResources": {
+				"type": "object",
+				"required": ["vcpus", "memoryMb"],
+				"properties": {
+					"vcpus": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 32
+					},
+					"memoryMb": {
+						"type": "integer",
+						"minimum": 512
+					},
+					"diskGb": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4096
+					}
+				},
+				"title": "GithubRunnerResources",
+				"description": "A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range."
+			},
+			"GithubRunners": {
+				"type": "object",
+				"required": [
+					"id",
+					"accountId",
+					"name",
+					"appId",
+					"owner",
+					"scope",
+					"pools",
+					"enabled",
+					"webhookUrl",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The runner integration's ID, such as `ghr_3m4n5b`."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"appId": {
+						"type": "integer",
+						"description": "The GitHub App's ID."
+					},
+					"owner": {
+						"type": "string",
+						"description": "The GitHub organization (or user) the App is installed on, such as `octo-org`."
+					},
+					"scope": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "organization"
+							},
+							{
+								"type": "string",
+								"const": "repository"
+							}
+						],
+						"description": "Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository."
+					},
+					"runnerGroupId": {
+						"type": "integer",
+						"description": "The organization's runner group the runners join."
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on."
+					},
+					"pools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPool"
+						}
+					},
+					"enabled": {
+						"type": "boolean"
+					},
+					"webhookUrl": {
+						"type": "string",
+						"description": "Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered."
+					},
+					"installationId": {
+						"type": "integer",
+						"description": "The App's installation, as the first webhook from it named it."
+					},
+					"lastWebhookAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"lastError": {
+						"$ref": "#/components/schemas/GithubRunnersError"
+					},
+					"status": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPoolStatus"
+						},
+						"description": "Each pool's queue and runners, on a get."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "GithubRunners",
+				"description": "A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is."
+			},
+			"GithubRunnersError": {
+				"type": "object",
+				"required": ["at", "message"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"message": {
+						"type": "string"
+					}
+				},
+				"title": "GithubRunnersError",
+				"description": "The last failure talking to GitHub or making a runner."
+			},
+			"GithubRunnersList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunners"
+						}
+					}
+				},
+				"title": "GithubRunnersList"
+			},
+			"GithubRunnersWithSecret": {
+				"type": "object",
+				"required": ["githubRunners", "webhookSecret"],
+				"properties": {
+					"githubRunners": {
+						"$ref": "#/components/schemas/GithubRunners"
+					},
+					"webhookSecret": {
+						"type": "string",
+						"description": "The secret to give the GitHub App's webhook. Shown once."
+					}
+				},
+				"title": "GithubRunnersWithSecret"
 			},
 			"GuestAgent": {
 				"type": "object",
@@ -18105,6 +19027,81 @@
 					}
 				},
 				"title": "UpdateEnvironmentBody"
+			},
+			"UpdateGithubRunnersBody": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"appId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"privateKey": {
+						"type": "string",
+						"minLength": 64,
+						"maxLength": 16384
+					},
+					"owner": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"scope": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "organization"
+							},
+							{
+								"type": "string",
+								"const": "repository"
+							}
+						],
+						"description": "Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository."
+					},
+					"runnerGroupId": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"minimum": 1
+							},
+							{
+								"type": "null"
+							}
+						]
+					},
+					"repositories": {
+						"anyOf": [
+							{
+								"type": "array",
+								"items": {
+									"type": "string",
+									"pattern": "^[^/\\s]+/[^/\\s]+$"
+								},
+								"maxItems": 500
+							},
+							{
+								"type": "null"
+							}
+						]
+					},
+					"pools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPool"
+						},
+						"minItems": 1,
+						"maxItems": 20
+					},
+					"enabled": {
+						"type": "boolean"
+					}
+				},
+				"title": "UpdateGithubRunnersBody"
 			},
 			"UpdateHostBody": {
 				"type": "object",
