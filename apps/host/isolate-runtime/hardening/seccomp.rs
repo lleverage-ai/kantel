@@ -26,10 +26,10 @@
 use std::collections::BTreeMap;
 use std::convert::TryInto;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use seccompiler::{
-    BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter, SeccompRule,
-    TargetArch,
+    BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+    SeccompRule, TargetArch,
 };
 
 /// How the allow-list treats a call that isn't on it. The kill list and the `clone3` rule apply in both modes.
@@ -71,12 +71,18 @@ impl std::fmt::Display for Report {
             Sockets::UnixOnly => "Unix sockets only",
             Sockets::UnixAndIpv4 => "Unix and IPv4 sockets",
         };
-        write!(f, "{mode}: {} calls allowed, {} kill the process, {sockets}", self.allowed, self.killed)
+        write!(
+            f,
+            "{mode}: {} calls allowed, {} kill the process, {sockets}",
+            self.allowed, self.killed
+        )
     }
 }
 
 fn arch() -> Result<TargetArch> {
-    std::env::consts::ARCH.try_into().map_err(|e| anyhow!("seccomp: unsupported architecture: {e:?}"))
+    std::env::consts::ARCH
+        .try_into()
+        .map_err(|e| anyhow!("seccomp: unsupported architecture: {e:?}"))
 }
 
 /// The calls that kill the process. None of them is made by the runtime after start-up.
@@ -152,17 +158,30 @@ fn kill_list() -> Vec<i64> {
 
 /// `arg == value` on one argument, compared as a 64-bit value.
 fn eq(arg: u8, value: u64) -> Result<SeccompCondition> {
-    Ok(SeccompCondition::new(arg, SeccompCmpArgLen::Qword, SeccompCmpOp::Eq, value)?)
+    Ok(SeccompCondition::new(
+        arg,
+        SeccompCmpArgLen::Qword,
+        SeccompCmpOp::Eq,
+        value,
+    )?)
 }
 
 /// `arg & mask == value`.
 fn masked(arg: u8, mask: u64, value: u64) -> Result<SeccompCondition> {
-    Ok(SeccompCondition::new(arg, SeccompCmpArgLen::Qword, SeccompCmpOp::MaskedEq(mask), value)?)
+    Ok(SeccompCondition::new(
+        arg,
+        SeccompCmpArgLen::Qword,
+        SeccompCmpOp::MaskedEq(mask),
+        value,
+    )?)
 }
 
 /// One rule per allowed value of argument `arg` (rules are ORed; conditions within a rule are ANDed).
 fn one_of(arg: u8, values: &[u64]) -> Result<Vec<SeccompRule>> {
-    values.iter().map(|&value| Ok(SeccompRule::new(vec![eq(arg, value)?])?)).collect()
+    values
+        .iter()
+        .map(|&value| Ok(SeccompRule::new(vec![eq(arg, value)?])?))
+        .collect()
 }
 
 /// Which sockets the process may make: with every endpoint on a Unix socket (native mode), none but `AF_UNIX`, so
@@ -283,7 +302,8 @@ fn allow_list(sockets: Sockets) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
         libc::SYS_getresgid,
         libc::SYS_getgroups,
     ];
-    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = any.into_iter().map(|call| (call, vec![])).collect();
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> =
+        any.into_iter().map(|call| (call, vec![])).collect();
     #[cfg(target_arch = "x86_64")]
     for call in [
         libc::SYS_open,
@@ -307,7 +327,10 @@ fn allow_list(sockets: Sockets) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
     // clone: threads only. A thread needs CLONE_THREAD (with CLONE_VM and CLONE_SIGHAND, which the kernel requires
     // alongside it); anything without it would be a new process.
     let thread = (libc::CLONE_THREAD | libc::CLONE_VM | libc::CLONE_SIGHAND) as u64;
-    rules.insert(libc::SYS_clone, vec![SeccompRule::new(vec![masked(0, thread, thread)?])?]);
+    rules.insert(
+        libc::SYS_clone,
+        vec![SeccompRule::new(vec![masked(0, thread, thread)?])?],
+    );
     // socket and socketpair: Unix sockets, and IPv4 only when an endpoint is TCP (the bridges are 127.0.0.1 or Unix
     // sockets; IPv6 is off). The type argument may carry SOCK_CLOEXEC and SOCK_NONBLOCK, so only the family is checked.
     let families: &[u64] = match sockets {
@@ -317,19 +340,38 @@ fn allow_list(sockets: Sockets) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
     rules.insert(libc::SYS_socket, one_of(0, families)?);
     rules.insert(libc::SYS_socketpair, one_of(0, &[libc::AF_UNIX as u64])?);
     // ioctl: is-this-a-terminal, non-blocking and close-on-exec. Nothing else.
-    rules.insert(libc::SYS_ioctl, one_of(1, &[libc::TCGETS as u64, libc::FIONBIO as u64, libc::FIOCLEX as u64])?);
+    rules.insert(
+        libc::SYS_ioctl,
+        one_of(
+            1,
+            &[
+                u64::from(libc::TCGETS),
+                u64::from(libc::FIONBIO),
+                u64::from(libc::FIOCLEX),
+            ],
+        )?,
+    );
     // prctl: naming threads and anonymous mappings, and reading the dumpable flag and thread names.
     rules.insert(
         libc::SYS_prctl,
         one_of(
             0,
-            &[libc::PR_SET_NAME as u64, libc::PR_GET_NAME as u64, libc::PR_SET_VMA as u64, libc::PR_GET_DUMPABLE as u64],
+            &[
+                libc::PR_SET_NAME as u64,
+                libc::PR_GET_NAME as u64,
+                libc::PR_SET_VMA as u64,
+                libc::PR_GET_DUMPABLE as u64,
+            ],
         )?,
     );
     Ok(rules)
 }
 
-fn compile(rules: BTreeMap<i64, Vec<SeccompRule>>, mismatch: SeccompAction, matched: SeccompAction) -> Result<BpfProgram> {
+fn compile(
+    rules: BTreeMap<i64, Vec<SeccompRule>>,
+    mismatch: SeccompAction,
+    matched: SeccompAction,
+) -> Result<BpfProgram> {
     let filter = SeccompFilter::new(rules, mismatch, matched, arch()?)?;
     Ok(filter.try_into()?)
 }
@@ -364,7 +406,12 @@ pub fn install(mode: Mode, sockets: Sockets) -> Result<Report> {
     for program in [&kill, &no_clone3, &allow] {
         seccompiler::apply_filter_all_threads(program).map_err(|e| anyhow!("seccomp: {e}"))?;
     }
-    Ok(Report { mode, sockets, allowed: count, killed: killed.len() })
+    Ok(Report {
+        mode,
+        sockets,
+        allowed: count,
+        killed: killed.len(),
+    })
 }
 
 #[cfg(test)]
@@ -380,14 +427,24 @@ mod tests {
         if pid == 0 {
             // No core dump: several tests end the child with SIGSYS on purpose, and a dump would carry this process's
             // environment into the working directory.
-            let none = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
             unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
             let code = body();
             unsafe { libc::_exit(code) };
         }
         let mut status = 0;
         unsafe { libc::waitpid(pid, &mut status, 0) };
-        (libc::WIFSIGNALED(status), if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { libc::WTERMSIG(status) })
+        (
+            libc::WIFSIGNALED(status),
+            if libc::WIFEXITED(status) {
+                libc::WEXITSTATUS(status)
+            } else {
+                libc::WTERMSIG(status)
+            },
+        )
     }
 
     fn errno() -> i32 {
@@ -407,7 +464,8 @@ mod tests {
             if std::fs::read("/proc/self/stat").is_err() {
                 return 12;
             }
-            let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+            let fd =
+                unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
             if fd < 0 {
                 return 13;
             }
@@ -417,7 +475,10 @@ mod tests {
             }
             0
         });
-        assert!(!signalled && code == 0, "child failed with {code} (signalled: {signalled})");
+        assert!(
+            !signalled && code == 0,
+            "child failed with {code} (signalled: {signalled})"
+        );
     }
 
     #[test]
@@ -450,7 +511,10 @@ mod tests {
             }
             0
         });
-        assert!(!signalled && code == 0, "child failed with {code} (signalled: {signalled})");
+        assert!(
+            !signalled && code == 0,
+            "child failed with {code} (signalled: {signalled})"
+        );
     }
 
     #[test]
@@ -472,7 +536,10 @@ mod tests {
             }
             0
         });
-        assert!(!signalled && code == 0, "child failed with {code} (signalled: {signalled})");
+        assert!(
+            !signalled && code == 0,
+            "child failed with {code} (signalled: {signalled})"
+        );
     }
 
     #[test]
@@ -491,7 +558,10 @@ mod tests {
             }
             0
         });
-        assert!(!signalled && code == 0, "child failed with {code} (signalled: {signalled})");
+        assert!(
+            !signalled && code == 0,
+            "child failed with {code} (signalled: {signalled})"
+        );
     }
 
     #[test]
@@ -507,14 +577,22 @@ mod tests {
             // Not reached when the filter works.
             20
         });
-        assert!(signalled && code == libc::SIGSYS, "execve should kill with SIGSYS; got code {code}, signalled {signalled}");
+        assert!(
+            signalled && code == libc::SIGSYS,
+            "execve should kill with SIGSYS; got code {code}, signalled {signalled}"
+        );
     }
 
     #[test]
     fn ptrace_and_unshare_kill_the_process() {
         for (name, call) in [
-            ("ptrace", (|| unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) as i64 }) as fn() -> i64),
-            ("unshare", || unsafe { libc::unshare(libc::CLONE_NEWUSER) as i64 }),
+            (
+                "ptrace",
+                (|| unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) as i64 }) as fn() -> i64,
+            ),
+            ("unshare", || unsafe {
+                libc::unshare(libc::CLONE_NEWUSER) as i64
+            }),
         ] {
             let (signalled, code) = in_child(|| {
                 if install(Mode::Enforce, Sockets::UnixAndIpv4).is_err() {
@@ -523,7 +601,10 @@ mod tests {
                 call();
                 20
             });
-            assert!(signalled && code == libc::SIGSYS, "{name} should kill with SIGSYS; got {code}, signalled {signalled}");
+            assert!(
+                signalled && code == libc::SIGSYS,
+                "{name} should kill with SIGSYS; got {code}, signalled {signalled}"
+            );
         }
     }
 }

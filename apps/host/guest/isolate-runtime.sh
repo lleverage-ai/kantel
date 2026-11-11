@@ -132,7 +132,8 @@ if [ -z "${KANTEL_ISOLATE_BINARY:-}" ] && [ -f "$CRATE/Cargo.toml" ]; then
 fi
 
 if [ "$ARCH" = test ]; then
-	cargo kantel-isolate-builder:local sh -euc 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
+	# shellcheck disable=SC2086 # FEATURES is empty or one flag and its value.
+	cargo kantel-isolate-builder:local sh -euc "cargo fmt --check && cargo clippy --locked --all-targets $FEATURES -- -D warnings && cargo test --locked $FEATURES"
 	exit 0
 fi
 
