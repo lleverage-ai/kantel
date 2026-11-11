@@ -215,6 +215,22 @@ memory. Restoring one needs the same base image and kernel underneath: a snapsho
 not a whole one. Replacing a host's image therefore orphans the snapshots taken on the old one, until the host keeps
 old images for them.
 
+## The isolate image
+
+`isolate.Dockerfile` is the isolate tier's VM: Debian 13 slim with systemd, the guest agent and `kantel-isolate`
+(Kantel's isolate runtime, `apps/host/isolate-runtime`: deno_core and V8), whose `kantel-isolate.service` runs it as
+its own unprivileged user. `/usr/local/bin/kantel-isolate` is the binary, `/opt/kantel-isolate` its assets (the
+guest bundles, Pyodide and its memory snapshot), read-only. It has no network device: the runtime reaches the host's
+blob store and egress proxy through the guest agent's vsock bridges (`127.0.0.1:7001` and `7002`), and the host
+reaches it on `127.0.0.1:8080` (the `isolate` ready name).
+
+`rootfs.sh <out> isolate <arch>` builds both through `isolate-runtime.sh`, which compiles the runtime in a Rust
+container (glibc, cross-compiled for the other architecture; the script says why) and runs the crate's
+`build-assets.sh`. `KANTEL_ISOLATE_BINARY` and `KANTEL_ISOLATE_ASSETS` build the image around a binary and assets made
+elsewhere. With an early build of the runtime the image is about 560 MB (80 MB gzipped), against about 600 MB (87 MB)
+when it ran workerd; the runtime (about 70 MB) and Pyodide with its snapshot (about 45 MB) are most of it.
+`test/isolate.sh <images> <firecracker>` boots it through `kantel-host`'s own code and runs commands in it.
+
 ## The kernel
 
 `kernel/kantel.config` is a Firecracker guest config with what Docker needs (overlayfs, cgroups v2, namespaces,

@@ -5,10 +5,12 @@
 #   apps/host/guest/release.sh <out-dir> <tag> [--publish]
 #
 # <tag> is host-images-<yyyymmdd>[.<n>]. Writes to <out-dir>: vmlinux-<arch> and its .config, sandbox-<arch>.ext4.gz,
-# isolate-<arch>.ext4.gz, manifest.json (kantel-host manifest: each file's SHA-256, which install checks as it
-# downloads), THIRD-PARTY-NOTICES.md, the exact source of the GPL and LGPL libraries the sandbox image bundles
-# outside a distro package (Selkies' libx264, x265 and libde265: gpl-sources.sh, read off each built sandbox image),
-# as source-*.tar.gz with SOURCES.md and SOURCES.sha256, and SHA256SUMS over every asset (sha256sum -c format).
+# isolate-<arch>.ext4.gz, kantel-isolate-<arch> and isolate-assets-<arch>.tar.gz (the isolate runtime and its assets
+# as the isolate image has them, for hosts that run isolates natively), manifest.json (kantel-host manifest: each
+# file's SHA-256, which install checks as it downloads), THIRD-PARTY-NOTICES.md, the exact source of the GPL and LGPL
+# libraries the sandbox image bundles outside a distro package (Selkies' libx264, x265 and libde265: gpl-sources.sh,
+# read off each built sandbox image), as source-*.tar.gz with SOURCES.md and SOURCES.sha256, and SHA256SUMS over every
+# asset (sha256sum -c format).
 #
 # ARCHES (default "amd64 arm64") picks the architectures. arm64 is cross-built on an x86_64 machine: its kernel with
 # a cross compiler, its images under QEMU user emulation, which Docker needs registered first
@@ -21,8 +23,8 @@
 # (its BUILD file says so), --publish publishes that build instead of building again: build, check (boot-check-arm64.sh
 # too), merge, publish.
 #
-# Needs Docker, Go, bun, gzip, git, curl, jq and debugfs (e2fsprogs). About 15 minutes for amd64 on 48 cores from
-# cold; each architecture's images are about 1 GB gzipped. Each asset has to stay under GitHub's 2 GiB limit per
+# Needs Docker, Go, bun, gzip, git, curl, jq and debugfs (e2fsprogs), and what guest/isolate-runtime.sh needs. About
+# 15 minutes for amd64 on 48 cores from cold; each architecture's images are about 1 GB gzipped. Each asset has to stay under GitHub's 2 GiB limit per
 # release asset; the script checks.
 set -eu
 
@@ -56,6 +58,10 @@ else
 		done
 		# The static agent rootfs.sh built, on its own too: a host with injectGuestAgent boots any image with it.
 		cp "$MODULE/dist/kantel-guest-$arch" "$OUT/kantel-guest-$arch"
+		# The isolate runtime the isolate image was built with (guest/isolate-runtime.sh), on its own too: a host
+		# without KVM runs it natively (isolateRuntime "native").
+		cp "$MODULE/dist/kantel-isolate-$arch" "$OUT/kantel-isolate-$arch"
+		tar -C "$MODULE/dist/isolate-assets-$arch" --owner=0 --group=0 --numeric-owner -cf - . | gzip -n -6 >"$OUT/isolate-assets-$arch.tar.gz"
 	done
 	# The GPL sources come from the images as built, so they're read before the images are gzipped.
 	set --
@@ -75,7 +81,8 @@ fi
 set -- manifest.json THIRD-PARTY-NOTICES.md SOURCES.md SOURCES.sha256
 for arch in $ARCHES; do
 	case "$arch" in amd64) karch=x86_64 ;; arm64) karch=aarch64 ;; esac
-	set -- "$@" "vmlinux-$karch" "vmlinux-$karch.config" "sandbox-$arch.ext4.gz" "isolate-$arch.ext4.gz" "kantel-guest-$arch"
+	set -- "$@" "vmlinux-$karch" "vmlinux-$karch.config" "sandbox-$arch.ext4.gz" "isolate-$arch.ext4.gz" "kantel-guest-$arch" \
+		"kantel-isolate-$arch" "isolate-assets-$arch.tar.gz"
 done
 for f in "$OUT"/source-*.tar.gz; do set -- "$@" "$(basename "$f")"; done
 limit=$((2 * 1024 * 1024 * 1024))
