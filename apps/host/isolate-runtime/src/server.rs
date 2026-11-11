@@ -81,6 +81,7 @@ async fn healthz(State(app): State<Arc<App>>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "v8": deno_core::v8::V8::get_version(),
         "warm": is_warm(&app),
+        "v8Sandbox": crate::v8_sandbox_enabled(),
         "transports": ["tcp", "unix"],
         "capabilities": { "javascript": true, "python": true },
         "memoryEnforced": true,

@@ -178,10 +178,30 @@ unsafe extern "C" fn b_drop(b: *const Budget) {
 static VTABLE: v8::RustAllocatorVtable<Budget> =
     v8::RustAllocatorVtable { allocate: b_alloc, allocate_uninitialized: b_alloc_uninit, free: b_free, drop: b_drop };
 
-/// An ArrayBuffer allocator that draws on `budget`.
+// The allocator choice is behind one function so W2's V8 heap sandbox can swap it (the sandbox removes
+// new_rust_allocator and refuses Rust-heap backing stores). With `--features v8-sandbox` the ArrayBuffer bytes are
+// allocated by V8's own allocator inside the sandbox, bounded by W2's C++ budget allocator; the Rust `Budget` above
+// then only counts wasm reservations (op_kt_wasm_reserve). Without the feature (the default, dev build), the Rust
+// allocator counts ArrayBuffers and wasm together.
+
+#[cfg(not(feature = "v8-sandbox"))]
 pub fn allocator(budget: &Arc<Budget>) -> v8::UniqueRef<v8::Allocator> {
     // SAFETY: the vtable's functions match RustAllocatorVtable<Budget>; the Arc is released by b_drop.
     unsafe { v8::new_rust_allocator(Arc::into_raw(budget.clone()), &VTABLE) }
+}
+
+#[cfg(feature = "v8-sandbox")]
+unsafe extern "C" {
+    // Provided by W2's rusty_v8 budget-allocator patch (apps/host/isolate-runtime/v8/patches); links only against a
+    // V8 built with v8/build-v8-sandbox.sh.
+    fn kantel__BudgetAllocator__New(limit: usize) -> *mut v8::Allocator;
+}
+
+#[cfg(feature = "v8-sandbox")]
+pub fn allocator(budget: &Arc<Budget>) -> v8::UniqueRef<v8::Allocator> {
+    // V8's in-sandbox allocator bounds ArrayBuffer bytes; the Rust Budget keeps counting wasm reservations.
+    // SAFETY: kantel__BudgetAllocator__New returns an owned Allocator*; UniqueRef takes ownership.
+    unsafe { v8::UniqueRef::from_raw(kantel__BudgetAllocator__New(budget.limit())) }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

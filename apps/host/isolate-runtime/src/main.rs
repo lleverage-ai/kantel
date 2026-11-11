@@ -2,6 +2,8 @@
 
 mod bridges;
 mod config;
+#[path = "../hardening/mod.rs"]
+mod hardening;
 mod isolate;
 mod limits;
 mod ops;
@@ -47,6 +49,21 @@ fn entropy_source(buf: &mut [u8]) -> bool {
     true
 }
 
+/// Whether this binary's V8 has the heap sandbox on. With `--features v8-sandbox` it asks V8 (W2's build); otherwise
+/// it is off.
+#[cfg(feature = "v8-sandbox")]
+fn v8_sandbox_enabled() -> bool {
+    unsafe extern "C" {
+        fn v8__V8__IsSandboxEnabled() -> bool;
+    }
+    // SAFETY: a pure query into V8; valid after init_platform.
+    unsafe { v8__V8__IsSandboxEnabled() }
+}
+#[cfg(not(feature = "v8-sandbox"))]
+fn v8_sandbox_enabled() -> bool {
+    false
+}
+
 fn init_v8() {
     // Must be set before V8 initialises, so every isolate (including the snapshot's) seeds its RNG from the OS.
     deno_core::v8::V8::set_entropy_source(entropy_source);
@@ -81,7 +98,7 @@ fn main() -> Result<()> {
     match cli.command {
         Cmd::Version => {
             init_v8();
-            let v8_sandbox = cfg!(feature = "v8-sandbox");
+            let v8_sandbox = v8_sandbox_enabled();
             println!(
                 "{}",
                 serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "v8": deno_core::v8::V8::get_version(), "v8Sandbox": v8_sandbox, "unixSockets": true, "transports": ["tcp", "unix"] })
@@ -117,10 +134,65 @@ fn main() -> Result<()> {
         Cmd::Serve(args) => {
             let cfg = config::Config::from_args(&args)?;
             setup_logging(cfg.log_format);
+            // Before any thread starts: refuse privileges, then apply Landlock (it binds this thread and the ones it
+            // starts afterwards, so it must run before the tokio runtime and the pools).
+            harden(&cfg, args.require_landlock, args.allow_root)?;
             init_v8();
             serve(cfg)
         }
     }
+}
+
+/// Process hardening (W2's module): no root/capabilities, non-dumpable, then a Landlock policy that allows only
+/// `--assets` (read), a private temp dir (read-write), the few system files V8/jemalloc read, and either the Unix
+/// socket directory (no TCP at all) or the store/egress/listen TCP ports.
+fn harden(cfg: &config::Config, require_landlock: bool, allow_root: bool) -> Result<()> {
+    hardening::check_privileges(allow_root)?;
+    let temp = std::env::temp_dir().join(format!("kantel-isolate-{}", std::process::id()));
+    std::fs::create_dir_all(&temp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o700));
+    }
+    let transport = transport_of(cfg);
+    let policy = hardening::landlock::Policy {
+        assets: cfg.assets.clone(),
+        temp,
+        extra_read: vec![],
+        transport,
+    };
+    let report = hardening::landlock::restrict(&policy)?;
+    tracing::info!(status = report.status, abi = report.abi, network = report.network, "landlock");
+    if require_landlock && report.status != "fully enforced" {
+        anyhow::bail!("--require-landlock: Landlock is {} on this kernel", report.status);
+    }
+    Ok(())
+}
+
+/// The Landlock transport: Unix (no TCP) when `--listen`, `--store` and `--egress` are all Unix sockets, else TCP
+/// with the ports the runtime binds and connects to.
+fn transport_of(cfg: &config::Config) -> hardening::landlock::Transport {
+    use bridges::Target;
+    let listen_unix = cfg.listen.strip_prefix("unix:");
+    if let (Some(listen), Target::Unix(store), Target::Unix(egress)) = (listen_unix, &cfg.store, &cfg.egress) {
+        // The sockets share one 0700 directory (kantel-host's per-account dir); allow that directory.
+        let dir = std::path::Path::new(listen)
+            .parent()
+            .or_else(|| store.parent())
+            .or_else(|| egress.parent())
+            .unwrap_or_else(|| std::path::Path::new("/run/kantel-isolate"))
+            .to_path_buf();
+        let _ = egress;
+        return hardening::landlock::Transport::Unix { socket_dir: dir };
+    }
+    let port = |t: &Target| match t {
+        Target::Tcp(a) => a.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()),
+        Target::Unix(_) => None,
+    };
+    let listen = cfg.listen.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
+    let connect = [port(&cfg.store), port(&cfg.egress)].into_iter().flatten().collect();
+    hardening::landlock::Transport::Tcp { listen, connect }
 }
 
 fn serve(cfg: config::Config) -> Result<()> {

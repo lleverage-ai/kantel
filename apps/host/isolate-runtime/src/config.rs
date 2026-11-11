@@ -73,6 +73,12 @@ pub struct ServeArgs {
     /// A sandbox idle this long gives its isolate up (its next command gets a fresh one).
     #[arg(long, env = "KANTEL_ISOLATE_IDLE_MS", default_value_t = 15 * 60_000)]
     pub idle_ms: u64,
+    /// Exit if the process can't apply its own Landlock policy fully (the systemd unit passes this).
+    #[arg(long, env = "KANTEL_ISOLATE_REQUIRE_LANDLOCK", default_value_t = false)]
+    pub require_landlock: bool,
+    /// Allow running as root / with capabilities (tests and local experiments only).
+    #[arg(long, env = "KANTEL_ISOLATE_ALLOW_ROOT", default_value_t = false)]
+    pub allow_root: bool,
 }
 
 pub const DEFAULT_MEMORY_MIB: usize = 256;
