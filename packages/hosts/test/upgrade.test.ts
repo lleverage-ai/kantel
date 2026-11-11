@@ -832,6 +832,7 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 function failingStore(refuse: (placement: PlacementRecord) => "before" | "landed" | undefined): HostStore {
 	const store = createMemoryHostStore();
 	const put = store.putPlacement.bind(store);
+	const update = store.updatePlacement.bind(store);
 	return {
 		...store,
 		putPlacement: async (placement) => {
@@ -839,6 +840,16 @@ function failingStore(refuse: (placement: PlacementRecord) => "before" | "landed
 			if (how === "before") throw new Error("the database went away");
 			await put(placement);
 			if (how === "landed") throw new Error("the database went away after the write");
+		},
+		updatePlacement: async (sandboxId, change) => {
+			let how: "before" | "landed" | undefined;
+			const written = await update(sandboxId, (latest) => {
+				const next = change(latest);
+				how = next === undefined ? undefined : refuse(next);
+				return how === "before" ? undefined : next;
+			});
+			if (how !== undefined) throw new Error("the database went away");
+			return written;
 		},
 	};
 }
@@ -943,5 +954,120 @@ describe("an upgrade that fails after its irreversible step", () => {
 		const placement = await service.sandboxes.placement(sandbox.id);
 		expect(placement).toMatchObject({ tier: "microvm", hostId: host.hostId });
 		expect(placement?.upgrade).toBeUndefined();
+	});
+});
+
+describe("a host's report racing an upgrade's handover", () => {
+	/** A store whose reads `hold` suspends once, right after they read, until `release`. */
+	function heldStore() {
+		const store = createMemoryHostStore();
+		let armed: "getHost" | "placementsOn" | undefined;
+		let release: () => void = () => undefined;
+		let reached: () => void = () => undefined;
+		const suspended = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const wrapped: HostStore = {
+			...store,
+			getHost: async (id) => {
+				const read = await store.getHost(id);
+				if (armed === "getHost") {
+					armed = undefined;
+					reached();
+					await gate;
+				}
+				return read;
+			},
+			placementsOn: async (hostId) => {
+				const read = await store.placementsOn(hostId);
+				if (armed === "placementsOn") {
+					armed = undefined;
+					reached();
+					await gate;
+				}
+				return read;
+			},
+		};
+		return {
+			store: wrapped,
+			hold: (at: "getHost" | "placementsOn") => (armed = at),
+			suspended,
+			release: () => release(),
+		};
+	}
+
+	it("keeps a same-host upgrade's microVM when an isolate event read before it lands after", async () => {
+		const held = heldStore();
+		const { root, service, hosts } = await setup(
+			[{ name: "both", facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade]) }],
+			{ store: held.store },
+		);
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		// The isolate's event: read with the isolate's placement, then held at its host's read.
+		held.hold("getHost");
+		host.receive(
+			JSON.stringify({
+				type: "event",
+				event: {
+					kind: "sandbox",
+					sandbox: { id: sandbox.id, tier: "isolate", size: "isolate", state: "stopped", createdAt: 1 },
+				},
+			}),
+		);
+		await held.suspended;
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: host.hostId });
+		held.release();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "microvm", hostId: host.hostId, state: "running", size: "default" });
+		expect(placement?.upgrade).toBeUndefined();
+	});
+
+	it("keeps a cross-host handover's placement when the isolate's host's hello, read before it, lands after", async () => {
+		const held = heldStore();
+		const { root, service, hosts } = await setup(
+			[
+				{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+				{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+			],
+			{ store: held.store },
+		);
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		// The isolate's host says hello again (to this gateway, as it reconnects), holding it as stopped: its placements
+		// read, then held.
+		const isolate = isolates.sandboxes.get(sandbox.id);
+		if (isolate === undefined) throw new Error("no isolate");
+		isolate.state = "stopped";
+		held.hold("placementsOn");
+		const hello = isolates.connect();
+		await held.suspended;
+		// Meanwhile the upgrade's handover is committed (by another gateway, whose connection to the host it has): the
+		// microVM on the other host, owing the isolate's removal.
+		const before = await service.sandboxes.placement(sandbox.id);
+		if (before === undefined) throw new Error("no placement");
+		const handedOver: PlacementRecord = {
+			...before,
+			hostId: vms.hostId,
+			tier: "microvm",
+			size: "default",
+			vcpus: 2,
+			memoryMiB: 2048,
+			diskGiB: 20,
+			state: "running",
+			cleanup: { hostId: isolates.hostId, operationId: "op_1" },
+		};
+		await held.store.putPlacement(handedOver);
+		held.release();
+		await hello;
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toEqual(handedOver);
 	});
 });

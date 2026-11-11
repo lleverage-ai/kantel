@@ -977,7 +977,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
-			if (latest !== placement) await store.putPlacement(latest);
+			if (latest !== placement) {
+				await applyReport(
+					placement.sandboxId,
+					hostId,
+					sandbox?.tier ?? placement.tier,
+					sandbox ?? { state: "lost" },
+					reported,
+				);
+			}
 			// One whose machine ended while the host was away, or that the host's restart ended (`the host restarted while
 			// it ran`), is caught up: the compute plane may still have it running.
 			const exit = sandbox === undefined ? undefined : exitOf(sandbox);
@@ -1115,13 +1123,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
 					});
 				}
-				// The call that caused the event usually recorded it already (a create's `running`).
+				// The call that caused the event usually recorded it already (a create's `running`). Applied to the placement
+				// as it is now, still this host's and of the sandbox's tier: an upgrade's handover since stands.
+				const tier = (sandbox as { tier?: unknown }).tier ?? placement.tier;
 				if (sandbox.state === "deleted") {
-					await store.removePlacement(sandbox.id);
+					await store.removePlacementIf(sandbox.id, (latest) => latest.hostId === hostId && latest.tier === tier);
 					return;
 				}
-				const latest = asReported(placement, sandbox, await store.getHost(hostId), clock.now());
-				if (latest !== placement) await store.putPlacement(latest);
+				await applyReport(sandbox.id, hostId, tier, sandbox, await store.getHost(hostId));
 				// A running sandbox's guest health, which a host with `guestHealth` sends an event for each time it changes.
 				if (sandbox.state === "running") {
 					await compute?.reportHealth?.(
@@ -1416,6 +1425,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			updatedAt: now,
 		};
 	};
+
+	/**
+	 * A host's report of a sandbox (an event, its hello, a call's answer), applied to its placement as it is now, never to
+	 * the one read before: only while that placement is still on `hostId`, and of the tier reported (`tier`, or the one
+	 * read for a report that doesn't say), so a report read before an upgrade's handover can't write back the isolate,
+	 * its host or its upgrade. Only its state and size change. Answers what was written, or undefined.
+	 */
+	const applyReport = (
+		sandboxId: string,
+		hostId: string,
+		tier: unknown,
+		reported: { readonly state: string; readonly size?: unknown },
+		host: HostRecord | undefined,
+	): Promise<PlacementRecord | undefined> =>
+		store.updatePlacement(sandboxId, (latest) => {
+			if (latest.hostId !== hostId || latest.tier !== tier) return undefined;
+			const next = asReported(latest, reported, host, clock.now());
+			return next === latest ? undefined : next;
+		});
 
 	const settle = async (
 		placement: PlacementRecord,
@@ -1756,12 +1784,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return undefined;
 			}
 		}
-		const latest = await store.getPlacement(sandboxId);
-		if (latest?.cleanup?.hostId !== hostId) return latest;
-		const { cleanup: _done, ...placed } = latest;
-		const cleaned = { ...placed, updatedAt: clock.now() };
-		await store.putPlacement(cleaned);
-		return cleaned;
+		const cleaned = await store.updatePlacement(sandboxId, (latest) => {
+			if (latest.cleanup?.hostId !== hostId) return undefined;
+			const { cleanup: _done, ...placed } = latest;
+			return { ...placed, updatedAt: clock.now() };
+		});
+		return cleaned ?? (await store.getPlacement(sandboxId));
 	};
 
 	/** The isolates upgrades left on each host, deleted on its next heartbeat (once it is welcomed). */
@@ -2422,10 +2450,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					(method === HostMethods.stop || (result as { id?: unknown }).id === sandboxId)
 				) {
 					const size = (result as { size?: unknown } | undefined)?.size;
-					await store.putPlacement({
-						...asReported(placement, { state, size }, await store.getHost(placement.hostId), clock.now()),
-						updatedAt: clock.now(),
-					});
+					const tier = (result as { tier?: unknown } | undefined)?.tier ?? placement.tier;
+					await applyReport(sandboxId, placement.hostId, tier, { state, size }, await store.getHost(placement.hostId));
 				}
 				return result;
 			},
