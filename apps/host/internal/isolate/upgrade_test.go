@@ -240,8 +240,14 @@ func TestExportTarMakesWorkspaceLinksRelative(t *testing.T) {
 	}
 
 	// One out of the workspace, absolute or climbing through it, is left as it was, and the extractor refuses it.
-	for _, out := range []string{"/etc/passwd", "/workspace/../etc/passwd", "/workspaces/x", "jump/../../../etc/passwd", "/workspace/jump/../../.."} {
-		m, _ := upgradeManager(t, proto.StateRunning, nil, nil, map[string]string{"out": out, "jump": "/workspace/src/deep"})
+	// So is one the isolate can't resolve, through a missing directory or a file, though it would land on a file there
+	// as text; and one too long to resolve.
+	for _, out := range []string{
+		"/etc/passwd", "/workspace/../etc/passwd", "/workspaces/x", "jump/../../../etc/passwd", "/workspace/jump/../../..",
+		"jump/../../missing/../top.txt", "jump/../../top.txt/../top.txt",
+		strings.Repeat("./", 100_000) + "../top.txt", strings.Repeat("a/", 3000) + strings.Repeat("../", 3001) + "top.txt",
+	} {
+		m, _ := upgradeManager(t, proto.StateRunning, map[string]string{"top.txt": "top\n", "src/deep/x": "x"}, nil, map[string]string{"out": out, "jump": "/workspace/src/deep"})
 		var buf bytes.Buffer
 		if _, _, err := m.ExportTar("iso_1", &buf); err != nil {
 			t.Fatal(err)

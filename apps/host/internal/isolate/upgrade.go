@@ -219,52 +219,80 @@ func linkStaysInside(name, target string) bool {
 	return true
 }
 
+// Bounds on resolveInWorkspace's work, which reads targets the guest wrote: a longer target, or one that takes more
+// steps (its own and those of the links it follows), is not resolved, and is left to the extractor as it is.
+const (
+	maxLinkTarget = 4096
+	maxLinkSteps  = 4096
+	maxLinkHops   = 40
+)
+
 // resolveInWorkspace walks target (relative, or absolute in /workspace) from dir as the isolate does, following the
-// links it passes through (not a last one: that is what the link names), at most 40 of them. It answers the path in
-// the workspace ("" for its top) it ends at, or false where it leaves the workspace or loops.
+// links it passes through (not a last one: that is what the link names), at most maxLinkHops of them. Every component
+// it passes through must be a directory or a link in man, as the isolate needs it to be (a missing one, or a file, is
+// ENOENT or ENOTDIR there): one that isn't, a walk out of the workspace, a loop or too much work answers false. It
+// answers the path in the workspace ("" for its top) it ends at.
 func resolveInWorkspace(man Manifest, dir, target string) (string, bool) {
 	var cur []string
 	if !strings.HasPrefix(target, "/") && dir != "" {
 		cur = strings.Split(dir, "/")
 	}
-	pending := strings.Split(target, "/")
-	if strings.HasPrefix(target, "/") {
-		if target != "/workspace" && !strings.HasPrefix(target, "/workspace/") {
+	// What is left to walk, last component first, so each step takes one off the end.
+	var pending []string
+	push := func(t string) bool {
+		if len(t) > maxLinkTarget {
+			return false
+		}
+		if strings.HasPrefix(t, "/") {
+			if t != "/workspace" && !strings.HasPrefix(t, "/workspace/") {
+				return false
+			}
+			cur = cur[:0]
+			t = strings.TrimPrefix(t, "/workspace")
+		}
+		parts := strings.Split(t, "/")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if parts[i] != "" && parts[i] != "." {
+				pending = append(pending, parts[i])
+			}
+		}
+		return true
+	}
+	if !push(target) {
+		return "", false
+	}
+	hops, steps := 0, 0
+	for len(pending) > 0 {
+		if steps++; steps > maxLinkSteps {
 			return "", false
 		}
-		pending = strings.Split(strings.TrimPrefix(target, "/workspace"), "/")
-	}
-	hops := 0
-	for len(pending) > 0 {
-		part := pending[0]
-		pending = pending[1:]
-		switch part {
-		case "", ".":
-			continue
-		case "..":
+		part := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if part == ".." {
 			if len(cur) == 0 {
 				return "", false
 			}
 			cur = cur[:len(cur)-1]
 			continue
 		}
-		next := strings.Join(append(append([]string{}, cur...), part), "/")
-		if e, ok := man[next]; ok && e.Kind == "symlink" && len(pending) > 0 {
-			if hops++; hops > 40 {
+		cur = append(cur, part)
+		if len(pending) == 0 {
+			break // The last component: what the link names, there or not.
+		}
+		e, ok := man[strings.Join(cur, "/")]
+		switch {
+		case ok && e.Kind == "dir":
+		case ok && e.Kind == "symlink":
+			if hops++; hops > maxLinkHops {
 				return "", false
 			}
-			linked := e.Target
-			if strings.HasPrefix(linked, "/") {
-				if linked != "/workspace" && !strings.HasPrefix(linked, "/workspace/") {
-					return "", false
-				}
-				cur = nil
-				linked = strings.TrimPrefix(linked, "/workspace")
+			cur = cur[:len(cur)-1]
+			if !push(e.Target) {
+				return "", false
 			}
-			pending = append(strings.Split(linked, "/"), pending...)
-			continue
+		default:
+			return "", false
 		}
-		cur = append(cur, part)
 	}
 	return strings.Join(cur, "/"), true
 }

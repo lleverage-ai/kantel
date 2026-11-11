@@ -476,7 +476,10 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		workspace?.set("src/top", { kind: "symlink", target: "/workspace" });
 		workspace?.set("abs", { kind: "symlink", target: "/workspace//src/../src/a.txt" });
 		// Through a link, then up: out of the workspace as text, in it where the isolate resolves it.
+		workspace?.set("src/deep", { kind: "dir" });
 		workspace?.set("jump", { kind: "symlink", target: "/workspace/src/deep" });
+		// One the isolate can't resolve (through a missing directory) is left as it was, for the extractor to refuse.
+		workspace?.set("src/broken", { kind: "symlink", target: "../jump/../../missing/../run.sh" });
 		workspace?.set("to-file", { kind: "symlink", target: "/workspace/jump/../../run.sh" });
 		workspace?.set("src/through", { kind: "symlink", target: "../jump/../../run.sh" });
 		workspace?.set("d".repeat(60), { kind: "dir" });
@@ -497,6 +500,10 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(files?.get("/home/user/workspace/jump")).toEqual({ kind: "symlink", target: "src/deep" });
 		expect(files?.get("/home/user/workspace/to-file")).toEqual({ kind: "symlink", target: "run.sh" });
 		expect(files?.get("/home/user/workspace/src/through")).toEqual({ kind: "symlink", target: "../run.sh" });
+		expect(files?.get("/home/user/workspace/src/broken")).toEqual({
+			kind: "symlink",
+			target: "../jump/../../missing/../run.sh",
+		});
 		expect(text(files?.get(`/home/user/workspace/${long}`)?.data)).toBe("long\n");
 		expect(files?.get("/home/user/workspace/big.bin")?.data?.length).toBe(big.length);
 		const reads = isolates.calls.filter(
@@ -518,7 +525,7 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		const event = (await root.listEvents({ sandboxId: sandbox.id })).items.find(
 			(each) => each.type === "sandbox.upgraded",
 		);
-		expect(event?.data).toMatchObject({ path: "control-plane", files: 13, bytes: 6 + 10 + 5 + big.length });
+		expect(event?.data).toMatchObject({ path: "control-plane", files: 15, bytes: 6 + 10 + 5 + big.length });
 		// Its commands go to the microVM now.
 		await root.runCommand(sandbox.id, { command: "ls" });
 		expect(vms.calls.filter((call) => call.method === "sandbox.exec")).toHaveLength(2);

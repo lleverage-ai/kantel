@@ -312,38 +312,63 @@ const linkStaysInside = (name: string, target: string): boolean => {
 	return true;
 };
 
+/** Bounds on `resolveInWorkspace`'s work, which reads targets the guest wrote (as in kantel-host's). */
+const MAX_LINK_TARGET = 4096;
+const MAX_LINK_STEPS = 4096;
+const MAX_LINK_HOPS = 40;
+
+/** A listed entry, as `resolveInWorkspace` needs it: a directory, a file, or a link and its target. */
+type ListedKind = { readonly kind: "directory" | "file" } | { readonly kind: "symlink"; readonly target: string };
+
 /**
- * Walks `target` (relative, or absolute in `/workspace`) from `dir` as the isolate does, through the links it passes
- * (`links`, by name; not a last one, which is what the link names), at most 40 of them: the path in the workspace ("" for
- * its top) it ends at, or undefined where it leaves the workspace or loops. As `resolveInWorkspace` in
- * apps/host/internal/isolate/upgrade.go.
+ * Walks `target` (relative, or absolute in `/workspace`) from `dir` as the isolate does, following the links it passes
+ * through (not a last one, which is what the link names), at most `MAX_LINK_HOPS`. Every component it passes through
+ * must be a directory or a link in `listed`, as the isolate needs it to be (a missing one, or a file, is ENOENT or
+ * ENOTDIR there): one that isn't, a walk out of the workspace, a loop or too much work answers undefined. Else the path
+ * in the workspace ("" for its top) it ends at. As `resolveInWorkspace` in apps/host/internal/isolate/upgrade.go.
  */
-const resolveInWorkspace = (links: ReadonlyMap<string, string>, dir: string, target: string): string | undefined => {
-	const inWorkspace = (to: string) => to === "/workspace" || to.startsWith("/workspace/");
-	let cur: string[] = target.startsWith("/") || dir === "" ? [] : dir.split("/");
-	if (target.startsWith("/") && !inWorkspace(target)) return undefined;
-	let pending = (target.startsWith("/") ? target.slice("/workspace".length) : target).split("/");
+const resolveInWorkspace = (
+	listed: ReadonlyMap<string, ListedKind>,
+	dir: string,
+	target: string,
+): string | undefined => {
+	const cur: string[] = target.startsWith("/") || dir === "" ? [] : dir.split("/");
+	// What is left to walk, last component first, so each step takes one off the end.
+	const pending: string[] = [];
+	const push = (to: string): boolean => {
+		if (to.length > MAX_LINK_TARGET) return false;
+		let rest = to;
+		if (to.startsWith("/")) {
+			if (to !== "/workspace" && !to.startsWith("/workspace/")) return false;
+			cur.length = 0;
+			rest = to.slice("/workspace".length);
+		}
+		const parts = rest.split("/");
+		for (let index = parts.length - 1; index >= 0; index--) {
+			const part = parts[index];
+			if (part !== undefined && part !== "" && part !== ".") pending.push(part);
+		}
+		return true;
+	};
+	if (!push(target)) return undefined;
 	let hops = 0;
-	while (pending.length > 0) {
-		const [part, ...rest] = pending;
-		pending = rest;
-		if (part === undefined || part === "" || part === ".") continue;
+	let steps = 0;
+	for (let part = pending.pop(); part !== undefined; part = pending.pop()) {
+		if (++steps > MAX_LINK_STEPS) return undefined;
 		if (part === "..") {
 			if (cur.length === 0) return undefined;
-			cur = cur.slice(0, -1);
+			cur.pop();
 			continue;
 		}
-		const linked = links.get([...cur, part].join("/"));
-		if (linked !== undefined && pending.length > 0) {
-			if (++hops > 40) return undefined;
-			if (linked.startsWith("/")) {
-				if (!inWorkspace(linked)) return undefined;
-				cur = [];
-				pending = [...linked.slice("/workspace".length).split("/"), ...pending];
-			} else pending = [...linked.split("/"), ...pending];
-			continue;
-		}
-		cur = [...cur, part];
+		cur.push(part);
+		// The last component: what the link names, there or not.
+		if (pending.length === 0) break;
+		const entry = listed.get(cur.join("/"));
+		if (entry?.kind === "directory") continue;
+		if (entry?.kind !== "symlink") return undefined;
+		if (++hops > MAX_LINK_HOPS) return undefined;
+		cur.pop();
+		if (!push(entry.target)) return undefined;
 	}
 	return cur.join("/");
 };
@@ -354,11 +379,11 @@ const resolveInWorkspace = (links: ReadonlyMap<string, string>, dir: string, tar
  * isolate resolves it in the workspace through a link it names (`jump -> deep/sub`, then `jump/../../file`), the path to
  * that file relative to the link's directory. Any other is left as it was: the extractor refuses it.
  */
-const exportLink = (links: ReadonlyMap<string, string>, name: string, target: string): string => {
+const exportLink = (listed: ReadonlyMap<string, ListedKind>, name: string, target: string): string => {
 	const text = workspaceLink(name, target);
 	if (linkStaysInside(name, text)) return text;
 	const at = name.lastIndexOf("/");
-	const resolved = resolveInWorkspace(links, at < 0 ? "" : name.slice(0, at), text);
+	const resolved = resolveInWorkspace(listed, at < 0 ? "" : name.slice(0, at), text);
 	if (resolved === undefined) return text;
 	const up = "../".repeat(name.split("/").length - 1);
 	if (resolved === "") return up === "" ? "." : up.slice(0, -1);
@@ -1623,11 +1648,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				}
 			}
 		}
-		// Each link's target as the microVM takes it (`exportLink`), read against every link listed.
-		const links = new Map<string, string>();
-		for (const entry of entries) if (entry.kind === "symlink") links.set(entry.name, entry.target);
+		// Each link's target as the microVM takes it (`exportLink`), read against everything listed.
+		const listed = new Map<string, ListedKind>();
+		for (const entry of entries) {
+			listed.set(
+				entry.name,
+				entry.kind === "symlink" ? { kind: "symlink", target: entry.target } : { kind: entry.kind },
+			);
+		}
 		return entries.map((entry) =>
-			entry.kind === "symlink" ? { ...entry, target: exportLink(links, entry.name, entry.target) } : entry,
+			entry.kind === "symlink" ? { ...entry, target: exportLink(listed, entry.name, entry.target) } : entry,
 		);
 	};
 
