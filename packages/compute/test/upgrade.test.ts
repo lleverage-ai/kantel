@@ -986,6 +986,48 @@ describe("an upgrade's egress and billing", () => {
 		expect(stored?.egressApplied).toBe(stored?.egressRevision);
 	});
 
+	it("gives the isolate a revocation it never took before its upgrade, when the upgrade fails", async () => {
+		let away = false;
+		const updates: { hosts: string[]; state?: string }[] = [];
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let storeOf: ComputeStore | undefined;
+		const { tom, api } = setup({
+			upgrade: async () => {
+				await held;
+				throw new KantelError("exhausted", "No host has room for the microVM");
+			},
+			updateEgress: async (sandboxId, egress) => {
+				const state = (await storeOf?.sandboxes.get(sandboxId))?.state;
+				if (away) throw new KantelError("unavailable", "The host is away");
+				updates.push({
+					hosts: (egress?.grants ?? []).map((grant) => grant.host),
+					...(state === undefined ? {} : { state }),
+				});
+			},
+		});
+		storeOf = api.store;
+		const sandbox = await tom.createSandbox({ wait: true, autoStopMinutes: null });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// Revoked just before the upgrade, and never taken by the isolate's host: it still has the grant.
+		away = true;
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		away = false;
+		updates.length = 0;
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		release();
+		expect((await upgrading).status).toBe(429);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running" });
+		expect(updates.at(0)).toMatchObject({ hosts: [], state: "starting" });
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
 	it("leaves a stopped isolate stopped when its upgrade fails, its egress left to its next start", async () => {
 		const { tom, api, release, updates } = failingHeld();
 		const sandbox = await tom.createSandbox({ wait: true });

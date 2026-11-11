@@ -9866,6 +9866,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							...(latest.startedAt === undefined ? {} : { startedAt: latest.startedAt }),
 							...(latest.stoppedAt === undefined ? {} : { stoppedAt: latest.stoppedAt }),
 							...(latest.lastActiveAt === undefined ? {} : { lastActiveAt: latest.lastActiveAt }),
+							// Whether the isolate's host had its egress as it was (an update not yet delivered, it hadn't).
+							egressInSync:
+								latest.egressRevision === undefined ||
+								(latest.egressApplied ?? Number.NEGATIVE_INFINITY) >= latest.egressRevision,
 						},
 						...(machine.size === undefined ? {} : { size: machine.size }),
 						...(machine.shape === undefined ? {} : { shape: machine.shape }),
@@ -9984,8 +9988,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const upgrading = read?.upgrading;
 			if (read === undefined || upgrading === undefined || !ours(read)) return;
 			const reconciles = upgrading.from === "running" && backend.updateEgress !== undefined;
-			// What the isolate's host has: what it had before the upgrade, the same egress as the revision the upgrade read.
-			let applied = upgrading.egressRevision;
+			// What the isolate's host has: the egress the upgrade read (the same as the isolate's before it), where its host
+			// had taken that; else none it can be said to have, so it is sent whatever changed.
+			let applied = upgrading.before.egressInSync === false ? undefined : upgrading.egressRevision;
 			let sent = false;
 			const restored = (latest: StoredSandbox): StoredSandbox => ({
 				...latest,
@@ -9996,7 +10001,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? { egressApplied: applied }
 					: {}),
 			});
-			const ready = (latest: StoredSandbox) => ours(latest) && (!reconciles || latest.egressRevision === applied);
+			const ready = (latest: StoredSandbox) =>
+				ours(latest) && (!reconciles || (applied !== undefined && latest.egressRevision === applied));
 			let result = await transition(sandboxId, "starting", restored, ready);
 			for (let round = 0; "lost" in result && result.lost.state === "starting" && ours(result.lost); round++) {
 				const lost = result.lost;
