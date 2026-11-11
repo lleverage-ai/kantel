@@ -749,6 +749,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const clock = options.clock ?? systemClock;
 	const log = options.log ?? ((message: string) => console.error(message));
 	const upgradeTimeoutMs = options.upgradeTimeoutMs ?? DISK_COPY_TIMEOUT_MS;
+	/**
+	 * How long a gateway's claim on rolling back an upgrade lasts (`upgrade.settling`): past its two calls' time and some,
+	 * so a gateway still at it is never taken for gone.
+	 */
+	const settleLeaseMs = 2 * (options.callTimeoutMs ?? 120_000) + 60_000;
 	const moveLimits = options.upgradeMoveLimits ?? UPGRADE_MOVE_LIMITS;
 	let joinTokens: ExternalJoinTokens = store;
 	let compute: HostComputeLink | undefined;
@@ -1684,31 +1689,82 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		};
 	};
 
+	/** Whether a placement is still the isolate upgrade `operationId` is under way on. */
+	const upgradingBy = (placement: PlacementRecord | undefined, operationId: string): placement is PlacementRecord =>
+		placement?.tier === "isolate" && placement.upgrade?.operationId === operationId;
+
+	/**
+	 * Clears upgrade `operationId` off its isolate's placement (`settling` by `token`, where given), as the placement is
+	 * now: its host's reports since are kept, and a placement another gateway settled, or a later upgrade's, is left as
+	 * it is. Whether it did.
+	 */
+	const clearUpgrade = async (sandboxId: string, operationId: string, token?: string): Promise<boolean> =>
+		(await store.updatePlacement(sandboxId, (latest) => {
+			if (!upgradingBy(latest, operationId)) return undefined;
+			if (token !== undefined && latest.upgrade?.settling?.by !== token) return undefined;
+			const { upgrade: _done, ...placed } = latest;
+			return { ...placed, updatedAt: clock.now() };
+		})) !== undefined;
+
 	/**
 	 * Rolls back an upgrade that copied files to another host: the microVM made there (or perhaps made: its create's
-	 * answer may be lost) deleted, the isolate thawed, its placement as it was. False when a host couldn't be reached:
-	 * the upgrade stays on the placement, to be settled later.
+	 * answer may be lost) deleted, the isolate thawed, its placement as it was.
+	 *
+	 * Claimed first, in the store every gateway shares (`upgrade.settling`, for `settleLeaseMs`), so only one gateway
+	 * sends the compensating calls at a time, and each is sent only while its claim and the upgrade still stand: a
+	 * rollback that is late (its gateway slow, its claim lapsed and another's done since, a newer upgrade begun) never
+	 * deletes the newer one's microVM or puts back a placement over it. `done` once rolled back; `unreachable` when a
+	 * host couldn't be reached (the claim let go, the upgrade left on the placement to be settled later); `busy` while
+	 * another gateway has it; `superseded` when it is no longer this rollback's (settled elsewhere).
 	 */
 	const rollBackCopy = async (
 		sandboxId: string,
-		source: PlacementRecord,
+		sourceHostId: string,
 		targetId: string,
 		operationId: string,
-	): Promise<boolean> => {
+	): Promise<"done" | "unreachable" | "busy" | "superseded"> => {
 		const gone = (error: unknown) => isKantelError(error) && error.code === "not_found";
-		try {
-			await onHost(targetId, HostMethods.delete, { sandboxId });
-		} catch (error) {
-			if (!gone(error)) return false;
+		const token = shortId("rbk");
+		const claimed = await store.updatePlacement(sandboxId, (latest) => {
+			if (!upgradingBy(latest, operationId) || latest.upgrade === undefined) return undefined;
+			const held = latest.upgrade.settling;
+			if (held !== undefined && held.until > clock.now()) return undefined;
+			return {
+				...latest,
+				upgrade: { ...latest.upgrade, settling: { by: token, until: clock.now() + settleLeaseMs } },
+			};
+		});
+		if (claimed === undefined) {
+			return upgradingBy(await store.getPlacement(sandboxId), operationId) ? "busy" : "superseded";
 		}
-		try {
-			await onHost(source.hostId, HostMethods.upgradeThaw, { sandboxId, operationId });
-		} catch (error) {
-			if (!gone(error)) return false;
+		const stillOurs = async () => {
+			const read = await store.getPlacement(sandboxId);
+			return upgradingBy(read, operationId) && read.upgrade?.settling?.by === token;
+		};
+		/** Lets the claim go, so the next attempt needn't wait for it to lapse. */
+		const letGo = () =>
+			store
+				.updatePlacement(sandboxId, (latest) => {
+					if (!upgradingBy(latest, operationId) || latest.upgrade?.settling?.by !== token) return undefined;
+					const { settling: _gone, ...upgrade } = latest.upgrade;
+					return { ...latest, upgrade };
+				})
+				.catch(() => undefined);
+		for (const [hostId, method, params] of [
+			[targetId, HostMethods.delete, { sandboxId }],
+			[sourceHostId, HostMethods.upgradeThaw, { sandboxId, operationId }],
+		] as const) {
+			if (!(await stillOurs())) return "superseded";
+			try {
+				await onHost(hostId, method, params);
+			} catch (error) {
+				if (!gone(error)) {
+					await letGo();
+					return "unreachable";
+				}
+			}
 		}
-		const { upgrade: _done, ...placed } = source;
-		await store.putPlacement({ ...placed, updatedAt: clock.now() });
-		return true;
+		return (await clearUpgrade(sandboxId, operationId, token)) ? "done" : "superseded";
 	};
 
 	/**
@@ -1743,9 +1799,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const upgrade = placement.upgrade;
 		if (upgrade?.operationId !== operationId) return { state: "failed", reason: "The upgrade never began" };
 		if (upgrade.phase === "copy") {
-			if (!(await rollBackCopy(sandboxId, placement, upgrade.target, operationId))) {
+			const rolled = await rollBackCopy(sandboxId, placement.hostId, upgrade.target, operationId);
+			if (rolled === "unreachable") {
 				throw new KantelError("unavailable", "A host the upgrade used can't be reached to roll it back yet");
 			}
+			// Another gateway's: asked again later, the placement then says what became of it.
+			if (rolled !== "done") throw new KantelError("unavailable", "The upgrade is being settled by another gateway");
 			return { state: "failed", reason: "The upgrade didn't finish, and was rolled back" };
 		}
 		const host = await store.getHost(upgrade.target);
@@ -1759,8 +1818,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		if (outcome.state === "done" && outcome.sandbox !== undefined && host !== undefined && upgrade.size !== undefined) {
 			return { state: "done", upgraded: await commitOnHost(sandboxId, sane(host), upgrade.size, outcome.sandbox) };
 		}
-		const { upgrade: _failed, ...placed } = placement;
-		await store.putPlacement({ ...placed, updatedAt: clock.now() });
+		// Its host undid it: the isolate's placement as it is now, only while this upgrade is still on it.
+		await clearUpgrade(sandboxId, operationId);
 		return { state: "failed", ...(outcome.error === undefined ? {} : { reason: outcome.error }) };
 	};
 
@@ -2266,12 +2325,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				 * The upgrade, kept on the isolate's placement before anything is sent: where its microVM may be, so one whose
 				 * gateway or answer is lost is settled (`settleUpgrade`) rather than guessed.
 				 */
-				const intend = (target: HostRecord, size: HostSize, phase: "host" | "copy") =>
-					store.putPlacement({
-						...source,
-						upgrade: { operationId, target: target.id, phase, size },
-						updatedAt: clock.now(),
-					});
+				const intend = async (target: HostRecord, size: HostSize, phase: "host" | "copy") => {
+					// Only on the isolate it was read as, with no other upgrade on it: never over a newer placement.
+					const written = await store.updatePlacement(sandboxId, (latest) =>
+						latest.tier === "isolate" &&
+						latest.hostId === source.hostId &&
+						(latest.upgrade === undefined || latest.upgrade.operationId === operationId)
+							? { ...latest, upgrade: { operationId, target: target.id, phase, size }, updatedAt: clock.now() }
+							: undefined,
+					);
+					if (written === undefined) throw new KantelError("conflict", "Another upgrade of the sandbox is under way");
+				};
 				// Its own host, where it makes microVMs from its isolates: the files go from its blob store into the microVM
 				// there, never through Kantel.
 				const own = listed.find(
@@ -2305,8 +2369,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 								`The upgrade didn't happen: ${outcome.reason ?? "its host rolled it back"}`,
 							);
 						}
-						// The host refused it, and rolled back what it did: the isolate is as it was, placed as it was.
-						await store.putPlacement({ ...source, updatedAt: clock.now() });
+						// The host refused it, and rolled back what it did: the isolate is as it was, placed as it was (as it is now,
+						// and only while this upgrade is on it).
+						await clearUpgrade(sandboxId, operationId);
 						// No room there after all: another host, as when it had none to begin with. Any other failure stands.
 						if (!isKantelError(error) || (error.code !== "exhausted" && error.code !== "not_supported")) throw error;
 						log(`[hosts] host ${own.id} couldn't upgrade ${sandboxId} itself (${error.message}); moving it`);
@@ -2352,12 +2417,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				reserve(target.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				/** Rolls the copy back: only before the placement is the microVM's, while the isolate is still there. */
 				const rollBack = async (error: unknown): Promise<never> => {
-					if (!(await rollBackCopy(sandboxId, source, target.id, operationId))) {
-						throw upgradeOutcomeUnknown(
-							`The upgrade failed (${error instanceof Error ? error.message : String(error)}) and couldn't be rolled back yet: a host didn't answer`,
-						);
-					}
-					throw error;
+					const rolled = await rollBackCopy(sandboxId, source.hostId, target.id, operationId);
+					if (rolled === "done") throw error;
+					throw upgradeOutcomeUnknown(
+						rolled === "unreachable"
+							? `The upgrade failed (${error instanceof Error ? error.message : String(error)}) and couldn't be rolled back yet: a host didn't answer`
+							: `The upgrade failed (${error instanceof Error ? error.message : String(error)}), and another gateway is settling it`,
+					);
 				};
 				let sandbox: HostSandbox;
 				let moved: { readonly files: number; readonly bytes: number };

@@ -10116,19 +10116,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * The sweep's settling of an upgrade whose gateway has gone quiet (`upgrading.heartbeatAt`), or whose outcome its
 	 * backend couldn't tell: done, published; failed, put back. One its backend still can't tell is left for next time.
+	 *
+	 * Taken on in the store every gateway shares first: its heartbeat moved on from the quiet one this sweep read, as
+	 * its upgrading gateway's would be, and kept moving while this gateway settles it. So another gateway's sweep finds
+	 * it under way and leaves it, and only one settles it at a time; one already taken on, or settled, is left.
 	 */
 	async function settleStuckUpgrade(sandbox: StoredSandbox): Promise<void> {
 		const upgrading = sandbox.upgrading;
 		if (upgrading === undefined) return;
 		const { operationId } = upgrading;
-		await track([sandbox.id], async () => {
-			const outcome: UpgradeOutcome =
-				backend.settleUpgrade === undefined
-					? { state: "failed" }
-					: await backend.settleUpgrade(sandbox.id, operationId);
-			if (outcome.state === "done") await commitUpgrade(sandbox.id, operationId, outcome.placement);
-			else await restoreUpgrade(sandbox.id, operationId);
-		});
+		// The heartbeat this gateway last wrote: moved on only from it, so a write by anyone else ends this one's hold.
+		let mine = upgrading.heartbeatAt;
+		const beat = async (to: number) => {
+			const from = mine;
+			const written = await patchSandbox(sandbox.id, (latest) =>
+				latest.upgrading?.operationId === operationId && latest.upgrading.heartbeatAt === from
+					? { ...latest, upgrading: { ...latest.upgrading, heartbeatAt: to } }
+					: undefined,
+			);
+			if (written !== undefined) mine = to;
+			return written !== undefined;
+		};
+		if (!(await beat(now()))) return;
+		const heartbeat = setInterval(() => beat(now()).catch(() => undefined), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		try {
+			await track([sandbox.id], async () => {
+				const outcome: UpgradeOutcome =
+					backend.settleUpgrade === undefined
+						? { state: "failed" }
+						: await backend.settleUpgrade(sandbox.id, operationId);
+				if (outcome.state === "done") await commitUpgrade(sandbox.id, operationId, outcome.placement);
+				else await restoreUpgrade(sandbox.id, operationId);
+			});
+		} catch (error) {
+			// Not settled (its backend can't tell yet): let go, quiet as it was, for the next sweep on any gateway.
+			clearInterval(heartbeat);
+			await beat(upgrading.heartbeatAt).catch(() => undefined);
+			throw error;
+		} finally {
+			clearInterval(heartbeat);
+		}
 	}
 
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */

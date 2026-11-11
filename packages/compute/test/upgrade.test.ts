@@ -761,6 +761,75 @@ describe("an upgrade's outcome, when its answer is lost", () => {
 	});
 });
 
+describe("an upgrade settled by the sweep on more than one gateway", () => {
+	it("is settled by one of them at a time", async () => {
+		let at = 1_000_000;
+		const store = createMemoryStore();
+		let hang: (error: Error) => void = () => undefined;
+		const first = setup({
+			now: () => at,
+			store,
+			upgrade: () =>
+				new Promise<UpgradedPlacement>((_resolve, reject) => {
+					hang = reject;
+				}),
+		});
+		const sandbox = await first.tom.createSandbox({ wait: true, autoStopMinutes: null });
+		void first.tom.upgradeSandbox(sandbox.id, { wait: false });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// Two gateways' sweeps find it gone quiet; the first's settling is held.
+		let release: (outcome: UpgradeOutcome) => void = () => undefined;
+		const asked: string[] = [];
+		const a = setup({
+			now: () => at,
+			store,
+			settle: () => {
+				asked.push("a");
+				return new Promise<UpgradeOutcome>((resolve) => {
+					release = resolve;
+				});
+			},
+		});
+		const b = setup({
+			now: () => at,
+			store,
+			settle: () => {
+				asked.push("b");
+				return Promise.resolve({ state: "failed" as const });
+			},
+		});
+		at += UPGRADE_STALE_MS + 1;
+		const sweeping = a.api.service.sweep();
+		try {
+			for (let tries = 0; tries < 100 && asked.length === 0; tries++) {
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			await b.api.service.sweep();
+			expect(asked).toEqual(["a"]);
+		} finally {
+			release({ state: "failed" });
+			await sweeping;
+			hang(new KantelError("unavailable", "the gateway went"));
+		}
+		expect(await store.sandboxes.get(sandbox.id)).toMatchObject({ state: "running", type: "isolate" });
+		// One that couldn't be told is let go at once, for the next sweep on any gateway.
+		const unknown = setup({
+			now: () => at,
+			store,
+			upgrade: () => Promise.reject(upgradeOutcomeUnknown("no answer")),
+			settle: () => Promise.reject(new KantelError("unavailable", "The host is away")),
+		});
+		const other = await unknown.tom.createSandbox({ wait: true, autoStopMinutes: null });
+		await failure(unknown.tom.upgradeSandbox(other.id, {}));
+		const quiet = (await store.sandboxes.get(other.id))?.upgrading?.heartbeatAt;
+		at += UPGRADE_STALE_MS + 1;
+		await unknown.api.service.sweep();
+		const left = await store.sandboxes.get(other.id);
+		expect(left).toMatchObject({ state: "starting", type: "isolate" });
+		expect(left?.upgrading?.heartbeatAt).toBe(quiet);
+	});
+});
+
 describe("an upgrade's egress and billing", () => {
 	it("enforces a grant revoked while it was upgrading before the microVM runs", async () => {
 		let release: () => void = () => undefined;
