@@ -52,7 +52,7 @@ The compute API is always on. `bootstrap-key` prints the compute API's first key
 
 ## Add hosts
 
-A host is a Linux machine with `/dev/kvm` that runs `kantel-host` (Firecracker microVMs and workerd isolates). It dials out to the control plane, so it needs no open port. A host on the control plane's own machine joins at its local address, `http://127.0.0.1:58090`; a host anywhere else has to reach the control plane's public URL, so set that first. [Hosts](/hosts/) covers what a machine needs and what the install does.
+A host is a Linux machine with `/dev/kvm` that runs `kantel-host` (Firecracker microVMs and V8 isolates). It dials out to the control plane, so it needs no open port. A host on the control plane's own machine joins at its local address, `http://127.0.0.1:58090`; a host anywhere else has to reach the control plane's public URL, so set that first. [Hosts](/hosts/) covers what a machine needs and what the install does.
 
 ```sh
 kantel-admin compute enable --public-url https://kantel.example.com --apply   # only for hosts on other machines

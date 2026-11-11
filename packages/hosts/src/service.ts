@@ -38,6 +38,7 @@ import {
 	type HostFacts,
 	type HostHello,
 	type HostImageChannel,
+	type HostIsolateRuntime,
 	type HostMemoryReport,
 	HostMethods,
 	type HostMount,
@@ -169,6 +170,8 @@ export interface HostView {
 	readonly nestedVirtualisation: boolean;
 	/** What it does beyond protocol 1 as first released (`HOST_FEATURES`). */
 	readonly features: readonly string[];
+	/** What its isolate runtime can do, as it last said (its hello's facts); absent until it has said. */
+	readonly isolate?: HostIsolateRuntime;
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported (its hello or a heartbeat), what placement admits a create against;
@@ -1179,6 +1182,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			kvm: facts?.kvm ?? false,
 			nestedVirtualisation: facts?.nested ?? false,
 			features: [...(facts?.features ?? [])],
+			...(facts?.isolate === undefined ? {} : { isolate: { ...facts.isolate } }),
 			// Disk is free space, which changes as the host runs: the latest heartbeat's, else the hello's.
 			capacity: {
 				vcpus: facts?.cpus ?? 0,

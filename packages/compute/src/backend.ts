@@ -81,6 +81,12 @@ export interface BackendHost {
 	 * sandboxes get is enforced however they run (the stub).
 	 */
 	readonly features?: readonly string[];
+	/**
+	 * What its isolate runtime can do: whether its isolates' shells run `node` and `python`, and whether an isolate's
+	 * memory is a hard limit. Absent: it hasn't said (a host without the isolate tier, or from before its runtime said),
+	 * so neither, and not enforced.
+	 */
+	readonly isolate?: BackendIsolateRuntime;
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported, which placement admits a create against (`capacity.diskGb` is what it
@@ -104,6 +110,13 @@ export interface BackendHost {
 	/** The account it was added to as one of its own hosts, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
 	readonly lastSeenAt?: number;
+}
+
+/** A host's isolate runtime, as `BackendHost.isolate` says it. */
+export interface BackendIsolateRuntime {
+	readonly javascript: boolean;
+	readonly python: boolean;
+	readonly memoryEnforced: boolean;
 }
 
 /** What the deployment can run now. */

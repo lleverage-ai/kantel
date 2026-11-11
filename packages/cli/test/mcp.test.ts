@@ -35,6 +35,8 @@ const SANDBOX: Sandbox = {
 	capabilities: {
 		exec: true,
 		files: true,
+		javascript: false,
+		python: false,
 		ssh: false,
 		desktop: false,
 		browser: false,

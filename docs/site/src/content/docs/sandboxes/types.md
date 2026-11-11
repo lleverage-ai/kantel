@@ -15,7 +15,7 @@ Every sandbox is one of two types. You choose with `type` when you [create it](/
 
 | | `isolate` | `microvm` |
 | --- | --- | --- |
-| What it is | A workerd isolate running [just-bash](https://github.com/vercel-labs/just-bash), a bash written in TypeScript, over files kept in `/workspace` | A Firecracker microVM with its own Linux kernel |
+| What it is | A V8 isolate in `kantel-isolate`, Kantel's runtime on deno_core, running [just-bash](https://github.com/vercel-labs/just-bash), a bash written in TypeScript, over files kept in `/workspace` | A Firecracker microVM with its own Linux kernel |
 | Starts in | Milliseconds | Longer: a machine boots |
 | Costs | Almost nothing | Its size's hourly rate while it runs |
 | Commands and files | Yes, in the isolate's shell, starting in `/workspace` | Yes, with `bash`, starting in `/home/user` |

@@ -1,17 +1,18 @@
-// Package isolate is the isolate tier: each sandbox is a workerd Dynamic Worker running just-bash (a TypeScript
-// shell) over its own files. It starts in milliseconds and runs no native binaries.
+// Package isolate is the isolate tier: each sandbox is a V8 isolate in kantel-isolate (apps/host/isolate-runtime,
+// on deno_core), running just-bash (a TypeScript shell) over its own files, with `node` and `python` (Pyodide) each
+// run in a fresh isolate of their own. It starts in milliseconds and runs no native binaries.
 //
-// workerd "is not a hardened sandbox", so it never runs agent code on the host itself: each account's isolates run
-// in that account's own isolate VM, a small Firecracker microVM with workerd and the isolate worker
-// (apps/host/isolate) and no network device. With Runtime "native" (for a host without KVM, and only for code you
-// trust) workerd runs on the host instead, one process per account.
+// One process holds every isolate of an account, so it never runs agent code on the host itself: each account's
+// isolates run in that account's own isolate VM, a small Firecracker microVM with kantel-isolate and no network
+// device. With Runtime "native" (for a host without KVM, and only for code you trust) kantel-isolate runs on the host
+// instead, one process per account.
 //
 // State lives on the host, not in the VM: a sandbox is a manifest (path → SHA-256) and the account's blobs, which
-// the worker reads and writes through the host's store (a vsock port the host serves for that VM's account only).
+// the runtime reads and writes through the host's store (a vsock port the host serves for that VM's account only).
 // A command takes the manifest and returns the next one. So a snapshot or a fork copies a manifest, and stopping a
 // sandbox costs nothing.
 //
-// Fast acquisition: isolate VMs are restored from a template snapshot taken with workerd up and isolates
+// Fast acquisition: isolate VMs are restored from a template snapshot taken with the runtime up and isolates
 // pre-loaded, and each VM keeps isolates pre-loaded for its account's next ones. No idle VM waits for an account:
 // an account's first sandbox restores the template.
 package isolate
@@ -66,10 +67,25 @@ type Config struct {
 	// VM is the isolate VM's shape.
 	VCPUs     int
 	MemoryMiB int
-	// Workerd and Bundle are the native runtime's workerd binary and the isolate worker's directory (config.capnp
-	// and dist/).
-	Workerd string
-	Bundle  string
+	// Binary and Assets are the native runtime's kantel-isolate and its assets directory (the guest bundles and
+	// Pyodide: what apps/host/isolate-runtime/build-assets.sh makes).
+	Binary string
+	Assets string
+	// LegacyWorkerd and LegacyBundle, with no Binary, are the native runtime from before kantel-isolate: workerd and
+	// its isolate worker's directory (config.capnp and dist/), on a host updated by its binary alone.
+	LegacyWorkerd string
+	LegacyBundle  string
+	// RunDir holds each native runtime's directory (its sockets and temporary files), traversable but not listable
+	// (0711), so a runtime of its own uid reaches only its own (default /run/kantel-isolate when the host runs as root,
+	// else Root/runtimes).
+	RunDir string
+	// UIDBase is the first of the uids native runtimes run as, one each, when the host runs as root (default
+	// DefaultUIDBase); UIDs is how many (default 65536).
+	UIDBase uint32
+	UIDs    uint32
+	// CgroupRoot is the cgroup v2 directory native runtimes get a cgroup each under, with memory.max (MemoryMiB) and
+	// pids.max (NativePids) (default /sys/fs/cgroup/kantel-isolate, as root).
+	CgroupRoot string
 	// Preload is how many isolates each account's VM keeps loaded for its next sandboxes (default 4).
 	Preload int
 	// IdleVM is how long an account's VM lives with no running sandbox (default 10 minutes).
@@ -91,9 +107,9 @@ type meta struct {
 	Egress    *proto.Egress     `json:"egress,omitempty"`
 	Error     string            `json:"error,omitempty"`
 	// MemoryMiB is the memory the sandbox asked for (DefaultMemoryMiB when it asked for none; 0 in a sandbox made
-	// before it was recorded). Requested, not enforced: workerd's WorkerLoader limits take only cpuMs and subRequests,
-	// so the runtime records it; the account VM's memory (Config.MemoryMiB) is the enforced ceiling, shared by the
-	// owner's isolates.
+	// before it was recorded). kantel-isolate enforces it per isolate (heap, ArrayBuffers and wasm memory together;
+	// its /healthz says memoryEnforced), and the account VM's memory (Config.MemoryMiB), shared by the owner's
+	// isolates, is the ceiling besides.
 	MemoryMiB int `json:"memoryMiB,omitempty"`
 }
 
@@ -162,6 +178,23 @@ type Manager struct {
 	// autoMu is held while snapshots are removed (pruneAuto, a sandbox's delete, DeleteSnapshot) and while one is kept
 	// as a saved snapshot (KeepSnapshot), so a keep never copies a snapshot being removed.
 	autoMu sync.Mutex
+	// runtimeInfo is what the runtime last said it is (its /healthz), nil until one has answered (or, for the VM
+	// runtime, until a template made from these images is found on disk with its record).
+	runtimeInfo atomic.Pointer[proto.IsolateRuntime]
+	// prepared is closed once Prepare has run (or failed).
+	prepared    chan struct{}
+	prepareOnce sync.Once
+	// noReseed logs, once, a runtime without /reseed.
+	noReseed sync.Once
+	// The native runtime's (native.go): the uids live runtimes run as, whether kantel-isolate takes unix: addresses,
+	// and what is logged or done once.
+	uidMu        sync.Mutex
+	uids         map[uint32]bool
+	unixOnce     sync.Once
+	unixOK       bool
+	noUnix       sync.Once
+	noCgroup     sync.Once
+	readableOnce sync.Once
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -196,7 +229,13 @@ func New(cfg Config) (*Manager, error) {
 	for _, e := range entries {
 		_ = os.RemoveAll(filepath.Join(root, "runtimes", e.Name()))
 	}
-	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, runtimes: map[string]*runtime{}, stopReap: make(chan struct{})}
+	if cfg.Runtime == "native" {
+		if err := prepareNative(&cfg); err != nil {
+			return nil, err
+		}
+	}
+	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, runtimes: map[string]*runtime{}, stopReap: make(chan struct{}), prepared: make(chan struct{})}
+	m.loadRuntimeInfo()
 	sbs, _ := os.ReadDir(filepath.Join(root, "sandboxes"))
 	for _, e := range sbs {
 		dir := filepath.Join(root, "sandboxes", e.Name())
@@ -262,7 +301,7 @@ func readManifest(path string) (Manifest, error) {
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
-	return proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: "isolate", State: s.meta.State, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner}
+	return proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: "isolate", State: s.meta.State, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner, Isolate: m.RuntimeInfo()}
 }
 
 func (m *Manager) emit(s *sandbox) {
@@ -281,7 +320,7 @@ func (m *Manager) get(id string) (*sandbox, error) {
 	return s, nil
 }
 
-// Owner is the account a sandbox belongs to (the egress proxy's check on the isolate worker's claims).
+// Owner is the account a sandbox belongs to (the egress proxy's check on the isolate runtime's claims).
 func (m *Manager) Owner(id string) (string, bool) {
 	s, err := m.get(id)
 	if err != nil {
@@ -342,7 +381,7 @@ func (m *Manager) readBlob(account, sha string) ([]byte, error) {
 
 // --- runtimes -------------------------------------------------------------------------------------------------------
 
-// runtime is one account's workerd: an isolate VM, or a native process.
+// runtime is one account's kantel-isolate: an isolate VM, or a native process.
 type runtime struct {
 	dir     string
 	account atomic.Pointer[string]
@@ -352,6 +391,8 @@ type runtime struct {
 	proc    *os.Process
 	done    <-chan struct{}
 	lns     []net.Listener
+	// cleanup undoes what a native start set up beyond dir: its cgroup and its uid (native.go).
+	cleanup []func()
 	// lastUsed is when the account last had a running sandbox or a call (unix ms).
 	lastUsed atomic.Int64
 	mu       sync.Mutex
@@ -379,6 +420,9 @@ func (r *runtime) close() {
 		l.Close()
 	}
 	_ = os.RemoveAll(r.dir)
+	for i := len(r.cleanup) - 1; i >= 0; i-- {
+		r.cleanup[i]()
+	}
 }
 
 func (r *runtime) alive() bool {
@@ -390,7 +434,7 @@ func (r *runtime) alive() bool {
 	}
 }
 
-// call POSTs to the isolate worker.
+// call POSTs to the isolate runtime.
 func (r *runtime) call(ctx context.Context, path string, body any, out any) error {
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://isolate"+path, bytes.NewReader(raw))
@@ -409,7 +453,7 @@ func (r *runtime) call(ctx context.Context, path string, body any, out any) erro
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		return fmt.Errorf("isolate worker %s: %d %s", path, res.StatusCode, e.Error)
+		return fmt.Errorf("isolate runtime %s: %d %s", path, res.StatusCode, e.Error)
 	}
 	if out != nil {
 		return json.Unmarshal(data, out)
@@ -417,36 +461,146 @@ func (r *runtime) call(ctx context.Context, path string, body any, out any) erro
 	return nil
 }
 
-func (r *runtime) health(ctx context.Context) (map[string]any, error) {
+// health is the runtime's GET /healthz (apps/host/isolate-runtime): its pool, and what it can do.
+type health struct {
+	OK bool `json:"ok"`
+	// Want is the isolates /warm asked it to keep loaded, and Idle how many it has.
+	Want     int    `json:"want"`
+	Idle     int    `json:"idle"`
+	Sessions int    `json:"sessions"`
+	Runtime  string `json:"runtime"`
+	Version  string `json:"version"`
+	// Capabilities say whether its shell has node and python; absent from a runtime from before them.
+	Capabilities struct {
+		JavaScript bool `json:"javascript"`
+		Python     bool `json:"python"`
+	} `json:"capabilities"`
+	MemoryEnforced bool `json:"memoryEnforced"`
+	// Warm, where the runtime says, is whether it has nothing left to do before a command: its pools (shell, node
+	// and python isolates) full and their idle work done. A template is snapshotted once it is.
+	Warm *bool `json:"warm,omitempty"`
+}
+
+func (h health) info() proto.IsolateRuntime {
+	return proto.IsolateRuntime{Runtime: h.Runtime, Version: h.Version, JavaScript: h.Capabilities.JavaScript, Python: h.Capabilities.Python, MemoryEnforced: h.MemoryEnforced}
+}
+
+func (r *runtime) health(ctx context.Context) (health, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://isolate/healthz", nil)
 	res, err := r.client.Do(req)
 	if err != nil {
-		return nil, err
+		return health{}, err
 	}
 	defer res.Body.Close()
-	var out map[string]any
+	if res.StatusCode != http.StatusOK {
+		return health{}, fmt.Errorf("isolate runtime /healthz: %d", res.StatusCode)
+	}
+	var out health
 	return out, json.NewDecoder(res.Body).Decode(&out)
 }
 
-func (r *runtime) waitWorker(ctx context.Context) error {
+// waitRuntime waits for the runtime to answer /healthz, and answers what it said.
+func (r *runtime) waitRuntime(ctx context.Context) (health, error) {
 	for {
 		attempt, cancel := context.WithTimeout(ctx, time.Second)
-		_, err := r.health(attempt)
+		h, err := r.health(attempt)
 		cancel()
 		if err == nil {
-			return nil
+			return h, nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("isolate worker never answered: %w", err)
+			return health{}, fmt.Errorf("isolate runtime never answered: %w", err)
 		case <-r.done:
-			return errors.New("isolate runtime exited")
+			return health{}, errors.New("isolate runtime exited")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }
 
-// serveStore answers the isolate worker's blob reads and writes, for the runtime's account only.
+// ready waits for a runtime the host is to use, and records what it said it can do.
+func (m *Manager) ready(ctx context.Context, r *runtime) (health, error) {
+	h, err := r.waitRuntime(ctx)
+	if err != nil {
+		return health{}, err
+	}
+	m.setRuntimeInfo(h.info())
+	return h, nil
+}
+
+// legacy says the runtime is workerd's isolate worker, from before kantel-isolate: its /healthz names no runtime. It
+// has no /reseed, and answers any POST without a sandboxId 400 before it looks at the path, so the host doesn't ask.
+func (h health) legacy() bool { return h.Runtime == "" }
+
+// RuntimeInfo is what the runtime last said it can do (proto.Facts.Isolate); nil until one has answered.
+func (m *Manager) RuntimeInfo() *proto.IsolateRuntime {
+	if p := m.runtimeInfo.Load(); p != nil {
+		info := *p
+		return &info
+	}
+	return nil
+}
+
+func (m *Manager) setRuntimeInfo(info proto.IsolateRuntime) {
+	if have := m.runtimeInfo.Load(); have == nil || *have != info {
+		m.log.Info("isolate runtime", "runtime", info.Runtime, "version", info.Version, "javascript", info.JavaScript, "python", info.Python, "memoryEnforced", info.MemoryEnforced)
+	}
+	m.runtimeInfo.Store(&info)
+}
+
+// runtimeFile is the VM runtime's record of what its template's runtime said, kept in the template (and gone with it
+// when the images change), so a restart knows before it restores a VM.
+func (m *Manager) runtimeFile() string { return filepath.Join(m.cfg.Root, "template", "runtime.json") }
+
+func (m *Manager) loadRuntimeInfo() {
+	if m.cfg.Runtime == "native" {
+		return
+	}
+	made, _ := os.ReadFile(filepath.Join(m.cfg.Root, "template", "images"))
+	if string(made) != fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) {
+		return
+	}
+	var info proto.IsolateRuntime
+	if raw, err := os.ReadFile(m.runtimeFile()); err == nil && json.Unmarshal(raw, &info) == nil {
+		m.runtimeInfo.Store(&info)
+	}
+}
+
+// Prepare makes the tier ready for its first sandbox, so the host knows what its runtime can do before it says
+// (proto.Facts.Isolate): the VM runtime's template snapshot, made now if there is none for these images; for the
+// native runtime, a runtime started and ended. A failure is logged: the first create tries again, and says why.
+func (m *Manager) Prepare(ctx context.Context) {
+	m.prepareOnce.Do(func() {
+		defer close(m.prepared)
+		// Not past the tier's Close.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			select {
+			case <-m.stopReap:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		var err error
+		if m.cfg.Runtime == "native" {
+			var r *runtime
+			if r, err = m.start(ctx); err == nil {
+				r.close()
+			}
+		} else {
+			_, err = m.templateDir(ctx)
+		}
+		if err != nil && ctx.Err() == nil {
+			m.log.Warn("isolate runtime not ready yet", "error", err)
+		}
+	})
+}
+
+// Prepared is closed once Prepare has run.
+func (m *Manager) Prepared() <-chan struct{} { return m.prepared }
+
+// serveStore answers the isolate runtime's blob reads and writes, for the runtime's account only.
 func (m *Manager) serveStore(r *runtime, l net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /blobs/{sha}", func(w http.ResponseWriter, req *http.Request) {
@@ -484,7 +638,7 @@ func (m *Manager) serveStore(r *runtime, l net.Listener) {
 	_ = (&http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}).Serve(l)
 }
 
-// serveEgress passes the isolate worker's requests to the host's egress proxy. The worker names the sandbox; the
+// serveEgress passes the isolate runtime's requests to the host's egress proxy. The runtime names the sandbox; the
 // host believes it only for a running sandbox of this runtime's account.
 func (m *Manager) serveEgress(r *runtime, l net.Listener) {
 	for {
@@ -520,7 +674,11 @@ func (m *Manager) listen(r *runtime, network, address string) (net.Listener, err
 
 // start makes a runtime with no account yet.
 func (m *Manager) start(ctx context.Context) (*runtime, error) {
-	dir, err := os.MkdirTemp(filepath.Join(m.cfg.Root, "runtimes"), "rt-")
+	base := filepath.Join(m.cfg.Root, "runtimes")
+	if m.cfg.Runtime == "native" {
+		base = m.cfg.RunDir
+	}
+	dir, err := os.MkdirTemp(base, "rt-")
 	if err != nil {
 		return nil, err
 	}
@@ -539,62 +697,12 @@ func (m *Manager) start(ctx context.Context) (*runtime, error) {
 	return r, nil
 }
 
-func (m *Manager) startNative(ctx context.Context, r *runtime) error {
-	store, err := m.listen(r, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	egressL, err := m.listen(r, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	worker, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	workerAddr := worker.Addr().String()
-	worker.Close()
-	go m.serveStore(r, store)
-	go m.serveEgress(r, egressL)
-	config, err := os.ReadFile(filepath.Join(m.cfg.Bundle, "config.capnp"))
-	if err != nil {
-		return err
-	}
-	text := strings.NewReplacer(
-		"127.0.0.1:7001", store.Addr().String(),
-		"127.0.0.1:7002", egressL.Addr().String(),
-		"127.0.0.1:8080", workerAddr,
-		`embed "dist/`, `embed "`+filepath.Join(m.cfg.Bundle, "dist")+"/",
-	).Replace(string(config))
-	if err := os.WriteFile(filepath.Join(r.dir, "config.capnp"), []byte(text), 0o600); err != nil {
-		return err
-	}
-	logFile, err := os.Create(filepath.Join(r.dir, "workerd.log"))
-	if err != nil {
-		return err
-	}
-	proc, err := os.StartProcess(m.cfg.Workerd, []string{m.cfg.Workerd, "serve", "config.capnp", "--experimental"}, &os.ProcAttr{Dir: r.dir, Files: []*os.File{nil, logFile, logFile}})
-	logFile.Close()
-	if err != nil {
-		return err
-	}
-	r.proc = proc
-	done := make(chan struct{})
-	go func() { _, _ = proc.Wait(); close(done) }()
-	r.done = done
-	r.client = &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "tcp", workerAddr)
-	}}}
-	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	return r.waitWorker(readyCtx)
-}
-
 const bootArgs = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/usr/sbin/kantel-init quiet loglevel=3 systemd.show_status=false"
 
-// templateDir returns the isolate VM's template snapshot, cold-booting one if there is none: a VM with workerd up
-// and Preload isolates loaded, paused and snapshotted.
+// templateDir returns the isolate VM's template snapshot, cold-booting one if there is none: a VM with kantel-isolate
+// up and Preload isolates loaded, paused and snapshotted. Every account's VM is restored from it, so whatever the
+// template's memory holds is the same in each until changed: startVM sets the restored VM's clock and reseeds its
+// kernel's random pool (SetIdentity) before the host uses it.
 func (m *Manager) templateDir(ctx context.Context) (string, error) {
 	m.template.Lock()
 	defer m.template.Unlock()
@@ -636,12 +744,19 @@ func (m *Manager) templateDir(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("isolate VM boot: %w", err)
 	}
 	r := &runtime{guest: client, done: machine.Done()}
-	r.client = workerClient(client)
-	if err := r.waitWorker(bootCtx); err != nil {
+	r.client = runtimeClient(client)
+	h, err := r.waitRuntime(bootCtx)
+	if err != nil {
 		return "", err
 	}
 	if err := r.call(bootCtx, "/warm", map[string]int{"size": m.cfg.Preload}, nil); err != nil {
 		return "", fmt.Errorf("preload isolates: %w", err)
+	}
+	// The runtime warm before the snapshot: every VM restored from it starts where the snapshot left it, so work the
+	// runtime still had in hand (its node and python isolates still loading, its idle collections due) would be
+	// done again, at once, in each one's first command.
+	if h, err = r.settled(bootCtx, m.cfg.Preload, settleLimit); err != nil {
+		return "", err
 	}
 	_ = client.Sync(ctx)
 	client.Close()
@@ -660,13 +775,63 @@ func (m *Manager) templateDir(ctx context.Context) (string, error) {
 		return "", err
 	}
 	raw, _ := json.Marshal(map[string]any{"bootMs": time.Since(start).Milliseconds(), "at": time.Now().UnixMilli()})
+	info := h.info()
+	m.setRuntimeInfo(info)
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
+	_ = writeJSONFile(m.runtimeFile(), info)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
 	m.log.Info("isolate VM template ready", "ms", time.Since(start).Milliseconds())
 	return dir, nil
 }
 
-func workerClient(client *guest.Client) *http.Client {
+// settleTime is how long a template's runtime is left once its pool is full, when its /healthz doesn't say it is
+// warm: long enough for its node and python isolates to load and its first idle collections to run (in the spike,
+// half a second after a command).
+const settleTime = 2 * time.Second
+
+// settleLimit is how long a template's runtime has to settle before its template fails.
+const settleLimit = 60 * time.Second
+
+// settled waits (up to limit) for the runtime to have want isolates loaded and be warm, and answers its last
+// /healthz. A runtime that says (warm) is taken at its word; one that doesn't is given settleTime once its pool is
+// full (its idle count reaching what it wants, where it reports both). One that is neither by limit is an error: a
+// template snapshotted unready would hand every VM restored from it the work it hadn't done.
+func (r *runtime) settled(ctx context.Context, want int, limit time.Duration) (health, error) {
+	deadline := time.Now().Add(limit)
+	for {
+		h, err := r.health(ctx)
+		if err != nil {
+			return health{}, err
+		}
+		pooled := h.Want == 0 || h.Idle >= min(want, h.Want)
+		if h.Warm != nil && *h.Warm && pooled {
+			return h, nil
+		}
+		if h.Warm == nil && pooled {
+			select {
+			case <-ctx.Done():
+				return health{}, ctx.Err()
+			case <-time.After(settleTime):
+			}
+			return r.health(ctx)
+		}
+		if time.Now().After(deadline) {
+			warm := "says nothing of warm"
+			if h.Warm != nil {
+				warm = fmt.Sprintf("warm %v", *h.Warm)
+			}
+			return h, fmt.Errorf("the isolate runtime didn't settle in %v (%d of %d isolates loaded, %s)", limit, h.Idle, min(want, h.Want), warm)
+		}
+		select {
+		case <-ctx.Done():
+			return health{}, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// runtimeClient reaches the VM's kantel-isolate (127.0.0.1:8080 in the guest) through its guest agent.
+func runtimeClient(client *guest.Client) *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		DialContext:         func(ctx context.Context, _, _ string) (net.Conn, error) { return client.DialPort(ctx, 8080) },
 		MaxIdleConnsPerHost: 8,
@@ -703,7 +868,7 @@ func (m *Manager) startVM(ctx context.Context, r *runtime) error {
 	if err := runCmd("cp", "--reflink=auto", "--sparse=always", filepath.Join(tpl, fc.DiskFile), filepath.Join(vm, fc.DiskFile)); err != nil {
 		return err
 	}
-	// The worker's ways to the host: Firecracker hands a guest's connection to host port N to <uds>_N.
+	// The runtime's ways to the host: Firecracker hands a guest's connection to host port N to <uds>_N.
 	store, err := m.listen(r, "unix", filepath.Join(vm, fmt.Sprintf("%s_%d", fc.VsockSocket, StorePort)))
 	if err != nil {
 		return err
@@ -728,9 +893,56 @@ func (m *Manager) startVM(ctx context.Context, r *runtime) error {
 	if _, err := r.guest.WaitReady(readyCtx); err != nil {
 		return err
 	}
+	// The template's memory is every restored VM's: its clock and its kernel's random pool are set apart here, and the
+	// runtime's own random state (its loaded isolates' Math.random, Pyodide's random) by /reseed.
 	_ = r.guest.SetIdentity(ctx, guest.Identity{Hostname: "kantel-isolate", UnixTimeMs: time.Now().UnixMilli(), Entropy: entropy()})
-	r.client = workerClient(r.guest)
-	return r.waitWorker(readyCtx)
+	r.client = runtimeClient(r.guest)
+	return m.restored(readyCtx, r)
+}
+
+// restored readies a runtime restored from the template: waits for it, and reseeds it unless it is workerd's.
+func (m *Manager) restored(ctx context.Context, r *runtime) error {
+	h, err := m.ready(ctx, r)
+	if err != nil {
+		return err
+	}
+	if h.legacy() {
+		// A template of an image from before kantel-isolate (workerd): its isolates keep the template's random state, as
+		// they always did.
+		m.noReseed.Do(func() {
+			m.log.Warn("the isolate image runs workerd, from before kantel-isolate: its restored VMs aren't reseeded; update the host's images")
+		})
+		return nil
+	}
+	return m.reseed(ctx, r)
+}
+
+// reseed tells a runtime restored from the template that it is a VM of its own (POST /reseed with fresh entropy), so
+// its loaded isolates draw random numbers of their own rather than the template's. A runtime without /reseed (404)
+// is left as it is, and logged once.
+func (m *Manager) reseed(ctx context.Context, r *runtime) error {
+	raw, _ := json.Marshal(map[string]string{"entropy": entropy()})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://isolate/reseed", bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	res, err := r.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("isolate runtime /reseed: %w", err)
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	switch {
+	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed:
+		m.noReseed.Do(func() {
+			m.log.Warn("the isolate runtime has no /reseed: isolates its template loaded share their random state across accounts' VMs")
+		})
+		return nil
+	case res.StatusCode >= 300:
+		return fmt.Errorf("isolate runtime /reseed: %d", res.StatusCode)
+	}
+	return nil
 }
 
 // runtimeFor is the account's runtime: its own, or a new one.
@@ -836,7 +1048,7 @@ func (m *Manager) load(ctx context.Context, s *sandbox, t timings) (string, erro
 	if memoryMiB == 0 {
 		memoryMiB = DefaultMemoryMiB
 	}
-	// memoryMiB is recorded by the runtime, not enforced (meta.MemoryMiB).
+	// memoryMiB is the isolate's limit where the runtime enforces it (meta.MemoryMiB).
 	if err := r.call(ctx, "/load", map[string]any{"sandboxId": s.meta.ID, "memoryMiB": memoryMiB}, &res); err != nil {
 		return "", err
 	}
@@ -1535,7 +1747,9 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 }
 
 func (m *Manager) Close() {
-	m.closed.Store(true)
+	if !m.closed.CompareAndSwap(false, true) {
+		return
+	}
 	close(m.stopReap)
 	m.mu.Lock()
 	rts := m.runtimes
@@ -1576,7 +1790,7 @@ func (m *Manager) SetEnv(id string, env map[string]string) error {
 	return s.saveMeta()
 }
 
-// SetEgress replaces a sandbox's egress; the worker's next request sees it.
+// SetEgress replaces a sandbox's egress; the runtime's next request for it sees it.
 func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s, err := m.get(id)
 	if err != nil {

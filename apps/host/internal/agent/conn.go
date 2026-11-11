@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -79,6 +80,7 @@ func (h *Host) Run(ctx context.Context, update Updater) error {
 	usageCtx, stopUsage := context.WithCancel(ctx)
 	defer stopUsage()
 	go h.RunUsage(usageCtx)
+	h.awaitIsolateRuntime(ctx, isolateRuntimeWait)
 	backoff := time.Second
 	for {
 		started := time.Now()
@@ -97,6 +99,56 @@ func (h *Host) Run(ctx context.Context, update Updater) error {
 		case <-time.After(wait):
 		}
 		backoff = min(backoff*2, 30*time.Second)
+	}
+}
+
+// isolateRuntimeWait is how long a starting host waits for its isolate runtime before its first hello.
+const isolateRuntimeWait = 30 * time.Second
+
+// awaitIsolateRuntime waits, at most wait, for the isolate tier to be ready (isolate.Manager.Prepare), so the first
+// hello's facts say what its runtime can do: the control plane reads node, python and enforced memory from them. A
+// template already made for the host's images is ready at once; a host that must make one connects without it after
+// wait, and reports it at its next hello.
+func (h *Host) awaitIsolateRuntime(ctx context.Context, wait time.Duration) {
+	iso, ok := h.tiers[isolate.Tier].(*isolate.Manager)
+	if !ok || iso.RuntimeInfo() != nil {
+		return
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-iso.Prepared():
+	case <-timer.C:
+		h.log.Warn("connecting before the isolate runtime is ready: its facts follow at the next connection")
+	case <-ctx.Done():
+	}
+}
+
+// isolateRuntimeCheck is how often a connection checks whether its hello's isolate runtime facts still hold.
+const isolateRuntimeCheck = 10 * time.Second
+
+// reconnectOnIsolateRuntime ends the connection (Run connects again, with a new hello) once what the isolate runtime
+// says it can do differs from what the hello said. Facts go only in a hello, so a runtime that became ready after
+// awaitIsolateRuntime gave up would otherwise go unreported, and the control plane say no isolate memory is enforced,
+// until the next reconnect.
+func (h *Host) reconnectOnIsolateRuntime(ctx context.Context, sent *proto.IsolateRuntime, every time.Duration, reconnect func()) {
+	iso, ok := h.tiers[isolate.Tier].(*isolate.Manager)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if now := iso.RuntimeInfo(); now != nil && (sent == nil || *now != *sent) {
+			h.log.Info("the isolate runtime's facts changed: reconnecting to report them")
+			reconnect()
+			return
+		}
 	}
 }
 
@@ -141,10 +193,12 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		}
 		s.mu.Unlock()
 	}()
-	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.Facts(), Sandboxes: h.List(), Capacity: h.Capacity()}}
+	facts := h.Facts()
+	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: facts, Sandboxes: h.List(), Capacity: h.Capacity()}}
 	if err := s.send(ctx, hello); err != nil {
 		return err
 	}
+	go h.reconnectOnIsolateRuntime(ctx, facts.Isolate, isolateRuntimeCheck, cancel)
 	kind, raw, err := ws.Read(ctx)
 	if err != nil {
 		if ce, revoked := revokedClose(err); revoked {

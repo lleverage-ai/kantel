@@ -260,9 +260,10 @@ export const JoinOrganisationBody = Type.Object(
 export const SandboxType = Type.Union([Type.Literal("isolate"), Type.Literal("microvm")], {
 	title: "SandboxType",
 	description:
-		"`isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. " +
+		"`isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. " +
 		"Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, " +
-		"but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. " +
+		"and `node` and `python` where its `capabilities` say so (`javascript`, `python`), but no git, package manager " +
+		"or other program of its own, no Docker, desktop, ports or SSH. " +
 		"`microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser " +
 		"and SSH.",
 });
@@ -423,8 +424,9 @@ export const SandboxShapes = Type.Object(
 				memoryMb: ShapeRange,
 				enforced: Type.Boolean({
 					description:
-						"Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's " +
-						"memory, shared by its isolates, is the limit.",
+						"Whether an isolate's memory is a hard limit (its heap, ArrayBuffers and WebAssembly memory together): true " +
+						"when every host the account's isolates may run on says its isolate runtime enforces it. Otherwise the " +
+						"runtime records it, and the account VM's memory, shared by its isolates, is the limit.",
 				}),
 			},
 			{ title: "IsolateShapes" },
@@ -574,6 +576,16 @@ export const SandboxCapabilities = Type.Object(
 	{
 		exec: Type.Boolean(),
 		files: Type.Boolean(),
+		javascript: Type.Boolean({
+			description:
+				"Whether its commands can run JavaScript with `node`: always in a microVM; in an isolate, where its host's isolate " +
+				"runtime has it (each run a fresh V8 isolate, with no npm packages).",
+		}),
+		python: Type.Boolean({
+			description:
+				"Whether its commands can run Python with `python` (`python3`): always in a microVM; in an isolate, where its " +
+				"host's isolate runtime has it (Pyodide, with the packages it ships, none installed from the internet).",
+		}),
 		ssh: Type.Boolean(),
 		desktop: Type.Boolean(),
 		browser: Type.Boolean(),

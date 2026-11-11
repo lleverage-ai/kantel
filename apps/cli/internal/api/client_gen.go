@@ -45,7 +45,7 @@ func (q *DeleteEnvironmentFileQuery) values() url.Values {
 
 // DeleteFileQuery is DeleteFile's query.
 type DeleteFileQuery struct {
-	// An absolute path, or one relative to the user's home.
+	// An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.
 	Path *string
 }
 
@@ -75,7 +75,7 @@ func (q *DeleteTelemetryQuery) values() url.Values {
 
 // ExtractArchiveQuery is ExtractArchive's query.
 type ExtractArchiveQuery struct {
-	// The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.
+	// The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
 	Path *string
 }
 
@@ -355,7 +355,7 @@ func (q *ListEventsQuery) values() url.Values {
 
 // ListFilesQuery is ListFiles's query.
 type ListFilesQuery struct {
-	// Default: the user's home.
+	// Default: a microVM's `/home/user` or an isolate's `/workspace`.
 	Path *string
 	// At most this many; default 50.
 	Limit *int64
@@ -427,7 +427,7 @@ func (q *ListSandboxesQuery) values() url.Values {
 
 // ListSnapshotFilesQuery is ListSnapshotFiles's query.
 type ListSnapshotFilesQuery struct {
-	// A directory; default the user's home.
+	// A directory; default a microVM's `/home/user` or an isolate's `/workspace`.
 	Path *string
 	// At most this many; default 50.
 	Limit *int64
@@ -1191,7 +1191,7 @@ func (c *Client) ListSandboxes(ctx context.Context, query *ListSandboxesQuery, o
 	return &out, nil
 }
 
-// CreateSandbox POST /sandboxes: Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.
+// CreateSandbox POST /sandboxes: Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.
 func (c *Client) CreateSandbox(ctx context.Context, body CreateSandboxBody, opts ...CallOption) (*Sandbox, error) {
 	var out Sandbox
 	if err := c.Do(ctx, Call{Method: "POST", Path: "/sandboxes", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {

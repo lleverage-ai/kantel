@@ -100,7 +100,7 @@ export interface AccountsSource {
 // Sandboxes
 
 /**
- * Where a sandbox runs. `isolate`: a V8 isolate on workerd running a bash written in TypeScript over its /workspace, up in milliseconds. `microvm`: a
+ * Where a sandbox runs. `isolate`: a V8 isolate (kantel-isolate) running a bash written in TypeScript over its /workspace, up in milliseconds. `microvm`: a
  * Firecracker microVM with its own kernel, root, Docker and /dev/kvm inside.
  */
 export type SandboxKind = "isolate" | "microvm";

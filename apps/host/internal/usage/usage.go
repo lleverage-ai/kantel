@@ -1,5 +1,5 @@
 // Package usage measures CPU and memory from the host's side, with nothing run inside a sandbox: the host's own from
-// /proc/stat and /proc/meminfo, and a sandbox's from the process that runs it (its Firecracker, or the workerd or
+// /proc/stat and /proc/meminfo, and a sandbox's from the process that runs it (its Firecracker, or the kantel-isolate or
 // isolate VM its account's isolates run in), through /proc/<pid>/stat and /proc/<pid>/status.
 //
 // CPU is a counter, so a reading is only a figure once there is a second one: Counters keeps the last reading of each
