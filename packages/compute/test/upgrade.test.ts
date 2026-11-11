@@ -807,6 +807,98 @@ describe("an upgrade's egress and billing", () => {
 		expect(started).toMatchObject({ type: "microvm", state: "running" });
 	});
 
+	/** An upgrade held until `release`, then refused; the egress updates its backend takes, with the record's state then. */
+	function failingHeld(refuseEgress = false) {
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const updates: { revision?: number; hosts: string[]; state?: string }[] = [];
+		let storeOf: ComputeStore | undefined;
+		const made = setup({
+			upgrade: async () => {
+				await held;
+				throw new KantelError("exhausted", "No host has room for the microVM");
+			},
+			updateEgress: async (sandboxId, egress, revision) => {
+				const state = (await storeOf?.sandboxes.get(sandboxId))?.state;
+				updates.push({
+					...(revision === undefined ? {} : { revision }),
+					hosts: (egress?.grants ?? []).map((grant) => grant.host),
+					...(state === undefined ? {} : { state }),
+				});
+				if (refuseEgress && state === "starting") {
+					throw new KantelError("not_supported", "this host can't enforce egress grants");
+				}
+			},
+		});
+		storeOf = made.api.store;
+		return { ...made, release: () => release(), updates };
+	}
+
+	it("gives the isolate a grant revoked while it was upgrading before it runs again, when the upgrade fails", async () => {
+		const { tom, api, release, updates } = failingHeld();
+		const sandbox = await tom.createSandbox({ wait: true, autoStopMinutes: null });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		const before = await api.store.sandboxes.get(sandbox.id);
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// Revoked while the microVM is being made: a starting sandbox is left to reconcile as it comes back.
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		updates.length = 0;
+		release();
+		expect((await upgrading).status).toBe(429);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running", runs: before?.runs, stopsAt: before?.stopsAt });
+		expect(stored?.upgrading).toBeUndefined();
+		// Sent to the isolate, without the grant, while it was still starting: it never ran again with the old one.
+		expect(updates.at(0)).toMatchObject({ hosts: [], state: "starting", revision: stored?.egressRevision });
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("leaves a stopped isolate stopped when its upgrade fails, its egress left to its next start", async () => {
+		const { tom, api, release, updates } = failingHeld();
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		updates.length = 0;
+		release();
+		expect((await upgrading).status).toBe(429);
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ type: "isolate", state: "stopped" });
+		expect(updates).toEqual([]);
+	});
+
+	it("stops the isolate rather than run it with egress its host refuses, when the upgrade fails", async () => {
+		const { tom, api, release } = failingHeld(true);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		const states: string[] = [];
+		const update = api.store.sandboxes.update.bind(api.store.sandboxes);
+		api.store.sandboxes.update = async (id, change, expected) => {
+			const written = await update(id, change, expected);
+			if (written !== undefined) states.push(written.state);
+			return written;
+		};
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		release();
+		await upgrading;
+		let stopped = await api.store.sandboxes.get(sandbox.id);
+		for (let tries = 0; stopped?.state !== "stopped" && tries < 300; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			stopped = await api.store.sandboxes.get(sandbox.id);
+		}
+		expect(stopped).toMatchObject({ type: "isolate", state: "stopped" });
+		expect(stopped?.upgrading).toBeUndefined();
+		// Never running again with the grant it had: straight from starting to its stop.
+		expect(states.slice(states.indexOf("starting"))).not.toContain("running");
+		expect(stopped?.runs.every((run) => run.to !== undefined)).toBe(true);
+	});
+
 	it("prices every run the isolate had as an isolate's, its stops and starts too", async () => {
 		let at = 1_000_000;
 		const { tom, api } = setup({ now: () => at });

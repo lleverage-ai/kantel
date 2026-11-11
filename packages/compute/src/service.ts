@@ -2718,8 +2718,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Only for what was found unenforceable: the sandbox in the state and at the `egressRevision` the refused delivery
 	 * (or the boot) was for. A newer egress (a clear, a boot's fresh revision) or another lifecycle step since leaves it
 	 * to its own delivery, and it answers `false`. A boot gives its `placement`, written with the intent, so the stop
-	 * and its retries know the host, and what else its publishing changes (`publishing`: an upgrade's microVM, its type,
-	 * which its stop and snapshot are then). `wait` awaits the stop (never from inside the sandbox's own queued work,
+	 * and its retries know the host. `publishing` is what else changes with the intent: a boot's (an upgrade's microVM,
+	 * its type, which its stop and snapshot are then), or an undone upgrade's (the isolate's runs and stop times as they
+	 * were, `restoreUpgrade`). `wait` awaits the stop (never from inside the sandbox's own queued work,
 	 * which the stop queues behind).
 	 */
 	async function enforceStop(
@@ -2738,7 +2739,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
 						...current,
-						...(placement === undefined ? {} : publishing?.(current)),
+						...publishing?.(current),
 						...(placement === undefined
 							? {}
 							: {
@@ -9933,29 +9934,79 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Puts an upgrading record back as it was before upgrade `operationId` (its state, runs and stop times), once its
 	 * backend has said it didn't happen. Nothing happens to one no longer upgrading by that operation.
+	 *
+	 * A running isolate runs again only with its egress as it is now. A change made while it upgraded (a grant revoked, a
+	 * protected variable unbound) skipped it, as one skips any starting sandbox, so it is sent to the isolate while the
+	 * record is still `starting`, and again for each change made while that was sent, as a boot does (`boot`). Where its
+	 * host refuses it, or it can't be got there in `BOOT_RECONCILE_ROUNDS`, the isolate is stopped instead (`enforceStop`),
+	 * never run with what it had. Nothing changed meanwhile (its revision the one the upgrade read), it runs again at
+	 * once. A stopped one is put back stopped: its next start sends its egress.
 	 */
 	async function restoreUpgrade(sandboxId: string, operationId: string): Promise<void> {
-		await transition(
-			sandboxId,
-			"starting",
-			(latest) => {
-				const upgrading = latest.upgrading;
-				if (upgrading === undefined) return latest;
-				const { before } = upgrading;
-				return {
-					...latest,
-					state: upgrading.from,
-					runs: before.runs,
-					stopsAt: before.stopsAt,
-					startedAt: before.startedAt,
-					stoppedAt: before.stoppedAt,
-					lastActiveAt: before.lastActiveAt,
-					upgrading: undefined,
-					lifecycle: (latest.lifecycle ?? 0) + 1,
-				};
-			},
-			(latest) => latest.upgrading?.operationId === operationId,
-		).catch(() => undefined);
+		const ours = (latest: StoredSandbox) => latest.upgrading?.operationId === operationId;
+		/** What it was before the upgrade, but its state. */
+		const before = (latest: StoredSandbox): Partial<StoredSandbox> => {
+			const upgrading = latest.upgrading;
+			if (upgrading === undefined) return {};
+			const { before } = upgrading;
+			return {
+				runs: before.runs,
+				stopsAt: before.stopsAt,
+				startedAt: before.startedAt,
+				stoppedAt: before.stoppedAt,
+				lastActiveAt: before.lastActiveAt,
+				upgrading: undefined,
+			};
+		};
+		try {
+			const read = await store.sandboxes.get(sandboxId);
+			const upgrading = read?.upgrading;
+			if (read === undefined || upgrading === undefined || !ours(read)) return;
+			const reconciles = upgrading.from === "running" && backend.updateEgress !== undefined;
+			// What the isolate's host has: what it had before the upgrade, the same egress as the revision the upgrade read.
+			let applied = upgrading.egressRevision;
+			let sent = false;
+			const restored = (latest: StoredSandbox): StoredSandbox => ({
+				...latest,
+				...before(latest),
+				state: latest.upgrading?.from ?? latest.state,
+				lifecycle: (latest.lifecycle ?? 0) + 1,
+				...(sent && applied !== undefined && (latest.egressApplied ?? Number.NEGATIVE_INFINITY) < applied
+					? { egressApplied: applied }
+					: {}),
+			});
+			const ready = (latest: StoredSandbox) => ours(latest) && (!reconciles || latest.egressRevision === applied);
+			let result = await transition(sandboxId, "starting", restored, ready);
+			for (let round = 0; "lost" in result && result.lost.state === "starting" && ours(result.lost); round++) {
+				const lost = result.lost;
+				// Stopped, its isolate's time ending now, never running again with the egress it had.
+				const stop = (reason: string) =>
+					enforceStop(sandboxId, reason, false, lost, undefined, (latest) => {
+						const at = now();
+						const was = before(latest);
+						return {
+							...was,
+							runs: (was.runs ?? latest.runs).map((run) => (run.to === undefined ? { ...run, to: at } : run)),
+						};
+					});
+				if (round >= BOOT_RECONCILE_ROUNDS) {
+					if (await stop("Its egress couldn't be applied to it as its upgrade was undone")) return;
+				} else {
+					try {
+						await deliverEgress(lost);
+						applied = lost.egressRevision ?? applied;
+						sent = true;
+					} catch (error) {
+						// Refused for the egress it has still: stopped. One changed since is sent next round.
+						if (unenforceable(error) && (await stop(UNENFORCED))) return;
+						if (!unenforceable(error)) await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+					}
+				}
+				result = await transition(sandboxId, "starting", restored, ready);
+			}
+		} catch {
+			// Deleted meanwhile, or its store away: an upgrade still on the record is the sweep's to settle.
+		}
 	}
 
 	/**
