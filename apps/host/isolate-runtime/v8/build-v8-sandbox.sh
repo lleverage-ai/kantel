@@ -16,7 +16,8 @@
 #   apps/host/isolate-runtime/v8/build-v8-sandbox.sh <out-dir> [work-dir]
 #
 # env: JOBS (parallel compile jobs, default 16), KEEP_WORK=1 keeps the work dir (its target/ makes a rebuild quick).
-# Runs in Docker (the builder image below, pinned by digest), so the host needs only Docker and ~25 GB of disk.
+# Runs in Docker (the builder image below, pinned by digest), so the host needs only Docker: about 17 minutes on
+# 20 cores and 5 GB of disk.
 # The source is rusty_v8's git tag with its submodules, checked against the pinned commit (the crates.io package
 # can't build from source: it leaves out ICU's data file). The build downloads Chromium's clang, gn, ninja and Rust
 # toolchain, as rusty_v8's build.rs always does with V8_FROM_SOURCE; bindgen uses LLVM 19's libclang from

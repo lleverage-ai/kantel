@@ -1,0 +1,298 @@
+diff -ruN orig/deno_core-0.412.0/convert.rs patched/deno_core-0.412.0/convert.rs
+--- orig/deno_core-0.412.0/convert.rs	2026-11-11 02:25:52.278376128 +0100
++++ patched/deno_core-0.412.0/convert.rs	2026-11-11 02:27:52.253118214 +0100
+@@ -908,9 +908,11 @@
+             })
+             .map(|v| v.into());
+         }
+-        let backing = v8::ArrayBuffer::new_backing_store_from_bytes(self.0);
+-        let backing_shared = backing.make_shared();
+-        let ab = v8::ArrayBuffer::with_backing_store(scope, &backing_shared);
++        // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs).
++        let ab = serde_v8::sandbox::new_array_buffer_of(scope, &self.0);
++        if ab.byte_length() == 0 {
++          return Err(JsErrorBox::range_error("Array buffer allocation failed"));
++        }
+         v8::$v8ty::new(scope, ab, 0, len)
+           .ok_or_else(|| JsErrorBox::type_error("Failed to create typed array"))
+           .map(|v| v.into())
+diff -ruN orig/deno_core-0.412.0/modules/map.rs patched/deno_core-0.412.0/modules/map.rs
+--- orig/deno_core-0.412.0/modules/map.rs	2026-11-11 02:25:52.283340952 +0100
++++ patched/deno_core-0.412.0/modules/map.rs	2026-11-11 02:27:52.254180794 +0100
+@@ -1146,22 +1146,14 @@
+     code: ModuleCodeBytes,
+   ) -> Result<ModuleId, ModuleError> {
+     let name = name.into_module_name();
+-    let (buf_len, backing_store) = match code {
+-      ModuleCodeBytes::Static(bytes) => (
+-        bytes.len(),
+-        v8::ArrayBuffer::new_backing_store_from_vec(bytes.to_vec()),
+-      ),
+-      ModuleCodeBytes::Boxed(bytes) => (
+-        bytes.len(),
+-        v8::ArrayBuffer::new_backing_store_from_boxed_slice(bytes),
+-      ),
+-      ModuleCodeBytes::Arc(bytes) => (
+-        bytes.len(),
+-        v8::ArrayBuffer::new_backing_store_from_vec(bytes.to_vec()),
+-      ),
++    // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs).
++    let bytes: &[u8] = match &code {
++      ModuleCodeBytes::Static(bytes) => bytes,
++      ModuleCodeBytes::Boxed(bytes) => bytes,
++      ModuleCodeBytes::Arc(bytes) => bytes,
+     };
+-    let backing_store_shared = backing_store.make_shared();
+-    let ab = v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared);
++    let buf_len = bytes.len();
++    let ab = serde_v8::sandbox::new_array_buffer(scope, bytes);
+     let uint8_array = v8::Uint8Array::new(scope, ab, 0, buf_len).unwrap();
+     let value: v8::Local<v8::Value> = uint8_array.into();
+     let exports = vec![(ascii_str!("default"), value)];
+diff -ruN orig/deno_core-0.412.0/ops_builtin_v8.rs patched/deno_core-0.412.0/ops_builtin_v8.rs
+--- orig/deno_core-0.412.0/ops_builtin_v8.rs	2026-11-11 02:25:52.285741134 +0100
++++ patched/deno_core-0.412.0/ops_builtin_v8.rs	2026-11-11 02:27:52.253835831 +0100
+@@ -567,10 +567,12 @@
+     .map_err(|_| JsErrorBox::type_error("Invalid argument"))?;
+   let text_str = serde_v8::to_utf8(text, scope);
+   let bytes = text_str.into_bytes();
++  // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs).
++  let buffer = serde_v8::sandbox::new_array_buffer(scope, &bytes);
++  if buffer.byte_length() != bytes.len() {
++    return Err(JsErrorBox::range_error("Array buffer allocation failed"));
++  }
+   let len = bytes.len();
+-  let backing_store =
+-    v8::ArrayBuffer::new_backing_store_from_vec(bytes).make_shared();
+-  let buffer = v8::ArrayBuffer::with_backing_store(scope, &backing_store);
+   let u8array = v8::Uint8Array::new(scope, buffer, 0, len).unwrap();
+   Ok(u8array)
+ }
+diff -ruN orig/deno_core-0.412.0/runtime/jsrealm.rs patched/deno_core-0.412.0/runtime/jsrealm.rs
+--- orig/deno_core-0.412.0/runtime/jsrealm.rs	2026-11-11 02:25:52.286622111 +0100
++++ patched/deno_core-0.412.0/runtime/jsrealm.rs	2026-11-11 02:28:16.794561313 +0100
+@@ -123,13 +123,13 @@
+   /// Shared tick info buffer exposed to JS as a Uint8Array.
+   /// Index 0: hasTickScheduled (1 = true, 0 = false)
+   /// Index 1: hasRejectionToWarn (set by Rust in promise_reject_callback)
+-  pub(crate) tick_info: Box<[u8; 2]>,
++  pub(crate) tick_info: SharedInfo<u8, 2>,
+   /// Shared immediate info buffer exposed to JS as a Uint32Array.
+   /// Indices: IMM_IDX_COUNT, IMM_IDX_REF_COUNT, IMM_IDX_HAS_OUTSTANDING
+-  pub(crate) immediate_info: Box<[u32; 3]>,
++  pub(crate) immediate_info: SharedInfo<u32, 3>,
+   /// Shared timer info buffer exposed to JS as an Int32Array.
+   /// Index 0: refed timer count (managed by JS)
+-  pub(crate) timer_info: Box<[i32; 1]>,
++  pub(crate) timer_info: SharedInfo<i32, 1>,
+   /// Active JS-managed timers tracked for the leak sanitizer.
+   /// Maps timer ID → (is_repeat, is_system). System timers (e.g.
+   /// AbortSignal.timeout) are excluded from sanitizer stats.
+@@ -178,6 +178,32 @@
+   pub(crate) uv_timer_wake_deadline: Cell<Option<u64>>,
+ }
+ 
++/// Kantel patch: a few numbers shared with JS through a typed array. The memory comes from the isolate's ArrayBuffer
++/// allocator, so with V8's sandbox on it is inside the sandbox. It was a Box on Rust's heap handed to JS with
++/// new_backing_store_from_ptr, which the sandbox forbids: JS could then write to Rust's heap.
++pub(crate) struct SharedInfo<T: Copy, const N: usize> {
++  pub(crate) store: v8::SharedRef<v8::BackingStore>,
++  ptr: *mut [T; N],
++}
++
++impl<T: Copy, const N: usize> SharedInfo<T, N> {
++  fn new(isolate: &mut v8::Isolate) -> Self {
++    // Zero-initialised by the allocator; size_of is a few bytes, far under any budget.
++    let store = v8::ArrayBuffer::new_backing_store(isolate, std::mem::size_of::<[T; N]>()).make_shared();
++    let ptr = store.data().expect("shared info store").as_ptr() as *mut [T; N];
++    Self { store, ptr }
++  }
++}
++
++impl<T: Copy, const N: usize> std::ops::Deref for SharedInfo<T, N> {
++  type Target = [T; N];
++  fn deref(&self) -> &[T; N] {
++    // SAFETY: `store` keeps the memory alive and is suitably aligned (V8 allocates at least 8-byte aligned). JS
++    // writes it only on this thread, between Rust's reads, as with the Box before.
++    unsafe { &*self.ptr }
++  }
++}
++
+ impl ContextState {
+   pub(crate) fn has_tick_scheduled(&self) -> bool {
+     self.tick_info[0] != 0
+@@ -192,6 +218,7 @@
+   }
+ 
+   pub(crate) fn new(
++    isolate: &mut v8::Isolate,
+     op_driver: Rc<OpDriverImpl>,
+     isolate_ptr: v8::UnsafeRawIsolatePtr,
+     op_ctxs: OpCtxs,
+@@ -203,8 +230,8 @@
+     Self {
+       isolate: Some(isolate_ptr),
+       exception_state: Default::default(),
+-      tick_info: Box::new([0u8; 2]),
+-      immediate_info: Box::new([0u32; 3]),
++      tick_info: SharedInfo::new(isolate),
++      immediate_info: SharedInfo::new(isolate),
+       js_event_loop_tick_cb: Default::default(),
+       js_process_timers_cb: Default::default(),
+       js_drain_next_tick_and_macrotasks_cb: Default::default(),
+@@ -222,7 +249,7 @@
+       pending_ops: op_driver,
+       task_spawner_factory: Default::default(),
+       user_timer: Default::default(),
+-      timer_info: Box::new([0i32; 1]),
++      timer_info: SharedInfo::new(isolate),
+       active_timers: Default::default(),
+       unrefed_ops,
+       external_ops_tracker,
+diff -ruN orig/deno_core-0.412.0/runtime/jsruntime.rs patched/deno_core-0.412.0/runtime/jsruntime.rs
+--- orig/deno_core-0.412.0/runtime/jsruntime.rs	2026-11-11 02:25:52.286871984 +0100
++++ patched/deno_core-0.412.0/runtime/jsruntime.rs	2026-11-11 02:29:59.553475301 +0100
+@@ -1007,6 +1007,7 @@
+ 
+     // ...once ops and isolate are set up, we can create a `ContextState`...
+     let context_state = Rc::new(ContextState::new(
++      &mut isolate,
+       op_driver.clone(),
+       isolate_ptr,
+       op_ctxs,
+@@ -1774,31 +1775,14 @@
+       // SAFETY: The backing memory lives on ContextState which outlives
+       // all JS. We pass a no-op destructor since ContextState owns
+       // the memory.
+-      extern "C" fn _no_op_deleter(
+-        _data: *mut std::ffi::c_void,
+-        _len: usize,
+-        _deleter_data: *mut std::ffi::c_void,
+-      ) {
+-      }
+-
+       // Create a shared Uint8Array backed by ContextState::tick_info and
+       // pass it to JS via __setTickInfo so JS can read/write
+       // hasTickScheduled without crossing the JS-to-Rust boundary.
+       {
+         let state_rc = realm.0.state();
+-        let tick_info_ptr =
+-          state_rc.tick_info.as_ptr() as *mut std::ffi::c_void;
+-        let backing_store = unsafe {
+-          v8::ArrayBuffer::new_backing_store_from_ptr(
+-            tick_info_ptr,
+-            2,
+-            _no_op_deleter,
+-            std::ptr::null_mut(),
+-          )
+-        };
+-        let backing_store_shared = backing_store.make_shared();
++        // Kantel patch: the V8-allocated store itself (jsrealm.rs SharedInfo).
+         let ab =
+-          v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared);
++          v8::ArrayBuffer::with_backing_store(scope, &state_rc.tick_info.store);
+         let tick_info_array = v8::Uint8Array::new(scope, ab, 0, 2).unwrap();
+         let set_tick_info_fn: v8::Local<v8::Function> = bindings::get(
+           scope,
+@@ -1817,20 +1801,9 @@
+       // and pass it to JS via __setImmediateInfo.
+       {
+         let state_rc = realm.0.state();
+-        let imm_info_ptr =
+-          state_rc.immediate_info.as_ptr() as *mut std::ffi::c_void;
+-        let imm_byte_len = 3 * std::mem::size_of::<u32>();
+-        let backing_store = unsafe {
+-          v8::ArrayBuffer::new_backing_store_from_ptr(
+-            imm_info_ptr,
+-            imm_byte_len,
+-            _no_op_deleter,
+-            std::ptr::null_mut(),
+-          )
+-        };
+-        let backing_store_shared = backing_store.make_shared();
++        // Kantel patch: the V8-allocated store itself (jsrealm.rs SharedInfo).
+         let ab =
+-          v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared);
++          v8::ArrayBuffer::with_backing_store(scope, &state_rc.immediate_info.store);
+         let imm_info_array = v8::Uint32Array::new(scope, ab, 0, 3).unwrap();
+         let set_imm_info_fn: v8::Local<v8::Function> = bindings::get(
+           scope,
+@@ -1848,20 +1821,9 @@
+       // and pass it to JS via __setTimerInfo.
+       {
+         let state_rc = realm.0.state();
+-        let timer_info_ptr =
+-          state_rc.timer_info.as_ptr() as *mut std::ffi::c_void;
+-        let timer_byte_len = std::mem::size_of::<i32>();
+-        let backing_store = unsafe {
+-          v8::ArrayBuffer::new_backing_store_from_ptr(
+-            timer_info_ptr,
+-            timer_byte_len,
+-            _no_op_deleter,
+-            std::ptr::null_mut(),
+-          )
+-        };
+-        let backing_store_shared = backing_store.make_shared();
++        // Kantel patch: the V8-allocated store itself (jsrealm.rs SharedInfo).
+         let ab =
+-          v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared);
++          v8::ArrayBuffer::with_backing_store(scope, &state_rc.timer_info.store);
+         let timer_info_array = v8::Int32Array::new(scope, ab, 0, 1).unwrap();
+         let set_timer_info_fn: v8::Local<v8::Function> = bindings::get(
+           scope,
+diff -ruN orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs patched/deno_core-0.412.0/runtime/ops_rust_to_v8.rs
+--- orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs	2026-11-11 02:25:52.287881273 +0100
++++ patched/deno_core-0.412.0/runtime/ops_rust_to_v8.rs	2026-11-11 02:29:59.553830334 +0100
+@@ -26,7 +26,6 @@
+ 
+ use std::borrow::Cow;
+ use std::marker::PhantomData;
+-use std::rc::Rc;
+ 
+ use bytes::BytesMut;
+ use libc::c_void;
+@@ -359,24 +358,8 @@
+   value.into_parts().to_v8_fallible(scope)
+ });
+ to_v8!(RustToV8Marker<ArrayBufferMarker, BytesMut>: |value, scope| {
+-  let value = value.0;
+-  let ptr = value.as_ptr();
+-  let len = value.len() as _;
+-  let rc = Rc::into_raw(Rc::new(value)) as *const c_void;
+-
+-  extern "C" fn drop_rc(_ptr: *mut c_void, _len: usize, data: *mut c_void) {
+-    // SAFETY: We know that data is a raw Rc from above
+-    unsafe { drop(Rc::<BytesMut>::from_raw(data as _)) }
+-  }
+-
+-  // SAFETY: We are using the BytesMut backing store here
+-  let backing_store_shared = unsafe {
+-    v8::ArrayBuffer::new_backing_store_from_ptr(
+-      ptr as _, len, drop_rc, rc as _,
+-    )
+-  }
+-  .make_shared();
+-  v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared)
++  // Kantel patch: a copy in the isolate's own allocation, not a store over Rust's heap (serde_v8/sandbox.rs).
++  serde_v8::sandbox::new_array_buffer(scope, &value.0)
+ });
+ to_v8_fallible!(BytesMut: |buf, scope| {
+   let len = buf.len();
+@@ -387,15 +370,8 @@
+ macro_rules! typedarray {
+   ($rty:ty, $v8ty:ident) => {
+     to_v8!(RustToV8Marker<ArrayBufferMarker, Box<[$rty]>>: |buf, scope| {
+-      let buf = buf.0;
+-      if buf.is_empty() {
+-        v8::ArrayBuffer::new(scope, 0)
+-      } else {
+-        let backing_store =
+-          v8::ArrayBuffer::new_backing_store_from_bytes(buf);
+-        let backing_store_shared = backing_store.make_shared();
+-        v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared)
+-      }
++      // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs).
++      serde_v8::sandbox::new_array_buffer_of(scope, &buf.0)
+     });
+     to_v8_fallible!(Box<[$rty]>: |buf, scope| {
+       let len = buf.len();

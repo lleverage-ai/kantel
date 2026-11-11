@@ -1,5 +1,5 @@
 diff --git a/src/binding.cc b/src/binding.cc
-index b5d145d..44593de 100644
+index b5d145d..e7f4f21 100644
 --- a/src/binding.cc
 +++ b/src/binding.cc
 @@ -1,5 +1,6 @@
@@ -9,7 +9,7 @@ index b5d145d..44593de 100644
  #include <cassert>
  #include <cstddef>
  #include <cstdint>
-@@ -2083,6 +2084,71 @@ void v8__ArrayBuffer__Allocator__DELETE(v8::ArrayBuffer::Allocator* self) {
+@@ -2083,6 +2084,83 @@ void v8__ArrayBuffer__Allocator__DELETE(v8::ArrayBuffer::Allocator* self) {
    delete self;
  }
  
@@ -76,6 +76,18 @@ index b5d145d..44593de 100644
 +
 +size_t kantel__BudgetAllocator__Used(const v8::ArrayBuffer::Allocator* self) {
 +  return static_cast<const KantelBudgetAllocator*>(self)->used();
++}
++
++// Kantel: a backing store from the isolate's allocator, or null when the allocator refuses (the budget is spent)
++// and GCs don't help. rusty_v8's new_backing_store asks V8 to crash the process instead, which an isolate over its
++// budget must not be able to do. Uninitialised: callers copy into all of it.
++v8::BackingStore* kantel__ArrayBuffer__NewBackingStore__or_null(
++    v8::Isolate* isolate, size_t byte_length) {
++  return v8::ArrayBuffer::NewBackingStore(
++             isolate, byte_length,
++             v8::BackingStoreInitializationMode::kUninitialized,
++             v8::BackingStoreOnFailureMode::kReturnNull)
++      .release();
 +}
 +
  const v8::ArrayBuffer* v8__ArrayBuffer__New__with_byte_length(
