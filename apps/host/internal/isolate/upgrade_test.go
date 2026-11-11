@@ -187,8 +187,13 @@ func TestExportTarMakesWorkspaceLinksRelative(t *testing.T) {
 		"missing":       "/workspace/nope.txt",
 		"double":        "/workspace//src/a.txt",
 		"rel":           "src/a.txt",
+		// Through a link, then up: out of the workspace as text, in it where the isolate resolves it.
+		"jump":        "/workspace/src/deep",
+		"to-file":     "/workspace/jump/../../top.txt",
+		"rel-through": "jump/../../top.txt",
+		"src/via":     "../jump/../x",
 	}
-	m, _ := upgradeManager(t, proto.StateRunning, map[string]string{"src/a.txt": "a\n", "top.txt": "top\n", "src/deep/x": "x"}, nil, links)
+	m, _ := upgradeManager(t, proto.StateRunning, map[string]string{"src/a.txt": "a\n", "top.txt": "top\n", "src/deep/x": "x", "src/x": "sx"}, nil, links)
 	var buf bytes.Buffer
 	if _, _, err := m.ExportTar("iso_1", &buf); err != nil {
 		t.Fatal(err)
@@ -210,6 +215,10 @@ func TestExportTarMakesWorkspaceLinksRelative(t *testing.T) {
 		"missing":       "nope.txt",
 		"double":        "src/a.txt",
 		"rel":           "src/a.txt",
+		"jump":          "src/deep",
+		"to-file":       "top.txt",
+		"rel-through":   "top.txt",
+		"src/via":       "../jump/../x",
 	}
 	for name, link := range want {
 		if got, err := os.Readlink(filepath.Join(target, name)); err != nil || got != link {
@@ -220,7 +229,7 @@ func TestExportTarMakesWorkspaceLinksRelative(t *testing.T) {
 		data, _ := os.ReadFile(filepath.Join(target, p))
 		return string(data)
 	}
-	for p, content := range map[string]string{"abs": "a\n", "src/up": "top\n", "src/deep/root/top.txt": "top\n", "src/dir/x": "x", "dotdot": "top\n", "double": "a\n"} {
+	for p, content := range map[string]string{"abs": "a\n", "src/up": "top\n", "src/deep/root/top.txt": "top\n", "src/dir/x": "x", "dotdot": "top\n", "double": "a\n", "to-file": "top\n", "rel-through": "top\n", "src/via": "sx", "jump/x": "x"} {
 		if got := read(p); got != content {
 			t.Errorf("%s reads %q, want %q", p, got, content)
 		}
@@ -231,8 +240,8 @@ func TestExportTarMakesWorkspaceLinksRelative(t *testing.T) {
 	}
 
 	// One out of the workspace, absolute or climbing through it, is left as it was, and the extractor refuses it.
-	for _, out := range []string{"/etc/passwd", "/workspace/../etc/passwd", "/workspaces/x"} {
-		m, _ := upgradeManager(t, proto.StateRunning, nil, nil, map[string]string{"out": out})
+	for _, out := range []string{"/etc/passwd", "/workspace/../etc/passwd", "/workspaces/x", "jump/../../../etc/passwd", "/workspace/jump/../../.."} {
+		m, _ := upgradeManager(t, proto.StateRunning, nil, nil, map[string]string{"out": out, "jump": "/workspace/src/deep"})
 		var buf bytes.Buffer
 		if _, _, err := m.ExportTar("iso_1", &buf); err != nil {
 			t.Fatal(err)

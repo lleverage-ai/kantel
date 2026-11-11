@@ -123,7 +123,7 @@ func (m *Manager) ExportTar(id string, w io.Writer) (entries int, bytes int64, e
 		case "dir":
 			h.Typeflag, h.Name, h.Mode = tar.TypeDir, k+"/", 0o755
 		case "symlink":
-			h.Typeflag, h.Linkname, h.Mode = tar.TypeSymlink, workspaceLink(k, e.Target), 0o777
+			h.Typeflag, h.Linkname, h.Mode = tar.TypeSymlink, exportLink(man, k, e.Target), 0o777
 		case "file":
 			if data, err = m.readBlob(owner, e.SHA); err != nil {
 				return entries, bytes, err
@@ -168,6 +168,105 @@ func workspaceLink(name, target string) string {
 		return strings.TrimSuffix(up, "/")
 	}
 	return up + rest
+}
+
+// exportLink is the target a link at name gets in an upgrade's tar: workspaceLink's, where that stays in the workspace
+// as text (the guest's extractor reads a target as text, never through the links it names). One that leaves it as text
+// but whose file is in the workspace, through a link it names (jump -> deep/sub, then jump/../../file), is made the
+// path to that file, relative to the link's directory, as the isolate resolves it now. Any other is left as it was:
+// the extractor refuses it.
+func exportLink(man Manifest, name, target string) string {
+	t := workspaceLink(name, target)
+	if linkStaysInside(name, t) {
+		return t
+	}
+	dir := path.Dir(name)
+	if dir == "." {
+		dir = ""
+	}
+	resolved, ok := resolveInWorkspace(man, dir, t)
+	if !ok {
+		return t
+	}
+	up := strings.Repeat("../", strings.Count(name, "/"))
+	if resolved == "" {
+		if up == "" {
+			return "."
+		}
+		return strings.TrimSuffix(up, "/")
+	}
+	return up + resolved
+}
+
+// linkStaysInside says whether target, read as text from a link at name, stays in the workspace: the extractor's test.
+func linkStaysInside(name, target string) bool {
+	if target == "" || strings.HasPrefix(target, "/") {
+		return false
+	}
+	depth := strings.Count(name, "/")
+	for _, part := range strings.Split(target, "/") {
+		switch part {
+		case "", ".":
+		case "..":
+			if depth == 0 {
+				return false
+			}
+			depth--
+		default:
+			depth++
+		}
+	}
+	return true
+}
+
+// resolveInWorkspace walks target (relative, or absolute in /workspace) from dir as the isolate does, following the
+// links it passes through (not a last one: that is what the link names), at most 40 of them. It answers the path in
+// the workspace ("" for its top) it ends at, or false where it leaves the workspace or loops.
+func resolveInWorkspace(man Manifest, dir, target string) (string, bool) {
+	var cur []string
+	if !strings.HasPrefix(target, "/") && dir != "" {
+		cur = strings.Split(dir, "/")
+	}
+	pending := strings.Split(target, "/")
+	if strings.HasPrefix(target, "/") {
+		if target != "/workspace" && !strings.HasPrefix(target, "/workspace/") {
+			return "", false
+		}
+		pending = strings.Split(strings.TrimPrefix(target, "/workspace"), "/")
+	}
+	hops := 0
+	for len(pending) > 0 {
+		part := pending[0]
+		pending = pending[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(cur) == 0 {
+				return "", false
+			}
+			cur = cur[:len(cur)-1]
+			continue
+		}
+		next := strings.Join(append(append([]string{}, cur...), part), "/")
+		if e, ok := man[next]; ok && e.Kind == "symlink" && len(pending) > 0 {
+			if hops++; hops > 40 {
+				return "", false
+			}
+			linked := e.Target
+			if strings.HasPrefix(linked, "/") {
+				if linked != "/workspace" && !strings.HasPrefix(linked, "/workspace/") {
+					return "", false
+				}
+				cur = nil
+				linked = strings.TrimPrefix(linked, "/workspace")
+			}
+			pending = append(strings.Split(linked, "/"), pending...)
+			continue
+		}
+		cur = append(cur, part)
+	}
+	return strings.Join(cur, "/"), true
 }
 
 // Dispose lets an upgraded sandbox's isolate go, its files' list and its meta, with no event, since the sandbox lives

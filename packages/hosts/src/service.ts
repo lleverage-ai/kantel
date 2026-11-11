@@ -295,6 +295,76 @@ const workspaceLink = (name: string, target: string): string => {
 	return up + rest;
 };
 
+/**
+ * Whether `target`, read as text from a link at `name` (relative to `/workspace`), stays in the workspace: the microVM's
+ * extractor's test (`linkInside` in apps/host/internal/guest/extract.go), which never reads through the links it names.
+ */
+const linkStaysInside = (name: string, target: string): boolean => {
+	if (target === "" || target.startsWith("/")) return false;
+	let depth = name.split("/").length - 1;
+	for (const part of target.split("/")) {
+		if (part === "" || part === ".") continue;
+		if (part === "..") {
+			if (depth === 0) return false;
+			depth--;
+		} else depth++;
+	}
+	return true;
+};
+
+/**
+ * Walks `target` (relative, or absolute in `/workspace`) from `dir` as the isolate does, through the links it passes
+ * (`links`, by name; not a last one, which is what the link names), at most 40 of them: the path in the workspace ("" for
+ * its top) it ends at, or undefined where it leaves the workspace or loops. As `resolveInWorkspace` in
+ * apps/host/internal/isolate/upgrade.go.
+ */
+const resolveInWorkspace = (links: ReadonlyMap<string, string>, dir: string, target: string): string | undefined => {
+	const inWorkspace = (to: string) => to === "/workspace" || to.startsWith("/workspace/");
+	let cur: string[] = target.startsWith("/") || dir === "" ? [] : dir.split("/");
+	if (target.startsWith("/") && !inWorkspace(target)) return undefined;
+	let pending = (target.startsWith("/") ? target.slice("/workspace".length) : target).split("/");
+	let hops = 0;
+	while (pending.length > 0) {
+		const [part, ...rest] = pending;
+		pending = rest;
+		if (part === undefined || part === "" || part === ".") continue;
+		if (part === "..") {
+			if (cur.length === 0) return undefined;
+			cur = cur.slice(0, -1);
+			continue;
+		}
+		const linked = links.get([...cur, part].join("/"));
+		if (linked !== undefined && pending.length > 0) {
+			if (++hops > 40) return undefined;
+			if (linked.startsWith("/")) {
+				if (!inWorkspace(linked)) return undefined;
+				cur = [];
+				pending = [...linked.slice("/workspace".length).split("/"), ...pending];
+			} else pending = [...linked.split("/"), ...pending];
+			continue;
+		}
+		cur = [...cur, part];
+	}
+	return cur.join("/");
+};
+
+/**
+ * The target a link at `name` gets in an upgrade's tar, as kantel-host's own upgrade makes it (`exportLink` in
+ * apps/host/internal/isolate/upgrade.go): `workspaceLink`'s, where that stays in the workspace as text; else, where the
+ * isolate resolves it in the workspace through a link it names (`jump -> deep/sub`, then `jump/../../file`), the path to
+ * that file relative to the link's directory. Any other is left as it was: the extractor refuses it.
+ */
+const exportLink = (links: ReadonlyMap<string, string>, name: string, target: string): string => {
+	const text = workspaceLink(name, target);
+	if (linkStaysInside(name, text)) return text;
+	const at = name.lastIndexOf("/");
+	const resolved = resolveInWorkspace(links, at < 0 ? "" : name.slice(0, at), text);
+	if (resolved === undefined) return text;
+	const up = "../".repeat(name.split("/").length - 1);
+	if (resolved === "") return up === "" ? "." : up.slice(0, -1);
+	return up + resolved;
+};
+
 /** A file of a sandbox, as `sandbox.files.list` answers it. */
 interface ListedFile {
 	readonly path: string;
@@ -1545,7 +1615,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					entries.push({ kind: "directory", name });
 					queue.push(entry.path);
 				} else if (entry.type === "symlink") {
-					entries.push({ kind: "symlink", name, target: workspaceLink(name, entry.target ?? "") });
+					entries.push({ kind: "symlink", name, target: entry.target ?? "" });
 				} else {
 					listedBytes += entry.size;
 					if (listedBytes > moveLimits.bytes) throw tooMuchToMove("too many bytes");
@@ -1553,7 +1623,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				}
 			}
 		}
-		return entries;
+		// Each link's target as the microVM takes it (`exportLink`), read against every link listed.
+		const links = new Map<string, string>();
+		for (const entry of entries) if (entry.kind === "symlink") links.set(entry.name, entry.target);
+		return entries.map((entry) =>
+			entry.kind === "symlink" ? { ...entry, target: exportLink(links, entry.name, entry.target) } : entry,
+		);
 	};
 
 	/**

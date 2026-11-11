@@ -19,7 +19,7 @@ import {
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { needsMicrovmOf } from "../src/needs-microvm.ts";
 import { HOST_REVOKED_REASON, PLACEHOLDER_RATES, UPGRADE_STALE_MS } from "../src/service.ts";
-import { type ComputeStore, createMemoryStore } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore, type StoredSandbox } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { TarCheck, writeTar } from "../src/tar.ts";
 import { bytesToBase64 } from "../src/util.ts";
@@ -1409,6 +1409,27 @@ describe("an upgraded sandbox's snapshots from before", () => {
 			expect((await tom.listSnapshots({ sandboxId: sandbox.id })).items).toEqual([]);
 		});
 	}
+
+	it("never label a microVM's stop snapshot an isolate's when the stop read it before its upgrade ended", async () => {
+		const store = createMemoryStore();
+		// The stop reads the sandbox as the isolate it was, until it moves it to stopping.
+		let stale: StoredSandbox | undefined;
+		const sandboxes = Object.create(store.sandboxes) as typeof store.sandboxes;
+		sandboxes.get = async (id) => (stale !== undefined && id === stale.id ? stale : store.sandboxes.get(id));
+		sandboxes.update = (id, change, expected) => {
+			stale = undefined;
+			return store.sandboxes.update(id, change, expected);
+		};
+		const { tom } = setup({ store: { ...store, sandboxes } });
+		const sandbox = await isolateWithFiles(tom);
+		const isolate = await store.sandboxes.get(sandbox.id);
+		await tom.upgradeSandbox(sandbox.id, {});
+		stale = isolate;
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const [snapshot] = (await tom.listSnapshots({ sandboxId: sandbox.id })).items;
+		expect(snapshot?.sandboxType).toBe("microvm");
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ type: "microvm", latestSnapshotId: snapshot?.id });
+	});
 
 	it("are never what the microVM resumes from once its own newest is deleted", async () => {
 		const { tom, api } = setup();

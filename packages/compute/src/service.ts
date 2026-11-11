@@ -5072,10 +5072,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
 	): Promise<{ readonly work: Promise<void>; readonly stopping: StoredSandbox }> {
+		// The record as the move to stopping found it: what is stopped (its type and machine, for its snapshot) and what a
+		// handed-back stop puts back, never the caller's earlier read, which an upgrade may have changed since.
+		let was = sandbox;
 		const began = await transition(
 			sandbox.id,
 			sandbox.state,
-			(current) => withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() }),
+			(current) => {
+				was = current;
+				return withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() });
+			},
 			still,
 		);
 		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
@@ -5094,11 +5100,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					accountId: sandbox.accountId,
 					kind: "automatic",
 					sandboxId: sandbox.id,
-					sandboxType: sandbox.type,
+					sandboxType: was.type,
 					state: "ready",
 					trigger: "stop",
 					memory: kept,
-					...recordedMachine(sandbox),
+					...recordedMachine(was),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
@@ -5137,8 +5143,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await transition(sandbox.id, "stopping", (current) => ({
 						...current,
 						state: "running",
-						runs: sandbox.runs,
-						stopsAt: sandbox.stopsAt,
+						runs: was.runs,
+						stopsAt: was.stopsAt,
 						// The same machine: its guest agent's health (and why) as the stop found it.
 						reason: current.health === "unresponsive" ? current.reason : undefined,
 					}));
