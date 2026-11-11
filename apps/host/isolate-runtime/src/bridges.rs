@@ -273,6 +273,31 @@ fn is_credential_header(lower: &str) -> bool {
     matches!(lower, "authorization" | "cookie" | "cookie2")
 }
 
+/// A request-body header (Fetch's "request-body-header name"): dropped with the body when a redirect turns the
+/// request into a GET.
+fn is_body_header(lower: &str) -> bool {
+    matches!(
+        lower,
+        "content-type" | "content-encoding" | "content-language" | "content-location"
+    )
+}
+
+/// A status Fetch follows as a redirect (with a `location`).
+fn is_redirect(status: hyper::StatusCode) -> bool {
+    matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308)
+}
+
+/// Whether following a redirect with `status` turns a `method` request into a GET without its body (Fetch,
+/// HTTP-redirect fetch): a POST on 301 or 302, and anything but GET or HEAD on 303. Otherwise the method and the body
+/// are kept (so a PUT, PATCH or DELETE redirected by a 301 or 302 is still one, as are 307 and 308 requests).
+fn redirect_to_get(status: hyper::StatusCode, method: &str) -> bool {
+    match status.as_u16() {
+        301 | 302 => method == "POST",
+        303 => method != "GET" && method != "HEAD",
+        _ => false,
+    }
+}
+
 fn origin_of(uri: &hyper::Uri) -> (Option<&str>, Option<String>) {
     (
         uri.scheme_str(),
@@ -295,6 +320,8 @@ pub async fn egress_fetch(
     let first: hyper::Uri = url.parse().map_err(|e| anyhow!("bad URL {url}: {e}"))?;
     let origin = origin_of(&first);
     let mut credentials_ok = true;
+    // Set once a redirect has turned the request into a GET: its body's headers go with the body.
+    let mut body_dropped = false;
     for _ in 0..10 {
         let uri: hyper::Uri = url.parse().map_err(|e| anyhow!("bad URL {url}: {e}"))?;
         match uri.scheme_str() {
@@ -320,7 +347,10 @@ pub async fn egress_fetch(
             .uri(uri.clone());
         for (k, v) in &req.headers {
             let lower = k.to_ascii_lowercase();
-            if is_dropped_header(&lower) || (!credentials_ok && is_credential_header(&lower)) {
+            if is_dropped_header(&lower)
+                || (!credentials_ok && is_credential_header(&lower))
+                || (body_dropped && is_body_header(&lower))
+            {
                 continue;
             }
             builder = builder.header(k.as_str(), v.as_str());
@@ -335,15 +365,14 @@ pub async fn egress_fetch(
             .map_err(|e| anyhow!("egress request: {e}"))?;
         let status = resp.status();
         if req.follow
-            && status.is_redirection()
+            && is_redirect(status)
             && let Some(loc) = resp.headers().get("location").and_then(|l| l.to_str().ok())
         {
             url = resolve_redirect(&uri, &authority, loc);
-            if status != hyper::StatusCode::TEMPORARY_REDIRECT
-                && status != hyper::StatusCode::PERMANENT_REDIRECT
-            {
+            if redirect_to_get(status, &method) {
                 method = "GET".into();
                 body = Vec::new();
+                body_dropped = true;
             }
             continue;
         }
@@ -389,6 +418,40 @@ fn resolve_redirect(uri: &hyper::Uri, authority: &str, loc: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redirects_rewrite_the_method_only_as_fetch_does() {
+        use hyper::StatusCode as S;
+        let s = |n: u16| S::from_u16(n).unwrap();
+        // POST becomes GET on 301 and 302; PUT, PATCH, DELETE (and GET, HEAD) keep their method.
+        for code in [301, 302] {
+            assert!(redirect_to_get(s(code), "POST"), "{code} POST");
+            for m in ["GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+                assert!(!redirect_to_get(s(code), m), "{code} {m}");
+            }
+        }
+        // 303: everything but GET and HEAD becomes GET.
+        for m in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+            assert!(redirect_to_get(s(303), m), "303 {m}");
+        }
+        assert!(!redirect_to_get(s(303), "GET"));
+        assert!(!redirect_to_get(s(303), "HEAD"));
+        // 307 and 308 keep every method and its body.
+        for code in [307, 308] {
+            for m in ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] {
+                assert!(!redirect_to_get(s(code), m), "{code} {m}");
+            }
+        }
+        // Only those five are followed: 300, 304 and 305 are answered as they are.
+        for code in [301, 302, 303, 307, 308] {
+            assert!(is_redirect(s(code)));
+        }
+        for code in [300, 304, 305, 306, 200] {
+            assert!(!is_redirect(s(code)));
+        }
+        assert!(is_body_header("content-type"));
+        assert!(!is_body_header("authorization"));
+    }
 
     #[test]
     fn target_parsing() {

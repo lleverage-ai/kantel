@@ -487,6 +487,49 @@ d("review fixes: memory guards and limits", () => {
 	});
 });
 
+// PR #837's review: the wasm guard counts with intrinsics captured before guest code; host buffers are charged before
+// a guest can see them; redirects keep PUT/PATCH/DELETE; node's fs keys paths through directory symlinks by their real
+// path; python removes an entry it replaced with one of another kind; JSON imports.
+d("PR #837 review fixes", () => {
+	beforeAll(async () => {
+		if (RUN) {
+			await c.load("pr");
+			await c.load("pr-neighbour");
+		}
+	});
+	const neighbourOk = async () => {
+		expect((await c.exec("pr-neighbour", "echo hi")).stdout).toBe("hi\n");
+		expect((await c.health()).ok).toBe(true);
+	};
+	/** Run a node script (as a manifest file) in sandbox "pr". */
+	const nodeScript = async (source: string, timeoutMs = 15000) =>
+		c.exec("pr", "node s.js", { "s.js": await c.fileEntry(source) }, timeoutMs);
+
+	it("redirects keep PUT, PATCH and DELETE (and their bodies) on 301 and 302, as Fetch does", async () => {
+		const r = await nodeScript(
+			`const cases = [["PUT", 301], ["PATCH", 302], ["DELETE", 302], ["POST", 301], ["POST", 302], ["PUT", 303], ["PUT", 307], ["POST", 308]];
+(async () => {
+	for (const [method, status] of cases) {
+		const body = method === "DELETE" ? undefined : "x";
+		const res = await fetch("http://a.test/redirect/" + status, { method, body, headers: body ? { "content-type": "text/plain" } : {} });
+		console.log(method, status, "->", await res.text());
+	}
+})();`,
+		);
+		expect(r.stdout.trim().split("\n")).toEqual([
+			"PUT 301 -> PUT text/plain x",
+			"PATCH 302 -> PATCH text/plain x",
+			"DELETE 302 -> DELETE none ",
+			"POST 301 -> GET none ",
+			"POST 302 -> GET none ",
+			"PUT 303 -> GET none ",
+			"PUT 307 -> PUT text/plain x",
+			"POST 308 -> POST text/plain x",
+		]);
+	});
+
+});
+
 // memoryMiB bounds the V8 heap, ArrayBuffers and wasm memory together: holding ~60% of it in one and then taking
 // ~60% in the other is stopped (each alone fits, and before the limit was one figure each fitted on its own budget).
 d("one memory limit: heap, buffers and wasm together", () => {
