@@ -21,7 +21,15 @@ export function createFs(ops, state, path) {
 		if (typeof p !== "string") throw new TypeError(`The "path" argument must be of type string. Received ${typeof p}`);
 		return p;
 	};
-	const abs = (p) => path.resolve(toPath(p));
+	// Absolute, but with "." and ".." left in: the walk below resolves them on the tree as the kernel does, so
+	// "alias/../a" with alias a directory link names the entry beside its target, not "a" beside alias.
+	// (path.resolve would collapse "alias/.." as text first.)
+	const abs = (p) => {
+		const s = toPath(p);
+		return s.startsWith("/") ? s : `${path.resolve(".")}/${s}`;
+	};
+	/** A link's target from the link's (resolved) directory, joined as text: the walk resolves it. */
+	const fromDir = (dir, target) => (target.startsWith("/") ? target : `${dir === "/" ? "" : dir}/${target}`);
 
 	function entry(p, syscall) {
 		const e = state.files.get(p);
@@ -66,6 +74,8 @@ export function createFs(ops, state, path) {
 	 */
 	function locate(ap, syscall) {
 		if (ap === "/") return "/";
+		// A path ending in "." or ".." names a directory reached by walking, never a link itself.
+		if (/(^|\/)\.{1,2}\/*$/.test(ap)) return resolve(ap, syscall)[0];
 		const [dir, e] = resolve(path.dirname(ap), syscall);
 		if (e.kind !== "dir") throw fsError("ENOTDIR", syscall, ap, "not a directory");
 		return dir === "/" ? `/${path.basename(ap)}` : `${dir}/${path.basename(ap)}`;
@@ -74,7 +84,7 @@ export function createFs(ops, state, path) {
 	function followLinks(key, syscall) {
 		for (let hops = 0; state.files.get(key)?.kind === "symlink"; hops++) {
 			if (hops > 40) throw fsError("ELOOP", syscall, key, "too many symbolic links encountered");
-			key = locate(path.resolve(path.dirname(key), state.files.get(key).target), syscall);
+			key = locate(fromDir(path.dirname(key), state.files.get(key).target), syscall);
 		}
 		return key;
 	}
@@ -247,6 +257,11 @@ export function createFs(ops, state, path) {
 		let cur = "/";
 		const parts = ap.split("/").filter(Boolean);
 		for (let i = 0; i < parts.length; i++) {
+			if (parts[i] === ".") continue;
+			if (parts[i] === "..") {
+				cur = path.dirname(cur);
+				continue;
+			}
 			const next = cur === "/" ? `/${parts[i]}` : `${cur}/${parts[i]}`;
 			if (!state.files.has(next)) {
 				state.files.set(next, { kind: "dir", mtimeMs: Date.now() });

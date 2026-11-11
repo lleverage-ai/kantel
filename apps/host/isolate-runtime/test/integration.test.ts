@@ -854,6 +854,69 @@ console.log(JSON.stringify(out));`,
 		expect(next.stdout).toBe("newnewyf");
 	});
 
+	it("node fs: '..' after a directory symlink is walked on the tree, alike for reads, writes and new files", async () => {
+		// alias -> real/sub, so alias/.. is real (not the workspace root). flink -> alias/../a names real/a; nlink ->
+		// alias/../new names real/new, which doesn't exist yet. The workspace root's own a must stay as it was.
+		const manifest = {
+			a: await c.fileEntry("root"),
+			"real/a": await c.fileEntry("old"),
+			"real/sub/s": await c.fileEntry("s"),
+			alias: { kind: "symlink", target: "real/sub" },
+			flink: { kind: "symlink", target: "alias/../a" },
+			nlink: { kind: "symlink", target: "alias/../new" },
+			alink: { kind: "symlink", target: "/workspace/alias/../a" },
+		};
+		const r = await c.exec("pr", "node s.js", {
+			...manifest,
+			"s.js": await c.fileEntry(
+				`const fs = require("fs");
+const out = [fs.readFileSync("flink", "utf8"), fs.readFileSync("alias/../a", "utf8"), fs.readFileSync("alink", "utf8")];
+fs.writeFileSync("flink", "new");
+fs.appendFileSync("alink", "+");
+const fd = fs.openSync("flink", "a");
+fs.writeSync(fd, "!");
+fs.closeSync(fd);
+fs.writeFileSync("nlink", "made");
+fs.writeFileSync("alias/../direct", "d");
+fs.mkdirSync("alias/../made/deeper", { recursive: true });
+out.push(
+	fs.readFileSync("flink", "utf8"), fs.readFileSync("real/a", "utf8"), fs.readFileSync("a", "utf8"),
+	fs.readFileSync("real/new", "utf8"), fs.readFileSync("real/direct", "utf8"), fs.statSync("real/made/deeper").isDirectory(),
+	fs.existsSync("new"), fs.existsSync("direct"), fs.existsSync("made"),
+);
+console.log(JSON.stringify(out));`,
+			),
+		});
+		expect(r.stderr).toBe("");
+		expect(JSON.parse(r.stdout)).toEqual([
+			"old",
+			"old",
+			"old",
+			"new+!",
+			"new+!",
+			"root",
+			"made",
+			"d",
+			true,
+			false,
+			false,
+			false,
+		]);
+		const m = r.manifest as Record<string, { kind: string; size?: number; target?: string }>;
+		expect(m["real/a"].size).toBe(5);
+		expect(m.a.size).toBe(4);
+		expect(m["real/new"].kind).toBe("file");
+		expect(m["real/direct"].kind).toBe("file");
+		expect(m["real/made/deeper"].kind).toBe("dir");
+		for (const k of ["new", "direct", "made"]) expect(m[k]).toBeUndefined();
+		const next = await c.exec(
+			"pr",
+			`node -e 'const fs=require("fs");process.stdout.write(["flink","a","nlink"].map((p)=>fs.readFileSync(p,"utf8")).join("|"))'`,
+			m,
+		);
+		expect(next.stdout).toBe("new+!|root|made");
+	});
+
 	it("python: replacing a symlink or a directory with a file, and a file with a directory, persists as made", async () => {
 		const manifest = {
 			"target.txt": await c.fileEntry("T"),
