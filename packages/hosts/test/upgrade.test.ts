@@ -480,6 +480,8 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		workspace?.set("jump", { kind: "symlink", target: "/workspace/src/deep" });
 		// One the isolate can't resolve (through a missing directory) is left as it was, for the extractor to refuse.
 		workspace?.set("src/broken", { kind: "symlink", target: "../jump/../../missing/../run.sh" });
+		workspace?.set("src/file-dot", { kind: "symlink", target: "../jump/../../run.sh/." });
+		workspace?.set("src/missing-dot", { kind: "symlink", target: "../jump/../../missing/." });
 		workspace?.set("to-file", { kind: "symlink", target: "/workspace/jump/../../run.sh" });
 		workspace?.set("src/through", { kind: "symlink", target: "../jump/../../run.sh" });
 		workspace?.set("d".repeat(60), { kind: "dir" });
@@ -500,6 +502,8 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(files?.get("/home/user/workspace/jump")).toEqual({ kind: "symlink", target: "src/deep" });
 		expect(files?.get("/home/user/workspace/to-file")).toEqual({ kind: "symlink", target: "run.sh" });
 		expect(files?.get("/home/user/workspace/src/through")).toEqual({ kind: "symlink", target: "../run.sh" });
+		expect(files?.get("/home/user/workspace/src/file-dot")?.target).toBe("../jump/../../run.sh/.");
+		expect(files?.get("/home/user/workspace/src/missing-dot")?.target).toBe("../jump/../../missing/.");
 		expect(files?.get("/home/user/workspace/src/broken")).toEqual({
 			kind: "symlink",
 			target: "../jump/../../missing/../run.sh",
@@ -525,7 +529,7 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		const event = (await root.listEvents({ sandboxId: sandbox.id })).items.find(
 			(each) => each.type === "sandbox.upgraded",
 		);
-		expect(event?.data).toMatchObject({ path: "control-plane", files: 15, bytes: 6 + 10 + 5 + big.length });
+		expect(event?.data).toMatchObject({ path: "control-plane", files: 17, bytes: 6 + 10 + 5 + big.length });
 		// Its commands go to the microVM now.
 		await root.runCommand(sandbox.id, { command: "ls" });
 		expect(vms.calls.filter((call) => call.method === "sandbox.exec")).toHaveLength(2);

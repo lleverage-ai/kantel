@@ -250,9 +250,13 @@ func resolveInWorkspace(man Manifest, dir, target string) (string, bool) {
 			cur = cur[:0]
 			t = strings.TrimPrefix(t, "/workspace")
 		}
+		// "." stays, as a trailing "/" does (as "."): what comes before either must be a directory, as in the isolate.
 		parts := strings.Split(t, "/")
+		if strings.HasSuffix(t, "/") && len(parts) > 1 {
+			parts[len(parts)-1] = "."
+		}
 		for i := len(parts) - 1; i >= 0; i-- {
-			if parts[i] != "" && parts[i] != "." {
+			if parts[i] != "" {
 				pending = append(pending, parts[i])
 			}
 		}
@@ -268,6 +272,9 @@ func resolveInWorkspace(man Manifest, dir, target string) (string, bool) {
 		}
 		part := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
+		if part == "." {
+			continue
+		}
 		if part == ".." {
 			if len(cur) == 0 {
 				return "", false

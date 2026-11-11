@@ -343,10 +343,12 @@ const resolveInWorkspace = (
 			cur.length = 0;
 			rest = to.slice("/workspace".length);
 		}
+		// "." stays, as a trailing "/" does (as "."): what comes before either must be a directory, as in the isolate.
 		const parts = rest.split("/");
+		if (rest.endsWith("/") && parts.length > 1) parts[parts.length - 1] = ".";
 		for (let index = parts.length - 1; index >= 0; index--) {
 			const part = parts[index];
-			if (part !== undefined && part !== "" && part !== ".") pending.push(part);
+			if (part !== undefined && part !== "") pending.push(part);
 		}
 		return true;
 	};
@@ -355,6 +357,7 @@ const resolveInWorkspace = (
 	let steps = 0;
 	for (let part = pending.pop(); part !== undefined; part = pending.pop()) {
 		if (++steps > MAX_LINK_STEPS) return undefined;
+		if (part === ".") continue;
 		if (part === "..") {
 			if (cur.length === 0) return undefined;
 			cur.pop();

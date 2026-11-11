@@ -245,6 +245,7 @@ func TestExportTarMakesWorkspaceLinksRelative(t *testing.T) {
 	for _, out := range []string{
 		"/etc/passwd", "/workspace/../etc/passwd", "/workspaces/x", "jump/../../../etc/passwd", "/workspace/jump/../../..",
 		"jump/../../missing/../top.txt", "jump/../../top.txt/../top.txt",
+		"jump/../../top.txt/.", "jump/../../top.txt/./.", "jump/../../top.txt/", "jump/../../missing/.",
 		strings.Repeat("./", 100_000) + "../top.txt", strings.Repeat("a/", 3000) + strings.Repeat("../", 3001) + "top.txt",
 	} {
 		m, _ := upgradeManager(t, proto.StateRunning, map[string]string{"top.txt": "top\n", "src/deep/x": "x"}, nil, map[string]string{"out": out, "jump": "/workspace/src/deep"})
