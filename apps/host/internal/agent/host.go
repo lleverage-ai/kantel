@@ -310,6 +310,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.upgradesIsolates() {
 		features = append(features, proto.FeatureIsolateUpgrade)
 	}
+	if _, ok := h.tiers[isolate.Tier].(upgradeSource); ok {
+		features = append(features, proto.FeatureIsolateFreeze)
+	}
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(SnapshotMeasurer); ok {
 			features = append(features, proto.FeatureSnapshotSizes)
@@ -631,11 +634,28 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		return info, nil
 	case proto.MethodUpgrade:
-		p, err := decode[proto.CreateParams](params)
+		p, err := decode[proto.UpgradeParams](params)
 		if err != nil {
 			return nil, err
 		}
 		return h.upgrade(ctx, p)
+	case proto.MethodUpgradeSettle:
+		p, err := decode[proto.UpgradeRef](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.settleUpgrade(ctx, p)
+	case proto.MethodUpgradeFreeze, proto.MethodUpgradeThaw:
+		p, err := decode[proto.UpgradeRef](params)
+		if err != nil {
+			return nil, err
+		}
+		if method == proto.MethodUpgradeFreeze {
+			// Not under the lifecycle lock: a freeze waits for the isolate's commands, which take none.
+			return map[string]bool{"ok": true}, h.freezeIsolate(p)
+		}
+		defer h.lifecycle.lock(p.SandboxID)()
+		return map[string]bool{"ok": true}, h.thawIsolate(p)
 	case proto.MethodStop:
 		p, err := decode[proto.StopParams](params)
 		if err != nil {

@@ -95,6 +95,10 @@ type meta struct {
 	// so the runtime records it; the account VM's memory (Config.MemoryMiB) is the enforced ceiling, shared by the
 	// owner's isolates.
 	MemoryMiB int `json:"memoryMiB,omitempty"`
+	// Frozen is the upgrade (its operation ID) that holds the sandbox still while its files go into a microVM
+	// (Freeze): its commands and file writes are refused until the upgrade commits (Dispose) or rolls back (Thaw).
+	// Kept on disk, so a host restart in the middle doesn't let a write in that the microVM would never get.
+	Frozen string `json:"frozen,omitempty"`
 }
 
 // An isolate's memory: what a sandbox gets when it asks for none, and the range it may ask for.
@@ -1093,12 +1097,15 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	s.exec.Lock()
 	defer s.exec.Unlock()
 	s.mu.Lock()
-	state, owner := s.meta.State, s.meta.Owner
+	state, owner, frozen := s.meta.State, s.meta.Owner, s.meta.Frozen
 	env := map[string]string{}
 	for k, v := range s.meta.Env {
 		env[k] = v
 	}
 	s.mu.Unlock()
+	if frozen != "" {
+		return proto.ExecResult{}, beingUpgraded(p.SandboxID)
+	}
 	if state != proto.StateRunning {
 		return proto.ExecResult{}, conflict("sandbox %s is %s, not running", p.SandboxID, state)
 	}
@@ -1206,6 +1213,9 @@ func (m *Manager) withManifest(id string, write bool, fn func(s *sandbox, man Ma
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if write && s.meta.Frozen != "" {
+		return beingUpgraded(id)
+	}
 	man, err := readManifest(filepath.Join(s.dir, "manifest.json"))
 	if err != nil {
 		return err

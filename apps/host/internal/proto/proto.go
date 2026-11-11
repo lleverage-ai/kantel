@@ -271,6 +271,35 @@ const FeatureSandboxEnv = "sandbox-env"
 // SandboxInfo and Moved. Reported by a host that runs both tiers.
 const FeatureIsolateUpgrade = "isolate-upgrade"
 
+// FeatureIsolateFreeze (HOST_FEATURES.isolateFreeze): the host takes sandbox.upgrade.freeze and sandbox.upgrade.thaw
+// (UpgradeRef) for its isolates, so Kantel can copy one version of an isolate's files to a microVM on another host
+// while nothing writes to them. Reported by a host with the isolate tier.
+const FeatureIsolateFreeze = "isolate-freeze"
+
+// UpgradeParams is sandbox.upgrade's: the microVM's create params (Tier "microvm"), and Kantel's ID for the upgrade.
+// The host does one upgrade per OperationID: sent again (an answer lost), it answers the first's outcome.
+type UpgradeParams struct {
+	CreateParams
+	OperationID string `json:"operationId"`
+}
+
+// UpgradeRef is sandbox.upgrade.freeze's, .thaw's and .settle's params: an upgrade of a sandbox by its operation ID.
+// WaitMs, for a freeze, is how long it waits for a command or write under way to end (default 2 minutes).
+type UpgradeRef struct {
+	SandboxID   string `json:"sandboxId"`
+	OperationID string `json:"operationId"`
+	WaitMs      int64  `json:"waitMs,omitempty"`
+}
+
+// UpgradeOutcome is sandbox.upgrade.settle's answer: "done" with the microVM, or "failed" (rolled back: the isolate
+// as it was, any microVM made for it deleted), with why. Settling waits for the upgrade if it is under way, and an
+// upgrade the host never saw is settled failed, so it can't start after.
+type UpgradeOutcome struct {
+	State   string       `json:"state"`
+	Sandbox *SandboxInfo `json:"sandbox,omitempty"`
+	Error   string       `json:"error,omitempty"`
+}
+
 // UpgradeWorkspace is where an upgraded isolate's /workspace files are in its microVM.
 const UpgradeWorkspace = "/home/user/workspace"
 
@@ -1046,6 +1075,9 @@ type ExecResult struct {
 type NeedsMicrovm struct {
 	Command string `json:"command"`
 	Reason  string `json:"reason"`
+	// Inferred: the host read it from the shell's answer (exit 127 and its message), the runtime didn't say it. A hint
+	// only: Kantel's autoUpgrade acts on what a runtime says, never on text a command could print.
+	Inferred bool `json:"inferred,omitempty"`
 }
 
 // Moved is what an upgrade (sandbox.upgrade) moved into the microVM: its entries (files, links and directories) and
@@ -1268,14 +1300,19 @@ const (
 	MethodCreate = "sandbox.create"
 	// MethodUpgrade makes an isolate a microVM with the same ID (FeatureIsolateUpgrade).
 	MethodUpgrade = "sandbox.upgrade"
-	MethodStop    = "sandbox.stop"
-	MethodResume  = "sandbox.resume"
-	MethodStart   = "sandbox.start"
-	MethodFork    = "sandbox.fork"
-	MethodDelete  = "sandbox.delete"
-	MethodGet     = "sandbox.get"
-	MethodList    = "sandbox.list"
-	MethodExec    = "sandbox.exec"
+	// MethodUpgradeFreeze, MethodUpgradeThaw (FeatureIsolateFreeze) and MethodUpgradeSettle (FeatureIsolateUpgrade):
+	// UpgradeRef.
+	MethodUpgradeFreeze = "sandbox.upgrade.freeze"
+	MethodUpgradeThaw   = "sandbox.upgrade.thaw"
+	MethodUpgradeSettle = "sandbox.upgrade.settle"
+	MethodStop          = "sandbox.stop"
+	MethodResume        = "sandbox.resume"
+	MethodStart         = "sandbox.start"
+	MethodFork          = "sandbox.fork"
+	MethodDelete        = "sandbox.delete"
+	MethodGet           = "sandbox.get"
+	MethodList          = "sandbox.list"
+	MethodExec          = "sandbox.exec"
 	// MethodExecGet (Kantel → host, ExecRef; FeatureExecControl) answers a command's ExecStatus by its CommandID.
 	MethodExecGet = "sandbox.exec.get"
 	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its

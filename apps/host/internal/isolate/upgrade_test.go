@@ -2,11 +2,14 @@ package isolate
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -150,5 +153,66 @@ func TestNeedsMicrovmReadsTheShellsAnswer(t *testing.T) {
 		case c.want != "" && (got == nil || got.Command != c.want || got.Reason == ""):
 			t.Errorf("%d %q: %+v, want %s", c.exit, c.stderr, got, c.want)
 		}
+	}
+}
+
+// Freeze waits for a command or write under way (one holding the exec lock) to end, then refuses every write until
+// Thaw, so the files an upgrade copies are one version; a freeze that waits too long fails, and the isolate is as it
+// was. It is kept on disk.
+func TestFreezeHoldsTheIsolateStillForItsUpgrade(t *testing.T) {
+	m, _ := upgradeManager(t, proto.StateRunning, map[string]string{"a.txt": "a"}, nil, nil)
+	s := m.sandboxes["iso_1"]
+	// A command runs: a freeze that can't wait for it fails.
+	s.exec.Lock()
+	if err := m.Freeze("iso_1", "upg_1", 50*time.Millisecond); err == nil {
+		t.Fatal("froze under a running command")
+	}
+	if m.FrozenBy("iso_1") != "" {
+		t.Fatal("a failed freeze left it frozen")
+	}
+	// One that ends while the freeze waits: the freeze waits for it.
+	frozen := make(chan error, 1)
+	go func() { frozen <- m.Freeze("iso_1", "upg_1", 5*time.Second) }()
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case err := <-frozen:
+		t.Fatalf("froze while the command ran: %v", err)
+	default:
+	}
+	s.exec.Unlock()
+	if err := <-frozen; err != nil {
+		t.Fatal(err)
+	}
+	write := func() error {
+		return m.WriteFile(context.Background(), proto.FileParams{SandboxID: "iso_1", Path: "/workspace/b.txt"}, []byte("b"))
+	}
+	if err := write(); err == nil {
+		t.Fatal("a write landed in a frozen isolate")
+	}
+	if _, err := m.Exec(context.Background(), proto.ExecParams{SandboxID: "iso_1", Command: "true"}, nil); err == nil {
+		t.Fatal("a command ran in a frozen isolate")
+	}
+	// Reads go on.
+	if data, _, _, err := m.ReadFile(context.Background(), proto.FileParams{SandboxID: "iso_1", Path: "/workspace/a.txt"}); err != nil || string(data) != "a" {
+		t.Fatalf("read %q %v", data, err)
+	}
+	if err := m.Freeze("iso_1", "upg_1", 0); err != nil {
+		t.Fatalf("freezing again for the same upgrade: %v", err)
+	}
+	if err := m.Freeze("iso_1", "upg_2", 0); err == nil {
+		t.Fatal("another upgrade froze it too")
+	}
+	raw, _ := os.ReadFile(filepath.Join(s.dir, "meta.json"))
+	if !strings.Contains(string(raw), `"frozen": "upg_1"`) {
+		t.Fatalf("meta.json doesn't keep it: %s", raw)
+	}
+	if err := m.Thaw("iso_1", "upg_2"); err != nil || m.FrozenBy("iso_1") != "upg_1" {
+		t.Fatal("another upgrade thawed it")
+	}
+	if err := m.Thaw("iso_1", "upg_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := write(); err != nil {
+		t.Fatalf("a write after the thaw: %v", err)
 	}
 }

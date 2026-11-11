@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
@@ -26,6 +27,32 @@ type upgradeIsolateTier struct {
 	files    map[string]string
 	disposed []string
 	failTar  error
+	frozen   string
+}
+
+func (f *upgradeIsolateTier) Freeze(_, opID string, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.frozen != "" && f.frozen != opID {
+		return &proto.Error{Code: proto.ErrConflict, Message: "held by another upgrade"}
+	}
+	f.frozen = opID
+	return nil
+}
+
+func (f *upgradeIsolateTier) Thaw(_, opID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.frozen == opID {
+		f.frozen = ""
+	}
+	return nil
+}
+
+func (f *upgradeIsolateTier) FrozenBy(string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.frozen
 }
 
 func (f *upgradeIsolateTier) Get(id string) (proto.SandboxInfo, error) {
@@ -137,9 +164,13 @@ func newUpgradeHost(t *testing.T) (*Host, *upgradeIsolateTier, *upgradeMicrovmTi
 	return h, iso, mv, events
 }
 
-func upgradeCall(t *testing.T, h *Host, params proto.CreateParams) (proto.SandboxInfo, error) {
+func upgradeCall(t *testing.T, h *Host, params proto.CreateParams, op ...string) (proto.SandboxInfo, error) {
 	t.Helper()
-	raw, _ := json.Marshal(params)
+	id := "upg_1"
+	if len(op) > 0 {
+		id = op[0]
+	}
+	raw, _ := json.Marshal(proto.UpgradeParams{CreateParams: params, OperationID: id})
 	out, err := h.Call(context.Background(), proto.MethodUpgrade, raw, nil)
 	if err != nil {
 		return proto.SandboxInfo{}, err
@@ -205,9 +236,60 @@ func TestUpgradeMovesTheIsolatesFilesIntoTheMicrovm(t *testing.T) {
 	if strings.Join(said, ",") != "microvm:running" {
 		t.Fatalf("events for it: %v", said)
 	}
-	// Again: it is a microVM now, not an isolate.
-	if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}); codeOf(err) != proto.ErrConflict {
+	if iso.frozen != "upg_1" {
+		t.Fatalf("the isolate wasn't frozen for the upgrade (%q)", iso.frozen)
+	}
+	// The same operation again (its answer lost): its outcome, nothing made twice.
+	again, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"})
+	if err != nil || again.Tier != microvm.Tier || again.Moved == nil || again.Moved.Files != 2 {
+		t.Fatalf("the same upgrade again: %+v %v", again, err)
+	}
+	if len(mv.deleted) != 0 {
+		t.Fatalf("the microVM was touched again: %v", mv.deleted)
+	}
+	settled := settleCall(t, h, "sbx_up", "upg_1")
+	if settled.State != "done" || settled.Sandbox == nil || settled.Sandbox.Tier != microvm.Tier {
+		t.Fatalf("settling it: %+v", settled)
+	}
+	// Another operation: it is a microVM now, not an isolate.
+	if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}, "upg_2"); codeOf(err) != proto.ErrConflict {
 		t.Fatalf("upgrading a microVM: %v", err)
+	}
+}
+
+func settleCall(t *testing.T, h *Host, id, op string) proto.UpgradeOutcome {
+	t.Helper()
+	raw, _ := json.Marshal(proto.UpgradeRef{SandboxID: id, OperationID: op})
+	out, err := h.Call(context.Background(), proto.MethodUpgradeSettle, raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out.(proto.UpgradeOutcome)
+}
+
+// An upgrade the host never finished, or never got, is settled failed: rolled back, the isolate thawed, and the same
+// operation arriving later doesn't start.
+func TestSettlingAnUpgradeTheHostNeverDidFailsIt(t *testing.T) {
+	h, iso, mv, _ := newUpgradeHost(t)
+	// A freeze landed (a cross-host copy), then Kantel lost track: settling thaws it.
+	if err := iso.Freeze("sbx_up", "upg_lost", 0); err != nil {
+		t.Fatal(err)
+	}
+	if out := settleCall(t, h, "sbx_up", "upg_lost"); out.State != "failed" {
+		t.Fatalf("settled %+v", out)
+	}
+	if iso.frozen != "" {
+		t.Fatalf("the isolate is still frozen by %q", iso.frozen)
+	}
+	if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}, "upg_lost"); err == nil {
+		t.Fatal("an upgrade settled failed ran after all")
+	}
+	if len(iso.disposed) != 0 || mv.execCount() != 0 {
+		t.Fatalf("it ran: disposed %v, %d execs", iso.disposed, mv.execCount())
+	}
+	// A new operation upgrades it.
+	if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}, "upg_new"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -240,6 +322,13 @@ func TestAFailedUpgradeLeavesTheIsolate(t *testing.T) {
 			if len(*events) != 0 {
 				t.Fatalf("it told Kantel %v", *events)
 			}
+			if iso.frozen != "" {
+				t.Fatalf("the isolate is still frozen by %q", iso.frozen)
+			}
+			// Sent again, it answers the same failure rather than trying again.
+			if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}); err == nil {
+				t.Fatal("the failed upgrade succeeded when sent again")
+			}
 		})
 	}
 }
@@ -261,12 +350,4 @@ func TestUpgradeRefusesWhatIsntAnIsolate(t *testing.T) {
 	if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}); codeOf(err) != proto.ErrUnsupported {
 		t.Fatalf("on a host without microVMs: %v", err)
 	}
-}
-
-func codeOf(err error) string {
-	var pe *proto.Error
-	if errors.As(err, &pe) {
-		return pe.Code
-	}
-	return ""
 }

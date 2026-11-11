@@ -2,6 +2,7 @@ package isolate
 
 import (
 	"archive/tar"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -15,6 +16,72 @@ import (
 
 // An isolate's part in an upgrade to a microVM (sandbox.upgrade, agent/upgrade.go): its files as a tar, read from the
 // host's blob store, and its going once the microVM runs with them. And whether a command needed a microVM at all.
+
+func beingUpgraded(id string) error {
+	return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s is being upgraded to a microVM: its files are held still until that ends", id)}
+}
+
+// Freeze holds the sandbox still for upgrade opID: it waits up to wait for a command or file write under way to end
+// (refusing the freeze, conflict, if one doesn't), then refuses every later command and file write until Thaw or
+// Dispose, so the files an upgrade copies are one version and none written after it is lost. Reads go on. Kept on
+// disk. Freezing again for the same opID is a no-op; for another, conflict.
+func (m *Manager) Freeze(id, opID string, wait time.Duration) error {
+	s, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(wait)
+	for !s.exec.TryLock() {
+		if time.Now().After(deadline) {
+			return conflict("sandbox %s still runs a command after %s; upgrade it once that has ended", id, wait)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	defer s.exec.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch s.meta.Frozen {
+	case opID:
+		return nil
+	case "":
+	default:
+		return conflict("sandbox %s is held by another upgrade (%s)", id, s.meta.Frozen)
+	}
+	s.meta.Frozen = opID
+	if err := s.saveMeta(); err != nil {
+		s.meta.Frozen = ""
+		s.unsaved = false
+		return err
+	}
+	return nil
+}
+
+// Thaw lets a sandbox frozen for upgrade opID take commands and writes again (the upgrade rolled back). One not frozen
+// for opID is left as it is.
+func (m *Manager) Thaw(id, opID string) error {
+	s, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.Frozen != opID {
+		return nil
+	}
+	s.meta.Frozen = ""
+	return s.saveMeta()
+}
+
+// FrozenBy is the upgrade that holds the sandbox still, or "".
+func (m *Manager) FrozenBy(id string) string {
+	s, err := m.get(id)
+	if err != nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.meta.Frozen
+}
 
 // ExportTar writes the sandbox's /workspace to w as a tar: its directories, its files (from the account's blobs, with
 // their modes) and its links, each named relative to /workspace. It is one state: held against the sandbox's
@@ -135,10 +202,10 @@ func needsMicrovm(exitCode int, stderr string) *proto.NeedsMicrovm {
 		return nil
 	}
 	if m := notAvailable.FindStringSubmatch(stderr); m != nil {
-		return &proto.NeedsMicrovm{Command: m[1], Reason: "An isolate runs only its shell's own commands, and " + m[1] + " isn't one."}
+		return &proto.NeedsMicrovm{Command: m[1], Reason: "An isolate runs only its shell's own commands, and " + m[1] + " isn't one.", Inferred: true}
 	}
 	if m := commandNotFound.FindStringSubmatch(stderr); m != nil && microvmPrograms[m[1]] {
-		return &proto.NeedsMicrovm{Command: m[1], Reason: "An isolate has no " + m[1] + "; a microVM does."}
+		return &proto.NeedsMicrovm{Command: m[1], Reason: "An isolate has no " + m[1] + "; a microVM does.", Inferred: true}
 	}
 	return nil
 }

@@ -91,8 +91,9 @@ func TestUpgradeAnIsolateToAMicrovm(t *testing.T) {
 		size = sizes[0].Name
 	}
 	start := time.Now()
-	info := vmCall[proto.SandboxInfo](t, h, proto.MethodUpgrade, proto.CreateParams{SandboxID: id, Tier: "microvm", Size: size,
-		Owner: "acct_vmtest", Egress: &proto.Egress{Mode: "open"}})
+	params := proto.UpgradeParams{CreateParams: proto.CreateParams{SandboxID: id, Tier: "microvm", Size: size,
+		Owner: "acct_vmtest", Egress: &proto.Egress{Mode: "open"}}, OperationID: "upg_vmtest"}
+	info := vmCall[proto.SandboxInfo](t, h, proto.MethodUpgrade, params)
 	took := time.Since(start)
 	t.Logf("upgrade took %v (size %s): %+v moved, timings %v", took, size, info.Moved, info.Timings)
 	if info.Tier != "microvm" || info.State != proto.StateRunning || info.Moved == nil || info.Moved.Files != 7 {
@@ -100,6 +101,12 @@ func TestUpgradeAnIsolateToAMicrovm(t *testing.T) {
 	}
 	if _, name, err := h.tierOfNamed(id); err != nil || name != "microvm" {
 		t.Fatalf("%s is now %q (%v)", id, name, err)
+	}
+	// Its answer lost: the same operation again, and settling it, answer the microVM, made once.
+	again := vmCall[proto.SandboxInfo](t, h, proto.MethodUpgrade, params)
+	settled := vmCall[proto.UpgradeOutcome](t, h, proto.MethodUpgradeSettle, proto.UpgradeRef{SandboxID: id, OperationID: "upg_vmtest"})
+	if again.Tier != "microvm" || settled.State != "done" {
+		t.Fatalf("again %+v, settled %+v", again, settled)
 	}
 
 	check := run(t, h, id, "set -e; cat /workspace/src/a.txt; readlink /workspace; readlink /home/user/workspace/link; "+
