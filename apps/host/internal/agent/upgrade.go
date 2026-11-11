@@ -296,7 +296,8 @@ func (h *Host) settleUpgrade(ctx context.Context, p proto.UpgradeRef) (proto.Upg
 }
 
 // freezeIsolate and thawIsolate are sandbox.upgrade.freeze and .thaw: an isolate held still while Kantel copies its
-// files to a microVM on another host, and let go again if that upgrade rolls back.
+// files to a microVM on another host, and let go again if that upgrade rolls back. The caller holds the sandbox's
+// lifecycle lock, so a thaw follows a freeze that is still waiting for a command to end.
 func (h *Host) freezeIsolate(p proto.UpgradeRef) error {
 	if err := validUpgrade(p.SandboxID, p.OperationID); err != nil {
 		return err

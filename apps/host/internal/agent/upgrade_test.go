@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -349,5 +350,91 @@ func TestUpgradeRefusesWhatIsntAnIsolate(t *testing.T) {
 	}
 	if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}); codeOf(err) != proto.ErrUnsupported {
 		t.Fatalf("on a host without microVMs: %v", err)
+	}
+}
+
+// isolateWithSandbox is the real isolate tier with one running sandbox on disk (as after a restart), and no runtime:
+// its freeze, thaw and file writes need none.
+func isolateWithSandbox(t *testing.T, id string) *isolate.Manager {
+	t.Helper()
+	root := t.TempDir()
+	images := t.TempDir()
+	cfg := isolate.Config{Root: root, Firecracker: filepath.Join(images, "firecracker"), Kernel: filepath.Join(images, "vmlinux"), Rootfs: filepath.Join(images, "isolate.ext4"), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for _, p := range []string{cfg.Firecracker, cfg.Kernel, cfg.Rootfs} {
+		if err := os.WriteFile(p, []byte(p), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := filepath.Join(root, "sandboxes", id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]any{"id": id, "owner": "acct", "state": proto.StateRunning})
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := isolate.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Close)
+	return m
+}
+
+// A cross-host upgrade's freeze waits for a command or file write under way. If Kantel loses the connection and rolls
+// the upgrade back meanwhile, its thaw (on a new connection) must come after that freeze, not before: else the freeze
+// lands after the acknowledged thaw and the isolate stays held by an upgrade that is over.
+func TestAThawWaitsForTheFreezeUnderWay(t *testing.T) {
+	const id, op = "sbx_fz", "upg_lost"
+	iso := isolateWithSandbox(t, id)
+	ctx := context.Background()
+	if err := iso.WriteFile(ctx, proto.FileParams{SandboxID: id, Path: "/workspace/a.txt"}, []byte("a\n")); err != nil {
+		t.Fatal(err)
+	}
+	h := newLifecycleHost(t, newLifecycleTier())
+	h.tiers[isolate.Tier] = iso
+	h.order = append(h.order, isolate.Tier)
+
+	// The isolate's work under way: an export, holding the isolate's commands and writes until its tar is read.
+	pr, pw := io.Pipe()
+	exported := make(chan error, 1)
+	go func() {
+		_, _, err := iso.ExportTar(id, pw)
+		pw.CloseWithError(err)
+		exported <- err
+	}()
+	if _, err := pr.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	ref := proto.UpgradeRef{SandboxID: id, OperationID: op, WaitMs: 10_000}
+	froze := make(chan error, 1)
+	go func() { froze <- call(t, h, proto.MethodUpgradeFreeze, ref) }()
+	time.Sleep(100 * time.Millisecond) // the freeze waits for the export
+	thawed := make(chan error, 1)
+	go func() { thawed <- call(t, h, proto.MethodUpgradeThaw, ref) }()
+	select {
+	case err := <-thawed:
+		t.Errorf("the thaw answered (%v) while the freeze still waited", err)
+		thawed <- err
+	case <-time.After(200 * time.Millisecond):
+	}
+	go func() { _, _ = io.Copy(io.Discard, pr) }()
+	if err := <-exported; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-froze; err != nil {
+		t.Fatalf("freeze: %v", err)
+	}
+	if err := <-thawed; err != nil {
+		t.Fatalf("thaw: %v", err)
+	}
+	if by := iso.FrozenBy(id); by != "" {
+		t.Fatalf("held by %s after its thaw", by)
+	}
+	if err := iso.WriteFile(ctx, proto.FileParams{SandboxID: id, Path: "/workspace/b.txt"}, []byte("b\n")); err != nil {
+		t.Fatalf("a write after the thaw: %v", err)
 	}
 }

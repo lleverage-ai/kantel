@@ -664,11 +664,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		// Both under the lifecycle lock, so a thaw (a rollback, perhaps on a new connection) can't answer before a
+		// freeze still waiting for a command or file write has frozen the isolate after it. The freeze can wait under
+		// it: commands and file writes take none.
+		defer h.lifecycle.lock(p.SandboxID)()
 		if method == proto.MethodUpgradeFreeze {
-			// Not under the lifecycle lock: a freeze waits for the isolate's commands, which take none.
 			return map[string]bool{"ok": true}, h.freezeIsolate(p)
 		}
-		defer h.lifecycle.lock(p.SandboxID)()
 		return map[string]bool{"ok": true}, h.thawIsolate(p)
 	case proto.MethodStop:
 		p, err := decode[proto.StopParams](params)
