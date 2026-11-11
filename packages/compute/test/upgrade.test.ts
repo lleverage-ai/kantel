@@ -6,10 +6,20 @@ import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/a
 import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { ExecRequest, ExecResult, SandboxBackend, SandboxSpec, UpgradedPlacement } from "../src/backend.ts";
+import {
+	type BackendEgress,
+	type ExecRequest,
+	type ExecResult,
+	type SandboxBackend,
+	type SandboxSpec,
+	type UpgradedPlacement,
+	type UpgradeOutcome,
+	upgradeOutcomeUnknown,
+} from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { needsMicrovmOf } from "../src/needs-microvm.ts";
-import { PLACEHOLDER_RATES } from "../src/service.ts";
+import { PLACEHOLDER_RATES, UPGRADE_STALE_MS } from "../src/service.ts";
+import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend } from "../src/stub-backend.ts";
 import { TarCheck, writeTar } from "../src/tar.ts";
 import { bytesToBase64 } from "../src/util.ts";
@@ -19,6 +29,13 @@ const PEOPLE: { readonly [token: string]: PersonIdentity } = {
 	"tom-token": { userId: "usr_tom", name: "Tom", email: "tom@example.com" },
 };
 const KEY = bytesToBase64(new Uint8Array(32).fill(7));
+/** A command's answer when the isolate's runtime says it needs a microVM. */
+const NEEDS_TAR = {
+	exitCode: 127,
+	stdout: "",
+	stderr: "tar: not available in an isolate, which runs only its shell's own commands. Use a microVM.\n",
+	needsMicrovm: { command: "tar", reason: "tar is not available in an isolate." },
+} as const;
 const opened: ComputeApi[] = [];
 
 afterEach(async () => {
@@ -27,29 +44,55 @@ afterEach(async () => {
 
 interface Options {
 	/** Stands in for the backend's upgrade: undefined lets the stub do it. */
-	readonly upgrade?: (sandboxId: string, spec: SandboxSpec) => Promise<UpgradedPlacement> | undefined;
+	readonly upgrade?: (
+		sandboxId: string,
+		spec: SandboxSpec,
+		operationId: string,
+	) => Promise<UpgradedPlacement> | undefined;
+	/** Stands in for the backend's settling of an upgrade: undefined lets the stub do it. */
+	readonly settle?: (sandboxId: string, operationId: string) => Promise<UpgradeOutcome> | undefined;
 	/** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
-	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined;
+	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined | Promise<ExecResult>;
+	/** Takes egress updates, as a host does; absent, the backend takes none (as the stub). */
+	readonly updateEgress?: (sandboxId: string, egress: BackendEgress | undefined, revision?: number) => Promise<void>;
+	/** Answers commands' results by their ID, as a host that keeps them does. */
+	readonly results?: Map<string, ExecResult>;
 	readonly now?: () => number;
+	readonly store?: ComputeStore;
 }
 
 function setup(options: Options = {}) {
 	const stub = createStubBackend();
-	const upgrades: { readonly sandboxId: string; readonly spec: SandboxSpec }[] = [];
+	const upgrades: { readonly sandboxId: string; readonly spec: SandboxSpec; readonly operationId: string }[] = [];
 	const backend: SandboxBackend = {
 		...stub,
-		exec: async (sandboxId, request) => options.exec?.(sandboxId, request) ?? stub.exec(sandboxId, request),
-		upgrade: async (sandboxId, spec) => {
-			upgrades.push({ sandboxId, spec });
-			const instead = options.upgrade?.(sandboxId, spec);
+		exec: async (sandboxId, request) => {
+			const result = (await options.exec?.(sandboxId, request)) ?? (await stub.exec(sandboxId, request));
+			if (request.commandId !== undefined) options.results?.set(request.commandId, result);
+			return result;
+		},
+		upgrade: async (sandboxId, spec, operationId) => {
+			upgrades.push({ sandboxId, spec, operationId });
+			const instead = options.upgrade?.(sandboxId, spec, operationId);
 			if (instead !== undefined) return instead;
 			if (stub.upgrade === undefined) throw new Error("The stub upgrades isolates");
-			return stub.upgrade(sandboxId, spec);
+			return stub.upgrade(sandboxId, spec, operationId);
 		},
+		settleUpgrade: async (sandboxId, operationId) => {
+			const instead = options.settle?.(sandboxId, operationId);
+			if (instead !== undefined) return instead;
+			if (stub.settleUpgrade === undefined) throw new Error("The stub settles upgrades");
+			return stub.settleUpgrade(sandboxId, operationId);
+		},
+		...(options.updateEgress === undefined ? {} : { updateEgress: options.updateEgress }),
+		...(options.results === undefined
+			? {}
+			: { commandResult: async (_sandboxId: string, commandId: string) => options.results?.get(commandId) }),
 	};
 	const api = createComputeApi({
 		backend,
 		secretsKey: KEY,
+		...(options.store === undefined ? {} : { store: options.store }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -259,9 +302,9 @@ describe("upgrading an isolate to a microVM", () => {
 			release = resolve;
 		});
 		const { tom, stub } = setup({
-			upgrade: async (sandboxId, spec) => {
+			upgrade: async (sandboxId, spec, operationId) => {
 				await held;
-				return stub.upgrade?.(sandboxId, spec) as Promise<UpgradedPlacement>;
+				return stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>;
 			},
 		});
 		const sandbox = await isolateWithFiles(tom);
@@ -338,7 +381,7 @@ describe("a command that needs a microVM", () => {
 		const sandbox = await tom.createSandbox({ wait: true });
 		const command = await tom.runCommand(sandbox.id, { command: "gi" + "t status" });
 		expect(command.exitCode).toBe(127);
-		expect(command.needsMicrovm).toMatchObject({ command: "gi" + "t" });
+		expect(command.needsMicrovm).toMatchObject({ command: "gi" + "t", inferred: true });
 		expect(command.rerunAs).toBeUndefined();
 		expect((await tom.getSandbox(sandbox.id)).type).toBe("isolate");
 		expect(upgrades).toHaveLength(0);
@@ -353,12 +396,11 @@ describe("a command that needs a microVM", () => {
 			exec: (_id, request) => {
 				if (!request.command.startsWith("tar ")) return undefined;
 				if (upgraded) return { exitCode: 0, stdout: `tar in ${request.cwd}\n`, stderr: "", timedOut: false };
-				const stderr = "tar: not available in an isolate, which runs only its shell's own commands. Use a microVM.\n";
-				const result = { exitCode: 127, stdout: "", stderr, timedOut: false };
-				return { ...result, needsMicrovm: needsMicrovmOf(result) };
+				// As the isolate's runtime says it, not read from the shell's answer.
+				return { ...NEEDS_TAR, timedOut: false };
 			},
-			upgrade: async (sandboxId, spec) => {
-				const placed = await (stub.upgrade?.(sandboxId, spec) as Promise<UpgradedPlacement>);
+			upgrade: async (sandboxId, spec, operationId) => {
+				const placed = await (stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
 				upgraded = true;
 				return placed;
 			},
@@ -398,11 +440,12 @@ describe("a command that needs a microVM", () => {
 	it("with autoUpgrade, keeps the first answer and says why when the upgrade fails", async () => {
 		const { tom } = setup({
 			upgrade: () => Promise.reject(new KantelError("unavailable", "No host runs microvm sandboxes")),
+			exec: (_id, request) => (request.command.startsWith("tar ") ? { ...NEEDS_TAR, timedOut: false } : undefined),
 		});
 		const sandbox = await tom.createSandbox({ wait: true });
 		await tom.updateSandbox(sandbox.id, { autoUpgrade: true });
-		const answer = await tom.runCommand(sandbox.id, { command: "gi" + "t status" });
-		expect(answer).toMatchObject({ exitCode: 127, needsMicrovm: { command: "gi" + "t" } });
+		const answer = await tom.runCommand(sandbox.id, { command: "tar -xf a.tar" });
+		expect(answer).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
 		expect(answer.rerunAs).toBeUndefined();
 		expect(answer.stderr).toContain("couldn't be upgraded to a microVM: No host runs microvm sandboxes");
 		expect((await tom.getSandbox(sandbox.id)).type).toBe("isolate");
@@ -440,5 +483,224 @@ describe("writeTar", () => {
 		const check = new TarCheck({ maxBytes: 1 << 20 });
 		check.push(tar);
 		expect(check.end()).toEqual({ files: 2, directories: 2, symlinks: 1, bytes: 1006 });
+	});
+});
+
+describe("an upgrade's outcome, when its answer is lost", () => {
+	it("asks the backend, and publishes the microVM its host made though the answer never came", async () => {
+		const { tom, stub, upgrades } = setup({
+			// The host did it, then its answer was lost.
+			upgrade: async (sandboxId, spec, operationId) => {
+				await stub.upgrade?.(sandboxId, spec, operationId);
+				throw upgradeOutcomeUnknown("The host didn't answer within the call's time");
+			},
+		});
+		const sandbox = await isolateWithFiles(tom);
+		const upgraded = await tom.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", state: "running" });
+		expect(upgrades).toHaveLength(1);
+		expect((await tom.runCommand(sandbox.id, { command: "cat /workspace/src/a.txt" })).stdout).toBe("hello\n");
+	});
+
+	it("keeps it starting while that can't be told, and the sweep settles it once the host answers", async () => {
+		let at = 1_000_000;
+		let hostBack = false;
+		const { tom, api, stub } = setup({
+			now: () => at,
+			upgrade: async (sandboxId, spec, operationId) => {
+				await stub.upgrade?.(sandboxId, spec, operationId);
+				throw upgradeOutcomeUnknown("The host went away during the upgrade");
+			},
+			settle: (sandboxId, operationId) =>
+				hostBack
+					? undefined
+					: Promise.reject(new KantelError("unavailable", `The host is away (${sandboxId} ${operationId})`)),
+		});
+		const sandbox = await tom.createSandbox({ wait: true, autoStopMinutes: null });
+		const refused = await failure(tom.upgradeSandbox(sandbox.id, {}));
+		expect(refused.status).toBe(503);
+		expect(refused.message).toContain("isn't known");
+		// Neither put back (and billed as a running isolate) nor taken for a microVM.
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ state: "starting", type: "isolate" });
+		expect(stored?.upgrading?.operationId).toMatch(/^upg_/);
+		await api.service.sweep();
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("starting");
+		hostBack = true;
+		at += UPGRADE_STALE_MS + 1;
+		await api.service.sweep();
+		const settled = await api.store.sandboxes.get(sandbox.id);
+		expect(settled).toMatchObject({ state: "running", type: "microvm" });
+		expect(settled?.upgrading).toBeUndefined();
+	});
+
+	it("puts back an isolate whose upgrading gateway died, once its backend says the upgrade never finished", async () => {
+		let at = 1_000_000;
+		const store = createMemoryStore();
+		let hang: (error: Error) => void = () => undefined;
+		const first = setup({
+			now: () => at,
+			store,
+			// The gateway dies mid-upgrade: its call never ends.
+			upgrade: () =>
+				new Promise<UpgradedPlacement>((_resolve, reject) => {
+					hang = reject;
+				}),
+		});
+		const sandbox = await first.tom.createSandbox({ wait: true, autoStopMinutes: null });
+		const before = await store.sandboxes.get(sandbox.id);
+		void first.tom.upgradeSandbox(sandbox.id, { wait: false });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect((await store.sandboxes.get(sandbox.id))?.state).toBe("starting");
+		// Another gateway, with no part in it, settles it once it has gone quiet.
+		const other = setup({ now: () => at, store, settle: () => Promise.resolve({ state: "failed" as const }) });
+		await other.api.service.sweep();
+		expect((await store.sandboxes.get(sandbox.id))?.state).toBe("starting");
+		at += UPGRADE_STALE_MS + 1;
+		await other.api.service.sweep();
+		const back = await store.sandboxes.get(sandbox.id);
+		expect(back).toMatchObject({ state: "running", type: "isolate", runs: before?.runs });
+		expect(back?.upgrading).toBeUndefined();
+		hang(new KantelError("unavailable", "the gateway went"));
+	});
+});
+
+describe("an upgrade's egress and billing", () => {
+	it("enforces a grant revoked while it was upgrading before the microVM runs", async () => {
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const updates: { revision?: number; hosts: string[]; state?: string }[] = [];
+		let storeOf: ComputeStore | undefined;
+		const { tom, stub, api } = setup({
+			upgrade: async (sandboxId, spec, operationId) => {
+				await held;
+				return stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>;
+			},
+			updateEgress: async (sandboxId, egress, revision) => {
+				const state = (await storeOf?.sandboxes.get(sandboxId))?.state;
+				updates.push({
+					...(revision === undefined ? {} : { revision }),
+					hosts: (egress?.grants ?? []).map((grant) => grant.host),
+					...(state === undefined ? {} : { state }),
+				});
+			},
+		});
+		storeOf = api.store;
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		const upgrading = tom.upgradeSandbox(sandbox.id, {});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// Revoked while the microVM is made: sent with the old grant.
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		updates.length = 0;
+		release();
+		const upgraded = await upgrading;
+		expect(upgraded.type).toBe("microvm");
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		// Sent to the microVM, without the grant, while it was still starting: it never ran with the old one.
+		expect(updates.at(0)).toMatchObject({ hosts: [], state: "starting", revision: stored?.egressRevision });
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("prices every run the isolate had as an isolate's, its stops and starts too", async () => {
+		let at = 1_000_000;
+		const { tom, api } = setup({ now: () => at });
+		const sandbox = await tom.createSandbox({ wait: true, autoStopMinutes: null });
+		const isolateRate = (await tom.getSandbox(sandbox.id)).cost.ratePerHour;
+		at += 3_600_000;
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		at += 3_600_000;
+		await tom.startSandbox(sandbox.id, { wait: true });
+		at += 3_600_000;
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		// Upgraded from stopped, so both earlier runs are closed already.
+		await tom.upgradeSandbox(sandbox.id, {});
+		at += 3_600_000;
+		const view = await tom.getSandbox(sandbox.id);
+		const microvmRate = view.cost.ratePerHour;
+		expect(view.cost.total).toBeCloseTo(2 * isolateRate + microvmRate, 4);
+		const runs = (await api.store.sandboxes.get(sandbox.id))?.runs ?? [];
+		expect(runs.slice(0, 2).every((run) => run.ratePerHour === isolateRate)).toBe(true);
+		expect(runs.at(-1)?.ratePerHour).toBeUndefined();
+	});
+});
+
+describe("autoUpgrade's limits", () => {
+	it("never upgrades on a needsMicrovm read from the command's own output", async () => {
+		const { tom, upgrades } = setup({
+			// The guest prints the refusal itself, and exits 127: read from its answer, as a host reads one.
+			exec: (_id, request) => {
+				if (!request.command.startsWith("fake")) return undefined;
+				const printed = { exitCode: 127, stdout: "", stderr: NEEDS_TAR.stderr, timedOut: false };
+				return { ...printed, needsMicrovm: needsMicrovmOf(printed) };
+			},
+		});
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		const answer = await tom.runCommand(sandbox.id, { command: "fake-tar" });
+		expect(answer.needsMicrovm).toMatchObject({ command: "tar", inferred: true });
+		expect(answer.rerunAs).toBeUndefined();
+		expect(upgrades).toHaveLength(0);
+		expect((await tom.getSandbox(sandbox.id)).type).toBe("isolate");
+	});
+
+	it("is set only with sandboxes:write, and then any key that may run commands may cause the upgrade", async () => {
+		const { tom, client, upgrades } = setup({
+			exec: (_id, request) => (request.command.startsWith("tar ") ? { ...NEEDS_TAR, timedOut: false } : undefined),
+		});
+		const runner = client((await tom.createApiKey({ name: "runner", scopes: ["sandboxes:read", "exec"] })).secret);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect((await failure(runner.updateSandbox(sandbox.id, { autoUpgrade: true }))).status).toBe(403);
+		expect((await failure(runner.createSandbox({ autoUpgrade: true }))).status).toBe(403);
+		expect((await tom.getSandbox(sandbox.id)).autoUpgrade).toBeUndefined();
+		await tom.updateSandbox(sandbox.id, { autoUpgrade: true });
+		// The opt-in, made with sandboxes:write, lets an exec-only key's command upgrade it.
+		const answer = await runner.runCommand(sandbox.id, { command: "tar -xf a.tar" });
+		expect(answer.rerunOf).toBeDefined();
+		expect(upgrades).toHaveLength(1);
+		expect((await tom.getSandbox(sandbox.id)).type).toBe("microvm");
+	});
+
+	it("doesn't let a reader of a detached command record its end before its run again is", async () => {
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let upgraded = false;
+		const results = new Map<string, ExecResult>();
+		const { tom, stub } = setup({
+			results,
+			exec: (_id, request) =>
+				request.command.startsWith("tar ")
+					? upgraded
+						? { exitCode: 0, stdout: "listed\n", stderr: "", timedOut: false }
+						: { ...NEEDS_TAR, timedOut: false }
+					: undefined,
+			upgrade: async (sandboxId, spec, operationId) => {
+				await held;
+				const placed = await (stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+		});
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		const started = await tom.runCommand(sandbox.id, { command: "tar -tf x.tar", detached: true });
+		for (let tries = 0; tries < 100 && !results.has(started.id); tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		// Its end is in, needing a microVM, and its backend says so: a reader asking meanwhile sees it running still.
+		expect(results.get(started.id)?.needsMicrovm?.command).toBe("tar");
+		for (let look = 0; look < 3; look++) {
+			expect((await tom.getCommand(sandbox.id, started.id)).state).toBe("running");
+		}
+		release();
+		let ended = await tom.getCommand(sandbox.id, started.id);
+		for (let tries = 0; ended.state === "running" && tries < 200; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			ended = await tom.getCommand(sandbox.id, started.id);
+		}
+		expect(ended).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
+		expect(ended.rerunAs).toBeDefined();
 	});
 });

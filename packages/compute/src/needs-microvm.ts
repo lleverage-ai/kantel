@@ -70,11 +70,12 @@ export function needsMicrovmOf(
 		return {
 			command: unavailable,
 			reason: `An isolate runs only its shell's own commands, and ${unavailable} isn't one.`,
+			inferred: true,
 		};
 	}
 	const missing = NOT_FOUND.exec(result.stderr)?.[1];
 	if (missing !== undefined && MICROVM_PROGRAMS.has(missing)) {
-		return { command: missing, reason: `An isolate has no ${missing}; a microVM does.` };
+		return { command: missing, reason: `An isolate has no ${missing}; a microVM does.`, inferred: true };
 	}
 	return undefined;
 }

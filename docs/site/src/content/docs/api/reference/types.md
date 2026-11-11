@@ -391,6 +391,7 @@ In an isolate: the command failed because it ran something an isolate doesn't ha
 | --- | --- | --- | --- |
 | `command` | string | yes | What it ran that an isolate doesn't have, such as `tar`. |
 | `reason` | string | yes | Why, in one sentence. |
+| `inferred` | boolean | no | Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it. |
 
 ### CommandPage
 
@@ -528,7 +529,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
 | `host` | string | no | Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
-| `autoUpgrade` | boolean | no | For an isolate: when a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the command again there, once. Default false: the command answers `needsMicrovm` and the isolate stays as it is. |
+| `autoUpgrade` | boolean | no | For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
 
 ### CreateTemplateBody
@@ -2240,7 +2241,7 @@ A template version's definition, never changed once made. Answered with every de
 | `extendMinutes` | integer | no | Move `stopsAt` to this long from now. (minimum 1, maximum 43200) |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |
-| `autoUpgrade` | boolean | no | Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when a command needs one. |
+| `autoUpgrade` | boolean | no | Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade. |
 
 ### UpdateTemplateBody
 

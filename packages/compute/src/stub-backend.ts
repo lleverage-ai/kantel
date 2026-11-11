@@ -273,6 +273,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const killers = new Map<string, () => void>();
 	const commandKey = (sandboxId: string, commandId: string) => `${sandboxId}\u0000${commandId}`;
 	const snapshots = new Map<string, Tree>();
+	/** Each sandbox's latest upgrade by its operation ID: its microVM, or why it failed. */
+	const upgrades = new Map<string, { operationId: string; placement?: UpgradedPlacement; reason?: string }>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
 
@@ -439,7 +441,13 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	 * isolate's `/workspace` (its live files, or a stopped one's stop snapshot) under `UPGRADE_WORKSPACE`, and `/workspace`
 	 * a link to it. The isolate is replaced only once the microVM is made, so a failure leaves it as it was.
 	 */
-	const upgrade = async (sandboxId: string, spec: SandboxSpec): Promise<UpgradedPlacement> => {
+	const upgrade = async (sandboxId: string, spec: SandboxSpec, operationId: string): Promise<UpgradedPlacement> => {
+		// Sent again: the first's outcome, as a host keeps it.
+		const done = upgrades.get(sandboxId);
+		if (done?.operationId === operationId) {
+			if (done.placement === undefined) throw new KantelError("unavailable", done.reason ?? "The upgrade failed");
+			return done.placement;
+		}
 		const isolate = machineOf(sandboxId);
 		if (isolate.type !== "isolate") throw new KantelError("conflict", `${sandboxId} is a microVM already`);
 		if (spec.type !== "microvm") throw new KantelError("invalid", "An isolate is upgraded to a microVM");
@@ -499,7 +507,12 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			};
 			await boot(microvm, fs);
 			machines.set(sandboxId, microvm);
-			return { ...placement(microvm), path: "host", files, bytes };
+			const placed: UpgradedPlacement = { ...placement(microvm), path: "host", files, bytes };
+			upgrades.set(sandboxId, { operationId, placement: placed });
+			return placed;
+		} catch (error) {
+			upgrades.set(sandboxId, { operationId, reason: error instanceof Error ? error.message : String(error) });
+			throw error;
 		} finally {
 			creating.delete(sandboxId);
 		}
@@ -573,6 +586,16 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		},
 
 		upgrade,
+
+		// The stub's upgrades end in the call: one it never saw is failed now, so it can't start after.
+		async settleUpgrade(sandboxId, operationId) {
+			const done = upgrades.get(sandboxId);
+			if (done?.operationId === operationId && done.placement !== undefined) {
+				return { state: "done", placement: done.placement };
+			}
+			if (done?.operationId !== operationId) upgrades.set(sandboxId, { operationId, reason: "Settled before it ran" });
+			return { state: "failed", reason: done?.reason ?? "The upgrade never ran" };
+		},
 
 		// As a host does: the machine keeps it, and a running one's shell has exactly it from its next command (its disk
 		// stays, as a guest's env file is rewritten in place).

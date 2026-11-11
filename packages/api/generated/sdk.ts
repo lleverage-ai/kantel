@@ -417,6 +417,8 @@ export interface CommandNeedsMicrovm {
 	readonly command: string;
 	/** Why, in one sentence. */
 	readonly reason: string;
+	/** Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it. */
+	readonly inferred?: boolean;
 }
 
 export interface CommandPage {
@@ -589,7 +591,7 @@ export interface CreateSandboxBody {
 	readonly host?: string;
 	/** Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
 	readonly mounts?: readonly Mount[];
-	/** For an isolate: when a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the command again there, once. Default false: the command answers `needsMicrovm` and the isolate stays as it is. */
+	/** For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. */
 	readonly autoUpgrade?: boolean;
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
@@ -2539,7 +2541,7 @@ export interface UpdateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
-	/** Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when a command needs one. */
+	/** Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade. */
 	readonly autoUpgrade?: boolean;
 }
 

@@ -42,6 +42,34 @@ export const SANDBOX_ENV_FEATURE = "sandbox-env";
  * isolate's files go from its blob store into the new microVM on the host, never through Kantel.
  */
 export const ISOLATE_UPGRADE_FEATURE = "isolate-upgrade";
+/**
+ * A host that holds one of its isolates still for an upgrade (`HOST_FEATURES.isolateFreeze`), so Kantel can copy one
+ * version of its files to a microVM on another host while nothing writes to them.
+ */
+export const ISOLATE_FREEZE_FEATURE = "isolate-freeze";
+
+/** What a backend's upgrade whose outcome isn't known was refused with (`upgradeOutcomeUnknown`). */
+const unknownUpgrades = new WeakSet<KantelError>();
+
+/**
+ * An upgrade whose outcome isn't known: its host was sent it and didn't answer, and couldn't be asked since. Neither
+ * done nor failed: the caller keeps the sandbox as it is (starting) until `settleUpgrade` says which.
+ */
+export function upgradeOutcomeUnknown(message: string): KantelError {
+	const error = new KantelError("unavailable", message);
+	unknownUpgrades.add(error);
+	return error;
+}
+
+/** Whether `error` is `upgradeOutcomeUnknown`'s. */
+export function isUpgradeOutcomeUnknown(error: unknown): boolean {
+	return error instanceof KantelError && unknownUpgrades.has(error);
+}
+
+/** An upgrade's outcome as `settleUpgrade` answers it: done, with the microVM, or failed and rolled back. */
+export type UpgradeOutcome =
+	| { readonly state: "done"; readonly placement: UpgradedPlacement }
+	| { readonly state: "failed"; readonly reason?: string };
 
 /** Where an upgraded isolate's `/workspace` files are in its microVM; `/workspace` there is a link to it. */
 export const UPGRADE_WORKSPACE = "/home/user/workspace";
@@ -487,7 +515,12 @@ export interface ExecResult {
 	readonly stderr: string;
 	readonly timedOut: boolean;
 	/** In an isolate: it failed because it ran something an isolate doesn't have (`Command.needsMicrovm`). */
-	readonly needsMicrovm?: { readonly command: string; readonly reason: string };
+	readonly needsMicrovm?: {
+		readonly command: string;
+		readonly reason: string;
+		/** Read from the shell's answer, not said by the isolate's runtime: a hint, never acted on (`autoUpgrade`). */
+		readonly inferred?: true;
+	};
 	/** In an isolate: its runtime stopped it for using too much CPU time, memory or wall time. */
 	readonly terminated?: "cpu" | "memory" | "wall";
 }
@@ -674,10 +707,19 @@ export interface SandboxBackend {
 	 * link to it; the isolate is let go only once the microVM runs with them. A stopped isolate's files are what it
 	 * stopped with (`spec.fromSnapshot`, its stop's snapshot, where the backend keeps them there). Its own host does it
 	 * where it can (`ISOLATE_UPGRADE_FEATURE`, in `spec.eligibleHosts`, with room); else the microVM goes on another host
-	 * and the files are moved to it, up to `UPGRADE_MOVE_LIMITS`. Rejects, with the isolate as it was, when the microVM
-	 * can't be made or the files can't be moved. Absent: isolates aren't upgraded here (`not_supported`).
+	 * and the files are moved to it, up to `UPGRADE_MOVE_LIMITS`, the isolate held still meanwhile
+	 * (`ISOLATE_FREEZE_FEATURE`). Rejects, with the isolate as it was, when the microVM can't be made or the files can't
+	 * be moved; `upgradeOutcomeUnknown` when that isn't known (`settleUpgrade` says). Sent again with the same
+	 * `operationId`, it answers the first's outcome. Absent: isolates aren't upgraded here (`not_supported`).
 	 */
-	upgrade?(sandboxId: string, spec: SandboxSpec): Promise<UpgradedPlacement>;
+	upgrade?(sandboxId: string, spec: SandboxSpec, operationId: string): Promise<UpgradedPlacement>;
+	/**
+	 * The outcome of upgrade `operationId` (`upgrade`'s third argument), for one whose answer was lost: once one under
+	 * way has ended, done with its microVM, or failed, rolled back (any microVM made for it deleted, the isolate as it
+	 * was) so that it can't land later. Each upgrade is done at most once by its ID. Rejects `unavailable` while it can't
+	 * be told (the host away). Absent with `upgrade` absent.
+	 */
+	settleUpgrade?(sandboxId: string, operationId: string): Promise<UpgradeOutcome>;
 	/**
 	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
 	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.

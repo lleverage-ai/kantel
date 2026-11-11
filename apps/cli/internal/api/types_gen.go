@@ -459,6 +459,8 @@ type Command struct {
 type CommandNeedsMicrovm struct {
 	// What it ran that an isolate doesn't have, such as `tar`.
 	Command string `json:"command"`
+	// Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it.
+	Inferred *bool `json:"inferred,omitempty"`
 	// Why, in one sentence.
 	Reason string `json:"reason"`
 }
@@ -585,7 +587,7 @@ type CreateSandboxBody struct {
 	Account *string `json:"account,omitempty"`
 	// Default 60. `null`: never stop by itself.
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
-	// For an isolate: when a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the command again there, once. Default false: the command answers `needsMicrovm` and the isolate stays as it is.
+	// For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is.
 	AutoUpgrade *bool `json:"autoUpgrade,omitempty"`
 	// Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.
 	Env map[string]string `json:"env,omitzero"`
@@ -2707,7 +2709,7 @@ type UpdateMemberBody struct {
 
 type UpdateSandboxBody struct {
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
-	// Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when a command needs one.
+	// Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade.
 	AutoUpgrade *bool `json:"autoUpgrade,omitempty"`
 	// Move `stopsAt` to this long from now.
 	ExtendMinutes *int64 `json:"extendMinutes,omitempty"`
