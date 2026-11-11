@@ -4049,3 +4049,226 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"snapshot.saved",
 	"snapshot.deleted",
 ];
+
+// GitHub Actions runners: a GitHub App's `workflow_job` webhooks make an ephemeral microVM per job on the account's hosts.
+
+const RunnerLabel = Type.String({
+	pattern: "^[a-z0-9][a-z0-9._-]{0,62}$",
+	description: "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.",
+});
+
+export const GithubRunnerPool = Type.Object(
+	{
+		label: RunnerLabel,
+		template: Type.String({
+			minLength: 1,
+			description:
+				"The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub " +
+				"Actions runner at `runnerCommand`'s path.",
+		}),
+		resources: Type.Object(
+			{
+				vcpus: Type.Integer({ minimum: 1, maximum: 256 }),
+				memoryMb: Type.Integer({ minimum: 512 }),
+				diskGb: Type.Optional(Type.Integer({ minimum: 1 })),
+			},
+			{ title: "GithubRunnerResources" },
+		),
+		hostLabels: Type.Optional(
+			Type.Record(Type.String(), Type.String(), { description: "Run only on hosts with each of these labels." }),
+		),
+		environments: Type.Optional(
+			Type.Array(Type.String(), {
+				maxItems: 10,
+				description:
+					"Environments each runner starts with, IDs or names in the account, such as one holding a cache token.",
+			}),
+		),
+		maxRunners: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 500,
+				description: "The most runners the pool has at once, starting or running. Default 20.",
+			}),
+		),
+		timeoutMinutes: Type.Optional(
+			Type.Integer({
+				minimum: 5,
+				maximum: 4320,
+				description:
+					"How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.",
+			}),
+		),
+		runnerCommand: Type.Optional(
+			Type.String({
+				minLength: 1,
+				maxLength: 4096,
+				description:
+					"The shell command that starts the runner, run as root with the just-in-time configuration in " +
+					"`KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig " +
+					'"$KANTEL_RUNNER_JITCONFIG"`.',
+			}),
+		),
+	},
+	{ title: "GithubRunnerPool", description: "Runners of one shape, picked by a `runs-on` label." },
+);
+
+export const GithubRunnersScope = Type.Union([Type.Literal("organization"), Type.Literal("repository")], {
+	description:
+		"Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.",
+});
+
+export const GithubRunners = Type.Object(
+	{
+		id: id("The runner integration's ID, such as `ghr_3m4n5b`."),
+		accountId: Type.String(),
+		name: Type.String(),
+		appId: Type.Integer({ description: "The GitHub App's ID." }),
+		owner: Type.String({
+			description: "The GitHub organization (or user) the App is installed on, such as `octo-org`.",
+		}),
+		scope: GithubRunnersScope,
+		runnerGroupId: Type.Optional(Type.Integer({ description: "The organization's runner group the runners join." })),
+		repositories: Type.Optional(
+			Type.Array(Type.String(), {
+				description: "Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on.",
+			}),
+		),
+		pools: Type.Array(GithubRunnerPool),
+		enabled: Type.Boolean(),
+		webhookUrl: Type.String({
+			description:
+				"Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered.",
+		}),
+		installationId: Type.Optional(
+			Type.Integer({ description: "The App's installation, as the first webhook from it named it." }),
+		),
+		lastWebhookAt: Type.Optional(Timestamp),
+		lastError: Type.Optional(
+			Type.Object(
+				{ at: Timestamp, message: Type.String() },
+				{ title: "GithubRunnersError", description: "The last failure talking to GitHub or making a runner." },
+			),
+		),
+		status: Type.Optional(
+			Type.Array(
+				Type.Object(
+					{
+						label: Type.String(),
+						queued: Type.Integer({ description: "Jobs waiting for a runner." }),
+						starting: Type.Integer({ description: "Runners being made or booting." }),
+						idle: Type.Integer({ description: "Runners up and waiting for GitHub to give them a job." }),
+						busy: Type.Integer({ description: "Runners running a job." }),
+						waitingSince: Type.Optional(Timestamp),
+						waitingFor: Type.Optional(
+							Type.String({ description: "Why the oldest queued job has no runner yet, when it has waited." }),
+						),
+					},
+					{ title: "GithubRunnerPoolStatus" },
+				),
+				{ description: "Each pool's queue and runners, on a get." },
+			),
+		),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{
+		title: "GithubRunners",
+		description:
+			"A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from " +
+			"a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job " +
+			"ends. Jobs that find no room wait in a queue until there is.",
+	},
+);
+
+export const GithubRunnersList = Type.Object({ items: Type.Array(GithubRunners) }, { title: "GithubRunnersList" });
+
+export const GithubRunnersPath = Type.Object(
+	{ githubRunnersId: id("The runner integration's ID.") },
+	{ title: "GithubRunnersPath" },
+);
+
+export const CreateGithubRunnersBody = Type.Object(
+	{
+		account: accountQuery,
+		name: Type.String({ minLength: 1, maxLength: 100 }),
+		appId: Type.Integer({ minimum: 1 }),
+		privateKey: Type.String({
+			minLength: 64,
+			maxLength: 16_384,
+			description: "The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered.",
+		}),
+		owner: Type.String({ minLength: 1, maxLength: 100 }),
+		scope: Type.Optional(GithubRunnersScope),
+		runnerGroupId: Type.Optional(Type.Integer({ minimum: 1 })),
+		repositories: Type.Optional(Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), { maxItems: 500 })),
+		pools: Type.Array(GithubRunnerPool, { minItems: 1, maxItems: 20 }),
+	},
+	{ title: "CreateGithubRunnersBody" },
+);
+
+export const UpdateGithubRunnersBody = Type.Object(
+	{
+		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+		appId: Type.Optional(Type.Integer({ minimum: 1 })),
+		privateKey: Type.Optional(Type.String({ minLength: 64, maxLength: 16_384 })),
+		owner: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+		scope: Type.Optional(GithubRunnersScope),
+		runnerGroupId: Type.Optional(Type.Union([Type.Integer({ minimum: 1 }), Type.Null()])),
+		repositories: Type.Optional(
+			Type.Union([Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), { maxItems: 500 }), Type.Null()]),
+		),
+		pools: Type.Optional(Type.Array(GithubRunnerPool, { minItems: 1, maxItems: 20 })),
+		enabled: Type.Optional(Type.Boolean()),
+	},
+	{ title: "UpdateGithubRunnersBody" },
+);
+
+export const GithubRunnersWithSecret = Type.Object(
+	{
+		githubRunners: GithubRunners,
+		webhookSecret: Type.String({ description: "The secret to give the GitHub App's webhook. Shown once." }),
+	},
+	{ title: "GithubRunnersWithSecret" },
+);
+
+export const GithubRunnerJobState = Type.Union(
+	[Type.Literal("queued"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("ignored")],
+	{
+		description:
+			"`queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label " +
+			"matches it, or its repository isn't one this runs jobs for.",
+	},
+);
+
+export const GithubRunnerJob = Type.Object(
+	{
+		id: id("GitHub's ID for the job."),
+		runId: Type.Integer(),
+		repository: Type.String(),
+		name: Type.String(),
+		labels: Type.Array(Type.String()),
+		pool: Type.Optional(Type.String({ description: "The pool whose label it matched." })),
+		state: GithubRunnerJobState,
+		conclusion: Type.Optional(Type.String()),
+		sandboxId: Type.Optional(Type.String({ description: "The runner's sandbox that took it." })),
+		queuedAt: Timestamp,
+		startedAt: Type.Optional(Timestamp),
+		completedAt: Type.Optional(Timestamp),
+		reason: Type.Optional(Type.String({ description: "Why it is ignored, or why it still waits." })),
+	},
+	{ title: "GithubRunnerJob" },
+);
+
+export const GithubRunnerJobList = Type.Object(
+	{ items: Type.Array(GithubRunnerJob, { description: "The newest 200, newest first." }) },
+	{ title: "GithubRunnerJobList" },
+);
+
+export type GithubRunnerPool = Static<typeof GithubRunnerPool>;
+export type GithubRunners = Static<typeof GithubRunners>;
+export type GithubRunnersScope = Static<typeof GithubRunnersScope>;
+export type CreateGithubRunnersBody = Static<typeof CreateGithubRunnersBody>;
+export type UpdateGithubRunnersBody = Static<typeof UpdateGithubRunnersBody>;
+export type GithubRunnerJob = Static<typeof GithubRunnerJob>;
+export type GithubRunnerJobState = Static<typeof GithubRunnerJobState>;

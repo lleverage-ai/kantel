@@ -36,6 +36,7 @@ import {
 	CreateApiKeyBody,
 	CreateBucketSourceBody,
 	CreateEnvironmentBody,
+	CreateGithubRunnersBody,
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
 	CreateOrganisationBody,
@@ -67,6 +68,11 @@ import {
 	FileUrlBody,
 	ForkedSandboxes,
 	ForkSandboxBody,
+	GithubRunnerJobList,
+	GithubRunners,
+	GithubRunnersList,
+	GithubRunnersPath,
+	GithubRunnersWithSecret,
 	Host,
 	HostJoinToken,
 	HostList,
@@ -144,6 +150,7 @@ import {
 	TemplateVersionList,
 	UpdateAccountBody,
 	UpdateEnvironmentBody,
+	UpdateGithubRunnersBody,
 	UpdateHostBody,
 	UpdateMemberBody,
 	UpdateSandboxBody,
@@ -1961,6 +1968,110 @@ export const watchEvents = defineRoute({
 });
 
 export const eventRoutes = { listEvents, watchEvents } as const;
+// GitHub Actions runners.
+
+const GITHUB_RUNNERS_OFF = "`not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`).";
+
+export const listGithubRunners = defineRoute({
+	operationId: "listGithubRunners",
+	method: "GET",
+	path: "/github-runners",
+	tag: "github-runners",
+	summary: "List GitHub runner integrations",
+	description: describe(GITHUB_RUNNERS_OFF, scope("account:admin")),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The integrations.", schema: GithubRunnersList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createGithubRunners = defineRoute({
+	operationId: "createGithubRunners",
+	method: "POST",
+	path: "/github-runners",
+	tag: "github-runners",
+	summary: "Connect a GitHub App for runners",
+	description: describe(
+		"From then on, each `workflow_job` the App's webhook sends whose `runs-on` labels a pool's label matches gets a",
+		"runner: a microVM made from the pool's template on the account's hosts, deleted once its job ends. Answers the",
+		"webhook's URL and secret (shown once) to give the App. Its runners act through an API key it makes, named for it;",
+		"revoking that key stops them. Needs protected values (`KANTEL_SECRETS_KEY`), as the App's key is kept sealed.",
+		GITHUB_RUNNERS_OFF,
+		scope("account:admin"),
+	),
+	body: CreateGithubRunnersBody,
+	idempotent: true,
+	answer: { status: 201, description: "The integration and its webhook secret.", schema: GithubRunnersWithSecret },
+	errors: ["invalid", "forbidden", "not_found", "not_supported"],
+});
+
+export const getGithubRunners = defineRoute({
+	operationId: "getGithubRunners",
+	method: "GET",
+	path: "/github-runners/{githubRunnersId}",
+	tag: "github-runners",
+	summary: "Get a GitHub runner integration",
+	description: describe("With each pool's queue and runners (`status`).", scope("account:admin")),
+	params: GithubRunnersPath,
+	answer: { status: 200, description: "The integration.", schema: GithubRunners },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const updateGithubRunners = defineRoute({
+	operationId: "updateGithubRunners",
+	method: "PATCH",
+	path: "/github-runners/{githubRunnersId}",
+	tag: "github-runners",
+	summary: "Change a GitHub runner integration",
+	description: describe(
+		"Runners already made keep the pool they were made for; disabling it makes no more, and leaves its queue to wait.",
+		scope("account:admin"),
+	),
+	params: GithubRunnersPath,
+	body: UpdateGithubRunnersBody,
+	answer: { status: 200, description: "The integration.", schema: GithubRunners },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const deleteGithubRunners = defineRoute({
+	operationId: "deleteGithubRunners",
+	method: "DELETE",
+	path: "/github-runners/{githubRunnersId}",
+	tag: "github-runners",
+	summary: "Disconnect a GitHub App",
+	description: describe(
+		"Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub",
+		"wait there for another runner.",
+		scope("account:admin"),
+	),
+	params: GithubRunnersPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listGithubRunnerJobs = defineRoute({
+	operationId: "listGithubRunnerJobs",
+	method: "GET",
+	path: "/github-runners/{githubRunnersId}/jobs",
+	tag: "github-runners",
+	summary: "List a GitHub runner integration's jobs",
+	description: describe(
+		"The jobs its webhook told it of, newest first, and why any still waits.",
+		scope("account:admin"),
+	),
+	params: GithubRunnersPath,
+	answer: { status: 200, description: "Its jobs.", schema: GithubRunnerJobList },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const githubRunnerRoutes = {
+	listGithubRunners,
+	createGithubRunners,
+	getGithubRunners,
+	updateGithubRunners,
+	deleteGithubRunners,
+	listGithubRunnerJobs,
+} as const;
+
 export const webhookRoutes = {
 	listWebhooks,
 	createWebhook,
@@ -2485,6 +2596,7 @@ export const computeRoutes = {
 	...templateRoutes,
 	...eventRoutes,
 	...webhookRoutes,
+	...githubRunnerRoutes,
 	...telemetryRoutes,
 	// Before the hosts' `/admin/hosts/{hostId}`, which would otherwise take `images` for a host's ID.
 	...baseImageRoutes,

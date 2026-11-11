@@ -374,6 +374,21 @@ func (q *ListFilesQuery) values() url.Values {
 	return v
 }
 
+// ListGithubRunnersQuery is ListGithubRunners's query.
+type ListGithubRunnersQuery struct {
+	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
+	Account *string
+}
+
+func (q *ListGithubRunnersQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "account", q.Account)
+	return v
+}
+
 // ListSandboxProcessesQuery is ListSandboxProcesses's query.
 type ListSandboxProcessesQuery struct {
 	// How many to list: default 10, at most 50.
@@ -1051,6 +1066,56 @@ func (c *Client) SetEnvironmentVariable(ctx context.Context, environmentID strin
 func (c *Client) ListEvents(ctx context.Context, query *ListEventsQuery, opts ...CallOption) (*EventPage, error) {
 	var out EventPage
 	if err := c.Do(ctx, Call{Method: "GET", Path: "/events", Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListGithubRunners GET /github-runners: List GitHub runner integrations. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`.
+func (c *Client) ListGithubRunners(ctx context.Context, query *ListGithubRunnersQuery, opts ...CallOption) (*GithubRunnersList, error) {
+	var out GithubRunnersList
+	if err := c.Do(ctx, Call{Method: "GET", Path: "/github-runners", Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateGithubRunners POST /github-runners: Connect a GitHub App for runners. From then on, each `workflow_job` the App's webhook sends whose `runs-on` labels a pool's label matches gets a runner: a microVM made from the pool's template on the account's hosts, deleted once its job ends. Answers the webhook's URL and secret (shown once) to give the App. Its runners act through an API key it makes, named for it; revoking that key stops them. Needs protected values (`KANTEL_SECRETS_KEY`), as the App's key is kept sealed. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`.
+func (c *Client) CreateGithubRunners(ctx context.Context, body CreateGithubRunnersBody, opts ...CallOption) (*GithubRunnersWithSecret, error) {
+	var out GithubRunnersWithSecret
+	if err := c.Do(ctx, Call{Method: "POST", Path: "/github-runners", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteGithubRunners DELETE /github-runners/{githubRunnersId}: Disconnect a GitHub App. Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub wait there for another runner. A key needs `account:admin`.
+func (c *Client) DeleteGithubRunners(ctx context.Context, githubRunnersID string, opts ...CallOption) error {
+	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/github-runners/%s", url.PathEscape(githubRunnersID)), Query: nil}, opts...)
+}
+
+// GetGithubRunners GET /github-runners/{githubRunnersId}: Get a GitHub runner integration. With each pool's queue and runners (`status`). A key needs `account:admin`.
+func (c *Client) GetGithubRunners(ctx context.Context, githubRunnersID string, opts ...CallOption) (*GithubRunners, error) {
+	var out GithubRunners
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/github-runners/%s", url.PathEscape(githubRunnersID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateGithubRunners PATCH /github-runners/{githubRunnersId}: Change a GitHub runner integration. Runners already made keep the pool they were made for; disabling it makes no more, and leaves its queue to wait. A key needs `account:admin`.
+func (c *Client) UpdateGithubRunners(ctx context.Context, githubRunnersID string, body UpdateGithubRunnersBody, opts ...CallOption) (*GithubRunners, error) {
+	var out GithubRunners
+	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/github-runners/%s", url.PathEscape(githubRunnersID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListGithubRunnerJobs GET /github-runners/{githubRunnersId}/jobs: List a GitHub runner integration's jobs. The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`.
+func (c *Client) ListGithubRunnerJobs(ctx context.Context, githubRunnersID string, opts ...CallOption) (*GithubRunnerJobList, error) {
+	var out GithubRunnerJobList
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/github-runners/%s/jobs", url.PathEscape(githubRunnersID)), Query: nil, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

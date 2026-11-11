@@ -165,6 +165,13 @@ const TAGS: {
 		order: 10,
 		about: "Signed event deliveries to your endpoints, with retries.",
 	},
+	"github-runners": {
+		title: "GitHub runners",
+		order: 10.5,
+		about:
+			"GitHub Apps whose `workflow_job` webhooks get an ephemeral microVM runner per job, made from a pool's template on the account's hosts, with a queue for jobs that find no room.",
+		note: "Experimental: a deployment serves these only with `KANTEL_GITHUB_RUNNERS=experimental`.",
+	},
 	telemetry: {
 		title: "OpenTelemetry",
 		order: 11,

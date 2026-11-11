@@ -78,6 +78,9 @@
  *   KANTEL_TEMPLATES             `experimental` turns on templates: versioned microVM profiles whose snapshots are built
  *                                in the background (`/v1/templates`, `/v1/template-bases`), on the stub or on hosts
  *                                that build them. Default off: those routes answer 501 not_supported
+ *   KANTEL_GITHUB_RUNNERS        `experimental` turns on GitHub Actions runners (`/v1/github-runners`): GitHub Apps
+ *                                whose `workflow_job` webhooks get an ephemeral microVM runner each, made from a
+ *                                template (so KANTEL_TEMPLATES too). Default off: those routes answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -200,6 +203,8 @@ export interface ComputeConfig {
 	readonly mounts?: boolean;
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. */
 	readonly templates?: boolean;
+	/** GitHub Actions runners (KANTEL_GITHUB_RUNNERS=experimental). */
+	readonly githubRunners?: boolean;
 	/**
 	 * Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Off by default: a replicated install turns it on only
 	 * once every gateway runs a version that has it.
@@ -221,8 +226,9 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	// Read whatever the backend, so a typo stops the gateway on the stub too.
 	const mounts = mountsSwitch(env[MOUNTS_SWITCH]);
 	const templates = templatesSwitch(env.KANTEL_TEMPLATES) ? { templates: true } : {};
+	const runners = experimentalSwitch(env.KANTEL_GITHUB_RUNNERS, "KANTEL_GITHUB_RUNNERS") ? { githubRunners: true } : {};
 	const expiry = snapshotExpirySwitch(env.KANTEL_SNAPSHOT_EXPIRY) ? { snapshotExpiry: true } : {};
-	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...templates, ...patching, ...expiry };
+	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...templates, ...runners, ...patching, ...expiry };
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error(
@@ -262,6 +268,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	return {
 		...(mounts ? { mounts } : {}),
 		...templates,
+		...runners,
 		...expiry,
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
@@ -306,10 +313,15 @@ export function mountsSwitch(raw: string | undefined): boolean {
  * worth stopping for, as KANTEL_ACCOUNT_HOSTS's is.
  */
 export function templatesSwitch(raw: string | undefined): boolean {
+	return experimentalSwitch(raw, "KANTEL_TEMPLATES");
+}
+
+/** An experimental feature's switch: `experimental` on; unset, empty or `off` off; anything else stops the gateway. */
+export function experimentalSwitch(raw: string | undefined, name: string): boolean {
 	const value = raw?.trim().toLowerCase() ?? "";
 	if (value === "" || value === "off") return false;
 	if (value === "experimental") return true;
-	throw new Error("KANTEL_TEMPLATES is `experimental` or `off`");
+	throw new Error(`${name} is \`experimental\` or \`off\``);
 }
 
 /**
@@ -592,6 +604,8 @@ export async function gatewayCompute(options: {
 	readonly invites?: InviteMailing;
 	/** Templates (KANTEL_TEMPLATES=experimental). Default off. */
 	readonly templates?: boolean;
+	/** GitHub Actions runners (KANTEL_GITHUB_RUNNERS=experimental). Default off. */
+	readonly githubRunners?: boolean;
 	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
 	readonly snapshotExpiry?: boolean;
 	/** Sandboxes' live changes from the other replicas over the database (live-relay.ts); absent, this gateway's only. */
@@ -642,6 +656,8 @@ export async function gatewayCompute(options: {
 		...(hosts?.config.portsDomain === undefined ? {} : { sandboxDomain: hosts.config.portsDomain }),
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.templates === true ? { templates: true } : {}),
+		// The broker's passes run in the compute sweep, every few seconds.
+		...(options.githubRunners === true ? { githubRunners: { log: (message: string) => console.log(message) } } : {}),
 		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),

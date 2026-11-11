@@ -10,9 +10,11 @@
  * endpoint's) are kept but never answered. An environment's protected variable values and secret files are kept sealed
  * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
+
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
 import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
+import type { StoredGithubRunnerJob, StoredGithubRunnerMachine, StoredGithubRunners } from "./github-runners.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /**
@@ -813,6 +815,10 @@ export interface ComputeStore {
 	readonly usageClaims: Collection<StoredUsageClaim>;
 	/** Account deletions under way (`StoredDeletion`). */
 	readonly deletions: Collection<StoredDeletion>;
+	/** GitHub Actions runners (`github-runners.ts`): the integrations, the jobs their webhooks told of, and their runners. */
+	readonly githubRunners: Collection<StoredGithubRunners>;
+	readonly githubRunnerJobs: Collection<StoredGithubRunnerJob>;
+	readonly githubRunnerMachines: Collection<StoredGithubRunnerMachine>;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -978,6 +984,9 @@ export function createMemoryStore(): ComputeStore {
 		templateWrites: memoryTemplateWrites(templates, templateVersions),
 		templateSnapshots: memoryCollection(),
 		templateBases: memoryCollection(),
+		githubRunners: memoryCollection(),
+		githubRunnerJobs: memoryCollection(),
+		githubRunnerMachines: memoryCollection(),
 	};
 }
 
@@ -1021,7 +1030,7 @@ export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
 
 /**
  * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
- * deliveries, telemetry, proxy settings, join tokens, events) fenced against its deletion: a write is checked once it
+ * deliveries, telemetry, proxy settings, join tokens, events, GitHub runner integrations and their jobs) fenced against its deletion: a write is checked once it
  * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
  * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
  * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
@@ -1090,5 +1099,8 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		// Keyed by their account.
 		telemetry: fenced(store.telemetry, isAccount),
 		proxies: fenced(store.proxies, isAccount),
+		githubRunners: fenced(store.githubRunners, byAccount),
+		githubRunnerJobs: fenced(store.githubRunnerJobs, byAccount, true),
+		githubRunnerMachines: fenced(store.githubRunnerMachines, byAccount),
 	};
 }

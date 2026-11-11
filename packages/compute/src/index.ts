@@ -7,6 +7,8 @@ export * from "./auth.ts";
 export * from "./backend.ts";
 export * from "./base-images.ts";
 export * from "./base-status.ts";
+export * from "./github-app.ts";
+export * from "./github-runners.ts";
 export * from "./http.ts";
 export * from "./live.ts";
 export * from "./mounts.ts";

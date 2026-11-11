@@ -397,6 +397,8 @@ export interface StackComputeOptions {
 	};
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
 	readonly templates?: boolean;
+	/** GitHub Actions runners (KANTEL_GITHUB_RUNNERS=experimental). Default off. */
+	readonly githubRunners?: boolean;
 	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
 	readonly snapshotExpiry?: boolean;
 	/**
@@ -586,6 +588,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
 		...(options.templates === true ? { templates: true } : {}),
+		// The broker's passes run on the stack object's alarm (`tickGithubRunners`), and in each request's sweep.
+		...(options.githubRunners === true
+			? { githubRunners: { log: (message: string) => console.log(`kantel: ${message}`) } }
+			: {}),
 		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
