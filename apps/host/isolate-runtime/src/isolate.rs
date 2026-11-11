@@ -442,6 +442,9 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                     match cmd {
                         ShellCmd::Load { mem_mib, reply } => {
                             if mem_mib != live.budget.limit() / MIB {
+                                // The old isolate goes first: rusty_v8 isolates are dropped in reverse order of
+                                // creation.
+                                drop(live);
                                 live = new_live(Kind::Shell, mem_mib);
                             }
                             let _ = reply.send(());

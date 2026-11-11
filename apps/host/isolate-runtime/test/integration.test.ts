@@ -501,6 +501,15 @@ d("one memory limit: heap, buffers and wasm together", () => {
 		expect(r.stdout).toBe("");
 		expect((await c.health()).ok).toBe(true);
 	});
+	it("loading a sandbox again with another memory size replaces its isolate", async () => {
+		await c.load("mem-resize", 256);
+		expect((await c.exec("mem-resize", "echo one")).stdout).toBe("one\n");
+		expect((await c.load("mem-resize", 128)).ok).toBe(true);
+		expect((await c.exec("mem-resize", "echo two")).stdout).toBe("two\n");
+		expect((await c.load("mem-resize", 256)).ok).toBe(true);
+		expect((await c.exec("mem-resize", "echo three")).stdout).toBe("three\n");
+		expect((await c.health()).ok).toBe(true);
+	});
 	it("ordinary work still fits in 256 MiB: a 20 MB JSON in node, a 100k-row CSV and numpy in python", async () => {
 		const rows = Array.from({ length: 150_000 }, (_, i) => ({
 			id: i,

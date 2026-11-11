@@ -400,8 +400,14 @@ test each (`test/integration.test.ts`, run on both the stock and `v8-sandbox` bu
   wasm requests are refused past memoryMiB minus the heap, and the epilogue terminates (`terminated: memory`) when
   heap + buffers + wasm is over memoryMiB at a full GC and the GC after it. In `v8-sandbox` builds the C++ budget
   allocator's byte count (`kantel__BudgetAllocator__Used`) is read into the same sum; the allocator's own limit
-  stays memoryMiB, so no V8 rebuild was needed. The heap limit stays memoryMiB as the backstop. Tested in the shell,
-  node and python, heap-then-buffers and the reverse, on both builds.
+  stays memoryMiB, so no V8 rebuild was needed. The heap limit stays memoryMiB as the backstop. If no GC follows the
+  full GC that found the total over (the program stopped allocating), the watchdog stops the isolate when it is still
+  over 200 ms later. Tested in the shell, node and python, heap-then-buffers and the reverse, on both builds. An
+  independent review of this change also found, and these are fixed: a refused request was counted for a moment
+  before it was rolled back (a concurrent GC could act on it); a watchdog termination could land after a command
+  had cancelled its own and the isolate was being dropped (stopping and finishing are now serialised); and
+  reloading a sandbox with another memory size made the new isolate before dropping the old one (rusty_v8 needs the
+  reverse).
   Speed (the spike's bench, B2/B3, two rounds each, before → after, same machine, load 7–10): no cost beyond the
   noise.
 

@@ -8,11 +8,12 @@
 //!   the isolate there.
 //! - Wasm memory: reserved in the same [`Budget`] by the guest's wasm guard (op_kt_wasm_reserve).
 //! - The watchdog, one thread for the process, ticks every few milliseconds over every running command: it adds
-//!   each isolate thread's CPU time to its command's total and terminates past the budget or the deadline. It reads
-//!   only atomics and calls terminate_execution (thread-safe): touching V8 state from another thread aborts the
+//!   each isolate thread's CPU time to its command's total and terminates past the budget or the deadline, and
+//!   stops an isolate a full GC found over its memory limit if it is still over a moment later with no GC since. It
+//!   reads only atomics and calls terminate_execution (thread-safe): touching V8 state from another thread aborts the
 //!   process, which is why the heap is read in the GC epilogue instead.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,9 @@ pub const MIB: usize = 1024 * 1024;
 /// Heap V8 is given while a terminated execution unwinds (the isolate is discarded afterwards).
 const UNWIND_HEADROOM: usize = 64 * MIB;
 const TICK: Duration = Duration::from_millis(5);
+/// Watchdog ticks (200 ms) a budget a full GC found over the limit may stay over, with no GC since, before the
+/// isolate is stopped (see Watched::check_memory).
+const SUSPECT_TICKS: u32 = 40;
 
 /// Why a command was stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,19 +193,30 @@ impl Budget {
         self.armed.store(on, Ordering::SeqCst);
     }
     /// Take `len` bytes, or say why not: the total (heap + buffers + wasm) would pass the limit.
+    /// Checked before it is added (compare-and-swap), so a request that is refused is never counted, even for a
+    /// moment: a GC epilogue on the isolate's thread reads the total while a body is charged on an I/O thread.
     pub fn take(&self, len: usize) -> Result<(), Refusal> {
         let limit = self.limit();
-        let before = self.used.fetch_add(len, Ordering::SeqCst);
-        let direct = before
-            .saturating_add(len)
-            .saturating_add(self.sandbox_buffers());
-        if direct > limit {
-            self.used.fetch_sub(len, Ordering::SeqCst);
-            return Err(Refusal::Over);
-        }
-        if direct.saturating_add(self.heap()) > limit {
-            self.used.fetch_sub(len, Ordering::SeqCst);
-            return Err(Refusal::Heap);
+        let mut cur = self.used.load(Ordering::SeqCst);
+        loop {
+            let direct = cur
+                .saturating_add(len)
+                .saturating_add(self.sandbox_buffers());
+            if direct > limit {
+                return Err(Refusal::Over);
+            }
+            if direct.saturating_add(self.heap()) > limit {
+                return Err(Refusal::Heap);
+            }
+            match self.used.compare_exchange_weak(
+                cur,
+                cur + len,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(now) => cur = now,
+            }
         }
         self.refused_at.store(NO_REFUSAL, Ordering::SeqCst);
         Ok(())
@@ -210,10 +225,11 @@ impl Budget {
     pub fn try_take(&self, len: usize) -> bool {
         self.take(len).is_ok()
     }
-    /// A refusal blamed on the heap: true if it should only fail this attempt (no GC has run since the heap figure
-    /// was last held against an allocation, so V8 collects and retries), false if the figure is from a GC after that
-    /// (it's real: stop the isolate). V8 retries a refused ArrayBuffer allocation after a GC, up to three times.
-    /// Only the stock build's Rust allocator asks (the sandbox build's C++ allocator has V8 retry on its own).
+    /// A refusal blamed on the heap: true if it should only fail this attempt, so V8 collects and retries (it
+    /// retries a refused ArrayBuffer allocation after each of up to three GCs); false once two GCs have run since the
+    /// first such refusal — by the second one's start V8 has freed the buffers the first found dead, so what is left
+    /// is real: stop the isolate. Only the stock build's Rust allocator asks (the sandbox build's C++ allocator
+    /// refuses only past memoryMiB on its own, and V8 retries those itself).
     #[cfg(any(test, not(feature = "v8-sandbox")))]
     fn soft_refusal(&self) -> bool {
         let gcs = self.gcs.load(Ordering::SeqCst);
@@ -222,8 +238,12 @@ impl Budget {
             .compare_exchange(NO_REFUSAL, gcs, Ordering::SeqCst, Ordering::SeqCst)
         {
             Ok(_) => true,
-            Err(at) => at == gcs,
+            Err(at) => gcs < at.saturating_add(2),
         }
+    }
+    /// A full GC found the total over the limit and no GC since has cleared it.
+    pub fn suspect(&self) -> bool {
+        self.suspect.load(Ordering::SeqCst)
     }
     pub fn give(&self, len: usize) {
         // Saturating subtract via CAS (never underflow if a guest over-releases).
@@ -248,7 +268,8 @@ impl Budget {
             h.terminate_execution();
         }
     }
-    /// The total is over the limit (seen by the GC epilogue): stop the running command once, if one is running.
+    /// The total is over the limit (seen by the GC epilogue, or the watchdog's follow-up to one): stop the running
+    /// command once, if one is running.
     fn trip(&self) {
         if self.armed.load(Ordering::SeqCst)
             && self
@@ -512,6 +533,12 @@ pub struct Watched {
     /// This isolate's own reason (a child stopped for its own memory doesn't stop the parent).
     term: AtomicU8,
     done: AtomicBool,
+    /// Held to terminate and to finish: once the guard is dropped (`done`), nothing terminates this isolate any more
+    /// — a termination landing after the command has cancelled its own would be live when the isolate is torn down,
+    /// which aborts V8.
+    gate: Mutex<()>,
+    /// Consecutive watchdog ticks with the budget suspect and still over (see `check_memory`).
+    over_ticks: AtomicU32,
 }
 
 impl Watched {
@@ -538,7 +565,26 @@ impl Watched {
         let _ = self
             .term
             .compare_exchange(0, t.code(), Ordering::SeqCst, Ordering::SeqCst);
-        self.handle.terminate_execution();
+        let _gate = self.gate.lock().unwrap();
+        if !self.done.load(Ordering::SeqCst) {
+            self.handle.terminate_execution();
+        }
+    }
+    /// The follow-up to a full GC that found the total over the limit: if no GC since has cleared it (the program
+    /// stopped allocating) and it is still over a moment later (time for V8 to free the buffers that GC found dead),
+    /// stop the isolate rather than leave an observed breach to whichever GC comes next.
+    fn check_memory(&self) {
+        let _gate = self.gate.lock().unwrap();
+        if self.done.load(Ordering::SeqCst) {
+            return;
+        }
+        if self.budget.suspect() && self.budget.total() > self.budget.limit() {
+            if self.over_ticks.fetch_add(1, Ordering::Relaxed) + 1 >= SUSPECT_TICKS {
+                self.budget.trip();
+            }
+        } else {
+            self.over_ticks.store(0, Ordering::Relaxed);
+        }
     }
     fn account(&self) {
         let now = cpu_time(self.clock);
@@ -564,6 +610,7 @@ impl Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         self.w.account();
+        let _gate = self.w.gate.lock().unwrap();
         self.w.budget.arm(false);
         self.w.done.store(true, Ordering::SeqCst);
     }
@@ -589,6 +636,8 @@ pub fn watch(handle: v8::IsolateHandle, command: Arc<Command>, budget: Arc<Budge
         budget,
         term: AtomicU8::new(0),
         done: AtomicBool::new(false),
+        gate: Mutex::new(()),
+        over_ticks: AtomicU32::new(0),
     });
     w.budget.arm(true);
     WATCHED.lock().unwrap().push(Arc::downgrade(&w));
@@ -612,6 +661,7 @@ fn watchdog() {
                 continue;
             }
             w.account();
+            w.check_memory();
             // Act on any reason, including budget.exceeded (a heap breach the near-heap callback couldn't terminate
             // on because it already fired once): keep calling terminate_execution (idempotent) rather than skipping,
             // so a reused isolate whose heap guard is spent is still stopped, and CPU/wall stay enforced.
@@ -685,7 +735,9 @@ mod tests {
         assert!(b.soft_refusal()); // let V8 collect and retry
         assert!(b.soft_refusal()); // no GC since: still the same figure
         b.after_gc(80 * MIB, false);
-        assert!(!b.soft_refusal()); // collected and still over: real
+        assert!(b.soft_refusal()); // one GC: the buffers it found dead may not be freed yet
+        b.after_gc(80 * MIB, false);
+        assert!(!b.soft_refusal()); // two: real
         b.reset_exceeded();
         assert!(b.soft_refusal());
     }
