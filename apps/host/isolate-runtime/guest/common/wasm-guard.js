@@ -15,6 +15,8 @@
 // The descriptors and byte arrays a guest passes are read once and copied, so it can't show the check one value and
 // V8 another.
 
+import { Prim } from "./primordials.js";
+
 const PAGE = 65536;
 const MAX_PAGES = 65536;
 
@@ -36,7 +38,9 @@ export function installWasmGuard(ops, mode) {
 	const moduleImports = OrigModule.imports;
 	const moduleExports = OrigModule.exports;
 	const moduleCustomSections = OrigModule.customSections;
-	const apply = Reflect.apply;
+	// All intrinsics from Prim (snapshot-time), so a guest can't swap Reflect.apply / WeakMap methods to defeat the
+	// accounting (e.g. make `reserved.get(this)` return a huge "already reserved" value, review finding H2).
+	const { ReflectApply: apply, WeakMapGet, WeakMapSet, WeakMapHas, newWeakMap, JSONparse, ObjectEntries } = Prim;
 	const isMemory = (v) => {
 		try {
 			apply(bufferOf, v, []);
@@ -47,9 +51,9 @@ export function installWasmGuard(ops, mode) {
 	};
 
 	/** Reserved bytes by memory. */
-	const reserved = new WeakMap();
+	const reserved = newWeakMap();
 	/** What op_kt_wasm_inspect said about each module this isolate compiled. */
-	const infos = new WeakMap();
+	const infos = newWeakMap();
 
 	const limitError = (what) =>
 		new RangeError(`${what}: out of memory (this isolate's memory limit counts WebAssembly memory too)`);
@@ -75,7 +79,7 @@ export function installWasmGuard(ops, mode) {
 	}
 
 	function inspect(bytes, what) {
-		const info = JSON.parse(ops.op_kt_wasm_inspect(bytes, boot));
+		const info = JSONparse(ops.op_kt_wasm_inspect(bytes, boot));
 		if (info.error) throw new WA.CompileError(`${what}: ${info.error}`);
 		return info;
 	}
@@ -103,7 +107,7 @@ export function installWasmGuard(ops, mode) {
 			release(initial * PAGE);
 			throw error;
 		}
-		reserved.set(memory, initial * PAGE);
+		WeakMapSet(reserved, memory, initial * PAGE);
 		return memory;
 	};
 
@@ -111,10 +115,10 @@ export function installWasmGuard(ops, mode) {
 		const n = pages(delta, "delta");
 		const current = apply(bufferOf, this, []).byteLength;
 		const want = current + n * PAGE;
-		const have = reserved.get(this) ?? current;
+		const have = WeakMapGet(reserved, this) ?? current;
 		if (want > have) {
 			reserve(want - have, "WebAssembly.Memory.grow()");
-			reserved.set(this, want);
+			WeakMapSet(reserved, this, want);
 		}
 		return apply(origGrow, this, [n]);
 	}
@@ -124,7 +128,7 @@ export function installWasmGuard(ops, mode) {
 		const copy = copyBytes(bytes, "WebAssembly.Module()");
 		const info = inspect(copy, "WebAssembly.Module()");
 		const module = new OrigModule(copy);
-		infos.set(module, info);
+		WeakMapSet(infos, module, info);
 		return module;
 	};
 	Module.imports = moduleImports;
@@ -136,25 +140,25 @@ export function installWasmGuard(ops, mode) {
 			// Pyodide's own module, once per process: the host keeps it compiled.
 			const cached = ops.op_kt_wasm_cached();
 			if (cached) {
-				infos.set(cached, JSON.parse(ops.op_kt_wasm_cached_info()));
+				WeakMapSet(infos, cached, JSONparse(ops.op_kt_wasm_cached_info()));
 				return cached;
 			}
 			const copy = copyBytes(source, what);
 			const info = inspect(copy, what);
 			const module = await apply(origCompile, WA, [copy]);
-			infos.set(module, info);
+			WeakMapSet(infos, module, info);
 			ops.op_kt_wasm_store(module, JSON.stringify(info));
 			return module;
 		}
 		const copy = copyBytes(source, what);
 		const info = inspect(copy, what);
 		const module = await apply(origCompile, WA, [copy]);
-		infos.set(module, info);
+		WeakMapSet(infos, module, info);
 		return module;
 	}
 
 	function makeInstance(module, imports, what) {
-		const info = infos.get(module);
+		const info = WeakMapGet(infos, module);
 		if (info === undefined) throw new TypeError(`${what}: Argument 0 must be a WebAssembly.Module`);
 		let total = 0;
 		for (const m of info.memories) if (!m.imported) total += m.initial * PAGE;
@@ -168,10 +172,10 @@ export function installWasmGuard(ops, mode) {
 		}
 		// The memories the module defined are counted from here by their grow(); a defined memory it doesn't export
 		// can't grow (no memory.grow instruction) and stays reserved at its initial size.
-		for (const [name, index] of Object.entries(info.memoryExports)) {
+		for (const [name, index] of ObjectEntries(info.memoryExports)) {
 			const m = info.memories[index];
 			const value = instance.exports[name];
-			if (m && !m.imported && isMemory(value) && !reserved.has(value)) reserved.set(value, m.initial * PAGE);
+			if (m && !m.imported && isMemory(value) && !WeakMapHas(reserved, value)) WeakMapSet(reserved, value, m.initial * PAGE);
 		}
 		return instance;
 	}

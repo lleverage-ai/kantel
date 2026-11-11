@@ -1,4 +1,5 @@
 // TextEncoder and TextDecoder on deno_core's encode/decode. Loaded first: whatwg-url makes one when its module loads.
+import { budgetedCopy } from "./budget.js";
 const core = globalThis.Deno.core;
 
 class TextEncoder {
@@ -6,7 +7,8 @@ class TextEncoder {
 		return "utf-8";
 	}
 	encode(input = "") {
-		return core.encode(String(input));
+		// Budget the bytes (finding H4): a retained TextEncoder().encode(...) must count against the isolate.
+		return budgetedCopy(core.encode(String(input)));
 	}
 	encodeInto(input, dest) {
 		const bytes = core.encode(String(input));

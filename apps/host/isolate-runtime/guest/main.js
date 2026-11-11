@@ -41,12 +41,15 @@ const hostConsole = {
 };
 
 function init(kind) {
+	// Wrap ArrayBuffer and SharedArrayBuffer (refuse resizable/growable buffers, which allocate outside the budget)
+	// BEFORE deleting the SharedArrayBuffer global, so SharedArrayBuffer.prototype.constructor is repointed to the
+	// guarded one and grow is gone: a shared buffer that Pyodide's boot creates (reached via `.buffer.constructor`)
+	// then can't be used to make a growable SharedArrayBuffer (review finding H3).
+	fixBuffers(globalThis);
 	// No shared memory and so no way to build a fine timer from a counter (performance.now() is whole
 	// milliseconds). Removed here, not in the snapshot: V8 adds to Atomics when it deserialises a context.
 	delete globalThis.SharedArrayBuffer;
 	delete globalThis.Atomics;
-	// Refuse resizable/growable buffers, which would otherwise allocate outside the isolate's memory budget (W2).
-	fixBuffers(globalThis);
 	globalThis.console = hostConsole;
 	let entry;
 	if (kind === "shell") {
@@ -58,8 +61,10 @@ function init(kind) {
 		installWasmGuard(ops, "strict");
 		entry = createNode(ops);
 	} else if (kind === "python") {
+		// boot mode lets Pyodide's trusted init load its big module and a shared memory; createPython calls the
+		// returned lockdown() once Pyodide is up and before any user code runs.
 		const lockdown = installWasmGuard(ops, "boot");
-		entry = { ...createPython(ops), lockdown };
+		entry = createPython(ops, lockdown);
 	} else throw new Error(`unknown isolate kind ${kind}`);
 	// Every route from guest code to the host's ops: Deno.core.ops, and __bootstrap.core.ops (reachable from Python
 	// via `js.__bootstrap`). __infra (promise/queue helpers deno_core keeps) has no ops, so it stays.

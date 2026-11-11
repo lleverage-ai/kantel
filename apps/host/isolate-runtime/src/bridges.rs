@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
@@ -15,8 +17,48 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// The most of a response body one guest fetch may read.
+use crate::limits::Budget;
+
+/// The most of one egress response body one fetch may read.
 const MAX_FETCH_BODY: usize = 64 * 1024 * 1024;
+/// Bytes of in-flight response/blob bodies being collected in Rust across the whole process, so many concurrent
+/// fetches can't exhaust host memory regardless of per-isolate budgets.
+const MAX_PROCESS_INFLIGHT: usize = 512 * 1024 * 1024;
+static PROCESS_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Charges bytes being collected in Rust against the isolate's memory budget and a process-wide in-flight cap, and
+/// releases them when dropped (when the collected buffer is handed to V8 and freed). So a response can't be larger
+/// than the sandbox's memory, and all in-flight bodies together can't exhaust the host (review findings H5, M7).
+pub struct Charge {
+    budget: Arc<Budget>,
+    taken: usize,
+}
+
+impl Charge {
+    pub fn new(budget: Arc<Budget>) -> Charge {
+        Charge { budget, taken: 0 }
+    }
+    fn add(&mut self, n: usize) -> Result<()> {
+        let before = PROCESS_INFLIGHT.fetch_add(n, Ordering::SeqCst);
+        if before + n > MAX_PROCESS_INFLIGHT {
+            PROCESS_INFLIGHT.fetch_sub(n, Ordering::SeqCst);
+            bail!("the runtime is busy (too much data in flight); try again");
+        }
+        if !self.budget.try_take(n) {
+            PROCESS_INFLIGHT.fetch_sub(n, Ordering::SeqCst);
+            bail!("response is larger than this isolate's memory; use a microVM for large downloads");
+        }
+        self.taken += n;
+        Ok(())
+    }
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        PROCESS_INFLIGHT.fetch_sub(self.taken, Ordering::SeqCst);
+        self.budget.give(self.taken);
+    }
+}
 
 pub fn valid_sha(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -75,13 +117,16 @@ async fn dial(target: &Target) -> Result<BoxStream> {
     }
 }
 
-/// Send one HTTP/1.1 request over a fresh connection to `target` and read the whole response.
+/// Send one HTTP/1.1 request over a fresh connection to `target` and read the whole response, charging the body's
+/// bytes as they arrive against `charge` (if any) and refusing past `cap`.
 async fn request(
     target: &Target,
     method: &str,
     uri: &str,
     headers: &[(&str, &str)],
     body: Vec<u8>,
+    cap: usize,
+    charge: Option<&mut Charge>,
 ) -> Result<(hyper::StatusCode, hyper::HeaderMap, Bytes)> {
     let stream = dial(target).await?;
     let (mut sender, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
@@ -93,12 +138,28 @@ async fn request(
     let resp = sender.send_request(builder.body(http_body_util::Full::new(Bytes::from(body)))?).await?;
     let status = resp.status();
     let headers = resp.headers().clone();
-    let data = read_body(resp.into_body()).await?;
+    let data = read_body(resp.into_body(), cap, charge).await?;
     Ok((status, headers, data))
 }
 
-async fn read_body(body: Incoming) -> Result<Bytes> {
-    Ok(http_body_util::Limited::new(body, MAX_FETCH_BODY).collect().await.map_err(|e| anyhow!("response body: {e}"))?.to_bytes())
+/// Collect a body up to `cap`, charging each frame against `charge` as it arrives (so a slow stream can't grow
+/// unbounded, and the bytes count against the isolate's memory and the process-wide in-flight cap).
+async fn read_body(body: Incoming, cap: usize, mut charge: Option<&mut Charge>) -> Result<Bytes> {
+    let mut body = body;
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| anyhow!("response body: {e}"))?;
+        if let Some(chunk) = frame.data_ref() {
+            if out.len() + chunk.len() > cap {
+                bail!("response body is too large (over {} MiB)", cap / (1024 * 1024));
+            }
+            if let Some(c) = charge.as_deref_mut() {
+                c.add(chunk.len())?;
+            }
+            out.extend_from_slice(chunk);
+        }
+    }
+    Ok(Bytes::from(out))
 }
 
 pub struct Store {
@@ -110,11 +171,13 @@ impl Store {
         Store { target }
     }
 
-    pub async fn get(&self, sha: &str) -> Result<Vec<u8>> {
+    /// Read a blob, capped at `cap` (the sandbox's memory) and charged against its budget — not the egress body cap,
+    /// which is unrelated to the host's 256 MiB blob limit (review finding M7).
+    pub async fn get(&self, sha: &str, cap: usize, charge: Option<&mut Charge>) -> Result<Vec<u8>> {
         if !valid_sha(sha) {
             bail!("blob: not a SHA-256 digest");
         }
-        let (status, _, data) = request(&self.target, "GET", &format!("/blobs/{sha}"), &[], Vec::new()).await?;
+        let (status, _, data) = request(&self.target, "GET", &format!("/blobs/{sha}"), &[], Vec::new(), cap, charge).await?;
         if !status.is_success() {
             bail!("blob {sha}: {status}");
         }
@@ -123,7 +186,7 @@ impl Store {
 
     pub async fn put(&self, bytes: Vec<u8>) -> Result<String> {
         let (status, _, data) =
-            request(&self.target, "PUT", "/blobs", &[("content-type", "application/octet-stream")], bytes).await?;
+            request(&self.target, "PUT", "/blobs", &[("content-type", "application/octet-stream")], bytes, 1024, None).await?;
         if !status.is_success() {
             bail!("put blob: {status}");
         }
@@ -160,16 +223,33 @@ fn is_dropped_header(lower: &str) -> bool {
         )
 }
 
+/// Credential headers stripped when a redirect crosses origins (as the Fetch standard does), so a guest's token
+/// isn't sent to a host the redirect points at (review finding M10).
+fn is_credential_header(lower: &str) -> bool {
+    matches!(lower, "authorization" | "cookie" | "cookie2")
+}
+
+fn origin_of(uri: &hyper::Uri) -> (Option<&str>, Option<String>) {
+    (uri.scheme_str(), uri.authority().map(|a| a.as_str().to_ascii_lowercase()))
+}
+
 /// One request through the egress proxy, in proxy style (absolute-form target), tagged with the sandbox. The
 /// guest's own kantel-* headers (and hop-by-hop/framing headers) are dropped, so it can't claim another sandbox or
-/// confuse the proxy's framing.
-pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: Vec<u8>) -> Result<Vec<u8>> {
+/// confuse the proxy's framing. `charge` bounds the response body against the isolate's memory.
+pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: Vec<u8>, mut charge: Option<&mut Charge>) -> Result<Vec<u8>> {
     let (mut url, mut method, mut body) = (req.url.clone(), req.method.to_uppercase(), body);
+    // The origin the credential headers were meant for (the first request's); cleared once a redirect crosses it.
+    let first: hyper::Uri = url.parse().map_err(|e| anyhow!("bad URL {url}: {e}"))?;
+    let origin = origin_of(&first);
+    let mut credentials_ok = true;
     for _ in 0..10 {
         let uri: hyper::Uri = url.parse().map_err(|e| anyhow!("bad URL {url}: {e}"))?;
         match uri.scheme_str() {
             Some("http") | Some("https") => {}
             _ => bail!("unsupported URL scheme: {url}"),
+        }
+        if credentials_ok && origin_of(&uri) != origin {
+            credentials_ok = false;
         }
         let authority = uri.authority().ok_or_else(|| anyhow!("no host in {url}"))?.to_string();
         let stream = dial(egress).await.map_err(|e| anyhow!("egress proxy: {e}"))?;
@@ -178,9 +258,11 @@ pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: V
         // Absolute-form request target (proxy style), so the proxy sees the real destination.
         let mut builder = hyper::Request::builder().method(method.as_str()).uri(uri.clone());
         for (k, v) in &req.headers {
-            if !is_dropped_header(&k.to_ascii_lowercase()) {
-                builder = builder.header(k.as_str(), v.as_str());
+            let lower = k.to_ascii_lowercase();
+            if is_dropped_header(&lower) || (!credentials_ok && is_credential_header(&lower)) {
+                continue;
             }
+            builder = builder.header(k.as_str(), v.as_str());
         }
         builder = builder.header("host", authority.as_str()).header("kantel-isolate-sandbox", sandbox);
         let request = builder.body(http_body_util::Full::new(Bytes::from(body.clone())))?;
@@ -200,7 +282,7 @@ pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: V
         for (k, v) in resp.headers() {
             headers.insert(k.to_string(), Value::String(v.to_str().unwrap_or("").to_string()));
         }
-        let data = read_body(resp.into_body()).await?;
+        let data = read_body(resp.into_body(), MAX_FETCH_BODY, charge.as_deref_mut()).await?;
         let meta = json!({ "status": status.as_u16(), "statusText": status.canonical_reason().unwrap_or(""), "headers": headers, "url": url, "redirected": url != req.url });
         return Ok(pack(&meta, &data));
     }

@@ -140,7 +140,7 @@ fn resolve_file(index: &HashMap<String, FileRef>, payload: &[u8], path: &str) ->
             let sha = sha.clone();
             let (tx, rx) = std::sync::mpsc::channel();
             engine().io.spawn(async move {
-                let _ = tx.send(engine().store.get(&sha).await);
+                let _ = tx.send(engine().store.get(&sha, 256 * crate::limits::MIB, None).await);
             });
             rx.recv()?.map_err(|e| anyhow!("{e}"))
         }
@@ -403,13 +403,16 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                 (_, Some(t)) if t != Term::Exit => {
                                     engine().stats.count_term(t);
                                     engine().stats.rebuilds.fetch_add(1, Ordering::Relaxed);
-                                    // Clear the terminate flag and reuse the isolate for the sandbox's next command:
-                                    // each exec builds its own bash and filesystem from the manifest (the host's
-                                    // state), so nothing carries over, and a low-memory notification hands back what
-                                    // the stopped command allocated. The isolate is reused, not rebuilt: dropping it
-                                    // here, inside the running event-loop turn, would abort V8.
+                                    // Reuse the isolate (dropping it here, inside the event-loop turn, would abort
+                                    // V8): clear the terminate flag, shrink the heap, and RE-ARM the heap guard by
+                                    // installing a fresh near-heap-limit callback — the previous one is one-shot
+                                    // (it won't terminate twice, to survive teardown GC), so a reused isolate would
+                                    // otherwise have no heap guard for its next command (review finding H1). Each
+                                    // exec builds its own bash and filesystem from the manifest, so nothing carries
+                                    // over.
                                     live.rt.v8_isolate().cancel_terminate_execution();
                                     live.rt.v8_isolate().low_memory_notification();
+                                    live.rt.add_near_heap_limit_callback(near_heap_limit(&live.budget.clone(), live.handle.clone()));
                                     json!({
                                         "exitCode": t.exit_code(), "stdout": "",
                                         "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
@@ -448,6 +451,15 @@ pub struct Job {
 
 fn pack_error(code: i64, stderr: &str) -> Vec<u8> {
     crate::bridges::pack(&json!({ "exitCode": code, "stdout": "", "stderr": stderr, "writes": [], "removes": [], "mkdirs": [], "symlinks": [] }), &[])
+}
+
+/// A terminated node/python run: carries `terminated` so the shell propagates it (exit 137/152) to /exec, as a
+/// shell command's own termination does (review finding H9).
+fn pack_terminated(t: Term, stderr: &str) -> Vec<u8> {
+    crate::bridges::pack(
+        &json!({ "exitCode": t.exit_code(), "stdout": "", "stderr": stderr, "terminated": t.name(), "writes": [], "removes": [], "mkdirs": [], "symlinks": [] }),
+        &[],
+    )
 }
 
 /// Run `node`/`python` for the shell. The child isolate is watched under the shell command's budget, so its CPU
@@ -714,7 +726,7 @@ fn run_one(live: &mut Live, kind: Kind, job: Job, rt: &tokio::runtime::Runtime) 
     let out = match (result, term) {
         (_, Some(t)) if t != Term::Exit => {
             engine().stats.count_term(t);
-            pack_error(t.exit_code(), &t.message(what, mem, command.cpu_limit, command.wall))
+            pack_terminated(t, &t.message(what, mem, command.cpu_limit, command.wall))
         }
         (Some(Ok(())), _) => take_result(&mut live.rt).unwrap_or_else(|| pack_error(1, &format!("{what}: no result\n"))),
         (Some(Err(e)), _) => take_result(&mut live.rt).unwrap_or_else(|| pack_error(1, &format!("{what}: {e}\n"))),

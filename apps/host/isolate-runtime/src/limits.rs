@@ -135,9 +135,18 @@ impl Budget {
             }
         }
     }
-    /// The allocator refused: stop the isolate (its command answers `terminated: memory`).
+    /// The allocator refused: stop the isolate (its command answers `terminated: memory`). Only the Rust allocator
+    /// calls this; under the V8 heap sandbox the C++ budget allocator handles refusal.
+    #[cfg(not(feature = "v8-sandbox"))]
     fn refuse(&self) {
         self.exceeded.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle.get() {
+            h.terminate_execution();
+        }
+    }
+    /// Terminate the isolate's running JavaScript (used by process.exit to end the run at once, without marking the
+    /// budget exceeded — it is a clean exit, not a memory breach).
+    pub fn stop_isolate(&self) {
         if let Some(h) = self.handle.get() {
             h.terminate_execution();
         }
@@ -363,11 +372,16 @@ fn watchdog() {
             list.iter().filter_map(|w| w.upgrade()).collect()
         };
         for w in live {
-            if w.term().is_some() || w.done.load(Ordering::SeqCst) {
+            if w.done.load(Ordering::SeqCst) {
                 continue;
             }
             w.account();
-            if let Some(t) = w.command.term().filter(|t| *t != Term::Exit).or_else(|| w.command.over()) {
+            // Act on any reason, including budget.exceeded (a heap breach the near-heap callback couldn't terminate
+            // on because it already fired once): keep calling terminate_execution (idempotent) rather than skipping,
+            // so a reused isolate whose heap guard is spent is still stopped, and CPU/wall stay enforced.
+            if let Some(t) =
+                w.term().or_else(|| w.command.term().filter(|t| *t != Term::Exit)).or_else(|| w.command.over())
+            {
                 w.command.stop(t);
                 w.stop(t);
             }

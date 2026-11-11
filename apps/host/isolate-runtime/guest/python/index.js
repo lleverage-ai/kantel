@@ -47,7 +47,7 @@ async def __kt_main(code, filename, argv, env, cwd, module):
         sys.stderr.flush()
 `;
 
-export function createPython(ops) {
+export function createPython(ops, lockdown = () => {}) {
 	const core = globalThis.Deno.core;
 	const td = new TextDecoder();
 	const g = globalThis;
@@ -140,6 +140,9 @@ export function createPython(ops) {
 		py.setStdout(writer("stdout"));
 		py.setStderr(writer("stderr"));
 		py.FS.mkdirTree(ROOT);
+		// Pyodide is up: end the wasm guard's boot mode before any user code runs, so a script can no longer make a
+		// shared WebAssembly.Memory or have WebAssembly.compile() hand back the cached Pyodide module (finding H3).
+		lockdown();
 		return Date.now() - t0;
 	}
 

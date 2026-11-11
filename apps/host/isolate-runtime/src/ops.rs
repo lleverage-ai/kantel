@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use deno_core::{JsBuffer, OpState, op2, v8};
@@ -118,7 +119,11 @@ async fn op_kt_blob_read(state: Rc<RefCell<OpState>>, #[string] sha: String) -> 
     if !c.allowed.lock().unwrap().contains(&sha) {
         return Err(JsErrorBox::generic("blob: not in this sandbox's files"));
     }
-    engine().store.get(&sha).await.map_err(jerr)
+    // Cap the read at the sandbox's memory and charge it (finding M7): the host accepts 256 MiB blobs, but an
+    // isolate can't hold a file larger than its own memory.
+    let cap = c.budget.limit();
+    let mut charge = crate::bridges::Charge::new(c.budget.clone());
+    engine().store.get(&sha, cap, Some(&mut charge)).await.map_err(jerr)
 }
 
 #[op2]
@@ -135,7 +140,24 @@ async fn op_kt_blob_put(state: Rc<RefCell<OpState>>, #[buffer] bytes: JsBuffer) 
 
 // --- EGRESS: one request through the host's proxy -----------------------------------------------------------------
 
-const MAX_CONCURRENT_FETCH: usize = 64;
+const MAX_CONCURRENT_FETCH: usize = 8;
+
+/// Decrements the isolate's in-flight fetch count when the op ends (even if cancelled).
+struct FetchSlot(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for FetchSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Aborts the spawned I/O task if the op future is dropped (isolate terminated or command ended), so a withheld or
+/// slow response can't keep running and holding memory after the run is over (review finding H5).
+struct AbortOnDrop(tokio::task::AbortHandle);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 #[op2]
 #[buffer]
@@ -152,16 +174,18 @@ async fn op_kt_fetch(state: Rc<RefCell<OpState>>, #[string] req: String, #[buffe
         c.fetches.fetch_sub(1, Ordering::SeqCst);
         return Err(JsErrorBox::generic("fetch: too many concurrent requests from this sandbox"));
     }
+    let _slot = FetchSlot(c.fetches.clone());
     let body = body.to_vec();
     let sandbox = c.sandbox_id.to_string();
-    let deadline = c.command.deadline;
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let budget = c.budget.clone();
+    let remaining = c.command.deadline.saturating_duration_since(std::time::Instant::now());
     let eng = engine();
-    let out = eng
-        .io
-        .spawn(async move { tokio::time::timeout(remaining, egress_fetch(&engine().egress, &sandbox, req, body)).await })
-        .await;
-    c.fetches.fetch_sub(1, Ordering::SeqCst);
+    let handle = eng.io.spawn(async move {
+        let mut charge = crate::bridges::Charge::new(budget);
+        tokio::time::timeout(remaining, egress_fetch(&engine().egress, &sandbox, req, body, Some(&mut charge))).await
+    });
+    let _abort = AbortOnDrop(handle.abort_handle());
+    let out = handle.await;
     match out.map_err(jerr)? {
         Ok(Ok(bytes)) => Ok(bytes),
         Ok(Err(e)) => Err(JsErrorBox::generic(format!("fetch failed: {e:#}"))),
@@ -222,6 +246,12 @@ fn op_kt_set_result(state: &mut OpState, #[buffer] data: &[u8]) {
 fn op_kt_exit(state: &mut OpState) {
     if let Ok(c) = ctx_sync(state) {
         c.command.stop(crate::limits::Term::Exit);
+        // End the child run now: terminate the isolate so its event loop and any pending timers stop (the guest has
+        // already packed the result). Only a node/python child isolate, never the shell (op_kt_exit isn't reachable
+        // there), so this never stops a sandbox mid-shell-command (finding H8).
+        if c.kind != Kind::Shell {
+            c.budget.stop_isolate();
+        }
     }
 }
 

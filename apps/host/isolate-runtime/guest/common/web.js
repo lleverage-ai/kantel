@@ -3,6 +3,7 @@
 // here: the only ways out are the ops, which act for the sandbox the isolate belongs to.
 import "./text.js";
 import { URL, URLSearchParams } from "whatwg-url";
+import { budgetedCopy } from "./budget.js";
 
 const core = globalThis.Deno.core;
 const ops = core.ops;
@@ -368,7 +369,7 @@ export async function egressFetch(url, options = {}) {
 			call.then(resolve, reject);
 		});
 	} else out = await call;
-	return unpack(out, (meta, data) => ({ ...meta, body: data }));
+	return unpack(out, (meta, data) => ({ ...meta, body: budgetedCopy(data) }));
 }
 
 /** A buffer the host or a child made: [u32 big-endian meta length][meta JSON][data]. */

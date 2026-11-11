@@ -35,9 +35,14 @@ PYODIDE_NPM="pyodide@${PYODIDE_VERSION}"
 
 log() { echo "build-assets: $*" >&2; }
 
-# 1. The guest bundle.
+# 1. The guest bundle. A frozen install only (never a plain install that could change the lockfile); offline uses the
+# install cache or fails (review finding M11).
 log "bundling the guest"
-( cd "$here" && bun install --frozen-lockfile >/dev/null 2>&1 || bun install >/dev/null )
+if [ -n "${KANTEL_ISOLATE_OFFLINE:-}" ]; then
+	( cd "$here" && bun install --frozen-lockfile --offline >/dev/null )
+else
+	( cd "$here" && bun install --frozen-lockfile >/dev/null )
+fi
 mkdir -p "$out/guest"
 ( cd "$here" && bun run guest/build.ts "$out/guest" )
 
@@ -65,6 +70,12 @@ if [ ! -f "$tarball" ]; then
 	[ -n "$url" ] || url="https://registry.npmjs.org/pyodide/-/pyodide-${PYODIDE_VERSION}.tgz"
 	curl -fsSL "$url" -o "$tarball"
 fi
+# Verify the tarball against its pinned SHA-256 BEFORE extracting it (review finding M11): the per-file checks below
+# only see files already unpacked from it.
+tarball_sha="$(awk '/^tarball /{print $2}' "$lock")"
+[ -n "$tarball_sha" ] || { log "assets.lock has no tarball digest"; exit 1; }
+got="$(sha256sum "$tarball" | cut -d' ' -f1)"
+[ "$got" = "$tarball_sha" ] || { log "pyodide tarball DIGEST MISMATCH: got $got want $tarball_sha"; rm -f "$tarball"; exit 1; }
 tmp="$(mktemp -d)"
 tar -xzf "$tarball" -C "$tmp"
 for f in pyodide.mjs pyodide.asm.mjs pyodide.asm.wasm python_stdlib.zip pyodide-lock.json; do
@@ -91,7 +102,7 @@ while read -r sha rel; do
 	[ -f "$f" ] || { log "MISSING $rel"; missing=1; continue; }
 	got="$(sha256sum "$f" | cut -d' ' -f1)"
 	[ "$got" = "$sha" ] || { log "DIGEST MISMATCH $rel: got $got want $sha"; missing=1; }
-done < <(grep -vE '^(numpy |#|$)' "$lock" || true)
+done < <(grep -vE '^(numpy |tarball |#|$)' "$lock" || true)
 [ "$missing" = 0 ] || { log "asset verification failed"; exit 1; }
 
 # 4. The Pyodide memory snapshot: boot Pyodide once and dump its linear memory.

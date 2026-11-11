@@ -20,10 +20,28 @@ use crate::limits::Command;
 struct Session {
     handle: Arc<ShellHandle>,
     last_used: Instant,
+    /// Commands running in this sandbox now; a session is idle (evictable) only when this is zero.
+    inflight: Arc<AtomicUsize>,
+}
+
+/// Keeps a session counted as in-flight for a command's lifetime, so it isn't evicted while executing, and marks it
+/// used when the command ends (review finding H6).
+struct Busy {
+    inflight: Arc<AtomicUsize>,
+    sessions: Arc<std::sync::Mutex<HashMap<String, Session>>>,
+    id: String,
+}
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.inflight.fetch_sub(1, Ordering::SeqCst);
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(&self.id) {
+            s.last_used = Instant::now();
+        }
+    }
 }
 
 pub struct App {
-    sessions: std::sync::Mutex<HashMap<String, Session>>,
+    sessions: Arc<std::sync::Mutex<HashMap<String, Session>>>,
     pool: std::sync::Mutex<Vec<ShellHandle>>,
     want: AtomicUsize,
     cfg: Config,
@@ -32,7 +50,7 @@ pub struct App {
 impl App {
     pub fn new(cfg: Config) -> Arc<App> {
         Arc::new(App {
-            sessions: std::sync::Mutex::new(HashMap::new()),
+            sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pool: std::sync::Mutex::new(Vec::new()),
             want: AtomicUsize::new(cfg.pool),
             cfg,
@@ -122,20 +140,29 @@ async fn warm(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Valu
     Json(json!({ "ok": true, "idle": app.pool.lock().unwrap().len(), "want": size }))
 }
 
-/// Drop the isolates of sessions idle past the configured time, and cap live sessions by evicting the least recently
-/// used idle ones.
+/// Drop the isolates of sessions idle past the configured time. Only idle (no in-flight command) sessions are
+/// evicted — never one that is executing, whose Arc would otherwise keep the thread alive uncounted (finding H6).
 fn expire(app: &App) {
     let now = Instant::now();
     let idle = engine().cfg.idle;
     let mut sessions = app.sessions.lock().unwrap();
-    sessions.retain(|_, s| now.duration_since(s.last_used) < idle);
-    let max = app.cfg.max_sandboxes;
-    if sessions.len() > max {
-        let mut by_age: Vec<(String, Instant)> = sessions.iter().map(|(k, s)| (k.clone(), s.last_used)).collect();
-        by_age.sort_by_key(|(_, t)| *t);
-        for (id, _) in by_age.into_iter().take(sessions.len() - max) {
+    sessions.retain(|_, s| s.inflight.load(Ordering::SeqCst) > 0 || now.duration_since(s.last_used) < idle);
+}
+
+/// Evict the least-recently-used idle session to make room (for the `--max-sandboxes` cap). Returns false if every
+/// session is busy.
+fn evict_one_idle(sessions: &mut HashMap<String, Session>) -> bool {
+    let victim = sessions
+        .iter()
+        .filter(|(_, s)| s.inflight.load(Ordering::SeqCst) == 0)
+        .min_by_key(|(_, s)| s.last_used)
+        .map(|(k, _)| k.clone());
+    match victim {
+        Some(id) => {
             sessions.remove(&id);
+            true
         }
+        None => false,
     }
 }
 
@@ -153,13 +180,21 @@ fn sandbox_id(body: &Value) -> Option<String> {
     body["sandboxId"].as_str().filter(|s| !s.is_empty() && s.len() <= 200).map(String::from)
 }
 
-/// The session's isolate: its own, a pooled one (default memory only), or a fresh one.
-fn assign(app: &App, id: &str, mem_mib: usize) -> (Arc<ShellHandle>, &'static str) {
+/// The session's isolate: its own, a pooled one (default memory only), or a fresh one. Returns a 503 error response
+/// when a new sandbox would exceed `--max-sandboxes` and every live sandbox is busy (kantel-host can retry).
+fn assign(app: &App, id: &str, mem_mib: usize) -> std::result::Result<(Arc<ShellHandle>, &'static str), Response> {
     expire(app);
     let mut sessions = app.sessions.lock().unwrap();
     if let Some(s) = sessions.get_mut(id) {
         s.last_used = Instant::now();
-        return (s.handle.clone(), "session");
+        return Ok((s.handle.clone(), "session"));
+    }
+    if sessions.len() >= app.cfg.max_sandboxes && !evict_one_idle(&mut sessions) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "sandbox capacity reached on this host; retry", "retryable": true })),
+        )
+            .into_response());
     }
     let (handle, hit) = if mem_mib == DEFAULT_MEMORY_MIB {
         match app.pool.lock().unwrap().pop() {
@@ -173,8 +208,16 @@ fn assign(app: &App, id: &str, mem_mib: usize) -> (Arc<ShellHandle>, &'static st
         (spawn_shell(Arc::from(id), mem_mib, false), "miss")
     };
     let handle = Arc::new(handle);
-    sessions.insert(id.to_string(), Session { handle: handle.clone(), last_used: Instant::now() });
-    (handle, hit)
+    sessions.insert(id.to_string(), Session { handle: handle.clone(), last_used: Instant::now(), inflight: Arc::new(AtomicUsize::new(0)) });
+    Ok((handle, hit))
+}
+
+/// Mark a session in-flight for a command's lifetime (so it isn't evicted) and get its handle.
+fn begin(app: &App, id: &str) -> Option<Busy> {
+    let sessions = app.sessions.lock().unwrap();
+    let s = sessions.get(id)?;
+    s.inflight.fetch_add(1, Ordering::SeqCst);
+    Some(Busy { inflight: s.inflight.clone(), sessions: app.sessions.clone(), id: id.to_string() })
 }
 
 async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response {
@@ -184,7 +227,11 @@ async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         Ok(m) => m,
         Err(r) => return r,
     };
-    let (handle, hit) = assign(&app, &id, mem_mib);
+    let (handle, hit) = match assign(&app, &id, mem_mib) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let _busy = begin(&app, &id);
     let (reply, rx) = tokio::sync::oneshot::channel();
     if handle.tx.send(ShellCmd::Load { mem_mib, reply }).is_err() {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "isolate thread stopped");
@@ -204,7 +251,11 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         Ok(m) => m,
         Err(r) => return r,
     };
-    let (handle, hit) = assign(&app, &id, mem_mib);
+    let (handle, hit) = match assign(&app, &id, mem_mib) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let _busy = begin(&app, &id);
     let wall = body["timeoutMs"]
         .as_u64()
         .filter(|t| *t > 0)

@@ -369,3 +369,29 @@ Replaces `kantel-workerd.service` in the isolate VM. What it sets:
 3. CI: publish the sandboxed V8 as a release asset and fetch it with `fetch-v8-sandbox.sh` plus `actions/cache`
    (`v8/README.md` has the steps and a workflow).
 4. Optionally move the isolate VM's guest kernel to 6.12 or later for Landlock's network and scope rules.
+
+## Review follow-ups implemented in the runtime (W1)
+
+A later independent review of the runtime raised further items; these are fixed in the crate with a regression
+test each (`test/integration.test.ts`, run on both the stock and `v8-sandbox` builds):
+
+- **Heap guard after a reused isolate (H1):** a shell isolate terminated for CPU/memory is reused, so its one-shot
+  near-heap callback is re-armed, and the watchdog no longer skips an isolate whose budget is marked exceeded —
+  repeated breaches and a following CPU loop all stay contained.
+- **Guest-mutable intrinsics (H2):** the buffer and wasm guards use primordials captured at snapshot time
+  (`guest/common/primordials.js`), so replacing `Reflect.construct` or `WeakMap.prototype.get` can't smuggle a
+  resizable buffer past the guard or fake a wasm-growth reservation.
+- **Python wasm lockdown (H3):** the wasm guard's boot mode is ended once Pyodide is up and before any user code, and
+  `SharedArrayBuffer` is wrapped before it is deleted, so Python can't make a shared/growable memory.
+- **Host-returned buffers are budgeted (H4):** file reads, fetch bodies and `core.encode` copies are charged to the
+  isolate's memory in stock builds (the in-sandbox allocator charges them in `v8-sandbox` builds).
+- **Fetch memory (H5):** concurrency is 8 per isolate, response bytes are charged as they arrive against the isolate
+  and a process-wide in-flight cap, and the spawned I/O is aborted when the run ends.
+- **Capacity (H6):** `--max-sandboxes` evicts only idle sessions and answers a retryable `503` when full; an
+  executing sandbox is never evicted.
+- **STORE reads (M7)** are capped at the sandbox's memory, separate from the egress body cap.
+- **`process.exit` (H8)** ends the child run at once (pending timers stop).
+- **Child terminations (H9)** carry `terminated` through to `/exec`.
+- **Cross-origin redirects (M10)** drop `Authorization`/`Cookie`; same-origin redirects keep them.
+- **build-assets.sh (M11)** uses a frozen install (never a plain fallback), honours `KANTEL_ISOLATE_OFFLINE`, and
+  pins the Pyodide tarball's SHA-256 (checked before extraction).

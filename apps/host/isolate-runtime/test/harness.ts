@@ -31,8 +31,9 @@ export interface Harness {
 	pid: number;
 }
 
-export async function start(opts: { cpuMs?: number; pool?: number } = {}): Promise<Harness> {
-	const ports = { store: BASE, egress: BASE + 1, upstream: BASE + 2, rt: BASE + 3 };
+export async function start(opts: { cpuMs?: number; pool?: number; maxSandboxes?: number; basePort?: number } = {}): Promise<Harness> {
+	const base = opts.basePort ?? BASE;
+	const ports = { store: base, egress: base + 1, upstream: base + 2, rt: base + 3 };
 	const upstreamHits: { sandbox: string | null; path: string }[] = [];
 	const blobs = new Map<string, Uint8Array>();
 	const hex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -80,10 +81,28 @@ export async function start(opts: { cpuMs?: number; pool?: number } = {}): Promi
 	const upstream = Bun.serve({
 		port: ports.upstream,
 		hostname: "127.0.0.1",
-		fetch: (req) => {
+		async fetch(req) {
 			const url = new URL(req.url);
 			if (url.pathname === "/json") return Response.json({ hello: "world", n: 7 });
 			if (url.pathname === "/echo") return new Response(req.body, { status: 200 });
+			if (url.pathname === "/echo-auth") return new Response(req.headers.get("authorization") ?? "none");
+			if (url.pathname === "/redirect-cross")
+				return new Response(null, { status: 302, headers: { location: "http://b.test/echo-auth" } });
+			if (url.pathname === "/redirect-same")
+				return new Response(null, { status: 302, headers: { location: `http://${req.headers.get("x-origin-host") ?? "a.test"}/echo-auth` } });
+			if (url.pathname === "/stream-forever") {
+				const stream = new ReadableStream({
+					async pull(c) {
+						c.enqueue(new Uint8Array(64 * 1024));
+						await Bun.sleep(5);
+					},
+				});
+				return new Response(stream, { headers: { "content-type": "application/octet-stream" } });
+			}
+			if (url.pathname === "/slow") {
+				await Bun.sleep(1500);
+				return new Response("done\n");
+			}
 			return new Response(`upstream ${req.method} ${url.pathname}\n`);
 		},
 	});
@@ -108,6 +127,8 @@ export async function start(opts: { cpuMs?: number; pool?: number } = {}): Promi
 			"1",
 			"--cpu-ms",
 			String(opts.cpuMs ?? 2000),
+			"--max-sandboxes",
+			String(opts.maxSandboxes ?? 64),
 			"--log-format",
 			"text",
 		],

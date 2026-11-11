@@ -339,3 +339,122 @@ d("wasm accounting is watertight", () => {
 		expect(r.stdout.trim()).toBe("refused");
 	});
 });
+
+d("review fixes: memory guards and limits", () => {
+	beforeAll(async () => {
+		if (RUN) await c.load("rf");
+	});
+
+	it("H1: a sandbox reused after repeated terminations stays contained and still enforces CPU", async () => {
+		// Each termination poisons the shell isolate; it is rebuilt at the next command, re-arming the heap guard.
+		for (let i = 0; i < 2; i++) {
+			const t = await c.exec("rf", "awk 'BEGIN{for(i=0;i<99999;i++)for(j=0;j<99999;j++)x++}'", {}, 7000);
+			expect(t.exitCode).not.toBe(0);
+			expect(await c.health().then((h) => h.ok)).toBe(true);
+			expect((await c.exec("rf", "echo hi")).stdout).toBe("hi\n"); // recovers
+		}
+		// CPU enforcement is still live after the reuses (the watchdog wasn't left skipping this isolate).
+		const busy = await c.exec("rf", "node -e 'while(true){}'", {}, 7000);
+		expect(busy.exitCode).toBe(152);
+		expect((await c.health()).ok).toBe(true);
+	});
+
+	it("H2: replacing Reflect.construct can't smuggle a resizable ArrayBuffer past the guard", async () => {
+		const r = await c.exec(
+			"rf",
+			"node -e 'Reflect.construct=()=>({}); let ok=true; try{new ArrayBuffer(8,{maxByteLength:64*1024*1024}); ok=false}catch(e){} console.log(ok && new ArrayBuffer(4).byteLength===4)'",
+		);
+		expect(r.stdout).toBe("true\n");
+	});
+
+	it("H2: replacing WeakMap.prototype.get can't fake wasm-growth reservation", async () => {
+		const r = await c.exec(
+			"rf",
+			"node -e 'WeakMap.prototype.get=()=>512*1024*1024; const m=new WebAssembly.Memory({initial:1,maximum:8192}); let ok=false; try{m.grow(8191)}catch(e){ok=true} console.log(ok)'",
+		);
+		expect(r.stdout).toBe("true\n");
+	});
+
+	it("H4: retaining host-returned buffers can't exceed the isolate's memory", async () => {
+		const r = await c.exec("rf", "node -e 'const a=[];for(let i=0;i<60;i++)a.push(Buffer.from(\"x\".repeat(16*1024*1024)))'");
+		expect(r.exitCode).not.toBe(0);
+		expect((await c.health()).ok).toBe(true);
+	});
+
+	it("H8: process.exit ends the run at once despite pending timers", async () => {
+		const r = await c.exec("rf", "node -e 'setInterval(()=>{},1000); process.exit(3)'", {}, 8000);
+		expect(r.exitCode).toBe(3);
+		expect(r.ms).toBeLessThan(4000); // not held to the wall by the interval
+	});
+
+	it("H9: a node memory termination reports terminated=memory", async () => {
+		const r = await c.exec("rf", "node -e 'const a=[];while(true)a.push(new Uint8Array(64*1024*1024))'", {}, 8000);
+		expect(r.exitCode).toBe(137);
+		expect(r.terminated).toBe("memory");
+	});
+
+	it("H3: Python can't make a shared WebAssembly.Memory or reach SharedArrayBuffer", async () => {
+		// Real newlines inside a single-quoted arg (just-bash preserves them); double quotes for the Python strings.
+		const code = [
+			"import js",
+			'print(hasattr(js, "SharedArrayBuffer"))',
+			"d = js.Object.new()",
+			"d.initial = 1",
+			"d.maximum = 1",
+			"d.shared = True",
+			"try:",
+			"    js.WebAssembly.Memory.new(d)",
+			'    print("made")',
+			"except Exception:",
+			'    print("refused")',
+		].join("\n");
+		const r = await c.exec("rf", `python3 -c '${code}'`, {}, 15000);
+		expect(r.stdout).toContain("False"); // SharedArrayBuffer removed
+		expect(r.stdout).toContain("refused"); // shared memory refused after lockdown
+	});
+
+	it("M10: a cross-origin redirect drops the Authorization header; a same-origin one keeps it", async () => {
+		const cross = await c.exec(
+			"rf",
+			"node -e 'fetch(\"http://a.test/redirect-cross\",{headers:{authorization:\"Bearer secret\"}}).then(r=>r.text()).then(t=>console.log(t))'",
+		);
+		expect(cross.stdout.trim()).toBe("none");
+		const same = await c.exec(
+			"rf",
+			"node -e 'fetch(\"http://a.test/redirect-same\",{headers:{authorization:\"Bearer secret\"}}).then(r=>r.text()).then(t=>console.log(t))'",
+		);
+		expect(same.stdout.trim()).toBe("Bearer secret");
+	});
+
+	it("H5: over 8 concurrent fetches from one isolate are refused, and a withheld body doesn't hang the process", async () => {
+		const many = await c.exec(
+			"rf",
+			"node -e 'const p=[];for(let i=0;i<20;i++)p.push(fetch(\"http://a.test/slow\").then(()=>\"ok\").catch(e=>String(e.message||e))); Promise.all(p).then(rs=>console.log(rs.filter(s=>/too many concurrent/.test(s)).length>0))'",
+			{},
+			8000,
+		);
+		expect(many.stdout.trim()).toBe("true");
+		const stream = await c.exec("rf", "node -e 'fetch(\"http://a.test/stream-forever\").then(r=>r.arrayBuffer()).then(b=>console.log(b.byteLength))'", {}, 3000);
+		expect(stream.exitCode).not.toBe(0);
+		expect((await c.health()).ok).toBe(true);
+	});
+});
+
+describe(RUN ? "review fixes: max-sandboxes capacity" : "review fixes: max-sandboxes capacity (skipped)", () => {
+	it("H6: a busy sandbox isn't evicted and a new one over the cap gets a retryable 503", async () => {
+		if (!RUN) return;
+		const h2 = await start({ maxSandboxes: 1, cpuMs: 5000, basePort: 29320 });
+		try {
+			const c2 = client(h2);
+			await c2.load("busy");
+			const running = c2.exec("busy", "sleep 2", {}, 8000); // hold the one slot
+			await Bun.sleep(200);
+			const r = await fetch(`${h2.rt}/load`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sandboxId: "other" }) });
+			expect(r.status).toBe(503);
+			expect((await r.json()).retryable).toBe(true);
+			expect((await running).exitCode).toBe(0); // not evicted mid-command
+		} finally {
+			await h2.stop();
+		}
+	});
+});

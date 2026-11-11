@@ -5,6 +5,7 @@
 // and calls finish(). Full Node compatibility is out of scope: no npm installs, no child processes, no servers.
 import { Buffer } from "../common/buffer.js";
 import { bytesOf, Chunks, egressFetch, pack, refTimer, resetClock, scheduleTimer, timerActive } from "../common/web.js";
+import { budgetedCopy } from "../common/budget.js";
 import { createFs, ROOT } from "./fs.js";
 import {
 	createAssert,
@@ -40,12 +41,13 @@ export function createNode(ops) {
 		read: 0,
 		exitCode: undefined,
 		exited: false,
+		packed: false,
 		needsMicrovm: undefined,
 		out: { stdout: [], stderr: [], bytes: 0, truncated: false },
 		stdinBytes: undefined,
 		stdinPos: 0,
 		stdin: () => {
-			state.stdinBytes ??= ops.op_kt_input();
+			state.stdinBytes ??= budgetedCopy(ops.op_kt_input());
 			return state.stdinBytes;
 		},
 		write(stream, bytes) {
@@ -150,7 +152,9 @@ export function createNode(ops) {
 			state.exitCode = Number(c) | 0;
 			state.exited = true;
 			process.emit("exit", state.exitCode);
-			// Stop now: the host ends the run (pending timers and promises included) and calls finish().
+			// Pack the result now (stdout/stderr/files buffered so far), then tell the host to end the run at once:
+			// op_kt_exit terminates this isolate, so pending timers and promises don't keep running (finding H8).
+			finish(null);
 			ops.op_kt_exit();
 			throw new Exit(state.exitCode);
 		},
@@ -856,6 +860,9 @@ export function createNode(ops) {
 
 	/** After the event loop (error: an uncaught exception or rejection there, as text; null if none). */
 	function finish(error) {
+		// Pack once: process.exit() packs before stopping the isolate, so the host's later finish() call is a no-op.
+		if (state.packed) return;
+		state.packed = true;
 		if (error && !state.exited) {
 			state.write("stderr", Buffer.from(`${error}\n`));
 			state.exitCode = 1;

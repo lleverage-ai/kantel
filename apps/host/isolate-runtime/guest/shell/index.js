@@ -3,6 +3,7 @@
 // is read from STORE only when the command reads it, and the files the command changed are uploaded at the end and
 // returned as the next manifest. `node` and `python` run in a fresh isolate each (op_kt_run), over the same files.
 import { Bash, defineCommand, InMemoryFs } from "just-bash/browser";
+import { budgetedCopy } from "../common/budget.js";
 import { latin1 } from "../common/text.js";
 import { Chunks, egressFetch, unpack } from "../common/web.js";
 import { message, UNAVAILABLE } from "./unavailable.js";
@@ -61,7 +62,7 @@ export function createShell(ops, log) {
 			if (entry.kind !== "file") continue;
 			files[abs(path)] = async () => {
 				lazyReads++;
-				return await ops.op_kt_blob_read(entry.sha);
+				return budgetedCopy(await ops.op_kt_blob_read(entry.sha));
 			};
 		}
 		const fs = new InMemoryFs(files);

@@ -1,4 +1,5 @@
 // Node's Buffer, as a Uint8Array subclass: the node runtime's, and a global in the shell for just-bash's gzip.
+import { budgetedCopy } from "./budget.js";
 import { latin1 } from "./text.js";
 import { base64 } from "./web.js";
 
@@ -68,7 +69,7 @@ function fromString(s, enc) {
 			return b;
 		}
 		default: {
-			const u = core.encode(s);
+			const u = budgetedCopy(core.encode(s));
 			return new Buffer(u.buffer, u.byteOffset, u.byteLength);
 		}
 	}

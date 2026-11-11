@@ -93,7 +93,7 @@ Per isolate, together where noted:
 | CPU per command | A watchdog thread samples each isolate thread's CPU clock and terminates past `--cpu-ms` (exit 152, `terminated: cpu`); a `node`/`python` run's CPU counts against the shell command that started it. |
 | Wall clock per command | The same watchdog terminates past the request's `timeoutMs` (max 10 min), default 30 s (exit 152, `terminated: wall`). |
 | Concurrent node/python runs | `--max-runs` (default 2× CPUs, 2–16); over it a run answers a clear "runtime is busy" error. |
-| Concurrent egress requests per isolate | 64; over it `fetch` throws. |
+| Concurrent egress requests per isolate | 8; over it `fetch` throws. A response body is charged against the isolate's memory as it arrives (and a process-wide in-flight cap), and the I/O is aborted when the run ends. |
 | Live sandboxes | `--max-sandboxes`; the least-recently-used idle one gives up its isolate past the cap, and an idle sandbox gives it up after `--idle-ms`. |
 | Output per command | 128 MiB (shell), 16 MiB (node/python). |
 
@@ -133,18 +133,20 @@ hardening (seccomp, landlock, a dedicated uid and cgroup), which this crate deli
 - **Memory is bounded per facet, not summed.** The V8 heap is capped at `memoryMiB` and ArrayBuffers+wasm are capped
   at `memoryMiB` on a separate budget, so a sandbox's worst case is roughly `2 × memoryMiB` rather than a single
   combined figure. Summing them needs sampling the live heap from the isolate's own thread without aborting V8 under
-  termination; the spike's approach (two equal budgets) is kept for now. W2's V8 heap sandbox changes the allocator
-  and is the place to revisit this.
-- **wasm accounting** relies on the guest-side guard (every `WebAssembly.Memory`, `grow`, `Module`/`Instance` goes
-  through it) plus a host-side module inspection that refuses a module able to grow its own memory. It is installed
-  before guest code and made non-configurable; a guest can't reach the original `WebAssembly` constructors. It is
-  watertight for the attacks tested (new Memory, Instance exports, a Module that declares a big memory), but it is a
-  JS-level guard, not a VM-level one — a true V8 escape would bypass it like anything else.
+  termination; the two-budget approach is kept. Host-returned buffers (file reads, fetch bodies, `core.encode`) are
+  copied into the budget in stock builds and allocated through the in-sandbox budget allocator in `v8-sandbox`
+  builds, so they can no longer be retained outside it.
+- **The memory guards are JS-level.** The wasm guard (every `WebAssembly.Memory`/`grow`/`Module`/`Instance`, plus a
+  host module inspection) and the resizable-buffer guard are installed before any guest code, use primordials
+  captured at snapshot time (a guest can't defeat them by swapping `Reflect.construct`, `WeakMap.prototype.get`, …),
+  and are made non-configurable. Python's guard is locked down after Pyodide boots. They are watertight for the
+  attacks tested, but a true V8 escape would bypass them like anything else — the isolate VM (and W2's seccomp /
+  Landlock / heap sandbox) is the boundary that doesn't depend on V8.
 - **node is not Node.** No npm install, no `child_process`, no servers/sockets, no native addons, no worker threads.
   Named imports from a CommonJS module imported by ESM aren't resolved (default import only). This is for agent glue
   code, not for building or running projects — that is what a microVM is for.
 - **python hash randomisation** is fixed by the snapshot (only `random` is reseeded per run); code that depends on
   per-process hash seeds sees the snapshot's seed.
-- **The V8 heap sandbox is off by default** (`v8-sandbox` feature). With it on, deno_core needs W2's allocator patch;
-  this crate keeps the allocator choice behind one function so only deno_core needs patching.
-EOF 2>/dev/null; echo written; wc -l /home/tvd/dev/lleverage-ai/kantel/.claude/worktrees/agent-a974296a90a98732b/apps/host/isolate-runtime/README.md
+- **The V8 heap sandbox is off by default** (`v8-sandbox` feature). With it on, the crate uses W2's in-sandbox budget
+  allocator and deno_core/serde_v8 are vendored with W2's patches (`v8/sandbox-crate.sh`); the allocator choice is
+  behind one function so the stock build needs no patching. Production ships the sandboxed build.
