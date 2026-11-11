@@ -87,6 +87,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ports/{port}", s.port)
 	mux.HandleFunc("POST /mounts", s.mounts)
 	mux.HandleFunc("POST /bundles", s.mountBundles)
+	mux.HandleFunc("POST /sticky", s.mountSticky)
+	mux.HandleFunc("POST /sticky/freeze", s.freezeSticky)
+	mux.HandleFunc("POST /sticky/thaw", s.thawSticky)
 	return mux
 }
 

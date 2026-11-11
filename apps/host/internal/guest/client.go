@@ -469,6 +469,32 @@ func (c *Client) MountBundles(ctx context.Context, mounts []BundleMount) (Bundle
 	return out, err
 }
 
+// MountSticky has the guest mount these sticky disks read-write, answering how each went. A guest agent from before
+// sticky disks answers 404 (IsNotFound).
+func (c *Client) MountSticky(ctx context.Context, mounts []StickyMount) ([]StickyResult, error) {
+	if mounts == nil {
+		mounts = []StickyMount{}
+	}
+	var out struct {
+		Mounts []StickyResult `json:"mounts"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/sticky", jsonBody(map[string]any{"mounts": mounts}), &out)
+	return out.Mounts, err
+}
+
+// FreezeSticky has the guest write back and freeze (FIFREEZE) the sticky disk mounted at path, so its drive's file
+// holds still until ThawSticky.
+func (c *Client) FreezeSticky(ctx context.Context, path string) error {
+	_, err := c.do(ctx, http.MethodPost, "/sticky/freeze", jsonBody(map[string]string{"path": path}), &map[string]any{})
+	return err
+}
+
+// ThawSticky thaws (FITHAW) the sticky disk mounted at path; one that isn't frozen is fine.
+func (c *Client) ThawSticky(ctx context.Context, path string) error {
+	_, err := c.do(ctx, http.MethodPost, "/sticky/thaw", jsonBody(map[string]string{"path": path}), &map[string]any{})
+	return err
+}
+
 // DialPort opens a byte stream to a TCP port on the guest's loopback.
 func (c *Client) DialPort(ctx context.Context, port int) (net.Conn, error) {
 	conn, err := vsock.Dial(ctx, c.udsPath, vsock.AgentPort)

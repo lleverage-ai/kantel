@@ -337,7 +337,7 @@ func TestAStaleTemplateIsUsedWhileOneRebuildRuns(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for name, content := range map[string]string{"ready": "{}", "images": "made on older images;" + templateShape(size)} {
+	for name, content := range map[string]string{"ready": "{}", "images": "made on older images;" + (&Manager{}).shapeKey(shape{Size: size})} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}

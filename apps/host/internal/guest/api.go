@@ -223,3 +223,24 @@ type BundlesAnswer struct {
 
 // BundleDevice is the guest's device for bundle drive i.
 func BundleDevice(i int) string { return "/dev/vd" + string(rune('c'+i)) }
+
+// StickyLabel is the ext4 label of every sticky disk the host makes: the guest mounts a sticky drive only when the file
+// system on it has it, so a drive that isn't the disk it was told of is never mounted read-write.
+const StickyLabel = "kantel-sticky"
+
+// StickyMount is one sticky disk the host has the guest mount read-write (POST /sticky). The host has already pointed
+// the drive at the sandbox's clone of the disk. A mount already at Path from the same drive is kept, so the host sends
+// the sandbox's sticky disks again after every start and resume.
+type StickyMount struct {
+	Path string `json:"path"`
+	// Drive is the drive's index as BundleDevice counts it: the sticky drives come after the bundle drives.
+	Drive int `json:"drive"`
+	// Bytes is the disk's size: the guest waits for the device to be that size before it mounts.
+	Bytes int64 `json:"bytes"`
+}
+
+// StickyResult is how mounting one StickyMount went: an empty Error is mounted.
+type StickyResult struct {
+	Path  string `json:"path"`
+	Error string `json:"error,omitempty"`
+}
