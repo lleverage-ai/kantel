@@ -1462,7 +1462,7 @@
 			"post": {
 				"operationId": "createSandbox",
 				"summary": "Create a sandbox",
-				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.",
+				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -3499,7 +3499,7 @@
 						"name": "path",
 						"in": "query",
 						"required": true,
-						"description": "An absolute path, or one relative to the user's home.",
+						"description": "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1
@@ -3583,7 +3583,7 @@
 						"name": "path",
 						"in": "query",
 						"required": false,
-						"description": "Default: the user's home.",
+						"description": "Default: a microVM's `/home/user` or an isolate's `/workspace`.",
 						"schema": {
 							"type": "string"
 						}
@@ -3895,7 +3895,7 @@
 						"name": "path",
 						"in": "query",
 						"required": true,
-						"description": "The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.",
+						"description": "The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -5107,7 +5107,7 @@
 						"name": "path",
 						"in": "query",
 						"required": false,
-						"description": "A directory; default the user's home.",
+						"description": "A directory; default a microVM's `/home/user` or an isolate's `/workspace`.",
 						"schema": {
 							"type": "string"
 						}
@@ -14219,7 +14219,7 @@
 						"type": "string",
 						"minLength": 1,
 						"maxLength": 4096,
-						"description": "An absolute path, or one relative to the user's home."
+						"description": "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`."
 					},
 					"ttlSeconds": {
 						"type": "integer",
@@ -15799,7 +15799,7 @@
 					},
 					"cwd": {
 						"type": "string",
-						"description": "Default: the sandbox user's home."
+						"description": "Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there."
 					},
 					"env": {
 						"type": "object",
@@ -16764,7 +16764,7 @@
 					}
 				],
 				"title": "SandboxType",
-				"description": "`isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH."
+				"description": "`isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH."
 			},
 			"SandboxUsage": {
 				"type": "object",

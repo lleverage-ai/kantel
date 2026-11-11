@@ -80,7 +80,7 @@ pi doesn't take MCP servers. It uses the `kantel` command through its shell inst
 
 | Tool | What it does |
 | --- | --- |
-| `sandbox_create` | Make a sandbox and wait until it runs. An isolate unless `type` is `microvm`; `from` starts it from a snapshot |
+| `sandbox_create` | Make a sandbox and wait until it runs. The agent chooses `type`, `isolate` or `microvm`, and the tool's description says when each fits; `from` starts it from a snapshot, whose type it takes |
 | `sandbox_list`, `sandbox_get` | The account's sandboxes, or one with its state, capabilities and cost |
 | `sandbox_stop`, `sandbox_resume` | Stop one, keeping its disk (`pause` keeps a microVM's memory too), and bring it back |
 | `sandbox_fork` | Copies of a sandbox, `count` at a time |

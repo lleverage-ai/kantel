@@ -214,13 +214,15 @@ describe("sealing", () => {
 	it("refuses to open a value moved to another place, or under another key, without saying what it was", async () => {
 		const sealer = createSealer(KEY);
 		const sealed = await sealer.seal(SECRET, aad);
+		// Each opening starts only when it's awaited: started together, a later one could reject before anything
+		// handled it, which the runner reports as an unhandled rejection.
 		for (const opening of [
-			sealer.open(sealed, sealedAt("environments", "env_two", "variables.GH_TOKEN")),
-			sealer.open(sealed, sealedAt("environments", "env_one", "variables.OTHER")),
-			createSealer(OTHER_KEY).open(sealed, aad),
-			createEphemeralSealer().open(sealed, aad),
+			() => sealer.open(sealed, sealedAt("environments", "env_two", "variables.GH_TOKEN")),
+			() => sealer.open(sealed, sealedAt("environments", "env_one", "variables.OTHER")),
+			() => createSealer(OTHER_KEY).open(sealed, aad),
+			() => createEphemeralSealer().open(sealed, aad),
 		]) {
-			const error = await opening.then(
+			const error = await opening().then(
 				() => undefined,
 				(reason: unknown) => reason,
 			);
@@ -543,7 +545,7 @@ describe("sandboxes made from an environment", () => {
 			{ path: "/home/user/.npmrc", mode: 0o600, sizeBytes: npmrc.length, updatedAt: expect.any(Number) },
 		]);
 		expect(JSON.stringify(saved)).not.toContain("npm_FILESECRET789");
-		const sandbox = await tom.createSandbox({ environment: "files", wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", environment: "files", wait: true });
 		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe(npmrc);
 	});
 
@@ -1939,7 +1941,7 @@ describe("a sandbox with several environments", () => {
 		const { api, tom, recorded } = setup();
 		const github = await githubEnvironment(tom);
 		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ environments: ["backend", npm.id], wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["backend", npm.id], wait: true });
 		expect(sandbox.environmentIds).toEqual([github.id, npm.id]);
 		expect(sandbox.environmentId).toBe(github.id);
 		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("info");
@@ -2009,7 +2011,12 @@ describe("a sandbox with several environments", () => {
 		const { api, tom, recorded } = setup();
 		await githubEnvironment(tom);
 		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ environment: "backend", env: { OWN: "mine" }, wait: true });
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			environment: "backend",
+			env: { OWN: "mine" },
+			wait: true,
+		});
 		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
 
 		const answer = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
@@ -2087,7 +2094,7 @@ describe("a sandbox with several environments", () => {
 		const { api, tom, recorded } = setup();
 		const github = await githubEnvironment(tom);
 		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["backend", "npm"], wait: true });
 		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
 		const answer = await tom.detachSandboxEnvironment(sandbox.id, npm.id);
 		expect(answer.environments.map((each) => each.id)).toEqual([github.id]);

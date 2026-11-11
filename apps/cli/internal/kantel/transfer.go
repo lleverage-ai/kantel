@@ -953,34 +953,44 @@ func archiveFits(ctx context.Context, client *api.Client, sandboxID, target stri
 }
 
 // uploadTreeTo copies files into target as the sandbox takes it best: one tar into a microVM, file by file into an
-// isolate.
-func uploadTreeTo(c *cli.Context, client *api.Client, sandboxID, root string, files []string, target string, onFile func(string)) (copied, error) {
+// isolate. It answers where they went too: target made absolute from the sandbox's home (a microVM's /home/user, an
+// isolate's /workspace), or target as it is when the key may not read the sandbox to tell.
+func uploadTreeTo(c *cli.Context, client *api.Client, sandboxID, root string, files []string, target string, onFile func(string)) (copied, string, error) {
 	ctx := c.Ctx
 	microvm := false
+	to := target
 	sandbox, err := client.GetSandbox(ctx, sandboxID)
 	if err != nil {
 		// A key that may write files but not read the sandbox (no sandboxes:read) still pushes, one file at a time.
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) || apiErr.Code != "forbidden" {
-			return copied{}, err
+			return copied{}, "", err
 		}
 	} else {
 		microvm = sandbox.Type == api.SandboxTypeMicrovm
+		if !strings.HasPrefix(target, "/") {
+			home := "/home/user"
+			if !microvm {
+				home = "/workspace"
+			}
+			to = remoteJoin(home, target)
+		}
 	}
 	if microvm && archiveFits(ctx, client, sandboxID, target) {
 		done, err := uploadTreeArchive(ctx, client, sandboxID, root, files, target, onFile)
 		if err == nil {
-			return done, nil
+			return done, to, nil
 		}
 		// Extracting failed in the sandbox (a directory in the tree only root may write, say): the files API, as root,
 		// still can. Anything else, such as the sandbox stopping, fails as it is.
 		var cliErr *cli.Error
 		if !errors.As(err, &cliErr) || !strings.HasPrefix(cliErr.Message, "a command in ") {
-			return copied{}, err
+			return copied{}, "", err
 		}
 		c.Note("kantel: the archive couldn't be extracted (" + cliErr.Message + "); sending file by file")
 	}
-	return uploadTree(ctx, client, sandboxID, root, files, target, onFile)
+	done, err := uploadTree(ctx, client, sandboxID, root, files, target, onFile)
+	return done, to, err
 }
 
 // remoteWalk is the files under p in the sandbox, relative to it.

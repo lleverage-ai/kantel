@@ -15,11 +15,11 @@ Every sandbox is one of two types. You choose with `type` when you [create it](/
 
 | | `isolate` | `microvm` |
 | --- | --- | --- |
-| What it is | A workerd isolate, with a JavaScript shell over the sandbox's files | A Firecracker microVM with its own Linux kernel |
+| What it is | A workerd isolate running [just-bash](https://github.com/vercel-labs/just-bash), a bash written in TypeScript, over files kept in `/workspace` | A Firecracker microVM with its own Linux kernel |
 | Starts in | Milliseconds | Longer: a machine boots |
 | Costs | Almost nothing | Its size's hourly rate while it runs |
-| Commands and files | Yes, in the isolate's shell | Yes, with `bash` |
-| Native binaries, packages, root | No | Yes |
+| Commands and files | Yes, in the isolate's shell, starting in `/workspace` | Yes, with `bash`, starting in `/home/user` |
+| git, Node, Python, packages, root | No | Yes |
 | Docker | No | Yes |
 | `/dev/kvm` inside, for virtual machines of its own | No | Yes, where its host allows nested virtualisation |
 | Desktop, browser and SSH | No | Yes |
@@ -28,7 +28,28 @@ Every sandbox is one of two types. You choose with `type` when you [create it](/
 
 A microVM on Kantel's own image has all of these. One on a [custom image](/sandboxes/custom-images/) has the desktop, browser and Docker only where its image does, and its `capabilities` say so.
 
-An isolate is the default. Choose one for quick scripts and file work an agent does in JavaScript, where you want an answer in milliseconds and many sandboxes at almost no cost. Choose a microVM for anything a normal Linux machine does: installing packages, building and testing a project, running Docker, or using a desktop and browser.
+An isolate is the default.
+
+## Choosing one
+
+Choose an **isolate** when the whole task is calling HTTP APIs and working on text or JSON: reading issues, tickets or logs with a token, reshaping an export with `jq` or `awk`, or running the same small check over many items, one fork each. It starts in milliseconds, costs almost nothing, and forks for almost nothing too, since a fork copies only the list of its files. Its requests go through the [egress proxy](/sandboxes/egress-proxy/) like a microVM's, so a [protected variable](/sandboxes/environments/) stays a placeholder inside it, and `kantel egress <sandbox>` shows every request it made.
+
+Choose a **microVM** for anything a normal Linux machine does: cloning, installing, building, testing or running a project, any language runtime, Docker, a server, a desktop and browser, or a job longer than a few minutes. If you're unsure, choose a microVM.
+
+A sandbox doesn't change type. To move work from an isolate to a microVM, make the microVM and copy the files across.
+
+### What an isolate's shell has
+
+An isolate runs bash's syntax (pipes, redirections, variables, functions, loops and `if`) and these commands, all written in TypeScript:
+
+- files: `cat`, `cp`, `mv`, `rm`, `ln`, `ls`, `mkdir`, `find`, `stat`, `touch`, `tree`, `du`, `split`, `file`;
+- text: `grep`, `rg`, `sed`, `awk`, `cut`, `sort`, `uniq`, `wc`, `head`, `tail`, `tr`, `diff`, `comm`, `join`, `paste`, `column`, `xargs`, `base64`, `md5sum`, `sha256sum`;
+- data and network: `jq`, `curl`, and `gzip`, `gunzip` and `zcat`;
+- shell: `echo`, `printf`, `date`, `seq`, `expr`, `sleep`, `timeout`, `env`, `export`, `test`.
+
+`help` lists the shell's builtins, and every command takes `--help`. It has no `git`, `node`, `python`, `sqlite3`, `yq`, `tar` or package manager, and runs no program of its own: each of those answers `command not found` or `not available in an isolate` with exit code 127. Only `/workspace` is kept. A file written anywhere else, such as `/tmp`, is gone when the command ends.
+
+A command runs for at most 30 seconds unless its `timeoutMs` gives it longer (up to 10 minutes).
 
 ## Capabilities
 

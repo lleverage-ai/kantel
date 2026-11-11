@@ -14,11 +14,23 @@ import { notRunningOf } from "./errors.ts";
 export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
 const LATEST_PROTOCOL = "2025-06-18";
 
+/** How to choose between an isolate and a microVM, for the instructions and sandbox_create alike. */
+const CHOOSING_A_TYPE =
+	"Choose its type. An isolate starts in milliseconds and costs almost nothing, but is only a shell (just-bash) " +
+	"over files in /workspace: curl, jq, grep, rg, sed, awk, sort, diff, gzip and the like, each command at most 30 s " +
+	"unless you give a timeoutMs. It has no git, node, python, package manager, Docker, browser, ports or SSH. Use one " +
+	"only when the whole task is calling HTTP APIs and working on text or JSON, such as reading issues or logs with a " +
+	"token or checking many items in forks. Use a microvm, a full Linux with root, Docker, a desktop and a browser, " +
+	"for anything touching a codebase (clone, install, build, test, run), any language runtime, a server or a long " +
+	"job. If unsure, use a microvm. If an isolate answers 'command not found' or 'not available in an isolate', " +
+	"don't work around it: make a microvm and copy what you need from the isolate's /workspace.";
+
 /** What `initialize` tells the agent about using the tools. */
 export const INSTRUCTIONS =
 	"Kantel gives you sandboxes: machines of your own to run code in, away from the user's computer. Create one with " +
-	"sandbox_create (an isolate starts in milliseconds and runs JavaScript; type microvm is a full Linux with root, " +
-	"Docker, a desktop and a browser) and keep its id. Run commands in it with sandbox_exec, and move files with " +
+	"sandbox_create and keep its id. " +
+	CHOOSING_A_TYPE +
+	" Run commands in it with sandbox_exec, and move files with " +
 	"file_write, file_read and file_list. port_expose gives a server in it a URL; snapshot_save keeps its state to " +
 	"start new sandboxes from. Stop it with sandbox_stop when you are done: a stopped sandbox keeps its disk and costs " +
 	"nothing to run, and sandbox_resume brings it back. If a command may take longer than your MCP client waits " +
@@ -354,11 +366,14 @@ const TOOLS: readonly Tool[] = [
 	{
 		name: "sandbox_create",
 		description:
-			"Create a sandbox and wait until it runs; answers it, with its id. An isolate (the default) starts in " +
-			"milliseconds and runs a JavaScript shell, but no native binaries. A microvm is a full Linux with root, " +
-			"Docker, a desktop, a browser and SSH. Stop it with sandbox_stop when you are done.",
+			`Create a sandbox and wait until it runs; answers it, with its id. ${CHOOSING_A_TYPE} ` +
+			"Stop it with sandbox_stop when you are done.",
 		inputSchema: schema({
-			type: { type: "string", enum: SANDBOX_TYPES, description: "isolate (default) or microvm." },
+			type: {
+				type: "string",
+				enum: SANDBOX_TYPES,
+				description: "isolate or microvm. Needed unless from names a snapshot, whose type it takes.",
+			},
 			size: { type: "string", enum: SIZES, description: "A microVM's size; default the deployment's." },
 			name: { type: "string", description: "Default: a generated name." },
 			from: { type: "string", description: "Start from this snapshot: its ID, or a saved snapshot's name." },
@@ -384,13 +399,22 @@ const TOOLS: readonly Tool[] = [
 		}),
 		annotations: { title: "Create a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
 		async call(args, { client, account, signal }) {
+			// The API makes an isolate when no type is given, which an agent that left it out rarely wants: it has to choose.
+			const type = optionalChoice(args, "type", SANDBOX_TYPES);
+			const from = optionalText(args, "from");
+			if (type === undefined && from === undefined) {
+				throw new ArgumentError(
+					"type is required: microvm for anything touching code, a runtime or a server; isolate only for HTTP calls " +
+						"and text or JSON work.",
+				);
+			}
 			const sandbox = await client.createSandbox(
 				{
 					account,
-					type: optionalChoice(args, "type", SANDBOX_TYPES),
+					type,
 					size: optionalChoice(args, "size", SIZES),
 					name: optionalText(args, "name"),
-					from: optionalText(args, "from"),
+					from,
 					image: optionalText(args, "image"),
 					autoStopMinutes: optionalNumber(args, "autoStopMinutes"),
 					idleStopMinutes: optionalNumber(args, "idleStopMinutes"),

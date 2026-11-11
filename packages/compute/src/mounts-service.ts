@@ -37,7 +37,7 @@ import type {
 	StoredSandbox,
 } from "./store.ts";
 import { gunzipIfGzipped, TarCheck } from "./tar.ts";
-import { randomId, randomSecret, randomSlug, resolvePath, sha256Hex } from "./util.ts";
+import { homeFor, randomId, randomSecret, randomSlug, resolvePath, sha256Hex } from "./util.ts";
 
 /** The largest archive by default, in bytes of its files: 4 GiB. */
 export const DEFAULT_MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024;
@@ -571,7 +571,7 @@ export function createMounts(deps: MountsDeps) {
 	): Promise<computeSchema.FileUrl> {
 		const { sandbox } = await deps.sandboxFor(principal, sandboxId, "files");
 		const running = await deps.requireRunning(principal, sandbox.id);
-		const path = resolvePath(body.path);
+		const path = resolvePath(body.path, homeFor(sandbox.type));
 		if (path === "/") throw new KantelError("invalid", "A file URL is for a file, not /");
 		if (method === "PUT") refuseUnderMount(running, path);
 		const token = randomSecret("kfu_", 40);
@@ -678,7 +678,7 @@ export function createMounts(deps: MountsDeps) {
 		extractArchive: async (principal, { params, query }, request) => {
 			const { sandbox } = await deps.sandboxFor(principal, params.sandboxId, "files");
 			const running = await deps.requireRunning(principal, sandbox.id);
-			const target = resolvePath(query.path);
+			const target = resolvePath(query.path, homeFor(sandbox.type));
 			const touching = mountsTouching(running.mounts, target);
 			if (touching.length > 0) {
 				throw new KantelError(

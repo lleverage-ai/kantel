@@ -260,9 +260,11 @@ export const JoinOrganisationBody = Type.Object(
 export const SandboxType = Type.Union([Type.Literal("isolate"), Type.Literal("microvm")], {
 	title: "SandboxType",
 	description:
-		"`isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs " +
-		"almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with " +
-		"a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.",
+		"`isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. " +
+		"Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, " +
+		"but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. " +
+		"`microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser " +
+		"and SSH.",
 });
 
 export const SandboxState = Type.Union(
@@ -1542,7 +1544,11 @@ export const RunCommandBody = Type.Object(
 			minLength: 1,
 			description: "A shell command line, run with `bash -lc` (or the isolate's shell).",
 		}),
-		cwd: Type.Optional(Type.String({ description: "Default: the sandbox user's home." })),
+		cwd: Type.Optional(
+			Type.String({
+				description: "Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there.",
+			}),
+		),
 		env: Type.Optional(Type.Record(Type.String(), Type.String())),
 		stdin: Type.Optional(Type.String()),
 		timeoutMs: Type.Optional(
@@ -1601,7 +1607,12 @@ export const CommandPath = Type.Object(
 export const FileEncoding = Type.Union([Type.Literal("utf8"), Type.Literal("base64")], { title: "FileEncoding" });
 
 export const FilePathQuery = Type.Object(
-	{ path: Type.String({ minLength: 1, description: "An absolute path, or one relative to the user's home." }) },
+	{
+		path: Type.String({
+			minLength: 1,
+			description: "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.",
+		}),
+	},
 	{ title: "FilePathQuery" },
 );
 
@@ -1679,7 +1690,13 @@ export const FileList = Type.Object(
 );
 
 export const ListFilesQuery = Type.Object(
-	{ path: Type.Optional(Type.String({ description: "Default: the user's home." })), limit, cursor },
+	{
+		path: Type.Optional(
+			Type.String({ description: "Default: a microVM's `/home/user` or an isolate's `/workspace`." }),
+		),
+		limit,
+		cursor,
+	},
 	{ title: "ListFilesQuery" },
 );
 
@@ -1688,7 +1705,7 @@ export const FileUrlBody = Type.Object(
 		path: Type.String({
 			minLength: 1,
 			maxLength: 4096,
-			description: "An absolute path, or one relative to the user's home.",
+			description: "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.",
 		}),
 		ttlSeconds: Type.Optional(
 			Type.Integer({
@@ -1728,7 +1745,8 @@ export const ExtractArchiveQuery = Type.Object(
 			minLength: 1,
 			maxLength: 4096,
 			description:
-				"The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.",
+				"The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in " +
+				"or over a mount.",
 		}),
 	},
 	{ title: "ExtractArchiveQuery" },
@@ -2013,7 +2031,13 @@ export const SaveSnapshotBody = Type.Object(
 );
 
 export const SnapshotFilesQuery = Type.Object(
-	{ path: Type.Optional(Type.String({ description: "A directory; default the user's home." })), limit, cursor },
+	{
+		path: Type.Optional(
+			Type.String({ description: "A directory; default a microVM's `/home/user` or an isolate's `/workspace`." }),
+		),
+		limit,
+		cursor,
+	},
 	{ title: "SnapshotFilesQuery" },
 );
 
