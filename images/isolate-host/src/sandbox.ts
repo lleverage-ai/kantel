@@ -14,7 +14,27 @@
 // points at the vault proxy. This module never sees a credential.
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { Bash, InMemoryFs } from "just-bash/browser";
+import { Bash, defineCommand, InMemoryFs } from "just-bash/browser";
+
+/**
+ * Commands just-bash lists but can't run in workerd: its browser bundle leaves out tar, yq, xan, sqlite3 and
+ * Python, and html-to-markdown needs a DOM. Without these, each fails with a message about "the Node.js bundle",
+ * which means nothing to whoever ran it. Each answers the same way a missing command does (127), saying what to use.
+ */
+const UNAVAILABLE = ["tar", "yq", "xan", "sqlite3", "python", "python3", "html-to-markdown"];
+const unavailable = UNAVAILABLE.map((name) =>
+	defineCommand(name, async () => ({
+		stdout: "",
+		stderr: `${name}: not available in an isolate, which runs only its shell's own commands. Use a microVM.\n`,
+		exitCode: 127,
+	})),
+);
+
+/**
+ * The most output one command may make. workerd's zlib takes at most 128 MiB of output, and just-bash's default
+ * (256 MiB) asks for more, so without this every gzip, gunzip and zcat fails before it starts.
+ */
+const MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 
 export type ManifestEntry =
 	| { kind: "file"; sha: string; size: number; mode: number }
@@ -162,6 +182,8 @@ export default class Sandbox extends WorkerEntrypoint<Env> {
 			fs,
 			cwd: normalise(ROOT, request.cwd ?? "."),
 			env: { HOME: ROOT, ...request.env },
+			customCommands: unavailable,
+			executionLimits: { maxOutputSize: MAX_OUTPUT_BYTES },
 			// The vault decides what may leave; globalOutbound enforces it, so
 			// curl and wget get a plain fetch with no allow-list of their own.
 			fetch: plainFetch,

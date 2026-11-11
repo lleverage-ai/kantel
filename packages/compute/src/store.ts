@@ -1103,6 +1103,11 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		 * path. A record that landed in a closed account is still taken out again, a moment later.
 		 */
 		behind = false,
+		/**
+		 * Fence changes to records that exist, not only new ones. Off for records whose own cleanup must outlive the
+		 * account's closing (GitHub runners: their leases and ending runners), which a closed account's writes can't add to.
+		 */
+		updates = true,
 	): Collection<T> {
 		const refuse = async (record: T): Promise<never> => {
 			await collection.delete(record.id).catch(() => false);
@@ -1133,7 +1138,7 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 			},
 			async update(id, change, expected) {
 				const updated = await collection.update(id, change, expected);
-				await check(updated);
+				if (updates) await check(updated);
 				return updated;
 			},
 		};
@@ -1152,9 +1157,10 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		// Keyed by their account.
 		telemetry: fenced(store.telemetry, isAccount),
 		proxies: fenced(store.proxies, isAccount),
-		githubRunners: fenced(store.githubRunners, byAccount),
+		// New ones only: their cleanup (leases, ending runners) runs on while their account closes, and consumes them.
+		githubRunners: fenced(store.githubRunners, byAccount, false, false),
 		githubRunnerJobs: fenced(store.githubRunnerJobs, byAccount, true),
-		githubRunnerMachines: fenced(store.githubRunnerMachines, byAccount),
+		githubRunnerMachines: fenced(store.githubRunnerMachines, byAccount, false, false),
 		stickyDisks: fenced(store.stickyDisks, byAccount),
 		stickyDiskVersions: fenced(store.stickyDiskVersions, byAccount),
 		stickyDiskNames: fenced(store.stickyDiskNames, byAccount),

@@ -1055,7 +1055,7 @@ type FileURL struct {
 }
 
 type FileURLBody struct {
-	// An absolute path, or one relative to the user's home.
+	// An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.
 	Path string `json:"path"`
 	// How long the URL may be used: default 900 (15 minutes), at most 3600.
 	TTLSeconds *int64 `json:"ttlSeconds,omitempty"`
@@ -1161,6 +1161,7 @@ type GithubRunnerPoolStatus struct {
 	WaitingSince *int64 `json:"waitingSince,omitempty"`
 }
 
+// A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.
 type GithubRunnerResources struct {
 	DiskGb   *int64 `json:"diskGb,omitempty"`
 	MemoryMb int64  `json:"memoryMb"`
@@ -1882,7 +1883,7 @@ type ResumeSandboxBody struct {
 type RunCommandBody struct {
 	// A shell command line, run with `bash -lc` (or the isolate's shell).
 	Command string `json:"command"`
-	// Default: the sandbox user's home.
+	// Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there.
 	Cwd *string `json:"cwd,omitempty"`
 	// Start it and answer at once; it runs with no time limit unless `timeoutMs` gives one. Read it back by its ID.
 	Detached *bool             `json:"detached,omitempty"`
@@ -2313,7 +2314,7 @@ const (
 	SandboxTemplateStartBoot     SandboxTemplateStart = "boot"
 )
 
-// `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
+// `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
 type SandboxType string
 
 const (

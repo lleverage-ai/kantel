@@ -188,6 +188,7 @@ import {
 	base64ToBytes,
 	bytesToBase64,
 	HOME,
+	homeFor,
 	paginate,
 	randomId,
 	randomSecret,
@@ -2133,19 +2134,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 			},
 			async run(principal, sandboxId, command, env) {
-				answered(
+				const started = answered(
 					await handlers.runCommand(
 						principal,
 						{ params: { sandboxId }, query: {}, body: { command, env, detached: true } },
 						internalRequest(),
 					),
 				);
+				return started.id;
 			},
-			async listLabelled(accountId, labels) {
+			async commandRunning(principal, sandboxId, commandId) {
+				try {
+					const command = answered(
+						await handlers.getCommand(
+							principal,
+							{ params: { sandboxId, commandId }, query: {}, body: undefined },
+							internalRequest(),
+						),
+					);
+					return command.state === "running";
+				} catch (error) {
+					if (error instanceof KantelError && error.code === "not_found") return false;
+					return undefined;
+				}
+			},
+			async listMadeBy(accountId, keyId, labels) {
 				return (await store.sandboxes.list({ accountId }))
 					.filter(
 						(sandbox) =>
 							sandbox.state !== "deleted" &&
+							sandbox.createdBy.kind === "api_key" &&
+							sandbox.createdBy.id === keyId &&
 							Object.entries(labels).every(([key, value]) => sandbox.labels?.[key] === value),
 					)
 					.map((sandbox) => ({ id: sandbox.id, createdAt: sandbox.createdAt }));
@@ -2175,9 +2194,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** Checks a pool list: labels unique, and each template one the account has. */
 	async function checkPools(accountId: string, pools: readonly RunnerPool[]): Promise<void> {
 		const labels = new Set<string>();
+		const capabilities = await backend.capabilities();
+		const presets = [...capabilities.sizes, ...capabilities.hosts.flatMap((host) => host.sizes ?? [])];
 		for (const pool of pools) {
 			if (labels.has(pool.label)) throw new KantelError("invalid", `Two pools have the label ${pool.label}`);
 			labels.add(pool.label);
+			// The constraints a create holds the shape to, its hosts' preset sizes included, so a pool that can never make a
+			// runner is refused now.
+			checkShape("microvm", pool.resources, presets);
+			checkDisk("microvm", pool.resources.diskGb);
 			await templates.templateIn(accountId, pool.template);
 			if ((pool.stickyDisks?.length ?? 0) > 0) {
 				requireSticky();
@@ -8394,7 +8419,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sandboxId: current.id,
 					accountId: current.accountId,
 					command: body.command,
-					cwd: resolvePath(body.cwd ?? HOME),
+					cwd: resolvePath(body.cwd ?? homeFor(current.type), homeFor(current.type)),
 					state: "running",
 					stdout: "",
 					stderr: "",
@@ -8517,7 +8542,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		readFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(query.path);
+			const path = resolvePath(query.path, homeFor(sandbox.type));
 			const ranged = query.offset !== undefined || query.length !== undefined;
 			const offset = query.offset ?? 0;
 			// Without a range, a file over 1 MiB is refused: one more byte is enough to tell, and the host sends no more.
@@ -8539,7 +8564,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		writeFile: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(body.path);
+			const path = resolvePath(body.path, homeFor(sandbox.type));
 			refuseInMount(sandbox, path);
 			const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", "A file written here is at most 1 MiB");
@@ -8554,7 +8579,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(query.path);
+			const path = resolvePath(query.path, homeFor(sandbox.type));
 			const touching = mountsTouching(sandbox.mounts, path);
 			if (touching.length > 0) {
 				throw new KantelError("conflict", `${path} is in or over the read-only mount at ${touching[0]?.path}`);
@@ -8566,7 +8591,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listFiles: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(query.path ?? HOME);
+			const path = resolvePath(query.path ?? homeFor(sandbox.type), homeFor(sandbox.type));
 			const page = paginate(await backend.listFiles(sandbox.id, path), query.limit, query.cursor);
 			return { path, items: page.items.map(fileEntry), nextCursor: page.nextCursor };
 		},
@@ -8911,7 +8936,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		listSnapshotFiles: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
-			const path = resolvePath(query.path ?? HOME);
+			const home = homeFor(snapshot.sandboxType);
+			const path = resolvePath(query.path ?? home, home);
 			const ref = readyRef(snapshot);
 			// Its files are on its host: refused at once while that's away (its record and history are still answered).
 			await requireSnapshotHostReachable(ref);
@@ -8921,7 +8947,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		readSnapshotFile: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
-			const path = resolvePath(query.path);
+			const path = resolvePath(query.path, homeFor(snapshot.sandboxType));
 			const ref = readyRef(snapshot);
 			await requireSnapshotHostReachable(ref);
 			const bytes = await backend.readSnapshotFile(ref, path);
@@ -9852,9 +9878,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
 				}
 				const repositories = body.repositories === null ? undefined : (body.repositories ?? current.repositories);
-				const { runnerGroupId: _group, repositories: _repositories, ...rest } = current;
+				// Another owner or App: the installation is found again from that owner's next delivery.
+				const moved =
+					(body.owner !== undefined && body.owner.toLowerCase() !== current.owner.toLowerCase()) ||
+					(body.appId !== undefined && body.appId !== current.appId);
+				const { runnerGroupId: _group, repositories: _repositories, installationId, ...rest } = current;
 				return {
 					...rest,
+					...(moved || installationId === undefined ? {} : { installationId }),
 					...(body.name === undefined ? {} : { name: body.name }),
 					...(body.appId === undefined ? {} : { appId: body.appId }),
 					...(body.owner === undefined ? {} : { owner: body.owner }),

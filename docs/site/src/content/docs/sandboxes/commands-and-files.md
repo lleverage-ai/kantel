@@ -15,7 +15,7 @@ The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up i
 
 ## Run a command
 
-Send a command line. A microVM runs it with `bash -lc`, in the sandbox user's home, and an isolate runs it in its own shell. The call answers when the command ends:
+Send a command line. A microVM runs it with `bash -lc`, in the sandbox user's home (`/home/user`), and an isolate runs it in its own shell, in `/workspace`. A relative `cwd` or file path starts from the same place. The call answers when the command ends:
 
 ```sh
 curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/commands" \

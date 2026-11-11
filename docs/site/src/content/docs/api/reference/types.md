@@ -855,7 +855,7 @@ A short-lived URL for one file of one sandbox, streamed to or from the sandbox's
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | string | yes | An absolute path, or one relative to the user's home. (at most 4096 characters) |
+| `path` | string | yes | An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`. (at most 4096 characters) |
 | `ttlSeconds` | integer | no | How long the URL may be used: default 900 (15 minutes), at most 3600. (minimum 1, maximum 3600) |
 
 ### ForkedSandboxes
@@ -930,11 +930,13 @@ Runners of one shape, picked by a `runs-on` label.
 
 ### GithubRunnerResources
 
+A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `vcpus` | integer | yes |  (minimum 1, maximum 256) |
+| `vcpus` | integer | yes |  (minimum 1, maximum 32) |
 | `memoryMb` | integer | yes |  (minimum 512) |
-| `diskGb` | integer | no |  (minimum 1) |
+| `diskGb` | integer | no |  (minimum 1, maximum 4096) |
 
 ### GithubRunners
 
@@ -1500,7 +1502,7 @@ A bucket mount as the sandbox shows it after a refresh.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `command` | string | yes | A shell command line, run with `bash -lc` (or the isolate's shell). |
-| `cwd` | string | no | Default: the sandbox user's home. |
+| `cwd` | string | no | Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there. |
 | `env` | Record&lt;string, string&gt; | no |  |
 | `stdin` | string | no |  |
 | `timeoutMs` | integer | no | Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one. (minimum 1, maximum 600000) |
@@ -1849,7 +1851,7 @@ The template a sandbox was made from.
 
 ### SandboxType
 
-`isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
+`isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
 
 One of: `"isolate"` or `"microvm"`.
 

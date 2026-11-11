@@ -196,15 +196,19 @@ describe("sandboxes", () => {
 		expect(command.exitCode).toBe(0);
 		expect(command.stdout).toBe("hello\n");
 		expect((await tom.listCommands(sandbox.id)).items.map((item) => item.id)).toEqual([command.id]);
+		// An isolate keeps only /workspace, so its commands start there, and relative paths are from there.
+		expect(command.cwd).toBe("/workspace");
+		expect((await tom.runCommand(sandbox.id, { command: "pwd; echo $HOME" })).stdout).toBe("/workspace\n/workspace\n");
+		expect((await tom.runCommand(sandbox.id, { command: "pwd", cwd: "notes" })).cwd).toBe("/workspace/notes");
 
 		const read = await tom.readFile(sandbox.id, { path: "f.txt" });
-		expect(read).toMatchObject({ path: "/home/user/f.txt", encoding: "utf8", content: "hello\n", size: 6 });
+		expect(read).toMatchObject({ path: "/workspace/f.txt", encoding: "utf8", content: "hello\n", size: 6 });
 
 		const written = await tom.writeFile(sandbox.id, { path: "notes/todo.md", content: "# To do" });
-		expect(written).toMatchObject({ path: "/home/user/notes/todo.md", kind: "file", size: 7 });
+		expect(written).toMatchObject({ path: "/workspace/notes/todo.md", kind: "file", size: 7 });
 		const listing = await tom.listFiles(sandbox.id, { path: "notes" });
 		expect(listing.items.map((entry) => entry.name)).toEqual(["todo.md"]);
-		const encoded = await tom.readFile(sandbox.id, { path: "/home/user/notes/todo.md", encoding: "base64" });
+		const encoded = await tom.readFile(sandbox.id, { path: "/workspace/notes/todo.md", encoding: "base64" });
 		expect(atob(encoded.content)).toBe("# To do");
 
 		await tom.deleteFile(sandbox.id, { path: "notes/todo.md" });
@@ -2190,7 +2194,7 @@ describe("calls on a sandbox that isn't running", () => {
 		gated.release();
 		const command = await first;
 		expect(command).toMatchObject({ state: "exited", exitCode: 0, stdout: "one\n" });
-		expect(await second).toMatchObject({ path: "/home/user/two.txt" });
+		expect(await second).toMatchObject({ path: "/workspace/two.txt" });
 		expect(gated.state.resumes).toBe(1);
 		await api.service.idle();
 		const events = await tom.listEvents({ sandboxId: sandbox.id });

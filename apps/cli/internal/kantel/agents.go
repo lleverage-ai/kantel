@@ -173,8 +173,12 @@ func mcpServers(url string, launch mcpLaunch) snippetServers {
 }
 
 // cheatSheet is the commands an agent needs, for the AGENTS.md block and the skill alike.
-const cheatSheet = "- Create one: `id=$(kantel new --type microvm --json | jq -r .id)`. Without `--type microvm` it is an\n" +
-	"  isolate: it starts in milliseconds but runs JavaScript only; a microVM is a full Linux with root and Docker.\n" +
+const cheatSheet = "- Create one: `id=$(kantel new --type microvm --json | jq -r .id)`. A microVM is a full Linux with root and\n" +
+	"  Docker: use one for anything touching code (clone, install, build, test, run), any runtime, a server or a long job.\n" +
+	"- `--type isolate` (the default without `--type`) starts in milliseconds and costs almost nothing, but is only a\n" +
+	"  shell over files in /workspace: curl, jq, grep, rg, sed, awk, sort, diff, gzip. It has no git, node, python, package\n" +
+	"  manager, Docker or SSH. Use one only for HTTP calls and text or JSON work, such as reading issues or logs with a token.\n" +
+	"  If it says `command not found` or `not available in an isolate`, make a microVM instead; if unsure, use a microVM.\n" +
 	"- Run a command: `kantel exec \"$id\" -- npm test`. Its output and exit code are the command's (30 s limit;\n" +
 	"  `--timeout 0` = no limit, following its output).\n" +
 	"- A job you don't wait for: `kantel exec \"$id\" --detach -- npm run build` prints the command's ID; then\n" +
@@ -201,7 +205,7 @@ const agentsBlock = agentsStart + "\n" +
 // skillMD is the skill Claude Code (.claude/skills), Codex and pi (.agents/skills) load when a task needs a sandbox.
 const skillMD = "---\n" +
 	"name: kantel\n" +
-	"description: Run code in a Kantel sandbox (an isolate, or a microVM with root, Docker, SSH, a desktop and Chromium) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation and long jobs.\n" +
+	"description: Run code in a Kantel sandbox (a microVM with root, Docker, SSH, a desktop and Chromium, or an isolate, a quick shell for HTTP calls and text work) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation, long jobs, and API calls with a token kept out of reach.\n" +
 	"---\n\n" +
 	"# Kantel sandboxes\n\n" +
 	"Kantel gives you sandboxes through the `kantel` command line. `KANTEL_URL` and `KANTEL_API_KEY` are set in the\n" +

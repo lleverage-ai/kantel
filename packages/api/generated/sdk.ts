@@ -548,7 +548,7 @@ export interface CreateSandboxBody {
 	readonly account?: string;
 	/** Default: a generated name, such as `brave-otter`. */
 	readonly name?: string;
-	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	/** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type?: SandboxType;
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
@@ -881,7 +881,7 @@ export interface ExposePortBody {
 }
 
 export interface ExtractArchiveQuery {
-	/** The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount. */
+	/** The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
 	readonly path: string;
 }
 
@@ -929,7 +929,7 @@ export interface FileList {
 }
 
 export interface FilePathQuery {
-	/** An absolute path, or one relative to the user's home. */
+	/** An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path: string;
 }
 
@@ -946,7 +946,7 @@ export interface FileUrl {
 }
 
 export interface FileUrlBody {
-	/** An absolute path, or one relative to the user's home. */
+	/** An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path: string;
 	/** How long the URL may be used: default 900 (15 minutes), at most 3600. */
 	readonly ttlSeconds?: number;
@@ -1007,6 +1007,7 @@ export interface GithubRunnerPool {
 	readonly label: string;
 	/** The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. */
 	readonly template: string;
+	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
 	readonly resources: GithubRunnerResources;
 	/** Run only on hosts with each of these labels. */
 	readonly hostLabels?: {
@@ -1040,6 +1041,7 @@ export interface GithubRunnerPoolStatus {
 	readonly waitingFor?: string;
 }
 
+/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
 export interface GithubRunnerResources {
 	readonly vcpus: number;
 	readonly memoryMb: number;
@@ -1418,7 +1420,7 @@ export interface ListEventsQuery {
 }
 
 export interface ListFilesQuery {
-	/** Default: the user's home. */
+	/** Default: a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path?: string;
 	/** At most this many; default 50. */
 	readonly limit?: number;
@@ -1735,7 +1737,7 @@ export interface ResumeSandboxBody {
 export interface RunCommandBody {
 	/** A shell command line, run with `bash -lc` (or the isolate's shell). */
 	readonly command: string;
-	/** Default: the sandbox user's home. */
+	/** Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there. */
 	readonly cwd?: string;
 	readonly env?: {
 		readonly [key: string]: string;
@@ -1754,7 +1756,7 @@ export interface Sandbox {
 	readonly name: string;
 	/** Its name under the deployment's sandbox domain, which its public port URLs start with. */
 	readonly subdomain: string;
-	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	/** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type: SandboxType;
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
@@ -2141,7 +2143,7 @@ export interface SandboxTemplate {
 	readonly start: "snapshot" | "boot";
 }
 
-/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+/** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 export type SandboxType = "isolate" | "microvm";
 
 export interface SandboxUsage {
@@ -2287,7 +2289,7 @@ export interface Snapshot {
 	};
 	/** The sandbox it was taken of; absent once that is deleted. */
 	readonly sandboxId?: string;
-	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	/** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly sandboxType: SandboxType;
 	readonly state: SnapshotState;
 	/** What took it. */
@@ -2315,7 +2317,7 @@ export interface Snapshot {
 }
 
 export interface SnapshotFilesQuery {
-	/** A directory; default the user's home. */
+	/** A directory; default a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path?: string;
 	/** At most this many; default 50. */
 	readonly limit?: number;
@@ -3267,7 +3269,7 @@ export interface KantelClient {
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
 	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. With `host`, from that host alone. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
 	getSandboxShapes(query?: SandboxShapesQuery, options?: CallOptions): Promise<SandboxShapes>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;

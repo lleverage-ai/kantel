@@ -39,6 +39,8 @@ function fakeSandboxes(room: { value: number }) {
 	const runs: { sandboxId: string; command: string; env: { readonly [name: string]: string } }[] = [];
 	const fail = new Set<"get" | "delete" | "run">();
 	const deletedBy: string[] = [];
+	/** Runner commands that have ended. */
+	const ended = new Set<string>();
 	const execs: { sandboxId: string; command: string }[] = [];
 	const commits: { sandboxId: string; disk: string }[] = [];
 	let next = 0;
@@ -74,8 +76,12 @@ function fakeSandboxes(room: { value: number }) {
 		async run(_principal, sandboxId, command, env) {
 			failing("run");
 			runs.push({ sandboxId, command, env });
+			return `cmd_${runs.length}`;
 		},
-		async listLabelled(_accountId, labels) {
+		async commandRunning(_principal, _sandboxId, commandId) {
+			return !ended.has(commandId);
+		},
+		async listMadeBy(_accountId, _keyId, labels) {
 			return [...sandboxes]
 				.filter(([, sandbox]) =>
 					Object.entries(labels).every(([key, value]) => (sandbox.labels as Record<string, string>)[key] === value),
@@ -89,6 +95,7 @@ function fakeSandboxes(room: { value: number }) {
 		sandboxes,
 		fail,
 		deletedBy,
+		ended,
 		execs,
 		commits,
 		/** Every starting sandbox is running now. */
@@ -155,9 +162,23 @@ async function setUp(
 	const sandboxes = fakeSandboxes(room);
 	const github = fakeGithub();
 	const key = { revoked: false };
+	/** Runs after each listing of runners, before the pass acts on it: a webhook landing at that moment. */
+	const afterListing: { hook?: () => Promise<void> } = {};
+	const machines = store.githubRunnerMachines;
+	const watched = {
+		...store,
+		githubRunnerMachines: {
+			...machines,
+			async list(where?: Parameters<typeof machines.list>[0]) {
+				const listed = await machines.list(where);
+				await afterListing.hook?.();
+				return listed;
+			},
+		},
+	};
 	const broker = (gatewayId: string) =>
 		createGithubRunners({
-			store,
+			store: watched,
 			now: () => clock.now,
 			sealer: () => sealer,
 			sandboxes: sandboxes.api,
@@ -218,7 +239,7 @@ async function setUp(
 		if (record === undefined) throw new Error("gone");
 		return (await runners.view(record, "https://kantel.example/hook", true)).status?.[0];
 	};
-	return { store, clock, room, sandboxes, github, runners, broker, key, deliver, job, status };
+	return { store, clock, room, sandboxes, github, runners, broker, key, deliver, job, status, afterListing };
 }
 
 describe("GitHub runners", () => {
@@ -296,6 +317,8 @@ describe("GitHub runners", () => {
 		await job("queued", 2);
 		expect(sandboxes.sandboxes.size).toBe(1);
 		const [first] = [...sandboxes.sandboxes.keys()];
+		sandboxes.boot();
+		await runners.tick();
 		await job("in_progress", 1, { runner_name: first });
 		await job("completed", 1, { runner_name: first });
 		// The completed job's runner freed the room, and the same delivery's pass used it.
@@ -471,13 +494,10 @@ describe("GitHub runners", () => {
 		let first = true;
 		sandboxes.api.create = async (principal, body) => {
 			const made = await create(principal, body);
-			// A slow first create: its lease ran out and another gateway took it meanwhile.
+			// A slow first create: its lease ran out, and another gateway took it, filled the pool and released it.
 			if (first) {
 				first = false;
-				await store.githubRunners.update("ghr_one", (current) => ({
-					...current,
-					lease: { owner: "gw_other", until: clock.now + 60_000 },
-				}));
+				await store.githubRunners.update("ghr_one", ({ lease: _lease, ...current }) => current);
 			}
 			return made;
 		};
@@ -530,8 +550,8 @@ describe("GitHub runners", () => {
 		await job("queued", 1);
 		sandboxes.boot();
 		await runners.tick();
-		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "other-org", runnerGroupId: 9 }));
 		await job("completed", 1, { conclusion: "cancelled" });
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "other-org", runnerGroupId: 9 }));
 		clock.now += IDLE_GRACE_MS + 1;
 		await runners.tick();
 		expect(github.removedFrom).toEqual([{ kind: "organization", org: "octo-org", runnerGroupId: 7 }]);
@@ -543,6 +563,231 @@ describe("GitHub runners", () => {
 		expect(await runners.retire("ghr_one")).toBe(true);
 		expect(sandboxes.sandboxes.has(orphan.id)).toBe(false);
 		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
+	});
+
+	it("replaces an idle runner that can't take a job: its sandbox stopped, or its runner's command ended", async () => {
+		for (const kill of ["sandbox", "command"] as const) {
+			const { job, sandboxes, runners } = await setUp();
+			await job("queued", 1);
+			sandboxes.boot();
+			await runners.tick();
+			const [first = ""] = [...sandboxes.sandboxes.keys()];
+			if (kill === "sandbox") {
+				const sandbox = sandboxes.sandboxes.get(first);
+				if (sandbox !== undefined) sandbox.state = "stopped";
+			} else sandboxes.ended.add("cmd_1");
+			await runners.tick();
+			expect(sandboxes.sandboxes.has(first)).toBe(false);
+			expect(sandboxes.sandboxes.size).toBe(1);
+		}
+	});
+
+	it("keeps a runner GitHub gave a job while it was being ended for want of one", async () => {
+		const { job, sandboxes, runners, github, store, clock } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("completed", 1, { conclusion: "cancelled" });
+		clock.now += IDLE_GRACE_MS + 1;
+		// GitHub refuses the removal: it has just given the runner another job.
+		github.state.failRemove = true;
+		await runners.tick();
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("ending");
+		await job("in_progress", 2, { runner_name: sandboxId });
+		github.state.failRemove = false;
+		await runners.tick();
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("busy");
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(true);
+	});
+
+	it("lets a runner finish its job when its pool is renamed", async () => {
+		const { job, sandboxes, runners, store } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("in_progress", 1, { runner_name: sandboxId });
+		await store.githubRunners.update("ghr_one", (current) => ({
+			...current,
+			pools: [{ ...POOL, label: "kantel-16vcpu" }],
+		}));
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(true);
+		await job("completed", 1, { runner_name: sandboxId, conclusion: "success" });
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+	});
+
+	it("follows a runner made under the old owner to its end after the owner changes, without moving the installation", async () => {
+		const { job, sandboxes, runners, store } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("in_progress", 1, { runner_name: sandboxId });
+		await store.githubRunners.update("ghr_one", ({ installationId: _installation, ...current }) => ({
+			...current,
+			owner: "new-org",
+		}));
+		// GitHub gives the same runner another of the old owner's jobs: its job is recorded, for polling to find.
+		await job("in_progress", 3, { runner_name: sandboxId });
+		expect(await store.githubRunnerJobs.get("ghr_one:3")).toMatchObject({ state: "in_progress", installationId: 42 });
+		expect((await job("completed", 1, { runner_name: sandboxId, conclusion: "success" })).status).toBe(200);
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBeUndefined();
+		// A new job of the old owner is still nobody's.
+		expect((await job("queued", 2)).status).toBe(202);
+	});
+
+	it("acts on a delivery only within the installation that sent it, whatever names it carries", async () => {
+		const { job, deliver, sandboxes, runners, store } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [victim = ""] = [...sandboxes.sandboxes.keys()];
+		// Another owner's installation names our runner in its own job's signed `completed`: nothing happens to it.
+		const foreign = await deliver("workflow_job", {
+			action: "completed",
+			installation: { id: 77 },
+			repository: { full_name: "attacker/app" },
+			workflow_job: {
+				id: 500,
+				run_id: 1,
+				name: "x",
+				labels: ["kantel-8vcpu"],
+				runner_name: victim,
+				conclusion: "success",
+			},
+		});
+		expect(foreign.status).toBe(202);
+		expect(sandboxes.sandboxes.has(victim)).toBe(true);
+		expect((await store.githubRunnerMachines.get(victim))?.state).toBe("idle");
+		// The owner changes while a delivery about a new job of the old owner is in flight: it records nothing.
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "new-org" }));
+		expect((await job("queued", 2)).status).toBe(202);
+		expect(await store.githubRunnerJobs.get("ghr_one:2")).toBeUndefined();
+	});
+
+	it("forgets an account's runner records whose integration is already gone", async () => {
+		const { store, runners, clock } = await setUp();
+		await store.githubRunnerMachines.put({
+			id: "sbx_stray",
+			integrationId: "ghr_gone",
+			accountId: "acc_org",
+			pool: "kantel-8vcpu",
+			state: "idle",
+			createdAt: clock.now,
+			expiresAt: clock.now + 60_000,
+			updatedAt: clock.now,
+		});
+		await runners.forgetAccount("acc_org");
+		expect(await store.githubRunnerMachines.list({ accountId: "acc_org" })).toEqual([]);
+		expect(await store.githubRunners.list({ accountId: "acc_org" })).toEqual([]);
+	});
+
+	it("leaves a runner that took a job after a pass saw it ending for want of one", async () => {
+		const { job, sandboxes, runners, github, store, clock, afterListing } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("completed", 1, { conclusion: "cancelled" });
+		clock.now += IDLE_GRACE_MS + 1;
+		github.state.failRemove = true;
+		await runners.tick();
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("ending");
+		github.state.failRemove = false;
+		// The next pass lists it ending; GitHub's in_progress lands before that pass acts on it, and does what a webhook
+		// does (here straight to the store: a delivery would wait for this pass).
+		let once = true;
+		afterListing.hook = async () => {
+			if (!once) return;
+			once = false;
+			await store.githubRunnerMachines.update(
+				sandboxId,
+				({ unused: _unused, endingAt: _at, endReason: _why, ...rest }) => ({
+					...rest,
+					state: "busy",
+					tookJob: true,
+					jobId: 2,
+				}),
+			);
+		};
+		await runners.tick();
+		afterListing.hook = undefined;
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("busy");
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(true);
+	});
+
+	it("stops a pass at its next effect once account cleanup on the same gateway has taken its lease", async () => {
+		const { job, sandboxes, runners, store } = await setUp();
+		const create = sandboxes.api.create;
+		let first = true;
+		sandboxes.api.create = async (principal, body) => {
+			const made = await create(principal, body);
+			if (first) {
+				first = false;
+				await runners.forgetAccount("acc_org");
+			}
+			return made;
+		};
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, installationId: 42 }));
+		for (const id of [1, 2, 3]) {
+			await store.githubRunnerJobs.insert({
+				id: `ghr_one:${id}`,
+				integrationId: "ghr_one",
+				accountId: "acc_org",
+				jobId: id,
+				runId: 1,
+				repository: "octo-org/app",
+				name: "checks",
+				labels: ["kantel-8vcpu"],
+				pool: "kantel-8vcpu",
+				installationId: 42,
+				state: "queued",
+				queuedAt: 0,
+				updatedAt: 0,
+			});
+		}
+		await runners.tick();
+		// One create was under way when cleanup took over; nothing more was made.
+		expect(sandboxes.sandboxes.size).toBe(1);
+		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
+	});
+
+	it("takes a registration off GitHub when cleanup took the lease while GitHub registered it", async () => {
+		const { job, sandboxes, runners, github, store, clock } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		// Account cleanup takes the lease (and finds no runner on GitHub yet) while GitHub registers this one.
+		github.state.onRegister = async () => {
+			await store.githubRunners.update("ghr_one", (current) => ({
+				...current,
+				lease: { owner: "cleanup", until: clock.now + 60_000 },
+			}));
+		};
+		await runners.tick();
+		github.state.onRegister = undefined;
+		expect(github.registered).toHaveLength(1);
+		expect(github.removed).toEqual([1]);
+		expect(sandboxes.runs).toEqual([]);
+	});
+
+	it("binds the installation only from its own owner's deliveries", async () => {
+		const { deliver, store, sandboxes } = await setUp();
+		const from = (owner: string, installation: number) =>
+			deliver("workflow_job", {
+				action: "queued",
+				installation: { id: installation },
+				repository: { full_name: `${owner}/app` },
+				workflow_job: { id: installation, run_id: 1, name: "checks", labels: ["kantel-8vcpu"] },
+			});
+		await from("octo-org", 42);
+		expect((await from("other-org", 99)).status).toBe(202);
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBe(42);
+		expect(sandboxes.sandboxes.size).toBe(1);
 	});
 
 	it("commits a runner's sticky disk after a successful job on a branch it commits from, never a pull request's", async () => {
@@ -625,8 +870,26 @@ describe("GitHub runners through the API", () => {
 
 	it("connects an App, answers its signed webhook with a runner made as the integration's key, and disconnects", async () => {
 		const github = fakeGithub();
+		const stub = createStubBackend();
+		// A host offering a 2-vCPU, 768 MB preset: a shape a create takes from it, outside the custom-shape rules.
+		const backend = {
+			...stub,
+			async capabilities() {
+				const capabilities = await stub.capabilities();
+				return {
+					...capabilities,
+					hosts: capabilities.hosts.map((host) => ({
+						...host,
+						sizes: [
+							...(host.sizes ?? capabilities.sizes),
+							{ name: "small" as const, vcpus: 2, memoryMb: 768, diskGb: 10 },
+						],
+					})),
+				};
+			},
+		};
 		const api = createComputeApi({
-			backend: createStubBackend(),
+			backend,
 			templates: true,
 			githubRunners: { app: github.app },
 			authenticatePerson: async (request) =>
@@ -688,8 +951,32 @@ describe("GitHub runners through the API", () => {
 			expect((await tom.getGithubRunners(githubRunners.id)).status).toEqual([
 				expect.objectContaining({ label: "kantel-8vcpu", queued: 1 }),
 			]);
+			// A sandbox someone labelled as a runner isn't one: the integration's cleanup leaves it.
+			const forged = await tom.createSandbox({ labels: { [RUNNER_LABEL]: githubRunners.id } });
 			await tom.deleteGithubRunners(githubRunners.id);
-			expect((await tom.listSandboxes()).items.filter((sandbox) => sandbox.state !== "deleted")).toEqual([]);
+			expect(
+				(await tom.listSandboxes()).items.filter((sandbox) => sandbox.state !== "deleted").map((s) => s.id),
+			).toEqual([forged.id]);
+			// A host's preset shape is a pool's to use; a pool no create could make is refused when it's given.
+			const preset = await tom.createGithubRunners({
+				name: "preset",
+				appId: 1,
+				privateKey: await pem(),
+				owner: "octo-org",
+				runnerGroupId: 7,
+				pools: [{ ...POOL, label: "kantel-tiny", resources: { vcpus: 2, memoryMb: 768 } }],
+			});
+			expect(preset.githubRunners.pools[0]?.resources).toEqual({ vcpus: 2, memoryMb: 768 });
+			await expect(
+				tom.createGithubRunners({
+					name: "bad",
+					appId: 1,
+					privateKey: await pem(),
+					owner: "octo-org",
+					runnerGroupId: 7,
+					pools: [{ ...POOL, resources: { vcpus: 8, memoryMb: 20_000 } }],
+				}),
+			).rejects.toMatchObject({ code: "invalid" });
 			expect(
 				(await tom.listApiKeys()).items.find((item) => item.name === "GitHub runners: ci")?.revokedAt,
 			).toBeDefined();

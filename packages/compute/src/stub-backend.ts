@@ -34,7 +34,7 @@ import {
 	type UsageSample,
 } from "./backend.ts";
 import { type BackendUsageReport, RAW_WINDOW_MS, USAGE_INTERVAL_MS } from "./usage-series.ts";
-import { baseName, HOME, randomId, randomSecret, sha256Hex, sliceRange } from "./util.ts";
+import { baseName, HOME, homeFor, randomId, randomSecret, sha256Hex, sliceRange } from "./util.ts";
 
 /** The stub's one host. */
 export const STUB_HOST_ID = "host_stub";
@@ -340,10 +340,13 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			capabilities: machine.type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
 		};
 	};
-	/** The machine's shell on its disk, with its env. */
-	const shellOf = (machine: Machine, fs: InMemoryFs) =>
-		new Bash({ fs, cwd: HOME, env: { HOME, USER: "user", ...machine.env } });
-	const boot = (machine: Machine, fs: InMemoryFs) => {
+	/** The machine's shell on its disk, with its env, starting in its type's home. */
+	const shellOf = (machine: Machine, fs: InMemoryFs) => {
+		const home = homeFor(machine.type);
+		return new Bash({ fs, cwd: home, env: { HOME: home, USER: "user", ...machine.env } });
+	};
+	const boot = async (machine: Machine, fs: InMemoryFs) => {
+		await fs.mkdir(homeFor(machine.type), { recursive: true });
 		machine.fs = fs;
 		machine.bash = shellOf(machine, fs);
 		machine.state = "running";
@@ -410,8 +413,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		// A template snapshot the stub no longer holds (lost with the process, as the records outlast it) boots fresh, and
 		// says so (`bootedFresh`).
 		const prepared = template?.snapshot === undefined ? undefined : templateSnapshots.get(template.snapshot);
-		if (prepared !== undefined) boot(machine, await restore(prepared));
-		else boot(machine, await fromSnapshot(spec.fromSnapshot));
+		if (prepared !== undefined) await boot(machine, await restore(prepared));
+		else await boot(machine, await fromSnapshot(spec.fromSnapshot));
 		// A fresh boot from a template: its setup runs in the new machine, as a build would have run it.
 		if (template !== undefined && prepared === undefined && template.setup !== undefined) {
 			await runSetup((machine as LiveMachine).bash, template.setup, machine.env);
@@ -445,8 +448,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		if (machine.type === "microvm") machine.shape = options.shape;
 		machine.size = options.size ?? machine.size;
 		machine.env = { ...options.env };
-		if (keepMemory && machine.state === "paused" && machine.fs !== undefined) boot(machine, machine.fs);
-		else boot(machine, await fromSnapshot(options.fromSnapshot));
+		if (keepMemory && machine.state === "paused" && machine.fs !== undefined) await boot(machine, machine.fs);
+		else await boot(machine, await fromSnapshot(options.fromSnapshot));
 		return placement(machine);
 	};
 
@@ -510,7 +513,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			placeable(options.eligibleHosts, machine.type);
 			machine.env = { ...options.env };
 			machine.ports.clear();
-			boot(machine, machine.fs ?? (await fromSnapshot(options.fromSnapshot)));
+			await boot(machine, machine.fs ?? (await fromSnapshot(options.fromSnapshot)));
 			return placement(machine);
 		},
 
@@ -537,7 +540,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			const races: Promise<ExecResult>[] = [
 				machine.bash
 					.exec(request.command, {
-						cwd: request.cwd ?? HOME,
+						cwd: request.cwd ?? homeFor(machine.type),
 						signal: controller.signal,
 						...(request.env === undefined ? {} : { env: { ...request.env } }),
 						...(request.stdin === undefined ? {} : { stdin: request.stdin }),
