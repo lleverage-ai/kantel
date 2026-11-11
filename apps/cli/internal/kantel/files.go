@@ -66,6 +66,19 @@ func printOutput(c *cli.Context, command *api.Command) {
 	if command.State == api.CommandStateKilled {
 		c.Note("kantel: the command was killed")
 	}
+	noteIsolate(c, command)
+}
+
+// noteIsolate says what an isolate did to a command: stopped it for its time or memory, or found it needs a microVM,
+// and what to do about that.
+func noteIsolate(c *cli.Context, command *api.Command) {
+	if command.Terminated != nil {
+		c.Note("kantel: the isolate stopped it: too much " + string(*command.Terminated) + " time")
+	}
+	if command.NeedsMicrovm != nil && command.RerunAs == nil {
+		c.Note("kantel: " + command.NeedsMicrovm.Command + " needs a microVM. kantel upgrade " + command.SandboxID +
+			" turns this isolate into one, its files and settings kept; then run it again")
+	}
 }
 
 // showCommand is exec --status: the command as JSON, or its state and output so far.
@@ -218,6 +231,17 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 			return err
 		}
 	}
+	// Its isolate upgraded itself to a microVM (autoUpgrade) and ran it again there: that one is what it came to.
+	if command.RerunAs != nil {
+		if !c.JSON {
+			what := ""
+			if command.NeedsMicrovm != nil {
+				what = " (" + command.NeedsMicrovm.Command + ")"
+			}
+			c.Note("kantel: it needed a microVM" + what + "; " + sandboxID + " is one now, and it runs again there as " + *command.RerunAs)
+		}
+		return follow(c, client, sandboxID, *command.RerunAs, followOptions{limitSeconds: o.limitSeconds})
+	}
 	if c.JSON {
 		c.Out(cli.IndentJSON(raw, command))
 	} else {
@@ -234,6 +258,7 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 		case api.CommandStateKilled:
 			c.Note("kantel: the command was killed")
 		}
+		noteIsolate(c, command)
 	}
 	return exitWith(exitCodeOf(command))
 }

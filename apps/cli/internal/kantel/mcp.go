@@ -35,7 +35,10 @@ const mcpInstructions = "Kantel gives you sandboxes: machines of your own to run
 	"start new sandboxes from. Stop it with sandbox_stop when you are done: a stopped sandbox keeps its disk and costs " +
 	"nothing to run, and sandbox_resume brings it back. If a command may take longer than your MCP client waits " +
 	"for a call, run sandbox_exec with detached, then wait for it with command_get; it runs with no time limit unless you " +
-	"give it a timeoutMs (a host whose kantel-host predates exec-control still ends it after about 2 minutes on a microVM)."
+	"give it a timeoutMs (a host whose kantel-host predates exec-control still ends it after about 2 minutes on a microVM). " +
+	"If an isolate's command needs a microVM (its answer says so), upgrade it with sandbox_upgrade, which keeps its id, " +
+	"files (in /home/user/workspace, with /workspace linked there), env and grants, and run the command again; create " +
+	"an isolate with autoUpgrade to have that done for you."
 
 const (
 	// progressInterval is how often a tool call that waits tells the client it is still working.
@@ -411,13 +414,17 @@ func pickUp(c api.Command) string {
 }
 
 type commandStructured struct {
-	CommandID  string           `json:"commandId"`
-	State      api.CommandState `json:"state"`
-	ExitCode   *int64           `json:"exitCode"`
-	Stdout     string           `json:"stdout"`
-	Stderr     string           `json:"stderr"`
-	Truncated  bool             `json:"truncated"`
-	DurationMs *int64           `json:"durationMs"`
+	CommandID    string                   `json:"commandId"`
+	State        api.CommandState         `json:"state"`
+	ExitCode     *int64                   `json:"exitCode"`
+	Stdout       string                   `json:"stdout"`
+	Stderr       string                   `json:"stderr"`
+	Truncated    bool                     `json:"truncated"`
+	DurationMs   *int64                   `json:"durationMs"`
+	NeedsMicrovm *api.CommandNeedsMicrovm `json:"needsMicrovm,omitempty"`
+	Terminated   *api.CommandTermination  `json:"terminated,omitempty"`
+	RerunAs      *string                  `json:"rerunAs,omitempty"`
+	RerunOf      *string                  `json:"rerunOf,omitempty"`
 }
 
 // commandResult is a command as a tool answers it: its state, exit code and output, cut to about 64 KiB each.
@@ -443,6 +450,20 @@ func commandResult(c api.Command) toolResult {
 		}
 		lines = append(lines, "The command exited with code "+code+".")
 	}
+	if c.RerunOf != nil {
+		lines = append(lines, fmt.Sprintf("Its isolate needed a microVM for it (%s said so): Kantel upgraded %s to a microVM, "+
+			"its files in /home/user/workspace (/workspace links there), and this is the command run again there.", *c.RerunOf, c.SandboxID))
+	}
+	if c.RerunAs != nil {
+		lines = append(lines, fmt.Sprintf("It needed a microVM: Kantel upgraded %s and runs it again there as %s. Read that one "+
+			"with command_get (sandboxId %s, commandId %s).", c.SandboxID, *c.RerunAs, c.SandboxID, *c.RerunAs))
+	} else if c.NeedsMicrovm != nil {
+		lines = append(lines, fmt.Sprintf("It needs a microVM: %s Call sandbox_upgrade with sandboxId %s (it keeps the id, files, "+
+			"env and grants), then run it again.", c.NeedsMicrovm.Reason, c.SandboxID))
+	}
+	if c.Terminated != nil {
+		lines = append(lines, "The isolate stopped it for using too much "+string(*c.Terminated)+" time.")
+	}
 	if c.Truncated {
 		lines = append(lines, "Kantel kept only its first 1 MiB of output.")
 	}
@@ -459,7 +480,8 @@ func commandResult(c api.Command) toolResult {
 	return toolResult{
 		Content: []textContent{{Type: "text", Text: strings.Join(lines, "\n")}},
 		StructuredContent: commandStructured{CommandID: c.ID, State: c.State, ExitCode: c.ExitCode, Stdout: stdout, Stderr: stderr,
-			Truncated: c.Truncated || stdout != c.Stdout || stderr != c.Stderr, DurationMs: c.DurationMs},
+			Truncated: c.Truncated || stdout != c.Stdout || stderr != c.Stderr, DurationMs: c.DurationMs,
+			NeedsMicrovm: c.NeedsMicrovm, Terminated: c.Terminated, RerunAs: c.RerunAs, RerunOf: c.RerunOf},
 	}
 }
 
@@ -572,6 +594,8 @@ var mcpTools = []mcpTool{
 			stringsProp("labels", "Labels to find it by, such as { task: 'PROJ-12' }."),
 			stringsProp("env", "Environment variables every command sees. Not for secrets: anyone who may exec sees them."),
 			str("host", "Run it on this host, its name or ID. Only when the user asks for a host; default: Kantel picks."),
+			boolean("autoUpgrade", "For an isolate: when a command needs a microVM, Kantel upgrades it (as sandbox_upgrade does) and "+
+				"runs the command again there, once, answering that run. Use it when a task may turn out to need more than a shell."),
 		}),
 		Annotations: toolAnnotations{Title: "Create a sandbox", ReadOnlyHint: boolp(false), DestructiveHint: boolp(false), IdempotentHint: boolp(false)},
 		call: func(ctx context.Context, t toolContext, a toolArgs) (toolResult, error) {
@@ -590,6 +614,9 @@ var mcpTools = []mcpTool{
 			}
 			if n := a.optInt("idleStopMinutes"); n != nil {
 				body.IdleStopMinutes = api.Of(*n)
+			}
+			if a.isTrue("autoUpgrade") {
+				body.AutoUpgrade = api.Ptr(true)
 			}
 			var raw json.RawMessage
 			s, err := t.client.CreateSandbox(ctx, body, api.Raw(&raw))
@@ -682,6 +709,37 @@ var mcpTools = []mcpTool{
 				return toolResult{}, err
 			}
 			return sandboxAnswer(raw, s), nil
+		},
+	},
+	{
+		Name: "sandbox_upgrade",
+		Description: "Turn an isolate into a microVM and wait until it runs: the same id, name, labels, env, environments, grants " +
+			"and protected variables, and its /workspace files in /home/user/workspace, with /workspace a link there, so " +
+			"its paths still work. Use it when an isolate's command needs a microVM (git, node, python, a package " +
+			"manager, a build, Docker), then run the command again; a stopped isolate comes back running. A microVM " +
+			"costs more than an isolate from then on. If the microVM can't be made, the isolate is left as it was.",
+		Schema: schema(properties{
+			sandboxIDProp,
+			enum("size", "The microVM's size; default the deployment's.", Sizes),
+			str("image", "The microVM's base image; default the deployment's."),
+		}, "sandboxId"),
+		Annotations: toolAnnotations{Title: "Upgrade an isolate to a microVM", ReadOnlyHint: boolp(false), DestructiveHint: boolp(false), IdempotentHint: boolp(true)},
+		call: func(ctx context.Context, t toolContext, a toolArgs) (toolResult, error) {
+			id, err := a.text("sandboxId")
+			if err != nil {
+				return toolResult{}, err
+			}
+			body := api.UpgradeSandboxBody{Image: a.optText("image"), Wait: api.Ptr(true)}
+			if v := a.optChoice("size", Sizes); v != nil {
+				body.Size = api.Ptr(api.SandboxSizeName(*v))
+			}
+			var raw json.RawMessage
+			s, err := t.client.UpgradeSandbox(ctx, id, body, api.Raw(&raw))
+			if err != nil {
+				return toolResult{}, err
+			}
+			return jsonResult(raw, fmt.Sprintf("Sandbox %s is a %s now, %s. Its files are in /home/user/workspace (/workspace links "+
+				"there): run the command again.", s.ID, s.Type, stateLine(*s))), nil
 		},
 	},
 	{
