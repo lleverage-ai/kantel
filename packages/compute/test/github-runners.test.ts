@@ -676,7 +676,10 @@ describe("GitHub runners through the API", () => {
 					...capabilities,
 					hosts: capabilities.hosts.map((host) => ({
 						...host,
-						sizes: [...(host.sizes ?? capabilities.sizes), { name: "small" as const, vcpus: 2, memoryMb: 768, diskGb: 10 }],
+						sizes: [
+							...(host.sizes ?? capabilities.sizes),
+							{ name: "small" as const, vcpus: 2, memoryMb: 768, diskGb: 10 },
+						],
 					})),
 				};
 			},
