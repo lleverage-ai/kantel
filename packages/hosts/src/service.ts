@@ -1434,7 +1434,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	return {
 		hub,
 		async stickyDelete(hostId, diskId, version) {
-			if (!hub.connected(hostId)) throw new KantelError("unavailable", "The host isn't connected");
+			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.stickyDelete, { diskId, ...(version === undefined ? {} : { version }) });
 		},
 		async createJoinToken(input) {

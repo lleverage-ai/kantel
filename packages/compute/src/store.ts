@@ -822,6 +822,8 @@ export interface ComputeStore {
 	/** Sticky disks and their versions (docs/design/disk-store.md). */
 	readonly stickyDisks: Collection<StoredStickyDisk>;
 	readonly stickyDiskVersions: Collection<StoredStickyDiskVersion>;
+	/** Each live sticky disk's name in its account (`stickyDiskNameId`): an insert claims a name, atomically. */
+	readonly stickyDiskNames: Collection<StoredStickyDiskName>;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -845,9 +847,26 @@ export interface StoredStickyDisk {
 	readonly sizeGb: number;
 	/** The newest committed version. */
 	readonly head?: string;
+	/** How many versions have been committed: the next one's `seq` is one more. */
+	readonly commits?: number;
+	/**
+	 * When it was deleted: from then it is gone to every caller and its name is free, and the record is kept so passes
+	 * delete its versions from hosts that were away (`STICKY_TOMBSTONE_MS`).
+	 */
+	readonly deletedAt?: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }
+
+/** A sticky disk's claim on its name in its account. */
+export interface StoredStickyDiskName {
+	/** `stickyDiskNameId(accountId, name)`. */
+	readonly id: string;
+	readonly accountId: string;
+	readonly diskId: string;
+}
+
+export const stickyDiskNameId = (accountId: string, name: string): string => `${accountId}:${name}`;
 
 /** One committed version of a sticky disk: where it was made, from what. Never changed. */
 export interface StoredStickyDiskVersion {
@@ -859,6 +878,8 @@ export interface StoredStickyDiskVersion {
 	readonly sandboxId: string;
 	readonly sizeBytes: number;
 	readonly allocatedBytes: number;
+	/** Its place among its disk's commits, from 1: what orders them, as two may share a millisecond. */
+	readonly seq: number;
 	readonly createdAt: number;
 }
 
@@ -1018,6 +1039,7 @@ export function createMemoryStore(): ComputeStore {
 		githubRunnerMachines: memoryCollection(),
 		stickyDisks: memoryCollection(),
 		stickyDiskVersions: memoryCollection(),
+		stickyDiskNames: memoryCollection(),
 	};
 }
 
@@ -1135,5 +1157,6 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		githubRunnerMachines: fenced(store.githubRunnerMachines, byAccount),
 		stickyDisks: fenced(store.stickyDisks, byAccount),
 		stickyDiskVersions: fenced(store.stickyDiskVersions, byAccount),
+		stickyDiskNames: fenced(store.stickyDiskNames, byAccount),
 	};
 }

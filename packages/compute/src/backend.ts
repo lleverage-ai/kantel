@@ -846,7 +846,7 @@ export interface SandboxBackend {
 	 * backend has no sticky disks.
 	 */
 	commitStickyDisk?(sandboxId: string, diskId: string, version: string): Promise<CommittedStickyDisk>;
-	/** Deletes a sticky disk's versions from every host that holds one and is connected now. */
+	/** Deletes a sticky disk's versions from every host that runs sticky disks and is online now; idempotent. */
 	deleteStickyDisk?(diskId: string): Promise<void>;
 	/**
 	 * Asks a connected host to update its host agent to `latestVersion`, answering once it has the new one in place,

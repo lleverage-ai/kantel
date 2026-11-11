@@ -356,6 +356,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		githubRunnerMachines: sqlCollection(driver, "githubRunnerMachines"),
 		stickyDisks: sqlCollection(driver, "stickyDisks"),
 		stickyDiskVersions: sqlCollection(driver, "stickyDiskVersions"),
+		stickyDiskNames: sqlCollection(driver, "stickyDiskNames"),
 	};
 }
 
