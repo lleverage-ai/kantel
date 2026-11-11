@@ -16,6 +16,7 @@ use sha2::Digest;
 
 use crate::bridges::{FetchReq, egress_fetch, valid_sha};
 use crate::isolate::{Ctx, Engine, Kind, RunResult, RunState, engine, run_child};
+use crate::limits::Refusal;
 
 fn jerr(e: impl std::fmt::Display) -> JsErrorBox {
     JsErrorBox::generic(e.to_string())
@@ -322,12 +323,11 @@ fn op_kt_overlay(state: &mut OpState, #[string] path: &str, #[buffer] data: &[u8
 
 #[op2(fast)]
 fn op_kt_node_builtins(state: &mut OpState, #[string] json: &str) {
-    if let Some(run) = state.try_borrow::<RunState>() {
-        if let Ok(map) =
+    if let Some(run) = state.try_borrow::<RunState>()
+        && let Ok(map) =
             serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(json)
-        {
-            *run.builtins.lock().unwrap() = map;
-        }
+    {
+        *run.builtins.lock().unwrap() = map;
     }
 }
 
@@ -373,21 +373,32 @@ pub struct SnapshotSink(pub Rc<RefCell<Option<Vec<u8>>>>);
 
 // --- wasm memory accounting (the guest's wasm guard) --------------------------------------------------------------
 
-#[op2(fast)]
-fn op_kt_wasm_reserve(state: &mut OpState, bytes: f64) -> bool {
-    let Ok(c) = ctx_sync(state) else { return false };
+/// Reserve wasm memory against the isolate's one memory limit (heap + buffers + wasm). Refused only because of the
+/// heap figure from the last GC, it collects garbage and asks again (the figure can be stale: garbage the program
+/// has dropped since), so a run isn't refused memory it has. Not a fast op: a fast call may not collect garbage.
+#[op2(nofast)]
+fn op_kt_wasm_reserve(isolate: &mut v8::Isolate, state: Rc<RefCell<OpState>>, bytes: f64) -> bool {
+    // The OpState borrow ends here, before any GC (whose callbacks may need it).
+    let Ok(c) = ctx(&state) else { return false };
     if !(0.0..=(u32::MAX as f64) * 16.0).contains(&bytes) {
         return false;
     }
-    c.budget.try_take(bytes as usize)
+    match c.budget.take(bytes as usize) {
+        Ok(()) => true,
+        Err(Refusal::Heap) => {
+            isolate.low_memory_notification();
+            c.budget.try_take(bytes as usize)
+        }
+        Err(Refusal::Over) => false,
+    }
 }
 
 #[op2(fast)]
 fn op_kt_wasm_release(state: &mut OpState, bytes: f64) {
-    if let Ok(c) = ctx_sync(state) {
-        if bytes >= 0.0 {
-            c.budget.give(bytes as usize);
-        }
+    if let Ok(c) = ctx_sync(state)
+        && bytes >= 0.0
+    {
+        c.budget.give(bytes as usize);
     }
 }
 
@@ -453,12 +464,11 @@ pub fn manifest_shas(manifest: &Value) -> HashSet<String> {
     let mut set = HashSet::new();
     if let Some(obj) = manifest.as_object() {
         for entry in obj.values() {
-            if entry.get("kind").and_then(Value::as_str) == Some("file") {
-                if let Some(sha) = entry.get("sha").and_then(Value::as_str) {
-                    if valid_sha(sha) {
-                        set.insert(sha.to_string());
-                    }
-                }
+            if entry.get("kind").and_then(Value::as_str) == Some("file")
+                && let Some(sha) = entry.get("sha").and_then(Value::as_str)
+                && valid_sha(sha)
+            {
+                set.insert(sha.to_string());
             }
         }
     }

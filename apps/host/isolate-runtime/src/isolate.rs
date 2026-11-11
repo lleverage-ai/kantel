@@ -21,10 +21,14 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::bridges::Store;
 use crate::config::{Config, DEFAULT_MEMORY_MIB};
-use crate::limits::{Budget, Command, MIB, Term, allocator, near_heap_limit, watch};
+use crate::limits::{
+    Budget, Command, GcWatch, MIB, Term, allocator, gc_watch, near_heap_limit, watch,
+};
 use crate::ops::{SnapshotSink, kt};
 
 const GUEST: &str = include_str!("../guest/dist/guest.js");
+/// How long a terminated shell command may take to unwind before it is abandoned (see spawn_shell).
+const STUCK_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -304,6 +308,14 @@ pub struct Live {
     pub budget: Arc<Budget>,
     #[allow(dead_code)]
     pub kind: Kind,
+    gc: GcWatch,
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        // Off before the isolate goes: GC while it is torn down must not reach the budget's epilogue.
+        self.gc.remove(self.rt.v8_isolate());
+    }
 }
 
 fn module_loader(kind: Kind) -> Option<Rc<dyn ModuleLoader>> {
@@ -319,7 +331,7 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
     let budget = Budget::new(limit);
     let params = v8::CreateParams::default()
         .heap_limits(0, limit)
-        .array_buffer_allocator(allocator(&budget).make_shared());
+        .array_buffer_allocator(allocator(&budget));
     let mut rt = JsRuntime::new(RuntimeOptions {
         extensions: vec![kt::init()],
         startup_snapshot: Some(engine().snapshot()),
@@ -330,6 +342,7 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
     let handle = rt.v8_isolate().thread_safe_handle();
     budget.set_handle(handle.clone());
     rt.add_near_heap_limit_callback(near_heap_limit(&budget, handle.clone()));
+    let gc = gc_watch(rt.v8_isolate(), &budget);
     if kind == Kind::Shell {
         // The shell never needs JS eval, and its isolate is long-lived, so eval and new Function throw there. A
         // node/python isolate is single-use (one run, then discarded) and its CommonJS loader builds a function from
@@ -350,6 +363,7 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
         handle,
         budget,
         kind,
+        gc,
     }
 }
 
@@ -421,8 +435,10 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                 let _ = rt.block_on(call(&mut live.rt, "exec", &[r#"{"command":"true","manifest":{}}"#]));
                 drop(guard);
             }
-            rt.block_on(async move {
-                while let Some(cmd) = rx.recv().await {
+            // One block_on per step rather than one around the loop, so a stuck command's isolate can be dropped
+            // between them, outside any poll (dropping it inside one aborts V8).
+            while let Some(cmd) = rt.block_on(rx.recv()) {
+                {
                     match cmd {
                         ShellCmd::Load { mem_mib, reply } => {
                             if mem_mib != live.budget.limit() / MIB {
@@ -442,10 +458,42 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             // The shell isolate is long-lived and reused, so let the terminated call run to its error
                             // (terminate_execution makes execute_script / the event loop return Err) rather than
                             // abandoning it mid-op — abandoning while it awaits a child node/python op leaves the
-                            // isolate in a state that aborts V8.
-                            let result = call(&mut live.rt, "exec", &[body.as_str()]).await;
+                            // isolate in a state that aborts V8. Except when the call is stuck: a termination that
+                            // lands in a timer callback or an event-loop tick is swallowed by deno_core, which then
+                            // never schedules the remaining timers, so the call never settles. Then (only after a
+                            // grace period, by which time children have been stopped too) the call is abandoned and
+                            // the isolate replaced.
+                            let watched = guard.watched().clone();
+                            let args = [body.as_str()];
+                            let result = rt.block_on(async {
+                                tokio::select! {
+                                    biased;
+                                    r = call(&mut live.rt, "exec", &args) => Some(r),
+                                    _ = async {
+                                        watched.tripped().await;
+                                        tokio::time::sleep(STUCK_GRACE).await;
+                                    } => None,
+                                }
+                            });
                             let term = guard.watched().term();
                             drop(guard);
+                            let Some(result) = result else {
+                                let t = term.unwrap_or(Term::Wall);
+                                tracing::warn!(term = t.name(), "shell command stuck after termination; replacing its isolate");
+                                engine().stats.count_term(t);
+                                engine().stats.rebuilds.fetch_add(1, Ordering::Relaxed);
+                                live.rt.v8_isolate().cancel_terminate_execution();
+                                // Dropped before the new one is made (rusty_v8 isolates go in reverse order).
+                                drop(live);
+                                live = new_live(Kind::Shell, mem);
+                                let _ = reply.send(json!({
+                                    "exitCode": t.exit_code(), "stdout": "",
+                                    "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
+                                    "manifest": manifest, "changed": [], "terminated": t.name(),
+                                    "timings": {},
+                                }));
+                                continue;
+                            };
                             let value = match (result, term) {
                                 (Ok(s), None) => serde_json::from_str(&s).unwrap_or_else(|e| json!({ "error": format!("bad guest reply: {e}") })),
                                 (_, Some(t)) if t != Term::Exit => {
@@ -472,10 +520,16 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                 (Err(e), _) => json!({ "error": format!("{e:#}") }),
                             };
                             let _ = reply.send(value);
+                            // The heap figure the budget holds against buffers and wasm is the last GC's: after a
+                            // command that left a lot of garbage, collect now (the reply has gone) so the next
+                            // command isn't refused memory it has.
+                            if live.budget.heap() > live.budget.limit() / 4 {
+                                live.rt.v8_isolate().low_memory_notification();
+                            }
                         }
                     }
                 }
-            });
+            }
         })
         .expect("spawn shell thread");
     ShellHandle {
@@ -883,15 +937,15 @@ async fn run_node(rt: &mut JsRuntime, meta: &str) -> Result<()> {
     let start = call(rt, "start", &[meta]).await?;
     let parsed: Value = serde_json::from_str(&start).unwrap_or(json!({}));
     let mut err: Option<String> = None;
-    if let Some(spec) = parsed["esm"].as_str() {
-        if let Err(e) = load_main_module(rt, spec).await {
-            err = Some(e);
-        }
+    if let Some(spec) = parsed["esm"].as_str()
+        && let Err(e) = load_main_module(rt, spec).await
+    {
+        err = Some(e);
     }
-    if err.is_none() {
-        if let Err(e) = rt.run_event_loop(PollEventLoopOptions::default()).await {
-            err = Some(e.to_string());
-        }
+    if err.is_none()
+        && let Err(e) = rt.run_event_loop(PollEventLoopOptions::default()).await
+    {
+        err = Some(e.to_string());
     }
     let err_json = serde_json::to_string(&err).unwrap_or("null".into());
     rt.execute_script(
