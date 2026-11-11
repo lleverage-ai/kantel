@@ -1170,7 +1170,7 @@ type GithubRunnerPool struct {
 	// The most runners the pool has at once, starting or running. Default 20.
 	MaxRunners *int64                `json:"maxRunners,omitempty"`
 	Resources  GithubRunnerResources `json:"resources"`
-	// The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.
+	// The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.
 	RunnerCommand *string `json:"runnerCommand,omitempty"`
 	// The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path.
 	Template string `json:"template"`
