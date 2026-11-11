@@ -756,6 +756,12 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `attached` | string | no | `sandbox.environments_changed`: the environment attached. |
 | `detached` | string | no | `sandbox.environments_changed`: the environment detached. |
 | `environmentIds` | string[] | no | `sandbox.environments_changed`: the sandbox's environments now, in order. |
+| `from` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
+| `to` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
+| `path` | `"host"` or `"control-plane"` | no | `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them. |
+| `files` | integer | no | `sandbox.upgraded`: the files, links and directories moved. (minimum 0) |
+| `bytes` | integer | no | `sandbox.upgraded`: the files' bytes. (minimum 0) |
+| `durationMs` | integer | no | `sandbox.upgraded`: how long the upgrade took. (minimum 0) |
 
 ### EventPage
 

@@ -833,6 +833,18 @@ export interface EventData {
 	readonly detached?: string;
 	/** `sandbox.environments_changed`: the sandbox's environments now, in order. */
 	readonly environmentIds?: readonly string[];
+	/** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly from?: SandboxType;
+	/** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly to?: SandboxType;
+	/** `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them. */
+	readonly path?: "host" | "control-plane";
+	/** `sandbox.upgraded`: the files, links and directories moved. */
+	readonly files?: number;
+	/** `sandbox.upgraded`: the files' bytes. */
+	readonly bytes?: number;
+	/** `sandbox.upgraded`: how long the upgrade took. */
+	readonly durationMs?: number;
 }
 
 export interface EventPage {

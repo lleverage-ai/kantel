@@ -14125,6 +14125,40 @@
 							"type": "string"
 						},
 						"description": "`sandbox.environments_changed`: the sandbox's environments now, in order."
+					},
+					"from": {
+						"$ref": "#/components/schemas/SandboxType"
+					},
+					"to": {
+						"$ref": "#/components/schemas/SandboxType"
+					},
+					"path": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "host"
+							},
+							{
+								"type": "string",
+								"const": "control-plane"
+							}
+						],
+						"description": "`sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them."
+					},
+					"files": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`sandbox.upgraded`: the files, links and directories moved."
+					},
+					"bytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`sandbox.upgraded`: the files' bytes."
+					},
+					"durationMs": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`sandbox.upgraded`: how long the upgrade took."
 					}
 				},
 				"title": "EventData"

@@ -920,19 +920,37 @@ type EventData struct {
 	Actor *CreatedBy `json:"actor,omitempty"`
 	// `sandbox.environments_changed`: the environment attached.
 	Attached *string `json:"attached,omitempty"`
+	// `sandbox.upgraded`: the files' bytes.
+	Bytes *int64 `json:"bytes,omitempty"`
 	// `sandbox.environments_changed`: the environment detached.
 	Detached *string `json:"detached,omitempty"`
+	// `sandbox.upgraded`: how long the upgrade took.
+	DurationMs *int64 `json:"durationMs,omitempty"`
 	// `sandbox.environments_changed`: the sandbox's environments now, in order.
 	EnvironmentIds []string `json:"environmentIds,omitzero"`
-	Name           *string  `json:"name,omitempty"`
+	// `sandbox.upgraded`: the files, links and directories moved.
+	Files *int64       `json:"files,omitempty"`
+	From  *SandboxType `json:"from,omitempty"`
+	Name  *string      `json:"name,omitempty"`
 	// `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading.
-	OOMKills        *int64           `json:"oomKills,omitempty"`
+	OOMKills *int64 `json:"oomKills,omitempty"`
+	// `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them.
+	Path            *EventDataPath   `json:"path,omitempty"`
 	PlacementReason *PlacementReason `json:"placementReason,omitempty"`
 	PreviousState   *SandboxState    `json:"previousState,omitempty"`
 	Reason          *string          `json:"reason,omitempty"`
 	Startup         *SandboxStartup  `json:"startup,omitempty"`
 	State           *SandboxState    `json:"state,omitempty"`
+	To              *SandboxType     `json:"to,omitempty"`
 }
+
+// `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them.
+type EventDataPath string
+
+const (
+	EventDataPathHost         EventDataPath = "host"
+	EventDataPathControlPlane EventDataPath = "control-plane"
+)
 
 type EventPage struct {
 	Items []Event `json:"items"`
