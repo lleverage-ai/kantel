@@ -1939,7 +1939,7 @@ describe("a sandbox with several environments", () => {
 		const { api, tom, recorded } = setup();
 		const github = await githubEnvironment(tom);
 		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ environments: ["backend", npm.id], wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["backend", npm.id], wait: true });
 		expect(sandbox.environmentIds).toEqual([github.id, npm.id]);
 		expect(sandbox.environmentId).toBe(github.id);
 		expect(await echo(tom, sandbox.id, "LOG_LEVEL")).toBe("info");
@@ -2009,7 +2009,7 @@ describe("a sandbox with several environments", () => {
 		const { api, tom, recorded } = setup();
 		await githubEnvironment(tom);
 		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ environment: "backend", env: { OWN: "mine" }, wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", environment: "backend", env: { OWN: "mine" }, wait: true });
 		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
 
 		const answer = await tom.attachSandboxEnvironment(sandbox.id, { environment: "npm" });
@@ -2087,7 +2087,7 @@ describe("a sandbox with several environments", () => {
 		const { api, tom, recorded } = setup();
 		const github = await githubEnvironment(tom);
 		const npm = await npmEnvironment(tom);
-		const sandbox = await tom.createSandbox({ environments: ["backend", "npm"], wait: true });
+		const sandbox = await tom.createSandbox({ type: "microvm", environments: ["backend", "npm"], wait: true });
 		const before = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
 		const answer = await tom.detachSandboxEnvironment(sandbox.id, npm.id);
 		expect(answer.environments.map((each) => each.id)).toEqual([github.id]);
