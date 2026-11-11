@@ -48,10 +48,33 @@ export function createFs(ops, state, path) {
 		}
 		return [cur, state.files.get(cur) ?? { kind: "dir" }];
 	}
-	function parentDir(p, syscall) {
-		const [, e] = resolve(path.dirname(p), syscall);
-		if (e.kind !== "dir") throw fsError("ENOTDIR", syscall, p, "not a directory");
+	/**
+	 * The key of the entry a path names itself, a final symlink not followed (what unlink, lstat, readlink, rename and
+	 * symlink act on): its parent directory resolved through any symlinks, so a path through a directory symlink
+	 * names the same entry as the real path does. Throws if the parent doesn't exist or isn't a directory.
+	 */
+	function locate(ap, syscall) {
+		if (ap === "/") return "/";
+		const [dir, e] = resolve(path.dirname(ap), syscall);
+		if (e.kind !== "dir") throw fsError("ENOTDIR", syscall, ap, "not a directory");
+		return dir === "/" ? `/${path.basename(ap)}` : `${dir}/${path.basename(ap)}`;
 	}
+	/** A located key, then through any final symlinks (to a target that may not exist yet): where a write lands. */
+	function followLinks(key, syscall) {
+		for (let hops = 0; state.files.get(key)?.kind === "symlink"; hops++) {
+			if (hops > 40) throw fsError("ELOOP", syscall, key, "too many symbolic links encountered");
+			key = locate(path.resolve(path.dirname(key), state.files.get(key).target), syscall);
+		}
+		return key;
+	}
+	const exists = (ap) => {
+		try {
+			resolve(ap, "access");
+			return true;
+		} catch {
+			return false;
+		}
+	};
 	function contents(_p, e) {
 		if (e.data === undefined) {
 			e.data = budgetedCopy(ops.op_kt_file(e.ref));
@@ -155,14 +178,12 @@ export function createFs(ops, state, path) {
 		if (typeof p === "number") return writeSync(p, data);
 		if (p === "/dev/stdout" || p === "/dev/stderr")
 			return state.write(p.endsWith("out") ? "stdout" : "stderr", bytesFrom(data, options));
-		let ap = abs(p);
-		const existing = state.files.get(ap);
-		if (existing?.kind === "symlink") [ap] = resolve(ap, "open");
-		parentDir(ap, "open");
+		const named = locate(abs(p), "open");
+		const flag = typeof options === "object" ? options?.flag : undefined;
+		if (flag === "wx" && state.files.has(named)) throw fsError("EEXIST", "open", named, "file already exists");
+		const ap = followLinks(named, "open");
 		const prev = state.files.get(ap);
 		if (prev?.kind === "dir") throw fsError("EISDIR", "open", ap, "illegal operation on a directory");
-		const flag = typeof options === "object" ? options?.flag : undefined;
-		if (flag === "wx" && prev) throw fsError("EEXIST", "open", ap, "file already exists");
 		const bytes = bytesFrom(data, options);
 		if (flag === "a" && prev) return appendFileSync(ap, bytes);
 		state.files.set(ap, {
@@ -174,8 +195,9 @@ export function createFs(ops, state, path) {
 		touched(ap);
 	}
 	function appendFileSync(p, data, options) {
-		const ap = abs(p);
+		const ap = followLinks(locate(abs(p), "open"), "open");
 		const prev = state.files.get(ap);
+		if (prev?.kind === "dir") throw fsError("EISDIR", "open", ap, "illegal operation on a directory");
 		const old = prev ? contents(ap, prev) : new Uint8Array(0);
 		const add = bytesFrom(data, options);
 		const joined = new Uint8Array(old.length + add.length);
@@ -202,26 +224,32 @@ export function createFs(ops, state, path) {
 	function mkdirSync(p, options) {
 		const ap = abs(p);
 		const recursive = typeof options === "object" && options?.recursive === true;
-		if (state.files.has(ap)) {
-			if (recursive && state.files.get(ap).kind === "dir") return undefined;
-			throw fsError("EEXIST", "mkdir", ap, "file already exists");
-		}
 		if (!recursive) {
-			parentDir(ap, "mkdir");
-			state.files.set(ap, { kind: "dir", mtimeMs: Date.now() });
-			touched(ap);
+			const key = locate(ap, "mkdir");
+			if (state.files.has(key)) throw fsError("EEXIST", "mkdir", ap, "file already exists");
+			state.files.set(key, { kind: "dir", mtimeMs: Date.now() });
+			touched(key);
 			return undefined;
 		}
+		// Each component through any symlink to a directory, so a directory made below one lands at its real path.
 		let first;
-		let cur = "";
-		for (const part of ap.split("/").filter(Boolean)) {
-			cur += `/${part}`;
-			const e = state.files.get(cur);
-			if (!e) {
-				state.files.set(cur, { kind: "dir", mtimeMs: Date.now() });
-				touched(cur);
-				first ??= cur;
-			} else if (e.kind !== "dir" && e.kind !== "symlink") throw fsError("ENOTDIR", "mkdir", ap, "not a directory");
+		let cur = "/";
+		const parts = ap.split("/").filter(Boolean);
+		for (let i = 0; i < parts.length; i++) {
+			const next = cur === "/" ? `/${parts[i]}` : `${cur}/${parts[i]}`;
+			if (!state.files.has(next)) {
+				state.files.set(next, { kind: "dir", mtimeMs: Date.now() });
+				touched(next);
+				first ??= next;
+				cur = next;
+				continue;
+			}
+			const [real, e] = resolve(next, "mkdir");
+			if (e.kind !== "dir")
+				throw i === parts.length - 1
+					? fsError("EEXIST", "mkdir", ap, "file already exists")
+					: fsError("ENOTDIR", "mkdir", ap, "not a directory");
+			cur = real;
 		}
 		return first;
 	}
@@ -234,7 +262,13 @@ export function createFs(ops, state, path) {
 			}
 	}
 	function rmSync(p, options) {
-		const ap = abs(p);
+		let ap;
+		try {
+			ap = locate(abs(p), "rm");
+		} catch (error) {
+			if (options?.force && error.code === "ENOENT") return;
+			throw error;
+		}
 		const e = state.files.get(ap);
 		if (!e) {
 			if (options?.force) return;
@@ -245,10 +279,9 @@ export function createFs(ops, state, path) {
 		remove(ap);
 	}
 	function renameSync(from, to) {
-		const a = abs(from);
-		const b = abs(to);
+		const a = locate(abs(from), "rename");
+		const b = locate(abs(to), "rename");
 		entry(a, "rename");
-		parentDir(b, "rename");
 		if (a === b) return;
 		const moved = [];
 		for (const k of state.files.keys()) if (k === a || k.startsWith(`${a}/`)) moved.push(k);
@@ -270,7 +303,7 @@ export function createFs(ops, state, path) {
 		const ap = abs(p);
 		const f = String(flags);
 		if (f.startsWith("w")) writeFileSync(ap, "", { flag: f.includes("x") ? "wx" : "w", mode });
-		else if (f.startsWith("a") && !state.files.has(ap)) writeFileSync(ap, "");
+		else if (f.startsWith("a") && !exists(ap)) writeFileSync(ap, "");
 		const [rp, e] = resolve(ap, "open");
 		if (e.kind === "dir" && f !== "r") throw fsError("EISDIR", "open", rp, "illegal operation on a directory");
 		const fd = nextFd++;
@@ -351,12 +384,7 @@ export function createFs(ops, state, path) {
 			COPYFILE_EXCL: 1,
 		},
 		existsSync(p) {
-			try {
-				resolve(abs(p), "access");
-				return true;
-			} catch {
-				return false;
-			}
+			return exists(abs(p));
 		},
 		accessSync(p) {
 			resolve(abs(p), "access");
@@ -368,14 +396,14 @@ export function createFs(ops, state, path) {
 		mkdirSync,
 		rmSync,
 		rmdirSync(p, options) {
-			const ap = abs(p);
+			const ap = locate(abs(p), "rmdir");
 			const e = entry(ap, "rmdir");
 			if (e.kind !== "dir") throw fsError("ENOTDIR", "rmdir", ap, "not a directory");
 			if (!options?.recursive && readdirSync(ap).length) throw fsError("ENOTEMPTY", "rmdir", ap, "directory not empty");
 			remove(ap);
 		},
 		unlinkSync(p) {
-			const ap = abs(p);
+			const ap = locate(abs(p), "unlink");
 			const e = entry(ap, "unlink");
 			if (e.kind === "dir") throw fsError("EISDIR", "unlink", ap, "illegal operation on a directory");
 			remove(ap);
@@ -405,8 +433,7 @@ export function createFs(ops, state, path) {
 		lstatSync(p, options) {
 			try {
 				const ap = abs(p);
-				resolve(path.dirname(ap), "lstat");
-				return new Stats(ap === "/" ? { kind: "dir" } : entry(ap, "lstat"));
+				return new Stats(ap === "/" ? { kind: "dir" } : entry(locate(ap, "lstat"), "lstat"));
 			} catch (error) {
 				if (options?.throwIfNoEntry === false && error.code === "ENOENT") return undefined;
 				throw error;
@@ -425,14 +452,13 @@ export function createFs(ops, state, path) {
 			return resolve(abs(p), "realpath")[0];
 		},
 		symlinkSync(target, p) {
-			const ap = abs(p);
-			parentDir(ap, "symlink");
+			const ap = locate(abs(p), "symlink");
 			if (state.files.has(ap)) throw fsError("EEXIST", "symlink", ap, "file already exists");
 			state.files.set(ap, { kind: "symlink", target: toPath(target) });
 			touched(ap);
 		},
 		readlinkSync(p) {
-			const ap = abs(p);
+			const ap = locate(abs(p), "readlink");
 			const e = entry(ap, "readlink");
 			if (e.kind !== "symlink") throw fsError("EINVAL", "readlink", ap, "invalid argument");
 			return e.target;

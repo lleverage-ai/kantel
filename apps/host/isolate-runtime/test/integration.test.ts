@@ -548,6 +548,49 @@ console.log(d.a[1], d.b, w.default.written);`,
 		expect(bad.exitCode).not.toBe(0);
 	});
 
+	it("node fs: writes, renames and removals below a directory symlink use the real path, in the run and after", async () => {
+		const manifest = {
+			"real/a": await c.fileEntry("old"),
+			"real/gone": await c.fileEntry("bye"),
+			alias: { kind: "symlink", target: "real" },
+		};
+		const r = await c.exec("pr", "node s.js", {
+			...manifest,
+			"s.js": await c.fileEntry(
+				`const fs = require("fs");
+fs.writeFileSync("alias/a", "new");
+fs.writeFileSync("alias/b", "made");
+fs.appendFileSync("alias/b", "+");
+fs.mkdirSync("alias/sub/deep", { recursive: true });
+fs.writeFileSync("alias/sub/deep/c", "c");
+fs.renameSync("alias/b", "alias/b2");
+fs.unlinkSync("alias/gone");
+fs.symlinkSync("a", "alias/la");
+fs.unlinkSync("alias/la");
+fs.symlinkSync("real/a", "link");
+fs.unlinkSync("link");
+console.log(JSON.stringify([
+	fs.readFileSync("alias/a", "utf8"), fs.readFileSync("real/a", "utf8"), fs.readFileSync("real/b2", "utf8"),
+	fs.existsSync("real/b"), fs.existsSync("real/gone"), fs.existsSync("real/la"), fs.existsSync("link"),
+	fs.lstatSync("alias").isSymbolicLink(), fs.readFileSync("real/sub/deep/c", "utf8"), fs.readdirSync("real").join(","),
+]));`,
+			),
+		});
+		expect(r.stderr).toBe("");
+		expect(JSON.parse(r.stdout)).toEqual(["new", "new", "made+", false, false, false, false, true, "c", "a,b2,sub"]);
+		const m = r.manifest as Record<string, { kind: string; size?: number; target?: string }>;
+		expect(m.alias).toEqual({ kind: "symlink", target: "real" });
+		expect(m["real/a"].size).toBe(3);
+		expect(m["real/b2"].size).toBe(5);
+		expect(m["real/sub/deep/c"].kind).toBe("file");
+		for (const k of Object.keys(m)) expect(k.startsWith("alias/")).toBe(false);
+		expect(m["real/gone"]).toBeUndefined();
+		expect(m.link).toBeUndefined();
+		// The next command, from that manifest.
+		const next = await c.exec("pr", "cat real/a alias/a real/b2 real/sub/deep/c", m);
+		expect(next.stdout).toBe("newnewmade+c");
+	});
+
 });
 
 // memoryMiB bounds the V8 heap, ArrayBuffers and wasm memory together: holding ~60% of it in one and then taking
