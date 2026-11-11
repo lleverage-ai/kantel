@@ -10,6 +10,7 @@ import {
 	DEPLOY_VARIABLES,
 	deployConfig,
 	deployValues,
+	EXPERIMENTAL_SWITCHES,
 	instanceTypeProblem,
 	LOCATION_HINTS,
 	missingVariables,
@@ -288,15 +289,18 @@ describe("deploy config", () => {
 		expect(releasesUrl("off")).toBeUndefined();
 	});
 
-	it("passes the templates switch on as it is, refusing anything but experimental or off", () => {
+	it.each(EXPERIMENTAL_SWITCHES)("passes %s on as it is, refusing anything but experimental or off", (name) => {
 		const vars = (env: Record<string, string>) =>
 			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;
-		expect(vars({}).KANTEL_TEMPLATES).toBe("");
-		expect(vars({ KANTEL_TEMPLATES: "experimental" }).KANTEL_TEMPLATES).toBe("experimental");
-		expect(vars({ KANTEL_TEMPLATES: "off" }).KANTEL_TEMPLATES).toBe("off");
-		expect(() => deployValues({ ...configured, KANTEL_TEMPLATES: "on" }, "deploy")).toThrow(
-			"KANTEL_TEMPLATES must be experimental or off",
+		expect(vars({})[name]).toBe("");
+		expect(vars({ [name]: "experimental" })[name]).toBe("experimental");
+		expect(vars({ [name]: "off" })[name]).toBe("off");
+		expect(() => deployValues({ ...configured, [name]: "on" }, "deploy")).toThrow(
+			`${name} must be experimental or off`,
 		);
+	});
+
+	it("reads the templates switch in the Worker", () => {
 		const runtime = (value: string) =>
 			gatewayConfig({
 				KANTEL_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
