@@ -342,14 +342,7 @@ fn allow_list(sockets: Sockets) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
     // ioctl: is-this-a-terminal, non-blocking and close-on-exec. Nothing else.
     rules.insert(
         libc::SYS_ioctl,
-        one_of(
-            1,
-            &[
-                u64::from(libc::TCGETS),
-                u64::from(libc::FIONBIO),
-                u64::from(libc::FIOCLEX),
-            ],
-        )?,
+        one_of(1, &[libc::TCGETS, libc::FIONBIO, libc::FIOCLEX])?,
     );
     // prctl: naming threads and anonymous mappings, and reading the dumpable flag and thread names.
     rules.insert(
