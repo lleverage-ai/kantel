@@ -126,16 +126,17 @@ jobs:
     # (kantel-isolate-cargo) and the build, with V8's static library (about 100 MB a target, downloaded by rusty_v8's
     # build script), a directory in the runner's home, both kept between jobs.
     #
-    # V8: the KANTEL_RUSTY_V8_ARCHIVE or KANTEL_RUSTY_V8_MIRROR repository variable, when set, picks the V8 it links
-    # instead of rusty_v8's prebuilt one (a V8 built with its sandbox on, say); the script passes either to cargo as
-    # RUSTY_V8_ARCHIVE or RUSTY_V8_MIRROR.
+    # V8: the KANTEL_V8_SANDBOX repository variable ("1") links the sandboxed V8 build the crate pins
+    # (v8/fetch-v8-sandbox.sh), and KANTEL_RUSTY_V8_ARCHIVE with KANTEL_RUSTY_V8_ARCHIVE_SHA256 any other; the script
+    # checks either against its SHA-256 before cargo sees it.
     name: Rust check and test (apps/host/isolate-runtime)
     runs-on: [self-hosted, harbour]
     timeout-minutes: 45
     env:
       KANTEL_ISOLATE_TARGET: ${{ github.workspace }}/../.kantel-isolate-target
+      KANTEL_V8_SANDBOX: ${{ vars.KANTEL_V8_SANDBOX }}
       RUSTY_V8_ARCHIVE: ${{ vars.KANTEL_RUSTY_V8_ARCHIVE }}
-      RUSTY_V8_MIRROR: ${{ vars.KANTEL_RUSTY_V8_MIRROR }}
+      RUSTY_V8_ARCHIVE_SHA256: ${{ vars.KANTEL_RUSTY_V8_ARCHIVE_SHA256 }}
     steps:
       - uses: actions/checkout@v4
 
