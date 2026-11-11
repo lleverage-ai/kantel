@@ -264,6 +264,16 @@ const FeatureExitStamps = "exit-stamps"
 // with its next boot.
 const FeatureSandboxEnv = "sandbox-env"
 
+// FeatureIsolateUpgrade (HOST_FEATURES.isolateUpgrade): the host takes sandbox.upgrade (CreateParams, Tier "microvm"):
+// it makes a microVM with an isolate's sandbox ID, as sandbox.create would make it, puts the isolate's /workspace files
+// in it at UpgradeWorkspace (from its own blob store, never through Kantel) with /workspace a link to them, and lets the
+// isolate go only once the microVM runs with them. A failure leaves the isolate as it was. Answered with the microVM's
+// SandboxInfo and Moved. Reported by a host that runs both tiers.
+const FeatureIsolateUpgrade = "isolate-upgrade"
+
+// UpgradeWorkspace is where an upgraded isolate's /workspace files are in its microVM.
+const UpgradeWorkspace = "/home/user/workspace"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -439,6 +449,8 @@ type SandboxInfo struct {
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner).
 	Owner string `json:"owner,omitempty"`
+	// Moved, in sandbox.upgrade's answer: what of the isolate went into the microVM.
+	Moved *Moved `json:"moved,omitempty"`
 	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
 	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
 	Base string `json:"base,omitempty"`
@@ -1023,6 +1035,24 @@ type ExecResult struct {
 	TimedOut   bool   `json:"timedOut,omitempty"`
 	DurationMs int64  `json:"durationMs"`
 	Pid        int    `json:"pid,omitempty"`
+	// NeedsMicrovm, from an isolate: the command failed because it ran something an isolate doesn't have (its runtime's
+	// say, or the host's reading of the shell's answer for a runtime that doesn't say).
+	NeedsMicrovm *NeedsMicrovm `json:"needsMicrovm,omitempty"`
+	// Terminated, from an isolate: its runtime stopped the command, for "cpu", "memory" or "wall" time.
+	Terminated string `json:"terminated,omitempty"`
+}
+
+// NeedsMicrovm is what an isolate's command needed a microVM for: the program, and why in one sentence.
+type NeedsMicrovm struct {
+	Command string `json:"command"`
+	Reason  string `json:"reason"`
+}
+
+// Moved is what an upgrade (sandbox.upgrade) moved into the microVM: its entries (files, links and directories) and
+// its files' bytes.
+type Moved struct {
+	Files int   `json:"files"`
+	Bytes int64 `json:"bytes"`
 }
 
 // FileParams is sandbox.files.read/write/delete/list. Data is base64. A read with a Length reads at most that many
@@ -1236,14 +1266,16 @@ const (
 // Methods.
 const (
 	MethodCreate = "sandbox.create"
-	MethodStop   = "sandbox.stop"
-	MethodResume = "sandbox.resume"
-	MethodStart  = "sandbox.start"
-	MethodFork   = "sandbox.fork"
-	MethodDelete = "sandbox.delete"
-	MethodGet    = "sandbox.get"
-	MethodList   = "sandbox.list"
-	MethodExec   = "sandbox.exec"
+	// MethodUpgrade makes an isolate a microVM with the same ID (FeatureIsolateUpgrade).
+	MethodUpgrade = "sandbox.upgrade"
+	MethodStop    = "sandbox.stop"
+	MethodResume  = "sandbox.resume"
+	MethodStart   = "sandbox.start"
+	MethodFork    = "sandbox.fork"
+	MethodDelete  = "sandbox.delete"
+	MethodGet     = "sandbox.get"
+	MethodList    = "sandbox.list"
+	MethodExec    = "sandbox.exec"
 	// MethodExecGet (Kantel → host, ExecRef; FeatureExecControl) answers a command's ExecStatus by its CommandID.
 	MethodExecGet = "sandbox.exec.get"
 	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its

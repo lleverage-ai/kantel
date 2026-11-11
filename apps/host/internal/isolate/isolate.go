@@ -1137,6 +1137,9 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 		Stderr   string   `json:"stderr"`
 		Manifest Manifest `json:"manifest"`
 		Changed  []string `json:"changed"`
+		// From a runtime that says (the deno_core one): what the command needed a microVM for, and why it stopped it.
+		NeedsMicrovm *proto.NeedsMicrovm `json:"needsMicrovm,omitempty"`
+		Terminated   string              `json:"terminated,omitempty"`
 	}
 	cwd := p.Cwd
 	if strings.HasPrefix(cwd, "/workspace") {
@@ -1162,7 +1165,16 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	if onOutput != nil {
 		onOutput(res.Stdout, res.Stderr)
 	}
-	return proto.ExecResult{ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr, DurationMs: time.Since(started).Milliseconds()}, nil
+	out := proto.ExecResult{ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr, DurationMs: time.Since(started).Milliseconds(), NeedsMicrovm: res.NeedsMicrovm}
+	if out.NeedsMicrovm == nil {
+		// A runtime that doesn't say (workerd's): read from its shell's answer.
+		out.NeedsMicrovm = needsMicrovm(res.ExitCode, res.Stderr)
+	}
+	switch res.Terminated {
+	case "cpu", "memory", "wall":
+		out.Terminated = res.Terminated
+	}
+	return out, nil
 }
 
 // --- files ----------------------------------------------------------------------------------------------------------

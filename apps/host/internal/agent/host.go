@@ -102,6 +102,8 @@ type Host struct {
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
 	bySlot map[int]egress.Rules
+	// held are the sandboxes being upgraded, whose events wait for the upgrade's end (holdEvents).
+	held map[string]int
 	// events go to the control plane while connected.
 	events func(proto.Event)
 	// link makes calls to the control plane while connected.
@@ -305,6 +307,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if _, ok := h.tiers[microvm.Tier]; ok {
 		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps)
 	}
+	if h.upgradesIsolates() {
+		features = append(features, proto.FeatureIsolateUpgrade)
+	}
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(SnapshotMeasurer); ok {
 			features = append(features, proto.FeatureSnapshotSizes)
@@ -430,7 +435,12 @@ func (h *Host) Close() {
 func (h *Host) sandboxEvent(info proto.SandboxInfo) {
 	h.mu.Lock()
 	fn := h.events
+	held := h.held[info.ID] > 0
 	h.mu.Unlock()
+	if held {
+		// Being upgraded: its microVM's create and its isolate's going are told as one, once it is done (upgrade.go).
+		return
+	}
 	if fn != nil {
 		fn(proto.Event{Kind: "sandbox", Sandbox: &info})
 	}
@@ -620,6 +630,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return info, nil
+	case proto.MethodUpgrade:
+		p, err := decode[proto.CreateParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.upgrade(ctx, p)
 	case proto.MethodStop:
 		p, err := decode[proto.StopParams](params)
 		if err != nil {
