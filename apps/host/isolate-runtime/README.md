@@ -134,6 +134,11 @@ hardening (seccomp, landlock, a dedicated uid and cgroup), which this crate deli
 
 ## Known gaps
 
+- **The shell doesn't follow a symlink whose target passes through another symlink** (`nested -> alias/sub` with
+  `alias -> real`): just-bash 3.6.0's in-memory filesystem looks a link's target up as one path rather than walking
+  it, so `cat nested/f` answers "No such file or directory". node's `fs` resolves such links (it walks every
+  component of a target, as realpath does); python wasn't checked. A link to a real path, the common case, works.
+
 - **The memory limit is checked at GCs and allocations, not continuously.** The heap figure is the last GC's, so
   between GCs the heap can grow past memoryMiB minus the buffers until the next GC (V8 collects often while the heap
   grows) or, at worst, the heap limit (memoryMiB) — the backstop. Buffers count until V8 frees them, so the epilogue

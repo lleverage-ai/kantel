@@ -559,6 +559,8 @@ describe("a command killed while autoUpgrade runs it again", () => {
 			const rerun = commands.find((command) => command.rerunOf !== undefined);
 			expect(first).toMatchObject({ state: "killed" });
 			expect(rerun).toMatchObject({ state: "killed", rerunOf: first?.id });
+			// The killed original still names the run again it had, attached or detached.
+			expect(first?.rerunAs).toBe(rerun?.id);
 			if (!detached) expect(answered).toMatchObject({ id: rerun?.id, state: "killed" });
 		}
 	});

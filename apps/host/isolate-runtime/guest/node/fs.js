@@ -28,22 +28,34 @@ export function createFs(ops, state, path) {
 		if (!e) throw ENOENT(syscall, p);
 		return e;
 	}
-	/** The entry a path names, following symlinks (in every component). */
+	/**
+	 * The entry a path names, following symlinks in every component, as realpath does: a symlink's target is walked
+	 * component by component too (from the link's directory, or from / when absolute), so a target that itself passes
+	 * through a directory symlink resolves. One hop limit covers the whole walk. A final symlink is followed only with
+	 * followLast.
+	 */
 	function resolve(p, syscall, followLast = true) {
-		const parts = p.split("/").filter(Boolean);
+		let pending = p.split("/").filter(Boolean);
 		let cur = "/";
-		for (let i = 0; i < parts.length; i++) {
-			const next = cur === "/" ? `/${parts[i]}` : `${cur}/${parts[i]}`;
-			let e = state.files.get(next);
-			let target = next;
-			for (let hops = 0; e?.kind === "symlink" && (followLast || i < parts.length - 1); hops++) {
-				if (hops > 40) throw fsError("ELOOP", syscall, p, "too many symbolic links encountered");
-				target = path.resolve(path.dirname(target), e.target);
-				e = state.files.get(target);
+		let hops = 0;
+		while (pending.length > 0) {
+			const name = pending.shift();
+			if (name === ".") continue;
+			if (name === "..") {
+				cur = path.dirname(cur);
+				continue;
 			}
+			const next = cur === "/" ? `/${name}` : `${cur}/${name}`;
+			const e = state.files.get(next);
 			if (!e) throw ENOENT(syscall, p);
-			if (i < parts.length - 1 && e.kind !== "dir") throw fsError("ENOTDIR", syscall, p, "not a directory");
-			cur = target;
+			if (e.kind === "symlink" && (followLast || pending.length > 0)) {
+				if (++hops > 40) throw fsError("ELOOP", syscall, p, "too many symbolic links encountered");
+				pending = [...e.target.split("/").filter(Boolean), ...pending];
+				if (e.target.startsWith("/")) cur = "/";
+				continue;
+			}
+			if (pending.length > 0 && e.kind !== "dir") throw fsError("ENOTDIR", syscall, p, "not a directory");
+			cur = next;
 		}
 		return [cur, state.files.get(cur) ?? { kind: "dir" }];
 	}

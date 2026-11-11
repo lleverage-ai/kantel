@@ -802,6 +802,58 @@ console.log(JSON.stringify([
 		expect(next.stdout).toBe("newnewmade+c");
 	});
 
+	it("node fs: symlinks whose targets pass through another directory symlink resolve, in the run and after", async () => {
+		// alias -> real; nested -> alias/sub (a directory link through a directory link); flink -> alias/a (a final file
+		// link to a file beneath a directory link).
+		const manifest = {
+			"real/a": await c.fileEntry("old"),
+			"real/sub/x": await c.fileEntry("x"),
+			alias: { kind: "symlink", target: "real" },
+			nested: { kind: "symlink", target: "alias/sub" },
+			flink: { kind: "symlink", target: "alias/a" },
+		};
+		const r = await c.exec("pr", "node s.js", {
+			...manifest,
+			"s.js": await c.fileEntry(
+				`const fs = require("fs");
+const out = [fs.readFileSync("nested/x", "utf8"), fs.readFileSync("flink", "utf8"), fs.statSync("flink").size];
+fs.writeFileSync("nested/y", "y");
+fs.mkdirSync("nested/d/e", { recursive: true });
+fs.writeFileSync("nested/d/e/f", "f");
+fs.renameSync("nested/y", "nested/y2");
+fs.unlinkSync("nested/x");
+fs.writeFileSync("flink", "new");
+const fd = fs.openSync("flink", "r");
+fs.closeSync(fd);
+out.push(
+	fs.readFileSync("flink", "utf8"), fs.readFileSync("real/a", "utf8"), fs.statSync("flink").size,
+	fs.readFileSync("real/sub/y2", "utf8"), fs.readFileSync("real/sub/d/e/f", "utf8"),
+	fs.existsSync("real/sub/x"), fs.readdirSync("nested").sort().join(","),
+	fs.lstatSync("flink").isSymbolicLink(), fs.lstatSync("nested").isSymbolicLink(),
+);
+console.log(JSON.stringify(out));`,
+			),
+		});
+		expect(r.stderr).toBe("");
+		expect(JSON.parse(r.stdout)).toEqual(["x", "old", 3, "new", "new", 3, "y", "f", false, "d,y2", true, true]);
+		const m = r.manifest as Record<string, { kind: string; size?: number; target?: string }>;
+		expect(m.nested).toEqual({ kind: "symlink", target: "alias/sub" });
+		expect(m.flink).toEqual({ kind: "symlink", target: "alias/a" });
+		expect(m["real/a"].size).toBe(3);
+		expect(m["real/sub/y2"].kind).toBe("file");
+		expect(m["real/sub/d/e/f"].kind).toBe("file");
+		expect(m["real/sub/x"]).toBeUndefined();
+		for (const k of Object.keys(m)) expect(k.startsWith("nested/") || k.startsWith("alias/")).toBe(false);
+		// The next command, from that manifest, through node's fs (just-bash's own filesystem, which the shell's commands
+		// use, doesn't follow a link whose target passes through another link: a known gap in the README).
+		const next = await c.exec(
+			"pr",
+			`node -e 'const fs=require("fs");process.stdout.write(["real/a","flink","real/sub/y2","nested/d/e/f"].map((p)=>fs.readFileSync(p,"utf8")).join(""))'`,
+			m,
+		);
+		expect(next.stdout).toBe("newnewyf");
+	});
+
 	it("python: replacing a symlink or a directory with a file, and a file with a directory, persists as made", async () => {
 		const manifest = {
 			"target.txt": await c.fileEntry("T"),

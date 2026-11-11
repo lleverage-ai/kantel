@@ -9663,6 +9663,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					endedAt: at,
 					durationMs: at - latest.startedAt,
 				}));
+				// The kill found no run again to link (it wasn't recorded yet): link it now, leaving the original as it ended,
+				// so the killed command still says which run again it had.
+				if (original !== undefined) {
+					await store.commands.update(original.id, (latest) =>
+						latest.rerunAs === undefined && latest.sandboxId === command.sandboxId
+							? { ...latest, rerunAs: command.id }
+							: undefined,
+					);
+				}
 				return unrun ?? (await store.commands.get(command.id)) ?? command;
 			}
 		}
