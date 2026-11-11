@@ -15,9 +15,11 @@
 #
 #   apps/host/isolate-runtime/v8/build-v8-sandbox.sh <out-dir> [work-dir]
 #
-# env: JOBS (parallel compile jobs, default 16), KEEP_WORK=1 keeps the work dir (its target/ makes a rebuild quick).
+# env: JOBS (parallel compile jobs, default 16), KEEP_WORK=1 keeps the work dir (its target/ makes a rebuild quick),
+# TARGET (x86_64-unknown-linux-gnu, the default, or aarch64-unknown-linux-gnu, cross-compiled on this x86_64 host
+# with Chromium's arm64 sysroot for V8 and Debian's aarch64 glibc headers for bindgen).
 # Runs in Docker (the builder image below, pinned by digest), so the host needs only Docker: about 17 minutes on
-# 20 cores and 5 GB of disk.
+# 20 cores and 5 GB of disk (the aarch64 cross build about 36 minutes at 16 jobs).
 # The source is rusty_v8's git tag with its submodules, checked against the pinned commit (the crates.io package
 # can't build from source: it leaves out ICU's data file). The build downloads Chromium's clang, gn, ninja and Rust
 # toolchain, as rusty_v8's build.rs always does with V8_FROM_SOURCE; bindgen uses LLVM 19's libclang from
@@ -40,10 +42,14 @@ mkdir -p "$out" "$work"
 out=$(cd "$out" && pwd)
 work=$(cd "$work" && pwd)
 
-case $(uname -m) in
-x86_64) target=x86_64-unknown-linux-gnu ;;
-aarch64 | arm64) target=aarch64-unknown-linux-gnu ;;
-*) echo "build-v8-sandbox: unsupported machine $(uname -m)" >&2 && exit 1 ;;
+# The build runs on x86_64 only: rusty_v8's build.rs downloads Chromium's clang, and Chromium publishes no Linux arm64
+# clang. aarch64 is cross-compiled, as rusty_v8's own CI does.
+[ "$(uname -m)" = x86_64 ] || { echo "build-v8-sandbox: run this on x86_64 (it cross-compiles aarch64)" >&2 && exit 1; }
+host=x86_64-unknown-linux-gnu
+target=${TARGET:-$host}
+case $target in
+x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) ;;
+*) echo "build-v8-sandbox: unsupported target $target" >&2 && exit 1 ;;
 esac
 
 echo "build-v8-sandbox: v8 $V8_CRATE_VERSION ($RUSTY_V8_COMMIT) for $target, $jobs jobs, work dir $work"
@@ -51,7 +57,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 docker run --rm \
 	-v "$work:/work" -v "$out:/out" -v "$here/patches:/patches:ro" \
 	-e V8_CRATE_VERSION="$V8_CRATE_VERSION" -e RUSTY_V8_COMMIT="$RUSTY_V8_COMMIT" -e LLVM_VERSION="$LLVM_VERSION" \
-	-e TARGET="$target" -e JOBS="$jobs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+	-e TARGET="$target" -e HOST_TARGET="$host" -e JOBS="$jobs" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
 	"$BUILDER_IMAGE" bash -euo pipefail -c '
 trap "chown -R $HOST_UID:$HOST_GID /work /out" EXIT
 apt-get update -qq
@@ -60,6 +66,15 @@ curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor > /etc/apt
 echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-$LLVM_VERSION main" > /etc/apt/sources.list.d/llvm.list
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends "libclang-$LLVM_VERSION-dev" "clang-$LLVM_VERSION" >/dev/null
+cargo_target=()
+if [ "$TARGET" != "$HOST_TARGET" ]; then
+	# A cross build, as rusty_v8'"'"'s CI does it: the Rust target, and the aarch64 GCC cross toolchain, whose glibc
+	# headers clang finds for bindgen (it parses V8'"'"'s headers for $TARGET). V8 itself builds against Chromium'"'"'s
+	# debian_sid sysroots, which rusty_v8'"'"'s build.rs downloads.
+	rustup target add "$TARGET"
+	apt-get install -y -qq --no-install-recommends gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross >/dev/null
+	cargo_target=(--target "$TARGET")
+fi
 
 git config --global core.symlinks true
 git config --global --add safe.directory "*"
@@ -75,10 +90,11 @@ git apply "/patches/rusty_v8-$V8_CRATE_VERSION-budget-allocator.patch"
 # Its rust-toolchain.toml asks rustup for every target rusty_v8 ships (Apple, Windows, Android); the image has 1.91.
 git checkout -q -- rust-toolchain.toml && mv rust-toolchain.toml /work/rust-toolchain.toml.upstream
 export V8_FROM_SOURCE=1 LIBCLANG_PATH=/usr/lib/llvm-$LLVM_VERSION/lib CARGO_TARGET_DIR=/work/target CARGO_HOME=/work/cargo-home
-cargo build --release --locked --lib -j "$JOBS" --features v8_enable_sandbox,simdutf
+cargo build --release --locked --lib -j "$JOBS" --features v8_enable_sandbox,simdutf "${cargo_target[@]}"
 mv /work/rust-toolchain.toml.upstream rust-toolchain.toml
 
 gn_out=/work/target/release/gn_out
+[ "$TARGET" = "$HOST_TARGET" ] || gn_out=/work/target/$TARGET/release/gn_out
 grep -Eq "v8_enable_sandbox ?= ?true" "$gn_out/args.gn"
 grep -Eq "v8_enable_pointer_compression ?= ?true" "$gn_out/args.gn"
 grep -Eq "rusty_v8_enable_simdutf ?= ?true" "$gn_out/args.gn"

@@ -155,6 +155,12 @@ interface KantelOptions {
 	readonly configDir?: string;
 }
 
+/** A run of ssh, which the tests don't start: its arguments and the environment added. */
+interface SshRun {
+	readonly args: readonly string[];
+	readonly env?: Readonly<Record<string, string>>;
+}
+
 /** The `self` every run gets unless it says otherwise: Node and the installed CLI's link. */
 const SELF = ["/usr/local/bin/node", "/home/me/.local/bin/kantel"];
 
@@ -164,6 +170,7 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 	const stderr = capture();
 	const opened: string[] = [];
 	const slept: number[] = [];
+	const ssh: SshRun[] = [];
 	const code = await run(argv, {
 		fetch: api.fetch,
 		env: options.env ?? ENV,
@@ -178,8 +185,12 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 		sleep: async (ms) => {
 			slept.push(ms);
 		},
+		runSsh: async (args, env) => {
+			ssh.push({ args, ...(env === undefined ? {} : { env }) });
+			return 0;
+		},
 	});
-	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls, keys: api.keys, opened, slept };
+	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls, keys: api.keys, opened, slept, ssh };
 }
 
 describe("parsing", () => {
@@ -2964,5 +2975,319 @@ describe("upgrading an isolate", () => {
 		expect(run.stdout).toBe("On branch main\n");
 		expect(run.stderr).toContain("it needed a microVM (git); sbx_test1 is one now, and it runs again there as cmd_2");
 		expect(run.stderr).not.toContain("kantel upgrade");
+	});
+});
+
+describe("ssh to an isolate", () => {
+	/** What a line the fake isolate runs answers. */
+	interface Answer {
+		readonly stdout?: string;
+		readonly stderr?: string;
+		readonly exitCode?: number;
+		readonly needsMicrovm?: Command["needsMicrovm"];
+		/** The sandbox upgraded itself and ran it again, answering this. */
+		readonly rerun?: Answer;
+	}
+
+	/**
+	 * A fake isolate behind the commands API: it reads the pseudo-shell's script (the directory and variables it sets,
+	 * the line, and the trailer's marker), runs `cd`, `export`, `pwd`, `echo` and `false` itself, asks `answer` for
+	 * anything else, and answers with the trailer as a shell would print it.
+	 */
+	function fakeIsolate(answer: (line: string) => Answer | undefined = () => undefined, sandbox: Partial<Sandbox> = {}) {
+		const lines: string[] = [];
+		const scripts: string[] = [];
+		const commands = new Map<string, Command>();
+		const baseline = { HOME: "/workspace", PATH: "/usr/bin" };
+		const record = (marker: string, cwd: string, vars: Record<string, string>, line: string, got: Answer): Command => {
+			const id = `cmd_${commands.size + 1}`;
+			const exitCode = got.exitCode ?? 0;
+			const exported = Object.entries(vars)
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([name, value]) => `declare -x ${name}="${value}"\n`)
+				.join("");
+			const stdout = `${got.stdout ?? ""}${marker}${exitCode}\n${cwd}\n${exported}`;
+			const made = command({
+				id,
+				command: line,
+				exitCode,
+				stdout,
+				stderr: got.stderr ?? "",
+				...(got.needsMicrovm === undefined ? {} : { needsMicrovm: got.needsMicrovm }),
+			});
+			commands.set(id, made);
+			if (got.rerun !== undefined) {
+				const rerun = record(marker, cwd, vars, line, got.rerun);
+				commands.set(rerun.id, { ...rerun, rerunOf: id });
+				commands.set(id, { ...made, rerunAs: rerun.id });
+			}
+			return commands.get(id) as Command;
+		};
+		const routes: Record<string, Route> = {
+			"POST /v1/sandboxes/sbx_test1/ssh": () =>
+				kantelError(501, "not_supported", "SSH needs a microVM; this is an isolate"),
+			"GET /v1/sandboxes/sbx_test1": () => ({ ...SANDBOX, ...sandbox }),
+			"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+				const script = (call.body as { command: string }).command;
+				scripts.push(script);
+				const parts = script.split("\n");
+				const trailer = parts.pop() ?? "";
+				const marker = /printf '%s%s\\n' '([^']+)'/.exec(trailer)?.[1];
+				if (marker === undefined) return record("", "", {}, script, answer(script) ?? {});
+				let cwd = "/workspace";
+				const vars: Record<string, string> = { ...baseline };
+				while (parts.length > 1) {
+					const part = parts.shift() ?? "";
+					const cd = /^cd '(.*)'$/.exec(part);
+					const set = /^export (\w+)='(.*)'$/.exec(part);
+					if (cd?.[1] !== undefined) cwd = cd[1];
+					else if (set?.[1] !== undefined) vars[set[1]] = set[2] ?? "";
+				}
+				const line = parts[0] ?? "";
+				lines.push(line);
+				let got = answer(line);
+				const cdTo = /^cd (\S+)$/.exec(line)?.[1];
+				const exported = /^export (\w+)=(\S*)$/.exec(line);
+				if (got !== undefined) {
+					// Answered by the test.
+				} else if (cdTo !== undefined) {
+					cwd = cdTo.startsWith("/") ? cdTo : `${cwd}/${cdTo}`;
+					got = {};
+				} else if (exported?.[1] !== undefined) {
+					vars[exported[1]] = exported[2] ?? "";
+					got = {};
+				} else if (line === "pwd") got = { stdout: `${cwd}\n` };
+				else if (line.startsWith("echo ")) {
+					got = { stdout: `${line.slice(5).replace(/\$(\w+)/g, (_, name: string) => vars[name] ?? "")}\n` };
+				} else if (line === "false") got = { exitCode: 1 };
+				else got = {};
+				return record(marker, cwd, vars, line, got);
+			},
+		};
+		for (let n = 1; n <= 20; n++) {
+			routes[`GET /v1/sandboxes/sbx_test1/commands/cmd_${n}`] = () => commands.get(`cmd_${n}`);
+		}
+		return { routes, lines, scripts };
+	}
+
+	const ACCESS = {
+		host: "ssh.kantel.test",
+		port: 2222,
+		user: "sbx_test1",
+		command: "ssh -p 2222 sbx_test1@ssh.kantel.test",
+		expiresAt: Date.now() + 600_000,
+	};
+
+	/** SSH that an isolate refuses until it has been upgraded. */
+	function sshAfterUpgrade(routes: Record<string, Route>): Record<string, Route> {
+		let upgraded = false;
+		return {
+			...routes,
+			"POST /v1/sandboxes/sbx_test1/upgrade": () => {
+				upgraded = true;
+				return { ...SANDBOX, type: "microvm" };
+			},
+			"POST /v1/sandboxes/sbx_test1/ssh": (call: Call) =>
+				upgraded ? ACCESS : (routes["POST /v1/sandboxes/sbx_test1/ssh"] as Route)(call),
+		};
+	}
+
+	const NEEDS_GIT = { command: "git", reason: "An isolate has no git; a microVM does." };
+
+	it("runs piped lines in order, keeping the directory and exported variables, and exits with the last status", async () => {
+		const isolate = fakeIsolate();
+		const run = await kantel(["ssh", "sbx_test1"], {
+			routes: isolate.routes,
+			stdin: input("cd app\nexport GREETING=hi\npwd\necho $GREETING\nfalse\n"),
+		});
+		expect(run.code).toBe(1);
+		expect(run.stdout).toBe("/workspace/app\nhi\n");
+		expect(run.stderr).toBe("");
+		// The first runs nothing: where the shell starts, and its own variables.
+		expect(isolate.lines).toEqual([":", "cd app", "export GREETING=hi", "pwd", "echo $GREETING", "false"]);
+		expect(isolate.scripts[4]?.split("\n").slice(0, 3)).toEqual([
+			"cd '/workspace/app'",
+			"export GREETING='hi'",
+			"echo $GREETING",
+		]);
+		expect(run.ssh).toEqual([]);
+	});
+
+	it("says what went wrong with a line, with how to resume a stopped sandbox, and goes on", async () => {
+		const isolate = fakeIsolate();
+		let posts = 0;
+		const run = await kantel(["ssh", "sbx_test1"], {
+			routes: {
+				...isolate.routes,
+				"POST /v1/sandboxes/sbx_test1/commands": (call) =>
+					++posts === 3
+						? json(
+								{
+									error: {
+										code: "conflict",
+										message: "The sandbox is stopped (auto-stop); resume it first",
+										details: {
+											code: "sandbox_stopped",
+											sandboxId: "sbx_test1",
+											state: "stopped",
+											hint: "Resume it with kantel resume sbx_test1",
+										},
+									},
+								},
+								409,
+							)
+						: (isolate.routes["POST /v1/sandboxes/sbx_test1/commands"] as Route)(call),
+			},
+			stdin: input("echo one\necho two\necho three"),
+		});
+		expect(run.stdout).toBe("one\nthree\n");
+		expect(run.stderr).toContain("kantel: conflict: The sandbox is stopped (auto-stop); resume it first\n");
+		expect(run.stderr).toContain("Resume it with: kantel resume sbx_test1\n");
+		expect(run.code).toBe(0);
+	});
+
+	it("says a stopped isolate is stopped, and how to resume it", async () => {
+		const isolate = fakeIsolate(undefined, { state: "stopped" });
+		const run = await kantel(["ssh", "sbx_test1"], { routes: isolate.routes, stdin: input("ls\n") });
+		expect(run.code).toBe(1);
+		expect(run.stderr).toBe(
+			"kantel: brave-otter (sbx_test1) is stopped. Resume it with kantel resume sbx_test1, then run kantel ssh sbx_test1 again.\n",
+		);
+		expect(isolate.lines).toEqual([]);
+	});
+
+	it("at a terminal, shows a banner and a prompt with the directory and a failed status, and help", async () => {
+		const isolate = fakeIsolate();
+		const run = await kantel(["ssh", "sbx_test1"], {
+			routes: isolate.routes,
+			stdin: input("help\ncd app\nfalse\n", true),
+		});
+		expect(run.code).toBe(1);
+		expect(run.stderr).toContain("this is a pseudo-shell over Kantel's commands API");
+		expect(run.stderr).toContain("node and python work.");
+		expect(run.stderr).toContain("Auto-upgrade is off");
+		expect(run.stderr).toContain("upgrade   Upgrade this isolate to a microVM now");
+		expect(run.stderr).toContain("user@brave-otter:/workspace$ ");
+		expect(run.stderr).toContain("[1] user@brave-otter:/workspace/app$ ");
+	});
+
+	it("asks to upgrade when a command needs a microVM, then runs it again and switches to SSH there", async () => {
+		let upgraded = false;
+		const isolate = fakeIsolate((line) => {
+			if (line !== "git status") return undefined;
+			return upgraded
+				? { stdout: "On branch main\n" }
+				: { exitCode: 127, stderr: "bash: git: command not found\n", needsMicrovm: NEEDS_GIT };
+		});
+		const routes = sshAfterUpgrade(isolate.routes);
+		const upgrade = routes["POST /v1/sandboxes/sbx_test1/upgrade"] as Route;
+		routes["POST /v1/sandboxes/sbx_test1/upgrade"] = (call) => {
+			upgraded = true;
+			return upgrade(call);
+		};
+		const run = await kantel(["ssh", "sbx_test1"], { routes, stdin: input("cd app\ngit status\ny\n", true) });
+		expect(run.code).toBe(0);
+		expect(run.stderr).toContain(
+			"An isolate has no git; a microVM does. Upgrade this sandbox to a microVM now? [y/N] ",
+		);
+		expect(run.stderr).not.toContain("kantel upgrade sbx_test1 turns");
+		expect(run.stderr).toMatch(/Upgraded to a microVM in \d+s\./);
+		expect(run.stdout).toBe("On branch main\n");
+		expect(isolate.lines).toEqual([":", "cd app", "git status", "git status"]);
+		expect(run.calls.filter((call) => call.path === "/v1/sandboxes/sbx_test1/upgrade")[0]?.body).toEqual({
+			wait: true,
+		});
+		expect(run.stderr).toContain("Switching to SSH on the microVM, in /home/user/workspace/app.");
+		expect(run.ssh).toEqual([
+			{
+				args: [
+					"-t",
+					"-p",
+					"2222",
+					"sbx_test1@ssh.kantel.test",
+					"--",
+					`cd '/home/user/workspace/app' 2>/dev/null; exec "\${SHELL:-/bin/bash}" -l`,
+				],
+			},
+		]);
+	});
+
+	it("leaves the isolate as it is when the answer is no", async () => {
+		const isolate = fakeIsolate((line) =>
+			line === "git status" ? { exitCode: 127, needsMicrovm: NEEDS_GIT } : undefined,
+		);
+		const run = await kantel(["ssh", "sbx_test1"], { routes: isolate.routes, stdin: input("git status\nn\n", true) });
+		expect(run.code).toBe(127);
+		expect(run.stderr).toContain("Not upgraded. Type upgrade, or run kantel upgrade sbx_test1, when you want it.");
+		expect(run.calls.some((call) => call.path.endsWith("/upgrade"))).toBe(false);
+		expect(run.ssh).toEqual([]);
+	});
+
+	it("says an autoUpgrade sandbox upgraded itself, shows the run again, and switches to SSH", async () => {
+		const isolate = fakeIsolate(
+			(line) =>
+				line === "git clone https://example.test/app.git"
+					? {
+							exitCode: 127,
+							stderr: "bash: git: command not found\n",
+							needsMicrovm: NEEDS_GIT,
+							rerun: { stdout: "Cloning into 'app'...\n" },
+						}
+					: undefined,
+			{ autoUpgrade: true },
+		);
+		const routes = {
+			...isolate.routes,
+			"POST /v1/sandboxes/sbx_test1/ssh": (() => {
+				let asked = 0;
+				return () =>
+					++asked === 1 ? kantelError(501, "not_supported", "SSH needs a microVM; this is an isolate") : ACCESS;
+			})(),
+		};
+		const run = await kantel(["ssh", "sbx_test1"], {
+			routes,
+			stdin: input("git clone https://example.test/app.git\n", true),
+		});
+		expect(run.code).toBe(0);
+		expect(run.stderr).toContain("Auto-upgrade is on");
+		expect(run.stderr).toContain(
+			"This needed a microVM (git): the sandbox has been upgraded, and the command ran again there.",
+		);
+		expect(run.stdout).toBe("Cloning into 'app'...\n");
+		expect(run.calls.some((call) => call.path.endsWith("/upgrade"))).toBe(false);
+		expect(run.ssh[0]?.args.at(-1)).toBe(`cd '/home/user/workspace' 2>/dev/null; exec "\${SHELL:-/bin/bash}" -l`);
+	});
+
+	it("upgrades when upgrade is typed, then switches to SSH in the same directory", async () => {
+		const isolate = fakeIsolate();
+		const run = await kantel(["ssh", "sbx_test1"], {
+			routes: sshAfterUpgrade(isolate.routes),
+			stdin: input("cd src\nupgrade\n", true),
+		});
+		expect(run.code).toBe(0);
+		expect(run.calls.filter((call) => call.path.endsWith("/upgrade"))).toHaveLength(1);
+		expect(run.stderr).toContain("Switching to SSH on the microVM, in /home/user/workspace/src.");
+		expect(run.ssh[0]?.args[0]).toBe("-t");
+	});
+
+	it("runs one command after --, as exec does, saying how to upgrade when it needs a microVM", async () => {
+		const isolate = fakeIsolate((line) =>
+			line === "git status"
+				? { exitCode: 127, stderr: "bash: git: command not found\n", needsMicrovm: NEEDS_GIT }
+				: undefined,
+		);
+		const run = await kantel(["ssh", "sbx_test1", "--", "git", "status"], { routes: isolate.routes });
+		expect(run.code).toBe(127);
+		expect(isolate.scripts).toEqual(["git status"]);
+		expect(run.stderr).toContain("kantel: git needs a microVM. kantel upgrade sbx_test1 turns this isolate into one");
+		expect(run.ssh).toEqual([]);
+	});
+
+	it("leaves a microVM's ssh as it was", async () => {
+		const run = await kantel(["ssh", "sbx_test1", "--", "uname"], {
+			routes: { "POST /v1/sandboxes/sbx_test1/ssh": () => ACCESS },
+		});
+		expect(run.code).toBe(0);
+		expect(run.ssh).toEqual([{ args: ["-p", "2222", "sbx_test1@ssh.kantel.test", "--", "uname"] }]);
 	});
 });

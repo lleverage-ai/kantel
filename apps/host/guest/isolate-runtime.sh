@@ -17,7 +17,7 @@
 # apps/host/dist/.isolate-target).
 #
 # V8: by default rusty_v8's build script downloads its prebuilt library. KANTEL_V8_SANDBOX=1 links Kantel's build of
-# V8 with its sandbox on instead (amd64 for now), fetched and checked against the SHA-256s pinned in the crate's
+# V8 with its sandbox on instead (amd64 or arm64), fetched and checked against the SHA-256s pinned in the crate's
 # v8/fetch-v8-sandbox.sh (or the RUSTY_V8_ARCHIVE given, checked as below), with the patched deno_core and serde_v8
 # (v8/sandbox-crate.sh) and the crate's v8-sandbox feature. RUSTY_V8_ARCHIVE (a path or URL to a librusty_v8 .a or .a.gz) picks any other, checked
 # against RUSTY_V8_ARCHIVE_SHA256, which it then needs, with RUSTY_V8_SRC_BINDING_PATH (and its _SHA256) where that
@@ -49,9 +49,8 @@ esac
 v8() {
 	cache="$MODULE/dist/.v8"
 	if [ "${KANTEL_V8_SANDBOX:-}" = 1 ] && [ -z "${RUSTY_V8_ARCHIVE:-}" ]; then
-		[ "$TRIPLE" = x86_64-unknown-linux-gnu ] || { echo "KANTEL_V8_SANDBOX: no sandboxed V8 for $TRIPLE yet" >&2; exit 1; }
 		[ -x "$CRATE/v8/fetch-v8-sandbox.sh" ] || { echo "KANTEL_V8_SANDBOX: no $CRATE/v8/fetch-v8-sandbox.sh" >&2; exit 1; }
-		out=$("$CRATE/v8/fetch-v8-sandbox.sh" "$cache")
+		out=$(KANTEL_V8_TARGET=$TRIPLE "$CRATE/v8/fetch-v8-sandbox.sh" "$cache")
 		RUSTY_V8_ARCHIVE=$(printf '%s\n' "$out" | sed -n 's/^RUSTY_V8_ARCHIVE=//p')
 		RUSTY_V8_SRC_BINDING_PATH=$(printf '%s\n' "$out" | sed -n 's/^RUSTY_V8_SRC_BINDING_PATH=//p')
 		[ -f "$RUSTY_V8_ARCHIVE" ] && [ -f "$RUSTY_V8_SRC_BINDING_PATH" ] || { echo "fetch-v8-sandbox.sh said: $out" >&2; exit 1; }
@@ -132,7 +131,8 @@ if [ -z "${KANTEL_ISOLATE_BINARY:-}" ] && [ -f "$CRATE/Cargo.toml" ]; then
 fi
 
 if [ "$ARCH" = test ]; then
-	cargo kantel-isolate-builder:local sh -euc 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
+	# shellcheck disable=SC2086 # FEATURES is empty or one flag and its value.
+	cargo kantel-isolate-builder:local sh -euc "cargo fmt --check && cargo clippy --locked --all-targets $FEATURES -- -D warnings && cargo test --locked $FEATURES"
 	exit 0
 fi
 

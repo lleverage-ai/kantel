@@ -11,7 +11,8 @@
 #
 # A file already in <dir> with the right SHA-256 isn't downloaded again (so an actions/cache of <dir> keyed on this
 # file's hash skips the download). KANTEL_V8_BASE overrides where the assets come from (a mirror, or file:// for a
-# local build's out dir).
+# local build's out dir). KANTEL_V8_TARGET picks the target (x86_64- or aarch64-unknown-linux-gnu) for a cross build;
+# the default is this machine's.
 set -euo pipefail
 
 prefix=
@@ -27,12 +28,21 @@ TAG=rusty-v8-sandbox-v$V8_CRATE_VERSION-1
 BASE=${KANTEL_V8_BASE:-https://github.com/lleverage-ai/kantel/releases/download/$TAG}
 
 case $(uname -m) in
-x86_64)
-	target=x86_64-unknown-linux-gnu
+x86_64) host=x86_64-unknown-linux-gnu ;;
+aarch64 | arm64) host=aarch64-unknown-linux-gnu ;;
+*) host=$(uname -m) ;;
+esac
+target=${KANTEL_V8_TARGET:-$host}
+case $target in
+x86_64-unknown-linux-gnu)
 	lib_sha=21ebfc94b834a0e1aa0b034916f76106fd44e6ffee9e1f796b8d7f7374944361
 	binding_sha=35f9f49c552786714c814f66925bc9ebfb255194f2b66790f01bfad70a1f7e78
 	;;
-*) echo "fetch-v8-sandbox: no sandboxed V8 build for $(uname -m) yet (run build-v8-sandbox.sh there)" >&2 && exit 1 ;;
+aarch64-unknown-linux-gnu)
+	lib_sha=5bed3d0be9534f264eece2b9f3417d7aec4b9a44eaac3db700220e0248848026
+	binding_sha=35f9f49c552786714c814f66925bc9ebfb255194f2b66790f01bfad70a1f7e78
+	;;
+*) echo "fetch-v8-sandbox: no sandboxed V8 build for $target" >&2 && exit 1 ;;
 esac
 
 dir=${1:?usage: fetch-v8-sandbox.sh <cache-dir>}

@@ -2,7 +2,7 @@
 // host (`sandbox.upgrade`, the files never leaving it), or on another host with Kantel moving the files (listed and
 // read from the isolate's host, written as a tar into the microVM and extracted there), with the placement following
 // only once the microVM has them, and a failure leaving the isolate where and as it was. And a command's needsMicrovm,
-// passed through from the host.
+// passed through from the host. apps/host/test/upgrade-crosshost.sh moves one between real hosts.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it } from "vitest";
@@ -94,6 +94,10 @@ class Host {
 	upgradeAnswer?: "drop" | number;
 	/** `sandbox.create` makes the sandbox but its answer is dropped. */
 	dropCreateAnswer = false;
+	/** How long a file read takes to answer, in milliseconds, and the most answered at once so far. */
+	readDelayMs = 0;
+	private readsUnderWay = 0;
+	mostReadsAtOnce = 0;
 	/** A file whose reads answer this many more bytes than its listing says (it grows as it is read). */
 	growing?: { name: string; extra: number };
 	/** Each upgrade by sandbox, as kantel-host keeps it: its operation, and its outcome once it has one. */
@@ -292,7 +296,15 @@ class Host {
 				if (data === undefined) return fail({ code: "not_found", message: `no file ${path}` });
 				const offset = Number(p.offset ?? 0);
 				const part = p.length === undefined ? data : data.subarray(offset, offset + Number(p.length));
-				return answer({ data: b64(part), size: part.length, fileSize: data.length });
+				const result = { data: b64(part), size: part.length, fileSize: data.length };
+				if (this.readDelayMs === 0) return answer(result);
+				this.readsUnderWay += 1;
+				this.mostReadsAtOnce = Math.max(this.mostReadsAtOnce, this.readsUnderWay);
+				setTimeout(() => {
+					this.readsUnderWay -= 1;
+					answer(result);
+				}, this.readDelayMs);
+				return;
 			}
 			case "sandbox.files.list": {
 				const prefix = key === "" ? "" : `${key}/`;
@@ -522,6 +534,60 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(vms.sandboxes.has(sandbox.id)).toBe(false);
 		expect(isolates.frozen.has(sandbox.id)).toBe(false);
 		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+	});
+
+	it("refuses a workspace past the limits as listed, before it makes a microVM or reads a file", async () => {
+		const { root, service, hosts } = await setup(
+			[
+				{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+				{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+			],
+			{ upgradeMoveLimits: { files: 100, bytes: 1000 } },
+		);
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const many = await root.createSandbox({ type: "isolate", wait: true });
+		for (let index = 0; index <= 100; index++) {
+			isolates.sandboxes.get(many.id)?.files.set(`f${index}`, { kind: "file", data: enc("x") });
+		}
+		const big = await root.createSandbox({ type: "isolate", wait: true });
+		isolates.sandboxes.get(big.id)?.files.set("big.bin", { kind: "file", data: new Uint8Array(1001) });
+		for (const [sandbox, why] of [
+			[many, "too many files"],
+			[big, "too many bytes"],
+		] as const) {
+			const refused = await failure(root.upgradeSandbox(sandbox.id, {}));
+			expect(refused.status).toBe(501);
+			expect(refused.message).toContain(why);
+			expect(isolates.frozen.has(sandbox.id)).toBe(false);
+			expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
+		}
+		expect(isolates.methods()).not.toContain("sandbox.files.read");
+		expect(vms.methods()).not.toContain("sandbox.create");
+	});
+
+	it("reads an isolate's files a few at once, and keeps their order", async () => {
+		const { root, hosts } = await setup([
+			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+			{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+		]);
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		const workspace = isolates.sandboxes.get(sandbox.id)?.files;
+		workspace?.set("src", { kind: "dir" });
+		for (let index = 0; index < 64; index++) {
+			workspace?.set(`src/f${index}.txt`, { kind: "file", data: enc(`file ${index}\n`), mode: 0o644 });
+		}
+		isolates.readDelayMs = 5;
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded.type).toBe("microvm");
+		expect(isolates.mostReadsAtOnce).toBeGreaterThan(1);
+		expect(isolates.mostReadsAtOnce).toBeLessThanOrEqual(16);
+		const files = vms.sandboxes.get(sandbox.id)?.files;
+		for (let index = 0; index < 64; index++) {
+			expect(text(files?.get(`/home/user/workspace/src/f${index}.txt`)?.data)).toBe(`file ${index}\n`);
+		}
 	});
 
 	it("passes an isolate command's needsMicrovm and terminated through from its host", async () => {

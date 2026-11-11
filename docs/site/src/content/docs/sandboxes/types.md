@@ -98,7 +98,7 @@ The body takes `size` or `resources`, and `image`, as a [create](/sandboxes/life
 - **Its environments' secret files and repositories** are set up again in the microVM, where a microVM keeps them, and an exposed port is exposed again on it.
 - Its snapshots from before the upgrade stay, as an isolate's: a sandbox made from one is an isolate.
 
-Where the files go: the isolate's own host makes the microVM when it runs microVMs too and has room, and moves the files from its own store into the microVM, never through Kantel. Otherwise the microVM goes on another host the sandbox may use, and Kantel moves the files there, up to 20,000 files and 256 MiB as they are read. Past that the upgrade is refused (`not_supported`) and the isolate stays as it is. If deleting the isolate from its old host fails once the microVM runs, Kantel deletes it when that host next connects.
+Where the files go: the isolate's own host makes the microVM when it runs microVMs too and has room, and moves the files from its own store into the microVM, never through Kantel. Otherwise the microVM goes on another host the sandbox may use, and Kantel moves the files there, up to 20,000 files and 256 MiB. Past that the upgrade is refused (`not_supported`), as soon as the files are listed and before a microVM is made, and the isolate stays as it is. If deleting the isolate from its old host fails once the microVM runs, Kantel deletes it when that host next connects.
 
 ### Upgrade by itself
 
@@ -113,6 +113,22 @@ kantel new --auto-upgrade
 ```
 
 A command that needs a microVM says so in its `needsMicrovm` (`{"command": "tar", "reason": "..."}`), with exit code 127. Without `autoUpgrade`, that is its answer and the isolate stays one. With it, the answer is the command run again in the microVM: its `rerunOf` names the first, whose `rerunAs` names it. `PATCH /v1/sandboxes/{id}` with `{"autoUpgrade": true}` turns it on later. `kantel exec` follows the command run again by itself, and says so.
+
+To see it happen, make an isolate that upgrades itself and open [`kantel ssh`](/sandboxes/ssh/#ssh-to-an-isolate) to it, a pseudo-shell at first. Type a command an isolate can't run: the sandbox becomes a microVM, the command runs again there, and the session becomes SSH on the microVM, in the same directory:
+
+```sh
+kantel new --auto-upgrade
+kantel ssh sbx_4kq9x2mt
+```
+
+```text
+user@brave-otter:/workspace$ git clone https://github.com/octocat/Hello-World.git
+This needed a microVM (git): the sandbox has been upgraded, and the command ran again there.
+Cloning into 'Hello-World'...
+Switching to SSH on the microVM, in /home/user/workspace.
+```
+
+Without `autoUpgrade`, the pseudo-shell asks whether to upgrade instead.
 
 - **The whole command runs again**, not just the step that failed: in `curl -o data.json $URL && tar -xf a.tar`, the download happens twice. Write commands that can run again, or upgrade first.
 - **Only what the isolate's runtime says counts.** Where the runtime doesn't say (an older host), Kantel reads `needsMicrovm` from the shell's answer and marks it `"inferred": true`. That is a hint for you: a command can print the same text itself, so `autoUpgrade` never acts on it.
