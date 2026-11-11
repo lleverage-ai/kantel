@@ -1,7 +1,8 @@
 name: CI
 
 # The pull request gate, kept quick for the two self-hosted runners: install, typecheck, lint and the generated API
-# files, no tests, beside the host's Go vet and unit tests (seconds). The TypeScript tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
+# files, no tests, beside the host's Go vet and unit tests (seconds) and the isolate runtime's Rust checks and tests
+# (minutes from cold, less with the runner's cargo cache warm). The TypeScript tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
 # and Sandbox image suites, and deploys only once all three pass. On a branch, `gh workflow run ci.yml --ref <branch>
 # -f tests=true` runs the tests too.
 on:
@@ -116,6 +117,44 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  isolate-runtime:
+    # The isolate runtime (apps/host/isolate-runtime, kantel-isolate: Rust on deno_core) is outside both: cargo fmt,
+    # clippy and test, in the same Rust container the images build it in (guest/isolate-runtime.sh test), and a release
+    # build for amd64 and arm64 (cross-compiled), so a change that breaks the image's build fails here. Nothing is
+    # restored from GitHub's cache: on the self-hosted runners cargo's registry is a Docker volume
+    # (kantel-isolate-cargo) and the build, with V8's static library (about 100 MB a target, downloaded by rusty_v8's
+    # build script), a directory in the runner's home, both kept between jobs.
+    #
+    # V8: the KANTEL_RUSTY_V8_ARCHIVE or KANTEL_RUSTY_V8_MIRROR repository variable, when set, picks the V8 it links
+    # instead of rusty_v8's prebuilt one (a V8 built with its sandbox on, say); the script passes either to cargo as
+    # RUSTY_V8_ARCHIVE or RUSTY_V8_MIRROR.
+    name: Rust check and test (apps/host/isolate-runtime)
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 45
+    env:
+      KANTEL_ISOLATE_TARGET: ${{ github.workspace }}/../.kantel-isolate-target
+      RUSTY_V8_ARCHIVE: ${{ vars.KANTEL_RUSTY_V8_ARCHIVE }}
+      RUSTY_V8_MIRROR: ${{ vars.KANTEL_RUSTY_V8_MIRROR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Until the runtime's source is in (apps/host/isolate-runtime/Cargo.toml), there is nothing to check.
+      - name: Has the runtime's source
+        id: crate
+        run: |
+          if [ -f apps/host/isolate-runtime/Cargo.toml ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Format, clippy and test
+        if: steps.crate.outputs.present == 'true'
+        run: apps/host/guest/isolate-runtime.sh test
+
+      # Each with its assets (build-assets.sh), as rootfs.sh builds them for the isolate image.
+      - name: Release build (amd64 and arm64)
+        if: steps.crate.outputs.present == 'true'
+        run: |
+          apps/host/guest/isolate-runtime.sh amd64
+          apps/host/guest/isolate-runtime.sh arm64
 
   cli-go:
     # kantel and kantel-admin (apps/cli) are Go too. The generated API client must match the OpenAPI document, and the
