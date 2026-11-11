@@ -4455,7 +4455,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * already recorded while it ran is kept: a real end's output starts with it, and an end Kantel made up (its result
 	 * lost, its host gone) adds its reason after it.
 	 */
-	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
+	async function endCommand(
+		commandId: string,
+		result: ExecResult,
+		rerunAs?: string,
+	): Promise<StoredCommand | undefined> {
 		const at = now();
 		const ended = await settleCommand(commandId, (latest) => {
 			const stdout = endStream(latest.stdout, result.stdout);
@@ -4477,6 +4481,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? {}
 					: { needsMicrovm: { command: result.needsMicrovm.command, reason: result.needsMicrovm.reason } }),
 				...(result.terminated === undefined ? {} : { terminated: result.terminated }),
+				...(rerunAs === undefined ? {} : { rerunAs }),
 			};
 		});
 		return ended ?? (await store.commands.get(commandId));
@@ -8023,26 +8028,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		runCommand: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "exec");
 			return once(principal, "runCommand", { params, body, idempotencyKey }, async () => {
-				const first = await runCommandOnce(principal, sandbox.id, body);
-				// An isolate with `autoUpgrade` whose command needed a microVM: upgraded, and the command run again there, once,
-				// where it ran (`/workspace` is the same files in the microVM).
-				if (first.needsMicrovm === undefined || body.detached === true) return commandView(first);
-				const latest = await store.sandboxes.get(sandbox.id);
-				if (latest?.type !== "isolate" || latest.autoUpgrade !== true) return commandView(first);
-				try {
-					await upgradeIsolate(principal, role, sandbox.id, {});
-				} catch (error) {
-					// The isolate is as it was: its command's answer stands, saying why it wasn't upgraded.
-					const said = await store.commands.update(first.id, (command) => ({
-						...command,
-						stderr: `${command.stderr}kantel: the isolate couldn't be upgraded to a microVM: ${messageOf(error)}\n`,
-					}));
-					return commandView(said ?? first);
-				}
-				const rerun = await runCommandOnce(principal, sandbox.id, { ...body, cwd: first.cwd }, first.id);
-				const noted = await store.commands.update(first.id, (command) => ({ ...command, rerunAs: rerun.id }));
-				if (noted === undefined) await store.commands.put({ ...first, rerunAs: rerun.id });
-				return commandView(rerun);
+				let rerun: StoredCommand | undefined;
+				// An isolate with `autoUpgrade` whose command needed a microVM: upgraded, and the command run again there,
+				// once, where it ran (`/workspace` is the same files in the microVM), before the first is recorded as ended,
+				// with the run again's ID (`rerunAs`). A detached one's run again is detached too, and followed by its ID.
+				const beforeEnd = async (command: StoredCommand, result: ExecResult) => {
+					if (result.needsMicrovm === undefined) return undefined;
+					const latest = await store.sandboxes.get(sandbox.id);
+					if (latest?.type !== "isolate" || latest.autoUpgrade !== true) return undefined;
+					try {
+						await upgradeIsolate(principal, role, sandbox.id, {});
+					} catch (error) {
+						// The isolate is as it was: the command's answer stands, saying why it wasn't upgraded.
+						return { note: `kantel: the isolate couldn't be upgraded to a microVM: ${messageOf(error)}\n` };
+					}
+					rerun = await runCommandOnce(principal, sandbox.id, { ...body, cwd: command.cwd }, { rerunOf: command.id });
+					return { rerunAs: rerun.id };
+				};
+				const first = await runCommandOnce(principal, sandbox.id, body, { beforeEnd });
+				return commandView(rerun ?? first);
 			});
 		},
 
@@ -9467,18 +9471,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			: { id: user.id, name: personName({ userId: user.id, name: user.name, email: user.email }), email: user.email };
 	}
 
-	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
 	/**
 	 * Runs a command once in a running sandbox (`runCommand`): recorded, run by its backend, and answered once it ends
 	 * (detached: at once, its end recorded later). `rerunOf`: it is a command run again in the microVM its isolate was
-	 * just upgraded to (`autoUpgrade`).
+	 * just upgraded to (`autoUpgrade`). `beforeEnd`: what is done once its result is in and before it is recorded as
+	 * ended, so a follower never sees it end without it (an upgrade and its run again), and what to add to its record.
 	 */
 	async function runCommandOnce(
 		principal: Principal,
 		sandboxId: string,
 		body: computeSchema.RunCommandBody,
-		rerunOf?: string,
+		how: {
+			readonly rerunOf?: string;
+			readonly beforeEnd?: (
+				command: StoredCommand,
+				result: ExecResult,
+			) => Promise<{ readonly rerunAs?: string; readonly note?: string } | undefined>;
+		} = {},
 	): Promise<StoredCommand> {
+		const { rerunOf } = how;
 		const current = await requireRunning(principal, sandboxId);
 		if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
 		const detached = body.detached === true;
@@ -9516,8 +9527,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 		const finish = async (result: ExecResult): Promise<StoredCommand> => {
 			stopUsing();
+			const more = await how.beforeEnd?.(command, result).catch(() => undefined);
 			runningCommands.delete(command.id);
-			return (await endCommand(command.id, result)) ?? command;
+			const said = more?.note === undefined ? result : { ...result, stderr: `${result.stderr}${more.note}` };
+			return (await endCommand(command.id, said, more?.rerunAs)) ?? command;
 		};
 		const failed = async (error: unknown): Promise<StoredCommand> => {
 			// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
@@ -9792,6 +9805,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return work;
 	}
 
+	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
 	async function restart(
 		principal: Principal,
 		sandboxId: string,

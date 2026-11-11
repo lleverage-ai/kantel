@@ -375,6 +375,24 @@ describe("a command that needs a microVM", () => {
 		expect((await tom.listCommands(sandbox.id)).items.map((command) => command.id).sort()).toEqual(
 			[answer.id, first.id].sort(),
 		);
+
+		// Detached (as the CLI runs commands): the first ends only once its run again has started, naming it.
+		const other = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		upgraded = false;
+		const started = await tom.runCommand(other.id, { command: "tar -tf x.tar", detached: true });
+		let ended = await tom.getCommand(other.id, started.id);
+		for (let tries = 0; ended.state === "running" && tries < 200; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			ended = await tom.getCommand(other.id, started.id);
+		}
+		expect(ended).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
+		expect(ended.rerunAs).toBeDefined();
+		let again = await tom.getCommand(other.id, ended.rerunAs as string);
+		for (let tries = 0; again.state === "running" && tries < 200; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			again = await tom.getCommand(other.id, again.id);
+		}
+		expect(again).toMatchObject({ state: "exited", exitCode: 0, rerunOf: started.id, stdout: "tar in /workspace\n" });
 	});
 
 	it("with autoUpgrade, keeps the first answer and says why when the upgrade fails", async () => {

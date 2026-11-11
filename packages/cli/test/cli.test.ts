@@ -2868,3 +2868,99 @@ describe("ports and live views", () => {
 		expect(script.stdout).toContain("https://desk.kantel.test/#t");
 	});
 });
+
+describe("upgrading an isolate", () => {
+	const MICROVM: Sandbox = {
+		...SANDBOX,
+		type: "microvm",
+		size: "large",
+		resources: { vcpus: 4, memoryMb: 8192, diskGb: 40 },
+		upgradedFrom: { type: "isolate", at: Date.now() },
+	};
+
+	it("kantel upgrade sends the size, shape, disk and image, and says where the files are", async () => {
+		const routes = { "POST /v1/sandboxes/sbx_test1/upgrade": () => MICROVM };
+		const sized = await kantel(["upgrade", "sbx_test1", "--size", "large", "--image", "ubuntu-26.04"], { routes });
+		expect(sized.code).toBe(0);
+		expect(sized.calls[0]?.body).toEqual({ size: "large", image: "ubuntu-26.04", wait: true });
+		expect(sized.stdout).toContain("Upgraded sbx_test1 (brave-otter)");
+		expect(sized.stdout).toContain("/home/user/workspace (/workspace links there)");
+		// An upgrade is a create of a sort: retried under one key.
+		expect(sized.keys[0]).not.toBeNull();
+
+		const shaped = await kantel(
+			["upgrade", "sbx_test1", "--vcpus", "8", "--memory", "16", "--disk", "60", "--no-wait"],
+			{
+				routes,
+			},
+		);
+		expect(shaped.calls[0]?.body).toEqual({ resources: { vcpus: 8, memoryMb: 16384, diskGb: 60 }, wait: false });
+		const json = await kantel(["upgrade", "sbx_test1", "--json"], { routes });
+		expect(JSON.parse(json.stdout)).toMatchObject({ id: "sbx_test1", type: "microvm" });
+		for (const refused of [
+			["upgrade", "sbx_test1", "--vcpus", "2"],
+			["upgrade", "sbx_test1", "--size", "large", "--vcpus", "2", "--memory", "4"],
+			["upgrade", "sbx_test1", "--wait", "--no-wait"],
+			["upgrade"],
+		]) {
+			const run = await kantel(refused, { routes });
+			expect(run.code).toBe(2);
+			expect(run.calls).toHaveLength(0);
+		}
+	});
+
+	it("kantel new --auto-upgrade makes an isolate that upgrades itself", async () => {
+		const routes = { "POST /v1/sandboxes": () => ({ ...SANDBOX, autoUpgrade: true }) };
+		const made = await kantel(["new", "--auto-upgrade"], { routes });
+		expect(made.code).toBe(0);
+		expect(made.calls[0]?.body).toMatchObject({ autoUpgrade: true });
+		const plain = await kantel(["new"], { routes });
+		expect(plain.calls[0]?.body).not.toHaveProperty("autoUpgrade");
+		const microvm = await kantel(["new", "--type", "microvm", "--auto-upgrade"], { routes });
+		expect(microvm.code).toBe(2);
+		expect(microvm.calls).toHaveLength(0);
+	});
+
+	it("kantel exec says a command needs a microVM, and how to get one", async () => {
+		const needs = command({
+			command: "tar -xf a.tar",
+			exitCode: 127,
+			stderr: "tar: not available in an isolate, which runs only its shell's own commands. Use a microVM.\n",
+			needsMicrovm: { command: "tar", reason: "An isolate runs only its shell's own commands, and tar isn't one." },
+		});
+		const routes = {
+			"POST /v1/sandboxes/sbx_test1/commands": () => needs,
+			"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => needs,
+		};
+		const run = await kantel(["exec", "sbx_test1", "--", "tar", "-xf", "a.tar"], { routes });
+		expect(run.code).toBe(127);
+		expect(run.stderr).toContain("kantel: tar needs a microVM. kantel upgrade sbx_test1 turns this isolate into one");
+	});
+
+	it("kantel exec follows the command its isolate ran again after upgrading itself", async () => {
+		const first = command({
+			state: "running",
+			command: "git status",
+			exitCode: undefined,
+		});
+		const ended = command({
+			command: "git status",
+			exitCode: 127,
+			stderr: "bash: git: command not found\n",
+			needsMicrovm: { command: "git", reason: "An isolate has no git; a microVM does." },
+			rerunAs: "cmd_2",
+		});
+		const rerun = command({ id: "cmd_2", command: "git status", stdout: "On branch main\n", rerunOf: "cmd_1" });
+		let looks = 0;
+		const routes = {
+			"POST /v1/sandboxes/sbx_test1/commands": () => first,
+			"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => (++looks < 2 ? first : ended),
+			"GET /v1/sandboxes/sbx_test1/commands/cmd_2": () => rerun,
+		};
+		const run = await kantel(["exec", "sbx_test1", "--", "git", "status"], { routes });
+		expect(run.code).toBe(0);
+		expect(run.stdout).toBe("On branch main\n");
+		expect(run.stderr).toContain("it needed a microVM (git); sbx_test1 is one now, and it runs again there as cmd_2");
+		expect(run.stderr).not.toContain("kantel upgrade");
+	});
+});

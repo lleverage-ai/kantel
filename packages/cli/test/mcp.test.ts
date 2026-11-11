@@ -90,6 +90,7 @@ const ROUTES: {
 	readonly [route: string]: (body: unknown, signal?: AbortSignal | null, url?: URL) => Response | Promise<Response>;
 } = {
 	"POST /v1/sandboxes": () => Response.json(SANDBOX),
+	"POST /v1/sandboxes/sbx_mcp1/upgrade": () => Response.json({ ...SANDBOX, type: "microvm", size: "default" }),
 	"POST /v1/sandboxes/sbx_mcp1/commands": (body) =>
 		Response.json((body as { detached?: boolean }).detached === true ? RUNNING : COMMAND),
 	"POST /v1/sandboxes/sbx_slow/commands": (_body, signal) => later(120, () => Response.json(COMMAND), signal),
@@ -279,6 +280,7 @@ describe("the MCP server", () => {
 			"sandbox_stop",
 			"sandbox_resume",
 			"sandbox_fork",
+			"sandbox_upgrade",
 			"sandbox_delete",
 			"sandbox_exec",
 			"command_get",
@@ -813,5 +815,59 @@ describe("a killed command's answer", () => {
 		};
 		expect(text(old)).toContain("its host couldn't stop it");
 		expect(text(old)).toContain("pkill -f");
+	});
+});
+
+describe("upgrading an isolate from MCP", () => {
+	it("sandbox_upgrade makes the isolate a microVM and says where its files are", async () => {
+		const { mcp, calls, keys } = server();
+		const upgraded = resultOf(
+			await mcp.handle(
+				request(1, "tools/call", { name: "sandbox_upgrade", arguments: { sandboxId: "sbx_mcp1", size: "large" } }),
+			),
+		);
+		expect(upgraded.isError).toBeUndefined();
+		expect(upgraded.structuredContent).toMatchObject({ id: "sbx_mcp1", type: "microvm" });
+		expect(upgraded.content[0]?.text).toContain("/home/user/workspace");
+		expect(calls[0]).toMatchObject({
+			method: "POST",
+			path: "/v1/sandboxes/sbx_mcp1/upgrade",
+			body: { size: "large", wait: true },
+		});
+		expect(keys[0]).not.toBeNull();
+		const tool = TOOL_DEFINITIONS.find((each) => each.name === "sandbox_create");
+		expect(tool?.inputSchema.properties).toHaveProperty("autoUpgrade");
+	});
+
+	it("sandbox_create passes autoUpgrade, and the instructions say when to upgrade", async () => {
+		const { mcp, calls } = server();
+		resultOf(
+			await mcp.handle(
+				request(1, "tools/call", { name: "sandbox_create", arguments: { type: "isolate", autoUpgrade: true } }),
+			),
+		);
+		expect(calls[0]?.body).toMatchObject({ type: "isolate", autoUpgrade: true, wait: true });
+		const upgrade = TOOL_DEFINITIONS.find((each) => each.name === "sandbox_upgrade");
+		expect(upgrade?.description).toContain("needs a microVM");
+	});
+
+	it("tells the agent a command needs a microVM, and what Kantel did when it upgraded the sandbox itself", () => {
+		const needs = commandResult({
+			...COMMAND,
+			exitCode: 127,
+			stderr: "bash: git: command not found\n",
+			needsMicrovm: { command: "git", reason: "An isolate has no git; a microVM does." },
+		});
+		expect(needs.content[0]?.text).toContain("It needs a microVM: An isolate has no git; a microVM does.");
+		expect(needs.content[0]?.text).toContain("sandbox_upgrade with sandboxId sbx_mcp1");
+		expect(needs.structuredContent).toMatchObject({ needsMicrovm: { command: "git" } });
+		const handedOn = commandResult({ ...COMMAND, needsMicrovm: { command: "git", reason: "x" }, rerunAs: "cmd_2" });
+		expect(handedOn.content[0]?.text).toContain("runs it again there as cmd_2");
+		expect(handedOn.content[0]?.text).not.toContain("Call sandbox_upgrade");
+		const rerun = commandResult({ ...COMMAND, id: "cmd_2", rerunOf: "cmd_1" });
+		expect(rerun.content[0]?.text).toContain("this is the command run again there");
+		expect(rerun.structuredContent).toMatchObject({ rerunOf: "cmd_1" });
+		const stopped = commandResult({ ...COMMAND, exitCode: 152, terminated: "cpu" });
+		expect(stopped.content[0]?.text).toContain("too much cpu time");
 	});
 });
