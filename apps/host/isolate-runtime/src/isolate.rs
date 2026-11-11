@@ -339,6 +339,10 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
         module_loader: module_loader(kind),
         ..Default::default()
     });
+    // Before any guest code: the ops charge the bytes they return to this budget (hostbuf.rs).
+    rt.op_state()
+        .borrow_mut()
+        .put(crate::hostbuf::IsolateBudget(budget.clone()));
     let handle = rt.v8_isolate().thread_safe_handle();
     budget.set_handle(handle.clone());
     rt.add_near_heap_limit_callback(near_heap_limit(&budget, handle.clone()));
@@ -1156,17 +1160,11 @@ fn node_load(specifier: &ModuleSpecifier) -> std::result::Result<ModuleSource, J
     };
     let text = String::from_utf8_lossy(&bytes).to_string();
     if path_str.ends_with(".json") {
-        let code = format!(
-            "export default {};",
-            if text.trim().is_empty() {
-                "null"
-            } else {
-                text.trim()
-            }
-        );
+        // The JSON text as it is: deno_core parses a JSON module itself and makes the parsed value its default export
+        // (and refuses malformed or empty JSON, as Node does).
         return Ok(ModuleSource::new(
             ModuleType::Json,
-            ModuleSourceCode::String(code.into()),
+            ModuleSourceCode::String(text.into()),
             specifier,
             None,
         ));

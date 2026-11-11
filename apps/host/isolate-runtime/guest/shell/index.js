@@ -3,7 +3,6 @@
 // is read from STORE only when the command reads it, and the files the command changed are uploaded at the end and
 // returned as the next manifest. `node` and `python` run in a fresh isolate each (op_kt_run), over the same files.
 import { Bash, defineCommand, InMemoryFs } from "just-bash/browser";
-import { budgetedCopy } from "../common/budget.js";
 import { latin1 } from "../common/text.js";
 import { Chunks, egressFetch, unpack } from "../common/web.js";
 import { message, UNAVAILABLE } from "./unavailable.js";
@@ -37,7 +36,9 @@ function track(fs, dirty) {
 	};
 	const first = (args) => [String(args[0])];
 	const second = (args) => [String(args[1])];
-	for (const name of ["writeFile", "appendFile", "chmod", "utimes"]) wrap(name, first);
+	// rm too: a file removed and made again as a directory (by the shell, or replayed from a node/python run) is
+	// then looked at afresh instead of keeping its old file entry.
+	for (const name of ["writeFile", "appendFile", "chmod", "utimes", "rm"]) wrap(name, first);
 	for (const name of ["cp", "mv", "symlink", "link"]) wrap(name, second);
 	return fs;
 }
@@ -62,7 +63,7 @@ export function createShell(ops, log) {
 			if (entry.kind !== "file") continue;
 			files[abs(path)] = async () => {
 				lazyReads++;
-				return budgetedCopy(await ops.op_kt_blob_read(entry.sha));
+				return await ops.op_kt_blob_read(entry.sha);
 			};
 		}
 		const fs = new InMemoryFs(files);

@@ -143,19 +143,26 @@ hardening (seccomp, landlock, a dedicated uid and cgroup), which this crate deli
   (its limit can't be changed without rebuilding the patched V8), and buffers taken on top of the heap are stopped
   at the next GC, which V8 runs as external memory grows, rather than in the allocation itself; a program that takes
   them and then idles without allocating can hold them until then. Host-returned buffers (file reads, fetch
-  bodies, `core.encode`) are copied into the budget in stock builds and allocated through the in-sandbox budget
-  allocator in `v8-sandbox` builds, so they can't be retained outside it. A just-bash command holds a file it reads
+  bodies, zlib output, the UTF-8 encoder's bytes, Pyodide's assets) are charged to the isolate's budget in the op
+  that returns them, before guest code can see them (`src/hostbuf.rs`: in stock builds the guest's buffer owns the
+  charged bytes and gives them back when V8 frees it; in `v8-sandbox` builds they are copied into the in-sandbox
+  budget allocator), so they can't be retained outside it. A just-bash command holds a file it reads
   about twice over (the read and its own copy), so a shell reading a file of more than about 45% of memoryMiB is now
   stopped where it used to fit.
 - **The memory guards are JS-level.** The wasm guard (every `WebAssembly.Memory`/`grow`/`Module`/`Instance`, plus a
-  host module inspection) and the resizable-buffer guard are installed before any guest code, use primordials
-  captured at snapshot time (a guest can't defeat them by swapping `Reflect.construct`, `WeakMap.prototype.get`, …),
-  and are made non-configurable. Python's guard is locked down after Pyodide boots. They are watertight for the
+  host module inspection) and the resizable-buffer guard are installed before any guest code and made
+  non-configurable. While guest code can run they use only intrinsics captured at snapshot time
+  (`guest/common/primordials.js`): no live global, prototype method, getter, array iterator or promise resolution a
+  guest can replace takes part in counting (so swapping `Reflect.construct`, `WeakMap.prototype.get`, `Number`,
+  `Array.prototype[Symbol.iterator]`, `ArrayBuffer.prototype.byteLength` or `Object.prototype.then` changes
+  nothing). A module is compiled from the guard's own copy of the bytes it inspected, synchronously, so the module
+  recorded is the one compiled. Python's guard is locked down after Pyodide boots. They are watertight for the
   attacks tested, but a true V8 escape would bypass them like anything else — the isolate VM (and W2's seccomp /
   Landlock / heap sandbox) is the boundary that doesn't depend on V8.
 - **node is not Node.** No npm install, no `child_process`, no servers/sockets, no native addons, no worker threads.
-  Named imports from a CommonJS module imported by ESM aren't resolved (default import only). This is for agent glue
-  code, not for building or running projects — that is what a microVM is for.
+  Named imports from a CommonJS module imported by ESM aren't resolved (default import only), and an ESM import
+  through a directory symlink isn't followed (`import "./link/m.mjs"`; `require` and `fs` follow it). This is for
+  agent glue code, not for building or running projects — that is what a microVM is for.
 - **python hash randomisation** is fixed by the snapshot (only `random` is reseeded per run); code that depends on
   per-process hash seeds sees the snapshot's seed.
 - **The V8 heap sandbox is off by default** (`v8-sandbox` feature). With it on, the crate uses W2's in-sandbox budget

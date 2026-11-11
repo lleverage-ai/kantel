@@ -4,7 +4,6 @@
 // startup snapshot; the host calls start() and then, if it answers {esm}, loads that module; it runs the event loop
 // and calls finish(). Full Node compatibility is out of scope: no npm installs, no child processes, no servers.
 
-import { budgetedCopy } from "../common/budget.js";
 import { Buffer } from "../common/buffer.js";
 import { bytesOf, Chunks, egressFetch, pack, refTimer, resetClock, scheduleTimer, timerActive } from "../common/web.js";
 import { createFs, ROOT } from "./fs.js";
@@ -48,7 +47,7 @@ export function createNode(ops) {
 		stdinBytes: undefined,
 		stdinPos: 0,
 		stdin: () => {
-			state.stdinBytes ??= budgetedCopy(ops.op_kt_input());
+			state.stdinBytes ??= ops.op_kt_input();
 			return state.stdinBytes;
 		},
 		write(stream, bytes) {

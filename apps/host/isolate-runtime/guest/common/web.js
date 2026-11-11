@@ -1,9 +1,11 @@
 // The small web platform the guests need, on deno_core's primitives and kantel-isolate's ops: timers, a coarse
 // performance clock, crypto, events, abort signals, Headers, URL and atob/btoa. No network, files or environment
 // here: the only ways out are the ops, which act for the sandbox the isolate belongs to.
+
+// First, for its side effect: TextEncoder and TextDecoder, which whatwg-url uses as its module loads.
 import "./text.js";
 import { URL, URLSearchParams } from "whatwg-url";
-import { budgetedCopy } from "./budget.js";
+import { utf8 } from "./text.js";
 
 const core = globalThis.Deno.core;
 const ops = core.ops;
@@ -348,9 +350,9 @@ export async function egressFetch(url, options = {}) {
 	});
 	let body = options.body;
 	if (body == null) body = new Uint8Array(0);
-	else if (typeof body === "string") body = core.encode(body);
+	else if (typeof body === "string") body = utf8(body);
 	else if (body instanceof URLSearchParams) {
-		body = core.encode(body.toString());
+		body = utf8(body.toString());
 		headers["content-type"] ??= "application/x-www-form-urlencoded;charset=UTF-8";
 	} else body = bytesOf(body);
 	const request = {
@@ -369,7 +371,8 @@ export async function egressFetch(url, options = {}) {
 			call.then(resolve, reject);
 		});
 	} else out = await call;
-	return unpack(out, (meta, data) => ({ ...meta, body: budgetedCopy(data) }));
+	// The host charged the response to the isolate's memory before handing it over (hostbuf.rs).
+	return unpack(out, (meta, data) => ({ ...meta, body: data }));
 }
 
 /** A buffer the host or a child made: [u32 big-endian meta length][meta JSON][data]. */
@@ -382,7 +385,7 @@ export function unpack(buffer, then = (meta, data) => ({ meta, data })) {
 export function pack(meta, chunks) {
 	let total = 0;
 	for (const c of chunks) total += c.byteLength;
-	const m = core.encode(JSON.stringify(meta));
+	const m = utf8(JSON.stringify(meta));
 	const out = new Uint8Array(4 + m.length + total);
 	new DataView(out.buffer).setUint32(0, m.length);
 	out.set(m, 4);

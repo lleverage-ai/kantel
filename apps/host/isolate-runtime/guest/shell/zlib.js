@@ -1,11 +1,13 @@
 // node:zlib for just-bash's gzip, gunzip and zcat, on the host's flate2 (op_kt_zlib). Output is bounded by the host.
+import { utf8 } from "../common/text.js";
+
 const ops = globalThis.Deno.core.ops;
 
 export const constants = { Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1 };
 const level = (options) => (options && typeof options.level === "number" && options.level >= 0 ? options.level : 6);
 const asBytes = (d) =>
 	typeof d === "string"
-		? globalThis.Deno.core.encode(d)
+		? utf8(d)
 		: d instanceof Uint8Array
 			? d
 			: new Uint8Array(d.buffer ?? d, d.byteOffset ?? 0, d.byteLength);

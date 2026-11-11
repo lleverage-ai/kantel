@@ -125,6 +125,14 @@ export async function start(
 					status: 302,
 					headers: { location: `http://${req.headers.get("x-origin-host") ?? "a.test"}/echo-auth` },
 				});
+			// /redirect/<status> answers that redirect to /method-echo, which echoes what arrived: the method, the
+			// content type and the body.
+			const redirect = /^\/redirect\/(\d{3})$/.exec(url.pathname);
+			if (redirect) return new Response(null, { status: Number(redirect[1]), headers: { location: "/method-echo" } });
+			if (url.pathname === "/method-echo")
+				return new Response(
+					`${req.method} ${req.headers.get("content-type") ?? "none"} ${req.method === "HEAD" ? "" : await req.text()}`,
+				);
 			if (url.pathname === "/stream-forever") {
 				const stream = new ReadableStream({
 					async pull(c) {

@@ -5,6 +5,7 @@
 import "./common/web.js";
 import { Buffer } from "./common/buffer.js";
 import { fixBuffers } from "./common/buffer-guard.js";
+import { captureShared } from "./common/primordials.js";
 import { installWasmGuard } from "./common/wasm-guard.js";
 import { createNode } from "./node/index.js";
 import { createPython } from "./python/index.js";
@@ -46,6 +47,8 @@ function init(kind) {
 	// guarded one and grow is gone: a shared buffer that Pyodide's boot creates (reached via `.buffer.constructor`)
 	// then can't be used to make a growable SharedArrayBuffer (review finding H3).
 	fixBuffers(globalThis);
+	// The wasm guard reads a shared memory's size (Pyodide's, in python) with SharedArrayBuffer's own getter.
+	captureShared(globalThis);
 	// No shared memory and so no way to build a fine timer from a counter (performance.now() is whole
 	// milliseconds). Removed here, not in the snapshot: V8 adds to Atomics when it deserialises a context.
 	delete globalThis.SharedArrayBuffer;

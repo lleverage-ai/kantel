@@ -380,11 +380,11 @@ test each (`test/integration.test.ts`, run on both the stock and `v8-sandbox` bu
   repeated breaches and a following CPU loop all stay contained.
 - **Guest-mutable intrinsics (H2):** the buffer and wasm guards use primordials captured at snapshot time
   (`guest/common/primordials.js`), so replacing `Reflect.construct` or `WeakMap.prototype.get` can't smuggle a
-  resizable buffer past the guard or fake a wasm-growth reservation.
+  resizable buffer past the guard or fake a wasm-growth reservation. (Extended after PR #837's review; see below.)
 - **Python wasm lockdown (H3):** the wasm guard's boot mode is ended once Pyodide is up and before any user code, and
   `SharedArrayBuffer` is wrapped before it is deleted, so Python can't make a shared/growable memory.
-- **Host-returned buffers are budgeted (H4):** file reads, fetch bodies and `core.encode` copies are charged to the
-  isolate's memory in stock builds (the in-sandbox allocator charges them in `v8-sandbox` builds).
+- **Host-returned buffers are budgeted (H4):** file reads, fetch bodies and encoded text are charged to the
+  isolate's memory (at the Rust-to-V8 boundary since PR #837's review; see below).
 - **Fetch memory (H5):** concurrency is 8 per isolate, response bytes are charged as they arrive against the isolate
   and a process-wide in-flight cap, and the spawned I/O is aborted when the run ends.
 - **Capacity (H6):** `--max-sandboxes` evicts only idle sessions and answers a retryable `503` when full; an
@@ -428,3 +428,48 @@ test each (`test/integration.test.ts`, run on both the stock and `v8-sandbox` bu
 - **Unix-socket transport is tested:** a subset of the suite runs with `--listen`, `--store` and `--egress` on Unix
   sockets in a 0700 directory and checks that the process has no TCP or UDP socket while a guest fetch still reaches
   the egress socket.
+
+## PR #837's review (Cerbie, at a5166dc9)
+
+Each fixed with a regression test in `test/integration.test.ts` ("PR #837 review fixes", run on both builds; the test
+for each finding fails on the code before the fix) or a Rust unit test:
+
+- **The wasm guard still looked up guest-replaceable JavaScript while counting.** `makeInstance` summed a module's
+  memories with `for...of` (the guest's `Array.prototype[Symbol.iterator]`), `pages()` used the live `Number`,
+  `Number.isFinite` and `Math.trunc` (a `valueOf` that answers 0 three times then the real size reserved nothing),
+  and `grow()` read the current size through `ArrayBuffer.prototype.byteLength`. All shown to hold 12 × 64 MiB under a
+  256 MiB budget. The audit of `guest/common` found three more: `WebAssembly.compile` awaited V8's promise, so an
+  `Object.prototype.then` getter could make it resolve with another module, which was then recorded with this one's
+  (smaller) memories; the bytes were "copied" with the guest's `ArrayBuffer.prototype.slice` /
+  `%TypedArray%.prototype.slice`, which can hand back the guest's own buffer, and a getter on `Object.prototype.error`
+  (the inspection result's missing key) ran guest code between inspection and compilation, so a module that grows its
+  own memory compiled after a harmless one was inspected (shown growing 375 MiB); and the descriptor passed to V8
+  inherited from `Object.prototype`, so getters for `shared` and `maximum` made a shared memory. Now every intrinsic
+  the guard uses at call time is captured at snapshot time (including SharedArrayBuffer's `byteLength` getter, taken in
+  `init` before any guest code), sizes are read with captured getters, arrays are walked by index, the inspection
+  result and V8's descriptor have null prototypes, the bytes are copied with captured getters into a buffer the guest
+  never sees, and outside Pyodide's boot a module is compiled synchronously and recorded before anything is awaited.
+  The buffer guard already used only captured intrinsics at call time (tested with `RangeError`, `TypeError` and
+  `Reflect` replaced).
+- **Host-returned buffers in a stock build.** Copying an op's bytes into a budgeted buffer in JavaScript wasn't a
+  boundary: the guest could see the host's buffer first (a destination's own `set` in `encodeInto`, a replaced
+  typed-array `length` getter, an `Object.prototype.then` getter when an async op resolves) and keep gigabytes of
+  uncharged Rust memory; Python's `readbuffer` returned the asset uncharged. Every op that returns bytes now answers a
+  `HostBytes` (`src/hostbuf.rs`) charged in the op before it returns (a RangeError past the budget), whose backing
+  store gives the charge back when V8 frees it; a fetch or STORE body keeps the charge it took as it arrived. The
+  guest's UTF-8 encoding goes through a charged `op_kt_encode` instead of deno_core's `core.encode`.
+- **Redirects rewrote PUT, PATCH and DELETE to GET** on 301 and 302. Now only Fetch's rewrites apply (POST on 301/302,
+  anything but GET/HEAD on 303), the body's `content-*` headers go with the body, and only 301, 302, 303, 307 and 308
+  are followed.
+- **Decompression over 256 MiB returned a truncated success** (`Read::take`). It now reads one byte past the cap and
+  refuses with an error, so a success is always the whole stream with its checksum checked.
+- **node's fs kept the unresolved path below a directory symlink**, so `writeFileSync("alias/a")` made a separate
+  `alias/a` entry and the real file kept its old contents. Paths are now keyed by their parent resolved through
+  symlinks (create, update, append, mkdir, rename, rm, unlink, symlink, readlink, lstat), with the final component's
+  link followed only where the operation does.
+- **python left a replaced directory or symlink in place** (only a replaced file was removed first), and the shell
+  kept the old entry of a file removed and made again as a directory. Python now removes any entry whose kind
+  changed, and the shell treats a removed path as changed.
+- **JSON imports** were handed `export default …` as a JSON module; they now get the JSON text.
+- **A session was marked busy after the sessions lock was released**, so it could be evicted in between. `assign` now
+  marks it in flight under the lock.

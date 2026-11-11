@@ -1,6 +1,5 @@
 // Node's Buffer, as a Uint8Array subclass: the node runtime's, and a global in the shell for just-bash's gzip.
-import { budgetedCopy } from "./budget.js";
-import { latin1 } from "./text.js";
+import { latin1, utf8 } from "./text.js";
 import { base64 } from "./web.js";
 
 const core = globalThis.Deno.core;
@@ -69,7 +68,7 @@ function fromString(s, enc) {
 			return b;
 		}
 		default: {
-			const u = budgetedCopy(core.encode(s));
+			const u = utf8(s);
 			return new Buffer(u.buffer, u.byteOffset, u.byteLength);
 		}
 	}
@@ -110,7 +109,7 @@ export class Buffer extends Uint8Array {
 	static byteLength(s, enc) {
 		if (typeof s !== "string") return s.byteLength;
 		const e = encodingOf(enc);
-		if (e === "utf8" || e === "utf-8") return core.encode(s).byteLength;
+		if (e === "utf8" || e === "utf-8") return utf8(s).byteLength;
 		return fromString(s, e).length;
 	}
 	static compare(a, b) {

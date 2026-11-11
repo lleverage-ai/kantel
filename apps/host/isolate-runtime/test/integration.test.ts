@@ -487,6 +487,356 @@ d("review fixes: memory guards and limits", () => {
 	});
 });
 
+// PR #837's review: the wasm guard counts with intrinsics captured before guest code; host buffers are charged before
+// a guest can see them; redirects keep PUT/PATCH/DELETE; node's fs keys paths through directory symlinks by their real
+// path; python removes an entry it replaced with one of another kind; JSON imports.
+d("PR #837 review fixes", () => {
+	beforeAll(async () => {
+		if (RUN) {
+			await c.load("pr");
+			await c.load("pr-neighbour");
+		}
+	});
+	const neighbourOk = async () => {
+		expect((await c.exec("pr-neighbour", "echo hi")).stdout).toBe("hi\n");
+		expect((await c.health()).ok).toBe(true);
+	};
+	/** Run a node script (as a manifest file) in sandbox "pr". */
+	const nodeScript = async (source: string, timeoutMs = 15000) =>
+		c.exec("pr", "node s.js", { "s.js": await c.fileEntry(source) }, timeoutMs);
+
+	// Each wasm attack holds 64 MiB memories (or grows one in 32 MiB steps) past the 256 MiB budget after tampering
+	// with an intrinsic the guard used to look up when it ran; each must be refused near the budget, not allowed to 12.
+	const WASM_ITERATOR = `const bytes = new Uint8Array([0,97,115,109,1,0,0,0,5,4,1,0,128,8,7,5,1,1,109,2,0]);
+const mod = new WebAssembly.Module(bytes);
+const it = Array.prototype[Symbol.iterator];
+Array.prototype[Symbol.iterator] = function* () {};
+const held = [];
+let made = 0;
+let refused = "no";
+try { for (let i = 0; i < 12; i++) { held.push(new WebAssembly.Instance(mod).exports.m); made++; } } catch (e) { refused = e.name; }
+Array.prototype[Symbol.iterator] = it;
+console.log("iterator", made, refused);
+`;
+	const WASM_NUMBER = `const N = Number, T = Math.trunc;
+let made = 0, refused = "no";
+const held = [];
+globalThis.Number = Object.assign(function (v) { let c = 0; return { valueOf() { return c++ < 3 ? 0 : N(v); } }; }, { isFinite: () => true, isInteger: () => true });
+Math.trunc = (x) => x;
+try { for (let i = 0; i < 12; i++) { held.push(new WebAssembly.Memory({ initial: 1024 })); made++; } } catch (e) { refused = e.name; }
+globalThis.Number = N; Math.trunc = T;
+console.log("number", made, refused);
+`;
+	const WASM_BYTELENGTH = `const m = new WebAssembly.Memory({ initial: 1 });
+m.grow(1);
+const d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength");
+Object.defineProperty(ArrayBuffer.prototype, "byteLength", { configurable: true, get() { return 0; } });
+let grown = 0, refused = "no";
+try { for (let i = 0; i < 15; i++) { m.grow(512); grown++; } } catch (e) { refused = e.name; }
+Object.defineProperty(ArrayBuffer.prototype, "byteLength", d);
+console.log("byteLength", grown, refused);
+`;
+	const WASM_THEN = `const big = new Uint8Array([0,97,115,109,1,0,0,0,5,4,1,0,128,8,7,5,1,1,109,2,0]);
+const small = new Uint8Array([0,97,115,109,1,0,0,0]);
+(async () => {
+	const held = [];
+	let made = 0, refused = "no";
+	try {
+		for (let i = 0; i < 12; i++) {
+			const X = await WebAssembly.compile(big);
+			Object.defineProperty(Object.prototype, "then", {
+				configurable: true,
+				get() {
+					if (this instanceof WebAssembly.Module) {
+						delete Object.prototype.then;
+						return (resolve) => resolve(X);
+					}
+				},
+			});
+			await WebAssembly.compile(small);
+			delete Object.prototype.then;
+			held.push(new WebAssembly.Instance(X).exports.m);
+			made++;
+		}
+	} catch (e) { refused = e.name; }
+	console.log("then", made, refused);
+})();
+`;
+	const WASM_BYTES = `const evil = [0,97,115,109,1,0,0,0, 1,6,1,96,1,127,1,127, 3,2,1,0, 5,3,1,0,1, 7,9,2,1,109,2,0,1,103,0,0, 10,8,1,6,0,32,0,64,0,11];
+const at = evil.length - 3;
+const good = evil.slice(); good[at] = 0x45; good[at + 1] = 0x01;
+const TA = Object.getPrototypeOf(Uint8Array.prototype);
+const out = [];
+for (const view of [false, true]) {
+	const buf = new Uint8Array(good);
+	const saved = view ? TA.slice : ArrayBuffer.prototype.slice;
+	if (view) TA.slice = function () { return this; }; else ArrayBuffer.prototype.slice = function () { return this; };
+	Object.defineProperty(Object.prototype, "error", { configurable: true, get() { buf.set(evil); return undefined; } });
+	let result;
+	try {
+		const mod = new WebAssembly.Module(view ? buf : buf.buffer);
+		delete Object.prototype.error;
+		const inst = new WebAssembly.Instance(mod);
+		inst.exports.g(6000);
+		result = \`grew \${inst.exports.m.buffer.byteLength >> 20}\`;
+	} catch (e) { result = \`refused \${e.name}\`; }
+	delete Object.prototype.error;
+	if (view) TA.slice = saved; else ArrayBuffer.prototype.slice = saved;
+	out.push(result);
+}
+console.log("bytes", out.join(", "));
+`;
+	const WASM_SHARED = `Object.defineProperty(Object.prototype, "shared", { configurable: true, get() { return true; } });
+Object.defineProperty(Object.prototype, "maximum", { configurable: true, get() { return 10; } });
+let kind;
+try { kind = Object.prototype.toString.call(new WebAssembly.Memory({ initial: 1, shared: false, maximum: undefined }).buffer); } catch (e) { kind = \`refused \${e.name}\`; }
+delete Object.prototype.shared; delete Object.prototype.maximum;
+console.log("shared", kind);
+`;
+
+	it("wasm guard: replacing the Array iterator doesn't hide a module's memories", async () => {
+		const r = await nodeScript(WASM_ITERATOR);
+		const [, made, refused] = r.stdout.trim().split(" ");
+		expect(Number(made)).toBeLessThan(4);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: replacing Number, Number.isFinite and Math.trunc doesn't undercount a Memory", async () => {
+		const r = await nodeScript(WASM_NUMBER);
+		const [, made, refused] = r.stdout.trim().split(" ");
+		expect(Number(made)).toBeLessThan(4);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: replacing ArrayBuffer.prototype.byteLength doesn't undercount grow()", async () => {
+		const r = await nodeScript(WASM_BYTELENGTH);
+		const [, grown, refused] = r.stdout.trim().split(" ");
+		expect(Number(grown)).toBeLessThan(8);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: an Object.prototype.then getter can't swap the module a compile records", async () => {
+		const r = await nodeScript(WASM_THEN);
+		const [, made, refused] = r.stdout.trim().split(" ");
+		expect(Number(made)).toBeLessThan(4);
+		expect(refused).toBe("RangeError");
+		await neighbourOk();
+	});
+	it("wasm guard: replaced slice methods and an Object.prototype getter can't change the bytes after inspection", async () => {
+		// A module whose code grows its own memory, shown to the inspection as a harmless one and swapped back
+		// before compiling, would grow past the budget behind grow()'s back; the guard compiles its own copy.
+		const r = await nodeScript(WASM_BYTES);
+		expect(r.stdout).toBe("bytes grew 0, grew 0\n");
+		await neighbourOk();
+	});
+	it("wasm guard: Object.prototype getters can't make a Memory shared", async () => {
+		expect((await nodeScript(WASM_SHARED)).stdout).toBe("shared [object ArrayBuffer]\n");
+	});
+	it("buffer guard: replacing RangeError, TypeError and Reflect still refuses a resizable ArrayBuffer", async () => {
+		const r = await nodeScript(
+			`globalThis.RangeError = function () { return {}; };
+globalThis.TypeError = function () { return {}; };
+Reflect.construct = () => ({});
+let made;
+try { made = new ArrayBuffer(8, { maxByteLength: 1 << 30 }); } catch {}
+console.log(made === undefined, new ArrayBuffer(4).byteLength);`,
+		);
+		expect(r.stdout).toBe("true 4\n");
+	});
+
+	// Host-returned buffers in a stock build used to be Rust memory the budget never saw, and the guest could keep them
+	// before the JavaScript copy into the budget: each of these tries to retain them past the 256 MiB budget. Whatever
+	// it does keep is charged: it is stopped, or what it held fits in the budget.
+	const keptWithinBudget = (r: Record<string, unknown>) => {
+		const held = /held (\d+)/.exec(String(r.stdout));
+		if (r.exitCode === 0) expect(Number(held?.[1]) * 16).toBeLessThan(256);
+		else expect(String(r.stderr) + String(r.terminated)).toMatch(/RangeError|memory/i);
+	};
+	it("host buffers: a destination's own set() can't keep TextEncoder.encodeInto's bytes outside the budget", async () => {
+		const r = await nodeScript(
+			`const held = [];
+const d = new Uint8Array(1);
+d.set = (x) => held.push(x);
+const s = "x".repeat(16 * 1024 * 1024);
+const te = new TextEncoder();
+for (let i = 0; i < 40; i++) te.encodeInto(s, d);
+console.log("held", held.length);`,
+		);
+		keptWithinBudget(r);
+		await neighbourOk();
+	});
+	it("host buffers: a replaced typed-array length getter can't keep encoded bytes outside the budget", async () => {
+		const r = await nodeScript(
+			`const held = [];
+const TA = Object.getPrototypeOf(Uint8Array.prototype);
+const len = Object.getOwnPropertyDescriptor(TA, "length").get;
+Object.defineProperty(TA, "length", { configurable: true, get() { const n = len.call(this); if (n > 1e6) held.push(this); return n; } });
+const s = "x".repeat(16 * 1024 * 1024);
+for (let i = 0; i < 40; i++) Buffer.from(s);
+console.log("held", held.length);`,
+		);
+		keptWithinBudget(r);
+		await neighbourOk();
+	});
+	it("host buffers: an Object.prototype.then getter can't keep fetch bodies outside the budget", async () => {
+		const r = await nodeScript(
+			`const held = [];
+Object.defineProperty(Object.prototype, "then", { configurable: true, get() { if (this instanceof Uint8Array && this.byteLength > 1e6) held.push(this); } });
+const body = new Uint8Array(16 * 1024 * 1024);
+(async () => {
+	for (let i = 0; i < 30; i++) await fetch("http://a.test/echo", { method: "POST", body });
+	console.log("held", held.length);
+})().catch((e) => { console.error(String(e)); process.exit(1); });`,
+			30000,
+		);
+		keptWithinBudget(r);
+		await neighbourOk();
+	});
+	it("host buffers: repeated Pyodide asset reads in python count against the budget", async () => {
+		const code =
+			'import js\nheld=[]\nfor i in range(40): held.append(js.readbuffer("pyodide.asm.wasm"))\nprint(len(held))';
+		const r = await c.exec("pr", `python3 -c '${code}'`, {}, 30000);
+		// pyodide.asm.wasm is about 10 MB: 40 of them can't be held in 256 MiB.
+		expect(r.exitCode).not.toBe(0);
+		expect(r.stderr + String(r.terminated)).toMatch(/RangeError|memory/i);
+		await neighbourOk();
+	});
+	it("host buffers: encoding, files, stdin, zlib and digests still work", async () => {
+		const r = await c.exec("pr", "printf in | node s.js", {
+			"s.js": await c.fileEntry(
+				`const fs = require("fs"), zlib = require("zlib"), crypto = require("crypto");
+const te = new TextEncoder(), d = new Uint8Array(4);
+const into = te.encodeInto("héllo", d);
+console.log(te.encode("héllo").length, into.read, into.written, Buffer.byteLength("héllo"), Buffer.from("héllo").toString());
+console.log(fs.readFileSync("f.txt", "utf8"), fs.readFileSync(0, "utf8"));
+console.log(zlib.gunzipSync(zlib.gzipSync("zip")).toString(), crypto.createHash("sha256").update("a").digest("hex").slice(0, 8));`,
+			),
+			"f.txt": await c.fileEntry("file"),
+		});
+		expect(r.stdout).toBe("6 3 4 6 héllo\nfile in\nzip ca978112\n");
+	});
+
+	it("redirects keep PUT, PATCH and DELETE (and their bodies) on 301 and 302, as Fetch does", async () => {
+		const r = await nodeScript(
+			`const cases = [["PUT", 301], ["PATCH", 302], ["DELETE", 302], ["POST", 301], ["POST", 302], ["PUT", 303], ["PUT", 307], ["POST", 308]];
+(async () => {
+	for (const [method, status] of cases) {
+		const body = method === "DELETE" ? undefined : "x";
+		const res = await fetch("http://a.test/redirect/" + status, { method, body, headers: body ? { "content-type": "text/plain" } : {} });
+		console.log(method, status, "->", await res.text());
+	}
+})();`,
+		);
+		expect(r.stdout.trim().split("\n")).toEqual([
+			"PUT 301 -> PUT text/plain x",
+			"PATCH 302 -> PATCH text/plain x",
+			"DELETE 302 -> DELETE none ",
+			"POST 301 -> GET none ",
+			"POST 302 -> GET none ",
+			"PUT 303 -> GET none ",
+			"PUT 307 -> PUT text/plain x",
+			"POST 308 -> POST text/plain x",
+		]);
+	});
+
+	it("JSON imports: a manifest file, a file the run wrote, and malformed JSON refused", async () => {
+		const manifest = {
+			"d.json": await c.fileEntry('{"a": [1, 2], "b": "two"}'),
+			"bad.json": await c.fileEntry("{nope"),
+			"m.mjs": await c.fileEntry(
+				`import d from "./d.json" with { type: "json" };
+import { writeFileSync } from "node:fs";
+writeFileSync("w.json", JSON.stringify({ written: true }));
+const w = await import("./w.json", { with: { type: "json" } });
+console.log(d.a[1], d.b, w.default.written);`,
+			),
+			"bad.mjs": await c.fileEntry('import b from "./bad.json" with { type: "json" }; console.log(b);'),
+		};
+		const ok = await c.exec("pr", "node m.mjs", manifest);
+		expect(ok.stderr).toBe("");
+		expect(ok.stdout).toBe("2 two true\n");
+		const bad = await c.exec("pr", "node bad.mjs", manifest);
+		expect(bad.exitCode).not.toBe(0);
+	});
+
+	it("node fs: writes, renames and removals below a directory symlink use the real path, in the run and after", async () => {
+		const manifest = {
+			"real/a": await c.fileEntry("old"),
+			"real/gone": await c.fileEntry("bye"),
+			alias: { kind: "symlink", target: "real" },
+		};
+		const r = await c.exec("pr", "node s.js", {
+			...manifest,
+			"s.js": await c.fileEntry(
+				`const fs = require("fs");
+fs.writeFileSync("alias/a", "new");
+fs.writeFileSync("alias/b", "made");
+fs.appendFileSync("alias/b", "+");
+fs.mkdirSync("alias/sub/deep", { recursive: true });
+fs.writeFileSync("alias/sub/deep/c", "c");
+fs.renameSync("alias/b", "alias/b2");
+fs.unlinkSync("alias/gone");
+fs.symlinkSync("a", "alias/la");
+fs.unlinkSync("alias/la");
+fs.symlinkSync("real/a", "link");
+fs.unlinkSync("link");
+console.log(JSON.stringify([
+	fs.readFileSync("alias/a", "utf8"), fs.readFileSync("real/a", "utf8"), fs.readFileSync("real/b2", "utf8"),
+	fs.existsSync("real/b"), fs.existsSync("real/gone"), fs.existsSync("real/la"), fs.existsSync("link"),
+	fs.lstatSync("alias").isSymbolicLink(), fs.readFileSync("real/sub/deep/c", "utf8"), fs.readdirSync("real").join(","),
+]));`,
+			),
+		});
+		expect(r.stderr).toBe("");
+		expect(JSON.parse(r.stdout)).toEqual(["new", "new", "made+", false, false, false, false, true, "c", "a,b2,sub"]);
+		const m = r.manifest as Record<string, { kind: string; size?: number; target?: string }>;
+		expect(m.alias).toEqual({ kind: "symlink", target: "real" });
+		expect(m["real/a"].size).toBe(3);
+		expect(m["real/b2"].size).toBe(5);
+		expect(m["real/sub/deep/c"].kind).toBe("file");
+		for (const k of Object.keys(m)) expect(k.startsWith("alias/")).toBe(false);
+		expect(m["real/gone"]).toBeUndefined();
+		expect(m.link).toBeUndefined();
+		// The next command, from that manifest.
+		const next = await c.exec("pr", "cat real/a alias/a real/b2 real/sub/deep/c", m);
+		expect(next.stdout).toBe("newnewmade+c");
+	});
+
+	it("python: replacing a symlink or a directory with a file, and a file with a directory, persists as made", async () => {
+		const manifest = {
+			"target.txt": await c.fileEntry("T"),
+			link: { kind: "symlink", target: "target.txt" },
+			emptydir: { kind: "dir" },
+			f: await c.fileEntry("F"),
+			keep: { kind: "symlink", target: "target.txt" },
+		};
+		const code = [
+			"import os",
+			'os.unlink("/workspace/link")',
+			'open("/workspace/link", "w").write("L")',
+			'os.rmdir("/workspace/emptydir")',
+			'open("/workspace/emptydir", "w").write("D")',
+			'os.unlink("/workspace/f")',
+			'os.mkdir("/workspace/f")',
+			'open("/workspace/f/inner", "w").write("I")',
+		].join("\n");
+		const r = await c.exec("pr", `python3 -c '${code}'`, manifest, 30000);
+		expect(r.stderr).toBe("");
+		expect(r.exitCode).toBe(0);
+		const m = r.manifest as Record<string, { kind: string; target?: string }>;
+		expect(m.link.kind).toBe("file");
+		expect(m.emptydir.kind).toBe("file");
+		expect(m.f.kind).toBe("dir");
+		expect(m["f/inner"].kind).toBe("file");
+		expect(m.keep).toEqual({ kind: "symlink", target: "target.txt" });
+		const next = await c.exec("pr", "cat target.txt link emptydir f/inner keep", m);
+		expect(next.stdout).toBe("TLDIT");
+		// The shell's own file-to-directory replacement is recorded too.
+		const shell = await c.exec("pr", "rm target.txt && mkdir target.txt", m);
+		expect((shell.manifest as Record<string, { kind: string }>)["target.txt"]).toEqual({ kind: "dir" });
+	});
+});
+
 // memoryMiB bounds the V8 heap, ArrayBuffers and wasm memory together: holding ~60% of it in one and then taking
 // ~60% in the other is stopped (each alone fits, and before the limit was one figure each fitted on its own budget).
 d("one memory limit: heap, buffers and wasm together", () => {

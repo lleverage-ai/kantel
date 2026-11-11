@@ -15,6 +15,7 @@ use serde_json::Value;
 use sha2::Digest;
 
 use crate::bridges::{FetchReq, egress_fetch, valid_sha};
+use crate::hostbuf::{HostBytes, budget_of};
 use crate::isolate::{Ctx, Engine, Kind, RunResult, RunState, engine, run_child};
 use crate::limits::Refusal;
 
@@ -57,69 +58,95 @@ fn op_kt_random(#[buffer] buf: &mut [u8]) -> Result<(), JsErrorBox> {
 }
 
 #[op2]
-#[buffer]
-fn op_kt_digest(#[string] alg: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
-    Ok(match alg {
+fn op_kt_digest(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] alg: &str,
+    #[buffer] data: &[u8],
+) -> Result<HostBytes, JsErrorBox> {
+    let digest = match alg {
         "md5" => md5::Md5::digest(data).to_vec(),
         "sha1" => sha1::Sha1::digest(data).to_vec(),
         "sha256" => sha2::Sha256::digest(data).to_vec(),
         "sha384" => sha2::Sha384::digest(data).to_vec(),
         "sha512" => sha2::Sha512::digest(data).to_vec(),
         other => return Err(JsErrorBox::generic(format!("unsupported digest {other}"))),
-    })
+    };
+    HostBytes::charge(isolate, &state, digest)
+}
+
+/// UTF-8 bytes of a string, for the guest's TextEncoder and Buffer (in place of deno_core's `core.encode`, whose
+/// result a stock build doesn't charge to the isolate). Lone surrogates become U+FFFD, as TextEncoder does.
+#[op2]
+fn op_kt_encode(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] text: String,
+) -> Result<HostBytes, JsErrorBox> {
+    HostBytes::charge(isolate, &state, text.into_bytes())
 }
 
 // --- zlib (shell's gzip, node's zlib) -----------------------------------------------------------------------------
 
+/// Inflated output is bounded so a zip bomb can't take the process down.
+const ZLIB_MAX_OUTPUT: usize = 256 * 1024 * 1024;
+
 #[op2]
-#[buffer]
 fn op_kt_zlib(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
     #[string] kind: &str,
     #[buffer] data: &[u8],
     #[smi] level: u32,
-) -> Result<Vec<u8>, JsErrorBox> {
+) -> Result<HostBytes, JsErrorBox> {
+    let out = zlib(kind, data, level, ZLIB_MAX_OUTPUT).map_err(JsErrorBox::generic)?;
+    HostBytes::charge(isolate, &state, out)
+}
+
+/// Compress or decompress `data`. A decompression answers the whole output, checked to its end (a gzip or zlib
+/// stream's checksum included), or an error: output over `cap` is refused, never cut short and called a success.
+fn zlib(kind: &str, data: &[u8], level: u32, cap: usize) -> Result<Vec<u8>, String> {
     use std::io::{Read, Write};
 
     use flate2::Compression;
     let lvl = Compression::new(level.min(9));
+    let err = |e: std::io::Error| format!("zlib: {e}");
+    fn inflate(mut decoder: impl Read, cap: usize) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        // One byte past the cap tells "exactly the cap" (the decoder reached its end, checksum checked) from "more".
+        (&mut decoder)
+            .take(cap as u64 + 1)
+            .read_to_end(&mut out)
+            .map_err(|e| format!("zlib: {e}"))?;
+        if out.len() > cap {
+            return Err(format!(
+                "zlib: the output is larger than {} MiB, the most an isolate inflates",
+                cap >> 20
+            ));
+        }
+        Ok(out)
+    }
     let mut out = Vec::new();
-    // Inflated output is bounded so a zip bomb can't take the process down.
-    let cap = 256u64 * 1024 * 1024;
     match kind {
         "gzip" => {
             let mut e = flate2::write::GzEncoder::new(&mut out, lvl);
-            e.write_all(data).map_err(jerr)?;
-            e.finish().map_err(jerr)?;
+            e.write_all(data).map_err(err)?;
+            e.finish().map_err(err)?;
         }
         "deflate" => {
             let mut e = flate2::write::ZlibEncoder::new(&mut out, lvl);
-            e.write_all(data).map_err(jerr)?;
-            e.finish().map_err(jerr)?;
+            e.write_all(data).map_err(err)?;
+            e.finish().map_err(err)?;
         }
         "deflateraw" => {
             let mut e = flate2::write::DeflateEncoder::new(&mut out, lvl);
-            e.write_all(data).map_err(jerr)?;
-            e.finish().map_err(jerr)?;
+            e.write_all(data).map_err(err)?;
+            e.finish().map_err(err)?;
         }
-        "gunzip" => {
-            flate2::read::MultiGzDecoder::new(data)
-                .take(cap)
-                .read_to_end(&mut out)
-                .map_err(jerr)?;
-        }
-        "inflate" => {
-            flate2::read::ZlibDecoder::new(data)
-                .take(cap)
-                .read_to_end(&mut out)
-                .map_err(jerr)?;
-        }
-        "inflateraw" => {
-            flate2::read::DeflateDecoder::new(data)
-                .take(cap)
-                .read_to_end(&mut out)
-                .map_err(jerr)?;
-        }
-        _ => return Err(JsErrorBox::generic("zlib: unknown mode")),
+        "gunzip" => return inflate(flate2::read::MultiGzDecoder::new(data), cap),
+        "inflate" => return inflate(flate2::read::ZlibDecoder::new(data), cap),
+        "inflateraw" => return inflate(flate2::read::DeflateDecoder::new(data), cap),
+        _ => return Err("zlib: unknown mode".into()),
     }
     Ok(out)
 }
@@ -127,11 +154,10 @@ fn op_kt_zlib(
 // --- STORE: the shell's lazy blob reads and uploads ---------------------------------------------------------------
 
 #[op2]
-#[buffer]
 async fn op_kt_blob_read(
     state: Rc<RefCell<OpState>>,
     #[string] sha: String,
-) -> Result<Vec<u8>, JsErrorBox> {
+) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     if c.kind != Kind::Shell {
         return Err(JsErrorBox::generic("not available here"));
@@ -147,11 +173,14 @@ async fn op_kt_blob_read(
     // isolate can't hold a file larger than its own memory.
     let cap = c.budget.limit();
     let mut charge = crate::bridges::Charge::new(c.budget.clone());
-    engine()
+    let bytes = engine()
         .store
         .get(&sha, cap, Some(&mut charge))
         .await
-        .map_err(jerr)
+        .map_err(jerr)?;
+    // The read's charge becomes the buffer's: the bytes stay charged until V8 frees the guest's buffer.
+    let held = charge.keep();
+    HostBytes::adopt(budget_of(&state.borrow()), bytes, held)
 }
 
 #[op2]
@@ -191,12 +220,11 @@ impl Drop for AbortOnDrop {
 }
 
 #[op2]
-#[buffer]
 async fn op_kt_fetch(
     state: Rc<RefCell<OpState>>,
     #[string] req: String,
     #[buffer] body: JsBuffer,
-) -> Result<Vec<u8>, JsErrorBox> {
+) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     let req: FetchReq = serde_json::from_str(&req).map_err(jerr)?;
     // Allow-list methods: no CONNECT, no arbitrary verbs.
@@ -227,16 +255,19 @@ async fn op_kt_fetch(
     let eng = engine();
     let handle = eng.io.spawn(async move {
         let mut charge = crate::bridges::Charge::new(budget);
-        tokio::time::timeout(
+        let out = tokio::time::timeout(
             remaining,
             egress_fetch(&engine().egress, &sandbox, req, body, Some(&mut charge)),
         )
-        .await
+        .await;
+        // The body and its charge, still held by the Charge (given back if the op is dropped before taking it).
+        out.map(|r| r.map(|bytes| (bytes, charge)))
     });
     let _abort = AbortOnDrop(handle.abort_handle());
     let out = handle.await;
     match out.map_err(jerr)? {
-        Ok(Ok(bytes)) => Ok(bytes),
+        // The body's charge becomes the result's: the bytes stay charged until V8 frees the guest's buffer.
+        Ok(Ok((bytes, charge))) => HostBytes::adopt(Some(c.budget.clone()), bytes, charge.keep()),
         Ok(Err(e)) => Err(JsErrorBox::generic(format!("fetch failed: {e:#}"))),
         Err(_) => Err(JsErrorBox::generic("fetch timed out")),
     }
@@ -245,13 +276,12 @@ async fn op_kt_fetch(
 // --- the shell runs node/python in a fresh isolate ----------------------------------------------------------------
 
 #[op2]
-#[buffer]
 async fn op_kt_run(
     state: Rc<RefCell<OpState>>,
     #[string] kind: String,
     #[string] meta: String,
     #[buffer] payload: JsBuffer,
-) -> Result<Vec<u8>, JsErrorBox> {
+) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     if c.kind != Kind::Shell {
         return Err(JsErrorBox::generic("not available here"));
@@ -261,7 +291,8 @@ async fn op_kt_run(
         "python" | "python3" => Kind::Python,
         _ => return Err(JsErrorBox::generic("unknown runtime")),
     };
-    Ok(run_child(child, &c, meta, payload.to_vec()).await)
+    let out = run_child(child, &c, meta, payload.to_vec()).await;
+    HostBytes::adopt(budget_of(&state.borrow()), out, 0)
 }
 
 #[op2(fast)]
@@ -274,21 +305,32 @@ fn op_kt_cancel_run(state: &mut OpState, #[smi] run_id: u32) {
 // --- node/python read the run's files and stdin -------------------------------------------------------------------
 
 #[op2]
-#[buffer]
-fn op_kt_file(state: &mut OpState, #[string] path: &str) -> Result<Vec<u8>, JsErrorBox> {
-    let run = state
-        .try_borrow::<RunState>()
-        .ok_or_else(|| JsErrorBox::generic("no run"))?;
-    run.file(path).map_err(jerr)
+fn op_kt_file(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] path: &str,
+) -> Result<HostBytes, JsErrorBox> {
+    let bytes = {
+        let state = state.borrow();
+        let run = state
+            .try_borrow::<RunState>()
+            .ok_or_else(|| JsErrorBox::generic("no run"))?;
+        run.file(path).map_err(jerr)?
+    };
+    HostBytes::charge(isolate, &state, bytes)
 }
 
 #[op2]
-#[buffer]
-fn op_kt_input(state: &mut OpState) -> Vec<u8> {
-    state
+fn op_kt_input(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+) -> Result<HostBytes, JsErrorBox> {
+    let stdin = state
+        .borrow()
         .try_borrow::<RunState>()
         .map(|r| r.stdin.clone())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    HostBytes::charge(isolate, &state, stdin)
 }
 
 #[op2(fast)]
@@ -397,25 +439,32 @@ fn op_kt_syntax_error<'s>(
 // --- python: read a Pyodide asset, and its memory snapshot (its own copy, never a shared buffer) ------------------
 
 #[op2]
-#[buffer]
-fn op_kt_read_asset(state: &mut OpState, #[string] path: String) -> Result<Vec<u8>, JsErrorBox> {
-    let c = ctx_sync(state)?;
+fn op_kt_read_asset(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] path: String,
+) -> Result<HostBytes, JsErrorBox> {
+    let c = ctx(&state)?;
     if c.kind != Kind::Python {
         return Err(JsErrorBox::generic("not available here"));
     }
-    engine().read_asset(&path).map_err(jerr)
+    let bytes = engine().read_asset(&path).map_err(jerr)?;
+    HostBytes::charge(isolate, &state, bytes)
 }
 
 #[op2]
-#[buffer]
-fn op_kt_python_snapshot(state: &mut OpState) -> Result<Vec<u8>, JsErrorBox> {
-    let c = ctx_sync(state)?;
+fn op_kt_python_snapshot(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+) -> Result<HostBytes, JsErrorBox> {
+    let c = ctx(&state)?;
     if c.kind != Kind::Python {
         return Err(JsErrorBox::generic("not available here"));
     }
-    // A fresh copy for this isolate: the guest never sees the shared source, and nothing it does can corrupt another
-    // isolate's snapshot (the #[buffer] return copies into a V8-owned ArrayBuffer).
-    engine().python_snapshot().map_err(jerr)
+    // A fresh copy for this isolate, charged to it: the guest never sees the shared source, and nothing it does can
+    // corrupt another isolate's snapshot.
+    let bytes = engine().python_snapshot().map_err(jerr)?;
+    HostBytes::charge(isolate, &state, bytes)
 }
 
 #[op2(fast)]
@@ -491,6 +540,7 @@ deno_core::extension!(
         op_kt_log,
         op_kt_random,
         op_kt_digest,
+        op_kt_encode,
         op_kt_zlib,
         op_kt_blob_read,
         op_kt_blob_put,
@@ -531,4 +581,66 @@ pub fn manifest_shas(manifest: &Value) -> HashSet<String> {
         }
     }
     set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zlib;
+
+    const CAP: usize = 4096;
+
+    fn compress(kind: &str, data: &[u8]) -> Vec<u8> {
+        zlib(kind, data, 0, usize::MAX).expect("compress")
+    }
+
+    #[test]
+    fn decompression_is_whole_or_an_error() {
+        for (enc, dec) in [
+            ("gzip", "gunzip"),
+            ("deflate", "inflate"),
+            ("deflateraw", "inflateraw"),
+        ] {
+            // Below and exactly at the cap: the whole output.
+            for len in [0, 100, CAP - 1, CAP] {
+                let data: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+                let out = zlib(dec, &compress(enc, &data), 0, CAP)
+                    .unwrap_or_else(|e| panic!("{dec} {len}: {e}"));
+                assert_eq!(out, data, "{dec} {len}");
+            }
+            // Over the cap, by one byte and by a lot: refused, never a truncated success.
+            for len in [CAP + 1, CAP * 64] {
+                let data = vec![b'a'; len];
+                let err = zlib(dec, &compress(enc, &data), 0, CAP).expect_err(dec);
+                assert!(err.contains("larger than"), "{dec} {len}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bad_checksum_at_the_cap_is_an_error() {
+        let data = vec![b'z'; CAP];
+        // gzip: CRC-32 then ISIZE in the last 8 bytes; zlib: Adler-32 in the last 4.
+        for (enc, dec, from_end) in [("gzip", "gunzip", 8), ("deflate", "inflate", 4)] {
+            let mut stream = compress(enc, &data);
+            let at = stream.len() - from_end;
+            stream[at] ^= 0xff;
+            assert!(zlib(dec, &stream, 0, CAP).is_err(), "{dec}");
+        }
+    }
+
+    #[test]
+    fn a_truncated_stream_is_an_error() {
+        let data: Vec<u8> = (0..CAP).map(|i| (i * 31 % 256) as u8).collect();
+        for (enc, dec) in [
+            ("gzip", "gunzip"),
+            ("deflate", "inflate"),
+            ("deflateraw", "inflateraw"),
+        ] {
+            let stream = compress(enc, &data);
+            assert!(
+                zlib(dec, &stream[..stream.len() / 2], 0, CAP).is_err(),
+                "{dec}"
+            );
+        }
+    }
 }
