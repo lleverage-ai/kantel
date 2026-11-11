@@ -79,9 +79,13 @@ KANTEL_ISOLATE_ASSETS=<assets-dir> \
 ```
 
 The integration suite covers protocol parity with the behaviours `sandbox.ts` had, manifest semantics, node and
-python features, egress tagging, `needsMicrovm`, `terminated`, and the containment attacks (B5) with a neighbour
-sandbox's latency checked. It skips with a message if the binary or assets aren't built, so `pnpm test` at the repo
-root (which doesn't build Rust) doesn't fail. W3 owns adding the Rust build and this suite to CI.
+python features, egress tagging, `needsMicrovm`, `terminated`, the containment attacks (B5) with a neighbour
+sandbox's latency checked, the one memory limit (heap then buffers and the reverse, in the shell, node and python),
+and native mode's transport: a subset runs with the runtime, the store and the egress proxy on Unix sockets in a 0700
+directory, and checks the process has no TCP or UDP socket (in its own network namespace where unprivileged user
+namespaces are available) while a guest fetch still reaches the egress socket. It uses ports 29310–29343
+(`KANTEL_ISOLATE_TEST_PORT` moves them). It skips with a message if the binary or assets aren't built, so `pnpm test`
+at the repo root (which doesn't build Rust) doesn't fail. W3 owns adding the Rust build and this suite to CI.
 
 ## Limits, and what enforces each
 
@@ -89,7 +93,7 @@ Per isolate, together where noted:
 
 | Limit | Enforced by |
 | --- | --- |
-| Memory (`memoryMiB`, 128–512, default 256) | V8 heap limit = memoryMiB with a near-heap-limit callback that terminates (exit 137, `terminated: memory`); an ArrayBuffer allocator with a byte budget = memoryMiB for typed arrays/ArrayBuffers; WebAssembly memory counted against the same byte budget by the guest's wasm guard. Heap and buffers/wasm are each bounded by memoryMiB (see Known gaps). |
+| Memory (`memoryMiB`, 128–512, default 256) | One limit on the sum of the V8 heap, ArrayBuffers and WebAssembly memory. A GC epilogue records the heap in use after every GC; buffers (the ArrayBuffer allocator's byte budget) and wasm memory (the guest's wasm guard) are refused past memoryMiB minus that heap, and the epilogue terminates the command (exit 137, `terminated: memory`) when heap + buffers + wasm is over memoryMiB, so heap growth on top of buffers is stopped too. The V8 heap limit stays memoryMiB, with a near-heap-limit callback that terminates, as the backstop between GCs. |
 | CPU per command | A watchdog thread samples each isolate thread's CPU clock and terminates past `--cpu-ms` (exit 152, `terminated: cpu`); a `node`/`python` run's CPU counts against the shell command that started it. |
 | Wall clock per command | The same watchdog terminates past the request's `timeoutMs` (max 10 min), default 30 s (exit 152, `terminated: wall`). |
 | Concurrent node/python runs | `--max-runs` (default 2× CPUs, 2–16); over it a run answers a clear "runtime is busy" error. |
@@ -130,12 +134,19 @@ hardening (seccomp, landlock, a dedicated uid and cgroup), which this crate deli
 
 ## Known gaps
 
-- **Memory is bounded per facet, not summed.** The V8 heap is capped at `memoryMiB` and ArrayBuffers+wasm are capped
-  at `memoryMiB` on a separate budget, so a sandbox's worst case is roughly `2 × memoryMiB` rather than a single
-  combined figure. Summing them needs sampling the live heap from the isolate's own thread without aborting V8 under
-  termination; the two-budget approach is kept. Host-returned buffers (file reads, fetch bodies, `core.encode`) are
-  copied into the budget in stock builds and allocated through the in-sandbox budget allocator in `v8-sandbox`
-  builds, so they can no longer be retained outside it.
+- **The memory limit is checked at GCs and allocations, not continuously.** The heap figure is the last GC's, so
+  between GCs the heap can grow past memoryMiB minus the buffers until the next GC (V8 collects often while the heap
+  grows) or, at worst, the heap limit (memoryMiB) — the backstop. Buffers count until V8 frees them, so the epilogue
+  stops a command only when the total is over at a full GC and still over at the GC after it (by then the buffers
+  that GC found dead are freed); a stock-build allocation refused only because of the heap figure first lets V8
+  collect and retry. In a `v8-sandbox` build the C++ budget allocator holds ArrayBuffers to memoryMiB on their own
+  (its limit can't be changed without rebuilding the patched V8), and buffers taken on top of the heap are stopped
+  at the next GC, which V8 runs as external memory grows, rather than in the allocation itself; a program that takes
+  them and then idles without allocating can hold them until then. Host-returned buffers (file reads, fetch
+  bodies, `core.encode`) are copied into the budget in stock builds and allocated through the in-sandbox budget
+  allocator in `v8-sandbox` builds, so they can't be retained outside it. A just-bash command holds a file it reads
+  about twice over (the read and its own copy), so a shell reading a file of more than about 45% of memoryMiB is now
+  stopped where it used to fit.
 - **The memory guards are JS-level.** The wasm guard (every `WebAssembly.Memory`/`grow`/`Module`/`Instance`, plus a
   host module inspection) and the resizable-buffer guard are installed before any guest code, use primordials
   captured at snapshot time (a guest can't defeat them by swapping `Reflect.construct`, `WeakMap.prototype.get`, …),

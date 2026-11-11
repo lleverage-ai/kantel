@@ -213,6 +213,8 @@ impl Budget {
     /// A refusal blamed on the heap: true if it should only fail this attempt (no GC has run since the heap figure
     /// was last held against an allocation, so V8 collects and retries), false if the figure is from a GC after that
     /// (it's real: stop the isolate). V8 retries a refused ArrayBuffer allocation after a GC, up to three times.
+    /// Only the stock build's Rust allocator asks (the sandbox build's C++ allocator has V8 retry on its own).
+    #[cfg(any(test, not(feature = "v8-sandbox")))]
     fn soft_refusal(&self) -> bool {
         let gcs = self.gcs.load(Ordering::SeqCst);
         match self

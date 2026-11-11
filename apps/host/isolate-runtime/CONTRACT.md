@@ -24,7 +24,9 @@ between the workstreams so they can run in parallel. Change it only by telling t
   "capabilities": {"javascript": true, "python": true}, "memoryEnforced": true}` (extra fields are allowed).
 - `POST /warm {"size": n}` → `{"ok": true, ...stats}`.
 - `POST /load {"sandboxId", "memoryMiB"?}` → `{"ok": true, "hit", "ms", "memoryMiB"}`. memoryMiB (128–512, default 256)
-  is now ENFORCED per isolate: heap, ArrayBuffers and wasm memory together.
+  is now ENFORCED per isolate: one limit on the sum of the V8 heap, ArrayBuffers and wasm memory (`terminated:
+  "memory"`, exit 137, when a command takes it over; a buffer or wasm allocation past it may instead fail with a
+  RangeError / MemoryError that the program can handle).
 - `POST /exec {"sandboxId", "command", "cwd"?, "env"?, "manifest", "timeoutMs"?}` → `{"exitCode", "stdout", "stderr",
   "manifest", "changed", "timings", "hit", "ms"}` plus two new optional fields:
   - `"terminated": "cpu" | "memory" | "wall"` when the runtime stopped the command (exit code 152 for cpu/wall, 137 for

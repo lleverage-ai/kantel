@@ -395,3 +395,18 @@ test each (`test/integration.test.ts`, run on both the stock and `v8-sandbox` bu
 - **Cross-origin redirects (M10)** drop `Authorization`/`Cookie`; same-origin redirects keep them.
 - **build-assets.sh (M11)** uses a frozen install (never a plain fallback), honours `KANTEL_ISOLATE_OFFLINE`, and
   pins the Pyodide tarball's SHA-256 (checked before extraction).
+- **One memory limit:** memoryMiB used to bound the V8 heap and ArrayBuffers + wasm memory each, so an isolate could
+  hold about twice its size. A GC epilogue now records the heap after every GC into the isolate's budget; buffer and
+  wasm requests are refused past memoryMiB minus the heap, and the epilogue terminates (`terminated: memory`) when
+  heap + buffers + wasm is over memoryMiB at a full GC and the GC after it. In `v8-sandbox` builds the C++ budget
+  allocator's byte count (`kantel__BudgetAllocator__Used`) is read into the same sum; the allocator's own limit
+  stays memoryMiB, so no V8 rebuild was needed. The heap limit stays memoryMiB as the backstop. Tested in the shell,
+  node and python, heap-then-buffers and the reverse, on both builds.
+- **A terminated shell command could hang `/exec` for good:** when a termination lands in a timer callback or an
+  event-loop tick, deno_core swallows it and loses the timer schedule, so the command's promise never settles (seen
+  on the earlier build too, e.g. a CPU-limit stop while `wc` read a 120 MB file; the wall deadline didn't help,
+  since only JavaScript is terminated). The shell now abandons such a call after a 1 s grace and replaces its
+  isolate, dropping it outside the event loop (inside, V8 aborts).
+- **Unix-socket transport is tested:** a subset of the suite runs with `--listen`, `--store` and `--egress` on Unix
+  sockets in a 0700 directory and checks that the process has no TCP or UDP socket while a guest fetch still reaches
+  the egress socket.
