@@ -1,0 +1,56 @@
+[package]
+name = "kantel-isolate"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Kantel's isolate runtime: just-bash, node and python for isolate sandboxes, one V8 isolate each, on deno_core."
+
+[[bin]]
+name = "kantel-isolate"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+deno_ast = { version = "0.53", features = ["type_strip"] }
+deno_core = "0.412"
+deno_error = "0.7"
+flate2 = "1"
+getrandom = "0.3"
+hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+libc = "0.2"
+md-5 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms", "background_threads"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std", "ansi", "env-filter"] }
+wasmparser = { version = "0.244", default-features = false, features = ["std", "validate", "features"] }
+# The V8 that deno_core uses, named here only so its build features are set in one place (see [features]).
+deno_v8 = { version = "0.4", default-features = false, features = ["v8"] }
+
+[features]
+default = ["jemalloc"]
+# jemalloc replaces malloc for the whole process (V8 included): it returns freed memory to the OS and doesn't serialise
+# isolate threads the way glibc with few arenas does.
+jemalloc = ["dep:tikv-jemallocator"]
+# V8's heap sandbox (pointer compression and the sandbox): needs a V8 built with it (RUSTY_V8_ARCHIVE or a source build;
+# see README.md). `kantel-isolate version` reports which one a binary has.
+v8-sandbox = ["deno_v8/v8_enable_sandbox", "deno_core/v8_enable_pointer_compression"]
+
+[profile.release]
+codegen-units = 16
+lto = "thin"
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1
