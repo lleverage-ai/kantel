@@ -54,6 +54,8 @@ interface Options {
 	readonly settle?: (sandboxId: string, operationId: string) => Promise<UpgradeOutcome> | undefined;
 	/** Answers a stop instead of the stub, as a host away would (`unavailable`), where it throws. */
 	readonly stop?: (sandboxId: string) => void;
+	/** Runs before the stub takes a snapshot (to hold it while something else happens). */
+	readonly takeSnapshot?: (sandboxId: string) => Promise<void>;
 	/** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
 	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined | Promise<ExecResult | undefined>;
 	/** Takes egress updates, as a host does; absent, the backend takes none (as the stub). */
@@ -91,6 +93,10 @@ function setup(options: Options = {}) {
 			if (instead !== undefined) return instead;
 			if (stub.settleUpgrade === undefined) throw new Error("The stub settles upgrades");
 			return stub.settleUpgrade(sandboxId, operationId);
+		},
+		takeSnapshot: async (sandboxId, snapshotOptions) => {
+			await options.takeSnapshot?.(sandboxId);
+			return stub.takeSnapshot(sandboxId, snapshotOptions);
 		},
 		stop: async (sandboxId, stopOptions) => {
 			options.stop?.(sandboxId);
@@ -1375,6 +1381,34 @@ describe("an upgraded sandbox's snapshots from before", () => {
 		expect(stored?.shape).toEqual({ vcpus: 0, memoryMb: 384 });
 		expect(stored?.resources?.memoryMb).toBe(384);
 	});
+
+	for (const [what, take] of [
+		["snapshot", (tom: KantelClient, id: string) => tom.takeSnapshot(id, {})],
+		["save", (tom: KantelClient, id: string) => tom.saveSnapshot({ name: "across", sandboxId: id })],
+	] as const) {
+		it(`are never taken across an upgrade: a ${what} whose sandbox upgrades meanwhile is refused`, async () => {
+			let release: () => void = () => undefined;
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let holding = false;
+			const { tom, api } = setup({ takeSnapshot: async () => (holding ? held : undefined) });
+			const sandbox = await isolateWithFiles(tom);
+			holding = true;
+			// Read as an isolate, its bytes taken only once it has become a microVM.
+			const taking = failure(take(tom, sandbox.id));
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			holding = false;
+			await tom.upgradeSandbox(sandbox.id, {});
+			release();
+			expect((await taking).status).toBe(409);
+			const stored = await api.store.sandboxes.get(sandbox.id);
+			expect(stored?.type).toBe("microvm");
+			expect(stored?.latestSnapshotId).toBeUndefined();
+			// No snapshot says it is an isolate's that isn't.
+			expect((await tom.listSnapshots({ sandboxId: sandbox.id })).items).toEqual([]);
+		});
+	}
 
 	it("are never what the microVM resumes from once its own newest is deleted", async () => {
 		const { tom, api } = setup();

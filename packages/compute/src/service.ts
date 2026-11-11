@@ -4224,6 +4224,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await backend.deleteSnapshot(ref).catch(() => undefined);
 	}
 
+	/**
+	 * Refuses bytes just taken of `read` (a running sandbox, as read before they were taken) when what they are of can't
+	 * be told: the sandbox began or ended an upgrade meanwhile, so they may be the isolate's or the microVM's. The bytes go
+	 * again (`ref`). A snapshot's `sandboxType` is then always what its bytes are of.
+	 */
+	async function requireSameTier(read: StoredSandbox, ref: string | undefined): Promise<void> {
+		const latest = await store.sandboxes.get(read.id);
+		if (latest === undefined) return;
+		if (
+			latest.type === read.type &&
+			latest.upgrading === undefined &&
+			latest.upgradedFrom?.at === read.upgradedFrom?.at
+		) {
+			return;
+		}
+		await releaseRef(ref);
+		throw new KantelError("conflict", "The sandbox was upgraded while its snapshot was taken; take it again");
+	}
+
 	// Expiry of automatic snapshots. A record goes ready → marked (`deleting`, `retiring` {by, token, at}, which may be
 	// put back) → settling (`retiring.settling`, never put back) → gone; each move a compare-and-set on the record
 	// (`update`, which the SQL store writes only over the version it read):
@@ -8196,10 +8215,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (command.autoUpgrade !== true) return undefined;
 					// Another command's upgrade under way (on another gateway, whose queue this one doesn't see): its outcome is
 					// waited for as a command's is, start hold after start hold, for up to half the time a reader holds this
-					// command's end for it (`RERUN_CLAIM_MS`), then read again.
+					// command's end for it (`RERUN_CLAIM_MS`), by the clock, then read again.
 					const waitOutUpgrade = async () => {
 						let latest = await store.sandboxes.get(sandbox.id);
-						for (let round = 0; latest?.upgrading !== undefined && round * startHoldMs < RERUN_CLAIM_MS / 2; round++) {
+						const until = Date.now() + RERUN_CLAIM_MS / 2;
+						while (latest?.upgrading !== undefined && Date.now() < until) {
 							await requireRunning(principal, sandbox.id).catch(() => delay(startPollMs).done);
 							latest = await store.sandboxes.get(sandbox.id);
 						}
@@ -8510,6 +8530,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return once(principal, "takeSnapshot", { params, body, idempotencyKey }, async () => {
 				const current = await requireRunning(principal, sandbox.id);
 				const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
+				await requireSameTier(current, taken.ref);
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -8533,11 +8554,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
-				await patchSandbox(current.id, (latest) => ({
-					...latest,
-					latestSnapshotId: snapshot.id,
-					latestSnapshotAt: snapshot.createdAt,
-				}));
+				// What it resumes from, only while it is still what the snapshot is of (an upgrade since makes it a microVM).
+				await patchSandbox(current.id, (latest) =>
+					latest.type === snapshot.sandboxType
+						? { ...latest, latestSnapshotId: snapshot.id, latestSnapshotAt: snapshot.createdAt }
+						: undefined,
+				);
 				return snapshotView(snapshot);
 			});
 		},
@@ -8619,6 +8641,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const full = await savedBytesOver(current.accountId, current.hostId, existing);
 					if (full !== undefined) throw full;
 					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
+					await requireSameTier(current, taken.ref);
 					ref = taken.ref;
 					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
 					fullSizeBytes = taken.sizeBytes;
