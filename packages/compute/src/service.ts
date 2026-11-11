@@ -2091,19 +2091,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 			},
 			async run(principal, sandboxId, command, env) {
-				answered(
+				const started = answered(
 					await handlers.runCommand(
 						principal,
 						{ params: { sandboxId }, query: {}, body: { command, env, detached: true } },
 						internalRequest(),
 					),
 				);
+				return started.id;
 			},
-			async listLabelled(accountId, labels) {
+			async commandRunning(principal, sandboxId, commandId) {
+				try {
+					const command = answered(
+						await handlers.getCommand(
+							principal,
+							{ params: { sandboxId, commandId }, query: {}, body: undefined },
+							internalRequest(),
+						),
+					);
+					return command.state === "running";
+				} catch (error) {
+					if (error instanceof KantelError && error.code === "not_found") return false;
+					return undefined;
+				}
+			},
+			async listMadeBy(accountId, keyId, labels) {
 				return (await store.sandboxes.list({ accountId }))
 					.filter(
 						(sandbox) =>
 							sandbox.state !== "deleted" &&
+							sandbox.createdBy.kind === "api_key" &&
+							sandbox.createdBy.id === keyId &&
 							Object.entries(labels).every(([key, value]) => sandbox.labels?.[key] === value),
 					)
 					.map((sandbox) => ({ id: sandbox.id, createdAt: sandbox.createdAt }));
@@ -2136,6 +2154,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const pool of pools) {
 			if (labels.has(pool.label)) throw new KantelError("invalid", `Two pools have the label ${pool.label}`);
 			labels.add(pool.label);
+			// The constraints a create holds the shape to, so a pool that can never make a runner is refused now.
+			checkShape("microvm", pool.resources);
+			checkDisk("microvm", pool.resources.diskGb);
 			await templates.templateIn(accountId, pool.template);
 		}
 	}
@@ -9499,9 +9520,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
 				}
 				const repositories = body.repositories === null ? undefined : (body.repositories ?? current.repositories);
-				const { runnerGroupId: _group, repositories: _repositories, ...rest } = current;
+				// Another owner or App: the installation is found again from that owner's next delivery.
+				const moved =
+					(body.owner !== undefined && body.owner.toLowerCase() !== current.owner.toLowerCase()) ||
+					(body.appId !== undefined && body.appId !== current.appId);
+				const { runnerGroupId: _group, repositories: _repositories, installationId, ...rest } = current;
 				return {
 					...rest,
+					...(moved || installationId === undefined ? {} : { installationId }),
 					...(body.name === undefined ? {} : { name: body.name }),
 					...(body.appId === undefined ? {} : { appId: body.appId }),
 					...(body.owner === undefined ? {} : { owner: body.owner }),

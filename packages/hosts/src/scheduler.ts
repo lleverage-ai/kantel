@@ -340,15 +340,24 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 }
 
 /**
- * How full a host would be with `size` placed on it, from 0 to 1 (more when over-booked): the larger of the share of its
- * memory taken and the share of its vCPUs booked. Memory is what it has for sandboxes (`HostMemoryReport.capacityMiB`),
- * else the machine's; vCPUs its CPUs. Rounded to a hundredth, so two hosts about as full are ranked by what comes next
- * (the most free memory, the least loaded) rather than by a sliver of a percent.
+ * How full a host would be with `size` placed on it, from 0 (more than 1 when over-booked): the larger of the share of
+ * its memory reserved and the share of its vCPUs booked. Memory is counted in one set of units: what its sandboxes were
+ * given (`HostMemoryReport.reservedMiB`), and what was placed since the report, over what it has for sandboxes
+ * (`capacityMiB`), whichever way it admits them. Free memory as a host reports it is what it would still admit, which
+ * over-commit makes larger than what is unused, so it isn't a share of anything. A host from before memory reports
+ * counts its machine's memory less what it said was free. vCPUs are its CPUs, booked by live microVMs. Rounded to a
+ * hundredth, so two hosts about as full are ranked by what comes next (the most free memory, the least loaded).
  */
 export function fullness(candidate: Candidate, size: HostSize, freeMemoryMiB: number): number {
 	const { host } = candidate;
-	const totalMemory = host.capacity?.memory?.capacityMiB ?? host.facts?.memoryMiB ?? 0;
-	const memory = totalMemory > 0 ? (totalMemory - freeMemoryMiB + size.memoryMiB) / totalMemory : 0;
+	const report = host.capacity?.memory;
+	const held = candidate.heldMemory?.reduce((sum, entry) => sum + entry.memoryMiB, 0) ?? candidate.reservedMemoryMiB;
+	const memory =
+		report !== undefined && report.capacityMiB > 0
+			? (report.reservedMiB + held + size.memoryMiB) / report.capacityMiB
+			: (host.facts?.memoryMiB ?? 0) > 0
+				? ((host.facts?.memoryMiB ?? 0) - freeMemoryMiB + size.memoryMiB) / (host.facts?.memoryMiB ?? 1)
+				: 0;
 	const cpus = host.facts?.cpus ?? 0;
 	const vcpus = cpus > 0 && candidate.bookedVcpus !== undefined ? (candidate.bookedVcpus + size.vcpus) / cpus : 0;
 	return Math.round(Math.max(memory, vcpus, 0) * 100) / 100;

@@ -95,6 +95,59 @@ describe("place", () => {
 		expect(isRefusal(only) ? only.reason : only.host.id).toBe("only");
 	});
 
+	it("measures memory as reserved over capacity, not as the free memory over-commit admits", () => {
+		// Cerbie's case: a 16 GiB host with 14 GiB reserved and a 32 GiB host with 16 GiB reserved, each reporting what it
+		// would still admit at 1.5 times its capacity.
+		const report = (capacityMiB: number, reservedMiB: number) => ({
+			mode: "reserved" as const,
+			totalMiB: capacityMiB,
+			reserveMiB: 0,
+			capacityMiB,
+			reservedMiB,
+			committedMiB: reservedMiB,
+			guestUsedMiB: 0,
+			residentMiB: 0,
+			availableMiB: capacityMiB - reservedMiB,
+			swapUsedMiB: 0,
+			pressureSome: 0,
+			pressureFull: 0,
+			maxRatio: 1.5,
+			state: "ok" as const,
+		});
+		const small = candidate(
+			"small",
+			{
+				facts: { ...facts, memoryMiB: 16_384, cpus: 16 },
+				capacity: {
+					freeMemoryMiB: 16_384 * 1.5 - 14_336,
+					freeDiskGiB: 400,
+					running: 0,
+					stopped: 0,
+					load1: 0,
+					memory: report(16_384, 14_336),
+				},
+			},
+			{ bookedVcpus: 2 },
+		);
+		const big = candidate(
+			"big",
+			{
+				facts: { ...facts, memoryMiB: 32_768, cpus: 32 },
+				capacity: {
+					freeMemoryMiB: 32_768 * 1.5 - 16_384,
+					freeDiskGiB: 400,
+					running: 0,
+					stopped: 0,
+					load1: 0,
+					memory: report(32_768, 16_384),
+				},
+			},
+			{ bookedVcpus: 16 },
+		);
+		const chosen = place({ tier: "microvm", shape: { vcpus: 1, memoryMiB: 1_024 } }, [small, big].map(custom));
+		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("big");
+	});
+
 	it("counts what was placed since a host's last report", () => {
 		const a = candidate("a", capacity(10_000), { reservedMemoryMiB: 9_000 });
 		const b = candidate("b", capacity(5_000));

@@ -15044,7 +15044,7 @@
 					"vcpus": {
 						"type": "integer",
 						"minimum": 1,
-						"maximum": 256
+						"maximum": 32
 					},
 					"memoryMb": {
 						"type": "integer",
@@ -15052,10 +15052,12 @@
 					},
 					"diskGb": {
 						"type": "integer",
-						"minimum": 1
+						"minimum": 1,
+						"maximum": 4096
 					}
 				},
-				"title": "GithubRunnerResources"
+				"title": "GithubRunnerResources",
+				"description": "A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range."
 			},
 			"GithubRunners": {
 				"type": "object",

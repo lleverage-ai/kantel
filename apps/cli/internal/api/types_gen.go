@@ -1148,6 +1148,7 @@ type GithubRunnerPoolStatus struct {
 	WaitingSince *int64 `json:"waitingSince,omitempty"`
 }
 
+// A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.
 type GithubRunnerResources struct {
 	DiskGb   *int64 `json:"diskGb,omitempty"`
 	MemoryMb int64  `json:"memoryMb"`

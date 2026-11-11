@@ -4068,11 +4068,15 @@ export const GithubRunnerPool = Type.Object(
 		}),
 		resources: Type.Object(
 			{
-				vcpus: Type.Integer({ minimum: 1, maximum: 256 }),
+				vcpus: Type.Integer({ minimum: 1, maximum: 32 }),
 				memoryMb: Type.Integer({ minimum: 512 }),
-				diskGb: Type.Optional(Type.Integer({ minimum: 1 })),
+				diskGb: Type.Optional(Type.Integer({ minimum: 1, maximum: 4096 })),
 			},
-			{ title: "GithubRunnerResources" },
+			{
+				title: "GithubRunnerResources",
+				description:
+					"A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.",
+			},
 		),
 		hostLabels: Type.Optional(
 			Type.Record(Type.String(), Type.String(), { description: "Run only on hosts with each of these labels." }),

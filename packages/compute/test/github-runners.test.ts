@@ -39,6 +39,8 @@ function fakeSandboxes(room: { value: number }) {
 	const runs: { sandboxId: string; command: string; env: { readonly [name: string]: string } }[] = [];
 	const fail = new Set<"get" | "delete" | "run">();
 	const deletedBy: string[] = [];
+	/** Runner commands that have ended. */
+	const ended = new Set<string>();
 	let next = 0;
 	const failing = (call: "get" | "delete" | "run") => {
 		if (fail.has(call)) throw new KantelError("unavailable", `${call} failed`);
@@ -65,8 +67,12 @@ function fakeSandboxes(room: { value: number }) {
 		async run(_principal, sandboxId, command, env) {
 			failing("run");
 			runs.push({ sandboxId, command, env });
+			return `cmd_${runs.length}`;
 		},
-		async listLabelled(_accountId, labels) {
+		async commandRunning(_principal, _sandboxId, commandId) {
+			return !ended.has(commandId);
+		},
+		async listMadeBy(_accountId, _keyId, labels) {
 			return [...sandboxes]
 				.filter(([, sandbox]) =>
 					Object.entries(labels).every(([key, value]) => (sandbox.labels as Record<string, string>)[key] === value),
@@ -80,6 +86,7 @@ function fakeSandboxes(room: { value: number }) {
 		sandboxes,
 		fail,
 		deletedBy,
+		ended,
 		/** Every starting sandbox is running now. */
 		boot() {
 			for (const sandbox of sandboxes.values()) if (sandbox.state === "starting") sandbox.state = "running";
@@ -455,13 +462,10 @@ describe("GitHub runners", () => {
 		let first = true;
 		sandboxes.api.create = async (principal, body) => {
 			const made = await create(principal, body);
-			// A slow first create: its lease ran out and another gateway took it meanwhile.
+			// A slow first create: its lease ran out, and another gateway took it, filled the pool and released it.
 			if (first) {
 				first = false;
-				await store.githubRunners.update("ghr_one", (current) => ({
-					...current,
-					lease: { owner: "gw_other", until: clock.now + 60_000 },
-				}));
+				await store.githubRunners.update("ghr_one", ({ lease: _lease, ...current }) => current);
 			}
 			return made;
 		};
@@ -514,8 +518,8 @@ describe("GitHub runners", () => {
 		await job("queued", 1);
 		sandboxes.boot();
 		await runners.tick();
-		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "other-org", runnerGroupId: 9 }));
 		await job("completed", 1, { conclusion: "cancelled" });
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "other-org", runnerGroupId: 9 }));
 		clock.now += IDLE_GRACE_MS + 1;
 		await runners.tick();
 		expect(github.removedFrom).toEqual([{ kind: "organization", org: "octo-org", runnerGroupId: 7 }]);
@@ -527,6 +531,75 @@ describe("GitHub runners", () => {
 		expect(await runners.retire("ghr_one")).toBe(true);
 		expect(sandboxes.sandboxes.has(orphan.id)).toBe(false);
 		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
+	});
+
+	it("replaces an idle runner that can't take a job: its sandbox stopped, or its runner's command ended", async () => {
+		for (const kill of ["sandbox", "command"] as const) {
+			const { job, sandboxes, runners } = await setUp();
+			await job("queued", 1);
+			sandboxes.boot();
+			await runners.tick();
+			const [first = ""] = [...sandboxes.sandboxes.keys()];
+			if (kill === "sandbox") {
+				const sandbox = sandboxes.sandboxes.get(first);
+				if (sandbox !== undefined) sandbox.state = "stopped";
+			} else sandboxes.ended.add("cmd_1");
+			await runners.tick();
+			expect(sandboxes.sandboxes.has(first)).toBe(false);
+			expect(sandboxes.sandboxes.size).toBe(1);
+		}
+	});
+
+	it("keeps a runner GitHub gave a job while it was being ended for want of one", async () => {
+		const { job, sandboxes, runners, github, store, clock } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("completed", 1, { conclusion: "cancelled" });
+		clock.now += IDLE_GRACE_MS + 1;
+		// GitHub refuses the removal: it has just given the runner another job.
+		github.state.failRemove = true;
+		await runners.tick();
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("ending");
+		await job("in_progress", 2, { runner_name: sandboxId });
+		github.state.failRemove = false;
+		await runners.tick();
+		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("busy");
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(true);
+	});
+
+	it("lets a runner finish its job when its pool is renamed", async () => {
+		const { job, sandboxes, runners, store } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		await job("in_progress", 1, { runner_name: sandboxId });
+		await store.githubRunners.update("ghr_one", (current) => ({
+			...current,
+			pools: [{ ...POOL, label: "kantel-16vcpu" }],
+		}));
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(true);
+		await job("completed", 1, { runner_name: sandboxId, conclusion: "success" });
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+	});
+
+	it("binds the installation only from its own owner's deliveries", async () => {
+		const { deliver, store, sandboxes } = await setUp();
+		const from = (owner: string, installation: number) =>
+			deliver("workflow_job", {
+				action: "queued",
+				installation: { id: installation },
+				repository: { full_name: `${owner}/app` },
+				workflow_job: { id: installation, run_id: 1, name: "checks", labels: ["kantel-8vcpu"] },
+			});
+		await from("octo-org", 42);
+		expect((await from("other-org", 99)).status).toBe(202);
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBe(42);
+		expect(sandboxes.sandboxes.size).toBe(1);
 	});
 
 	it("ignores jobs no pool takes, and records those of repositories it doesn't serve", async () => {
@@ -637,8 +710,23 @@ describe("GitHub runners through the API", () => {
 			expect((await tom.getGithubRunners(githubRunners.id)).status).toEqual([
 				expect.objectContaining({ label: "kantel-8vcpu", queued: 1 }),
 			]);
+			// A sandbox someone labelled as a runner isn't one: the integration's cleanup leaves it.
+			const forged = await tom.createSandbox({ labels: { [RUNNER_LABEL]: githubRunners.id } });
 			await tom.deleteGithubRunners(githubRunners.id);
-			expect((await tom.listSandboxes()).items.filter((sandbox) => sandbox.state !== "deleted")).toEqual([]);
+			expect(
+				(await tom.listSandboxes()).items.filter((sandbox) => sandbox.state !== "deleted").map((s) => s.id),
+			).toEqual([forged.id]);
+			// A pool no create could make is refused when it's given.
+			await expect(
+				tom.createGithubRunners({
+					name: "bad",
+					appId: 1,
+					privateKey: await pem(),
+					owner: "octo-org",
+					runnerGroupId: 7,
+					pools: [{ ...POOL, resources: { vcpus: 8, memoryMb: 20_000 } }],
+				}),
+			).rejects.toMatchObject({ code: "invalid" });
 			expect(
 				(await tom.listApiKeys()).items.find((item) => item.name === "GitHub runners: ci")?.revokedAt,
 			).toBeDefined();

@@ -919,11 +919,13 @@ Runners of one shape, picked by a `runs-on` label.
 
 ### GithubRunnerResources
 
+A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `vcpus` | integer | yes |  (minimum 1, maximum 256) |
+| `vcpus` | integer | yes |  (minimum 1, maximum 32) |
 | `memoryMb` | integer | yes |  (minimum 512) |
-| `diskGb` | integer | no |  (minimum 1) |
+| `diskGb` | integer | no |  (minimum 1, maximum 4096) |
 
 ### GithubRunners
 

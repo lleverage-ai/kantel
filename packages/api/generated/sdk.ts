@@ -996,6 +996,7 @@ export interface GithubRunnerPool {
 	readonly label: string;
 	/** The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. */
 	readonly template: string;
+	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
 	readonly resources: GithubRunnerResources;
 	/** Run only on hosts with each of these labels. */
 	readonly hostLabels?: {
@@ -1027,6 +1028,7 @@ export interface GithubRunnerPoolStatus {
 	readonly waitingFor?: string;
 }
 
+/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
 export interface GithubRunnerResources {
 	readonly vcpus: number;
 	readonly memoryMb: number;
