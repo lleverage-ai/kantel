@@ -26,7 +26,13 @@ on, and deno_core 0.412 doesn't compile without them. The patches change these p
   heap. They are now V8-allocated stores (`SharedInfo`) that Rust reads through.
 
 Any code in kantel-isolate itself must do the same. Use `deno_core::serde_v8::sandbox::new_array_buffer(scope,
-bytes)` to give JS bytes. Never use `new_backing_store_from_ptr` on memory V8 didn't allocate.
+bytes)` to give JS bytes; it returns `Option` (`None` when the isolate's budget is spent), so propagate a RangeError
+to the guest instead of building a view over an empty buffer and `.unwrap()`ing it. Never use
+`new_backing_store_from_ptr` on memory V8 didn't allocate.
+
+The budget allocator only bounds fixed-size ArrayBuffers (the `Allocate` path). Resizable/growable ArrayBuffers and
+WebAssembly memory come from V8's page allocator and bypass it, so kantel-isolate forbids them in the guest (see
+`SECURITY.md`, findings 11). Keep those guards.
 
 ## Using it in the crate (W1)
 
@@ -55,7 +61,7 @@ let params = v8::CreateParams::default().heap_limits(0, mem_mib << 20).array_buf
 Build with:
 
 ```sh
-eval "$(apps/host/isolate-runtime/v8/fetch-v8-sandbox.sh ~/.cache/kantel-v8)" && cargo build --release
+eval "$(apps/host/isolate-runtime/v8/fetch-v8-sandbox.sh --export ~/.cache/kantel-v8)" && cargo build --release
 ```
 
 The patched crates need these Kantel symbols, so they link only against this build, not rusty_v8's prebuilt archives.

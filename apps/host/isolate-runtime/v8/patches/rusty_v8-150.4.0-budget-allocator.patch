@@ -1,5 +1,5 @@
 diff --git a/src/binding.cc b/src/binding.cc
-index b5d145d..e7f4f21 100644
+index b5d145d..c0b9e59 100644
 --- a/src/binding.cc
 +++ b/src/binding.cc
 @@ -1,5 +1,6 @@
@@ -9,7 +9,7 @@ index b5d145d..e7f4f21 100644
  #include <cassert>
  #include <cstddef>
  #include <cstdint>
-@@ -2083,6 +2084,83 @@ void v8__ArrayBuffer__Allocator__DELETE(v8::ArrayBuffer::Allocator* self) {
+@@ -2083,6 +2084,94 @@ void v8__ArrayBuffer__Allocator__DELETE(v8::ArrayBuffer::Allocator* self) {
    delete self;
  }
  
@@ -17,6 +17,17 @@ index b5d145d..e7f4f21 100644
 +// so with the V8 sandbox on it is inside the sandbox (a RustAllocator's malloc'd memory isn't, which is why rusty_v8
 +// leaves RustAllocator out of sandbox builds). The budget is the only thing it adds: an allocation that would take
 +// the isolate's ArrayBuffers past `limit` bytes fails, and JS gets a RangeError.
++//
++// IMPORTANT: this only bounds the fixed-size allocations that go through Allocate/AllocateUninitialized/Free. V8
++// serves *resizable* ArrayBuffers and *growable* SharedArrayBuffers (maxByteLength), and WebAssembly memory, from the
++// isolate group's BackingStorePageAllocator instead (BackingStore::TryAllocateAndPartiallyCommitMemory), which never
++// calls this allocator. Those are not counted here and each may be up to V8's per-buffer maximum. kantel-isolate must
++// forbid them in the guest: no resizable/growable buffers (the spike does this in guest/polyfills.js), and wasm memory
++// capped per isolate (the spike caps WebAssembly.Memory.grow and deletes WebAssembly where it isn't needed).
++// MaxAllocationSize is also only advisory: V8 reads it to reject over-large *fixed* lengths, not resizable maxima.
++// This V8's Allocator interface has no Reallocate method, so there is none to override.
++// GetPageAllocator forwards the default's: V8 asks the allocator for its page allocator only to learn the sandbox's,
++// and that memory (resizable/wasm backing stores) is the unaccounted path above, not a second one.
 +class KantelBudgetAllocator final : public v8::ArrayBuffer::Allocator {
 + public:
 +  explicit KantelBudgetAllocator(size_t limit)

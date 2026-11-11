@@ -10,9 +10,14 @@ Description=Kantel's isolate runtime (kantel-isolate on deno_core)
 After=kantel-guest.service
 Wants=kantel-guest.service
 
+# --require-landlock makes the runtime exit if it can't apply its own Landlock policy, so a kernel without Landlock
+# fails closed instead of running unconfined. The isolate VM's kernel must therefore have Landlock (CONFIG_LSM
+# starting with "landlock"): ABI 1 (Linux 5.13) is the minimum for the file-system rules; ABI 4 (Linux 6.7) adds the
+# TCP-port rules; ABI 6 (Linux 6.12) adds signal and abstract-socket scoping. The runtime logs the enforced ABI at
+# start-up ("landlock: ... (ABI n, ...)").
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/kantel-isolate serve --listen 127.0.0.1:8080 --store http://127.0.0.1:7001 --egress http://127.0.0.1:7002 --assets /opt/kantel-isolate
+ExecStart=/usr/local/bin/kantel-isolate serve --listen 127.0.0.1:8080 --store http://127.0.0.1:7001 --egress http://127.0.0.1:7002 --assets /opt/kantel-isolate --require-landlock
 WorkingDirectory=/opt/kantel-isolate
 Restart=always
 RestartSec=200ms

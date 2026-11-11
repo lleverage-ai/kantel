@@ -110,9 +110,12 @@ doesn't have this problem, because each VM's bridges are vsock ports for that VM
   - `pids.max` covers the runtime's threads (sandbox count + `--max-runs` + about 64).
 - **No network** if possible: `Cloneflags: CLONE_NEWNET` gives the process an empty network namespace. With Unix
   sockets it needs none, and the runtime's `RestrictAddressFamilies` then has nothing left to allow but AF_UNIX.
-- Until then, the runtime's Landlock rules allow TCP connect only to the store and egress ports and bind only to its
-  own, on kernels with Landlock ABI 4 (Linux 6.7 and later). This alone closes the other-account ports, but not on
-  older host kernels.
+- Until then, the runtime's Landlock rules (TCP transport) allow bind and connect only to the given ports, on
+  kernels with Landlock ABI 4 (Linux 6.7 and later). **This bounds the destination ports, not the host, and doesn't
+  cover UDP, so it is not egress confinement**: connect to port 7001 is allowed to 7001 on *any* reachable host.
+  The real fence is the network namespace (or no network at all), not Landlock. Once the transport is Unix sockets,
+  `landlock::restrict` is called with `Transport::Unix` and forbids TCP entirely (`network == true` then means "no
+  TCP at all", which *is* confinement), allowing only the 0700 socket directory.
 
 ### 6. Medium: unchecked sizes and timeouts from the host
 **Location:** `load` (`memoryMiB`), `exec` (`timeoutMs`), `new_live` (`mem_mib * 1024 * 1024`), `guarded`
@@ -171,6 +174,55 @@ compare-and-swap and releases the bytes on failure. It is also the only allocato
 
 **W1:** taking the allocator behind one function.
 
+### 11. High: resizable buffers and wasm memory bypass the ArrayBuffer budget
+**Location:** the budget allocator (any allocator), and the guests.
+
+V8 serves resizable ArrayBuffers and growable SharedArrayBuffers (`new ArrayBuffer(len, { maxByteLength })`,
+`new SharedArrayBuffer(len, { maxByteLength })`, `.resize()`, `.grow()`, `.transfer(biggerMax)` to a resizable
+target) and WebAssembly memory from the isolate group's page allocator
+(`BackingStore::TryAllocateAndPartiallyCommitMemory`), **not** through the embedder's `Allocate`/
+`AllocateUninitialized`. So the per-isolate byte budget never sees them: each can be up to V8's per-buffer maximum,
+and there can be many.
+
+**Shown** against the sandboxed spike with a 256 MiB budget (`probes/budget.js`), before the fix:
+- `rab-initial`, `rab-resize`, `gsab` each allocated 1200 MiB (process RSS went past 1.7 GiB), with no error.
+- `plain` (fixed buffers) and `transfer` to growing fixed lengths were stopped at the budget, as they should be:
+  those go through `Allocate`.
+
+**Fix (in the guest, `guest/polyfills.js`):** wrap `ArrayBuffer` and `SharedArrayBuffer` so the constructors refuse
+`maxByteLength` and `resize`/`grow` are removed, and repoint `prototype.constructor` so the species path can't reach
+the native constructor. The wrapper is idempotent and is re-applied in `__node.start` and the Python lockdown,
+because `SharedArrayBuffer` is added to the global only after the snapshot. After the fix, all of `rab-initial`,
+`rab-resize`, `gsab` are refused with a RangeError, `transfer` is bounded by the budget, normal `ArrayBuffer`
+construction and `Uint8Array` still work, and Python (`from js import ArrayBuffer`) is refused too. Wasm memory is
+already capped per isolate in the spike (python caps `WebAssembly.Memory.prototype.grow`, node deletes
+`WebAssembly`); keep that.
+
+This is defence in the guest, not in the allocator: V8 gives the allocator no hook for these paths (its `Allocator`
+interface in 150.4.0 has no `Reallocate` either). The allocator patch documents the limit.
+
+**W1:** forwarded. W1 must carry the same guest guards and must not expose resizable/growable buffers or uncapped
+wasm memory in any isolate kind.
+
+### 12. Medium: a refused ArrayBuffer allocation could panic the host
+**Location:** `v8/patches/deno_core-0.412.0-sandbox.patch` (the byte-module loader and buffer conversions).
+
+My first version of the patch had the allocation helper return an empty ArrayBuffer when the budget was spent. The
+byte-module loader then built a `Uint8Array` of the original length over the empty buffer and `.unwrap()`ed it, which
+panics the process (finding 3's class of bug). The fallible op conversions had the same shape.
+
+**Fix:** the helper now returns `Option`. Every call site propagates it: the byte-module loader returns a
+`ModuleError::Exception` (a RangeError), `op_encode` and the `JsBuffer`/`ToJsBuffer` conversions return an error, and
+the two infallible conversions (`BytesMut`, `Box<[T]>`) throw a RangeError in the isolate and answer an empty buffer
+without ever building a view over it. The typed-array element helper is also restricted to a sealed trait of the
+primitive number types, so a padded struct or `MaybeUninit` can't leak uninitialised bytes to a guest.
+
+**Shown:** with the budget exhausted, importing a non-empty byte module gives the guest a RangeError and the runtime
+stays healthy (the spike's `op_shared_snapshot`, which uses the same helper, returns the error path and `/healthz`
+still answers).
+
+**W1:** W1 must keep this discipline in its own copy of the patch and in any op that returns bytes.
+
 ### 10. Low: module loader and assets
 - **Verified sound:** `op_read_asset` canonicalises and requires the result to be under `--assets`, so `..` and
   symlinks out are refused. The manifest's paths are keys, never file system paths. The spike's `FsModuleLoader` is
@@ -221,7 +273,10 @@ What the numbers show:
 
 ### Privileges and Landlock (`hardening/`)
 - **`check_privileges`:**
-  - refuses root and any effective or permitted capability;
+  - refuses root in the **real, effective and saved** uid and gid (`getresuid`/`getresgid`), so a launcher that drops
+    only the effective uid but leaves the saved one 0 — from which the process could `setuid(0)` back — is caught;
+  - refuses a root supplementary group (`getgroups`);
+  - refuses any effective or permitted capability;
   - clears ambient capabilities;
   - sets `NO_NEW_PRIVS`;
   - sets `PR_SET_DUMPABLE=0`, so other processes of the same uid can't ptrace it or read `/proc/<pid>/mem`, and
@@ -231,10 +286,14 @@ What the numbers show:
   - read-write only its own temp dir (0700);
   - read-only `/dev/urandom` (V8 opens it per isolate), `/proc/self`, the CPU, cgroup, THP and overcommit files read
     at start-up, and the time zone;
-  - TCP bind only to `--listen`'s port and connect only to the store's and egress's ports (ABI 4 and later);
+  - with `Transport::Tcp`: bind only to `--listen`'s port and connect only to the store's and egress's ports (ABI 4
+    and later). This bounds the **ports, not the host**, and leaves UDP open, so it is **not** egress confinement
+    (see finding 5 and the module docs);
+  - with `Transport::Unix` (W1's `unix:` endpoints): **no TCP at all**, only the 0700 socket directory — which is
+    confinement;
   - signals and abstract Unix sockets scoped to the process (ABI 6 and later).
 
-  Shown on Linux 7.2 (ABI 10, "fully enforced, network: true"), by the spike's `KT_HARDEN_SELFTEST`:
+  Shown on Linux 7.2 (ABI 10, "fully enforced", TCP port rules in force), by the spike's `KT_HARDEN_SELFTEST`:
 
   | Attempt | Result |
   | --- | --- |
@@ -245,7 +304,12 @@ What the numbers show:
   | connect `127.0.0.1:29403` (not store or egress) | EACCES |
   | connect the store | ok |
 
-  The whole benchmark passed with it on (third column above).
+  The whole benchmark passed with it on (third column above). `Report` carries `status`, `abi` and `network`;
+  `network` is documented as "TCP port rules in force" for TCP transport, not egress confinement.
+- **Privilege check, tested** with `KT_CHECK_PRIV=1` (a hook that runs only `check_privileges`): as my normal user it
+  returns `Ok`; under `unshare --map-root-user` (real, effective and saved uid all 0) it refuses with "must not run
+  as root (uids real 0, effective 0, saved 0)" and exits non-zero. The saved-uid-0-only case (effective dropped,
+  saved still 0) needs `CAP_SETUID` to set up and wasn't run, but the same `getresuid` check covers it.
 - **In the isolate VM:** the guest kernel is 6.1 with Firecracker's CI config. It has Landlock (`CONFIG_LSM` starts
   with `landlock`) but only ABI 2, so the file system rules apply ("partially enforced") and the TCP and scope rules
   don't. Inside the VM there is nothing else on the network to reach, so this matters less there than in native mode.
@@ -281,11 +345,20 @@ Replaces `kantel-workerd.service` in the isolate VM. What it sets:
    from `vendor-patched.sh`, and build with `fetch-v8-sandbox.sh`'s two variables.
 2. Use `kantel__BudgetAllocator__New` as the isolate's ArrayBuffer allocator, and report `v8Sandbox` from
    `v8__V8__IsSandboxEnabled` in `version` and `/healthz`.
-3. Don't use the APIs listed in `v8/README.md` in its own code; copy with `serde_v8::sandbox::new_array_buffer`.
-4. Include `hardening/`. Call `check_privileges(false)` first, then `landlock::restrict(&Policy { assets, temp,
-   listen_port, connect_ports: [store, egress] })` before `JsRuntime::init_platform` or any thread. Make its own temp
-   dir 0700 first. Add `--require-landlock` for production.
-5. Fix findings 1–8.
+3. Don't use the APIs listed in `v8/README.md` in its own code; copy with `serde_v8::sandbox::new_array_buffer`, which
+   returns `Option`/`Result` — propagate a RangeError to the guest on `None`, never build a view over an empty buffer
+   and `.unwrap()` (finding 12). Keep the typed-array element helper restricted to the sealed primitive-number trait.
+4. Forbid resizable/growable buffers and uncapped wasm memory in every isolate kind (finding 11): carry the
+   `guest/polyfills.js` guards (wrap `ArrayBuffer`/`SharedArrayBuffer`, re-apply at run start because
+   `SharedArrayBuffer` appears after the snapshot) and keep the wasm-memory cap.
+5. Include `hardening/`. Call `check_privileges(false)` first, then `landlock::restrict(&Policy { assets, temp,
+   extra_read, transport })` before `JsRuntime::init_platform` or any thread; use `Transport::Unix { socket_dir }`
+   once the endpoints are `unix:` paths (then no TCP is allowed at all), `Transport::Tcp { listen, connect }` meanwhile.
+   Make its own temp dir 0700 first. Add `--require-landlock` (the unit passes it): exit if `restrict` reports less
+   than full enforcement. Log the enforced ABI at start-up.
+6. Add `unix:` support to `--listen`, `--store` and `--egress` so native mode can use Unix-socket transport (finding
+   5); this is a small contract change.
+7. Fix findings 1–8.
 
 **W3 (image, host, CI):**
 1. Install `systemd/kantel-isolate.service` in place of `kantel-workerd.service` in `guest/isolate.Dockerfile`. With

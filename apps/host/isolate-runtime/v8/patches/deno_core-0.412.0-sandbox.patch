@@ -1,7 +1,7 @@
-diff -ruN orig/deno_core-0.412.0/convert.rs patched/deno_core-0.412.0/convert.rs
+diff -ruN -x .cargo-ok orig/deno_core-0.412.0/convert.rs patched/deno_core-0.412.0/convert.rs
 --- orig/deno_core-0.412.0/convert.rs	2026-11-11 02:25:52.278376128 +0100
-+++ patched/deno_core-0.412.0/convert.rs	2026-11-11 02:27:52.253118214 +0100
-@@ -908,9 +908,11 @@
++++ patched/deno_core-0.412.0/convert.rs	2026-11-11 03:07:48.869240965 +0100
+@@ -908,9 +908,13 @@
              })
              .map(|v| v.into());
          }
@@ -9,17 +9,19 @@ diff -ruN orig/deno_core-0.412.0/convert.rs patched/deno_core-0.412.0/convert.rs
 -        let backing_shared = backing.make_shared();
 -        let ab = v8::ArrayBuffer::with_backing_store(scope, &backing_shared);
 +        // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs).
-+        let ab = serde_v8::sandbox::new_array_buffer_of(scope, &self.0);
-+        if ab.byte_length() == 0 {
-+          return Err(JsErrorBox::range_error("Array buffer allocation failed"));
-+        }
++        let Some(ab) = serde_v8::sandbox::new_array_buffer_of(scope, &self.0)
++        else {
++          return Err(JsErrorBox::range_error(
++            serde_v8::sandbox::ALLOCATION_FAILED,
++          ));
++        };
          v8::$v8ty::new(scope, ab, 0, len)
            .ok_or_else(|| JsErrorBox::type_error("Failed to create typed array"))
            .map(|v| v.into())
-diff -ruN orig/deno_core-0.412.0/modules/map.rs patched/deno_core-0.412.0/modules/map.rs
+diff -ruN -x .cargo-ok orig/deno_core-0.412.0/modules/map.rs patched/deno_core-0.412.0/modules/map.rs
 --- orig/deno_core-0.412.0/modules/map.rs	2026-11-11 02:25:52.283340952 +0100
-+++ patched/deno_core-0.412.0/modules/map.rs	2026-11-11 02:27:52.254180794 +0100
-@@ -1146,22 +1146,14 @@
++++ patched/deno_core-0.412.0/modules/map.rs	2026-11-11 03:07:48.870460048 +0100
+@@ -1146,22 +1146,19 @@
      code: ModuleCodeBytes,
    ) -> Result<ModuleId, ModuleError> {
      let name = name.into_module_name();
@@ -41,26 +43,30 @@ diff -ruN orig/deno_core-0.412.0/modules/map.rs patched/deno_core-0.412.0/module
 +      ModuleCodeBytes::Static(bytes) => bytes,
 +      ModuleCodeBytes::Boxed(bytes) => bytes,
 +      ModuleCodeBytes::Arc(bytes) => bytes,
++    };
++    let buf_len = bytes.len();
++    let Some(ab) = serde_v8::sandbox::new_array_buffer(scope, bytes) else {
++      // The isolate's budget is spent: the import fails with a RangeError (the Uint8Array below would be over
++      // an empty buffer otherwise).
++      let exc = serde_v8::sandbox::allocation_failed_error(scope);
++      return Err(ModuleError::Exception(v8::Global::new(scope, exc)));
      };
 -    let backing_store_shared = backing_store.make_shared();
 -    let ab = v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared);
-+    let buf_len = bytes.len();
-+    let ab = serde_v8::sandbox::new_array_buffer(scope, bytes);
      let uint8_array = v8::Uint8Array::new(scope, ab, 0, buf_len).unwrap();
      let value: v8::Local<v8::Value> = uint8_array.into();
      let exports = vec![(ascii_str!("default"), value)];
-diff -ruN orig/deno_core-0.412.0/ops_builtin_v8.rs patched/deno_core-0.412.0/ops_builtin_v8.rs
+diff -ruN -x .cargo-ok orig/deno_core-0.412.0/ops_builtin_v8.rs patched/deno_core-0.412.0/ops_builtin_v8.rs
 --- orig/deno_core-0.412.0/ops_builtin_v8.rs	2026-11-11 02:25:52.285741134 +0100
-+++ patched/deno_core-0.412.0/ops_builtin_v8.rs	2026-11-11 02:27:52.253835831 +0100
-@@ -567,10 +567,12 @@
++++ patched/deno_core-0.412.0/ops_builtin_v8.rs	2026-11-11 03:07:48.870093193 +0100
+@@ -567,10 +567,11 @@
      .map_err(|_| JsErrorBox::type_error("Invalid argument"))?;
    let text_str = serde_v8::to_utf8(text, scope);
    let bytes = text_str.into_bytes();
 +  // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs).
-+  let buffer = serde_v8::sandbox::new_array_buffer(scope, &bytes);
-+  if buffer.byte_length() != bytes.len() {
-+    return Err(JsErrorBox::range_error("Array buffer allocation failed"));
-+  }
++  let Some(buffer) = serde_v8::sandbox::new_array_buffer(scope, &bytes) else {
++    return Err(JsErrorBox::range_error(serde_v8::sandbox::ALLOCATION_FAILED));
++  };
    let len = bytes.len();
 -  let backing_store =
 -    v8::ArrayBuffer::new_backing_store_from_vec(bytes).make_shared();
@@ -68,7 +74,7 @@ diff -ruN orig/deno_core-0.412.0/ops_builtin_v8.rs patched/deno_core-0.412.0/ops
    let u8array = v8::Uint8Array::new(scope, buffer, 0, len).unwrap();
    Ok(u8array)
  }
-diff -ruN orig/deno_core-0.412.0/runtime/jsrealm.rs patched/deno_core-0.412.0/runtime/jsrealm.rs
+diff -ruN -x .cargo-ok orig/deno_core-0.412.0/runtime/jsrealm.rs patched/deno_core-0.412.0/runtime/jsrealm.rs
 --- orig/deno_core-0.412.0/runtime/jsrealm.rs	2026-11-11 02:25:52.286622111 +0100
 +++ patched/deno_core-0.412.0/runtime/jsrealm.rs	2026-11-11 02:28:16.794561313 +0100
 @@ -123,13 +123,13 @@
@@ -149,7 +155,7 @@ diff -ruN orig/deno_core-0.412.0/runtime/jsrealm.rs patched/deno_core-0.412.0/ru
        active_timers: Default::default(),
        unrefed_ops,
        external_ops_tracker,
-diff -ruN orig/deno_core-0.412.0/runtime/jsruntime.rs patched/deno_core-0.412.0/runtime/jsruntime.rs
+diff -ruN -x .cargo-ok orig/deno_core-0.412.0/runtime/jsruntime.rs patched/deno_core-0.412.0/runtime/jsruntime.rs
 --- orig/deno_core-0.412.0/runtime/jsruntime.rs	2026-11-11 02:25:52.286871984 +0100
 +++ patched/deno_core-0.412.0/runtime/jsruntime.rs	2026-11-11 02:29:59.553475301 +0100
 @@ -1007,6 +1007,7 @@
@@ -240,9 +246,9 @@ diff -ruN orig/deno_core-0.412.0/runtime/jsruntime.rs patched/deno_core-0.412.0/
          let timer_info_array = v8::Int32Array::new(scope, ab, 0, 1).unwrap();
          let set_timer_info_fn: v8::Local<v8::Function> = bindings::get(
            scope,
-diff -ruN orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs patched/deno_core-0.412.0/runtime/ops_rust_to_v8.rs
+diff -ruN -x .cargo-ok orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs patched/deno_core-0.412.0/runtime/ops_rust_to_v8.rs
 --- orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs	2026-11-11 02:25:52.287881273 +0100
-+++ patched/deno_core-0.412.0/runtime/ops_rust_to_v8.rs	2026-11-11 02:29:59.553830334 +0100
++++ patched/deno_core-0.412.0/runtime/ops_rust_to_v8.rs	2026-11-11 03:07:48.869685949 +0100
 @@ -26,7 +26,6 @@
  
  use std::borrow::Cow;
@@ -251,7 +257,7 @@ diff -ruN orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs patched/deno_core-0.4
  
  use bytes::BytesMut;
  use libc::c_void;
-@@ -359,24 +358,8 @@
+@@ -359,49 +358,42 @@
    value.into_parts().to_v8_fallible(scope)
  });
  to_v8!(RustToV8Marker<ArrayBufferMarker, BytesMut>: |value, scope| {
@@ -270,15 +276,27 @@ diff -ruN orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs patched/deno_core-0.4
 -    v8::ArrayBuffer::new_backing_store_from_ptr(
 -      ptr as _, len, drop_rc, rc as _,
 -    )
--  }
++  // Kantel patch: a copy in the isolate's own allocation, not a store over Rust's heap (serde_v8/sandbox.rs). This
++  // conversion can't fail, so a refused allocation throws a RangeError and answers an empty ArrayBuffer.
++  match serde_v8::sandbox::new_array_buffer(scope, &value.0) {
++    Some(ab) => ab,
++    None => {
++      serde_v8::sandbox::throw_allocation_failed(scope);
++      v8::ArrayBuffer::new(scope, 0)
++    }
+   }
 -  .make_shared();
 -  v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared)
-+  // Kantel patch: a copy in the isolate's own allocation, not a store over Rust's heap (serde_v8/sandbox.rs).
-+  serde_v8::sandbox::new_array_buffer(scope, &value.0)
  });
  to_v8_fallible!(BytesMut: |buf, scope| {
++  // Kantel patch: the view is made only over a buffer that has all of `len` (never over the empty one above).
    let len = buf.len();
-@@ -387,15 +370,8 @@
+-  let ab = unsafe { v8::Local::cast_unchecked(RustToV8Marker::<ArrayBufferMarker, _>::from(buf).to_v8(scope)) };
++  let ab = serde_v8::sandbox::new_array_buffer(scope, &buf)
++    .ok_or_else(|| serde_v8::Error::Message(serde_v8::sandbox::ALLOCATION_FAILED.into()))?;
+   v8::Uint8Array::new(scope, ab, 0, len).ok_or_else(|| serde_v8::Error::Message("failed to allocate array".into()))
+ });
+ 
  macro_rules! typedarray {
    ($rty:ty, $v8ty:ident) => {
      to_v8!(RustToV8Marker<ArrayBufferMarker, Box<[$rty]>>: |buf, scope| {
@@ -290,9 +308,24 @@ diff -ruN orig/deno_core-0.412.0/runtime/ops_rust_to_v8.rs patched/deno_core-0.4
 -          v8::ArrayBuffer::new_backing_store_from_bytes(buf);
 -        let backing_store_shared = backing_store.make_shared();
 -        v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared)
--      }
-+      // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs).
-+      serde_v8::sandbox::new_array_buffer_of(scope, &buf.0)
++      // Kantel patch: a copy in the isolate's own allocation (serde_v8/sandbox.rs); a refused allocation throws a
++      // RangeError and answers an empty ArrayBuffer (this conversion can't fail).
++      match serde_v8::sandbox::new_array_buffer_of(scope, &buf.0) {
++        Some(ab) => ab,
++        None => {
++          serde_v8::sandbox::throw_allocation_failed(scope);
++          v8::ArrayBuffer::new(scope, 0)
++        }
+       }
      });
      to_v8_fallible!(Box<[$rty]>: |buf, scope| {
++      // Kantel patch: the view is made only over a buffer that has all of `len` elements.
        let len = buf.len();
+-      let ab = unsafe {
+-        v8::Local::cast_unchecked(RustToV8Marker::<ArrayBufferMarker, _>::from(buf).to_v8(scope))
+-      };
++      let ab = serde_v8::sandbox::new_array_buffer_of(scope, &buf)
++        .ok_or_else(|| serde_v8::Error::Message(serde_v8::sandbox::ALLOCATION_FAILED.into()))?;
+       v8::$v8ty::new(scope, ab, 0, len).ok_or_else(|| serde_v8::Error::Message("failed to allocate array".into()))
+     });
+     to_v8!(RustToV8Marker<ArrayBufferMarker, Vec<$rty>>: |value, scope| {

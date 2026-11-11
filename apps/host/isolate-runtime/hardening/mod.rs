@@ -8,9 +8,11 @@
 //!    guest memory).
 //! 2. [`landlock::restrict`], before the first thread starts (Landlock binds the calling thread and the threads it
 //!    starts afterwards; kernels before 7.0 can't apply it to threads that already exist): read-only `--assets`,
-//!    read-write only its own temporary directory, the few system files V8 and the allocator read, and with
-//!    Landlock ABI 4 (Linux 6.7) TCP connect only to the store's and egress bridge's ports and bind only to its own.
-//!    Signals and abstract Unix sockets are scoped to the process with ABI 6 (Linux 6.12).
+//!    read-write only its own temporary directory, the few system files V8 and the allocator read. With Unix-socket
+//!    transport it forbids TCP entirely and allows only the socket directory; with TCP transport, and Landlock ABI 4
+//!    (Linux 6.7), it bounds the bind and connect *ports* — not the host, and not UDP, so that is not egress
+//!    confinement (see `landlock.rs` and SECURITY.md). Signals and abstract Unix sockets are scoped to the process
+//!    with ABI 6 (Linux 6.12).
 //!
 //! The systemd unit (`../systemd/kantel-isolate.service`) repeats the policy as a second, independent layer in the
 //! isolate VM; in native mode kantel-host's `startNative` has to provide the user, cgroup and namespaces (see
@@ -46,8 +48,37 @@ struct CapData {
 pub fn check_privileges(allow_root: bool) -> Result<()> {
     // SAFETY: plain syscalls with no pointers, or with pointers to locals.
     unsafe {
-        if !allow_root && (libc::geteuid() == 0 || libc::getuid() == 0) {
-            bail!("kantel-isolate must not run as root: run it as its own unprivileged user");
+        if !allow_root {
+            // Real, effective and saved IDs: a launcher that drops only the effective uid leaves the saved one 0,
+            // and the process could setuid(0) back.
+            let (mut r, mut e, mut s) = (0, 0, 0);
+            if libc::getresuid(&mut r, &mut e, &mut s) != 0 {
+                bail!("getresuid: {}", std::io::Error::last_os_error());
+            }
+            if r == 0 || e == 0 || s == 0 {
+                bail!("kantel-isolate must not run as root (uids real {r}, effective {e}, saved {s}): run it as its own unprivileged user");
+            }
+            let (mut r, mut e, mut s) = (0, 0, 0);
+            if libc::getresgid(&mut r, &mut e, &mut s) != 0 {
+                bail!("getresgid: {}", std::io::Error::last_os_error());
+            }
+            if r == 0 || e == 0 || s == 0 {
+                bail!("kantel-isolate must not run with group root (gids real {r}, effective {e}, saved {s})");
+            }
+            // Supplementary groups: none may be root's (gid 0). Other groups are the launcher's policy; the unit
+            // and native mode give it none.
+            let n = libc::getgroups(0, std::ptr::null_mut());
+            if n < 0 {
+                bail!("getgroups: {}", std::io::Error::last_os_error());
+            }
+            let mut groups = vec![0 as libc::gid_t; n as usize];
+            let n = libc::getgroups(n, groups.as_mut_ptr());
+            if n < 0 {
+                bail!("getgroups: {}", std::io::Error::last_os_error());
+            }
+            if groups[..n as usize].contains(&0) {
+                bail!("kantel-isolate must not be in group root (supplementary groups {:?})", &groups[..n as usize]);
+            }
         }
         let mut header = CapHeader { version: LINUX_CAPABILITY_VERSION_3, pid: 0 };
         let mut data = [CapData::default(); 2];

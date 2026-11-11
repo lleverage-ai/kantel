@@ -2,13 +2,23 @@
 # Downloads Kantel's sandboxed rusty_v8 build (made by build-v8-sandbox.sh, published as release assets), checks
 # both files against the SHA-256s pinned here, and prints the two variables cargo's v8 build script reads:
 #
-#   eval "$(apps/host/isolate-runtime/v8/fetch-v8-sandbox.sh ~/.cache/kantel-v8)"     # a shell
-#   apps/host/isolate-runtime/v8/fetch-v8-sandbox.sh "$RUNNER_TOOL_CACHE/kantel-v8" >> "$GITHUB_ENV"   # Actions
+#   eval "$(apps/host/isolate-runtime/v8/fetch-v8-sandbox.sh --export ~/.cache/kantel-v8)"   # a shell: exports to cargo
+#   apps/host/isolate-runtime/v8/fetch-v8-sandbox.sh ~/.cache/kantel-v8 >> "$GITHUB_ENV"     # GitHub Actions
+#
+# Without --export it prints `KEY=value` lines (the `$GITHUB_ENV` form); with --export it prefixes `export ` so that
+# `eval` in a shell puts the variables in the environment cargo inherits (plain `eval` of `KEY=value` sets shell
+# variables, not environment ones, and cargo wouldn't see them).
 #
 # A file already in <dir> with the right SHA-256 isn't downloaded again (so an actions/cache of <dir> keyed on this
 # file's hash skips the download). KANTEL_V8_BASE overrides where the assets come from (a mirror, or file:// for a
 # local build's out dir).
 set -euo pipefail
+
+prefix=
+if [ "${1:-}" = "--export" ]; then
+	prefix="export "
+	shift
+fi
 
 V8_CRATE_VERSION=150.4.0
 # The release that carries the assets: a prerelease of github.com/lleverage-ai/kantel, one per V8 crate version and
@@ -33,14 +43,20 @@ binding=src_binding_$name.rs
 
 fetch() { # <file> <sha256>
 	local f=$1 sha=$2
-	if ! echo "$sha  $dir/$f" | sha256sum -c --status - 2>/dev/null; then
-		curl -fsSL --retry 3 -o "$dir/$f.part" "$BASE/$f"
-		echo "$sha  $dir/$f.part" | sha256sum -c --status - || { echo "fetch-v8-sandbox: $f: SHA-256 mismatch" >&2; rm -f "$dir/$f.part"; exit 1; }
-		mv "$dir/$f.part" "$dir/$f"
+	if echo "$sha  $dir/$f" | sha256sum -c --status - 2>/dev/null; then
+		return
 	fi
+	# A unique temp file, so concurrent runs (several jobs sharing a cache) don't race on one .part; verify it, then
+	# rename atomically into place. Clean up only our own temp.
+	local tmp
+	tmp=$(mktemp "$dir/.$f.XXXXXX")
+	trap 'rm -f "$tmp"' RETURN
+	curl -fsSL --retry 3 -o "$tmp" "$BASE/$f"
+	echo "$sha  $tmp" | sha256sum -c --status - || { echo "fetch-v8-sandbox: $f: SHA-256 mismatch" >&2; return 1; }
+	mv -f "$tmp" "$dir/$f"
 }
 fetch "$lib" "$lib_sha"
 fetch "$binding" "$binding_sha"
 # v8's build.rs takes a .gz archive in RUSTY_V8_ARCHIVE as is (it checks the gzip magic).
-echo "RUSTY_V8_ARCHIVE=$(cd "$dir" && pwd)/$lib"
-echo "RUSTY_V8_SRC_BINDING_PATH=$(cd "$dir" && pwd)/$binding"
+echo "${prefix}RUSTY_V8_ARCHIVE=$(cd "$dir" && pwd)/$lib"
+echo "${prefix}RUSTY_V8_SRC_BINDING_PATH=$(cd "$dir" && pwd)/$binding"
