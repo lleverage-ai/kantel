@@ -91,10 +91,12 @@ function fakeSandboxes(room: { value: number }) {
 function fakeGithub() {
 	const registered: { name: string; labels: readonly string[]; scope: unknown }[] = [];
 	const removed: number[] = [];
-	const state = { failRemove: false };
+	const removedFrom: unknown[] = [];
+	const state: { failRemove: boolean; onRegister?: (name: string) => Promise<void> } = { failRemove: false };
 	return {
 		registered,
 		removed,
+		removedFrom,
 		state,
 		app: () => ({
 			async generateJitConfig(
@@ -102,6 +104,7 @@ function fakeGithub() {
 				scope: unknown,
 				runner: { name: string; labels: readonly string[] },
 			) {
+				await state.onRegister?.(runner.name);
 				registered.push({ ...runner, scope });
 				return { runnerId: registered.length, encodedJitConfig: `jit-for-${runner.name}` };
 			},
@@ -109,9 +112,10 @@ function fakeGithub() {
 				const index = registered.findIndex((runner) => runner.name === name);
 				return index < 0 || removed.includes(index + 1) ? undefined : index + 1;
 			},
-			async removeRunner(_installation: number, _scope: unknown, runnerId: number) {
+			async removeRunner(_installation: number, scope: unknown, runnerId: number) {
 				if (state.failRemove) throw new KantelError("unavailable", "GitHub answered 503");
 				removed.push(runnerId);
+				removedFrom.push(scope);
 			},
 			async getJob() {
 				return { status: "in_progress" };
@@ -120,7 +124,14 @@ function fakeGithub() {
 	};
 }
 
-async function setUp(options: { room?: number; repositories?: string[]; scope?: "organization" | "repository" } = {}) {
+async function setUp(
+	options: {
+		room?: number;
+		repositories?: string[];
+		scope?: "organization" | "repository";
+		pool?: Partial<RunnerPool>;
+	} = {},
+) {
 	const store = createMemoryStore();
 	const sealer = createEphemeralSealer();
 	const clock = { now: 1_000_000 };
@@ -150,7 +161,7 @@ async function setUp(options: { room?: number; repositories?: string[]; scope?: 
 		scope: options.scope ?? "organization",
 		...(options.scope === "repository" ? {} : { runnerGroupId: 7 }),
 		...(options.repositories === undefined ? {} : { repositories: options.repositories }),
-		pools: [POOL],
+		pools: [{ ...POOL, ...options.pool }],
 		enabled: true,
 		keyId: PRINCIPAL.keyId,
 		privateKey: sealed.privateKey,
@@ -368,6 +379,7 @@ describe("GitHub runners", () => {
 			...current,
 			state: "registering",
 			claimedAt: clock.now,
+			registration: { installationId: 42, scope: { kind: "organization", org: "octo-org", runnerGroupId: 7 } },
 		}));
 		github.registered.push({ name: sandboxId, labels: [], scope: {} });
 		clock.now += 3 * 60_000;
@@ -435,6 +447,86 @@ describe("GitHub runners", () => {
 			}),
 		);
 		expect(response.status).toBe(413);
+	});
+
+	it("stops a pass at its next effect once another gateway has taken its lease", async () => {
+		const { job, sandboxes, store, clock } = await setUp();
+		const create = sandboxes.api.create;
+		let first = true;
+		sandboxes.api.create = async (principal, body) => {
+			const made = await create(principal, body);
+			// A slow first create: its lease ran out and another gateway took it meanwhile.
+			if (first) {
+				first = false;
+				await store.githubRunners.update("ghr_one", (current) => ({
+					...current,
+					lease: { owner: "gw_other", until: clock.now + 60_000 },
+				}));
+			}
+			return made;
+		};
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, installationId: 42 }));
+		for (const id of [1, 2, 3]) {
+			await store.githubRunnerJobs.insert({
+				id: `ghr_one:${id}`,
+				integrationId: "ghr_one",
+				accountId: "acc_org",
+				jobId: id,
+				runId: 1,
+				repository: "octo-org/app",
+				name: "checks",
+				labels: ["kantel-8vcpu"],
+				pool: "kantel-8vcpu",
+				state: "queued",
+				queuedAt: clock.now,
+				updatedAt: clock.now,
+			});
+		}
+		await job("queued", 4);
+		expect(sandboxes.sandboxes.size).toBe(1);
+	});
+
+	it("keeps a pool to its limit across repositories", async () => {
+		const { job, sandboxes } = await setUp({ scope: "repository", pool: { maxRunners: 1 } });
+		await job("queued", 1, {}, "octo-org/a");
+		await job("queued", 2, {}, "octo-org/b");
+		expect(sandboxes.sandboxes.size).toBe(1);
+	});
+
+	it("takes a runner off GitHub when its job ends while it is being registered", async () => {
+		const { job, sandboxes, runners, github, store } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		github.state.onRegister = async (name) => {
+			// The job's `completed` webhook marks the runner to end while GitHub registers it.
+			await store.githubRunnerMachines.update(name, (current) => ({ ...current, state: "ending", endReason: "test" }));
+		};
+		await runners.tick();
+		github.state.onRegister = undefined;
+		await runners.tick();
+		expect(github.removed).toEqual([1]);
+		expect(sandboxes.runs.filter((run) => run.sandboxId === "sbx_1")).toEqual([]);
+		expect(await store.githubRunnerMachines.get("sbx_1")).toBeUndefined();
+	});
+
+	it("takes a runner off GitHub where it was registered, though the integration has moved since", async () => {
+		const { job, sandboxes, runners, github, store, clock } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "other-org", runnerGroupId: 9 }));
+		await job("completed", 1, { conclusion: "cancelled" });
+		clock.now += IDLE_GRACE_MS + 1;
+		await runners.tick();
+		expect(github.removedFrom).toEqual([{ kind: "organization", org: "octo-org", runnerGroupId: 7 }]);
+	});
+
+	it("deletes a runner sandbox whose record was never written before forgetting a deleted integration", async () => {
+		const { sandboxes, runners, store } = await setUp();
+		const orphan = await sandboxes.api.create(PRINCIPAL, { labels: { [RUNNER_LABEL]: "ghr_one" } });
+		expect(await runners.retire("ghr_one")).toBe(true);
+		expect(sandboxes.sandboxes.has(orphan.id)).toBe(false);
+		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
 	});
 
 	it("ignores jobs no pool takes, and records those of repositories it doesn't serve", async () => {

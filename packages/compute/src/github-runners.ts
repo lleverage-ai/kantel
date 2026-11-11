@@ -63,7 +63,11 @@ export const JOB_CHECK_EVERY_MS = 5 * 60_000;
 export const QUEUED_JOB_TTL_MS = 24 * 3_600_000;
 /** How long an ended job's record is kept, for the list. */
 export const ENDED_JOB_TTL_MS = 3 * 24 * 3_600_000;
-/** How long an ending runner's cleanup is tried for before it is given up on, its failure logged. */
+/**
+ * How long taking an unused runner off GitHub is tried for before it is left to GitHub, which removes a just-in-time
+ * runner that never ran a job, and an ephemeral one that hasn't connected for a day, by itself. A runner's sandbox is
+ * deleted however long that takes.
+ */
 export const END_GIVE_UP_MS = 24 * 3_600_000;
 /** How often a pass runs while a pool has work (queued jobs, runners booting): the deployment is woken for it. */
 export const ACTIVE_TICK_MS = 5_000;
@@ -180,6 +184,11 @@ export interface StoredGithubRunnerMachine {
 	readonly pool: string;
 	readonly state: "booting" | "registering" | "idle" | "busy" | "ending";
 	readonly runnerId?: number;
+	/**
+	 * Where it was registered (or was being registered): kept with the runner, so taking it off GitHub goes there however
+	 * the integration has changed since.
+	 */
+	readonly registration?: { readonly installationId: number; readonly scope: RunnerScope };
 	/** The repository it is for, for a repository-scoped integration: chosen when it is made. */
 	readonly repository?: string;
 	readonly jobId?: number;
@@ -353,6 +362,14 @@ function parseWorkflowJob(body: unknown): WorkflowJobEvent | undefined {
 	};
 }
 
+/** Thrown when this gateway no longer holds an integration's lease: its pass stops before its next effect. */
+class LeaseLost extends Error {
+	constructor(integrationId: string) {
+		super(`Another gateway holds ${integrationId}'s lease`);
+		this.name = "LeaseLost";
+	}
+}
+
 /** A request's body, at most `limit` bytes; undefined when it is longer. */
 async function boundedBody(request: Request, limit: number): Promise<Uint8Array | undefined> {
 	const declared = Number(request.headers.get("content-length") ?? "0");
@@ -431,9 +448,36 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	}
 
 	/**
-	 * Ends a runner: marks it `ending` (once), takes its runner off GitHub unless GitHub does that itself, deletes its
-	 * sandbox, and only then forgets it. Any step that fails leaves it `ending` for the next pass; answers whether it has
-	 * gone. Idempotent, and safe to run on any gateway: each step is.
+	 * Marks a runner to end, once: all a webhook does. The pass that holds the integration's lease does the ending (`end`),
+	 * so a runner is never ended while that pass is registering it.
+	 */
+	async function markEnding(
+		machineId: string,
+		why: string,
+		extra: { readonly keepBackoff?: boolean; readonly tookJob?: boolean } = {},
+	): Promise<StoredGithubRunnerMachine | undefined> {
+		const t = now();
+		return store.githubRunnerMachines.update(machineId, (current) =>
+			current.state === "ending"
+				? extra.tookJob === true && current.tookJob !== true
+					? { ...current, tookJob: true }
+					: current
+				: {
+						...current,
+						state: "ending",
+						endingAt: t,
+						endReason: why,
+						...(extra.keepBackoff === true ? { keepBackoff: true } : {}),
+						...(extra.tookJob === true ? { tookJob: true } : {}),
+						updatedAt: t,
+					},
+		);
+	}
+
+	/**
+	 * Ends a runner, as the lease holder: marks it `ending`, takes its runner off GitHub unless GitHub does that itself,
+	 * deletes its sandbox, and only then forgets it. A step that fails leaves it `ending` for the next pass; answers
+	 * whether it has gone.
 	 */
 	async function end(
 		record: StoredGithubRunners,
@@ -441,67 +485,64 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		why: string,
 		endOptions: { readonly keepBackoff?: boolean } = {},
 	): Promise<boolean> {
+		await hold(record.id);
 		const t = now();
-		const machine = await store.githubRunnerMachines.update(machineId, (current) =>
-			current.state === "ending"
-				? current
-				: {
-						...current,
-						state: "ending",
-						endingAt: t,
-						endReason: why,
-						...(endOptions.keepBackoff === true ? { keepBackoff: true } : {}),
-						// A runner that was registering when it ended may be on GitHub without its ID known here.
-						...(current.state === "registering" ? { claimedAt: current.claimedAt ?? t } : {}),
-						updatedAt: t,
-					},
-		);
+		const machine = await markEnding(machineId, why, endOptions);
 		if (machine === undefined) return true;
 		if (machine.endingAt === t) log(`[github-runners] ending runner ${machine.id}: ${why}`);
-		const givingUp = t - (machine.endingAt ?? t) > END_GIVE_UP_MS;
-		// Its runner on GitHub: an ephemeral runner that took a job is removed by GitHub once the job ends.
+		// Its runner on GitHub: one that took a job, GitHub removes once the job ends.
 		if (machine.unregistered !== true && machine.tookJob !== true) {
 			const removed = await unregister(record, machine).catch((error: unknown) => {
+				if (error instanceof LeaseLost) throw error;
 				log(`[github-runners] runner ${machine.id} not taken off GitHub yet: ${messageOf(error)}`);
 				return false;
 			});
-			if (!removed && !givingUp) return false;
-			if (!removed) await noteError(record, `gave up taking runner ${machine.id} off GitHub after a day`);
+			if (!removed && t - (machine.endingAt ?? t) <= END_GIVE_UP_MS) return false;
+			if (!removed) await noteError(record, `left runner ${machine.id} for GitHub to remove: it never ran a job`);
 			await store.githubRunnerMachines.update(machine.id, (current) => ({ ...current, unregistered: true }));
 		}
 		const principal = await options.cleanupPrincipalOf(record.keyId);
 		if (principal !== undefined) {
+			await hold(record.id);
 			try {
 				await options.sandboxes.delete(principal, machine.id);
 			} catch (error) {
 				if (!isKantelError(error, "not_found")) {
 					log(`[github-runners] sandbox ${machine.id} not deleted yet: ${messageOf(error)}`);
-					if (!givingUp) return false;
-					await noteError(record, `gave up deleting runner sandbox ${machine.id} after a day: ${messageOf(error)}`);
+					return false;
 				}
 			}
 		}
+		await hold(record.id);
 		await store.githubRunnerMachines.delete(machine.id);
 		// A runner gone is room: its pool may try again at once, unless it went for want of room.
-		if (machine.keepBackoff !== true)
+		if (machine.keepBackoff !== true) {
 			await setBackoff(record.id, demandKey(record, machine.pool, machine.repository), undefined);
+		}
 		return true;
 	}
 
-	/** Takes a runner off GitHub: by its ID, or for one that was registering, by its name. True once it isn't there. */
+	/**
+	 * Takes a runner off GitHub where it was registered: by its ID, or, for one whose registration never answered, by its
+	 * name. True once it isn't there.
+	 */
 	async function unregister(record: StoredGithubRunners, machine: StoredGithubRunnerMachine): Promise<boolean> {
-		const mayBeRegistered = machine.runnerId !== undefined || machine.claimedAt !== undefined;
-		if (!mayBeRegistered) return true;
-		const scope = scopeOf(record, machine.repository);
-		if (scope === undefined || record.installationId === undefined) return true;
+		const registration = machine.registration;
+		if (registration === undefined) return true;
+		await hold(record.id);
 		const app = await appOf(record);
-		const runnerId = machine.runnerId ?? (await app.findRunner(record.installationId, scope, machine.id));
+		const runnerId =
+			machine.runnerId ?? (await app.findRunner(registration.installationId, registration.scope, machine.id));
 		if (runnerId === undefined) return true;
-		await app.removeRunner(record.installationId, scope, runnerId);
+		await app.removeRunner(registration.installationId, registration.scope, runnerId);
 		return true;
 	}
 
-	/** Registers a running sandbox's runner on GitHub and starts it, once this pass holds its claim. */
+	/**
+	 * Registers a running sandbox's runner on GitHub and starts it. It is `registering` (with where, so an end can find
+	 * it) until the runner has started; only then `idle`, so a runner whose start never happened isn't counted as one
+	 * waiting for a job, and a stalled registration is ended.
+	 */
 	async function register(
 		record: StoredGithubRunners,
 		machine: StoredGithubRunnerMachine,
@@ -509,33 +550,54 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		pool: RunnerPool,
 	): Promise<void> {
 		const scope = scopeOf(record, machine.repository);
-		if (scope === undefined || record.installationId === undefined) {
+		const installationId = record.installationId;
+		if (scope === undefined || installationId === undefined) {
 			await end(record, machine.id, "no installation, runner group or repository to register it in");
 			return;
 		}
+		await hold(record.id);
 		const t = now();
 		const claimed = await store.githubRunnerMachines.update(machine.id, (current) =>
-			current.state === "booting" ? { ...current, state: "registering", claimedAt: t, updatedAt: t } : undefined,
+			current.state === "booting"
+				? { ...current, state: "registering", claimedAt: t, registration: { installationId, scope }, updatedAt: t }
+				: undefined,
 		);
 		if (claimed === undefined) return;
 		try {
-			const jit = await (await appOf(record)).generateJitConfig(record.installationId, scope, {
+			const jit = await (await appOf(record)).generateJitConfig(installationId, scope, {
 				name: machine.id,
 				labels: runnerLabels(pool),
 			});
-			const ready = await store.githubRunnerMachines.update(machine.id, (current) =>
-				current.state === "registering"
-					? { ...current, state: "idle", runnerId: jit.runnerId, readyAt: now(), updatedAt: now() }
-					: { ...current, runnerId: jit.runnerId },
-			);
-			// Ended while it registered: its ID is kept, so the end takes it off GitHub.
-			if (ready === undefined || ready.state !== "idle") return;
+			// Kept whatever its state now, so an end (marked meanwhile) takes it off GitHub by its ID.
+			const registered = await store.githubRunnerMachines.update(machine.id, (current) => ({
+				...current,
+				runnerId: jit.runnerId,
+			}));
+			if (registered?.state !== "registering") return;
+			await hold(record.id);
 			await options.sandboxes.run(principal, machine.id, pool.runnerCommand ?? DEFAULT_RUNNER_COMMAND, {
 				KANTEL_RUNNER_JITCONFIG: jit.encodedJitConfig,
 			});
+			await store.githubRunnerMachines.update(machine.id, (current) =>
+				current.state === "registering" ? { ...current, state: "idle", readyAt: now(), updatedAt: now() } : undefined,
+			);
 		} catch (error) {
+			if (error instanceof LeaseLost) throw error;
 			await noteError(record, `registering runner ${machine.id}: ${messageOf(error)}`);
 			await end(record, machine.id, "its registration failed");
+		}
+	}
+
+	/** Renews this gateway's lease on the integration before an effect; `LeaseLost` once another gateway holds it. */
+	async function hold(integrationId: string): Promise<void> {
+		const t = now();
+		const held = await store.githubRunners.update(integrationId, (current) =>
+			current.lease?.owner === gatewayId || current.lease === undefined
+				? { ...current, lease: { owner: gatewayId, until: t + LEASE_MS } }
+				: undefined,
+		);
+		if (held === undefined && (await store.githubRunners.get(integrationId)) !== undefined) {
+			throw new LeaseLost(integrationId);
 		}
 	}
 
@@ -566,6 +628,10 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		if (record === undefined) return (await store.githubRunners.get(integrationId)) !== undefined;
 		try {
 			return await passHolding(record);
+		} catch (error) {
+			if (!(error instanceof LeaseLost)) throw error;
+			log(`[github-runners] ${error.message}; its pass stopped`);
+			return true;
 		} finally {
 			await release(integrationId);
 		}
@@ -575,11 +641,13 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		const machines = await store.githubRunnerMachines.list({ integrationId: record.id });
 		const t = now();
 
-		// Retiring: end every runner, then forget the integration.
+		// Retiring: end every runner, and every sandbox labelled as one (its record never written), then forget it.
 		if (record.retiringAt !== undefined) {
 			let left = 0;
 			for (const machine of machines) if (!(await end(record, machine.id, "its integration was deleted"))) left++;
+			if ((await sweepOrphans(record, 0)) > 0) left++;
 			if (left > 0) return true;
+			await hold(record.id);
 			for (const job of await store.githubRunnerJobs.list({ integrationId: record.id })) {
 				await store.githubRunnerJobs.delete(job.id);
 			}
@@ -699,7 +767,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		const fresh = await store.githubRunners.get(record.id);
 		if (fresh?.enabled && fresh.retiringAt === undefined && principal !== undefined) {
 			if (fresh.installationId !== undefined) {
-				const live = await store.githubRunnerMachines.list({ integrationId: fresh.id });
+				const live: StoredGithubRunnerMachine[] = await store.githubRunnerMachines.list({ integrationId: fresh.id });
 				const keys = new Map<string, { readonly pool: RunnerPool; readonly repository: string | undefined }>();
 				for (const job of jobs) {
 					const pool = fresh.pools.find((candidate) => candidate.label === job.pool);
@@ -725,7 +793,10 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					// After waiting for room, one runner at a time probes for it.
 					const wanted = Math.min(waiting - supply, room, backoff === undefined ? CREATES_PER_PASS : 1);
 					for (let made = 0; made < wanted; made++) {
-						if (!(await makeRunner(fresh, pool, repository, principal))) break;
+						const runner = await makeRunner(fresh, pool, repository, principal);
+						if (runner === undefined) break;
+						// Counted at once, so the next key's room is the pool's room less this one.
+						live.push(runner);
 					}
 				}
 			} else if (jobs.some((job) => job.state === "queued")) {
@@ -733,35 +804,50 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			}
 		}
 
-		// Runners labelled for this integration with no record: a create whose record was never written.
-		const cleanup = await options.cleanupPrincipalOf(record.keyId);
-		if (cleanup !== undefined) {
-			const known = new Set(
-				(await store.githubRunnerMachines.list({ integrationId: record.id })).map((machine) => machine.id),
-			);
-			let labelled: readonly { readonly id: string; readonly createdAt: number }[] = [];
-			try {
-				labelled = await options.sandboxes.listLabelled(record.accountId, { [RUNNER_LABEL]: record.id });
-			} catch (error) {
-				log(`[github-runners] listing runner sandboxes failed: ${messageOf(error)}`);
-			}
-			for (const sandbox of labelled) {
-				if (!known.has(sandbox.id) && t - sandbox.createdAt > 60_000) {
-					log(`[github-runners] deleting orphaned runner sandbox ${sandbox.id}`);
-					await options.sandboxes.delete(cleanup, sandbox.id).catch(() => undefined);
-				}
-			}
-		}
+		await sweepOrphans(record, 60_000);
 		return active;
 	}
 
-	/** Makes one runner; false when there was no room (the key now backs off) or the create failed. */
+	/**
+	 * Deletes sandboxes labelled as the integration's runners that have no record (a create whose record was never
+	 * written), once older than `minAgeMs`; answers how many are left, a listing that failed counting as one.
+	 */
+	async function sweepOrphans(record: StoredGithubRunners, minAgeMs: number): Promise<number> {
+		const cleanup = await options.cleanupPrincipalOf(record.keyId);
+		if (cleanup === undefined) return 0;
+		const t = now();
+		const known = new Set(
+			(await store.githubRunnerMachines.list({ integrationId: record.id })).map((machine) => machine.id),
+		);
+		let labelled: readonly { readonly id: string; readonly createdAt: number }[];
+		try {
+			labelled = await options.sandboxes.listLabelled(record.accountId, { [RUNNER_LABEL]: record.id });
+		} catch (error) {
+			log(`[github-runners] listing runner sandboxes failed: ${messageOf(error)}`);
+			return 1;
+		}
+		let left = 0;
+		for (const sandbox of labelled) {
+			if (known.has(sandbox.id) || t - sandbox.createdAt < minAgeMs) continue;
+			log(`[github-runners] deleting orphaned runner sandbox ${sandbox.id}`);
+			await hold(record.id);
+			try {
+				await options.sandboxes.delete(cleanup, sandbox.id);
+			} catch (error) {
+				if (!isKantelError(error, "not_found")) left++;
+			}
+		}
+		return left;
+	}
+
+	/** Makes one runner; undefined when there was no room (the key now backs off) or the create failed. */
 	async function makeRunner(
 		record: StoredGithubRunners,
 		pool: RunnerPool,
 		repository: string | undefined,
 		principal: KeyPrincipal,
-	): Promise<boolean> {
+	): Promise<StoredGithubRunnerMachine | undefined> {
+		await hold(record.id);
 		const t = now();
 		const key = demandKey(record, pool.label, repository);
 		let sandbox: { readonly id: string; readonly state: string };
@@ -786,9 +872,9 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				await noteError(record, `making a runner for ${pool.label}: ${messageOf(error)}`);
 			}
 			await setBackoff(record.id, key, messageOf(error));
-			return false;
+			return undefined;
 		}
-		await store.githubRunnerMachines.put({
+		const machine: StoredGithubRunnerMachine = {
 			id: sandbox.id,
 			integrationId: record.id,
 			accountId: record.accountId,
@@ -798,11 +884,12 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			createdAt: t,
 			expiresAt: t + (pool.timeoutMinutes ?? DEFAULT_TIMEOUT_MINUTES) * 60_000,
 			updatedAt: t,
-		});
-		return true;
+		};
+		await store.githubRunnerMachines.put(machine);
+		return machine;
 	}
 
-	/** Marks a job ended, and ends the runner that ran it. */
+	/** Marks a job ended, and its runner to end (which the next pass does). */
 	async function completeJob(
 		record: StoredGithubRunners,
 		jobId: number,
@@ -823,10 +910,8 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					},
 		);
 		if (runnerName === undefined) return;
-		const machine = await store.githubRunnerMachines.update(runnerName, (current) =>
-			current.integrationId === record.id && current.state !== "ending" ? { ...current, tookJob: true } : undefined,
-		);
-		if (machine !== undefined) await end(record, machine.id, "its job ended");
+		const machine = await store.githubRunnerMachines.get(runnerName);
+		if (machine?.integrationId === record.id) await markEnding(machine.id, "its job ended", { tookJob: true });
 	}
 
 	async function onWorkflowJob(record: StoredGithubRunners, event: WorkflowJobEvent): Promise<void> {
@@ -941,13 +1026,20 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			}
 			if (parsed === undefined) return answer(400, "Not a workflow_job delivery");
 			const installationId = parsed.installationId;
-			const current =
-				(await store.githubRunners.update(record.id, (latest) => ({
-					...latest,
-					lastWebhookAt: now(),
-					...(installationId === undefined ? {} : { installationId }),
-				}))) ?? record;
+			const current = await store.githubRunners.update(record.id, (latest) =>
+				latest.retiringAt === undefined
+					? { ...latest, lastWebhookAt: now(), ...(installationId === undefined ? {} : { installationId }) }
+					: undefined,
+			);
+			// Deleted while the body was read: nothing is recorded for it.
+			if (current === undefined) return answer(404, "No such integration");
 			await onWorkflowJob(current, parsed);
+			// Deleted while the job was recorded: its retirement may have deleted the jobs before this one landed.
+			const after = await store.githubRunners.get(record.id);
+			if (after === undefined || after.retiringAt !== undefined) {
+				if (after === undefined) await store.githubRunnerJobs.delete(jobRecordId(record.id, parsed.job.id));
+				return answer(404, "No such integration");
+			}
 			// A pass now, so a queued job's runner starts at once: a create only places the sandbox, well inside
 			// GitHub's 10 s.
 			let active = true;
