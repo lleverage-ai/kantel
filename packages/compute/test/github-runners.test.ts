@@ -287,6 +287,8 @@ describe("GitHub runners", () => {
 		await job("queued", 2);
 		expect(sandboxes.sandboxes.size).toBe(1);
 		const [first] = [...sandboxes.sandboxes.keys()];
+		sandboxes.boot();
+		await runners.tick();
 		await job("in_progress", 1, { runner_name: first });
 		await job("completed", 1, { runner_name: first });
 		// The completed job's runner freed the room, and the same delivery's pass used it.
@@ -604,6 +606,52 @@ describe("GitHub runners", () => {
 		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBeUndefined();
 		// A new job of the old owner is still nobody's.
 		expect((await job("queued", 2)).status).toBe(202);
+	});
+
+	it("acts on a delivery only within the installation that sent it, whatever names it carries", async () => {
+		const { job, deliver, sandboxes, runners, store } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		const [victim = ""] = [...sandboxes.sandboxes.keys()];
+		// Another owner's installation names our runner in its own job's signed `completed`: nothing happens to it.
+		const foreign = await deliver("workflow_job", {
+			action: "completed",
+			installation: { id: 77 },
+			repository: { full_name: "attacker/app" },
+			workflow_job: {
+				id: 500,
+				run_id: 1,
+				name: "x",
+				labels: ["kantel-8vcpu"],
+				runner_name: victim,
+				conclusion: "success",
+			},
+		});
+		expect(foreign.status).toBe(202);
+		expect(sandboxes.sandboxes.has(victim)).toBe(true);
+		expect((await store.githubRunnerMachines.get(victim))?.state).toBe("idle");
+		// The owner changes while a delivery about a new job of the old owner is in flight: it records nothing.
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "new-org" }));
+		expect((await job("queued", 2)).status).toBe(202);
+		expect(await store.githubRunnerJobs.get("ghr_one:2")).toBeUndefined();
+	});
+
+	it("forgets an account's runner records whose integration is already gone", async () => {
+		const { store, runners, clock } = await setUp();
+		await store.githubRunnerMachines.put({
+			id: "sbx_stray",
+			integrationId: "ghr_gone",
+			accountId: "acc_org",
+			pool: "kantel-8vcpu",
+			state: "idle",
+			createdAt: clock.now,
+			expiresAt: clock.now + 60_000,
+			updatedAt: clock.now,
+		});
+		await runners.forgetAccount("acc_org");
+		expect(await store.githubRunnerMachines.list({ accountId: "acc_org" })).toEqual([]);
+		expect(await store.githubRunners.list({ accountId: "acc_org" })).toEqual([]);
 	});
 
 	it("binds the installation only from its own owner's deliveries", async () => {

@@ -162,6 +162,8 @@ export interface StoredGithubRunnerJob {
 	readonly name: string;
 	readonly labels: readonly string[];
 	readonly pool?: string;
+	/** The App installation whose delivery recorded it: only that installation's deliveries move it on. */
+	readonly installationId?: number;
 	readonly state: computeSchema.GithubRunnerJobState;
 	readonly conclusion?: string;
 	readonly sandboxId?: string;
@@ -386,6 +388,23 @@ class LeaseLost extends Error {
 		super(`Another gateway holds ${integrationId}'s lease`);
 		this.name = "LeaseLost";
 	}
+}
+
+/**
+ * Whether a runner was registered by the integration through `installationId`, in a scope `repository` (`owner/name`) is
+ * in: a delivery naming the runner speaks for it only then, as anyone may give their own runner its name.
+ */
+function registeredBy(
+	machine: StoredGithubRunnerMachine,
+	integrationId: string,
+	installationId: number,
+	repository: string,
+): boolean {
+	const registration = machine.registration;
+	if (machine.integrationId !== integrationId || registration?.installationId !== installationId) return false;
+	return registration.scope.kind === "organization"
+		? repository.split("/")[0]?.toLowerCase() === registration.scope.org.toLowerCase()
+		: repository.toLowerCase() === registration.scope.repository.toLowerCase();
 }
 
 /** Whether `repository` (`owner/name`) is the integration's owner's, as GitHub compares logins: without case. */
@@ -976,10 +995,15 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		jobId: number,
 		conclusion: string | undefined,
 		runnerName: string | undefined,
+		/** The installation a delivery came from: a job another installation recorded is left as it is. */
+		installationId?: number,
 	): Promise<void> {
 		const t = now();
 		await store.githubRunnerJobs.update(jobRecordId(record.id, jobId), (current) =>
-			current.state === "completed"
+			current.state === "completed" ||
+			(installationId !== undefined &&
+				current.installationId !== undefined &&
+				current.installationId !== installationId)
 				? undefined
 				: {
 						...current,
@@ -995,18 +1019,24 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		if (machine?.integrationId === record.id) await markEnding(machine.id, "its job ended", { tookJob: true });
 	}
 
-	async function onWorkflowJob(record: StoredGithubRunners, event: WorkflowJobEvent): Promise<void> {
+	async function onWorkflowJob(
+		record: StoredGithubRunners,
+		event: WorkflowJobEvent,
+		admission: "new" | "follow",
+		installationId: number,
+	): Promise<void> {
 		const t = now();
 		const id = jobRecordId(record.id, event.job.id);
 		const runnerName = event.job.runnerName;
-		const runnerOf = runnerName === undefined ? undefined : await store.githubRunnerMachines.get(runnerName);
+		const found = runnerName === undefined ? undefined : await store.githubRunnerMachines.get(runnerName);
+		// Its runner, only one it registered through this delivery's installation (`registeredBy`).
+		const machine =
+			found !== undefined && registeredBy(found, record.id, installationId, event.repository) ? found : undefined;
 		// A job no pool takes now may still be one of its own (its pool renamed or removed since): its later events, and
 		// those of a runner it made, are followed whatever the pools are now. Only a new job needs a pool to match.
 		const known = (await store.githubRunnerJobs.get(id))?.pool;
 		const label =
-			poolFor(record.pools, event.job.labels)?.label ??
-			known ??
-			(runnerOf?.integrationId === record.id ? runnerOf.pool : undefined);
+			(admission === "new" ? poolFor(record.pools, event.job.labels)?.label : undefined) ?? known ?? machine?.pool;
 		if (label === undefined) return;
 		const pool = { label };
 		const allowed = record.repositories === undefined || record.repositories.includes(event.repository);
@@ -1019,9 +1049,8 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					: event.action === "completed"
 						? "completed"
 						: "ignored";
-		const runner = event.job.runnerName;
-		const machine = runner === undefined ? undefined : await store.githubRunnerMachines.get(runner);
-		const ours = machine !== undefined && machine.integrationId === record.id;
+		const runner = machine?.id;
+		const ours = machine !== undefined;
 		const fields = {
 			...(event.job.conclusion === undefined || state !== "completed" ? {} : { conclusion: event.job.conclusion }),
 			...(ours && (state === "in_progress" || state === "completed") ? { sandboxId: machine.id } : {}),
@@ -1033,25 +1062,32 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			: event.action === "waiting"
 				? "Waiting for an approval or a concurrency group"
 				: undefined;
-		// Once, and only forward: a delivery sent again, or one arriving after a later one, changes nothing.
-		const inserted = await store.githubRunnerJobs.insert({
-			id,
-			integrationId: record.id,
-			accountId: record.accountId,
-			jobId: event.job.id,
-			runId: event.job.runId,
-			repository: event.repository,
-			name: event.job.name,
-			labels: event.job.labels,
-			pool: pool.label,
-			state,
-			...fields,
-			...(reason === undefined ? {} : { reason }),
-			queuedAt: t,
-			updatedAt: t,
-		});
-		if (!inserted && allowed) {
+		// Once, and only forward: a delivery sent again, or one arriving after a later one, changes nothing. Only the
+		// installation that recorded a job moves it on; only a delivery admitted as `new` records one.
+		const existing = await store.githubRunnerJobs.get(id);
+		const mayRecord = admission === "new" || existing?.installationId === installationId;
+		const inserted =
+			admission === "new" &&
+			(await store.githubRunnerJobs.insert({
+				id,
+				integrationId: record.id,
+				accountId: record.accountId,
+				jobId: event.job.id,
+				runId: event.job.runId,
+				repository: event.repository,
+				name: event.job.name,
+				labels: event.job.labels,
+				pool: pool.label,
+				installationId,
+				state,
+				...fields,
+				...(reason === undefined ? {} : { reason }),
+				queuedAt: t,
+				updatedAt: t,
+			}));
+		if (!inserted && allowed && mayRecord) {
 			await store.githubRunnerJobs.update(id, (current) => {
+				if (current.installationId !== undefined && current.installationId !== installationId) return undefined;
 				if (JOB_ORDER[state] <= JOB_ORDER[current.state]) return undefined;
 				const { reason: _reason, ...rest } = current;
 				return { ...rest, state, ...fields, updatedAt: t };
@@ -1069,15 +1105,29 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				return { ...current, tookJob: true };
 			});
 		}
-		if (state === "completed") await completeJob(record, event.job.id, event.job.conclusion, runner);
+		if (state === "completed") await completeJob(record, event.job.id, event.job.conclusion, runner, installationId);
 	}
 
-	/** Whether a delivery is about a job this integration recorded, or a runner it made: one it follows whoever owns it. */
-	async function followed(record: StoredGithubRunners, event: WorkflowJobEvent): Promise<boolean> {
-		if (event.action === "queued" || event.action === "waiting") return false;
-		if ((await store.githubRunnerJobs.get(jobRecordId(record.id, event.job.id))) !== undefined) return true;
+	/**
+	 * What a delivery from `installationId` may do: `new`, record a job (and so make demand), when it is the configured
+	 * owner's and comes from the installation the integration uses now; `follow`, move on a job this integration recorded
+	 * from that same installation, or a runner it registered with it (for a repository within that registration), though
+	 * the integration has moved to another owner since; else nothing.
+	 */
+	async function admit(
+		record: StoredGithubRunners,
+		event: WorkflowJobEvent,
+		installationId: number,
+	): Promise<"new" | "follow" | undefined> {
+		if (ownedBy(record, event.repository) && record.installationId === installationId) return "new";
+		if (event.action === "queued" || event.action === "waiting") return undefined;
+		const job = await store.githubRunnerJobs.get(jobRecordId(record.id, event.job.id));
+		if (job !== undefined && job.installationId === installationId) return "follow";
 		const runner = event.job.runnerName;
-		return runner !== undefined && (await store.githubRunnerMachines.get(runner))?.integrationId === record.id;
+		const machine = runner === undefined ? undefined : await store.githubRunnerMachines.get(runner);
+		return machine !== undefined && registeredBy(machine, record.id, installationId, event.repository)
+			? "follow"
+			: undefined;
 	}
 
 	async function webhookSecretOf(record: StoredGithubRunners): Promise<string> {
@@ -1128,26 +1178,25 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				parsed = undefined;
 			}
 			if (parsed === undefined) return answer(400, "Not a workflow_job delivery");
-			// The App may be installed on other owners too, and its signature says only that GitHub sent it: a delivery about
-			// another owner's repository neither makes demand nor moves the installation this integration uses. One about a
-			// job or runner this integration already has (made before its owner changed) is still followed, to its end.
-			const owned = ownedBy(record, parsed.repository);
-			if (!owned && !(await followed(record, parsed))) {
-				return answer(202, `${parsed.repository} isn't ${record.owner}'s`);
-			}
-			const installationId = owned ? parsed.installationId : undefined;
+			// A delivery acts only within the App installation that sent it (`installation.id`, which GitHub signs): the App
+			// may be installed on other owners too, and a repository or runner name in a delivery proves nothing.
+			const installationId = parsed.installationId;
+			if (installationId === undefined) return answer(202, "A delivery with no installation isn't one runners need");
+			// The installation is bound from the configured owner's own deliveries only, judged on the record as it is now.
 			const current = await store.githubRunners.update(record.id, (latest) =>
 				latest.retiringAt === undefined
 					? {
 							...latest,
 							lastWebhookAt: now(),
-							...(installationId === undefined || !ownedBy(latest, parsed.repository) ? {} : { installationId }),
+							...(ownedBy(latest, parsed.repository) ? { installationId } : {}),
 						}
 					: undefined,
 			);
 			// Deleted while the body was read: nothing is recorded for it.
 			if (current === undefined) return answer(404, "No such integration");
-			await onWorkflowJob(current, parsed);
+			const admission = await admit(current, parsed, installationId);
+			if (admission === undefined) return answer(202, `${parsed.repository}'s job isn't this integration's`);
+			await onWorkflowJob(current, parsed, admission, installationId);
 			// Deleted while the job was recorded: its retirement may have deleted the jobs before this one landed.
 			const after = await store.githubRunners.get(record.id);
 			if (after === undefined || after.retiringAt !== undefined) {
@@ -1273,6 +1322,12 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				holding.delete(record.id);
 				apps.delete(record.id);
 			}
+			// Records of the account's whose integration is already gone (deleted meanwhile, or a write that raced it):
+			// their sandboxes go with the account, and without the integration there is nothing left to take off GitHub.
+			for (const machine of await store.githubRunnerMachines.list({ accountId })) {
+				await store.githubRunnerMachines.delete(machine.id);
+			}
+			for (const job of await store.githubRunnerJobs.list({ accountId })) await store.githubRunnerJobs.delete(job.id);
 		},
 
 		async jobs(integrationId) {
