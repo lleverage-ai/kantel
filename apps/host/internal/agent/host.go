@@ -213,7 +213,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	}
 	isolateReady := false
 	if cfg.IsolateRuntime == "native" {
-		isolateReady = fileExists(cfg.Workerd) && fileExists(cfg.IsolateBundle+"/config.capnp")
+		isolateReady = fileExists(cfg.IsolateBinary) && fileExists(cfg.IsolateAssets)
 	} else {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
@@ -225,13 +225,15 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		}
 		iso, err := isolate.New(isolate.Config{
 			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
-			Rootfs: isoRootfs, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
+			Rootfs: isoRootfs, Binary: cfg.IsolateBinary, Assets: cfg.IsolateAssets, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
 			return nil, err
 		}
 		h.add(isolate.Tier, iso)
+		// Its template (or, native, a first start), so the facts say what its runtime can do (Facts.Isolate).
+		go iso.Prepare(context.Background())
 	} else if want[isolate.Tier] {
 		log.Warn("isolate tier off: its runtime isn't installed", "runtime", cfg.IsolateRuntime)
 	}
@@ -331,12 +333,16 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 }
 
-// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates.
+// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates, and
+// what its isolate runtime said it can do once it has (Isolate).
 func (h *Host) Facts() proto.Facts {
 	f := h.facts
 	if held := h.patching.facts.Load(); held != nil {
 		copied := *held
 		f.Images = &copied
+	}
+	if iso, ok := h.tiers[isolate.Tier].(*isolate.Manager); ok {
+		f.Isolate = iso.RuntimeInfo()
 	}
 	if h.canBuildTemplates(context.Background()) == nil {
 		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)

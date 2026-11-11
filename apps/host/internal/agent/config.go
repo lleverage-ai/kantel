@@ -29,17 +29,23 @@ type Config struct {
 	// Root holds sandboxes, snapshots and templates (default /var/lib/kantel-host).
 	Root string `json:"root,omitempty"`
 	// Images: the guest kernel and root filesystems (default Root/images/...).
-	Kernel        string `json:"kernel,omitempty"`
-	SandboxImage  string `json:"sandboxImage,omitempty"`
-	IsolateImage  string `json:"isolateImage,omitempty"`
-	Firecracker   string `json:"firecracker,omitempty"`
+	Kernel       string `json:"kernel,omitempty"`
+	SandboxImage string `json:"sandboxImage,omitempty"`
+	IsolateImage string `json:"isolateImage,omitempty"`
+	Firecracker  string `json:"firecracker,omitempty"`
+	// IsolateBinary and IsolateAssets are the native isolate runtime's kantel-isolate and its assets directory
+	// (default Root/bin/kantel-isolate and Root/isolate-assets); the VM runtime has both in its image.
+	IsolateBinary string `json:"isolateBinary,omitempty"`
+	IsolateAssets string `json:"isolateAssets,omitempty"`
+	// Workerd and IsolateBundle are no longer used: the native isolate runtime was workerd and its worker's
+	// directory, before kantel-isolate (IsolateBinary, IsolateAssets). Kept so old configs load.
 	Workerd       string `json:"workerd,omitempty"`
 	IsolateBundle string `json:"isolateBundle,omitempty"`
 
 	// Tiers to run; default every tier the host can.
 	Tiers []string `json:"tiers,omitempty"`
-	// IsolateRuntime is "microvm" (default) or "native": workerd on the host itself, for a host without KVM, and
-	// only for code you trust (workerd is not a hardened sandbox).
+	// IsolateRuntime is "microvm" (default) or "native": kantel-isolate on the host itself, for a host without KVM,
+	// and only for code you trust (every isolate of an account is in one process, with no VM around it).
 	IsolateRuntime string       `json:"isolateRuntime,omitempty"`
 	Sizes          []proto.Size `json:"sizes,omitempty"`
 	// ReserveMemoryMiB is kept back for the host itself (default 2048 or a tenth of memory, whichever is more).
@@ -198,8 +204,8 @@ func (c *Config) Defaults() {
 	set(&c.IsolateImage, filepath.Join(imageDir, "isolate.ext4"))
 	set(&c.GuestAgent, filepath.Join(imageDir, "kantel-guest"))
 	set(&c.Firecracker, filepath.Join(c.Root, "bin", "firecracker"))
-	set(&c.Workerd, filepath.Join(c.Root, "bin", "workerd"))
-	set(&c.IsolateBundle, filepath.Join(c.Root, "isolate"))
+	set(&c.IsolateBinary, filepath.Join(c.Root, "bin", "kantel-isolate"))
+	set(&c.IsolateAssets, filepath.Join(c.Root, "isolate-assets"))
 	set(&c.IsolateRuntime, "microvm")
 	set(&c.Subnet, "10.231.0.0/16")
 	set(&c.Egress, "open")

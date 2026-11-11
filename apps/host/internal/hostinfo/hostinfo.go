@@ -185,7 +185,7 @@ func Arch() string {
 	return "x86_64"
 }
 
-// Checks runs every prerequisite check. native is a host that runs isolates with workerd on itself (isolateRuntime
+// Checks runs every prerequisite check. native is a host that runs isolates with kantel-isolate on itself (isolateRuntime
 // "native"), which needs root and Linux but none of the microVM tier's other checks.
 func Checks(root string, native bool) []Check {
 	var out []Check

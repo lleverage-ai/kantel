@@ -196,7 +196,7 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 	if o.injectGuestAgent {
 		cfg.InjectGuestAgent = true
 	}
-	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", image, "", "", "", "", agentBin
+	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.IsolateBinary, cfg.IsolateAssets, cfg.GuestAgent = "", image, "", "", "", "", agentBin
 	cfg.Defaults()
 
 	p.step("Check this machine")
@@ -208,7 +208,7 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 	p.add("check", "kvm: "+kvmDetail, nil)
 	p.add("check", "nested virtualisation: "+nestedDetail, nil)
 	if !kvm && cfg.IsolateRuntime != "native" {
-		return nil, errors.New("no usable /dev/kvm, so no microVMs and no isolate VMs: fix that (see `kantel-host doctor`), or install with --isolate-runtime native --tiers isolate to run isolates only, with workerd on this machine itself (trusted code only)")
+		return nil, errors.New("no usable /dev/kvm, so no microVMs and no isolate VMs: fix that (see `kantel-host doctor`), or install with --isolate-runtime native --tiers isolate to run isolates only, with kantel-isolate on this machine itself (trusted code only)")
 	}
 
 	p.step("Install kantel-host " + version)
@@ -384,24 +384,28 @@ func (p *planner) images(cfg agent.Config, source string, kvm bool, keep kept) e
 		}
 	}
 	if cfg.IsolateRuntime == "native" {
-		if err := get("workerd-"+arch, cfg.Workerd, 0o755, true); err != nil {
+		// kantel-isolate and its assets directory, as the isolate VM's image has them (guest/isolate-runtime.sh).
+		if err := get("kantel-isolate-"+arch, cfg.IsolateBinary, 0o755, true); err != nil {
 			return err
 		}
-		if f, ok := manifest.Files["isolate-bundle.tar.gz"]; ok {
-			// Fetched (and checked) beside the directory, then unpacked into it.
-			archive := cfg.IsolateBundle + ".tar.gz"
-			f.Gzip = false
-			p.file(source, f, archive, 0o644)
-			p.mkdir(cfg.IsolateBundle)
-			p.add("unpack", archive+" into "+cfg.IsolateBundle, func() error {
-				r, err := os.Open(archive)
-				if err != nil {
-					return err
-				}
-				defer r.Close()
-				return untar(r, cfg.IsolateBundle)
-			})
+		name := "isolate-assets-" + arch + ".tar.gz"
+		f, ok := manifest.Files[name]
+		if !ok {
+			return fmt.Errorf("the images manifest has no %s, which the native isolate runtime needs", name)
 		}
+		// Fetched (and checked) beside the directory, then unpacked into it.
+		archive := cfg.IsolateAssets + ".tar.gz"
+		f.Gzip = false
+		p.file(source, f, archive, 0o644)
+		p.mkdir(cfg.IsolateAssets)
+		p.add("unpack", archive+" into "+cfg.IsolateAssets, func() error {
+			r, err := os.Open(archive)
+			if err != nil {
+				return err
+			}
+			defer r.Close()
+			return untar(r, cfg.IsolateAssets)
+		})
 	}
 	return nil
 }

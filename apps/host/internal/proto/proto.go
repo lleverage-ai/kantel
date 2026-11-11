@@ -117,6 +117,20 @@ type Facts struct {
 	// the same two, so they are part of its cache key. Empty on a host without the microVM tier.
 	Firecracker string `json:"firecracker,omitempty"`
 	GuestKernel string `json:"guestKernel,omitempty"`
+	// Isolate is what the isolate tier's runtime says it can do, as the host last read it from the runtime; absent on
+	// a host without the tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
+	Isolate *IsolateRuntime `json:"isolate,omitempty"`
+}
+
+// IsolateRuntime is what the isolate tier's runtime (kantel-isolate) says it is in its /healthz: which runtime and
+// version, whether its shell has `node` (JavaScript) and `python` (Pyodide), and whether an isolate's memoryMiB is a
+// hard limit (its heap, ArrayBuffers and wasm memory together) rather than recorded only.
+type IsolateRuntime struct {
+	Runtime        string `json:"runtime,omitempty"`
+	Version        string `json:"version,omitempty"`
+	JavaScript     bool   `json:"javascript"`
+	Python         bool   `json:"python"`
+	MemoryEnforced bool   `json:"memoryEnforced"`
 }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
@@ -448,6 +462,9 @@ type SandboxInfo struct {
 	BaseAt int64 `json:"baseAt,omitempty"`
 	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
 	Guest *GuestCapabilities `json:"guest,omitempty"`
+	// Isolate is, for an isolate, what its runtime can do (Facts.Isolate, from the runtime that runs it): absent from a
+	// host from before kantel-isolate, or before it has read its runtime.
+	Isolate *IsolateRuntime `json:"isolate,omitempty"`
 	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts, FeatureBundleMounts).
 	Mounts []MountStatus `json:"mounts,omitempty"`
 	// MountsAt, with Mounts, is when the host last set them (unix milliseconds, the host's clock, and always later
@@ -814,8 +831,8 @@ type CreateParams struct {
 	// VCPUs, MemoryMiB and DiskGiB are, for a microVM, a shape off the host's named sizes (all three set, Size
 	// empty), which cold-boots: no size template is kept for it (one made from a Template restores that template's
 	// snapshot when it was built as this shape). For an isolate, MemoryMiB is the memory asked
-	// for, recorded and passed to the runtime but not enforced per isolate (workerd has no per-isolate memory limit;
-	// the account VM's memory is the bound).
+	// for, passed to the runtime, which enforces it per isolate where its IsolateRuntime says MemoryEnforced (the
+	// account VM's memory, shared by its isolates, is the bound besides).
 	VCPUs     int `json:"vcpus,omitempty"`
 	MemoryMiB int `json:"memoryMiB,omitempty"`
 	DiskGiB   int `json:"diskGiB,omitempty"`
@@ -1199,8 +1216,8 @@ type SandboxUsage struct {
 	// memory. A VM without the balloon's statistics (one restored from a snapshot made before them, or a kernel
 	// without the driver) gets its Firecracker process's resident memory instead (MemSource "rss"): the guest memory the
 	// VM has touched, page cache included, which never falls, and the VMM's own. MemLimitBytes is its size's memory. An
-	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; workerd says nothing of
-	// an isolate's own).
+	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; the runtime reports no
+	// isolate's own).
 	MemUsedBytes  int64 `json:"memUsedBytes"`
 	MemLimitBytes int64 `json:"memLimitBytes"`
 	// MemSource is where MemUsedBytes came from, MemSourceGuest or MemSourceRSS. A host that predates it sends none

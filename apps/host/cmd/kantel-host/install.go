@@ -86,7 +86,7 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 	root := fs.String("root", agent.DefaultRoot, "Where sandboxes live, a `directory`")
 	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
 	tiers := fs.String("tiers", "", "The `tiers` to run: microvm, isolate or both, comma-separated (default: what the machine can)")
-	isolateRuntime := fs.String("isolate-runtime", "", "The isolate `runtime`: native runs isolates with workerd on the host itself (no KVM; trusted code only)")
+	isolateRuntime := fs.String("isolate-runtime", "", "The isolate `runtime`: native runs isolates with kantel-isolate on the host itself (no KVM; trusted code only)")
 	proxyDataPath := fs.Bool("proxy-data-path", false, "Turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
 	injectGuestAgent := fs.Bool("inject-guest-agent", false, "Boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
 	noStart := fs.Bool("no-start", false, "Install and register, but don't start the service")
