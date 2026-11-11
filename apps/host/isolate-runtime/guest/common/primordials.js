@@ -4,12 +4,20 @@
 // etc. and, if a guard looked them up dynamically, make it construct a resizable buffer or believe growth is
 // already reserved (review finding H2). These bindings can't be swapped: module-local consts holding the originals.
 
-const { construct: ReflectConstruct, apply: ReflectApply, defineProperty: ReflectDefineProperty, ownKeys: ReflectOwnKeys } = Reflect;
+const {
+	construct: ReflectConstruct,
+	apply: ReflectApply,
+	defineProperty: ReflectDefineProperty,
+	ownKeys: ReflectOwnKeys,
+} = Reflect;
 const ObjectDefineProperty = Object.defineProperty;
 const ObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 
 /** Turn a prototype method into a free function `f(thisArg, ...args)`, immune to later prototype mutation. */
-const uncurry = (fn) => (thisArg, ...args) => ReflectApply(fn, thisArg, args);
+const uncurry =
+	(fn) =>
+	(thisArg, ...args) =>
+		ReflectApply(fn, thisArg, args);
 
 export const Prim = {
 	ReflectConstruct,

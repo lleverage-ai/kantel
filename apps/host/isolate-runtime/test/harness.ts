@@ -31,7 +31,9 @@ export interface Harness {
 	pid: number;
 }
 
-export async function start(opts: { cpuMs?: number; pool?: number; maxSandboxes?: number; basePort?: number } = {}): Promise<Harness> {
+export async function start(
+	opts: { cpuMs?: number; pool?: number; maxSandboxes?: number; basePort?: number } = {},
+): Promise<Harness> {
 	const base = opts.basePort ?? BASE;
 	const ports = { store: base, egress: base + 1, upstream: base + 2, rt: base + 3 };
 	const upstreamHits: { sandbox: string | null; path: string }[] = [];
@@ -89,7 +91,10 @@ export async function start(opts: { cpuMs?: number; pool?: number; maxSandboxes?
 			if (url.pathname === "/redirect-cross")
 				return new Response(null, { status: 302, headers: { location: "http://b.test/echo-auth" } });
 			if (url.pathname === "/redirect-same")
-				return new Response(null, { status: 302, headers: { location: `http://${req.headers.get("x-origin-host") ?? "a.test"}/echo-auth` } });
+				return new Response(null, {
+					status: 302,
+					headers: { location: `http://${req.headers.get("x-origin-host") ?? "a.test"}/echo-auth` },
+				});
 			if (url.pathname === "/stream-forever") {
 				const stream = new ReadableStream({
 					async pull(c) {

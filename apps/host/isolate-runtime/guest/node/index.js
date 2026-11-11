@@ -3,9 +3,10 @@
 // TypeScript with types stripped, fetch and timers) over the sandbox's files. One fresh isolate per run, from the
 // startup snapshot; the host calls start() and then, if it answers {esm}, loads that module; it runs the event loop
 // and calls finish(). Full Node compatibility is out of scope: no npm installs, no child processes, no servers.
+
+import { budgetedCopy } from "../common/budget.js";
 import { Buffer } from "../common/buffer.js";
 import { bytesOf, Chunks, egressFetch, pack, refTimer, resetClock, scheduleTimer, timerActive } from "../common/web.js";
-import { budgetedCopy } from "../common/budget.js";
 import { createFs, ROOT } from "./fs.js";
 import {
 	createAssert,

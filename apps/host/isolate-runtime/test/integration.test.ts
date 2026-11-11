@@ -376,7 +376,10 @@ d("review fixes: memory guards and limits", () => {
 	});
 
 	it("H4: retaining host-returned buffers can't exceed the isolate's memory", async () => {
-		const r = await c.exec("rf", "node -e 'const a=[];for(let i=0;i<60;i++)a.push(Buffer.from(\"x\".repeat(16*1024*1024)))'");
+		const r = await c.exec(
+			"rf",
+			"node -e 'const a=[];for(let i=0;i<60;i++)a.push(Buffer.from(\"x\".repeat(16*1024*1024)))'",
+		);
 		expect(r.exitCode).not.toBe(0);
 		expect((await c.health()).ok).toBe(true);
 	});
@@ -416,12 +419,12 @@ d("review fixes: memory guards and limits", () => {
 	it("M10: a cross-origin redirect drops the Authorization header; a same-origin one keeps it", async () => {
 		const cross = await c.exec(
 			"rf",
-			"node -e 'fetch(\"http://a.test/redirect-cross\",{headers:{authorization:\"Bearer secret\"}}).then(r=>r.text()).then(t=>console.log(t))'",
+			'node -e \'fetch("http://a.test/redirect-cross",{headers:{authorization:"Bearer secret"}}).then(r=>r.text()).then(t=>console.log(t))\'',
 		);
 		expect(cross.stdout.trim()).toBe("none");
 		const same = await c.exec(
 			"rf",
-			"node -e 'fetch(\"http://a.test/redirect-same\",{headers:{authorization:\"Bearer secret\"}}).then(r=>r.text()).then(t=>console.log(t))'",
+			'node -e \'fetch("http://a.test/redirect-same",{headers:{authorization:"Bearer secret"}}).then(r=>r.text()).then(t=>console.log(t))\'',
 		);
 		expect(same.stdout.trim()).toBe("Bearer secret");
 	});
@@ -429,12 +432,17 @@ d("review fixes: memory guards and limits", () => {
 	it("H5: over 8 concurrent fetches from one isolate are refused, and a withheld body doesn't hang the process", async () => {
 		const many = await c.exec(
 			"rf",
-			"node -e 'const p=[];for(let i=0;i<20;i++)p.push(fetch(\"http://a.test/slow\").then(()=>\"ok\").catch(e=>String(e.message||e))); Promise.all(p).then(rs=>console.log(rs.filter(s=>/too many concurrent/.test(s)).length>0))'",
+			'node -e \'const p=[];for(let i=0;i<20;i++)p.push(fetch("http://a.test/slow").then(()=>"ok").catch(e=>String(e.message||e))); Promise.all(p).then(rs=>console.log(rs.filter(s=>/too many concurrent/.test(s)).length>0))\'',
 			{},
 			8000,
 		);
 		expect(many.stdout.trim()).toBe("true");
-		const stream = await c.exec("rf", "node -e 'fetch(\"http://a.test/stream-forever\").then(r=>r.arrayBuffer()).then(b=>console.log(b.byteLength))'", {}, 3000);
+		const stream = await c.exec(
+			"rf",
+			"node -e 'fetch(\"http://a.test/stream-forever\").then(r=>r.arrayBuffer()).then(b=>console.log(b.byteLength))'",
+			{},
+			3000,
+		);
 		expect(stream.exitCode).not.toBe(0);
 		expect((await c.health()).ok).toBe(true);
 	});
@@ -449,7 +457,11 @@ describe(RUN ? "review fixes: max-sandboxes capacity" : "review fixes: max-sandb
 			await c2.load("busy");
 			const running = c2.exec("busy", "sleep 2", {}, 8000); // hold the one slot
 			await Bun.sleep(200);
-			const r = await fetch(`${h2.rt}/load`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sandboxId: "other" }) });
+			const r = await fetch(`${h2.rt}/load`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ sandboxId: "other" }),
+			});
 			expect(r.status).toBe(503);
 			expect((await r.json()).retryable).toBe(true);
 			expect((await running).exitCode).toBe(0); // not evicted mid-command

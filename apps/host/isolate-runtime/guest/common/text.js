@@ -1,5 +1,6 @@
 // TextEncoder and TextDecoder on deno_core's encode/decode. Loaded first: whatwg-url makes one when its module loads.
 import { budgetedCopy } from "./budget.js";
+
 const core = globalThis.Deno.core;
 
 class TextEncoder {

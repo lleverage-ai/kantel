@@ -175,7 +175,8 @@ export function installWasmGuard(ops, mode) {
 		for (const [name, index] of ObjectEntries(info.memoryExports)) {
 			const m = info.memories[index];
 			const value = instance.exports[name];
-			if (m && !m.imported && isMemory(value) && !WeakMapHas(reserved, value)) WeakMapSet(reserved, value, m.initial * PAGE);
+			if (m && !m.imported && isMemory(value) && !WeakMapHas(reserved, value))
+				WeakMapSet(reserved, value, m.initial * PAGE);
 		}
 		return instance;
 	}
