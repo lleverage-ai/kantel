@@ -3967,6 +3967,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						await requireHostReachable(sandbox);
 						// Its guest agent doesn't answer its host: the call would only hang.
 						if (sandbox.health === "unresponsive") throw sandboxUnresponsive(sandbox, apiBasePath);
+						// Owed a stop (`enforceStop`: its egress as stored isn't what its host enforces) that didn't reach its host:
+						// running only until the sweep stops it, and never used meanwhile, its host back or not.
+						if (sandbox.stopFor !== undefined) {
+							throw new KantelError("conflict", `The sandbox is being stopped: ${sandbox.stopFor}`);
+						}
 						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
 						noteActivity(sandbox.id);
 						return sandbox;

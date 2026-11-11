@@ -52,6 +52,8 @@ interface Options {
 	) => Promise<UpgradedPlacement> | undefined;
 	/** Stands in for the backend's settling of an upgrade: undefined lets the stub do it. */
 	readonly settle?: (sandboxId: string, operationId: string) => Promise<UpgradeOutcome> | undefined;
+	/** Answers a stop instead of the stub, as a host away would (`unavailable`), where it throws. */
+	readonly stop?: (sandboxId: string) => void;
 	/** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
 	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined | Promise<ExecResult | undefined>;
 	/** Takes egress updates, as a host does; absent, the backend takes none (as the stub). */
@@ -89,6 +91,10 @@ function setup(options: Options = {}) {
 			if (instead !== undefined) return instead;
 			if (stub.settleUpgrade === undefined) throw new Error("The stub settles upgrades");
 			return stub.settleUpgrade(sandboxId, operationId);
+		},
+		stop: async (sandboxId, stopOptions) => {
+			options.stop?.(sandboxId);
+			return stub.stop(sandboxId, stopOptions);
 		},
 		...(options.updateEgress === undefined ? {} : { updateEgress: options.updateEgress }),
 		...(options.kill === undefined
@@ -1048,7 +1054,7 @@ describe("an upgrade's egress and billing", () => {
 	});
 
 	/** An upgrade held until `release`, then refused; the egress updates its backend takes, with the record's state then. */
-	function failingHeld(refuseEgress = false) {
+	function failingHeld(refuseEgress: boolean | "unavailable" = false, stopAway?: { away: boolean; refused: number }) {
 		let release: () => void = () => undefined;
 		const held = new Promise<void>((resolve) => {
 			release = resolve;
@@ -1067,8 +1073,17 @@ describe("an upgrade's egress and billing", () => {
 					hosts: (egress?.grants ?? []).map((grant) => grant.host),
 					...(state === undefined ? {} : { state }),
 				});
-				if (refuseEgress && state === "starting") {
+				if (refuseEgress === "unavailable" && state === "starting") {
+					throw new KantelError("unavailable", "the isolate's host is away");
+				}
+				if (refuseEgress === true && state === "starting") {
 					throw new KantelError("not_supported", "this host can't enforce egress grants");
+				}
+			},
+			stop: () => {
+				if (stopAway?.away === true) {
+					stopAway.refused++;
+					throw new KantelError("unavailable", "the isolate's host is away");
 				}
 			},
 		});
@@ -1095,6 +1110,43 @@ describe("an upgrade's egress and billing", () => {
 		expect(updates.at(0)).toMatchObject({ hosts: [], state: "starting", revision: stored?.egressRevision });
 		expect(stored?.egressApplied).toBe(stored?.egressRevision);
 	});
+
+	for (const [how, refuse] of [
+		["its host refuses its egress", true],
+		["its egress can't be got to its host", "unavailable"],
+	] as const) {
+		it(`keeps the isolate from use when ${how} and its stop doesn't reach its host, until it is stopped`, async () => {
+			const stopAway = { away: true, refused: 0 };
+			const { tom, api, release } = failingHeld(refuse, stopAway);
+			const sandbox = await tom.createSandbox({ wait: true, autoStopMinutes: null });
+			await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+			const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			await tom.putSandboxGrants(sandbox.id, { grants: [] });
+			release();
+			await upgrading;
+			// The stop didn't reach its host: running again as it was, but owed the stop.
+			let stored = await api.store.sandboxes.get(sandbox.id);
+			for (let tries = 0; tries < 250 && (stopAway.refused === 0 || stored?.state !== "running"); tries++) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				stored = await api.store.sandboxes.get(sandbox.id);
+			}
+			expect(stored).toMatchObject({ type: "isolate", state: "running" });
+			expect(stored?.stopFor).toBeDefined();
+			// Its host back before the sweep: nothing uses it all the same.
+			stopAway.away = false;
+			expect((await failure(tom.runCommand(sandbox.id, { command: "echo hi" }))).status).toBe(409);
+			expect((await failure(tom.readFile(sandbox.id, { path: "a.txt" }))).status).toBe(409);
+			// The sweep stops it.
+			await api.service.sweep();
+			let swept = await api.store.sandboxes.get(sandbox.id);
+			for (let tries = 0; tries < 100 && swept?.state !== "stopped"; tries++) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				swept = await api.store.sandboxes.get(sandbox.id);
+			}
+			expect(swept?.state).toBe("stopped");
+		}, 15_000);
+	}
 
 	it("gives the isolate a revocation it never took before its upgrade, when the upgrade fails", async () => {
 		let away = false;
