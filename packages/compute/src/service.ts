@@ -2718,8 +2718,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Only for what was found unenforceable: the sandbox in the state and at the `egressRevision` the refused delivery
 	 * (or the boot) was for. A newer egress (a clear, a boot's fresh revision) or another lifecycle step since leaves it
 	 * to its own delivery, and it answers `false`. A boot gives its `placement`, written with the intent, so the stop
-	 * and its retries know the host. `wait` awaits the stop (never from inside the sandbox's own queued work, which the
-	 * stop queues behind).
+	 * and its retries know the host, and what else its publishing changes (`publishing`: an upgrade's microVM, its type,
+	 * which its stop and snapshot are then). `wait` awaits the stop (never from inside the sandbox's own queued work,
+	 * which the stop queues behind).
 	 */
 	async function enforceStop(
 		sandboxId: string,
@@ -2727,6 +2728,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		wait: boolean,
 		evaluated: Pick<StoredSandbox, "state" | "egressRevision">,
 		placement?: Placement,
+		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
 	): Promise<boolean> {
 		const at = now();
 		const due = await patchSandbox(sandboxId, (current) =>
@@ -2736,6 +2738,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
 						...current,
+						...(placement === undefined ? {} : publishing?.(current)),
 						...(placement === undefined
 							? {}
 							: {
@@ -4791,8 +4794,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { snapshotId: _none, ...rest } = template;
 			return { ...rest, start: "boot" };
 		};
+		// What its publishing changes goes with every outcome once its machine exists: running, stopped for its egress, or
+		// `error` with its host revoked. An upgrade's isolate is gone by then, so none of them may say it is one.
+		const published = (stored: StoredSandbox): StoredSandbox =>
+			publishing === undefined ? stored : { ...stored, ...publishing(stored) };
 		const toRunning = (stored: StoredSandbox) => {
-			const sandbox: StoredSandbox = publishing === undefined ? stored : { ...stored, ...publishing(stored) };
+			const sandbox = published(stored);
 			return withState(sandbox, "running", {
 				hostId: placement.hostId,
 				// This run's machine, which fences a late report of an earlier one's exit (`reportExit`); none where not said.
@@ -4846,7 +4853,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const revokedUnder = (sandbox: StoredSandbox) => sandbox.strandedOn?.includes(placement.hostId) === true;
 		const publish = (sandbox: StoredSandbox) =>
 			revokedUnder(sandbox)
-				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
+				? withState(published(sandbox), "error", { reason: HOST_REVOKED_REASON, ports: [] })
 				: toRunning(sandbox);
 		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
 		// Its record deleted, or being deleted, while it booted (a delete, or its account's deletion, whose destroy may have
@@ -4866,7 +4873,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const lost = result.lost;
 				if (round >= BOOT_RECONCILE_ROUNDS) {
 					const reason = "Its egress couldn't be applied to it while it started";
-					if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
+					if (await enforceStop(sandboxId, reason, false, lost, placement, publishing)) return undefined;
 					result = await transition(sandboxId, "starting", publish, ready);
 					continue;
 				}
@@ -4875,7 +4882,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					applied = lost.egressRevision;
 				} catch (error) {
 					// Refused for the egress it has still: stopped. One changed since is sent next round.
-					if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
+					if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement, publishing))) {
 						return undefined;
 					}
 					// A call that didn't get through: tried again, a moment on.
@@ -9979,20 +9986,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(work.length > 0 ? { pendingProvision: work } : {}),
 			}),
 		);
-		if (committed === undefined) return store.sandboxes.get(sandboxId);
-		await emit("sandbox.upgraded", committed.accountId, {
-			sandbox: committed,
-			data: {
-				...(by === undefined ? {} : { actor: actorOf(by.principal) }),
-				from: "isolate",
-				to: "microvm",
-				previousState: upgrading.from,
-				path: placement.path,
-				files: placement.files,
-				bytes: placement.bytes,
-				durationMs: Math.max(0, now() - upgrading.at),
-			},
-		});
+		const upgraded = (sandbox: StoredSandbox) =>
+			emit("sandbox.upgraded", sandbox.accountId, {
+				sandbox,
+				data: {
+					...(by === undefined ? {} : { actor: actorOf(by.principal) }),
+					from: "isolate",
+					to: "microvm",
+					previousState: upgrading.from,
+					path: placement.path,
+					files: placement.files,
+					bytes: placement.bytes,
+					durationMs: Math.max(0, now() - upgrading.at),
+				},
+			});
+		if (committed === undefined) {
+			// Not published running (stopped because its egress couldn't be got there, or its host revoked): the microVM
+			// it became all the same, which its event says.
+			const ended = await store.sandboxes.get(sandboxId);
+			if (ended?.type === "microvm" && ended.upgradedFrom?.at === upgrading.at) await upgraded(ended);
+			return ended;
+		}
+		await upgraded(committed);
 		// Its isolate's exposed ports, on the microVM, where a caller who may open them asked.
 		if (by !== undefined && latest.ports.length > 0 && mayUse(by.principal, "access", by.role)) {
 			await copyPorts(committed, latest.ports, encodeGrantee(by.principal)).catch(() => undefined);

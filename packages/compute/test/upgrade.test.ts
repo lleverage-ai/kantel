@@ -736,6 +736,51 @@ describe("an upgrade's egress and billing", () => {
 		expect(stored?.egressApplied).toBe(stored?.egressRevision);
 	});
 
+	it("keeps the microVM it became when its egress can't be enforced there and it is stopped instead", async () => {
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let storeOf: ComputeStore | undefined;
+		const { tom, stub, api } = setup({
+			upgrade: async (sandboxId, spec, operationId) => {
+				await held;
+				return stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>;
+			},
+			// The microVM's host refuses the egress changed while it was made.
+			updateEgress: async (sandboxId) => {
+				if ((await storeOf?.sandboxes.get(sandboxId))?.state === "starting") {
+					throw new KantelError("not_supported", "this host can't enforce egress grants");
+				}
+			},
+		});
+		storeOf = api.store;
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		const upgrading = tom.upgradeSandbox(sandbox.id, {});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		release();
+		await upgrading;
+		let stopped = await tom.getSandbox(sandbox.id);
+		for (let tries = 0; stopped.state !== "stopped" && tries < 300; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			stopped = await tom.getSandbox(sandbox.id);
+		}
+		// Stopped, never running with egress its host doesn't enforce, and a microVM: the isolate is gone.
+		expect(stopped).toMatchObject({ state: "stopped", type: "microvm" });
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored?.upgrading).toBeUndefined();
+		expect(stored?.upgradedFrom).toMatchObject({ type: "isolate" });
+		const [snapshot] = (await tom.listSnapshots({ sandboxId: sandbox.id })).items;
+		expect(snapshot?.sandboxType).toBe("microvm");
+		const events = (await tom.listEvents({ sandboxId: sandbox.id })).items.map((event) => event.type);
+		expect(events).toContain("sandbox.upgraded");
+		// Started again, it starts as the microVM it is, from its own snapshot.
+		const started = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ type: "microvm", state: "running" });
+	});
+
 	it("prices every run the isolate had as an isolate's, its stops and starts too", async () => {
 		let at = 1_000_000;
 		const { tom, api } = setup({ now: () => at });
