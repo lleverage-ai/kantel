@@ -144,6 +144,8 @@ impl Budget {
     }
 }
 
+// The Rust allocator: not in a V8 built with the heap sandbox, which allocates ArrayBuffers itself.
+#[cfg(not(feature = "v8-sandbox"))]
 unsafe extern "C" fn b_alloc(b: &Budget, len: usize) -> *mut std::ffi::c_void {
     if !b.try_take(len) {
         b.refuse();
@@ -155,6 +157,7 @@ unsafe extern "C" fn b_alloc(b: &Budget, len: usize) -> *mut std::ffi::c_void {
     }
     p
 }
+#[cfg(not(feature = "v8-sandbox"))]
 unsafe extern "C" fn b_alloc_uninit(b: &Budget, len: usize) -> *mut std::ffi::c_void {
     if !b.try_take(len) {
         b.refuse();
@@ -166,15 +169,18 @@ unsafe extern "C" fn b_alloc_uninit(b: &Budget, len: usize) -> *mut std::ffi::c_
     }
     p
 }
+#[cfg(not(feature = "v8-sandbox"))]
 unsafe extern "C" fn b_free(b: &Budget, data: *mut std::ffi::c_void, len: usize) {
     if !data.is_null() {
         unsafe { libc::free(data) };
         b.give(len);
     }
 }
+#[cfg(not(feature = "v8-sandbox"))]
 unsafe extern "C" fn b_drop(b: *const Budget) {
     drop(unsafe { Arc::from_raw(b) });
 }
+#[cfg(not(feature = "v8-sandbox"))]
 static VTABLE: v8::RustAllocatorVtable<Budget> =
     v8::RustAllocatorVtable { allocate: b_alloc, allocate_uninitialized: b_alloc_uninit, free: b_free, drop: b_drop };
 
@@ -200,8 +206,9 @@ unsafe extern "C" {
 #[cfg(feature = "v8-sandbox")]
 pub fn allocator(budget: &Arc<Budget>) -> v8::UniqueRef<v8::Allocator> {
     // V8's in-sandbox allocator bounds ArrayBuffer bytes; the Rust Budget keeps counting wasm reservations.
-    // SAFETY: kantel__BudgetAllocator__New returns an owned Allocator*; UniqueRef takes ownership.
-    unsafe { v8::UniqueRef::from_raw(kantel__BudgetAllocator__New(budget.limit())) }
+    // SAFETY: kantel__BudgetAllocator__New returns an owned Allocator* (never null: it aborts if V8 can't make its
+    // default allocator); UniquePtr takes ownership, and unwrap checks it isn't null.
+    unsafe { v8::UniquePtr::from_raw(kantel__BudgetAllocator__New(budget.limit())) }.unwrap()
 }
 
 // ---------------------------------------------------------------------------------------------------------------

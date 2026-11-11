@@ -16,13 +16,15 @@ const LATEST_PROTOCOL = "2025-06-18";
 
 /** How to choose between an isolate and a microVM, for the instructions and sandbox_create alike. */
 const CHOOSING_A_TYPE =
-	"Choose its type. An isolate starts in milliseconds and costs almost nothing, but is only a shell (just-bash) " +
-	"over files in /workspace: curl, jq, grep, rg, sed, awk, sort, diff, gzip and the like, each command at most 30 s " +
-	"unless you give a timeoutMs. It has no git, node, python, package manager, Docker, browser, ports or SSH. Use one " +
-	"only when the whole task is calling HTTP APIs and working on text or JSON, such as reading issues or logs with a " +
-	"token or checking many items in forks. Use a microvm, a full Linux with root, Docker, a desktop and a browser, " +
-	"for anything touching a codebase (clone, install, build, test, run), any language runtime, a server or a long " +
-	"job. If unsure, use a microvm. If an isolate's command needs a microVM (its answer says so, or 'command not " +
+	"Choose its type. An isolate starts in milliseconds and costs almost nothing: a shell (just-bash) over files in " +
+	"/workspace with curl, jq, grep, rg, sed, awk, sort, diff and gzip, plus `node` (JavaScript or TypeScript, with " +
+	"fs, path, crypto, fetch and relative imports, but no npm packages) and `python` (Pyodide: the standard library " +
+	"and numpy, but no pip install). Each command runs at most 30 s unless you give a timeoutMs. It has no git, " +
+	"package manager, Docker, browser, ports or SSH. Use one for calling HTTP APIs, working on text, JSON or CSV, and " +
+	"short scripts that need only what's built in, such as reading issues or logs with a token, reshaping an export, " +
+	"or checking many items in forks. Use a microvm, a full Linux with root, Docker, a desktop and a browser, for " +
+	"anything touching a codebase (clone, install, build, test, run), packages, a server or a long job. If unsure, " +
+	"use a microvm. If an isolate's command needs a microVM (its answer says so, or 'command not " +
 	"found' or 'not available in an isolate'), don't work around it: upgrade it with sandbox_upgrade, which keeps its " +
 	"id, files (in /home/user/workspace, with /workspace linked there), env and grants, and run the command again. " +
 	"Create an isolate with autoUpgrade to have that done for you.";

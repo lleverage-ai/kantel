@@ -503,8 +503,7 @@ export function UpgradeDialog({
 		>
 			<p>
 				{sandbox?.name === undefined ? "This isolate" : <strong className="break-all">{sandbox.name}</strong>} becomes a
-				full Linux machine with git, Node, Python, packages, root and Docker, with the same ID, env, environments and
-				grants.
+				full Linux machine with git, package managers, root and Docker, with the same ID, env, environments and grants.
 			</p>
 			<p>
 				Its files move to <span className="font-mono">/home/user/workspace</span>, and{" "}

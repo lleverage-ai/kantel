@@ -327,14 +327,20 @@ export function createPython(ops) {
 					// An unopened file at its own path, mode unchanged: as it was.
 					if (was?.kind === "file" && was.node === node && node.kt && mode === was.mode) continue;
 					const data = node.kt ? ops.op_kt_file(node.kt.path) : FS.readFile(full);
-					const unchanged = was?.kind === "file" && was.node === node && mode === was.mode && node.ktSha && hex(ops.op_kt_digest("sha256", data)) === node.ktSha;
+					const unchanged =
+						was?.kind === "file" &&
+						was.node === node &&
+						mode === was.mode &&
+						node.ktSha &&
+						hex(ops.op_kt_digest("sha256", data)) === node.ktSha;
 					// Emscripten makes files 0666; a new one gets the shell's umask (022), as one the shell makes would.
 					if (!unchanged) writes.push({ path: r, data: chunks.add(data), mode: was ? mode : mode & ~0o022 });
 				}
 			}
 		};
 		walk(ROOT);
-		for (const [p, was] of before) if (!seen.has(p) || (was.kind === "file" && !FS.isFile(FS.lstat(`${ROOT}/${p}`).mode))) removes.push(p);
+		for (const [p, was] of before)
+			if (!seen.has(p) || (was.kind === "file" && !FS.isFile(FS.lstat(`${ROOT}/${p}`).mode))) removes.push(p);
 		const join = (parts) => {
 			const all = new Uint8Array(parts.reduce((n, b) => n + b.byteLength, 0));
 			let at = 0;
@@ -345,7 +351,15 @@ export function createPython(ops) {
 			return all;
 		};
 		if (out.truncated) out.stderr.push(core.encode("python: output over 16 MiB was dropped\n"));
-		const meta = { exitCode, stdout: chunks.add(join(out.stdout)), stderr: chunks.add(join(out.stderr)), writes, mkdirs, symlinks, removes };
+		const meta = {
+			exitCode,
+			stdout: chunks.add(join(out.stdout)),
+			stderr: chunks.add(join(out.stderr)),
+			writes,
+			mkdirs,
+			symlinks,
+			removes,
+		};
 		if (needsMicrovm) meta.needsMicrovm = needsMicrovm;
 		ops.op_kt_set_result(pack(meta, chunks.list));
 	}

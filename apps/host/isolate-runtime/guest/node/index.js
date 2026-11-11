@@ -63,8 +63,7 @@ export function createNode(ops) {
 	state.Writable = Stream.Writable;
 	const fs = createFs(ops, state, path);
 	const util = createUtil();
-	const encode = (chunk, enc) =>
-		typeof chunk === "string" ? Buffer.from(chunk, enc ?? "utf8") : bytesOf(chunk);
+	const encode = (chunk, enc) => (typeof chunk === "string" ? Buffer.from(chunk, enc ?? "utf8") : bytesOf(chunk));
 
 	// ---- process ----
 	const writer = (name, fd) => {
@@ -142,7 +141,8 @@ export function createNode(ops) {
 		chdir(dir) {
 			const p = path.resolve(dir);
 			const st = fs.statSync(p);
-			if (!st.isDirectory()) throw Object.assign(new Error(`ENOTDIR: not a directory, chdir '${dir}'`), { code: "ENOTDIR" });
+			if (!st.isDirectory())
+				throw Object.assign(new Error(`ENOTDIR: not a directory, chdir '${dir}'`), { code: "ENOTDIR" });
 			state.cwd = p;
 		},
 		exit(code) {
@@ -163,7 +163,9 @@ export function createNode(ops) {
 		nextTick: (fn, ...args) => queueMicrotask(() => fn(...args)),
 		hrtime,
 		uptime: () => performance.now() / 1000,
-		memoryUsage: Object.assign(() => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }), { rss: () => 0 }),
+		memoryUsage: Object.assign(() => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }), {
+			rss: () => 0,
+		}),
 		cpuUsage: () => ({ user: 0, system: 0 }),
 		resourceUsage: () => ({}),
 		emitWarning: (w) => state.write("stderr", Buffer.from(`(node) Warning: ${w?.message ?? w}\n`)),
@@ -186,7 +188,10 @@ export function createNode(ops) {
 	const counts = new Map();
 	const timersByLabel = new Map();
 	let groupIndent = "";
-	const indented = (w) => (...args) => w(groupIndent ? format(...args).replace(/^/gm, groupIndent) : format(...args));
+	const indented =
+		(w) =>
+		(...args) =>
+			w(groupIndent ? format(...args).replace(/^/gm, groupIndent) : format(...args));
 	const console = {
 		log: indented(log),
 		info: indented(log),
@@ -204,7 +209,8 @@ export function createNode(ops) {
 		},
 		countReset: (label = "default") => counts.delete(label),
 		time: (label = "default") => timersByLabel.set(label, performance.now()),
-		timeLog: (label = "default", ...a) => log(`${label}: ${performance.now() - (timersByLabel.get(label) ?? 0)}ms`, ...a),
+		timeLog: (label = "default", ...a) =>
+			log(`${label}: ${performance.now() - (timersByLabel.get(label) ?? 0)}ms`, ...a),
 		timeEnd: (label = "default") => {
 			log(`${label}: ${performance.now() - (timersByLabel.get(label) ?? 0)}ms`);
 			timersByLabel.delete(label);
@@ -270,7 +276,9 @@ export function createNode(ops) {
 	class Blob {
 		#bytes;
 		constructor(parts = [], options = {}) {
-			this.#bytes = Buffer.concat(parts.map((p) => (p instanceof Blob ? p.#bytes : encode(p instanceof ArrayBuffer ? new Uint8Array(p) : p))));
+			this.#bytes = Buffer.concat(
+				parts.map((p) => (p instanceof Blob ? p.#bytes : encode(p instanceof ArrayBuffer ? new Uint8Array(p) : p))),
+			);
 			this.type = options.type ?? "";
 		}
 		get size() {
@@ -346,7 +354,10 @@ export function createNode(ops) {
 			this.type = "basic";
 		}
 		static json(data, init = {}) {
-			return new Response(JSON.stringify(data), { ...init, headers: { "content-type": "application/json", ...init.headers } });
+			return new Response(JSON.stringify(data), {
+				...init,
+				headers: { "content-type": "application/json", ...init.headers },
+			});
 		}
 		clone() {
 			return this;
@@ -381,7 +392,12 @@ export function createNode(ops) {
 	// ---- built-in modules ----
 	const webcrypto = g.crypto;
 	const nodeCrypto = createCrypto(ops, webcrypto);
-	const events = Object.assign(EventEmitter, { EventEmitter, once: EventEmitter.once, on: EventEmitter.on, default: EventEmitter });
+	const events = Object.assign(EventEmitter, {
+		EventEmitter,
+		once: EventEmitter.once,
+		on: EventEmitter.on,
+		default: EventEmitter,
+	});
 	const os = {
 		EOL: "\n",
 		platform: () => "linux",
@@ -412,7 +428,17 @@ export function createNode(ops) {
 		pathToFileURL: (p) => new URL(`file://${encodeURI(path.resolve(p))}`),
 		parse: (s) => {
 			const u = new URL(s, "http://localhost");
-			return { href: u.href, protocol: u.protocol, host: u.host, hostname: u.hostname, port: u.port, pathname: u.pathname, search: u.search, query: u.search.slice(1), hash: u.hash };
+			return {
+				href: u.href,
+				protocol: u.protocol,
+				host: u.host,
+				hostname: u.hostname,
+				port: u.port,
+				pathname: u.pathname,
+				search: u.search,
+				query: u.search.slice(1),
+				hash: u.hash,
+			};
 		},
 		format: (u) => (u instanceof URL ? u.href : String(u?.href ?? "")),
 		resolve: (from, to) => new URL(to, new URL(from, "resolve://")).href.replace(/^resolve:\/\//, ""),
@@ -425,7 +451,9 @@ export function createNode(ops) {
 					if (key === "__esModule" || typeof key === "symbol" || key === "then") return undefined;
 					return () => {
 						state.needsMicrovm ??= { command: "node", reason: `${reason}.` };
-						throw Object.assign(new Error(`${name} is not available in an isolate's node. Use a microVM.`), { code: "ERR_ISOLATE_UNAVAILABLE" });
+						throw Object.assign(new Error(`${name} is not available in an isolate's node. Use a microVM.`), {
+							code: "ERR_ISOLATE_UNAVAILABLE",
+						});
 					};
 				},
 			},
@@ -471,7 +499,9 @@ export function createNode(ops) {
 		dgram: unavailable("dgram", "an isolate can't open sockets"),
 		dns: unavailable("dns", "an isolate can't resolve names itself; use fetch"),
 		vm: unavailable("vm", "the vm module needs a microVM"),
-		v8: { getHeapStatistics: () => ({ total_heap_size: 0, used_heap_size: 0, heap_size_limit: state.memoryMiB * 2 ** 20 }) },
+		v8: {
+			getHeapStatistics: () => ({ total_heap_size: 0, used_heap_size: 0, heap_size_limit: state.memoryMiB * 2 ** 20 }),
+		},
 		perf_hooks: { performance },
 		async_hooks: {
 			AsyncLocalStorage: class AsyncLocalStorage {
@@ -495,7 +525,8 @@ export function createNode(ops) {
 		},
 		tty: { isatty: () => false },
 		module: {
-			createRequire: (from) => makeRequire(path.dirname(String(from).startsWith("file:") ? url.fileURLToPath(from) : String(from))),
+			createRequire: (from) =>
+				makeRequire(path.dirname(String(from).startsWith("file:") ? url.fileURLToPath(from) : String(from))),
 			builtinModules: [],
 			isBuiltin: (name) => String(name).replace(/^node:/, "") in builtins,
 		},
@@ -508,7 +539,14 @@ export function createNode(ops) {
 	const moduleCache = new Map();
 	const compileCjs = (source, filename) =>
 		// The isolate runs only this run's code, so compiling it from a string is no more than running it.
-		new Function("exports", "require", "module", "__filename", "__dirname", `${source.startsWith("#!") ? `//${source}` : source}\n//# sourceURL=${filename}`);
+		new Function(
+			"exports",
+			"require",
+			"module",
+			"__filename",
+			"__dirname",
+			`${source.startsWith("#!") ? `//${source}` : source}\n//# sourceURL=${filename}`,
+		);
 	const isTs = (f) => /\.(c|m)?tsx?$/.test(f);
 	const sourceOf = (filename) => {
 		const text = fs.readFileSync(filename, "utf8");
@@ -517,13 +555,28 @@ export function createNode(ops) {
 	function loadCjs(filename) {
 		const cached = moduleCache.get(filename);
 		if (cached) return cached.exports;
-		const module = { exports: {}, filename, id: filename, path: path.dirname(filename), loaded: false, children: [], paths: [] };
+		const module = {
+			exports: {},
+			filename,
+			id: filename,
+			path: path.dirname(filename),
+			loaded: false,
+			children: [],
+			paths: [],
+		};
 		moduleCache.set(filename, module);
 		try {
 			if (filename.endsWith(".json")) module.exports = JSON.parse(fs.readFileSync(filename, "utf8"));
 			else {
 				module.require = makeRequire(path.dirname(filename));
-				compileCjs(sourceOf(filename), filename).call(module.exports, module.exports, module.require, module, filename, path.dirname(filename));
+				compileCjs(sourceOf(filename), filename).call(
+					module.exports,
+					module.exports,
+					module.require,
+					module,
+					filename,
+					path.dirname(filename),
+				);
 			}
 		} catch (error) {
 			moduleCache.delete(filename);
@@ -541,7 +594,8 @@ export function createNode(ops) {
 	};
 	function resolveFile(base, id) {
 		const p = path.resolve(base, id);
-		for (const c of [p, `${p}.js`, `${p}.cjs`, `${p}.mjs`, `${p}.json`, `${p}.ts`, `${p}.cts`, `${p}.mts`]) if (fileKind(c)) return c;
+		for (const c of [p, `${p}.js`, `${p}.cjs`, `${p}.mjs`, `${p}.json`, `${p}.ts`, `${p}.cts`, `${p}.mts`])
+			if (fileKind(c)) return c;
 		const pkgFile = `${p}/package.json`;
 		if (fileKind(pkgFile)) {
 			const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
@@ -582,9 +636,12 @@ export function createNode(ops) {
 			const r = resolveModule(dir, String(id));
 			if (r.builtin) return builtins[r.builtin];
 			if (/\.m(j|t)s$/.test(r.file))
-				throw Object.assign(new Error(`require() of ES Module ${r.file} isn't supported in an isolate's node; use import()`), {
-					code: "ERR_REQUIRE_ESM",
-				});
+				throw Object.assign(
+					new Error(`require() of ES Module ${r.file} isn't supported in an isolate's node; use import()`),
+					{
+						code: "ERR_REQUIRE_ESM",
+					},
+				);
 			return loadCjs(r.file);
 		};
 		require.resolve = (id) => {
@@ -609,7 +666,9 @@ export function createNode(ops) {
 	}
 	const isEsmSyntax = (error) =>
 		error instanceof SyntaxError &&
-		/Cannot use import statement|Unexpected token 'export'|import\.meta|await is only valid|Unexpected reserved word|Cannot use 'import\.meta'/.test(error.message);
+		/Cannot use import statement|Unexpected token 'export'|import\.meta|await is only valid|Unexpected reserved word|Cannot use 'import\.meta'/.test(
+			error.message,
+		);
 
 	function start(json) {
 		const req = JSON.parse(json);
@@ -633,7 +692,14 @@ export function createNode(ops) {
 		process.env = { ...req.env };
 		builtins.module.builtinModules = Object.keys(builtins);
 		ops.op_kt_node_builtins(
-			JSON.stringify(Object.fromEntries(Object.entries(builtins).map(([k, v]) => [k, Object.keys(v).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n) && n !== "default")]))),
+			JSON.stringify(
+				Object.fromEntries(
+					Object.entries(builtins).map(([k, v]) => [
+						k,
+						Object.keys(v).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n) && n !== "default"),
+					]),
+				),
+			),
 		);
 
 		const args = req.args;
@@ -656,7 +722,7 @@ export function createNode(ops) {
 				return {};
 			}
 			if (a === "-h" || a === "--help") {
-				state.write("stdout", Buffer.from("Usage: node [options] [ script.js | -e \"script\" | - ] [arguments]\n"));
+				state.write("stdout", Buffer.from('Usage: node [options] [ script.js | -e "script" | - ] [arguments]\n'));
 				state.exitCode = 0;
 				return {};
 			}
@@ -690,12 +756,24 @@ export function createNode(ops) {
 			Request,
 			Blob,
 			global: g,
-			navigator: { userAgent: `Node.js/${NODE_VERSION.slice(1)}`, hardwareConcurrency: 1, language: "en-US", platform: "linux" },
+			navigator: {
+				userAgent: `Node.js/${NODE_VERSION.slice(1)}`,
+				hardwareConcurrency: 1,
+				language: "en-US",
+				platform: "linux",
+			},
 			...timers,
 		});
 		try {
 			if (code !== undefined) {
-				const main = { exports: {}, filename: `${state.cwd}/[eval]`, id: ".", path: state.cwd, loaded: false, children: [] };
+				const main = {
+					exports: {},
+					filename: `${state.cwd}/[eval]`,
+					id: ".",
+					path: state.cwd,
+					loaded: false,
+					children: [],
+				};
 				state.main = main;
 				const require = makeRequire(state.cwd);
 				if (forceModule) return esmEval(code);
@@ -719,7 +797,12 @@ export function createNode(ops) {
 					}
 				})();
 				if (!r) {
-					state.write("stderr", Buffer.from(`node:internal/modules/cjs/loader\n\nError: Cannot find module '${filename}'\n  code: 'MODULE_NOT_FOUND'\n`));
+					state.write(
+						"stderr",
+						Buffer.from(
+							`node:internal/modules/cjs/loader\n\nError: Cannot find module '${filename}'\n  code: 'MODULE_NOT_FOUND'\n`,
+						),
+					);
 					state.exitCode = 1;
 					return {};
 				}
@@ -819,7 +902,9 @@ export function createNode(ops) {
 			return all;
 		};
 		const stderr = out("stderr");
-		const truncatedNote = state.out.truncated ? Buffer.from("node: output over 16 MiB was dropped\n") : new Uint8Array(0);
+		const truncatedNote = state.out.truncated
+			? Buffer.from("node: output over 16 MiB was dropped\n")
+			: new Uint8Array(0);
 		const meta = {
 			exitCode,
 			stdout: chunks.add(out("stdout")),

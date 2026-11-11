@@ -18,7 +18,8 @@
 #
 # V8: by default rusty_v8's build script downloads its prebuilt library. KANTEL_V8_SANDBOX=1 links Kantel's build of
 # V8 with its sandbox on instead (amd64 for now), fetched and checked against the SHA-256s pinned in the crate's
-# v8/fetch-v8-sandbox.sh. RUSTY_V8_ARCHIVE (a path or URL to a librusty_v8 .a or .a.gz) picks any other, checked
+# v8/fetch-v8-sandbox.sh (or the RUSTY_V8_ARCHIVE given, checked as below), with the patched deno_core and serde_v8
+# (v8/sandbox-crate.sh) and the crate's v8-sandbox feature. RUSTY_V8_ARCHIVE (a path or URL to a librusty_v8 .a or .a.gz) picks any other, checked
 # against RUSTY_V8_ARCHIVE_SHA256, which it then needs, with RUSTY_V8_SRC_BINDING_PATH (and its _SHA256) where that
 # build has its own bindings. Each is mounted read-only into the build container.
 #
@@ -47,7 +48,7 @@ esac
 # naming checked local files, or neither for rusty_v8's own.
 v8() {
 	cache="$MODULE/dist/.v8"
-	if [ "${KANTEL_V8_SANDBOX:-}" = 1 ]; then
+	if [ "${KANTEL_V8_SANDBOX:-}" = 1 ] && [ -z "${RUSTY_V8_ARCHIVE:-}" ]; then
 		[ "$TRIPLE" = x86_64-unknown-linux-gnu ] || { echo "KANTEL_V8_SANDBOX: no sandboxed V8 for $TRIPLE yet" >&2; exit 1; }
 		[ -x "$CRATE/v8/fetch-v8-sandbox.sh" ] || { echo "KANTEL_V8_SANDBOX: no $CRATE/v8/fetch-v8-sandbox.sh" >&2; exit 1; }
 		out=$("$CRATE/v8/fetch-v8-sandbox.sh" "$cache")
@@ -80,7 +81,7 @@ v8() {
 # C++, linked by the target's gcc), built once and cached by Docker. As the caller's user, so what it leaves behind is
 # theirs.
 cargo() {
-	if [ ! -f "$CRATE/Cargo.toml" ]; then
+	if [ ! -f "$BUILD_CRATE/Cargo.toml" ]; then
 		echo "no $CRATE/Cargo.toml: the isolate runtime's source isn't here (set KANTEL_ISOLATE_BINARY to use a built one)" >&2
 		exit 1
 	fi
@@ -113,8 +114,22 @@ cargo() {
 	docker volume create kantel-isolate-cargo >/dev/null
 	docker run --rm --user 0 -v kantel-isolate-cargo:/cargo kantel-isolate-builder:local chown "$(id -u):$(id -g)" /cargo
 	docker run --rm --user "$(id -u):$(id -g)" -v kantel-isolate-cargo:/cargo -e CARGO_HOME=/cargo -e HOME=/tmp \
-		-v "$CRATE:/src:ro" -v "$TARGET_DIR:/target" -w /src "$@"
+		-v "$BUILD_CRATE:/src:ro" -v "$TARGET_DIR:/target" -w /src "$@"
 }
+
+# The guest bundle (the shell, node and python guests) is compiled into the binary, so it's built first, here.
+BUILD_CRATE=$CRATE
+FEATURES=
+if [ -z "${KANTEL_ISOLATE_BINARY:-}" ] && [ -f "$CRATE/Cargo.toml" ]; then
+	(cd "$CRATE" && bun install --frozen-lockfile >/dev/null && bun run guest/build.ts >&2)
+	# The sandboxed V8 needs deno_core and serde_v8 with Kantel's patches, which only link against it: build a copy of
+	# the crate that has them (v8/sandbox-crate.sh), with the same lock file but for those two.
+	if [ "${KANTEL_V8_SANDBOX:-}" = 1 ]; then
+		BUILD_CRATE="$MODULE/dist/.isolate-sandbox-src"
+		"$CRATE/v8/sandbox-crate.sh" "$BUILD_CRATE"
+		FEATURES="--features v8-sandbox"
+	fi
+fi
 
 if [ "$ARCH" = test ]; then
 	cargo kantel-isolate-builder:local sh -euc 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
@@ -127,7 +142,8 @@ ASSETS="$MODULE/dist/isolate-assets-$ARCH"
 if [ -n "${KANTEL_ISOLATE_BINARY:-}" ]; then
 	cp "$KANTEL_ISOLATE_BINARY" "$BIN"
 else
-	cargo kantel-isolate-builder:local cargo build --locked --release --bin kantel-isolate
+	# shellcheck disable=SC2086 # FEATURES is empty or one flag and its value.
+	cargo kantel-isolate-builder:local cargo build --locked --release --bin kantel-isolate $FEATURES
 	cp "$TARGET_DIR/$TRIPLE/release/kantel-isolate" "$BIN"
 fi
 chmod 0755 "$BIN"
@@ -136,7 +152,11 @@ rm -rf "$ASSETS"
 if [ -n "${KANTEL_ISOLATE_ASSETS:-}" ]; then
 	cp -r "$KANTEL_ISOLATE_ASSETS" "$ASSETS"
 elif [ -x "$CRATE/build-assets.sh" ]; then
-	"$CRATE/build-assets.sh" "$ASSETS"
+	# The Pyodide memory snapshot is made by running the binary, and is the same for every architecture: a binary for
+	# this machine makes it (the one just built, or, cross-building, one built for this machine first).
+	SNAPSHOT_BIN="$MODULE/dist/kantel-isolate-$BUILD_ARCH"
+	[ -x "$SNAPSHOT_BIN" ] || { echo "making $ARCH's assets needs $SNAPSHOT_BIN: build $BUILD_ARCH first" >&2; exit 1; }
+	"$CRATE/build-assets.sh" "$ASSETS" --bin "$SNAPSHOT_BIN" --cache "$MODULE/dist/.isolate-assets-cache"
 else
 	echo "no $CRATE/build-assets.sh: set KANTEL_ISOLATE_ASSETS to use a built assets directory" >&2
 	exit 1

@@ -1872,8 +1872,8 @@ const SECTIONS: readonly Section[] = [
 					"no-wait": noWait,
 				},
 				details:
-					"Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, Node or Python\n" +
-					"packages, a build, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
+					"Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip\n" +
+					"packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
 					"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
 					"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
 					"isolate is left as it was. Commands sent meanwhile wait for it.",

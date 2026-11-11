@@ -65,7 +65,13 @@ export function createPath(cwd) {
 			const base = path.basename(p);
 			const ext = path.extname(p);
 			const dir = path.dirname(p);
-			return { root, dir: dir === "." && !p.includes("/") ? "" : dir, base, ext, name: ext ? base.slice(0, -ext.length) : base };
+			return {
+				root,
+				dir: dir === "." && !p.includes("/") ? "" : dir,
+				base,
+				ext,
+				name: ext ? base.slice(0, -ext.length) : base,
+			};
 		},
 		format: (o) => {
 			const dir = o.dir ?? o.root ?? "";
@@ -161,7 +167,8 @@ export class EventEmitter {
 	emit(name, ...args) {
 		const list = this.#events.get(name);
 		if (!list?.length) {
-			if (name === "error") throw args[0] instanceof Error ? args[0] : new Error(`Unhandled error. (${inspect(args[0])})`);
+			if (name === "error")
+				throw args[0] instanceof Error ? args[0] : new Error(`Unhandled error. (${inspect(args[0])})`);
 			return false;
 		}
 		for (const listener of [...list]) listener.apply(this, args);
@@ -224,7 +231,9 @@ export function createStreams() {
 				queueMicrotask(() => this.#flush());
 				return false;
 			}
-			this.#buffer.push(this.#encoding && chunk instanceof Uint8Array ? Buffer.from(chunk).toString(this.#encoding) : chunk);
+			this.#buffer.push(
+				this.#encoding && chunk instanceof Uint8Array ? Buffer.from(chunk).toString(this.#encoding) : chunk,
+			);
 			queueMicrotask(() => this.#flush());
 			return true;
 		}
@@ -250,7 +259,9 @@ export function createStreams() {
 				return null;
 			}
 			const chunks = this.#buffer.splice(0);
-			return chunks.every((c) => typeof c === "string") ? chunks.join("") : Buffer.concat(chunks.map((c) => (typeof c === "string" ? Buffer.from(c) : c)));
+			return chunks.every((c) => typeof c === "string")
+				? chunks.join("")
+				: Buffer.concat(chunks.map((c) => (typeof c === "string" ? Buffer.from(c) : c)));
 		}
 		resume() {
 			this.#flowing = true;
@@ -340,10 +351,11 @@ export function createStreams() {
 				this.push(null);
 				this.emit("finish");
 			};
-			if (this._flushImpl) this._flushImpl((error, out) => {
-				if (out) this.push(out);
-				finish();
-			});
+			if (this._flushImpl)
+				this._flushImpl((_error, out) => {
+					if (out) this.push(out);
+					finish();
+				});
 			else finish();
 			return this;
 		}
@@ -366,13 +378,34 @@ export function createStreams() {
 		pipeline: (...s) => new Promise((resolve, reject) => pipeline(...s, (e) => (e ? reject(e) : resolve()))),
 		finished: (s) => new Promise((resolve, reject) => finished(s, (e) => (e ? reject(e) : resolve()))),
 	};
-	const Stream = Object.assign(Readable, { Readable, Writable, Transform, PassThrough, Duplex: Transform, pipeline, finished, promises, Stream: Readable });
+	const Stream = Object.assign(Readable, {
+		Readable,
+		Writable,
+		Transform,
+		PassThrough,
+		Duplex: Transform,
+		pipeline,
+		finished,
+		promises,
+		Stream: Readable,
+	});
 	return Stream;
 }
 
 export function createCrypto(ops, webcrypto) {
-	const toBytes = (d, enc) => (typeof d === "string" ? Buffer.from(d, enc ?? "utf8") : new Uint8Array(d.buffer, d.byteOffset, d.byteLength));
-	const ALGS = { md5: "md5", sha1: "sha1", sha256: "sha256", sha384: "sha384", sha512: "sha512", "sha-1": "sha1", "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512" };
+	const toBytes = (d, enc) =>
+		typeof d === "string" ? Buffer.from(d, enc ?? "utf8") : new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+	const ALGS = {
+		md5: "md5",
+		sha1: "sha1",
+		sha256: "sha256",
+		sha384: "sha384",
+		sha512: "sha512",
+		"sha-1": "sha1",
+		"sha-256": "sha256",
+		"sha-384": "sha384",
+		"sha-512": "sha512",
+	};
 	const BLOCK = { md5: 64, sha1: 64, sha256: 64, sha384: 128, sha512: 128 };
 	const algOf = (name) => {
 		const a = ALGS[String(name).toLowerCase()];
@@ -474,21 +507,41 @@ export function createAssert() {
 	const assert = (value, message) => ok(value, message);
 	const matches = (error, expected) => {
 		if (expected === undefined) return true;
-		if (typeof expected === "function") return expected.prototype !== undefined && error instanceof expected ? true : expected(error) === true;
+		if (typeof expected === "function")
+			return expected.prototype !== undefined && error instanceof expected ? true : expected(error) === true;
 		if (expected instanceof RegExp) return expected.test(String(error?.message ?? error));
-		return Object.entries(expected).every(([k, v]) => (v instanceof RegExp ? v.test(error[k]) : isDeepStrictEqual(error[k], v)));
+		return Object.entries(expected).every(([k, v]) =>
+			v instanceof RegExp ? v.test(error[k]) : isDeepStrictEqual(error[k], v),
+		);
 	};
 	Object.assign(assert, {
 		ok,
 		AssertionError,
 		fail: (message) => fail(message, undefined, undefined, "fail", "Failed"),
+		// biome-ignore lint/suspicious/noDoubleEquals: Node's assert.equal is loose equality.
 		equal: (a, b, m) => a == b || fail(m, a, b, "==", `${inspect(a)} == ${inspect(b)}`),
+		// biome-ignore lint/suspicious/noDoubleEquals: Node's assert.notEqual is loose inequality.
 		notEqual: (a, b, m) => a != b || fail(m, a, b, "!=", `${inspect(a)} != ${inspect(b)}`),
-		strictEqual: (a, b, m) => Object.is(a, b) || fail(m, a, b, "strictEqual", `Expected values to be strictly equal:\n\n${inspect(a)} !== ${inspect(b)}\n`),
-		notStrictEqual: (a, b, m) => !Object.is(a, b) || fail(m, a, b, "notStrictEqual", `Expected "actual" to be strictly unequal to: ${inspect(b)}`),
-		deepEqual: (a, b, m) => isDeepStrictEqual(a, b) || JSON.stringify(a) === JSON.stringify(b) || fail(m, a, b, "deepEqual", "Expected values to be loosely deep-equal"),
-		deepStrictEqual: (a, b, m) => isDeepStrictEqual(a, b) || fail(m, a, b, "deepStrictEqual", `Expected values to be strictly deep-equal:\n${inspect(a)}\n\nshould equal\n\n${inspect(b)}`),
-		notDeepStrictEqual: (a, b, m) => !isDeepStrictEqual(a, b) || fail(m, a, b, "notDeepStrictEqual", "Expected values not to be strictly deep-equal"),
+		strictEqual: (a, b, m) =>
+			Object.is(a, b) ||
+			fail(m, a, b, "strictEqual", `Expected values to be strictly equal:\n\n${inspect(a)} !== ${inspect(b)}\n`),
+		notStrictEqual: (a, b, m) =>
+			!Object.is(a, b) || fail(m, a, b, "notStrictEqual", `Expected "actual" to be strictly unequal to: ${inspect(b)}`),
+		deepEqual: (a, b, m) =>
+			isDeepStrictEqual(a, b) ||
+			JSON.stringify(a) === JSON.stringify(b) ||
+			fail(m, a, b, "deepEqual", "Expected values to be loosely deep-equal"),
+		deepStrictEqual: (a, b, m) =>
+			isDeepStrictEqual(a, b) ||
+			fail(
+				m,
+				a,
+				b,
+				"deepStrictEqual",
+				`Expected values to be strictly deep-equal:\n${inspect(a)}\n\nshould equal\n\n${inspect(b)}`,
+			),
+		notDeepStrictEqual: (a, b, m) =>
+			!isDeepStrictEqual(a, b) || fail(m, a, b, "notDeepStrictEqual", "Expected values not to be strictly deep-equal"),
 		throws(fn, expected, message) {
 			try {
 				fn();
@@ -496,7 +549,13 @@ export function createAssert() {
 				if (!matches(error, expected)) throw error;
 				return;
 			}
-			fail(typeof expected === "string" ? expected : message, undefined, expected, "throws", "Missing expected exception.");
+			fail(
+				typeof expected === "string" ? expected : message,
+				undefined,
+				expected,
+				"throws",
+				"Missing expected exception.",
+			);
 		},
 		doesNotThrow(fn) {
 			fn();
@@ -513,8 +572,11 @@ export function createAssert() {
 		async doesNotReject(p) {
 			await (typeof p === "function" ? p() : p);
 		},
-		match: (s, re, m) => re.test(s) || fail(m, s, re, "match", `The input did not match the regular expression ${re}. Input:\n\n${inspect(s)}\n`),
-		doesNotMatch: (s, re, m) => !re.test(s) || fail(m, s, re, "doesNotMatch", `The input was expected to not match ${re}`),
+		match: (s, re, m) =>
+			re.test(s) ||
+			fail(m, s, re, "match", `The input did not match the regular expression ${re}. Input:\n\n${inspect(s)}\n`),
+		doesNotMatch: (s, re, m) =>
+			!re.test(s) || fail(m, s, re, "doesNotMatch", `The input was expected to not match ${re}`),
 		ifError: (v) => {
 			if (v !== null && v !== undefined) throw v;
 		},
@@ -579,7 +641,9 @@ export function createReadline(EventEmitterClass) {
 		}
 	}
 	const createInterface = (input, output) =>
-		input && typeof input === "object" && "input" in input ? new Interface(input.input, input.output) : new Interface(input, output);
+		input && typeof input === "object" && "input" in input
+			? new Interface(input.input, input.output)
+			: new Interface(input, output);
 	return {
 		createInterface,
 		Interface,
@@ -594,7 +658,9 @@ export function createReadline(EventEmitterClass) {
 }
 
 export function createQuerystring() {
+	// biome-ignore lint/suspicious/noShadowRestrictedNames: node:querystring exports escape and unescape by these names.
 	const escape = (s) => encodeURIComponent(s);
+	// biome-ignore lint/suspicious/noShadowRestrictedNames: as above.
 	const unescape = (s) => decodeURIComponent(s.replace(/\+/g, " "));
 	return {
 		escape,

@@ -8,7 +8,12 @@ const MODULE_EXTENSIONS = /\.(m|c)?(j|t)sx?$|\.json$/;
 
 export function createFs(ops, state, path) {
 	const fsError = (code, syscall, p, text) =>
-		Object.assign(new Error(`${code}: ${text}, ${syscall} '${p}'`), { code, syscall, path: p, errno: ERRNO[code] ?? -1 });
+		Object.assign(new Error(`${code}: ${text}, ${syscall} '${p}'`), {
+			code,
+			syscall,
+			path: p,
+			errno: ERRNO[code] ?? -1,
+		});
 	const ENOENT = (s, p) => fsError("ENOENT", s, p, "no such file or directory");
 	const toPath = (p) => {
 		if (p instanceof URL) return p.pathname;
@@ -46,7 +51,7 @@ export function createFs(ops, state, path) {
 		const [, e] = resolve(path.dirname(p), syscall);
 		if (e.kind !== "dir") throw fsError("ENOTDIR", syscall, p, "not a directory");
 	}
-	function contents(p, e) {
+	function contents(_p, e) {
 		if (e.data === undefined) {
 			e.data = ops.op_kt_file(e.ref);
 			state.read += e.data.byteLength;
@@ -66,7 +71,9 @@ export function createFs(ops, state, path) {
 		if (typeof data === "string") return Buffer.from(data, encoding ?? "utf8");
 		if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
 		if (data instanceof ArrayBuffer) return new Uint8Array(data.slice(0));
-		throw new TypeError('The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView.');
+		throw new TypeError(
+			'The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView.',
+		);
 	}
 	const encodingOf = (options) => (typeof options === "string" ? options : options?.encoding);
 	const out = (bytes, options) => {
@@ -86,7 +93,8 @@ export function createFs(ops, state, path) {
 			this.gid = 1000;
 			this.rdev = 0;
 			this.blksize = 4096;
-			this.size = e.kind === "file" ? (e.data ? e.data.byteLength : e.size) : e.kind === "symlink" ? e.target.length : 4096;
+			this.size =
+				e.kind === "file" ? (e.data ? e.data.byteLength : e.size) : e.kind === "symlink" ? e.target.length : 4096;
 			this.blocks = Math.ceil(this.size / 512);
 			this.mode =
 				(e.kind === "dir" ? 0o040000 : e.kind === "symlink" ? 0o120000 : 0o100000) |
@@ -144,7 +152,8 @@ export function createFs(ops, state, path) {
 	}
 	function writeFileSync(p, data, options) {
 		if (typeof p === "number") return writeSync(p, data);
-		if (p === "/dev/stdout" || p === "/dev/stderr") return state.write(p.endsWith("out") ? "stdout" : "stderr", bytesFrom(data, options));
+		if (p === "/dev/stdout" || p === "/dev/stderr")
+			return state.write(p.endsWith("out") ? "stdout" : "stderr", bytesFrom(data, options));
 		let ap = abs(p);
 		const existing = state.files.get(ap);
 		if (existing?.kind === "symlink") [ap] = resolve(ap, "open");
@@ -155,7 +164,12 @@ export function createFs(ops, state, path) {
 		if (flag === "wx" && prev) throw fsError("EEXIST", "open", ap, "file already exists");
 		const bytes = bytesFrom(data, options);
 		if (flag === "a" && prev) return appendFileSync(ap, bytes);
-		state.files.set(ap, { kind: "file", data: bytes, mode: prev?.mode ?? (options?.mode ?? 0o666) & 0o777 & ~0o022, mtimeMs: Date.now() });
+		state.files.set(ap, {
+			kind: "file",
+			data: bytes,
+			mode: prev?.mode ?? (options?.mode ?? 0o666) & 0o777 & ~0o022,
+			mtimeMs: Date.now(),
+		});
 		touched(ap);
 	}
 	function appendFileSync(p, data, options) {
@@ -175,7 +189,8 @@ export function createFs(ops, state, path) {
 		const names = [];
 		const walk = options?.recursive === true;
 		for (const k of state.files.keys())
-			if (k !== dp && k.startsWith(prefix) && (walk || !k.slice(prefix.length).includes("/"))) names.push(k.slice(prefix.length));
+			if (k !== dp && k.startsWith(prefix) && (walk || !k.slice(prefix.length).includes("/")))
+				names.push(k.slice(prefix.length));
 		names.sort();
 		if (!options?.withFileTypes) return encodingOf(options) === "buffer" ? names.map((n) => Buffer.from(n)) : names;
 		return names.map((name) => {
@@ -296,16 +311,21 @@ export function createFs(ops, state, path) {
 		}
 		const f = fds.get(fd);
 		if (!f) throw fsError("EBADF", "write", String(fd), "bad file descriptor");
-		if (typeof data === "string") return f.write(Buffer.from(data, typeof b === "string" ? b : "utf8"), typeof a === "number" ? a : null);
+		if (typeof data === "string")
+			return f.write(Buffer.from(data, typeof b === "string" ? b : "utf8"), typeof a === "number" ? a : null);
 		const view = bytesFrom(data).subarray(a ?? 0, (a ?? 0) + (b ?? data.byteLength));
 		return f.write(view, c ?? null);
 	}
 	function readSync(fd, buffer, offset = 0, length = buffer.byteLength - offset, position = null) {
-		if (typeof offset === "object" && offset !== null) ({ offset = 0, length = buffer.byteLength, position = null } = offset);
+		if (typeof offset === "object" && offset !== null)
+			({ offset = 0, length = buffer.byteLength, position = null } = offset);
 		if (fd === 0) {
 			const data = state.stdin();
 			const n = Math.max(0, Math.min(length, data.length - state.stdinPos));
-			new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength).set(data.subarray(state.stdinPos, state.stdinPos + n), offset);
+			new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength).set(
+				data.subarray(state.stdinPos, state.stdinPos + n),
+				offset,
+			);
 			state.stdinPos += n;
 			return n;
 		}
@@ -315,7 +335,20 @@ export function createFs(ops, state, path) {
 	}
 
 	const fs = {
-		constants: { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024, COPYFILE_EXCL: 1 },
+		constants: {
+			F_OK: 0,
+			R_OK: 4,
+			W_OK: 2,
+			X_OK: 1,
+			O_RDONLY: 0,
+			O_WRONLY: 1,
+			O_RDWR: 2,
+			O_CREAT: 64,
+			O_EXCL: 128,
+			O_TRUNC: 512,
+			O_APPEND: 1024,
+			COPYFILE_EXCL: 1,
+		},
 		existsSync(p) {
 			try {
 				resolve(abs(p), "access");
@@ -355,7 +388,8 @@ export function createFs(ops, state, path) {
 			const a = abs(from);
 			const [, e] = resolve(a, "cp");
 			if (e.kind !== "dir") return fs.copyFileSync(a, to);
-			if (!options?.recursive) throw fsError("ERR_FS_EISDIR", "cp", a, "Recursive option is required to copy a directory");
+			if (!options?.recursive)
+				throw fsError("ERR_FS_EISDIR", "cp", a, "Recursive option is required to copy a directory");
 			mkdirSync(to, { recursive: true });
 			for (const name of readdirSync(a)) fs.cpSync(`${a}/${name}`, `${abs(to)}/${name}`, options);
 		},
@@ -503,7 +537,8 @@ export function createFs(ops, state, path) {
 			readFile: (o) => Promise.resolve(out(fds.get(fd).read(), o)),
 			writeFile: (d, o) => Promise.resolve(writeFileSync(fds.get(fd).path, d, o)),
 			write: (d) => Promise.resolve({ bytesWritten: writeSync(fd, d) }),
-			read: (buffer, offset, length, position) => Promise.resolve({ bytesRead: readSync(fd, buffer, offset, length, position), buffer }),
+			read: (buffer, offset, length, position) =>
+				Promise.resolve({ bytesRead: readSync(fd, buffer, offset, length, position), buffer }),
 			stat: () => Promise.resolve(fs.fstatSync(fd)),
 			close: () => Promise.resolve(fds.delete(fd)),
 		};
@@ -514,4 +549,14 @@ export function createFs(ops, state, path) {
 	return fs;
 }
 
-const ERRNO = { ENOENT: -2, EEXIST: -17, ENOTDIR: -20, EISDIR: -21, EINVAL: -22, ENOTEMPTY: -39, EBADF: -9, ELOOP: -40, ENOSYS: -38 };
+const ERRNO = {
+	ENOENT: -2,
+	EEXIST: -17,
+	ENOTDIR: -20,
+	EISDIR: -21,
+	EINVAL: -22,
+	ENOTEMPTY: -39,
+	EBADF: -9,
+	ELOOP: -40,
+	ENOSYS: -38,
+};

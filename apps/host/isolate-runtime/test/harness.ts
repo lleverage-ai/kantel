@@ -4,9 +4,10 @@
 //   KANTEL_ISOLATE_ASSETS  the --assets directory build-assets.sh made (default: $KANTEL_ISOLATE_TEST_ASSETS)
 // If neither the binary nor the assets (with a Pyodide snapshot) are present, `available()` is false and the suite
 // skips with a message, so `pnpm test` without a Rust build doesn't fail.
-import { type Subprocess, spawn } from "bun";
+
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { spawn } from "bun";
 
 const crateDir = resolve(import.meta.dir, "..");
 export const BIN = process.env.KANTEL_ISOLATE_BIN || resolve(crateDir, "target/release/kantel-isolate");
@@ -14,7 +15,8 @@ export const ASSETS = process.env.KANTEL_ISOLATE_ASSETS || process.env.KANTEL_IS
 
 export function available(): string | true {
 	if (!existsSync(BIN)) return `kantel-isolate not built at ${BIN} (set KANTEL_ISOLATE_BIN)`;
-	if (!ASSETS || !existsSync(resolve(ASSETS, "python.snapshot"))) return `assets with a Pyodide snapshot not found (set KANTEL_ISOLATE_ASSETS)`;
+	if (!ASSETS || !existsSync(resolve(ASSETS, "python.snapshot")))
+		return `assets with a Pyodide snapshot not found (set KANTEL_ISOLATE_ASSETS)`;
 	return true;
 }
 
@@ -67,7 +69,12 @@ export async function start(opts: { cpuMs?: number; pool?: number } = {}): Promi
 			const url = new URL(req.url);
 			upstreamHits.push({ sandbox, path: url.pathname });
 			const target = `http://127.0.0.1:${ports.upstream}${url.pathname}${url.search}`;
-			return fetch(target, { method: req.method, headers, body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer(), redirect: "manual" });
+			return fetch(target, {
+				method: req.method,
+				headers,
+				body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer(),
+				redirect: "manual",
+			});
 		},
 	});
 	const upstream = Bun.serve({
@@ -148,7 +155,11 @@ export async function start(opts: { cpuMs?: number; pool?: number } = {}): Promi
 
 export function client(h: Harness) {
 	const post = async (path: string, body: unknown) => {
-		const r = await fetch(`${h.rt}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+		const r = await fetch(`${h.rt}${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
 		return (await r.json()) as Record<string, unknown>;
 	};
 	const put = async (bytes: Uint8Array | string) => {
@@ -164,6 +175,6 @@ export function client(h: Harness) {
 		load: (sandboxId: string, memoryMiB?: number) => post("/load", { sandboxId, memoryMiB }),
 		exec: (sandboxId: string, command: string, manifest: Record<string, unknown> = {}, timeoutMs = 8000) =>
 			post("/exec", { sandboxId, command, cwd: "/workspace", env: {}, manifest, timeoutMs }),
-		health: async () => (await (await fetch(`${h.rt}/healthz`)).json()) as Record<string, any>,
+		health: async () => (await (await fetch(`${h.rt}/healthz`)).json()) as Record<string, unknown>,
 	};
 }

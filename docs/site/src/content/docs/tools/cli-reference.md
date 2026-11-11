@@ -283,7 +283,7 @@ Turn an isolate into a microVM, with the same ID, files and settings.
 kantel upgrade <id> [flags]
 ```
 
-Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, Node or Python packages, a build, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the isolate is left as it was. Commands sent meanwhile wait for it.
+Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the isolate is left as it was. Commands sent meanwhile wait for it.
 
 | Flag | What it does |
 | --- | --- |

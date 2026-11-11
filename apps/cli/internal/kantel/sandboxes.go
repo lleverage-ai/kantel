@@ -715,8 +715,8 @@ func upgradeCommand() *cli.Command {
 			{Name: "wait", Type: cli.Bool, Description: "Answer once the microVM runs (the default)"},
 			noWaitFlag,
 		},
-		Details: "Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, Node or Python\n" +
-			"packages, a build, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
+		Details: "Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip\n" +
+			"packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
 			"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
 			"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
 			"isolate is left as it was. Commands sent meanwhile wait for it.",

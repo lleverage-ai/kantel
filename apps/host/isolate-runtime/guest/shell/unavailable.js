@@ -64,7 +64,10 @@ const PROGRAMS = {
 	playwright: "a browser needs a microVM",
 };
 
-export const UNAVAILABLE = [...JUST_BASH.map((name) => [name, `${name} isn't available in an isolate's shell`]), ...Object.entries(PROGRAMS)];
+export const UNAVAILABLE = [
+	...JUST_BASH.map((name) => [name, `${name} isn't available in an isolate's shell`]),
+	...Object.entries(PROGRAMS),
+];
 
 export const message = (name) =>
 	`${name}: not available in an isolate, which runs only its shell's own commands, node and python. Use a microVM.\n`;

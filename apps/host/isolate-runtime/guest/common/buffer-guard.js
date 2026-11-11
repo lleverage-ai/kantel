@@ -16,7 +16,9 @@ export function fixBuffers(g = globalThis) {
 		const Fixed = function (length, options) {
 			if (new.target === undefined) throw new TypeError(`Constructor ${name} requires 'new'`);
 			if (options !== null && typeof options === "object" && options.maxByteLength !== undefined) {
-				throw new RangeError(`${name}: resizable buffers are not available in an isolate (memory is limited per isolate)`);
+				throw new RangeError(
+					`${name}: resizable buffers are not available in an isolate (memory is limited per isolate)`,
+				);
 			}
 			return Reflect.construct(Native, [length], new.target);
 		};
@@ -27,10 +29,20 @@ export function fixBuffers(g = globalThis) {
 			if (key === "prototype" || key === "length" || key === "name") continue;
 			Object.defineProperty(Fixed, key, Object.getOwnPropertyDescriptor(Native, key));
 		}
-		Object.defineProperty(Fixed, "prototype", { value: Native.prototype, writable: false, enumerable: false, configurable: false });
+		Object.defineProperty(Fixed, "prototype", {
+			value: Native.prototype,
+			writable: false,
+			enumerable: false,
+			configurable: false,
+		});
 		Fixed.__ktFixed = true;
 		// So `buf.constructor` (used by typed-array species) is the guarded one, not a path back to the native.
-		Object.defineProperty(Native.prototype, "constructor", { value: Fixed, writable: false, enumerable: false, configurable: false });
+		Object.defineProperty(Native.prototype, "constructor", {
+			value: Fixed,
+			writable: false,
+			enumerable: false,
+			configurable: false,
+		});
 		delete Native.prototype[grow];
 		// ArrayBuffer.prototype.transfer/transferToFixedLength can realloc; transferring with a larger length would
 		// grow outside the budget. Drop the growable transfer entirely (plain transfer of the same size is fine, but

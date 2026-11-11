@@ -98,9 +98,10 @@ export function mcpServersJson(url: string, launch: McpLaunch = MCP_ON_PATH): st
 /** The commands an agent needs, for the AGENTS.md block and the skill alike. */
 const CHEAT_SHEET = `- Create one: \`id=$(kantel new --type microvm --json | jq -r .id)\`. A microVM is a full Linux with root and
   Docker: use one for anything touching code (clone, install, build, test, run), any runtime, a server or a long job.
-- \`--type isolate\` (the default without \`--type\`) starts in milliseconds and costs almost nothing, but is only a
-  shell over files in /workspace: curl, jq, grep, rg, sed, awk, sort, diff, gzip. It has no git, node, python, package
-  manager, Docker or SSH. Use one only for HTTP calls and text or JSON work, such as reading issues or logs with a token.
+- \`--type isolate\` (the default without \`--type\`) starts in milliseconds and costs almost nothing: a shell over
+  files in /workspace (curl, jq, grep, rg, sed, awk, sort, diff, gzip), plus \`node\` (JavaScript or TypeScript, no npm
+  packages) and \`python\` (the standard library and numpy, no pip install). It has no git, package manager, Docker or
+  SSH. Use one for HTTP calls, text, JSON or CSV work and short scripts, such as reading issues or logs with a token.
   If it says a command needs a microVM (\`command not found\`, \`not available in an isolate\`), \`kantel upgrade "$id"\`
   makes it one with the same ID and files (in /home/user/workspace, /workspace linked) and you run it again; \`kantel
   new --auto-upgrade\` does that by itself. If unsure, use a microVM.

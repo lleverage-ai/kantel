@@ -27,7 +27,11 @@ function fmt(v, depth, seen, level, opts) {
 	if (typeof v === "boolean") return String(v);
 	if (typeof v === "function") {
 		const src = Function.prototype.toString.call(v);
-		const kind = src.startsWith("class") ? "class" : v.constructor?.name === "AsyncFunction" ? "AsyncFunction" : "Function";
+		const kind = src.startsWith("class")
+			? "class"
+			: v.constructor?.name === "AsyncFunction"
+				? "AsyncFunction"
+				: "Function";
 		const base = kind === "class" ? `[class ${v.name || "(anonymous)"}]` : `[${kind}: ${v.name || "(anonymous)"}]`;
 		const keys = Object.keys(v);
 		return keys.length && depth >= 0 ? `${base} ${fmtEntries(v, keys, depth, seen, level, opts, "{", "}")}` : base;
@@ -61,7 +65,8 @@ function fmt(v, depth, seen, level, opts) {
 		if (Array.isArray(v)) {
 			const items = v.slice(0, 100).map((x) => fmt(x, depth - 1, seen, level + 1, opts));
 			if (v.length > 100) items.push(`... ${v.length - 100} more item${v.length - 100 > 1 ? "s" : ""}`);
-			for (const k of Object.keys(v)) if (!/^\d+$/.test(k)) items.push(`${key(k)}: ${fmt(v[k], depth - 1, seen, level + 1, opts)}`);
+			for (const k of Object.keys(v))
+				if (!/^\d+$/.test(k)) items.push(`${key(k)}: ${fmt(v[k], depth - 1, seen, level + 1, opts)}`);
 			return wrap(items, "[", "]", level);
 		}
 		if (ArrayBuffer.isView(v) && !(v instanceof DataView)) {
@@ -71,7 +76,9 @@ function fmt(v, depth, seen, level, opts) {
 		}
 		if (v instanceof ArrayBuffer) return `ArrayBuffer { byteLength: ${v.byteLength} }`;
 		if (v instanceof Map) {
-			const items = [...v].map(([k, x]) => `${fmt(k, depth - 1, seen, level + 1, opts)} => ${fmt(x, depth - 1, seen, level + 1, opts)}`);
+			const items = [...v].map(
+				([k, x]) => `${fmt(k, depth - 1, seen, level + 1, opts)} => ${fmt(x, depth - 1, seen, level + 1, opts)}`,
+			);
 			return `Map(${v.size}) ${wrap(items, "{", "}", level)}`;
 		}
 		if (v instanceof Set) {
@@ -168,7 +175,8 @@ function isDeepStrictEqual(a, b, seen = new Map()) {
 export function createUtil() {
 	const promisify = (fn) => {
 		if (typeof fn[promisify.custom] === "function") return fn[promisify.custom];
-		return (...args) => new Promise((resolve, reject) => fn(...args, (error, value) => (error ? reject(error) : resolve(value))));
+		return (...args) =>
+			new Promise((resolve, reject) => fn(...args, (error, value) => (error ? reject(error) : resolve(value))));
 	};
 	promisify.custom = Symbol.for("nodejs.util.promisify.custom");
 	const types = {
@@ -187,10 +195,15 @@ export function createUtil() {
 		format,
 		inspect,
 		promisify,
-		callbackify: (fn) => (...args) => {
-			const callback = args.pop();
-			fn(...args).then((v) => callback(null, v), (e) => callback(e));
-		},
+		callbackify:
+			(fn) =>
+			(...args) => {
+				const callback = args.pop();
+				fn(...args).then(
+					(v) => callback(null, v),
+					(e) => callback(e),
+				);
+			},
 		inherits(ctor, superCtor) {
 			Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
 			Object.setPrototypeOf(ctor, superCtor);
@@ -206,6 +219,7 @@ export function createUtil() {
 		types,
 		TextEncoder,
 		TextDecoder,
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: it strips ANSI escapes, which start with ESC.
 		stripVTControlCharacters: (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, ""),
 		styleText: (_style, text) => text,
 		parseArgs: () => {

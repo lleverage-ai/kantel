@@ -70,8 +70,7 @@ export function installWasmGuard(ops, mode) {
 
 	function copyBytes(source, what) {
 		if (source instanceof ArrayBuffer) return new Uint8Array(source.slice(0));
-		if (ArrayBuffer.isView(source))
-			return new Uint8Array(source.buffer, source.byteOffset, source.byteLength).slice();
+		if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength).slice();
 		throw new TypeError(`${what}: Argument 0 must be a buffer source`);
 	}
 

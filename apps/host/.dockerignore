@@ -4,3 +4,4 @@
 !dist/kantel-isolate-*
 !dist/isolate-assets-*/
 !guest/
+!isolate-runtime/systemd/kantel-isolate.service

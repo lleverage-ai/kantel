@@ -30,7 +30,7 @@ out="$(cd "$out" && pwd)"
 cache="${cache:-$out/.cache}"
 mkdir -p "$cache"
 
-PYODIDE_VERSION="0.28.3"   # npm dist-tag that ships Pyodide 314.0.7 (Python 3.14); see assets.lock
+PYODIDE_VERSION="314.0.7"   # Pyodide 314.0.7 (Python 3.14.2), npm and jsDelivr alike; its files are pinned in assets.lock
 PYODIDE_NPM="pyodide@${PYODIDE_VERSION}"
 
 log() { echo "build-assets: $*" >&2; }

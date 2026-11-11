@@ -114,7 +114,7 @@ Every call sends `-H "authorization: Bearer $KANTEL_API_KEY"`, and calls with a 
     curl -s "$KANTEL_URL/v1/sandboxes" -H "authorization: Bearer $KANTEL_API_KEY" -H "content-type: application/json" \
       -d '{"type": "microvm", "name": "<short-task-name>", "labels": {"agent": "coding-agent"}, "wait": true}' | jq '{id, state}'
 
-- `type`: `microvm` is a full Linux machine with root, Docker and a browser: use it for anything touching code. `isolate` starts at once but is only a shell (curl, jq, grep, sed, awk) over files in `/workspace`, with no git, node or python: use it only for HTTP calls and text or JSON work.
+- `type`: `microvm` is a full Linux machine with root, Docker and a browser: use it for anything touching code. `isolate` starts at once: a shell (curl, jq, grep, sed, awk) over files in `/workspace`, with `node` and `python` for short scripts, but no git, npm or pip packages: use it for HTTP calls, text, JSON or CSV work and scripts that need only what's built in. If a command needs a microVM, `POST /v1/sandboxes/<id>/upgrade` makes it one with the same ID and files.
 - `"from": "<saved-snapshot-name>"` starts from a snapshot someone saved. List them with `GET /v1/snapshots?kind=saved`.
 - It stops by itself after 60 minutes. Give longer with `PATCH /v1/sandboxes/<id>` and `{"extendMinutes": 120}`.
 - Reuse a sandbox you made earlier in this task: `GET /v1/sandboxes?all=true&label.agent=coding-agent`.

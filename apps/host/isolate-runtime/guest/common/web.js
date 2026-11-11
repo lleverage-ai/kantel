@@ -140,7 +140,7 @@ g.crypto = {
 	},
 	subtle: {
 		async digest(algorithm, data) {
-			const name = (typeof algorithm === "string" ? algorithm : algorithm?.name ?? "").toUpperCase();
+			const name = (typeof algorithm === "string" ? algorithm : (algorithm?.name ?? "")).toUpperCase();
 			const op = DIGESTS[name];
 			if (!op) throw new DOMException(`Unrecognized algorithm name: ${name}`, "NotSupportedError");
 			const d = ops.op_kt_digest(op, bytesOf(data));
@@ -177,7 +177,10 @@ class EventTarget {
 		if (!listener) return;
 		const once = typeof options === "object" && options?.once === true;
 		let set = this.#listeners.get(type);
-		if (!set) this.#listeners.set(type, (set = []));
+		if (!set) {
+			set = [];
+			this.#listeners.set(type, set);
+		}
 		if (!set.some((e) => e.listener === listener)) set.push({ listener, once });
 		const signal = typeof options === "object" ? options?.signal : undefined;
 		signal?.addEventListener?.("abort", () => this.removeEventListener(type, listener), { once: true });

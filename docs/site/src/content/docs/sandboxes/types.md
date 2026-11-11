@@ -19,7 +19,8 @@ Every sandbox is one of two types. You choose with `type` when you [create it](/
 | Starts in | Milliseconds | Longer: a machine boots |
 | Costs | Almost nothing | Its size's hourly rate while it runs |
 | Commands and files | Yes, in the isolate's shell, starting in `/workspace` | Yes, with `bash`, starting in `/home/user` |
-| git, Node, Python, packages, root | No | Yes |
+| JavaScript and Python | `node` and `python`, each run in a fresh isolate of its own (see [below](#node-and-python)) | Yes, with any packages |
+| git, package managers, root | No | Yes |
 | Docker | No | Yes |
 | `/dev/kvm` inside, for virtual machines of its own | No | Yes, where its host allows nested virtualisation |
 | Desktop, browser and SSH | No | Yes |
@@ -32,9 +33,9 @@ An isolate is the default.
 
 ## Choosing one
 
-Choose an **isolate** when the whole task is calling HTTP APIs and working on text or JSON: reading issues, tickets or logs with a token, reshaping an export with `jq` or `awk`, or running the same small check over many items, one fork each. It starts in milliseconds, costs almost nothing, and forks for almost nothing too, since a fork copies only the list of its files. Its requests go through the [egress proxy](/sandboxes/egress-proxy/) like a microVM's, so a [protected variable](/sandboxes/environments/) stays a placeholder inside it, and `kantel egress <sandbox>` shows every request it made.
+Choose an **isolate** when the task is calling HTTP APIs, working on text, JSON or CSV, or running a short script in JavaScript, TypeScript or Python that needs only what's built in: reading issues, tickets or logs with a token, reshaping an export, a calculation in numpy, or running the same small check over many items, one fork each. It starts in milliseconds, costs almost nothing, and forks for almost nothing too, since a fork copies only the list of its files. Its requests go through the [egress proxy](/sandboxes/egress-proxy/) like a microVM's, so a [protected variable](/sandboxes/environments/) stays a placeholder inside it, and `kantel egress <sandbox>` shows every request it made.
 
-Choose a **microVM** for anything a normal Linux machine does: cloning, installing, building, testing or running a project, any language runtime, Docker, a server, a desktop and browser, or a job longer than a few minutes. If you're unsure, choose a microVM.
+Choose a **microVM** for anything a normal Linux machine does: cloning, installing, building, testing or running a project, npm or pip packages, Docker, a server, a desktop and browser, or a job longer than a few minutes. If you're unsure, choose a microVM.
 
 An isolate can become a microVM when the work turns out to need one: [upgrade it](#upgrade-an-isolate-to-a-microvm), and it keeps its ID, files and settings. A microVM doesn't go back to being an isolate.
 
@@ -47,9 +48,28 @@ An isolate runs bash's syntax (pipes, redirections, variables, functions, loops 
 - data and network: `jq`, `curl`, and `gzip`, `gunzip` and `zcat`;
 - shell: `echo`, `printf`, `date`, `seq`, `expr`, `sleep`, `timeout`, `env`, `export`, `test`.
 
-`help` lists the shell's builtins, and every command takes `--help`. It has no `git`, `node`, `python`, `sqlite3`, `yq`, `tar` or package manager, and runs no program of its own: each of those answers `command not found` or `not available in an isolate` with exit code 127. Only `/workspace` is kept. A file written anywhere else, such as `/tmp`, is gone when the command ends.
+`help` lists the shell's builtins, and every command takes `--help`. It has no `git`, `sqlite3`, `yq`, `tar` or package manager, and runs no program of its own: each of those answers `command not found` or `not available in an isolate` with exit code 127, and the command's record has `needsMicrovm` saying so (see [upgrading](#upgrade-an-isolate-to-a-microvm)). Only `/workspace` is kept. A file written anywhere else, such as `/tmp`, is gone when the command ends.
 
 A command runs for at most 30 seconds unless its `timeoutMs` gives it longer (up to 10 minutes).
+
+### node and python
+
+`node` runs JavaScript, and TypeScript with its types stripped: `node -e`, `node -p`, a script file, or a script on stdin. It has `console`, `process` (its arguments, environment, exit code and output), a `node:fs` over the isolate's files, `path`, `util`, `os`, `events`, `buffer`, `crypto`, `stream`, `readline`, `url`, `assert`, `timers` and `zlib`, relative imports (CommonJS and ES modules), and `fetch` and timers.
+
+`python` (and `python3`) runs Pyodide, CPython 3.14 compiled to WebAssembly: `python -c`, a script, a script on stdin or `-m`. It has the standard library and numpy, the isolate's files under `/workspace`, and the network through `pyfetch` or `from js import fetch`.
+
+```sh
+kantel exec sbx_4kq9x2mt -- "node -e 'console.log(JSON.parse(require(\"fs\").readFileSync(\"data.json\")).length)'"
+kantel exec sbx_4kq9x2mt -- "python -c 'import numpy as np; print(np.arange(10).sum())'"
+```
+
+Each run gets a fresh V8 isolate of its own, started from a snapshot, so a script can't see what another run left, and its limits are its own:
+
+- **Memory:** the isolate's memory, 256 MB by default and from 128 to 512 MB on a create (`resources.memoryMb`). The JavaScript heap and the buffers and WebAssembly memory are each held to it.
+- **CPU:** a command's CPU time, its `node` and `python` runs included, is limited, and a run that uses too much is stopped. A command stopped for CPU, memory or time answers exit code 152 (CPU or time) or 137 (memory), and its record has `terminated` saying which.
+- **What's left out:** npm and pip packages (only Pyodide's own, such as numpy), `child_process` and subprocesses, servers and listening sockets, native add-ons, worker threads, and building code from strings (`eval`, `new Function`). For any of these, [upgrade](#upgrade-an-isolate-to-a-microvm) to a microVM.
+
+Every request a script makes goes through the [egress proxy](/sandboxes/egress-proxy/), as `curl`'s does, so grants and protected variables apply to it and `kantel egress <sandbox>` shows it.
 
 ## Upgrade an isolate to a microVM
 

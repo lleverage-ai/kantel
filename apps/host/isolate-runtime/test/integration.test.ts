@@ -102,7 +102,10 @@ d("node", () => {
 		expect((await c.exec("nd", "node -v")).stdout).toMatch(/^v\d+/);
 	});
 	it("node:fs over the sandbox, writes reach the manifest", async () => {
-		const r = await c.exec("nd", "node -e 'const fs=require(\"fs\");fs.writeFileSync(\"n.json\",JSON.stringify({x:1}));process.stdout.write(fs.readFileSync(\"n.json\",\"utf8\"))'");
+		const r = await c.exec(
+			"nd",
+			'node -e \'const fs=require("fs");fs.writeFileSync("n.json",JSON.stringify({x:1}));process.stdout.write(fs.readFileSync("n.json","utf8"))\'',
+		);
 		expect(r.stdout).toBe('{"x":1}');
 		expect(r.changed).toContain("n.json");
 	});
@@ -118,15 +121,26 @@ d("node", () => {
 		expect((await c.exec("nd", "node t.ts", manifest)).stdout).toBe("42\n");
 	});
 	it("ESM entry with a node: import", async () => {
-		expect((await c.exec("nd", 'node --input-type=module -e \'import os from "node:os"; console.log(os.EOL==="\\n")\'')).stdout).toBe("true\n");
+		expect(
+			(await c.exec("nd", 'node --input-type=module -e \'import os from "node:os"; console.log(os.EOL==="\\n")\''))
+				.stdout,
+		).toBe("true\n");
 	});
 	it("crypto, path and buffer", async () => {
-		expect((await c.exec("nd", "node -e 'console.log(require(\"crypto\").createHash(\"md5\").update(\"abc\").digest(\"hex\"))'")).stdout.trim()).toBe("900150983cd24fb0d6963f7d28e17f72");
-		expect((await c.exec("nd", "node -e 'console.log(require(\"path\").join(\"a\",\"b\",\"..\",\"c\"))'")).stdout).toBe("a/c\n");
-		expect((await c.exec("nd", "node -e 'console.log(Buffer.from(\"aGk=\",\"base64\").toString())'")).stdout).toBe("hi\n");
+		expect(
+			(
+				await c.exec("nd", 'node -e \'console.log(require("crypto").createHash("md5").update("abc").digest("hex"))\'')
+			).stdout.trim(),
+		).toBe("900150983cd24fb0d6963f7d28e17f72");
+		expect((await c.exec("nd", 'node -e \'console.log(require("path").join("a","b","..","c"))\'')).stdout).toBe(
+			"a/c\n",
+		);
+		expect((await c.exec("nd", 'node -e \'console.log(Buffer.from("aGk=","base64").toString())\'')).stdout).toBe(
+			"hi\n",
+		);
 	});
 	it("child_process is unavailable", async () => {
-		const r = await c.exec("nd", "node -e 'require(\"child_process\").execSync(\"ls\")'");
+		const r = await c.exec("nd", 'node -e \'require("child_process").execSync("ls")\'');
 		expect(r.exitCode).toBe(1);
 		expect(r.stderr).toContain("microVM");
 	});
@@ -142,10 +156,20 @@ d("python", () => {
 		expect((await c.exec("py", "python -c 'import sys; sys.exit(3)'")).exitCode).toBe(3);
 	});
 	it("reads stdin and the sandbox's files, writes back", async () => {
-		expect((await c.exec("py", "echo 21 | python -c 'import sys; print(int(sys.stdin.read())*2)'")).stdout).toBe("42\n");
+		expect((await c.exec("py", "echo 21 | python -c 'import sys; print(int(sys.stdin.read())*2)'")).stdout).toBe(
+			"42\n",
+		);
 		const manifest = { "d.csv": await c.fileEntry("v\n1\n2\n3\n") };
-		expect((await c.exec("py", "python -c 'import csv; print(sum(int(r[\"v\"]) for r in csv.DictReader(open(\"d.csv\"))))'", manifest)).stdout).toBe("6\n");
-		const w = await c.exec("py", "python -c 'open(\"out.txt\",\"w\").write(\"hello\")'");
+		expect(
+			(
+				await c.exec(
+					"py",
+					'python -c \'import csv; print(sum(int(r["v"]) for r in csv.DictReader(open("d.csv"))))\'',
+					manifest,
+				)
+			).stdout,
+		).toBe("6\n");
+		const w = await c.exec("py", 'python -c \'open("out.txt","w").write("hello")\'');
 		expect(w.changed).toContain("out.txt");
 	});
 	it("loads numpy from the assets (not the internet)", async () => {
@@ -177,7 +201,10 @@ d("egress tagging", () => {
 	});
 	it("node fetch reaches the upstream and parses JSON", async () => {
 		await c.load("eg3");
-		const r = await c.exec("eg3", "node -e 'fetch(\"http://example.test/json\").then(r=>r.json()).then(j=>console.log(j.n))'");
+		const r = await c.exec(
+			"eg3",
+			"node -e 'fetch(\"http://example.test/json\").then(r=>r.json()).then(j=>console.log(j.n))'",
+		);
 		expect(r.stdout).toBe("7\n");
 	});
 });
@@ -238,7 +265,10 @@ d("containment (B5) with a neighbour", () => {
 		expect(r.exitCode).toBe(137);
 	});
 	it("node wasm memory bomb is contained (process survives, neighbour fast)", async () => {
-		const { r, p99 } = await attack("b5h", "node -e 'const a=[];while(true){const m=new WebAssembly.Memory({initial:1024});a.push(m)}'");
+		const { r, p99 } = await attack(
+			"b5h",
+			"node -e 'const a=[];while(true){const m=new WebAssembly.Memory({initial:1024});a.push(m)}'",
+		);
 		expect(r.exitCode).not.toBe(0);
 		expect(p99).toBeLessThan(500);
 	});
@@ -260,15 +290,24 @@ d("wasm accounting is watertight", () => {
 		if (RUN) await c.load("w");
 	});
 	it("a new Memory over the budget is refused", async () => {
-		const r = await c.exec("w", "node -e 'try{new WebAssembly.Memory({initial:5000})}catch(e){console.log(\"caught\")}'");
+		const r = await c.exec(
+			"w",
+			"node -e 'try{new WebAssembly.Memory({initial:5000})}catch(e){console.log(\"caught\")}'",
+		);
 		expect(r.stdout).toBe("caught\n");
 	});
 	it("growing a Memory past the budget is refused", async () => {
-		const r = await c.exec("w", "node -e 'const m=new WebAssembly.Memory({initial:1});try{m.grow(5000)}catch(e){console.log(\"caught\")}'");
+		const r = await c.exec(
+			"w",
+			"node -e 'const m=new WebAssembly.Memory({initial:1});try{m.grow(5000)}catch(e){console.log(\"caught\")}'",
+		);
 		expect(r.stdout).toBe("caught\n");
 	});
 	it("resizable ArrayBuffer (maxByteLength) is refused", async () => {
-		const r = await c.exec("w", "node -e 'try{new ArrayBuffer(8,{maxByteLength:2000000000})}catch(e){console.log(\"refused\")}'");
+		const r = await c.exec(
+			"w",
+			"node -e 'try{new ArrayBuffer(8,{maxByteLength:2000000000})}catch(e){console.log(\"refused\")}'",
+		);
 		expect(r.stdout).toBe("refused\n");
 	});
 	it("ArrayBuffer.prototype.resize is gone", async () => {
@@ -284,7 +323,10 @@ d("wasm accounting is watertight", () => {
 		expect(r.stdout).toBe("undefined\n");
 	});
 	it("a resizable-ArrayBuffer bomb can't exceed the budget (process survives)", async () => {
-		const r = await c.exec("w", "node -e 'const a=[];for(let i=0;i<50;i++){a.push(new ArrayBuffer(8,{maxByteLength:64*1024*1024}))}'");
+		const r = await c.exec(
+			"w",
+			"node -e 'const a=[];for(let i=0;i<50;i++){a.push(new ArrayBuffer(8,{maxByteLength:64*1024*1024}))}'",
+		);
 		expect(r.exitCode).not.toBe(0);
 		expect((await c.health()).ok).toBe(true);
 	});
@@ -292,7 +334,7 @@ d("wasm accounting is watertight", () => {
 		// (module (memory 9000)) — 9000 pages = 562 MiB initial, over the 512 MiB ceiling.
 		const r = await c.exec(
 			"w",
-			"node -e 'const b=new Uint8Array([0,97,115,109,1,0,0,0,5,4,1,0,168,70]);WebAssembly.compile(b).then(()=>console.log(\"compiled\"),e=>console.log(\"refused\"))'",
+			'node -e \'const b=new Uint8Array([0,97,115,109,1,0,0,0,5,4,1,0,168,70]);WebAssembly.compile(b).then(()=>console.log("compiled"),e=>console.log("refused"))\'',
 		);
 		expect(r.stdout.trim()).toBe("refused");
 	});

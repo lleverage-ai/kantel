@@ -4,7 +4,20 @@ import { base64 } from "./web.js";
 
 const core = globalThis.Deno.core;
 const HEX = "0123456789abcdef";
-const ENCODINGS = ["utf8", "utf-8", "hex", "base64", "base64url", "latin1", "binary", "ascii", "ucs2", "ucs-2", "utf16le", "utf-16le"];
+const ENCODINGS = [
+	"utf8",
+	"utf-8",
+	"hex",
+	"base64",
+	"base64url",
+	"latin1",
+	"binary",
+	"ascii",
+	"ucs2",
+	"ucs-2",
+	"utf16le",
+	"utf-16le",
+];
 
 function encodingOf(enc) {
 	const e = String(enc ?? "utf8").toLowerCase();
@@ -26,7 +39,10 @@ function fromString(s, enc) {
 		}
 		case "base64":
 		case "base64url": {
-			const clean = s.replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/]/g, "");
+			const clean = s
+				.replace(/-/g, "+")
+				.replace(/_/g, "/")
+				.replace(/[^A-Za-z0-9+/]/g, "");
 			const bin = atob(clean + "=".repeat((4 - (clean.length % 4)) % 4));
 			const b = new Buffer(bin.length);
 			for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
@@ -61,7 +77,8 @@ function fromString(s, enc) {
 export class Buffer extends Uint8Array {
 	static from(value, encOrOffset, length) {
 		if (typeof value === "string") return fromString(value, encOrOffset);
-		if (value instanceof ArrayBuffer) return new Buffer(value, encOrOffset ?? 0, length ?? value.byteLength - (encOrOffset ?? 0));
+		if (value instanceof ArrayBuffer)
+			return new Buffer(value, encOrOffset ?? 0, length ?? value.byteLength - (encOrOffset ?? 0));
 		if (ArrayBuffer.isView(value)) {
 			const b = new Buffer(value.byteLength);
 			b.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
@@ -203,7 +220,12 @@ const ACCESSORS = [
 	["BigInt64", "BigInt64", 8],
 ];
 for (const [name, dv, size] of ACCESSORS) {
-	for (const [suffix, little] of size === 1 ? [["", false]] : [["LE", true], ["BE", false]]) {
+	for (const [suffix, little] of size === 1
+		? [["", false]]
+		: [
+				["LE", true],
+				["BE", false],
+			]) {
 		Object.defineProperty(Buffer.prototype, `read${name}${suffix}`, {
 			value(offset = 0) {
 				return new DataView(this.buffer, this.byteOffset, this.byteLength)[`get${dv}`](offset, little);

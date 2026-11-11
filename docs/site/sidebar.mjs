@@ -13,6 +13,7 @@ export const sidebar = [
 			"hosts",
 			"concepts",
 			"coding-agents",
+			"platforms",
 		],
 	},
 	{
