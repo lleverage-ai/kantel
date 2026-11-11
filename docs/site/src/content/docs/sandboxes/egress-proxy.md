@@ -59,7 +59,7 @@ EnvironmentFile=-/etc/kantel/env
 ExecStart=/home/user/app/server
 ```
 
-The guest agent writes `/etc/kantel/env` each time the sandbox starts, resumes or is forked, and a unit reads it when the unit starts. Values read the same in a unit as in a command, except that a newline or tab in one arrives written as `\n` or `\t`. These settings come with the sandbox images after `host-images-20261107.1`. On an older image, write the variables into an `EnvironmentFile` of your own.
+The guest agent writes `/etc/kantel/env` each time the sandbox starts, resumes or is forked, and a unit reads it when the unit starts. Values read the same in a unit as in a command, except that a newline or tab in one arrives written as `\n` or `\t`. These settings come with the sandbox images from `host-images-20261111` on. On an older image, write the variables into an `EnvironmentFile` of your own.
 
 ### Git over SSH
 
@@ -121,7 +121,7 @@ docker run -e HTTP_PROXY=http://172.17.0.1:3128 -e http_proxy=http://172.17.0.1:
 
 In Compose, put the same variables under the service's `environment:`, or under `build.args:` for a build. A container has no DNS either, and Node in one follows the variables only with `NODE_USE_ENV_PROXY=1`. A program in a container that brings its own trusted certificates doesn't trust the proxy's certificate authority, so it can't reach a host a [protected variable](/sandboxes/environments/) is bound to. With `--network host` a container shares the sandbox's network and can use the forwarder on `127.0.0.1:3128`, like the sandbox's own programs.
 
-The settings are in the user's own `~/.docker/config.json`. `docker login` keeps them, but a file you write yourself replaces them, so keep the `proxies` block in it. Docker's default bridge has to stay on `172.17.0.0/16` (the default `bip`). The forwarder on `172.17.0.1` and the Docker settings come with the sandbox images after `host-images-20261107.1`. On an older image, pass the sandbox's current `HTTPS_PROXY` to the container, and pass it again after a fork or resume.
+The settings are in the user's own `~/.docker/config.json`. `docker login` keeps them, but a file you write yourself replaces them, so keep the `proxies` block in it. Docker's default bridge has to stay on `172.17.0.0/16` (the default `bip`). The forwarder on `172.17.0.1` and the Docker settings come with the sandbox images from `host-images-20261111` on. On an older image, pass the sandbox's current `HTTPS_PROXY` to the container, and pass it again after a fork or resume.
 
 ## Set the proxy settings
 
