@@ -45,7 +45,7 @@ func (q *DeleteEnvironmentFileQuery) values() url.Values {
 
 // DeleteFileQuery is DeleteFile's query.
 type DeleteFileQuery struct {
-	// An absolute path, or one relative to the user's home.
+	// An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.
 	Path *string
 }
 
@@ -75,7 +75,7 @@ func (q *DeleteTelemetryQuery) values() url.Values {
 
 // ExtractArchiveQuery is ExtractArchive's query.
 type ExtractArchiveQuery struct {
-	// The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.
+	// The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
 	Path *string
 }
 
@@ -330,7 +330,7 @@ type ListEventsQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account   *string
 	SandboxID *string
-	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 	Type  *EventType
 	Since *int64
 	// At most this many; default 50.
@@ -355,7 +355,7 @@ func (q *ListEventsQuery) values() url.Values {
 
 // ListFilesQuery is ListFiles's query.
 type ListFilesQuery struct {
-	// Default: the user's home.
+	// Default: a microVM's `/home/user` or an isolate's `/workspace`.
 	Path *string
 	// At most this many; default 50.
 	Limit *int64
@@ -427,7 +427,7 @@ func (q *ListSandboxesQuery) values() url.Values {
 
 // ListSnapshotFilesQuery is ListSnapshotFiles's query.
 type ListSnapshotFilesQuery struct {
-	// A directory; default the user's home.
+	// A directory; default a microVM's `/home/user` or an isolate's `/workspace`.
 	Path *string
 	// At most this many; default 50.
 	Limit *int64
@@ -1191,7 +1191,7 @@ func (c *Client) ListSandboxes(ctx context.Context, query *ListSandboxesQuery, o
 	return &out, nil
 }
 
-// CreateSandbox POST /sandboxes: Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.
+// CreateSandbox POST /sandboxes: Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.
 func (c *Client) CreateSandbox(ctx context.Context, body CreateSandboxBody, opts ...CallOption) (*Sandbox, error) {
 	var out Sandbox
 	if err := c.Do(ctx, Call{Method: "POST", Path: "/sandboxes", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
@@ -1493,6 +1493,15 @@ func (c *Client) StartSandbox(ctx context.Context, sandboxID string, body Resume
 func (c *Client) StopSandbox(ctx context.Context, sandboxID string, body StopSandboxBody, opts ...CallOption) (*Sandbox, error) {
 	var out Sandbox
 	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/stop", url.PathEscape(sandboxID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpgradeSandbox POST /sandboxes/{sandboxId}/upgrade: Upgrade an isolate to a microVM. Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and `/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`, Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was. Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the upgrade; a `sandbox.upgraded` event records it. A key needs `sandboxes:write`.
+func (c *Client) UpgradeSandbox(ctx context.Context, sandboxID string, body UpgradeSandboxBody, opts ...CallOption) (*Sandbox, error) {
+	var out Sandbox
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/upgrade", url.PathEscape(sandboxID)), Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

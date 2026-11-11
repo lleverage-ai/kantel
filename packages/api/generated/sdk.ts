@@ -401,6 +401,22 @@ export interface Command {
 	/** Epoch milliseconds, UTC. */
 	readonly endedAt?: number;
 	readonly durationMs?: number;
+	/** In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`. */
+	readonly needsMicrovm?: CommandNeedsMicrovm;
+	/** In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`). */
+	readonly terminated?: CommandTermination;
+	/** It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run again in the microVM. */
+	readonly rerunAs?: string;
+	/** It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the command that answered `needsMicrovm` in the isolate. */
+	readonly rerunOf?: string;
+}
+
+/** In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`. */
+export interface CommandNeedsMicrovm {
+	/** What it ran that an isolate doesn't have, such as `tar`. */
+	readonly command: string;
+	/** Why, in one sentence. */
+	readonly reason: string;
 }
 
 export interface CommandPage {
@@ -410,6 +426,9 @@ export interface CommandPage {
 }
 
 export type CommandState = "running" | "exited" | "killed" | "timed_out";
+
+/** In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`). */
+export type CommandTermination = "cpu" | "memory" | "wall";
 
 export interface ComputePageQuery {
 	/** At most this many; default 50. */
@@ -570,6 +589,8 @@ export interface CreateSandboxBody {
 	readonly host?: string;
 	/** Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
 	readonly mounts?: readonly Mount[];
+	/** For an isolate: when a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the command again there, once. Default false: the command answers `needsMicrovm` and the isolate stays as it is. */
+	readonly autoUpgrade?: boolean;
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
 }
@@ -782,7 +803,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -820,7 +841,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -831,6 +852,7 @@ export type EventType =
 	| "sandbox.recovered"
 	| "sandbox.environments_changed"
 	| "sandbox.oom_kill"
+	| "sandbox.upgraded"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1239,7 +1261,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -1620,6 +1642,10 @@ export interface Sandbox {
 	readonly lastActiveAt?: number;
 	/** When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. */
 	readonly idleStopsAt?: number;
+	/** An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. */
+	readonly autoUpgrade?: boolean;
+	/** A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings. */
+	readonly upgradedFrom?: SandboxUpgrade;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
 	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
@@ -1955,6 +1981,14 @@ export interface SandboxTemplate {
 
 /** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 export type SandboxType = "isolate" | "microvm";
+
+/** A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings. */
+export interface SandboxUpgrade {
+	/** `isolate`: a workerd isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, but no git, Node, Python, package manager or other program of its own, no Docker, desktop, ports or SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly type: SandboxType;
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+}
 
 export interface SandboxUsage {
 	readonly sandboxId: string;
@@ -2493,6 +2527,8 @@ export interface UpdateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+	/** Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when a command needs one. */
+	readonly autoUpgrade?: boolean;
 }
 
 /** A `spec` that differs from the current one makes a new version. */
@@ -2509,6 +2545,18 @@ export interface UpdateWebhookBody {
 	readonly url?: string;
 	readonly events?: readonly EventType[];
 	readonly enabled?: boolean;
+}
+
+/** The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM. */
+export interface UpgradeSandboxBody {
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
+	readonly size?: SandboxSizeName;
+	/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
+	readonly resources?: SandboxShapeInput;
+	/** The microVM's base image. Default: the deployment's. */
+	readonly image?: string;
+	/** Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was. */
+	readonly wait?: boolean;
 }
 
 export interface UploadBundleQuery {
@@ -2576,7 +2624,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -3040,6 +3088,8 @@ export interface KantelClient {
 	resumeSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A microVM fork is its source's machine (its `resources` from the start) unless `size` names another, and gets the source's exposed ports, each public or gated as it was, at its own URLs once it runs (only for a caller with `access`, as they are exposed as the caller). A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
+	/** Upgrade an isolate to a microVM. Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and `/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`, Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was. Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the upgrade; a `sandbox.upgraded` event records it. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/upgrade` */
+	upgradeSandbox(sandboxId: string, body?: UpgradeSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/restart-on-latest` */
@@ -3387,6 +3437,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/fork`, body, idempotent: true },
+				callOptions,
+			),
+		upgradeSandbox: (sandboxId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/upgrade`, body, idempotent: true },
 				callOptions,
 			),
 		recoverSandbox: (sandboxId, callOptions) =>

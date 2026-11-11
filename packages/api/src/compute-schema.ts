@@ -1046,6 +1046,26 @@ export const Sandbox = Type.Object(
 					"plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in.",
 			}),
 		),
+		autoUpgrade: Type.Optional(
+			Type.Boolean({
+				description:
+					"An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel " +
+					"upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false.",
+			}),
+		),
+		upgradedFrom: Type.Optional(
+			Type.Object(
+				{
+					type: SandboxType,
+					at: Timestamp,
+				},
+				{
+					title: "SandboxUpgrade",
+					description:
+						"A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings.",
+				},
+			),
+		),
 		latestSnapshotId: Type.Optional(Type.String({ description: "The snapshot a resume or fork would use." })),
 		latestSnapshotAt: Type.Optional(
 			Type.Integer({
@@ -1231,6 +1251,14 @@ export const CreateSandboxBody = Type.Object(
 					`without it. A fork keeps its source's mounts. ${MOUNTS_EXPERIMENTAL}`,
 			}),
 		),
+		autoUpgrade: Type.Optional(
+			Type.Boolean({
+				description:
+					"For an isolate: when a command needs something an isolate lacks (a program such as `tar`, a package " +
+					"manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the " +
+					"command again there, once. Default false: the command answers `needsMicrovm` and the isolate stays as it is.",
+			}),
+		),
 		wait: Type.Optional(
 			Type.Boolean({ description: "Answer once it is `running` (or `error`) rather than as soon as it is placed." }),
 		),
@@ -1255,8 +1283,35 @@ export const UpdateSandboxBody = Type.Object(
 		),
 		visibility: Type.Optional(SandboxVisibility),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Replaces its labels." })),
+		autoUpgrade: Type.Optional(
+			Type.Boolean({
+				description:
+					"Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when a command needs one.",
+			}),
+		),
 	},
 	{ title: "UpdateSandboxBody" },
+);
+
+export const UpgradeSandboxBody = Type.Object(
+	{
+		size: Type.Optional(SandboxSizeName),
+		resources: Type.Optional(SandboxShapeInput),
+		image: Type.Optional(Type.String({ description: "The microVM's base image. Default: the deployment's." })),
+		wait: Type.Optional(
+			Type.Boolean({
+				description:
+					"Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has " +
+					"begun (`starting`). Either way a failed upgrade leaves the isolate as it was.",
+			}),
+		),
+	},
+	{
+		title: "UpgradeSandboxBody",
+		description:
+			"The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` " +
+			"makes the deployment's default microVM.",
+	},
 );
 
 export const StopSandboxBody = Type.Object(
@@ -1591,6 +1646,42 @@ export const Command = Type.Object(
 		startedAt: Timestamp,
 		endedAt: Type.Optional(Timestamp),
 		durationMs: Type.Optional(Type.Integer()),
+		needsMicrovm: Type.Optional(
+			Type.Object(
+				{
+					command: Type.String({ description: "What it ran that an isolate doesn't have, such as `tar`." }),
+					reason: Type.String({ description: "Why, in one sentence." }),
+				},
+				{
+					title: "CommandNeedsMicrovm",
+					description:
+						"In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox " +
+						"(`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`.",
+				},
+			),
+		),
+		terminated: Type.Optional(
+			Type.Union([Type.Literal("cpu"), Type.Literal("memory"), Type.Literal("wall")], {
+				title: "CommandTermination",
+				description:
+					"In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or " +
+					"wall time (`wall`).",
+			}),
+		),
+		rerunAs: Type.Optional(
+			Type.String({
+				description:
+					"It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run " +
+					"again in the microVM.",
+			}),
+		),
+		rerunOf: Type.Optional(
+			Type.String({
+				description:
+					"It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the " +
+					"command that answered `needsMicrovm` in the isolate.",
+			}),
+		),
 	},
 	{ title: "Command" },
 );
@@ -3090,6 +3181,7 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.recovered"),
 		Type.Literal("sandbox.environments_changed"),
 		Type.Literal("sandbox.oom_kill"),
+		Type.Literal("sandbox.upgraded"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
 		Type.Literal("snapshot.deleted"),
@@ -3107,6 +3199,10 @@ export const EventType = Type.Union(
 			"`data.detached`, and `data.environmentIds`, in order). " +
 			"`sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since " +
 			"its last reading); it keeps running. " +
+			"`sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): " +
+			"`data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the " +
+			"microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and " +
+			"`data.durationMs`. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -3145,6 +3241,22 @@ export const Event = Type.Object(
 					Type.Array(Type.String(), {
 						description: "`sandbox.environments_changed`: the sandbox's environments now, in order.",
 					}),
+				),
+				from: Type.Optional(SandboxType),
+				to: Type.Optional(SandboxType),
+				path: Type.Optional(
+					Type.Union([Type.Literal("host"), Type.Literal("control-plane")], {
+						description:
+							"`sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, " +
+							"`control-plane` when the microVM went on another host and Kantel moved them.",
+					}),
+				),
+				files: Type.Optional(
+					Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: the files, links and directories moved." }),
+				),
+				bytes: Type.Optional(Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: the files' bytes." })),
+				durationMs: Type.Optional(
+					Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: how long the upgrade took." }),
 				),
 			},
 			{ title: "EventData" },
@@ -3920,6 +4032,7 @@ export type GuestCapabilities = Static<typeof GuestCapabilities>;
 export type GuestFeature = Static<typeof GuestFeature>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
+export type UpgradeSandboxBody = Static<typeof UpgradeSandboxBody>;
 export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;
@@ -3938,6 +4051,7 @@ export type CreateBucketSourceBody = Static<typeof CreateBucketSourceBody>;
 export type FileUrl = Static<typeof FileUrl>;
 export type ExtractedArchive = Static<typeof ExtractedArchive>;
 export type Command = Static<typeof Command>;
+export type RunCommandBody = Static<typeof RunCommandBody>;
 export type FileEntry = Static<typeof FileEntry>;
 export type ExposedPort = Static<typeof ExposedPort>;
 export type Snapshot = Static<typeof Snapshot>;
@@ -4069,6 +4183,7 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.recovered",
 	"sandbox.environments_changed",
 	"sandbox.oom_kill",
+	"sandbox.upgraded",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
