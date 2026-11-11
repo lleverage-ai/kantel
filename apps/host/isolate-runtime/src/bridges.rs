@@ -46,7 +46,9 @@ impl Charge {
         }
         if !self.budget.try_take(n) {
             PROCESS_INFLIGHT.fetch_sub(n, Ordering::SeqCst);
-            bail!("response is larger than this isolate's memory; use a microVM for large downloads");
+            bail!(
+                "response is larger than this isolate's memory; use a microVM for large downloads"
+            );
         }
         self.taken += n;
         Ok(())
@@ -61,7 +63,9 @@ impl Drop for Charge {
 }
 
 pub fn valid_sha(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Where a bridge listens: a TCP authority (host:port) or a Unix socket path.
@@ -88,7 +92,11 @@ impl Target {
         if host.is_empty() {
             bail!("{s}: no host");
         }
-        Ok(Target::Tcp(if host.contains(':') { host.to_string() } else { format!("{host}:80") }))
+        Ok(Target::Tcp(if host.contains(':') {
+            host.to_string()
+        } else {
+            format!("{host}:80")
+        }))
     }
 
     pub fn describe(&self) -> String {
@@ -129,13 +137,19 @@ async fn request(
     charge: Option<&mut Charge>,
 ) -> Result<(hyper::StatusCode, hyper::HeaderMap, Bytes)> {
     let stream = dial(target).await?;
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
+    let (mut sender, conn) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
     tokio::spawn(conn);
-    let mut builder = hyper::Request::builder().method(method).uri(uri).header("host", "kantel");
+    let mut builder = hyper::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "kantel");
     for (k, v) in headers {
         builder = builder.header(*k, *v);
     }
-    let resp = sender.send_request(builder.body(http_body_util::Full::new(Bytes::from(body)))?).await?;
+    let resp = sender
+        .send_request(builder.body(http_body_util::Full::new(Bytes::from(body)))?)
+        .await?;
     let status = resp.status();
     let headers = resp.headers().clone();
     let data = read_body(resp.into_body(), cap, charge).await?;
@@ -151,7 +165,10 @@ async fn read_body(body: Incoming, cap: usize, mut charge: Option<&mut Charge>) 
         let frame = frame.map_err(|e| anyhow!("response body: {e}"))?;
         if let Some(chunk) = frame.data_ref() {
             if out.len() + chunk.len() > cap {
-                bail!("response body is too large (over {} MiB)", cap / (1024 * 1024));
+                bail!(
+                    "response body is too large (over {} MiB)",
+                    cap / (1024 * 1024)
+                );
             }
             if let Some(c) = charge.as_deref_mut() {
                 c.add(chunk.len())?;
@@ -177,7 +194,16 @@ impl Store {
         if !valid_sha(sha) {
             bail!("blob: not a SHA-256 digest");
         }
-        let (status, _, data) = request(&self.target, "GET", &format!("/blobs/{sha}"), &[], Vec::new(), cap, charge).await?;
+        let (status, _, data) = request(
+            &self.target,
+            "GET",
+            &format!("/blobs/{sha}"),
+            &[],
+            Vec::new(),
+            cap,
+            charge,
+        )
+        .await?;
         if !status.is_success() {
             bail!("blob {sha}: {status}");
         }
@@ -185,13 +211,24 @@ impl Store {
     }
 
     pub async fn put(&self, bytes: Vec<u8>) -> Result<String> {
-        let (status, _, data) =
-            request(&self.target, "PUT", "/blobs", &[("content-type", "application/octet-stream")], bytes, 1024, None).await?;
+        let (status, _, data) = request(
+            &self.target,
+            "PUT",
+            "/blobs",
+            &[("content-type", "application/octet-stream")],
+            bytes,
+            1024,
+            None,
+        )
+        .await?;
         if !status.is_success() {
             bail!("put blob: {status}");
         }
         let v: Value = serde_json::from_slice(&data)?;
-        Ok(v["sha"].as_str().ok_or_else(|| anyhow!("put blob: no sha"))?.to_string())
+        Ok(v["sha"]
+            .as_str()
+            .ok_or_else(|| anyhow!("put blob: no sha"))?
+            .to_string())
     }
 }
 
@@ -219,7 +256,14 @@ fn is_dropped_header(lower: &str) -> bool {
         || lower.starts_with("proxy-")
         || matches!(
             lower,
-            "host" | "connection" | "keep-alive" | "transfer-encoding" | "content-length" | "te" | "trailer" | "upgrade"
+            "host"
+                | "connection"
+                | "keep-alive"
+                | "transfer-encoding"
+                | "content-length"
+                | "te"
+                | "trailer"
+                | "upgrade"
         )
 }
 
@@ -230,13 +274,22 @@ fn is_credential_header(lower: &str) -> bool {
 }
 
 fn origin_of(uri: &hyper::Uri) -> (Option<&str>, Option<String>) {
-    (uri.scheme_str(), uri.authority().map(|a| a.as_str().to_ascii_lowercase()))
+    (
+        uri.scheme_str(),
+        uri.authority().map(|a| a.as_str().to_ascii_lowercase()),
+    )
 }
 
 /// One request through the egress proxy, in proxy style (absolute-form target), tagged with the sandbox. The
 /// guest's own kantel-* headers (and hop-by-hop/framing headers) are dropped, so it can't claim another sandbox or
 /// confuse the proxy's framing. `charge` bounds the response body against the isolate's memory.
-pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: Vec<u8>, mut charge: Option<&mut Charge>) -> Result<Vec<u8>> {
+pub async fn egress_fetch(
+    egress: &Target,
+    sandbox: &str,
+    req: FetchReq,
+    body: Vec<u8>,
+    mut charge: Option<&mut Charge>,
+) -> Result<Vec<u8>> {
     let (mut url, mut method, mut body) = (req.url.clone(), req.method.to_uppercase(), body);
     // The origin the credential headers were meant for (the first request's); cleared once a redirect crosses it.
     let first: hyper::Uri = url.parse().map_err(|e| anyhow!("bad URL {url}: {e}"))?;
@@ -251,12 +304,20 @@ pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: V
         if credentials_ok && origin_of(&uri) != origin {
             credentials_ok = false;
         }
-        let authority = uri.authority().ok_or_else(|| anyhow!("no host in {url}"))?.to_string();
-        let stream = dial(egress).await.map_err(|e| anyhow!("egress proxy: {e}"))?;
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
+        let authority = uri
+            .authority()
+            .ok_or_else(|| anyhow!("no host in {url}"))?
+            .to_string();
+        let stream = dial(egress)
+            .await
+            .map_err(|e| anyhow!("egress proxy: {e}"))?;
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await?;
         tokio::spawn(conn);
         // Absolute-form request target (proxy style), so the proxy sees the real destination.
-        let mut builder = hyper::Request::builder().method(method.as_str()).uri(uri.clone());
+        let mut builder = hyper::Request::builder()
+            .method(method.as_str())
+            .uri(uri.clone());
         for (k, v) in &req.headers {
             let lower = k.to_ascii_lowercase();
             if is_dropped_header(&lower) || (!credentials_ok && is_credential_header(&lower)) {
@@ -264,14 +325,21 @@ pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: V
             }
             builder = builder.header(k.as_str(), v.as_str());
         }
-        builder = builder.header("host", authority.as_str()).header("kantel-isolate-sandbox", sandbox);
+        builder = builder
+            .header("host", authority.as_str())
+            .header("kantel-isolate-sandbox", sandbox);
         let request = builder.body(http_body_util::Full::new(Bytes::from(body.clone())))?;
-        let resp = sender.send_request(request).await.map_err(|e| anyhow!("egress request: {e}"))?;
+        let resp = sender
+            .send_request(request)
+            .await
+            .map_err(|e| anyhow!("egress request: {e}"))?;
         let status = resp.status();
         if req.follow && status.is_redirection() {
             if let Some(loc) = resp.headers().get("location").and_then(|l| l.to_str().ok()) {
                 url = resolve_redirect(&uri, &authority, loc);
-                if status != hyper::StatusCode::TEMPORARY_REDIRECT && status != hyper::StatusCode::PERMANENT_REDIRECT {
+                if status != hyper::StatusCode::TEMPORARY_REDIRECT
+                    && status != hyper::StatusCode::PERMANENT_REDIRECT
+                {
                     method = "GET".into();
                     body = Vec::new();
                 }
@@ -280,7 +348,10 @@ pub async fn egress_fetch(egress: &Target, sandbox: &str, req: FetchReq, body: V
         }
         let mut headers = serde_json::Map::new();
         for (k, v) in resp.headers() {
-            headers.insert(k.to_string(), Value::String(v.to_str().unwrap_or("").to_string()));
+            headers.insert(
+                k.to_string(),
+                Value::String(v.to_str().unwrap_or("").to_string()),
+            );
         }
         let data = read_body(resp.into_body(), MAX_FETCH_BODY, charge.as_deref_mut()).await?;
         let meta = json!({ "status": status.as_u16(), "statusText": status.canonical_reason().unwrap_or(""), "headers": headers, "url": url, "redirected": url != req.url });
@@ -295,11 +366,22 @@ fn resolve_redirect(uri: &hyper::Uri, authority: &str, loc: &str) -> String {
     } else if let Some(rest) = loc.strip_prefix("//") {
         format!("{}://{}", uri.scheme_str().unwrap_or("https"), rest)
     } else if loc.starts_with('/') {
-        format!("{}://{}{}", uri.scheme_str().unwrap_or("https"), authority, loc)
+        format!(
+            "{}://{}{}",
+            uri.scheme_str().unwrap_or("https"),
+            authority,
+            loc
+        )
     } else {
         let path = uri.path();
         let base = &path[..path.rfind('/').map(|i| i + 1).unwrap_or(0)];
-        format!("{}://{}{}{}", uri.scheme_str().unwrap_or("https"), authority, base, loc)
+        format!(
+            "{}://{}{}{}",
+            uri.scheme_str().unwrap_or("https"),
+            authority,
+            base,
+            loc
+        )
     }
 }
 
@@ -309,17 +391,38 @@ mod tests {
 
     #[test]
     fn target_parsing() {
-        assert_eq!(Target::parse("http://127.0.0.1:7001").unwrap(), Target::Tcp("127.0.0.1:7001".into()));
-        assert_eq!(Target::parse("127.0.0.1:7001").unwrap(), Target::Tcp("127.0.0.1:7001".into()));
-        assert_eq!(Target::parse("store").unwrap(), Target::Tcp("store:80".into()));
-        assert_eq!(Target::parse("unix:/run/kantel/store.sock").unwrap(), Target::Unix("/run/kantel/store.sock".into()));
+        assert_eq!(
+            Target::parse("http://127.0.0.1:7001").unwrap(),
+            Target::Tcp("127.0.0.1:7001".into())
+        );
+        assert_eq!(
+            Target::parse("127.0.0.1:7001").unwrap(),
+            Target::Tcp("127.0.0.1:7001".into())
+        );
+        assert_eq!(
+            Target::parse("store").unwrap(),
+            Target::Tcp("store:80".into())
+        );
+        assert_eq!(
+            Target::parse("unix:/run/kantel/store.sock").unwrap(),
+            Target::Unix("/run/kantel/store.sock".into())
+        );
         assert!(Target::parse("https://x").is_err());
         assert!(Target::parse("unix:").is_err());
     }
 
     #[test]
     fn drops_hop_by_hop_and_kantel_headers() {
-        for h in ["kantel-isolate-sandbox", "host", "connection", "content-length", "transfer-encoding", "proxy-authorization", "te", "upgrade"] {
+        for h in [
+            "kantel-isolate-sandbox",
+            "host",
+            "connection",
+            "content-length",
+            "transfer-encoding",
+            "proxy-authorization",
+            "te",
+            "upgrade",
+        ] {
             assert!(is_dropped_header(h), "{h} should be dropped");
         }
         assert!(!is_dropped_header("authorization"));
@@ -329,10 +432,16 @@ mod tests {
     #[test]
     fn redirects_resolve() {
         let uri: hyper::Uri = "http://a.test/x/y".parse().unwrap();
-        assert_eq!(resolve_redirect(&uri, "a.test", "https://b.test/z"), "https://b.test/z");
+        assert_eq!(
+            resolve_redirect(&uri, "a.test", "https://b.test/z"),
+            "https://b.test/z"
+        );
         assert_eq!(resolve_redirect(&uri, "a.test", "/z"), "http://a.test/z");
         assert_eq!(resolve_redirect(&uri, "a.test", "z"), "http://a.test/x/z");
-        assert_eq!(resolve_redirect(&uri, "a.test", "//c.test/z"), "http://c.test/z");
+        assert_eq!(
+            resolve_redirect(&uri, "a.test", "//c.test/z"),
+            "http://c.test/z"
+        );
     }
 
     #[test]

@@ -51,7 +51,10 @@ fn features(allow_shared: bool) -> WasmFeatures {
 pub fn inspect(bytes: &[u8], allow_shared: bool) -> Info {
     match try_inspect(bytes, allow_shared) {
         Ok(info) => info,
-        Err(error) => Info { error: Some(error), ..Default::default() },
+        Err(error) => Info {
+            error: Some(error),
+            ..Default::default()
+        },
     }
 }
 
@@ -62,9 +65,14 @@ fn try_inspect(bytes: &[u8], allow_shared: bool) -> Result<Info, String> {
         let payload = payload.map_err(|e| format!("invalid wasm: {e}"))?;
         // Validate everything (types, that memory.grow targets a memory the module has, and so on). This is what
         // stops a hand-built module that lies about its sections.
-        match validator.payload(&payload).map_err(|e| format!("invalid wasm: {e}"))? {
+        match validator
+            .payload(&payload)
+            .map_err(|e| format!("invalid wasm: {e}"))?
+        {
             ValidPayload::Func(f, body) => {
-                f.into_validator(Default::default()).validate(&body).map_err(|e| format!("invalid wasm: {e}"))?;
+                f.into_validator(Default::default())
+                    .validate(&body)
+                    .map_err(|e| format!("invalid wasm: {e}"))?;
             }
             _ => {}
         }
@@ -86,25 +94,34 @@ fn try_inspect(bytes: &[u8], allow_shared: bool) -> Result<Info, String> {
                 for m in reader {
                     let m = m.map_err(|e| format!("invalid wasm memories: {e}"))?;
                     check_memory(&m)?;
-                    info.memories.push(MemoryInfo { initial: m.initial, maximum: m.maximum, imported: false });
+                    info.memories.push(MemoryInfo {
+                        initial: m.initial,
+                        maximum: m.maximum,
+                        imported: false,
+                    });
                 }
             }
             Payload::ExportSection(reader) => {
                 for export in reader {
                     let export = export.map_err(|e| format!("invalid wasm exports: {e}"))?;
                     if export.kind == ExternalKind::Memory {
-                        info.memory_exports.insert(export.name.to_string(), export.index as usize);
+                        info.memory_exports
+                            .insert(export.name.to_string(), export.index as usize);
                     }
                 }
             }
             Payload::CodeSectionEntry(body) => {
                 // No memory.grow / memory.size in guest code: growth must come through Memory.prototype.grow, which
                 // the guard counts. (grow() itself maps to the host growMemory via an import, not this instruction.)
-                let mut reader =
-                    body.get_operators_reader().map_err(|e| format!("invalid wasm code: {e}"))?;
+                let mut reader = body
+                    .get_operators_reader()
+                    .map_err(|e| format!("invalid wasm code: {e}"))?;
                 while !reader.eof() {
                     use wasmparser::Operator::{MemoryGrow, MemorySize};
-                    match reader.read().map_err(|e| format!("invalid wasm code: {e}"))? {
+                    match reader
+                        .read()
+                        .map_err(|e| format!("invalid wasm code: {e}"))?
+                    {
                         MemoryGrow { .. } => {
                             return Err(
                                 "a module that grows its own memory isn't allowed in an isolate (memory is limited per isolate)".into(),
@@ -133,7 +150,9 @@ fn check_memory(m: &wasmparser::MemoryType) -> Result<(), String> {
     // real growth goes through Memory.prototype.grow, which the guard counts against the budget, so a memory can
     // never actually exceed the isolate's limit however large its maximum.
     if m.initial > MAX_PAGES {
-        return Err("wasm memory with an initial size over 512 MiB isn't allowed in an isolate".into());
+        return Err(
+            "wasm memory with an initial size over 512 MiB isn't allowed in an isolate".into(),
+        );
     }
     Ok(())
 }
@@ -152,7 +171,8 @@ mod tests {
         match s {
             r#"(module (memory 1 2) (export "m" (memory 0)))"# => vec![
                 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
-                0x05, 0x04, 0x01, 0x01, 0x01, 0x02, // memory section: 1 memory, flags=1 (has max), min 1, max 2
+                0x05, 0x04, 0x01, 0x01, 0x01,
+                0x02, // memory section: 1 memory, flags=1 (has max), min 1, max 2
                 0x07, 0x05, 0x01, 0x01, 0x6d, 0x02, 0x00, // export section: "m" memory 0
             ],
             _ => unreachable!(),
@@ -173,7 +193,11 @@ mod tests {
     #[test]
     fn refuses_garbage() {
         assert!(inspect(b"not wasm", false).error.is_some());
-        assert!(inspect(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0, 0, 0, 0xff], false).error.is_some());
+        assert!(
+            inspect(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0, 0, 0, 0xff], false)
+                .error
+                .is_some()
+        );
     }
 
     // (module (memory 1) (func (memory.grow (i32.const 1)) drop))
@@ -184,9 +208,16 @@ mod tests {
             0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type section: () -> ()
             0x03, 0x02, 0x01, 0x00, // function section: one func of type 0
             0x05, 0x03, 0x01, 0x00, 0x01, // memory section: 1 memory, min 1
-            0x0a, 0x09, 0x01, 0x07, 0x00, 0x41, 0x01, 0x40, 0x00, 0x1a, 0x0b, // code: i32.const 1; memory.grow 0; drop; end
+            0x0a, 0x09, 0x01, 0x07, 0x00, 0x41, 0x01, 0x40, 0x00, 0x1a,
+            0x0b, // code: i32.const 1; memory.grow 0; drop; end
         ];
         let info = inspect(&bytes, false);
-        assert!(info.error.as_deref().is_some_and(|e| e.contains("grows its own memory")), "{:?}", info.error);
+        assert!(
+            info.error
+                .as_deref()
+                .is_some_and(|e| e.contains("grows its own memory")),
+            "{:?}",
+            info.error
+        );
     }
 }

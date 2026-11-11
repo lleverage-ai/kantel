@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use deno_core::{
-    JsRuntime, JsRuntimeForSnapshot, ModuleLoadResponse, ModuleLoader, ModuleResolveResponse, ModuleSource,
-    ModuleSourceCode, ModuleSpecifier, ModuleType, PollEventLoopOptions, ResolutionKind,
-    RuntimeOptions, v8,
+    JsRuntime, JsRuntimeForSnapshot, ModuleLoadResponse, ModuleLoader, ModuleResolveResponse,
+    ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, PollEventLoopOptions,
+    ResolutionKind, RuntimeOptions, v8,
 };
 use deno_error::JsErrorBox;
 use serde_json::{Value, json};
@@ -63,7 +63,13 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    fn new(kind: Kind, sandbox_id: Arc<str>, command: Arc<Command>, budget: Arc<Budget>, allowed: std::collections::HashSet<String>) -> Ctx {
+    fn new(
+        kind: Kind,
+        sandbox_id: Arc<str>,
+        command: Arc<Command>,
+        budget: Arc<Budget>,
+        allowed: std::collections::HashSet<String>,
+    ) -> Ctx {
         Ctx {
             kind,
             sandbox_id,
@@ -133,14 +139,20 @@ impl RunState {
 fn resolve_file(index: &HashMap<String, FileRef>, payload: &[u8], path: &str) -> Result<Vec<u8>> {
     match index.get(path) {
         None => bail!("ENOENT: {path}"),
-        Some(FileRef::Inline(off, len)) => {
-            payload.get(*off..off + len).map(|s| s.to_vec()).ok_or_else(|| anyhow!("bad inline file"))
-        }
+        Some(FileRef::Inline(off, len)) => payload
+            .get(*off..off + len)
+            .map(|s| s.to_vec())
+            .ok_or_else(|| anyhow!("bad inline file")),
         Some(FileRef::Blob(sha)) => {
             let sha = sha.clone();
             let (tx, rx) = std::sync::mpsc::channel();
             engine().io.spawn(async move {
-                let _ = tx.send(engine().store.get(&sha, 256 * crate::limits::MIB, None).await);
+                let _ = tx.send(
+                    engine()
+                        .store
+                        .get(&sha, 256 * crate::limits::MIB, None)
+                        .await,
+                );
             });
             rx.recv()?.map_err(|e| anyhow!("{e}"))
         }
@@ -214,7 +226,9 @@ impl Engine {
             stats: Stats::default(),
             runs,
         };
-        ENGINE.set(built).map_err(|_| anyhow!("engine already set"))?;
+        ENGINE
+            .set(built)
+            .map_err(|_| anyhow!("engine already set"))?;
         Ok(engine())
     }
 
@@ -227,8 +241,13 @@ impl Engine {
     pub fn read_asset(&self, path: &str) -> Result<Vec<u8>> {
         let path = path.strip_prefix("file://").unwrap_or(path);
         let base = &self.cfg.pyodide;
-        let joined = if path.starts_with('/') { std::path::PathBuf::from(path) } else { base.join(path) };
-        let canon = std::fs::canonicalize(&joined).map_err(|e| anyhow!("{}: {e}", joined.display()))?;
+        let joined = if path.starts_with('/') {
+            std::path::PathBuf::from(path)
+        } else {
+            base.join(path)
+        };
+        let canon =
+            std::fs::canonicalize(&joined).map_err(|e| anyhow!("{}: {e}", joined.display()))?;
         if !canon.starts_with(base) {
             bail!("{}: outside the assets directory", joined.display());
         }
@@ -246,7 +265,10 @@ impl Engine {
         let src = match self.python_snapshot_src.get() {
             Some(s) => s.clone(),
             None => {
-                let bytes = Arc::new(std::fs::read(&self.cfg.python_snapshot).map_err(|e| anyhow!("python snapshot: {e}"))?);
+                let bytes = Arc::new(
+                    std::fs::read(&self.cfg.python_snapshot)
+                        .map_err(|e| anyhow!("python snapshot: {e}"))?,
+                );
                 let _ = self.python_snapshot_src.set(bytes.clone());
                 self.python_snapshot_src.get().cloned().unwrap_or(bytes)
             }
@@ -295,7 +317,9 @@ fn module_loader(kind: Kind) -> Option<Rc<dyn ModuleLoader>> {
 pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
     let limit = mem_mib * MIB;
     let budget = Budget::new(limit);
-    let params = v8::CreateParams::default().heap_limits(0, limit).array_buffer_allocator(allocator(&budget).make_shared());
+    let params = v8::CreateParams::default()
+        .heap_limits(0, limit)
+        .array_buffer_allocator(allocator(&budget).make_shared());
     let mut rt = JsRuntime::new(RuntimeOptions {
         extensions: vec![kt::init()],
         startup_snapshot: Some(engine().snapshot()),
@@ -311,12 +335,22 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
         // node/python isolate is single-use (one run, then discarded) and its CommonJS loader builds a function from
         // the run's own source, so codegen stays on for those.
         deno_core::scope!(scope, &mut rt);
-        scope.get_current_context().set_allow_generation_from_strings(false);
+        scope
+            .get_current_context()
+            .set_allow_generation_from_strings(false);
     }
     // Keep only this kind's entry; init removes Deno/__bootstrap/__infra/__kantel so guest code can't reach the ops.
-    let init = format!("globalThis.__kantelEntry = globalThis.__kantel.init({:?});", kind.init_arg());
+    let init = format!(
+        "globalThis.__kantelEntry = globalThis.__kantel.init({:?});",
+        kind.init_arg()
+    );
     rt.execute_script("kt:init", init).expect("guest init");
-    Live { rt, handle, budget, kind }
+    Live {
+        rt,
+        handle,
+        budget,
+        kind,
+    }
 }
 
 /// Call `globalThis.__kantelEntry.<method>(args...)` and await the result as a string. The ops the guest used run on
@@ -324,9 +358,14 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
 async fn call(rt: &mut JsRuntime, method: &str, args: &[&str]) -> Result<String> {
     let arg_list = args.iter().map(|a| lit(a)).collect::<Vec<_>>().join(",");
     let script = format!("globalThis.__kantelEntry.{method}({arg_list})");
-    let value = rt.execute_script("kt:call", script).map_err(|e| anyhow!("{e}"))?;
+    let value = rt
+        .execute_script("kt:call", script)
+        .map_err(|e| anyhow!("{e}"))?;
     let resolved = rt.resolve(value);
-    let value = rt.with_event_loop_promise(resolved, PollEventLoopOptions::default()).await.map_err(|e| anyhow!("{e}"))?;
+    let value = rt
+        .with_event_loop_promise(resolved, PollEventLoopOptions::default())
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     deno_core::scope!(scope, &mut *rt);
     let local = v8::Local::new(scope, value);
     Ok(local.to_rust_string_lossy(scope))
@@ -344,8 +383,17 @@ fn bind(rt: &mut JsRuntime, ctx: Ctx) {
 // Shell isolates: one thread each, kept while the sandbox is used
 
 pub enum ShellCmd {
-    Load { mem_mib: usize, reply: oneshot::Sender<()> },
-    Exec { sandbox_id: Arc<str>, body: String, manifest: Value, command: Arc<Command>, reply: oneshot::Sender<Value> },
+    Load {
+        mem_mib: usize,
+        reply: oneshot::Sender<()>,
+    },
+    Exec {
+        sandbox_id: Arc<str>,
+        body: String,
+        manifest: Value,
+        command: Arc<Command>,
+        reply: oneshot::Sender<Value>,
+    },
 }
 
 pub struct ShellHandle {
@@ -430,7 +478,11 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
             });
         })
         .expect("spawn shell thread");
-    ShellHandle { tx, mem_mib, sandbox_id }
+    ShellHandle {
+        tx,
+        mem_mib,
+        sandbox_id,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -450,7 +502,10 @@ pub struct Job {
 }
 
 fn pack_error(code: i64, stderr: &str) -> Vec<u8> {
-    crate::bridges::pack(&json!({ "exitCode": code, "stdout": "", "stderr": stderr, "writes": [], "removes": [], "mkdirs": [], "symlinks": [] }), &[])
+    crate::bridges::pack(
+        &json!({ "exitCode": code, "stdout": "", "stderr": stderr, "writes": [], "removes": [], "mkdirs": [], "symlinks": [] }),
+        &[],
+    )
 }
 
 /// A terminated node/python run: carries `terminated` so the shell propagates it (exit 137/152) to /exec, as a
@@ -470,7 +525,10 @@ pub async fn run_child(kind: Kind, parent: &Ctx, meta: String, payload: Vec<u8>)
         Ok(p) => p,
         Err(_) => {
             let name = if kind == Kind::Node { "node" } else { "python" };
-            return pack_error(1, &format!("{name}: the runtime is busy (too many concurrent runs). Try again.\n"));
+            return pack_error(
+                1,
+                &format!("{name}: the runtime is busy (too many concurrent runs). Try again.\n"),
+            );
         }
     };
     let parsed: Value = match serde_json::from_str(&meta) {
@@ -488,7 +546,11 @@ pub async fn run_child(kind: Kind, parent: &Ctx, meta: String, payload: Vec<u8>)
         builtins: Arc::new(Mutex::new(HashMap::new())),
     };
     let control = Arc::new(ChildControl::default());
-    parent.children.lock().unwrap().insert(run_id, control.clone());
+    parent
+        .children
+        .lock()
+        .unwrap()
+        .insert(run_id, control.clone());
     let (reply, rx) = oneshot::channel();
     let job = Job {
         ctx_kind: kind,
@@ -511,7 +573,9 @@ pub async fn run_child(kind: Kind, parent: &Ctx, meta: String, payload: Vec<u8>)
             python_dispatch(job);
         }
     }
-    let out = rx.await.unwrap_or_else(|_| pack_error(1, "runtime: the run's thread stopped\n"));
+    let out = rx
+        .await
+        .unwrap_or_else(|_| pack_error(1, "runtime: the run's thread stopped\n"));
     parent.children.lock().unwrap().remove(&run_id);
     out
 }
@@ -520,7 +584,10 @@ fn slice_of(v: &Value, payload: &[u8]) -> Vec<u8> {
     if let Some(a) = v.as_array() {
         let off = a.first().and_then(Value::as_u64).unwrap_or(0) as usize;
         let len = a.get(1).and_then(Value::as_u64).unwrap_or(0) as usize;
-        return payload.get(off..off + len).map(|s| s.to_vec()).unwrap_or_default();
+        return payload
+            .get(off..off + len)
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
     }
     Vec::new()
 }
@@ -555,7 +622,11 @@ pub fn node_refill() {
     let have = NODE_POOL.lock().unwrap().len() + NODE_BOOTING.load(Ordering::SeqCst);
     for _ in have..want {
         NODE_BOOTING.fetch_add(1, Ordering::SeqCst);
-        std::thread::Builder::new().name("kt-node".into()).stack_size(8 * MIB).spawn(|| node_thread(None)).expect("node thread");
+        std::thread::Builder::new()
+            .name("kt-node".into())
+            .stack_size(8 * MIB)
+            .spawn(|| node_thread(None))
+            .expect("node thread");
     }
 }
 
@@ -565,7 +636,10 @@ pub fn node_refill() {
 pub fn renew_ready_pools() {
     NODE_POOL.lock().unwrap().clear();
     let dropped = PY_POOL.lock().unwrap().drain(..).count();
-    PY_READY.fetch_sub(dropped.min(PY_READY.load(Ordering::Relaxed)), Ordering::Relaxed);
+    PY_READY.fetch_sub(
+        dropped.min(PY_READY.load(Ordering::Relaxed)),
+        Ordering::Relaxed,
+    );
     node_refill();
     python_refill();
 }
@@ -581,7 +655,11 @@ fn node_dispatch(job: Job) {
             return;
         }
     }
-    std::thread::Builder::new().name("kt-node".into()).stack_size(8 * MIB).spawn(move || node_thread(Some(job))).expect("node thread");
+    std::thread::Builder::new()
+        .name("kt-node".into())
+        .stack_size(8 * MIB)
+        .spawn(move || node_thread(Some(job)))
+        .expect("node thread");
 }
 
 fn node_thread(job: Option<Job>) {
@@ -599,7 +677,11 @@ pub fn python_refill() {
     let have = PY_POOL.lock().unwrap().len() + PY_BOOTING.load(Ordering::SeqCst);
     for _ in have..want {
         PY_BOOTING.fetch_add(1, Ordering::SeqCst);
-        std::thread::Builder::new().name("kt-python".into()).stack_size(8 * MIB).spawn(|| python_thread(None)).expect("python thread");
+        std::thread::Builder::new()
+            .name("kt-python".into())
+            .stack_size(8 * MIB)
+            .spawn(|| python_thread(None))
+            .expect("python thread");
     }
 }
 
@@ -616,7 +698,11 @@ fn python_dispatch(job: Job) {
         }
         python_refill();
     }
-    std::thread::Builder::new().name("kt-python".into()).stack_size(8 * MIB).spawn(move || python_thread(Some(job))).expect("python thread");
+    std::thread::Builder::new()
+        .name("kt-python".into())
+        .stack_size(8 * MIB)
+        .spawn(move || python_thread(Some(job)))
+        .expect("python thread");
 }
 
 fn python_thread(job: Option<Job>) {
@@ -625,12 +711,27 @@ fn python_thread(job: Option<Job>) {
 
 /// Shared body for a node/python worker thread: make an isolate, prepare it (python boots Pyodide), then run one job
 /// (from the pool or the one passed), and reply. The isolate is dropped at the end: one run per isolate.
-fn run_thread(kind: Kind, mut job: Option<Job>, pool: &'static Mutex<VecDeque<Ready>>, booting: &'static AtomicUsize) {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("run tokio");
+fn run_thread(
+    kind: Kind,
+    mut job: Option<Job>,
+    pool: &'static Mutex<VecDeque<Ready>>,
+    booting: &'static AtomicUsize,
+) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("run tokio");
     let _entered = rt.enter();
-    let mem = job.as_ref().map(|j| j.budget_mem).unwrap_or(DEFAULT_MEMORY_MIB);
+    let mem = job
+        .as_ref()
+        .map(|j| j.budget_mem)
+        .unwrap_or(DEFAULT_MEMORY_MIB);
     let mut live = new_live(kind, mem);
-    let prepared = if kind == Kind::Python { python_boot(&mut live, &rt) } else { Ok(()) };
+    let prepared = if kind == Kind::Python {
+        python_boot(&mut live, &rt)
+    } else {
+        Ok(())
+    };
     let pooled = job.is_none();
     if pooled {
         booting.fetch_sub(1, Ordering::SeqCst);
@@ -650,7 +751,10 @@ fn run_thread(kind: Kind, mut job: Option<Job>, pool: &'static Mutex<VecDeque<Re
     }
     let job = job.unwrap();
     if let Err(e) = prepared {
-        let _ = job.reply.send(pack_error(1, &format!("{}: failed to start: {e:#}\n", kind.init_arg())));
+        let _ = job.reply.send(pack_error(
+            1,
+            &format!("{}: failed to start: {e:#}\n", kind.init_arg()),
+        ));
         return;
     }
     run_one(&mut live, kind, job, &rt);
@@ -659,7 +763,16 @@ fn run_thread(kind: Kind, mut job: Option<Job>, pool: &'static Mutex<VecDeque<Re
 fn python_boot(live: &mut Live, rt: &tokio::runtime::Runtime) -> Result<()> {
     let args = json!({ "pyodide": engine().cfg.pyodide.display().to_string() }).to_string();
     let command = Command::new(Duration::from_secs(60), Duration::from_secs(90));
-    bind(&mut live.rt, Ctx::new(Kind::Python, Arc::from("boot"), command.clone(), live.budget.clone(), Default::default()));
+    bind(
+        &mut live.rt,
+        Ctx::new(
+            Kind::Python,
+            Arc::from("boot"),
+            command.clone(),
+            live.budget.clone(),
+            Default::default(),
+        ),
+    );
     let guard = watch(live.handle.clone(), command, live.budget.clone());
     let r = rt.block_on(async {
         load_pyodide_modules(&mut live.rt).await?;
@@ -676,24 +789,49 @@ async fn load_pyodide_modules(rt: &mut JsRuntime) -> Result<()> {
         "import {{ loadPyodide }} from \"file://{base}/pyodide.mjs\";\nimport createPyodideModule from \"file://{base}/pyodide.asm.mjs\";\nglobalThis.__pyodideLoad = loadPyodide;\nglobalThis.__pyodideModule = createPyodideModule;\n"
     );
     let spec = ModuleSpecifier::parse("file:///kantel/pyodide-boot.mjs")?;
-    let id = rt.load_main_es_module_from_code(&spec, source).await.map_err(|e| anyhow!("{e}"))?;
+    let id = rt
+        .load_main_es_module_from_code(&spec, source)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let eval = rt.mod_evaluate(id);
-    rt.run_event_loop(PollEventLoopOptions::default()).await.map_err(|e| anyhow!("{e}"))?;
+    rt.run_event_loop(PollEventLoopOptions::default())
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     eval.await.map_err(|e| anyhow!("{e}"))
 }
 
 fn run_one(live: &mut Live, kind: Kind, job: Job, rt: &tokio::runtime::Runtime) {
     live.budget.reset_exceeded();
-    let Job { sandbox_id, command, run, meta, control, reply, permit, .. } = job;
+    let Job {
+        sandbox_id,
+        command,
+        run,
+        meta,
+        control,
+        reply,
+        permit,
+        ..
+    } = job;
     let what = kind.init_arg();
     let mem = live.budget.limit() / MIB;
     if kind == Kind::Node {
         // Make the run's files reachable to the module loader on this thread (overlay and builtins are shared, so
         // the loader sees what the run writes and which built-ins exist).
-        set_node_env(run.overlay.clone(), run.builtins.clone(), run.index.clone(), run.payload.clone());
+        set_node_env(
+            run.overlay.clone(),
+            run.builtins.clone(),
+            run.index.clone(),
+            run.payload.clone(),
+        );
     }
     {
-        let ctx = Ctx::new(kind, sandbox_id, command.clone(), live.budget.clone(), Default::default());
+        let ctx = Ctx::new(
+            kind,
+            sandbox_id,
+            command.clone(),
+            live.budget.clone(),
+            Default::default(),
+        );
         let st = live.rt.op_state();
         let mut st = st.borrow_mut();
         st.put(ctx);
@@ -728,8 +866,11 @@ fn run_one(live: &mut Live, kind: Kind, job: Job, rt: &tokio::runtime::Runtime) 
             engine().stats.count_term(t);
             pack_terminated(t, &t.message(what, mem, command.cpu_limit, command.wall))
         }
-        (Some(Ok(())), _) => take_result(&mut live.rt).unwrap_or_else(|| pack_error(1, &format!("{what}: no result\n"))),
-        (Some(Err(e)), _) => take_result(&mut live.rt).unwrap_or_else(|| pack_error(1, &format!("{what}: {e}\n"))),
+        (Some(Ok(())), _) => take_result(&mut live.rt)
+            .unwrap_or_else(|| pack_error(1, &format!("{what}: no result\n"))),
+        (Some(Err(e)), _) => {
+            take_result(&mut live.rt).unwrap_or_else(|| pack_error(1, &format!("{what}: {e}\n")))
+        }
         (None, _) => pack_error(1, &format!("{what}: stopped\n")),
     };
     let _ = reply.send(out);
@@ -753,15 +894,24 @@ async fn run_node(rt: &mut JsRuntime, meta: &str) -> Result<()> {
         }
     }
     let err_json = serde_json::to_string(&err).unwrap_or("null".into());
-    rt.execute_script("kt:finish", format!("globalThis.__kantelEntry.finish({err_json})")).map_err(|e| anyhow!("{e}"))?;
+    rt.execute_script(
+        "kt:finish",
+        format!("globalThis.__kantelEntry.finish({err_json})"),
+    )
+    .map_err(|e| anyhow!("{e}"))?;
     Ok(())
 }
 
 async fn load_main_module(rt: &mut JsRuntime, spec: &str) -> std::result::Result<(), String> {
     let specifier = ModuleSpecifier::parse(spec).map_err(|e| e.to_string())?;
-    let id = rt.load_main_es_module(&specifier).await.map_err(|e| e.to_string())?;
+    let id = rt
+        .load_main_es_module(&specifier)
+        .await
+        .map_err(|e| e.to_string())?;
     let receiver = rt.mod_evaluate(id);
-    rt.run_event_loop(PollEventLoopOptions::default()).await.map_err(|e| e.to_string())?;
+    rt.run_event_loop(PollEventLoopOptions::default())
+        .await
+        .map_err(|e| e.to_string())?;
     receiver.await.map_err(|e| e.to_string())
 }
 
@@ -770,7 +920,10 @@ async fn run_python(rt: &mut JsRuntime, meta: &str) -> Result<()> {
 }
 
 fn take_result(rt: &mut JsRuntime) -> Option<Vec<u8>> {
-    rt.op_state().borrow_mut().try_take::<RunResult>().and_then(|r| r.0)
+    rt.op_state()
+        .borrow_mut()
+        .try_take::<RunResult>()
+        .and_then(|r| r.0)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -779,22 +932,45 @@ fn take_result(rt: &mut JsRuntime) -> Option<Vec<u8>> {
 /// python: resolves and loads only Pyodide's own ES modules, from `--assets` (op_read_asset enforces the directory).
 struct AssetModuleLoader;
 impl ModuleLoader for AssetModuleLoader {
-    fn resolve(&self, specifier: &str, referrer: &str, _kind: ResolutionKind) -> ModuleResolveResponse {
+    fn resolve(
+        &self,
+        specifier: &str,
+        referrer: &str,
+        _kind: ResolutionKind,
+    ) -> ModuleResolveResponse {
         deno_core::resolve_import(specifier, referrer).map_err(JsErrorBox::from_err)
     }
-    fn load(&self, specifier: &ModuleSpecifier, _referrer: Option<&deno_core::ModuleLoadReferrer>, _options: deno_core::ModuleLoadOptions) -> ModuleLoadResponse {
+    fn load(
+        &self,
+        specifier: &ModuleSpecifier,
+        _referrer: Option<&deno_core::ModuleLoadReferrer>,
+        _options: deno_core::ModuleLoadOptions,
+    ) -> ModuleLoadResponse {
         let specifier = specifier.clone();
         let path = match specifier.to_file_path() {
             Ok(p) => p,
-            Err(_) => return ModuleLoadResponse::Sync(Err(JsErrorBox::generic("python modules load only from file://"))),
+            Err(_) => {
+                return ModuleLoadResponse::Sync(Err(JsErrorBox::generic(
+                    "python modules load only from file://",
+                )));
+            }
         };
         let base = &engine().cfg.pyodide;
         let code = match std::fs::canonicalize(&path) {
             Ok(canon) if canon.starts_with(base) => std::fs::read_to_string(&canon),
-            _ => return ModuleLoadResponse::Sync(Err(JsErrorBox::generic("python module outside the assets directory"))),
+            _ => {
+                return ModuleLoadResponse::Sync(Err(JsErrorBox::generic(
+                    "python module outside the assets directory",
+                )));
+            }
         };
         match code {
-            Ok(code) => ModuleLoadResponse::Sync(Ok(ModuleSource::new(ModuleType::JavaScript, ModuleSourceCode::String(code.into()), &specifier, None))),
+            Ok(code) => ModuleLoadResponse::Sync(Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(code.into()),
+                &specifier,
+                None,
+            ))),
             Err(e) => ModuleLoadResponse::Sync(Err(JsErrorBox::generic(e.to_string()))),
         }
     }
@@ -830,7 +1006,14 @@ fn set_node_env(
     index: HashMap<String, FileRef>,
     payload: Arc<Vec<u8>>,
 ) {
-    NODE_ENV.with(|e| *e.borrow_mut() = Some(NodeEnv { overlay, builtins, index, payload }));
+    NODE_ENV.with(|e| {
+        *e.borrow_mut() = Some(NodeEnv {
+            overlay,
+            builtins,
+            index,
+            payload,
+        })
+    });
 }
 
 fn clear_node_env() {
@@ -838,15 +1021,30 @@ fn clear_node_env() {
 }
 
 impl ModuleLoader for NodeModuleLoader {
-    fn resolve(&self, specifier: &str, referrer: &str, _kind: ResolutionKind) -> ModuleResolveResponse {
+    fn resolve(
+        &self,
+        specifier: &str,
+        referrer: &str,
+        _kind: ResolutionKind,
+    ) -> ModuleResolveResponse {
         let bare = specifier.strip_prefix("node:").unwrap_or(specifier);
-        let is_builtin = NODE_ENV.with(|e| e.borrow().as_ref().is_some_and(|env| env.builtins.lock().unwrap().contains_key(bare)));
+        let is_builtin = NODE_ENV.with(|e| {
+            e.borrow()
+                .as_ref()
+                .is_some_and(|env| env.builtins.lock().unwrap().contains_key(bare))
+        });
         if specifier.starts_with("node:") || is_builtin {
-            return ModuleSpecifier::parse(&format!("{BUILTIN_SCHEME}{bare}")).map_err(|e| JsErrorBox::generic(e.to_string()));
+            return ModuleSpecifier::parse(&format!("{BUILTIN_SCHEME}{bare}"))
+                .map_err(|e| JsErrorBox::generic(e.to_string()));
         }
         deno_core::resolve_import(specifier, referrer).map_err(JsErrorBox::from_err)
     }
-    fn load(&self, specifier: &ModuleSpecifier, _referrer: Option<&deno_core::ModuleLoadReferrer>, _options: deno_core::ModuleLoadOptions) -> ModuleLoadResponse {
+    fn load(
+        &self,
+        specifier: &ModuleSpecifier,
+        _referrer: Option<&deno_core::ModuleLoadReferrer>,
+        _options: deno_core::ModuleLoadOptions,
+    ) -> ModuleLoadResponse {
         ModuleLoadResponse::Sync(node_load(specifier))
     }
 }
@@ -854,7 +1052,12 @@ impl ModuleLoader for NodeModuleLoader {
 fn node_load(specifier: &ModuleSpecifier) -> std::result::Result<ModuleSource, JsErrorBox> {
     let spec = specifier.as_str();
     if let Some(name) = spec.strip_prefix(BUILTIN_SCHEME) {
-        let exports = NODE_ENV.with(|e| e.borrow().as_ref().and_then(|env| env.builtins.lock().unwrap().get(name).cloned()).unwrap_or_default());
+        let exports = NODE_ENV.with(|e| {
+            e.borrow()
+                .as_ref()
+                .and_then(|env| env.builtins.lock().unwrap().get(name).cloned())
+                .unwrap_or_default()
+        });
         let named: String = exports
             .iter()
             .map(|n| format!("export const {n} = __m.{n};\n"))
@@ -863,12 +1066,21 @@ fn node_load(specifier: &ModuleSpecifier) -> std::result::Result<ModuleSource, J
             "const __m = globalThis[Symbol.for('kantel.node.builtin')]({});\nexport default __m;\n{named}",
             lit(name)
         );
-        return Ok(ModuleSource::new(ModuleType::JavaScript, ModuleSourceCode::String(code.into()), specifier, None));
+        return Ok(ModuleSource::new(
+            ModuleType::JavaScript,
+            ModuleSourceCode::String(code.into()),
+            specifier,
+            None,
+        ));
     }
-    let path = specifier.to_file_path().map_err(|_| JsErrorBox::generic(format!("cannot load {spec}")))?;
+    let path = specifier
+        .to_file_path()
+        .map_err(|_| JsErrorBox::generic(format!("cannot load {spec}")))?;
     let path_str = path.to_string_lossy().to_string();
     if path_str.ends_with(".wasm") {
-        return Err(JsErrorBox::generic("importing .wasm modules isn't available in an isolate's node"));
+        return Err(JsErrorBox::generic(
+            "importing .wasm modules isn't available in an isolate's node",
+        ));
     }
     let bytes = NODE_ENV.with(|e| -> Option<Vec<u8>> {
         let env = e.borrow();
@@ -881,34 +1093,72 @@ fn node_load(specifier: &ModuleSpecifier) -> std::result::Result<ModuleSource, J
         resolve_file(&env.index, &env.payload, rel).ok()
     });
     let Some(bytes) = bytes else {
-        return Err(JsErrorBox::generic(format!("Cannot find module '{path_str}'")));
+        return Err(JsErrorBox::generic(format!(
+            "Cannot find module '{path_str}'"
+        )));
     };
     let text = String::from_utf8_lossy(&bytes).to_string();
     if path_str.ends_with(".json") {
-        let code = format!("export default {};", if text.trim().is_empty() { "null" } else { text.trim() });
-        return Ok(ModuleSource::new(ModuleType::Json, ModuleSourceCode::String(code.into()), specifier, None));
+        let code = format!(
+            "export default {};",
+            if text.trim().is_empty() {
+                "null"
+            } else {
+                text.trim()
+            }
+        );
+        return Ok(ModuleSource::new(
+            ModuleType::Json,
+            ModuleSourceCode::String(code.into()),
+            specifier,
+            None,
+        ));
     }
-    let is_ts = path_str.ends_with(".ts") || path_str.ends_with(".mts") || path_str.ends_with(".cts");
+    let is_ts =
+        path_str.ends_with(".ts") || path_str.ends_with(".mts") || path_str.ends_with(".cts");
     let source = if is_ts {
-        crate::transpile::strip_types(&path_str, text).map_err(|e| JsErrorBox::generic(e.to_string()))?
+        crate::transpile::strip_types(&path_str, text)
+            .map_err(|e| JsErrorBox::generic(e.to_string()))?
     } else {
         text
     };
     // A CommonJS file imported from ESM: hand its module.exports back as the default export (named imports from a
     // CommonJS module aren't resolved — a known gap, see README).
-    let cjs = path_str.ends_with(".cjs") || path_str.ends_with(".cts") || (!path_str.ends_with(".mjs") && !path_str.ends_with(".mts") && !looks_like_esm(&source));
+    let cjs = path_str.ends_with(".cjs")
+        || path_str.ends_with(".cts")
+        || (!path_str.ends_with(".mjs") && !path_str.ends_with(".mts") && !looks_like_esm(&source));
     if cjs {
-        let code = format!("const __m = globalThis[Symbol.for('kantel.node.require')]({});\nexport default (__m && __m.default !== undefined && __m.__esModule) ? __m.default : __m;", lit(&path_str));
-        return Ok(ModuleSource::new(ModuleType::JavaScript, ModuleSourceCode::String(code.into()), specifier, None));
+        let code = format!(
+            "const __m = globalThis[Symbol.for('kantel.node.require')]({});\nexport default (__m && __m.default !== undefined && __m.__esModule) ? __m.default : __m;",
+            lit(&path_str)
+        );
+        return Ok(ModuleSource::new(
+            ModuleType::JavaScript,
+            ModuleSourceCode::String(code.into()),
+            specifier,
+            None,
+        ));
     }
-    Ok(ModuleSource::new(ModuleType::JavaScript, ModuleSourceCode::String(source.into()), specifier, None))
+    Ok(ModuleSource::new(
+        ModuleType::JavaScript,
+        ModuleSourceCode::String(source.into()),
+        specifier,
+        None,
+    ))
 }
 
 fn looks_like_esm(source: &str) -> bool {
     // A cheap check for top-level ESM syntax; good enough to tell a .js module from a CommonJS one.
     for line in source.lines() {
         let line = line.trim_start();
-        if line.starts_with("import ") || line.starts_with("import(") || line.starts_with("import{") || line.starts_with("export ") || line.starts_with("export{") || line.starts_with("export*") || line.starts_with("export default") {
+        if line.starts_with("import ")
+            || line.starts_with("import(")
+            || line.starts_with("import{")
+            || line.starts_with("export ")
+            || line.starts_with("export{")
+            || line.starts_with("export*")
+            || line.starts_with("export default")
+        {
             return true;
         }
     }
@@ -919,10 +1169,18 @@ fn looks_like_esm(source: &str) -> bool {
 // Snapshot
 
 fn build_snapshot() -> &'static [u8] {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("snapshot tokio");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("snapshot tokio");
     let _entered = rt.enter();
-    let mut snap_rt = JsRuntimeForSnapshot::new(RuntimeOptions { extensions: vec![kt::init()], ..Default::default() });
-    snap_rt.execute_script("kt:guest", GUEST).unwrap_or_else(|e| panic!("guest bundle failed to load: {e}"));
+    let mut snap_rt = JsRuntimeForSnapshot::new(RuntimeOptions {
+        extensions: vec![kt::init()],
+        ..Default::default()
+    });
+    snap_rt
+        .execute_script("kt:guest", GUEST)
+        .unwrap_or_else(|e| panic!("guest bundle failed to load: {e}"));
     Box::leak(snap_rt.snapshot())
 }
 
@@ -933,23 +1191,36 @@ mod snapshot_sink_helpers {
 
     /// Build and run the Pyodide snapshot: one isolate that boots Pyodide with _makeSnapshot and writes the bytes.
     pub fn make_python_snapshot(out: &std::path::Path) -> Result<()> {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
         let _entered = rt.enter();
         let mut live = new_live(Kind::Python, 1024);
         let sink = Rc::new(RefCell::new(None));
         {
             let st = live.rt.op_state();
             let mut st = st.borrow_mut();
-            st.put(Ctx::new(Kind::Python, Arc::from("snapshot"), Command::new(Duration::from_secs(120), Duration::from_secs(180)), live.budget.clone(), Default::default()));
+            st.put(Ctx::new(
+                Kind::Python,
+                Arc::from("snapshot"),
+                Command::new(Duration::from_secs(120), Duration::from_secs(180)),
+                live.budget.clone(),
+                Default::default(),
+            ));
             st.put(SnapshotSink(sink.clone()));
         }
-        let args = json!({ "pyodide": engine().cfg.pyodide.display().to_string(), "makeSnapshot": true }).to_string();
+        let args =
+            json!({ "pyodide": engine().cfg.pyodide.display().to_string(), "makeSnapshot": true })
+                .to_string();
         rt.block_on(async {
             load_pyodide_modules(&mut live.rt).await?;
             call(&mut live.rt, "boot", &[&args]).await
         })
         .map_err(|e| anyhow!("boot for snapshot: {e}"))?;
-        let bytes = sink.borrow_mut().take().ok_or_else(|| anyhow!("snapshot was not produced"))?;
+        let bytes = sink
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| anyhow!("snapshot was not produced"))?;
         std::fs::write(out, &bytes)?;
         Ok(())
     }

@@ -13,7 +13,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::config::{Config, DEFAULT_MEMORY_MIB, DEFAULT_WALL, MAX_MEMORY_MIB, MAX_WALL, MIN_MEMORY_MIB};
+use crate::config::{
+    Config, DEFAULT_MEMORY_MIB, DEFAULT_WALL, MAX_MEMORY_MIB, MAX_WALL, MIN_MEMORY_MIB,
+};
 use crate::isolate::{PY_READY, ShellCmd, ShellHandle, engine, spawn_shell};
 use crate::limits::Command;
 
@@ -136,7 +138,9 @@ async fn warm(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Valu
     let size = body["size"].as_u64().unwrap_or(0).min(64) as usize;
     app.want.store(size, Ordering::Relaxed);
     let a = app.clone();
-    tokio::task::spawn_blocking(move || refill_pool(&a)).await.ok();
+    tokio::task::spawn_blocking(move || refill_pool(&a))
+        .await
+        .ok();
     Json(json!({ "ok": true, "idle": app.pool.lock().unwrap().len(), "want": size }))
 }
 
@@ -146,7 +150,9 @@ fn expire(app: &App) {
     let now = Instant::now();
     let idle = engine().cfg.idle;
     let mut sessions = app.sessions.lock().unwrap();
-    sessions.retain(|_, s| s.inflight.load(Ordering::SeqCst) > 0 || now.duration_since(s.last_used) < idle);
+    sessions.retain(|_, s| {
+        s.inflight.load(Ordering::SeqCst) > 0 || now.duration_since(s.last_used) < idle
+    });
 }
 
 /// Evict the least-recently-used idle session to make room (for the `--max-sandboxes` cap). Returns false if every
@@ -171,18 +177,28 @@ fn clamp_memory(body: &Value) -> Result<usize, Response> {
         Value::Null => Ok(DEFAULT_MEMORY_MIB),
         v => match v.as_u64() {
             Some(m) if m >= MIN_MEMORY_MIB as u64 && m <= MAX_MEMORY_MIB as u64 => Ok(m as usize),
-            _ => Err(err(StatusCode::BAD_REQUEST, format!("memoryMiB must be an integer {MIN_MEMORY_MIB}–{MAX_MEMORY_MIB}"))),
+            _ => Err(err(
+                StatusCode::BAD_REQUEST,
+                format!("memoryMiB must be an integer {MIN_MEMORY_MIB}–{MAX_MEMORY_MIB}"),
+            )),
         },
     }
 }
 
 fn sandbox_id(body: &Value) -> Option<String> {
-    body["sandboxId"].as_str().filter(|s| !s.is_empty() && s.len() <= 200).map(String::from)
+    body["sandboxId"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 200)
+        .map(String::from)
 }
 
 /// The session's isolate: its own, a pooled one (default memory only), or a fresh one. Returns a 503 error response
 /// when a new sandbox would exceed `--max-sandboxes` and every live sandbox is busy (kantel-host can retry).
-fn assign(app: &App, id: &str, mem_mib: usize) -> std::result::Result<(Arc<ShellHandle>, &'static str), Response> {
+fn assign(
+    app: &App,
+    id: &str,
+    mem_mib: usize,
+) -> std::result::Result<(Arc<ShellHandle>, &'static str), Response> {
     expire(app);
     let mut sessions = app.sessions.lock().unwrap();
     if let Some(s) = sessions.get_mut(id) {
@@ -208,7 +224,14 @@ fn assign(app: &App, id: &str, mem_mib: usize) -> std::result::Result<(Arc<Shell
         (spawn_shell(Arc::from(id), mem_mib, false), "miss")
     };
     let handle = Arc::new(handle);
-    sessions.insert(id.to_string(), Session { handle: handle.clone(), last_used: Instant::now(), inflight: Arc::new(AtomicUsize::new(0)) });
+    sessions.insert(
+        id.to_string(),
+        Session {
+            handle: handle.clone(),
+            last_used: Instant::now(),
+            inflight: Arc::new(AtomicUsize::new(0)),
+        },
+    );
     Ok((handle, hit))
 }
 
@@ -217,12 +240,18 @@ fn begin(app: &App, id: &str) -> Option<Busy> {
     let sessions = app.sessions.lock().unwrap();
     let s = sessions.get(id)?;
     s.inflight.fetch_add(1, Ordering::SeqCst);
-    Some(Busy { inflight: s.inflight.clone(), sessions: app.sessions.clone(), id: id.to_string() })
+    Some(Busy {
+        inflight: s.inflight.clone(),
+        sessions: app.sessions.clone(),
+        id: id.to_string(),
+    })
 }
 
 async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response {
     let started = Instant::now();
-    let Some(id) = sandbox_id(&body) else { return err(StatusCode::BAD_REQUEST, "sandboxId required") };
+    let Some(id) = sandbox_id(&body) else {
+        return err(StatusCode::BAD_REQUEST, "sandboxId required");
+    };
     let mem_mib = match clamp_memory(&body) {
         Ok(m) => m,
         Err(r) => return r,
@@ -246,7 +275,9 @@ async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
 
 async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response {
     let started = Instant::now();
-    let Some(id) = sandbox_id(&body) else { return err(StatusCode::BAD_REQUEST, "sandboxId required") };
+    let Some(id) = sandbox_id(&body) else {
+        return err(StatusCode::BAD_REQUEST, "sandboxId required");
+    };
     let mem_mib = match clamp_memory(&body) {
         Ok(m) => m,
         Err(r) => return r,
@@ -270,7 +301,13 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
     });
     let command = Command::new(engine().cfg.cpu, wall);
     let (reply, rx) = tokio::sync::oneshot::channel();
-    let send = ShellCmd::Exec { sandbox_id: Arc::from(id.as_str()), body: request.to_string(), manifest, command, reply };
+    let send = ShellCmd::Exec {
+        sandbox_id: Arc::from(id.as_str()),
+        body: request.to_string(),
+        manifest,
+        command,
+        reply,
+    };
     if handle.tx.send(send).is_err() {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "isolate thread stopped");
     }
@@ -290,7 +327,8 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
 /// True once the pools are full and start-up work is done, so W3 can take the template snapshot (it waits for this).
 fn is_warm(app: &App) -> bool {
     let idle = app.pool.lock().unwrap().len();
-    idle >= app.want.load(Ordering::Relaxed) && PY_READY.load(Ordering::Relaxed) >= engine().cfg.python_pool
+    idle >= app.want.load(Ordering::Relaxed)
+        && PY_READY.load(Ordering::Relaxed) >= engine().cfg.python_pool
 }
 
 /// kantel-host calls this right after restoring a VM from the template snapshot. Every VM restored from one template
@@ -309,13 +347,17 @@ async fn reseed(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Va
     // node's and python's ready isolates too: otherwise each restored VM's first runs share their Math.random.
     crate::isolate::renew_ready_pools();
     let a = app.clone();
-    tokio::task::spawn_blocking(move || refill_pool(&a)).await.ok();
+    tokio::task::spawn_blocking(move || refill_pool(&a))
+        .await
+        .ok();
     Json(json!({ "ok": true, "idle": app.pool.lock().unwrap().len() }))
 }
 
 /// Not in the host protocol: forget a sandbox (its isolate thread ends when its handle drops). Used by tests and the
 /// memory benchmark.
 async fn unload(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Value> {
-    let removed = sandbox_id(&body).and_then(|id| app.sessions.lock().unwrap().remove(&id)).is_some();
+    let removed = sandbox_id(&body)
+        .and_then(|id| app.sessions.lock().unwrap().remove(&id))
+        .is_some();
     Json(json!({ "ok": removed }))
 }

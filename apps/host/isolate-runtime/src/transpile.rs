@@ -9,7 +9,14 @@ pub fn strip_types(filename: &str, code: String) -> Result<String> {
     let url = if filename.contains("://") {
         ModuleSpecifier::parse(filename)
     } else {
-        ModuleSpecifier::parse(&format!("file://{}", if filename.starts_with('/') { filename.to_string() } else { format!("/{filename}") }))
+        ModuleSpecifier::parse(&format!(
+            "file://{}",
+            if filename.starts_with('/') {
+                filename.to_string()
+            } else {
+                format!("/{filename}")
+            }
+        ))
     }
     .map_err(|e| anyhow!("bad specifier {filename}: {e}"))?;
     let module = Some(!filename.ends_with(".cts"));
@@ -30,7 +37,11 @@ mod tests {
 
     #[test]
     fn keeps_runtime_code() {
-        let out = strip_types("x.ts", "interface A { b: string }\nexport const f = (a: A): string => a.b;".into()).unwrap();
+        let out = strip_types(
+            "x.ts",
+            "interface A { b: string }\nexport const f = (a: A): string => a.b;".into(),
+        )
+        .unwrap();
         assert!(!out.contains("interface"));
         assert!(out.contains("export const f"));
     }

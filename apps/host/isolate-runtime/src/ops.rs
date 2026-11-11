@@ -22,11 +22,18 @@ fn jerr(e: impl std::fmt::Display) -> JsErrorBox {
 }
 
 fn ctx(state: &Rc<RefCell<OpState>>) -> Result<Ctx, JsErrorBox> {
-    state.borrow().try_borrow::<Ctx>().cloned().ok_or_else(|| JsErrorBox::generic("no isolate context"))
+    state
+        .borrow()
+        .try_borrow::<Ctx>()
+        .cloned()
+        .ok_or_else(|| JsErrorBox::generic("no isolate context"))
 }
 
 fn ctx_sync(state: &OpState) -> Result<Ctx, JsErrorBox> {
-    state.try_borrow::<Ctx>().cloned().ok_or_else(|| JsErrorBox::generic("no isolate context"))
+    state
+        .try_borrow::<Ctx>()
+        .cloned()
+        .ok_or_else(|| JsErrorBox::generic("no isolate context"))
 }
 
 // --- logging, randomness, digests (every kind) --------------------------------------------------------------------
@@ -65,7 +72,11 @@ fn op_kt_digest(#[string] alg: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, J
 
 #[op2]
 #[buffer]
-fn op_kt_zlib(#[string] kind: &str, #[buffer] data: &[u8], #[smi] level: u32) -> Result<Vec<u8>, JsErrorBox> {
+fn op_kt_zlib(
+    #[string] kind: &str,
+    #[buffer] data: &[u8],
+    #[smi] level: u32,
+) -> Result<Vec<u8>, JsErrorBox> {
     use std::io::{Read, Write};
 
     use flate2::Compression;
@@ -90,13 +101,22 @@ fn op_kt_zlib(#[string] kind: &str, #[buffer] data: &[u8], #[smi] level: u32) ->
             e.finish().map_err(jerr)?;
         }
         "gunzip" => {
-            flate2::read::MultiGzDecoder::new(data).take(cap).read_to_end(&mut out).map_err(jerr)?;
+            flate2::read::MultiGzDecoder::new(data)
+                .take(cap)
+                .read_to_end(&mut out)
+                .map_err(jerr)?;
         }
         "inflate" => {
-            flate2::read::ZlibDecoder::new(data).take(cap).read_to_end(&mut out).map_err(jerr)?;
+            flate2::read::ZlibDecoder::new(data)
+                .take(cap)
+                .read_to_end(&mut out)
+                .map_err(jerr)?;
         }
         "inflateraw" => {
-            flate2::read::DeflateDecoder::new(data).take(cap).read_to_end(&mut out).map_err(jerr)?;
+            flate2::read::DeflateDecoder::new(data)
+                .take(cap)
+                .read_to_end(&mut out)
+                .map_err(jerr)?;
         }
         _ => return Err(JsErrorBox::generic("zlib: unknown mode")),
     }
@@ -107,7 +127,10 @@ fn op_kt_zlib(#[string] kind: &str, #[buffer] data: &[u8], #[smi] level: u32) ->
 
 #[op2]
 #[buffer]
-async fn op_kt_blob_read(state: Rc<RefCell<OpState>>, #[string] sha: String) -> Result<Vec<u8>, JsErrorBox> {
+async fn op_kt_blob_read(
+    state: Rc<RefCell<OpState>>,
+    #[string] sha: String,
+) -> Result<Vec<u8>, JsErrorBox> {
     let c = ctx(&state)?;
     if c.kind != Kind::Shell {
         return Err(JsErrorBox::generic("not available here"));
@@ -123,12 +146,19 @@ async fn op_kt_blob_read(state: Rc<RefCell<OpState>>, #[string] sha: String) -> 
     // isolate can't hold a file larger than its own memory.
     let cap = c.budget.limit();
     let mut charge = crate::bridges::Charge::new(c.budget.clone());
-    engine().store.get(&sha, cap, Some(&mut charge)).await.map_err(jerr)
+    engine()
+        .store
+        .get(&sha, cap, Some(&mut charge))
+        .await
+        .map_err(jerr)
 }
 
 #[op2]
 #[string]
-async fn op_kt_blob_put(state: Rc<RefCell<OpState>>, #[buffer] bytes: JsBuffer) -> Result<String, JsErrorBox> {
+async fn op_kt_blob_put(
+    state: Rc<RefCell<OpState>>,
+    #[buffer] bytes: JsBuffer,
+) -> Result<String, JsErrorBox> {
     let c = ctx(&state)?;
     if c.kind != Kind::Shell {
         return Err(JsErrorBox::generic("not available here"));
@@ -161,28 +191,46 @@ impl Drop for AbortOnDrop {
 
 #[op2]
 #[buffer]
-async fn op_kt_fetch(state: Rc<RefCell<OpState>>, #[string] req: String, #[buffer] body: JsBuffer) -> Result<Vec<u8>, JsErrorBox> {
+async fn op_kt_fetch(
+    state: Rc<RefCell<OpState>>,
+    #[string] req: String,
+    #[buffer] body: JsBuffer,
+) -> Result<Vec<u8>, JsErrorBox> {
     let c = ctx(&state)?;
     let req: FetchReq = serde_json::from_str(&req).map_err(jerr)?;
     // Allow-list methods: no CONNECT, no arbitrary verbs.
     let method = req.method.to_ascii_uppercase();
-    if !matches!(method.as_str(), "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS") {
-        return Err(JsErrorBox::generic(format!("fetch: method {method} is not allowed")));
+    if !matches!(
+        method.as_str(),
+        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+    ) {
+        return Err(JsErrorBox::generic(format!(
+            "fetch: method {method} is not allowed"
+        )));
     }
     let before = c.fetches.fetch_add(1, Ordering::SeqCst);
     if before >= MAX_CONCURRENT_FETCH {
         c.fetches.fetch_sub(1, Ordering::SeqCst);
-        return Err(JsErrorBox::generic("fetch: too many concurrent requests from this sandbox"));
+        return Err(JsErrorBox::generic(
+            "fetch: too many concurrent requests from this sandbox",
+        ));
     }
     let _slot = FetchSlot(c.fetches.clone());
     let body = body.to_vec();
     let sandbox = c.sandbox_id.to_string();
     let budget = c.budget.clone();
-    let remaining = c.command.deadline.saturating_duration_since(std::time::Instant::now());
+    let remaining = c
+        .command
+        .deadline
+        .saturating_duration_since(std::time::Instant::now());
     let eng = engine();
     let handle = eng.io.spawn(async move {
         let mut charge = crate::bridges::Charge::new(budget);
-        tokio::time::timeout(remaining, egress_fetch(&engine().egress, &sandbox, req, body, Some(&mut charge))).await
+        tokio::time::timeout(
+            remaining,
+            egress_fetch(&engine().egress, &sandbox, req, body, Some(&mut charge)),
+        )
+        .await
     });
     let _abort = AbortOnDrop(handle.abort_handle());
     let out = handle.await;
@@ -227,14 +275,19 @@ fn op_kt_cancel_run(state: &mut OpState, #[smi] run_id: u32) {
 #[op2]
 #[buffer]
 fn op_kt_file(state: &mut OpState, #[string] path: &str) -> Result<Vec<u8>, JsErrorBox> {
-    let run = state.try_borrow::<RunState>().ok_or_else(|| JsErrorBox::generic("no run"))?;
+    let run = state
+        .try_borrow::<RunState>()
+        .ok_or_else(|| JsErrorBox::generic("no run"))?;
     run.file(path).map_err(jerr)
 }
 
 #[op2]
 #[buffer]
 fn op_kt_input(state: &mut OpState) -> Vec<u8> {
-    state.try_borrow::<RunState>().map(|r| r.stdin.clone()).unwrap_or_default()
+    state
+        .try_borrow::<RunState>()
+        .map(|r| r.stdin.clone())
+        .unwrap_or_default()
 }
 
 #[op2(fast)]
@@ -260,14 +313,19 @@ fn op_kt_exit(state: &mut OpState) {
 #[op2(fast)]
 fn op_kt_overlay(state: &mut OpState, #[string] path: &str, #[buffer] data: &[u8], present: bool) {
     if let Some(run) = state.try_borrow::<RunState>() {
-        run.overlay.lock().unwrap().insert(path.to_string(), if present { Some(data.to_vec()) } else { None });
+        run.overlay.lock().unwrap().insert(
+            path.to_string(),
+            if present { Some(data.to_vec()) } else { None },
+        );
     }
 }
 
 #[op2(fast)]
 fn op_kt_node_builtins(state: &mut OpState, #[string] json: &str) {
     if let Some(run) = state.try_borrow::<RunState>() {
-        if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(json) {
+        if let Ok(map) =
+            serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(json)
+        {
             *run.builtins.lock().unwrap() = map;
         }
     }
@@ -336,7 +394,8 @@ fn op_kt_wasm_release(state: &mut OpState, bytes: f64) {
 #[op2]
 #[string]
 fn op_kt_wasm_inspect(#[buffer] bytes: &[u8], boot: bool) -> String {
-    serde_json::to_string(&crate::wasm::inspect(bytes, boot)).unwrap_or_else(|_| "{\"error\":\"inspect failed\"}".into())
+    serde_json::to_string(&crate::wasm::inspect(bytes, boot))
+        .unwrap_or_else(|_| "{\"error\":\"inspect failed\"}".into())
 }
 
 /// The compiled Pyodide module another isolate in this process compiled, if any. Boot only (trusted).
@@ -405,4 +464,3 @@ pub fn manifest_shas(manifest: &Value) -> HashSet<String> {
     }
     set
 }
-

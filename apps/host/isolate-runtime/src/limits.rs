@@ -73,7 +73,10 @@ impl Term {
     pub fn message(self, what: &str, mem_mib: usize, cpu: Duration, wall: Duration) -> String {
         match self {
             Term::Memory => format!("{what}: stopped: exceeded the memory limit ({mem_mib} MiB)\n"),
-            Term::Cpu => format!("{what}: stopped: exceeded the CPU limit ({} ms)\n", cpu.as_millis()),
+            Term::Cpu => format!(
+                "{what}: stopped: exceeded the CPU limit ({} ms)\n",
+                cpu.as_millis()
+            ),
             Term::Wall => format!("{what}: stopped: timed out after {} ms\n", wall.as_millis()),
             Term::Cancel => format!("{what}: stopped\n"),
             Term::Exit => String::new(),
@@ -129,7 +132,10 @@ impl Budget {
         let mut cur = self.used.load(Ordering::SeqCst);
         loop {
             let next = cur.saturating_sub(len);
-            match self.used.compare_exchange_weak(cur, next, Ordering::SeqCst, Ordering::SeqCst) {
+            match self
+                .used
+                .compare_exchange_weak(cur, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
                 Ok(_) => break,
                 Err(c) => cur = c,
             }
@@ -190,8 +196,12 @@ unsafe extern "C" fn b_drop(b: *const Budget) {
     drop(unsafe { Arc::from_raw(b) });
 }
 #[cfg(not(feature = "v8-sandbox"))]
-static VTABLE: v8::RustAllocatorVtable<Budget> =
-    v8::RustAllocatorVtable { allocate: b_alloc, allocate_uninitialized: b_alloc_uninit, free: b_free, drop: b_drop };
+static VTABLE: v8::RustAllocatorVtable<Budget> = v8::RustAllocatorVtable {
+    allocate: b_alloc,
+    allocate_uninitialized: b_alloc_uninit,
+    free: b_free,
+    drop: b_drop,
+};
 
 // The allocator choice is behind one function so W2's V8 heap sandbox can swap it (the sandbox removes
 // new_rust_allocator and refuses Rust-heap backing stores). With `--features v8-sandbox` the ArrayBuffer bytes are
@@ -230,7 +240,10 @@ pub fn thread_cpu_clock() -> libc::clockid_t {
 }
 
 pub fn cpu_time(clock: libc::clockid_t) -> Duration {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     if unsafe { libc::clock_gettime(clock, &mut ts) } != 0 {
         return Duration::ZERO;
     }
@@ -266,7 +279,9 @@ impl Command {
         Term::from_code(self.term.load(Ordering::SeqCst))
     }
     pub fn stop(&self, t: Term) {
-        let _ = self.term.compare_exchange(0, t.code(), Ordering::SeqCst, Ordering::SeqCst);
+        let _ = self
+            .term
+            .compare_exchange(0, t.code(), Ordering::SeqCst, Ordering::SeqCst);
     }
     fn over(&self) -> Option<Term> {
         if self.cpu() > self.cpu_limit {
@@ -294,7 +309,11 @@ pub struct Watched {
 impl Watched {
     pub fn term(&self) -> Option<Term> {
         Term::from_code(self.term.load(Ordering::SeqCst)).or_else(|| {
-            if self.budget.exceeded.load(Ordering::SeqCst) { Some(Term::Memory) } else { None }
+            if self.budget.exceeded.load(Ordering::SeqCst) {
+                Some(Term::Memory)
+            } else {
+                None
+            }
         })
     }
     /// Resolves once this isolate has been stopped, so the run can abandon the in-flight call. Awaiting a terminated
@@ -308,7 +327,9 @@ impl Watched {
     }
     /// Stop this isolate now for `t` (first reason wins).
     pub fn stop(&self, t: Term) {
-        let _ = self.term.compare_exchange(0, t.code(), Ordering::SeqCst, Ordering::SeqCst);
+        let _ = self
+            .term
+            .compare_exchange(0, t.code(), Ordering::SeqCst, Ordering::SeqCst);
         self.handle.terminate_execution();
     }
     fn account(&self) {
@@ -316,7 +337,9 @@ impl Watched {
         let mut last = self.last_cpu.lock().unwrap();
         let delta = now.saturating_sub(*last);
         *last = now;
-        self.command.cpu_ns.fetch_add(delta.as_nanos() as u64, Ordering::Relaxed);
+        self.command
+            .cpu_ns
+            .fetch_add(delta.as_nanos() as u64, Ordering::Relaxed);
     }
 }
 
@@ -343,7 +366,10 @@ static STARTED: OnceLock<()> = OnceLock::new();
 /// Watch the isolate on the current thread for `command` until the returned guard is dropped.
 pub fn watch(handle: v8::IsolateHandle, command: Arc<Command>, budget: Arc<Budget>) -> Guard {
     STARTED.get_or_init(|| {
-        std::thread::Builder::new().name("kt-watchdog".into()).spawn(watchdog).expect("watchdog thread");
+        std::thread::Builder::new()
+            .name("kt-watchdog".into())
+            .spawn(watchdog)
+            .expect("watchdog thread");
     });
     let clock = thread_cpu_clock();
     let w = Arc::new(Watched {
@@ -379,8 +405,10 @@ fn watchdog() {
             // Act on any reason, including budget.exceeded (a heap breach the near-heap callback couldn't terminate
             // on because it already fired once): keep calling terminate_execution (idempotent) rather than skipping,
             // so a reused isolate whose heap guard is spent is still stopped, and CPU/wall stay enforced.
-            if let Some(t) =
-                w.term().or_else(|| w.command.term().filter(|t| *t != Term::Exit)).or_else(|| w.command.over())
+            if let Some(t) = w
+                .term()
+                .or_else(|| w.command.term().filter(|t| *t != Term::Exit))
+                .or_else(|| w.command.over())
             {
                 w.command.stop(t);
                 w.stop(t);
@@ -393,7 +421,10 @@ fn watchdog() {
 /// budget and terminates the running script; it then raises the limit so V8 can unwind. It terminates only once: GC
 /// while the terminated isolate is being torn down re-enters this callback, and calling terminate_execution then
 /// would re-arm the terminate flag mid-destroy and abort the process, so later hits only grant headroom.
-pub fn near_heap_limit(budget: &Arc<Budget>, handle: v8::IsolateHandle) -> impl FnMut(usize, usize) -> usize + 'static {
+pub fn near_heap_limit(
+    budget: &Arc<Budget>,
+    handle: v8::IsolateHandle,
+) -> impl FnMut(usize, usize) -> usize + 'static {
     let budget = budget.clone();
     let mut fired = false;
     move |current, _initial| {

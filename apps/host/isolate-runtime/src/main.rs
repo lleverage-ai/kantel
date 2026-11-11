@@ -86,9 +86,14 @@ fn init_v8() {
 
 fn setup_logging(format: LogFormat) {
     use tracing_subscriber::fmt;
-    let env = tracing_subscriber::EnvFilter::try_from_env("KANTEL_ISOLATE_LOG").unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let env = tracing_subscriber::EnvFilter::try_from_env("KANTEL_ISOLATE_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     match format {
-        LogFormat::Json => fmt().json().with_env_filter(env).with_current_span(false).init(),
+        LogFormat::Json => fmt()
+            .json()
+            .with_env_filter(env)
+            .with_current_span(false)
+            .init(),
         LogFormat::Text => fmt().with_env_filter(env).init(),
     }
 }
@@ -107,7 +112,8 @@ fn main() -> Result<()> {
         }
         Cmd::PythonSnapshot { assets, out } => {
             init_v8();
-            let assets = std::fs::canonicalize(&assets).map_err(|e| anyhow!("--assets {}: {e}", assets.display()))?;
+            let assets = std::fs::canonicalize(&assets)
+                .map_err(|e| anyhow!("--assets {}: {e}", assets.display()))?;
             let cfg = config::Config {
                 listen: String::new(),
                 store: bridges::Target::Tcp("127.0.0.1:0".into()),
@@ -125,8 +131,15 @@ fn main() -> Result<()> {
                 idle: std::time::Duration::from_secs(60),
             };
             setup_logging(LogFormat::Text);
-            let io = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-            isolate::Engine::init(cfg, io.handle().clone(), std::env::var("KANTEL_ISOLATE_DEBUG").is_ok())?;
+            let io = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()?;
+            isolate::Engine::init(
+                cfg,
+                io.handle().clone(),
+                std::env::var("KANTEL_ISOLATE_DEBUG").is_ok(),
+            )?;
             isolate::make_python_snapshot(&out)?;
             eprintln!("wrote {}", out.display());
             Ok(())
@@ -151,7 +164,12 @@ fn main() -> Result<()> {
 /// Process hardening (W2's module): no root/capabilities, non-dumpable, then a Landlock policy that allows only
 /// `--assets` (read), a private temp dir (read-write), the few system files V8/jemalloc read, and either the Unix
 /// socket directory (no TCP at all) or the store/egress/listen TCP ports.
-fn harden(cfg: &config::Config, require_landlock: bool, allow_root: bool, seccomp: &str) -> Result<()> {
+fn harden(
+    cfg: &config::Config,
+    require_landlock: bool,
+    allow_root: bool,
+    seccomp: &str,
+) -> Result<()> {
     hardening::check_privileges(allow_root)?;
     let temp = std::env::temp_dir().join(format!("kantel-isolate-{}", std::process::id()));
     std::fs::create_dir_all(&temp)?;
@@ -168,18 +186,33 @@ fn harden(cfg: &config::Config, require_landlock: bool, allow_root: bool, seccom
         transport,
     };
     let report = hardening::landlock::restrict(&policy)?;
-    tracing::info!(status = report.status, abi = report.abi, network = report.network, "landlock");
+    tracing::info!(
+        status = report.status,
+        abi = report.abi,
+        network = report.network,
+        "landlock"
+    );
     // --require-landlock fails closed when Landlock enforces nothing. An older ABI (the isolate VM's Linux 6.1 has
     // ABI 2) still enforces the file-system rules but not the TCP-port ones: that's accepted with a warning, because
     // the network is fenced elsewhere — the VM has no network device, and with Unix-socket transport (native mode)
     // the seccomp filter below allows no TCP or UDP socket at all, on any kernel.
     if report.status.starts_with("not enforced") {
         if require_landlock {
-            anyhow::bail!("--require-landlock: Landlock is {} on this kernel", report.status);
+            anyhow::bail!(
+                "--require-landlock: Landlock is {} on this kernel",
+                report.status
+            );
         }
-        tracing::warn!(status = report.status, "landlock: the runtime runs without its file-system rules");
+        tracing::warn!(
+            status = report.status,
+            "landlock: the runtime runs without its file-system rules"
+        );
     } else if report.status != "fully enforced" {
-        tracing::warn!(status = report.status, abi = report.abi, "landlock: file-system rules only; the network is fenced by seccomp and the VM");
+        tracing::warn!(
+            status = report.status,
+            abi = report.abi,
+            "landlock: file-system rules only; the network is fenced by seccomp and the VM"
+        );
     }
     // Last, still before any thread: every thread V8, tokio and the pools start inherits the filter.
     if seccomp == "off" {
@@ -200,7 +233,9 @@ fn harden(cfg: &config::Config, require_landlock: bool, allow_root: bool, seccom
 fn transport_of(cfg: &config::Config) -> hardening::landlock::Transport {
     use bridges::Target;
     let listen_unix = cfg.listen.strip_prefix("unix:");
-    if let (Some(listen), Target::Unix(store), Target::Unix(egress)) = (listen_unix, &cfg.store, &cfg.egress) {
+    if let (Some(listen), Target::Unix(store), Target::Unix(egress)) =
+        (listen_unix, &cfg.store, &cfg.egress)
+    {
         // The sockets share one 0700 directory (kantel-host's per-account dir); allow that directory.
         let dir = std::path::Path::new(listen)
             .parent()
@@ -215,8 +250,16 @@ fn transport_of(cfg: &config::Config) -> hardening::landlock::Transport {
         Target::Tcp(a) => a.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()),
         Target::Unix(_) => None,
     };
-    let listen = cfg.listen.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
-    let connect = [port(&cfg.store), port(&cfg.egress)].into_iter().flatten().collect();
+    let listen = cfg
+        .listen
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(0);
+    let connect = [port(&cfg.store), port(&cfg.egress)]
+        .into_iter()
+        .flatten()
+        .collect();
     hardening::landlock::Transport::Tcp { listen, connect }
 }
 
@@ -232,7 +275,10 @@ fn serve(cfg: config::Config) -> Result<()> {
             }
         });
     }
-    let io = tokio::runtime::Builder::new_multi_thread().worker_threads(8).enable_all().build()?;
+    let io = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()?;
     let handle = io.handle().clone();
     isolate::Engine::init(cfg.clone(), handle, debug)?;
     // Fill the node/python ready pools.

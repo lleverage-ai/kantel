@@ -9,7 +9,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::bridges::Target;
 
 #[derive(Parser, Debug)]
-#[command(name = "kantel-isolate", version, about = "Kantel's isolate runtime (deno_core)")]
+#[command(
+    name = "kantel-isolate",
+    version,
+    about = "Kantel's isolate runtime (deno_core)"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Cmd,
@@ -42,13 +46,25 @@ pub struct ServeArgs {
     #[arg(long, env = "KANTEL_ISOLATE_LISTEN", default_value = "127.0.0.1:8080")]
     pub listen: String,
     /// The host's blob store bridge (GET /blobs/<sha>, PUT /blobs): an http:// URL, host:port, or `unix:/path`.
-    #[arg(long, env = "KANTEL_ISOLATE_STORE", default_value = "http://127.0.0.1:7001")]
+    #[arg(
+        long,
+        env = "KANTEL_ISOLATE_STORE",
+        default_value = "http://127.0.0.1:7001"
+    )]
     pub store: String,
     /// The host's egress proxy bridge (proxy-style HTTP): an http:// URL, host:port, or `unix:/path`.
-    #[arg(long, env = "KANTEL_ISOLATE_EGRESS", default_value = "http://127.0.0.1:7002")]
+    #[arg(
+        long,
+        env = "KANTEL_ISOLATE_EGRESS",
+        default_value = "http://127.0.0.1:7002"
+    )]
     pub egress: String,
     /// The directory build-assets.sh made.
-    #[arg(long, env = "KANTEL_ISOLATE_ASSETS", default_value = "/opt/kantel-isolate")]
+    #[arg(
+        long,
+        env = "KANTEL_ISOLATE_ASSETS",
+        default_value = "/opt/kantel-isolate"
+    )]
     pub assets: PathBuf,
     /// Shell isolates kept pre-loaded for new sandboxes (POST /warm changes it).
     #[arg(long, env = "KANTEL_ISOLATE_POOL", default_value_t = 2)]
@@ -68,7 +84,12 @@ pub struct ServeArgs {
     /// node and python runs at once (default: twice the CPUs, 2 to 16).
     #[arg(long, env = "KANTEL_ISOLATE_MAX_RUNS")]
     pub max_runs: Option<usize>,
-    #[arg(long, env = "KANTEL_ISOLATE_LOG_FORMAT", value_enum, default_value = "json")]
+    #[arg(
+        long,
+        env = "KANTEL_ISOLATE_LOG_FORMAT",
+        value_enum,
+        default_value = "json"
+    )]
     pub log_format: LogFormat,
     /// A sandbox idle this long gives its isolate up (its next command gets a fresh one).
     #[arg(long, env = "KANTEL_ISOLATE_IDLE_MS", default_value_t = 15 * 60_000)]
@@ -116,8 +137,11 @@ pub struct Config {
 
 impl Config {
     pub fn from_args(a: &ServeArgs) -> Result<Config> {
-        let assets = std::fs::canonicalize(&a.assets).with_context(|| format!("--assets {}", a.assets.display()))?;
-        let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+        let assets = std::fs::canonicalize(&a.assets)
+            .with_context(|| format!("--assets {}", a.assets.display()))?;
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
         Ok(Config {
             listen: a.listen.clone(),
             store: Target::parse(&a.store)?,
@@ -146,7 +170,9 @@ mod tests {
         // SAFETY: tests in this module don't read the variable concurrently.
         unsafe { std::env::set_var("KANTEL_ISOLATE_MAX_SANDBOXES", "7") };
         let cli = Cli::try_parse_from(["kantel-isolate", "serve", "--assets", "/tmp"]).unwrap();
-        let Cmd::Serve(a) = cli.command else { panic!("serve") };
+        let Cmd::Serve(a) = cli.command else {
+            panic!("serve")
+        };
         assert_eq!(a.max_sandboxes, 7);
         assert_eq!(a.cpu_ms, 120_000);
         unsafe { std::env::remove_var("KANTEL_ISOLATE_MAX_SANDBOXES") };

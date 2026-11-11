@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use landlock::{
-    path_beneath_rules, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, PathFd, Ruleset,
-    RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, ABI,
+    ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, PathFd,
+    Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, path_beneath_rules,
 };
 
 /// How the runtime reaches its store and egress bridges, and serves its own API.
@@ -85,9 +85,13 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
         .create()?
         .add_rules(path_beneath_rules([&policy.assets], read))?
         .add_rules(path_beneath_rules(&policy.extra_read, read))?
-        .add_rules(path_beneath_rules(SYSTEM_READ.iter().map(Path::new).filter(|p| p.exists()), read))?;
+        .add_rules(path_beneath_rules(
+            SYSTEM_READ.iter().map(Path::new).filter(|p| p.exists()),
+            read,
+        ))?;
     // A directory gets every right below it; PathFd needs the directory to exist (the caller made it).
-    let temp = PathFd::new(&policy.temp).with_context(|| format!("landlock: temp dir {}", policy.temp.display()))?;
+    let temp = PathFd::new(&policy.temp)
+        .with_context(|| format!("landlock: temp dir {}", policy.temp.display()))?;
     ruleset = ruleset.add_rule(PathBeneath::new(temp, all))?;
     match &policy.transport {
         Transport::Tcp { listen, connect } => {
@@ -100,7 +104,8 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
         Transport::Unix { socket_dir } => {
             // No NetPort rule at all: handle_access(Bind|Connect) with none denies all TCP. The socket directory is
             // the account's own; the runtime binds its listener and the bridges' sockets live there.
-            let dir = PathFd::new(socket_dir).with_context(|| format!("landlock: socket dir {}", socket_dir.display()))?;
+            let dir = PathFd::new(socket_dir)
+                .with_context(|| format!("landlock: socket dir {}", socket_dir.display()))?;
             ruleset = ruleset.add_rule(PathBeneath::new(dir, all))?;
         }
     }
@@ -121,6 +126,13 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
 /// The kernel's Landlock ABI version (0 without Landlock).
 pub fn kernel_abi() -> i32 {
     // SAFETY: landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION) only returns the version.
-    let v = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<u8>(), 0usize, 1u32) };
+    let v = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<u8>(),
+            0usize,
+            1u32,
+        )
+    };
     if v < 0 { 0 } else { v as i32 }
 }

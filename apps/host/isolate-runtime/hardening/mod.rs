@@ -29,7 +29,7 @@
 pub mod landlock;
 pub mod seccomp;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 // capget(2)'s structures (linux/capability.h; the libc crate doesn't have them).
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
@@ -61,14 +61,18 @@ pub fn check_privileges(allow_root: bool) -> Result<()> {
                 bail!("getresuid: {}", std::io::Error::last_os_error());
             }
             if r == 0 || e == 0 || s == 0 {
-                bail!("kantel-isolate must not run as root (uids real {r}, effective {e}, saved {s}): run it as its own unprivileged user");
+                bail!(
+                    "kantel-isolate must not run as root (uids real {r}, effective {e}, saved {s}): run it as its own unprivileged user"
+                );
             }
             let (mut r, mut e, mut s) = (0, 0, 0);
             if libc::getresgid(&mut r, &mut e, &mut s) != 0 {
                 bail!("getresgid: {}", std::io::Error::last_os_error());
             }
             if r == 0 || e == 0 || s == 0 {
-                bail!("kantel-isolate must not run with group root (gids real {r}, effective {e}, saved {s})");
+                bail!(
+                    "kantel-isolate must not run with group root (gids real {r}, effective {e}, saved {s})"
+                );
             }
             // Supplementary groups: none may be root's (gid 0). Other groups are the launcher's policy; the unit
             // and native mode give it none.
@@ -82,10 +86,16 @@ pub fn check_privileges(allow_root: bool) -> Result<()> {
                 bail!("getgroups: {}", std::io::Error::last_os_error());
             }
             if groups[..n as usize].contains(&0) {
-                bail!("kantel-isolate must not be in group root (supplementary groups {:?})", &groups[..n as usize]);
+                bail!(
+                    "kantel-isolate must not be in group root (supplementary groups {:?})",
+                    &groups[..n as usize]
+                );
             }
         }
-        let mut header = CapHeader { version: LINUX_CAPABILITY_VERSION_3, pid: 0 };
+        let mut header = CapHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
         let mut data = [CapData::default(); 2];
         if libc::syscall(libc::SYS_capget, &mut header, data.as_mut_ptr()) != 0 {
             bail!("capget: {}", std::io::Error::last_os_error());
@@ -94,10 +104,18 @@ pub fn check_privileges(allow_root: bool) -> Result<()> {
         // file capabilities from adding to it).
         let any = data.iter().any(|d| d.effective != 0 || d.permitted != 0);
         if any && !allow_root {
-            bail!("kantel-isolate must run with no capabilities (CapabilityBoundingSet= in its unit, or none in native mode)");
+            bail!(
+                "kantel-isolate must run with no capabilities (CapabilityBoundingSet= in its unit, or none in native mode)"
+            );
         }
         // Ambient capabilities would come back on an exec: clear them.
-        libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        );
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             bail!("PR_SET_NO_NEW_PRIVS: {}", std::io::Error::last_os_error());
         }
