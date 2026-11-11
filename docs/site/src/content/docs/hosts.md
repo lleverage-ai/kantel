@@ -248,7 +248,7 @@ A machine with no usable `/dev/kvm` can still run isolates, with `kantel-isolate
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_… --tiers isolate --isolate-runtime native --images …
 ```
 
-Every isolate of an account then runs in one process on the host, with no VM around it, so give such a host only code you trust. The install fetches `kantel-isolate-amd64` (or `-arm64`) and `isolate-assets-amd64.tar.gz` from the images, which image releases carry from the first one built with `kantel-isolate`; older releases have neither. The binary needs glibc 2.36 or later.
+Every isolate of an account then runs in one process on the host, with no VM around it, so give such a host only code you trust. `kantel-host` keeps accounts' runtimes apart as far as it can without one: each runs as a uid of its own (from 1900000000), in a cgroup of its own (`/sys/fs/cgroup/kantel-isolate`, with the account's memory as `memory.max` and a `pids.max`), and reaches the host only through Unix sockets in its own directory under `/run/kantel-isolate`. A host installed with workerd and updated by its binary alone keeps running workerd, with a warning in its log, until the install command is run again. The install fetches `kantel-isolate-amd64` (or `-arm64`) and `isolate-assets-amd64.tar.gz` from the images, which image releases carry from the first one built with `kantel-isolate`; older releases have neither. The binary needs glibc 2.36 or later.
 
 ## Check on a host
 

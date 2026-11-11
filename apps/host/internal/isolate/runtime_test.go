@@ -22,10 +22,55 @@ import (
 // TestMain makes the test binary a stand-in kantel-isolate when it is run as one (`<binary> serve --listen ...`), so
 // the native runtime's start is tested with its real command line.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 2 && os.Args[1] == "serve" && os.Args[2] == "config.capnp" {
+		os.Exit(fakeWorkerd())
+	}
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		os.Exit(fakeRuntime(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println(`{"version":"test","v8":"test","v8Sandbox":false,"unixSockets":true}`)
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
+}
+
+// dialAddress is a --listen, --store or --egress value as kantel-isolate takes it: unix:<path>, a URL or host:port.
+func dialAddress(at string) (network, address string) {
+	if path, ok := strings.CutPrefix(at, "unix:"); ok {
+		return "unix", path
+	}
+	return "tcp", strings.TrimPrefix(at, "http://")
+}
+
+// fakeWorkerd answers as workerd running the isolate worker did, from the config.capnp the host wrote in its
+// directory: on the http socket's address, with a /healthz that names no runtime.
+func fakeWorkerd() int {
+	raw, err := os.ReadFile("config.capnp")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	var addr string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, `name = "http"`) {
+			_, rest, _ := strings.Cut(line, `address = "`)
+			addr, _, _ = strings.Cut(rest, `"`)
+		}
+	}
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	_ = http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			_, _ = io.WriteString(w, `{"ok":true,"want":0,"idle":0,"sessions":0}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "exitCode": 0, "stdout": "workerd\n", "manifest": map[string]any{}})
+	}))
+	return 0
 }
 
 // fakeRuntime answers the runtime's HTTP API as kantel-isolate does, enough for the host's calls: /healthz with what
@@ -40,13 +85,18 @@ func fakeRuntime(args []string) int {
 		return 2
 	}
 	for _, u := range []string{*store, *egress} {
-		if !strings.HasPrefix(u, "http://127.0.0.1:") {
-			fmt.Fprintln(os.Stderr, "not a loopback URL:", u)
+		if !strings.HasPrefix(u, "http://127.0.0.1:") && !strings.HasPrefix(u, "unix:/") {
+			fmt.Fprintln(os.Stderr, "not a loopback URL or a socket:", u)
 			return 2
 		}
 	}
+	storeNet, storeAddr := dialAddress(*store)
+	storeClient := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, storeNet, storeAddr)
+	}}}
 	if st, err := os.Stat(*assets); err != nil || !st.IsDir() {
-		fmt.Fprintln(os.Stderr, "no assets directory:", *assets)
+		fmt.Fprintln(os.Stderr, "no assets directory:", *assets, err, os.Getuid())
 		return 2
 	}
 	var want, sessions atomic.Int64
@@ -78,9 +128,28 @@ func fakeRuntime(args []string) int {
 			Manifest json.RawMessage `json:"manifest"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		_ = json.NewEncoder(w).Encode(map[string]any{"exitCode": 0, "stdout": "ran " + body.Command + "\n", "stderr": "", "manifest": body.Manifest, "changed": []string{}})
+		// Through the store bridge, as a command reading a file does: a blob it hasn't is a 404 from the host.
+		store := "unreachable"
+		if res, err := storeClient.Get("http://store/blobs/" + strings.Repeat("0", 64)); err == nil {
+			store = res.Status
+			res.Body.Close()
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"exitCode": 0, "stdout": "ran " + body.Command + "\n", "stderr": "store " + store, "manifest": body.Manifest, "changed": []string{}})
 	})
-	l, err := net.Listen("tcp", *listen)
+	// What another account's runtime could reach, for the isolation test: it dials a socket and says how that went.
+	mux.HandleFunc("POST /probe", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Path string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		result := "connected"
+		if c, err := net.DialTimeout("unix", body.Path, time.Second); err != nil {
+			result = err.Error()
+		} else {
+			c.Close()
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": result, "uid": os.Getuid()})
+	})
+	network, address := dialAddress(*listen)
+	l, err := net.Listen(network, address)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

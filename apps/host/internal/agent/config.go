@@ -37,8 +37,9 @@ type Config struct {
 	// (default Root/bin/kantel-isolate and Root/isolate-assets); the VM runtime has both in its image.
 	IsolateBinary string `json:"isolateBinary,omitempty"`
 	IsolateAssets string `json:"isolateAssets,omitempty"`
-	// Workerd and IsolateBundle are no longer used: the native isolate runtime was workerd and its worker's
-	// directory, before kantel-isolate (IsolateBinary, IsolateAssets). Kept so old configs load.
+	// Workerd and IsolateBundle are the native isolate runtime from before kantel-isolate: workerd and its worker's
+	// directory. A native host runs them only while it has no IsolateBinary and IsolateAssets (one updated to this
+	// version by the binary alone), until the install is run again.
 	Workerd       string `json:"workerd,omitempty"`
 	IsolateBundle string `json:"isolateBundle,omitempty"`
 
@@ -225,6 +226,26 @@ func (c *Config) Defaults() {
 	set(&c.Cosign, filepath.Join(c.Root, "bin", "cosign"))
 	set(&c.ImagesDir, imageDir)
 	set(&c.ControlSocket, DefaultControlSocket)
+}
+
+// legacyNativeRuntime is the workerd binary and isolate worker directory a native host installed before
+// kantel-isolate has (Workerd and IsolateBundle as its config saved them, else their old defaults), or empty when
+// it has none.
+func (c *Config) legacyNativeRuntime() (workerd, bundle string) {
+	workerd, bundle = c.Workerd, c.IsolateBundle
+	if workerd == "" {
+		workerd = filepath.Join(c.Root, "bin", "workerd")
+	}
+	if bundle == "" {
+		bundle = filepath.Join(c.Root, "isolate")
+	}
+	if st, err := os.Stat(workerd); err != nil || st.IsDir() {
+		return "", ""
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "config.capnp")); err != nil {
+		return "", ""
+	}
+	return workerd, bundle
 }
 
 func (c *Config) autoUpdate() bool { return c.AutoUpdate == nil || *c.AutoUpdate }

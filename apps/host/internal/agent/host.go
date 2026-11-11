@@ -212,8 +212,16 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		log.Warn("microVM tier off: needs /dev/kvm, firecracker, a kernel and the sandbox image", "kvm", kvm, "firecracker", cfg.Firecracker, "kernel", cfg.Kernel, "image", cfg.SandboxImage)
 	}
 	isolateReady := false
+	binary, assets, legacyWorkerd, legacyBundle := cfg.IsolateBinary, cfg.IsolateAssets, "", ""
 	if cfg.IsolateRuntime == "native" {
-		isolateReady = fileExists(cfg.IsolateBinary) && fileExists(cfg.IsolateAssets)
+		isolateReady = fileExists(binary) && fileExists(assets)
+		if workerd, bundle := cfg.legacyNativeRuntime(); !isolateReady && workerd != "" {
+			// A native host installed with workerd and updated to this binary alone (an update fetches kantel-host only):
+			// it keeps running workerd, rather than losing its isolates, until kantel-isolate is installed.
+			log.Warn("isolate tier on workerd, from before kantel-isolate: run the install command again to install kantel-isolate and its assets",
+				"workerd", workerd, "isolateBinary", binary, "isolateAssets", assets)
+			isolateReady, binary, assets, legacyWorkerd, legacyBundle = true, "", "", workerd, bundle
+		}
 	} else {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
@@ -225,7 +233,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		}
 		iso, err := isolate.New(isolate.Config{
 			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
-			Rootfs: isoRootfs, Binary: cfg.IsolateBinary, Assets: cfg.IsolateAssets, Egress: h.proxy,
+			Rootfs: isoRootfs, Binary: binary, Assets: assets, LegacyWorkerd: legacyWorkerd, LegacyBundle: legacyBundle, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {

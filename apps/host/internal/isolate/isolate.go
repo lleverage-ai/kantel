@@ -71,6 +71,21 @@ type Config struct {
 	// Pyodide: what apps/host/isolate-runtime/build-assets.sh makes).
 	Binary string
 	Assets string
+	// LegacyWorkerd and LegacyBundle, with no Binary, are the native runtime from before kantel-isolate: workerd and
+	// its isolate worker's directory (config.capnp and dist/), on a host updated by its binary alone.
+	LegacyWorkerd string
+	LegacyBundle  string
+	// RunDir holds each native runtime's directory (its sockets and temporary files), traversable but not listable
+	// (0711), so a runtime of its own uid reaches only its own (default /run/kantel-isolate when the host runs as root,
+	// else Root/runtimes).
+	RunDir string
+	// UIDBase is the first of the uids native runtimes run as, one each, when the host runs as root (default
+	// DefaultUIDBase); UIDs is how many (default 65536).
+	UIDBase uint32
+	UIDs    uint32
+	// CgroupRoot is the cgroup v2 directory native runtimes get a cgroup each under, with memory.max (MemoryMiB) and
+	// pids.max (NativePids) (default /sys/fs/cgroup/kantel-isolate, as root).
+	CgroupRoot string
 	// Preload is how many isolates each account's VM keeps loaded for its next sandboxes (default 4).
 	Preload int
 	// IdleVM is how long an account's VM lives with no running sandbox (default 10 minutes).
@@ -171,6 +186,15 @@ type Manager struct {
 	prepareOnce sync.Once
 	// noReseed logs, once, a runtime without /reseed.
 	noReseed sync.Once
+	// The native runtime's (native.go): the uids live runtimes run as, whether kantel-isolate takes unix: addresses,
+	// and what is logged or done once.
+	uidMu        sync.Mutex
+	uids         map[uint32]bool
+	unixOnce     sync.Once
+	unixOK       bool
+	noUnix       sync.Once
+	noCgroup     sync.Once
+	readableOnce sync.Once
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -204,6 +228,11 @@ func New(cfg Config) (*Manager, error) {
 	entries, _ := os.ReadDir(filepath.Join(root, "runtimes"))
 	for _, e := range entries {
 		_ = os.RemoveAll(filepath.Join(root, "runtimes", e.Name()))
+	}
+	if cfg.Runtime == "native" {
+		if err := prepareNative(&cfg); err != nil {
+			return nil, err
+		}
 	}
 	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, runtimes: map[string]*runtime{}, stopReap: make(chan struct{}), prepared: make(chan struct{})}
 	m.loadRuntimeInfo()
@@ -362,6 +391,8 @@ type runtime struct {
 	proc    *os.Process
 	done    <-chan struct{}
 	lns     []net.Listener
+	// cleanup undoes what a native start set up beyond dir: its cgroup and its uid (native.go).
+	cleanup []func()
 	// lastUsed is when the account last had a running sandbox or a call (unix ms).
 	lastUsed atomic.Int64
 	mu       sync.Mutex
@@ -389,6 +420,9 @@ func (r *runtime) close() {
 		l.Close()
 	}
 	_ = os.RemoveAll(r.dir)
+	for i := len(r.cleanup) - 1; i >= 0; i-- {
+		r.cleanup[i]()
+	}
 }
 
 func (r *runtime) alive() bool {
@@ -640,7 +674,11 @@ func (m *Manager) listen(r *runtime, network, address string) (net.Listener, err
 
 // start makes a runtime with no account yet.
 func (m *Manager) start(ctx context.Context) (*runtime, error) {
-	dir, err := os.MkdirTemp(filepath.Join(m.cfg.Root, "runtimes"), "rt-")
+	base := filepath.Join(m.cfg.Root, "runtimes")
+	if m.cfg.Runtime == "native" {
+		base = m.cfg.RunDir
+	}
+	dir, err := os.MkdirTemp(base, "rt-")
 	if err != nil {
 		return nil, err
 	}
@@ -657,79 +695,6 @@ func (m *Manager) start(ctx context.Context) (*runtime, error) {
 		return nil, startErr
 	}
 	return r, nil
-}
-
-// startNative starts kantel-isolate on the host itself, with the store and egress bridges on loopback ports of its own.
-func (m *Manager) startNative(ctx context.Context, r *runtime) error {
-	store, err := m.listen(r, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	egressL, err := m.listen(r, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	// A free port for the runtime to listen on: taken and given back, as the runtime binds it itself.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	addr := l.Addr().String()
-	l.Close()
-	go m.serveStore(r, store)
-	go m.serveEgress(r, egressL)
-	logFile, err := os.Create(filepath.Join(r.dir, "kantel-isolate.log"))
-	if err != nil {
-		return err
-	}
-	tmp := filepath.Join(r.dir, "tmp")
-	if err := os.Mkdir(tmp, 0o700); err != nil {
-		logFile.Close()
-		return err
-	}
-	argv := nativeArgs(m.cfg.Binary, addr, "http://"+store.Addr().String(), "http://"+egressL.Addr().String(), m.cfg.Assets)
-	// Its own environment, not the host's (no KANTEL_ISOLATE_* setting the host's process happens to have).
-	env := []string{"PATH=/usr/bin:/bin", "TMPDIR=" + tmp, "HOME=" + r.dir}
-	proc, err := os.StartProcess(m.cfg.Binary, argv, &os.ProcAttr{Dir: r.dir, Env: env, Files: []*os.File{nil, logFile, logFile}})
-	logFile.Close()
-	if err != nil {
-		return err
-	}
-	r.proc = proc
-	done := make(chan struct{})
-	go func() { _, _ = proc.Wait(); close(done) }()
-	r.done = done
-	r.client = &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "tcp", addr)
-	}}}
-	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if _, err := m.ready(readyCtx, r); err != nil {
-		if tail := logTail(filepath.Join(r.dir, "kantel-isolate.log")); tail != "" {
-			return fmt.Errorf("%w: %s", err, tail)
-		}
-		return err
-	}
-	return nil
-}
-
-// nativeArgs is kantel-isolate's command line on the host (the contract in apps/host/isolate-runtime: serve, where to
-// listen, the host's two bridges and its assets).
-func nativeArgs(binary, listen, store, egress, assets string) []string {
-	return []string{binary, "serve", "--listen", listen, "--store", store, "--egress", egress, "--assets", assets}
-}
-
-// logTail is the end of a runtime's log, for the error when it never came up.
-func logTail(p string) string {
-	raw, err := os.ReadFile(p)
-	if err != nil {
-		return ""
-	}
-	if len(raw) > 2000 {
-		raw = raw[len(raw)-2000:]
-	}
-	return strings.TrimSpace(string(raw))
 }
 
 const bootArgs = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/usr/sbin/kantel-init quiet loglevel=3 systemd.show_status=false"
@@ -1782,7 +1747,9 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 }
 
 func (m *Manager) Close() {
-	m.closed.Store(true)
+	if !m.closed.CompareAndSwap(false, true) {
+		return
+	}
 	close(m.stopReap)
 	m.mu.Lock()
 	rts := m.runtimes
