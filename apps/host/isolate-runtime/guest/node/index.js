@@ -542,16 +542,38 @@ export function createNode(ops) {
 
 	// ---- CommonJS ----
 	const moduleCache = new Map();
-	const compileCjs = (source, filename) =>
-		// The isolate runs only this run's code, so compiling it from a string is no more than running it.
-		new Function(
-			"exports",
-			"require",
-			"module",
-			"__filename",
-			"__dirname",
-			`${source.startsWith("#!") ? `//${source}` : source}\n//# sourceURL=${filename}`,
-		);
+	const compileCjs = (source, filename) => {
+		const body = source.startsWith("#!") ? `//${source}` : source;
+		try {
+			// The isolate runs only this run's code, so compiling it from a string is no more than running it.
+			return new Function(
+				"exports",
+				"require",
+				"module",
+				"__filename",
+				"__dirname",
+				`${body}\n//# sourceURL=${filename}`,
+			);
+		} catch (error) {
+			if (error instanceof SyntaxError) locateSyntaxError(error, filename, body);
+			throw error;
+		}
+	};
+	/** Gives a syntax error from compileCjs Node's form: where it is, the line, a caret under it, then the error. */
+	function locateSyntaxError(error, filename, body) {
+		let at;
+		try {
+			const json = ops.op_kt_syntax_error(filename, body);
+			at = json ? JSON.parse(json) : undefined;
+		} catch {}
+		if (!at?.line) return;
+		const caret = `${" ".repeat(at.start)}${"^".repeat(Math.max(1, at.end - at.start))}`;
+		Object.defineProperty(error, "stack", {
+			value: `${filename}:${at.line}\n${at.source}\n${caret}\n\n${error.name}: ${error.message}`,
+			configurable: true,
+			writable: true,
+		});
+	}
 	const isTs = (f) => /\.(c|m)?tsx?$/.test(f);
 	const sourceOf = (filename) => {
 		const text = fs.readFileSync(filename, "utf8");
@@ -662,10 +684,25 @@ export function createNode(ops) {
 	Object.defineProperty(g, Symbol.for("kantel.node.builtin"), { value: (name) => builtins[name] });
 	Object.defineProperty(g, Symbol.for("kantel.node.require"), { value: (file) => loadCjs(file) });
 
+	// The runtime's own frames (the guest bundle, the host's calls into it, the compile wrapper) mean nothing to the
+	// script's author, so an uncaught error's stack shows only the script's.
+	const internalFrame =
+		/^\s+at (?:.*\(kt:(?:guest|call)[:)]|kt:(?:guest|call):|new Function \(<anonymous>\)|Function \(<anonymous>\))/;
+	// A frame in code compiled by compileCjs reads "(file, <anonymous>:line:col)", with the line counted from the top of
+	// new Function's own source, which puts two lines of its wrapper before the body: give it as "(file:line:col)".
+	const compiledFrame = /([(\s])([^(\s][^,()]*), <anonymous>:(\d+):(\d+)/g;
+	const ownFrames = (stack) =>
+		String(stack)
+			.split("\n")
+			.filter((line) => !internalFrame.test(line))
+			.map((line) =>
+				line.replace(compiledFrame, (_, lead, file, l, col) => `${lead}${file}:${Math.max(1, l - 2)}:${col}`),
+			)
+			.join("\n");
 	function describe(error) {
 		if (error instanceof Error) {
 			const extra = Object.keys(error).filter((k) => k !== "stack" && k !== "message");
-			return extra.length ? inspect(error) : error.stack || `${error.name}: ${error.message}`;
+			return ownFrames(extra.length ? inspect(error) : error.stack || `${error.name}: ${error.message}`);
 		}
 		return `Uncaught ${inspect(error)}`;
 	}
@@ -717,7 +754,12 @@ export function createNode(ops) {
 			const a = args[i];
 			if (a === "-e" || a === "--eval" || a === "-p" || a === "--print") {
 				print = a === "-p" || a === "--print";
-				code = args[++i] ?? "";
+				if (i + 1 >= args.length) {
+					state.write("stderr", Buffer.from(`node: ${a} requires an argument\n`));
+					state.exitCode = 9;
+					return {};
+				}
+				code = args[++i];
 				rest = args.slice(i + 1);
 				break;
 			}

@@ -242,8 +242,16 @@ export function createPython(ops, lockdown = () => {}) {
 		const args = req.args;
 		for (let i = 0; i < args.length; i++) {
 			const a = args[i];
+			if ((a === "-c" || a === "-m") && i + 1 >= args.length) {
+				out.stderr.push(
+					core.encode(
+						`Argument expected for the ${a} option\nusage: python [option] ... [-c cmd | -m mod | file | -] [arg] ...\nTry \`python -h' for more information.\n`,
+					),
+				);
+				return finish(2, before);
+			}
 			if (a === "-c") {
-				code = args[++i] ?? "";
+				code = args[++i];
 				rest = args.slice(i + 1);
 				break;
 			}

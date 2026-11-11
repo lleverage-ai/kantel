@@ -42,8 +42,8 @@ between the workstreams so they can run in parallel. Change it only by telling t
 - `node` (`-e`, `-p`, a script, `-` / stdin, `-v`): agent JavaScript (and `.ts` with types stripped) in a fresh
   isolate per run with its own limits; console, process (argv, env, exit, cwd, stdout/stderr), a `node:fs` over the
   sandbox's files (writes go into the manifest), path/util/os/events/buffer/crypto, relative imports (ESM and CJS),
-  fetch and timers through the egress. No npm packages, no `eval`/`new Function` unless the runtime can allow them
-  safely, no child_process.
+  fetch and timers through the egress. No npm packages and no child_process. `eval` and `new Function` work: each run is a
+  fresh, single-use isolate, so building code from strings runs nothing but the run's own code.
 - `python` / `python3` (`-c`, a script, `-` / stdin, `-V`): Pyodide (pinned version) restored from a memory
   snapshot, in a fresh isolate per run with its own limits; print capture, `sys.argv`, exit codes, the sandbox's files
   under `/workspace`, network through the egress (pyfetch / `from js import fetch`); the packages that ship with the

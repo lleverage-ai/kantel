@@ -67,7 +67,7 @@ Each run gets a fresh V8 isolate of its own, started from a snapshot, so a scrip
 
 - **Memory:** the isolate's memory, 256 MB by default and from 128 to 512 MB on a create (`resources.memoryMb`). The JavaScript heap and the buffers and WebAssembly memory are each held to it.
 - **CPU:** a command's CPU time, its `node` and `python` runs included, is limited, and a run that uses too much is stopped. A command stopped for CPU, memory or time answers exit code 152 (CPU or time) or 137 (memory), and its record has `terminated` saying which.
-- **What's left out:** npm and pip packages (only Pyodide's own, such as numpy), `child_process` and subprocesses, servers and listening sockets, native add-ons, worker threads, and building code from strings (`eval`, `new Function`). For any of these, [upgrade](#upgrade-an-isolate-to-a-microvm) to a microVM.
+- **What's left out:** npm and pip packages (only Pyodide's own, such as numpy), `child_process` and subprocesses, servers and listening sockets, native add-ons, and worker threads. For any of these, [upgrade](#upgrade-an-isolate-to-a-microvm) to a microVM.
 
 Every request a script makes goes through the [egress proxy](/sandboxes/egress-proxy/), as `curl`'s does, so grants and protected variables apply to it and `kantel egress <sandbox>` shows it.
 

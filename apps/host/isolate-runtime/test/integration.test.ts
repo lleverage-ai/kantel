@@ -146,6 +146,35 @@ d("node", () => {
 		expect(r.exitCode).toBe(1);
 		expect(r.stderr).toContain("microVM");
 	});
+	it("-e or -p with no script fails as node does", async () => {
+		for (const flag of ["-e", "-p"]) {
+			const r = await c.exec("nd", `node ${flag}`);
+			expect(r.exitCode).toBe(9);
+			expect(r.stderr).toBe(`node: ${flag} requires an argument\n`);
+		}
+		// An empty script is a script.
+		expect((await c.exec("nd", "node -e ''")).exitCode).toBe(0);
+	});
+	it("a syntax error names the file and line, with a caret, and no runtime frames", async () => {
+		const r = await c.exec("nd", `printf 'const a = 1;\nconsole.log("Hello, world!);\n' > bad.js && node bad.js`);
+		expect(r.exitCode).toBe(1);
+		const lines = r.stderr.split("\n");
+		expect(lines[0]).toBe("/workspace/bad.js:2");
+		expect(lines[1]).toBe('console.log("Hello, world!);');
+		expect(lines[2]).toMatch(/^ {12}\^+$/);
+		expect(r.stderr).toContain("SyntaxError: Invalid or unexpected token");
+		expect(r.stderr).not.toMatch(/kt:(guest|call)|Function \(<anonymous>\)/);
+	});
+	it("an uncaught error shows the script's frames and none of the runtime's", async () => {
+		const r = await c.exec(
+			"nd",
+			`printf 'function boom() { throw new Error("nope"); }\nboom();\n' > boom.js && node boom.js`,
+		);
+		expect(r.exitCode).toBe(1);
+		expect(r.stderr).toContain("Error: nope");
+		expect(r.stderr).toContain("/workspace/boom.js:1");
+		expect(r.stderr).not.toMatch(/kt:(guest|call)|Function \(<anonymous>\)/);
+	});
 });
 
 d("python", () => {
@@ -156,6 +185,14 @@ d("python", () => {
 		expect((await c.exec("py", "python -c 'print(sum(range(5)))'")).stdout).toBe("10\n");
 		expect((await c.exec("py", "python -V")).stdout).toMatch(/^Python 3\./);
 		expect((await c.exec("py", "python -c 'import sys; sys.exit(3)'")).exitCode).toBe(3);
+	});
+	it("-c or -m with no argument fails as python does", async () => {
+		for (const flag of ["-c", "-m"]) {
+			const r = await c.exec("py", `python ${flag}`);
+			expect(r.exitCode).toBe(2);
+			expect(r.stderr).toContain(`Argument expected for the ${flag} option`);
+		}
+		expect((await c.exec("py", "python -c ''")).exitCode).toBe(0);
 	});
 	it("reads stdin and the sandbox's files, writes back", async () => {
 		expect((await c.exec("py", "echo 21 | python -c 'import sys; print(int(sys.stdin.read())*2)'")).stdout).toBe(

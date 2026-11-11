@@ -337,6 +337,63 @@ fn op_kt_transpile(#[string] filename: &str, #[string] text: String) -> Result<S
     crate::transpile::strip_types(filename, text).map_err(jerr)
 }
 
+/// Where a script that failed to compile has its syntax error, for printing it as Node does. The guest compiles
+/// CommonJS with `new Function`, which gives a SyntaxError no location, so on that failure it asks for this: the same
+/// source compiled as a script with the file as its origin (wrapped as Node wraps a module, on the first line so the
+/// line numbers hold). Answers JSON {line, start, end, source} (columns within the line), or "" if it compiles.
+#[op2]
+#[string]
+fn op_kt_syntax_error<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    #[string] filename: String,
+    #[string] source: String,
+) -> String {
+    const PREFIX: &str = "(function (exports, require, module, __filename, __dirname) {";
+    let wrapped = format!("{PREFIX}{source}\n}})");
+    let (Some(code), Some(name)) = (
+        v8::String::new(scope, &wrapped),
+        v8::String::new(scope, &filename),
+    ) else {
+        return String::new();
+    };
+    let origin = v8::ScriptOrigin::new(
+        scope,
+        name.into(),
+        0,
+        0,
+        false,
+        0,
+        None,
+        false,
+        false,
+        false,
+        None,
+    );
+    v8::tc_scope!(let tc, scope);
+    if v8::Script::compile(tc, code, Some(&origin)).is_some() {
+        return String::new();
+    }
+    let Some(message) = tc.message() else {
+        return String::new();
+    };
+    let line = message.get_line_number(tc).unwrap_or(0);
+    let (mut start, mut end) = (message.get_start_column(), message.get_end_column());
+    let mut text = message
+        .get_source_line(tc)
+        .map(|s| s.to_rust_string_lossy(tc))
+        .unwrap_or_default();
+    if line == 1 {
+        // The wrapper's prefix is on the first line: take it off the source line and the columns.
+        text = text
+            .strip_prefix(PREFIX)
+            .map(str::to_string)
+            .unwrap_or(text);
+        start = start.saturating_sub(PREFIX.len());
+        end = end.saturating_sub(PREFIX.len());
+    }
+    serde_json::json!({ "line": line, "start": start, "end": end, "source": text }).to_string()
+}
+
 // --- python: read a Pyodide asset, and its memory snapshot (its own copy, never a shared buffer) ------------------
 
 #[op2]
@@ -447,6 +504,7 @@ deno_core::extension!(
         op_kt_overlay,
         op_kt_node_builtins,
         op_kt_transpile,
+        op_kt_syntax_error,
         op_kt_read_asset,
         op_kt_python_snapshot,
         op_kt_write_snapshot,
