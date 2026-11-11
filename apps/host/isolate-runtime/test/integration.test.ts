@@ -528,6 +528,26 @@ d("PR #837 review fixes", () => {
 		]);
 	});
 
+	it("JSON imports: a manifest file, a file the run wrote, and malformed JSON refused", async () => {
+		const manifest = {
+			"d.json": await c.fileEntry('{"a": [1, 2], "b": "two"}'),
+			"bad.json": await c.fileEntry("{nope"),
+			"m.mjs": await c.fileEntry(
+				`import d from "./d.json" with { type: "json" };
+import { writeFileSync } from "node:fs";
+writeFileSync("w.json", JSON.stringify({ written: true }));
+const w = await import("./w.json", { with: { type: "json" } });
+console.log(d.a[1], d.b, w.default.written);`,
+			),
+			"bad.mjs": await c.fileEntry('import b from "./bad.json" with { type: "json" }; console.log(b);'),
+		};
+		const ok = await c.exec("pr", "node m.mjs", manifest);
+		expect(ok.stderr).toBe("");
+		expect(ok.stdout).toBe("2 two true\n");
+		const bad = await c.exec("pr", "node bad.mjs", manifest);
+		expect(bad.exitCode).not.toBe(0);
+	});
+
 });
 
 // memoryMiB bounds the V8 heap, ArrayBuffers and wasm memory together: holding ~60% of it in one and then taking
