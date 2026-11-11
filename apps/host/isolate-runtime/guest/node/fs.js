@@ -1,7 +1,6 @@
 // node:fs over the sandbox's files, in memory for the run. A file's body is read from the host (op_kt_file) only when
 // the script reads it; what the script writes, makes and removes under /workspace goes back into the manifest when
 // the run ends. Anything outside /workspace (such as /tmp) lasts only for the run.
-import { budgetedCopy } from "../common/budget.js";
 import { Buffer } from "../common/buffer.js";
 
 export const ROOT = "/workspace";
@@ -77,7 +76,7 @@ export function createFs(ops, state, path) {
 	};
 	function contents(_p, e) {
 		if (e.data === undefined) {
-			e.data = budgetedCopy(ops.op_kt_file(e.ref));
+			e.data = ops.op_kt_file(e.ref);
 			state.read += e.data.byteLength;
 		}
 		return e.data;

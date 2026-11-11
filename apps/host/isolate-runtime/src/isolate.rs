@@ -339,6 +339,10 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
         module_loader: module_loader(kind),
         ..Default::default()
     });
+    // Before any guest code: the ops charge the bytes they return to this budget (hostbuf.rs).
+    rt.op_state()
+        .borrow_mut()
+        .put(crate::hostbuf::IsolateBudget(budget.clone()));
     let handle = rt.v8_isolate().thread_safe_handle();
     budget.set_handle(handle.clone());
     rt.add_near_heap_limit_callback(near_heap_limit(&budget, handle.clone()));

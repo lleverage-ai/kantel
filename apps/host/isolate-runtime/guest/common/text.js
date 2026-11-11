@@ -1,18 +1,23 @@
-// TextEncoder and TextDecoder on deno_core's encode/decode. Loaded first: whatwg-url makes one when its module loads.
-import { budgetedCopy } from "./budget.js";
-
+// TextEncoder and TextDecoder on the host's UTF-8 encoder and deno_core's decode. Loaded first: whatwg-url makes one
+// when its module loads.
 const core = globalThis.Deno.core;
+const ops = core.ops;
+
+/**
+ * The UTF-8 bytes of a string, as a Uint8Array the host has charged to the isolate's memory before the guest can see
+ * it (op_kt_encode; deno_core's core.encode isn't charged in a stock build). Every guest encoding goes through here.
+ */
+export const utf8 = (s) => ops.op_kt_encode(s);
 
 class TextEncoder {
 	get encoding() {
 		return "utf-8";
 	}
 	encode(input = "") {
-		// Budget the bytes (finding H4): a retained TextEncoder().encode(...) must count against the isolate.
-		return budgetedCopy(core.encode(String(input)));
+		return utf8(String(input));
 	}
 	encodeInto(input, dest) {
-		const bytes = core.encode(String(input));
+		const bytes = utf8(String(input));
 		let n = Math.min(bytes.length, dest.length);
 		// Don't cut a UTF-8 sequence in half.
 		while (n > 0 && n < bytes.length && (bytes[n] & 0xc0) === 0x80) n--;
@@ -68,7 +73,7 @@ class TextDecoder {
 		const text = core.decode(bytes);
 		if (this.#fatal && text.includes("�")) {
 			// Valid UTF-8 encodes back to the same bytes; a replaced sequence doesn't.
-			const again = core.encode(text);
+			const again = utf8(text);
 			if (again.length !== bytes.length || again.some((b, i) => b !== bytes[i]))
 				throw new TypeError("The encoded data was not valid for encoding utf-8");
 		}

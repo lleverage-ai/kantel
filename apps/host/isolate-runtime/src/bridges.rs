@@ -55,6 +55,15 @@ impl Charge {
     }
 }
 
+impl Charge {
+    /// End the in-flight part of the charge and hand over the rest: the bytes taken from the isolate's budget, which
+    /// the caller now owns (and must give back).
+    pub fn keep(mut self) -> usize {
+        PROCESS_INFLIGHT.fetch_sub(self.taken, Ordering::SeqCst);
+        std::mem::take(&mut self.taken)
+    }
+}
+
 impl Drop for Charge {
     fn drop(&mut self) {
         PROCESS_INFLIGHT.fetch_sub(self.taken, Ordering::SeqCst);

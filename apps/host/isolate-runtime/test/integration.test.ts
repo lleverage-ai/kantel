@@ -644,6 +644,78 @@ console.log(made === undefined, new ArrayBuffer(4).byteLength);`,
 		expect(r.stdout).toBe("true 4\n");
 	});
 
+	// Host-returned buffers in a stock build used to be Rust memory the budget never saw, and the guest could keep them
+	// before the JavaScript copy into the budget: each of these tries to retain them past the 256 MiB budget. Whatever
+	// it does keep is charged: it is stopped, or what it held fits in the budget.
+	const keptWithinBudget = (r: Record<string, unknown>) => {
+		const held = /held (\d+)/.exec(String(r.stdout));
+		if (r.exitCode === 0) expect(Number(held?.[1]) * 16).toBeLessThan(256);
+		else expect(String(r.stderr) + String(r.terminated)).toMatch(/RangeError|memory/i);
+	};
+	it("host buffers: a destination's own set() can't keep TextEncoder.encodeInto's bytes outside the budget", async () => {
+		const r = await nodeScript(
+			`const held = [];
+const d = new Uint8Array(1);
+d.set = (x) => held.push(x);
+const s = "x".repeat(16 * 1024 * 1024);
+const te = new TextEncoder();
+for (let i = 0; i < 40; i++) te.encodeInto(s, d);
+console.log("held", held.length);`,
+		);
+		keptWithinBudget(r);
+		await neighbourOk();
+	});
+	it("host buffers: a replaced typed-array length getter can't keep encoded bytes outside the budget", async () => {
+		const r = await nodeScript(
+			`const held = [];
+const TA = Object.getPrototypeOf(Uint8Array.prototype);
+const len = Object.getOwnPropertyDescriptor(TA, "length").get;
+Object.defineProperty(TA, "length", { configurable: true, get() { const n = len.call(this); if (n > 1e6) held.push(this); return n; } });
+const s = "x".repeat(16 * 1024 * 1024);
+for (let i = 0; i < 40; i++) Buffer.from(s);
+console.log("held", held.length);`,
+		);
+		keptWithinBudget(r);
+		await neighbourOk();
+	});
+	it("host buffers: an Object.prototype.then getter can't keep fetch bodies outside the budget", async () => {
+		const r = await nodeScript(
+			`const held = [];
+Object.defineProperty(Object.prototype, "then", { configurable: true, get() { if (this instanceof Uint8Array && this.byteLength > 1e6) held.push(this); } });
+const body = new Uint8Array(16 * 1024 * 1024);
+(async () => {
+	for (let i = 0; i < 30; i++) await fetch("http://a.test/echo", { method: "POST", body });
+	console.log("held", held.length);
+})().catch((e) => { console.error(String(e)); process.exit(1); });`,
+			30000,
+		);
+		keptWithinBudget(r);
+		await neighbourOk();
+	});
+	it("host buffers: repeated Pyodide asset reads in python count against the budget", async () => {
+		const code =
+			'import js\nheld=[]\nfor i in range(40): held.append(js.readbuffer("pyodide.asm.wasm"))\nprint(len(held))';
+		const r = await c.exec("pr", `python3 -c '${code}'`, {}, 30000);
+		// pyodide.asm.wasm is about 10 MB: 40 of them can't be held in 256 MiB.
+		expect(r.exitCode).not.toBe(0);
+		expect(r.stderr + String(r.terminated)).toMatch(/RangeError|memory/i);
+		await neighbourOk();
+	});
+	it("host buffers: encoding, files, stdin, zlib and digests still work", async () => {
+		const r = await c.exec("pr", "printf in | node s.js", {
+			"s.js": await c.fileEntry(
+				`const fs = require("fs"), zlib = require("zlib"), crypto = require("crypto");
+const te = new TextEncoder(), d = new Uint8Array(4);
+const into = te.encodeInto("héllo", d);
+console.log(te.encode("héllo").length, into.read, into.written, Buffer.byteLength("héllo"), Buffer.from("héllo").toString());
+console.log(fs.readFileSync("f.txt", "utf8"), fs.readFileSync(0, "utf8"));
+console.log(zlib.gunzipSync(zlib.gzipSync("zip")).toString(), crypto.createHash("sha256").update("a").digest("hex").slice(0, 8));`,
+			),
+			"f.txt": await c.fileEntry("file"),
+		});
+		expect(r.stdout).toBe("6 3 4 6 héllo\nfile in\nzip ca978112\n");
+	});
+
 	it("redirects keep PUT, PATCH and DELETE (and their bodies) on 301 and 302, as Fetch does", async () => {
 		const r = await nodeScript(
 			`const cases = [["PUT", 301], ["PATCH", 302], ["DELETE", 302], ["POST", 301], ["POST", 302], ["PUT", 303], ["PUT", 307], ["POST", 308]];

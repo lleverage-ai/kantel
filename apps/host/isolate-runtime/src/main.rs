@@ -4,6 +4,7 @@ mod bridges;
 mod config;
 #[path = "../hardening/mod.rs"]
 mod hardening;
+mod hostbuf;
 mod isolate;
 mod limits;
 mod ops;

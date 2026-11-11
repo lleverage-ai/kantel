@@ -15,6 +15,7 @@ use serde_json::Value;
 use sha2::Digest;
 
 use crate::bridges::{FetchReq, egress_fetch, valid_sha};
+use crate::hostbuf::{HostBytes, budget_of};
 use crate::isolate::{Ctx, Engine, Kind, RunResult, RunState, engine, run_child};
 use crate::limits::Refusal;
 
@@ -57,16 +58,32 @@ fn op_kt_random(#[buffer] buf: &mut [u8]) -> Result<(), JsErrorBox> {
 }
 
 #[op2]
-#[buffer]
-fn op_kt_digest(#[string] alg: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
-    Ok(match alg {
+fn op_kt_digest(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] alg: &str,
+    #[buffer] data: &[u8],
+) -> Result<HostBytes, JsErrorBox> {
+    let digest = match alg {
         "md5" => md5::Md5::digest(data).to_vec(),
         "sha1" => sha1::Sha1::digest(data).to_vec(),
         "sha256" => sha2::Sha256::digest(data).to_vec(),
         "sha384" => sha2::Sha384::digest(data).to_vec(),
         "sha512" => sha2::Sha512::digest(data).to_vec(),
         other => return Err(JsErrorBox::generic(format!("unsupported digest {other}"))),
-    })
+    };
+    HostBytes::charge(isolate, &state, digest)
+}
+
+/// UTF-8 bytes of a string, for the guest's TextEncoder and Buffer (in place of deno_core's `core.encode`, whose
+/// result a stock build doesn't charge to the isolate). Lone surrogates become U+FFFD, as TextEncoder does.
+#[op2]
+fn op_kt_encode(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] text: String,
+) -> Result<HostBytes, JsErrorBox> {
+    HostBytes::charge(isolate, &state, text.into_bytes())
 }
 
 // --- zlib (shell's gzip, node's zlib) -----------------------------------------------------------------------------
@@ -75,13 +92,15 @@ fn op_kt_digest(#[string] alg: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, J
 const ZLIB_MAX_OUTPUT: usize = 256 * 1024 * 1024;
 
 #[op2]
-#[buffer]
 fn op_kt_zlib(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
     #[string] kind: &str,
     #[buffer] data: &[u8],
     #[smi] level: u32,
-) -> Result<Vec<u8>, JsErrorBox> {
-    zlib(kind, data, level, ZLIB_MAX_OUTPUT).map_err(JsErrorBox::generic)
+) -> Result<HostBytes, JsErrorBox> {
+    let out = zlib(kind, data, level, ZLIB_MAX_OUTPUT).map_err(JsErrorBox::generic)?;
+    HostBytes::charge(isolate, &state, out)
 }
 
 /// Compress or decompress `data`. A decompression answers the whole output, checked to its end (a gzip or zlib
@@ -135,11 +154,10 @@ fn zlib(kind: &str, data: &[u8], level: u32, cap: usize) -> Result<Vec<u8>, Stri
 // --- STORE: the shell's lazy blob reads and uploads ---------------------------------------------------------------
 
 #[op2]
-#[buffer]
 async fn op_kt_blob_read(
     state: Rc<RefCell<OpState>>,
     #[string] sha: String,
-) -> Result<Vec<u8>, JsErrorBox> {
+) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     if c.kind != Kind::Shell {
         return Err(JsErrorBox::generic("not available here"));
@@ -155,11 +173,14 @@ async fn op_kt_blob_read(
     // isolate can't hold a file larger than its own memory.
     let cap = c.budget.limit();
     let mut charge = crate::bridges::Charge::new(c.budget.clone());
-    engine()
+    let bytes = engine()
         .store
         .get(&sha, cap, Some(&mut charge))
         .await
-        .map_err(jerr)
+        .map_err(jerr)?;
+    // The read's charge becomes the buffer's: the bytes stay charged until V8 frees the guest's buffer.
+    let held = charge.keep();
+    HostBytes::adopt(budget_of(&state.borrow()), bytes, held)
 }
 
 #[op2]
@@ -199,12 +220,11 @@ impl Drop for AbortOnDrop {
 }
 
 #[op2]
-#[buffer]
 async fn op_kt_fetch(
     state: Rc<RefCell<OpState>>,
     #[string] req: String,
     #[buffer] body: JsBuffer,
-) -> Result<Vec<u8>, JsErrorBox> {
+) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     let req: FetchReq = serde_json::from_str(&req).map_err(jerr)?;
     // Allow-list methods: no CONNECT, no arbitrary verbs.
@@ -235,16 +255,19 @@ async fn op_kt_fetch(
     let eng = engine();
     let handle = eng.io.spawn(async move {
         let mut charge = crate::bridges::Charge::new(budget);
-        tokio::time::timeout(
+        let out = tokio::time::timeout(
             remaining,
             egress_fetch(&engine().egress, &sandbox, req, body, Some(&mut charge)),
         )
-        .await
+        .await;
+        // The body and its charge, still held by the Charge (given back if the op is dropped before taking it).
+        out.map(|r| r.map(|bytes| (bytes, charge)))
     });
     let _abort = AbortOnDrop(handle.abort_handle());
     let out = handle.await;
     match out.map_err(jerr)? {
-        Ok(Ok(bytes)) => Ok(bytes),
+        // The body's charge becomes the result's: the bytes stay charged until V8 frees the guest's buffer.
+        Ok(Ok((bytes, charge))) => HostBytes::adopt(Some(c.budget.clone()), bytes, charge.keep()),
         Ok(Err(e)) => Err(JsErrorBox::generic(format!("fetch failed: {e:#}"))),
         Err(_) => Err(JsErrorBox::generic("fetch timed out")),
     }
@@ -253,13 +276,12 @@ async fn op_kt_fetch(
 // --- the shell runs node/python in a fresh isolate ----------------------------------------------------------------
 
 #[op2]
-#[buffer]
 async fn op_kt_run(
     state: Rc<RefCell<OpState>>,
     #[string] kind: String,
     #[string] meta: String,
     #[buffer] payload: JsBuffer,
-) -> Result<Vec<u8>, JsErrorBox> {
+) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     if c.kind != Kind::Shell {
         return Err(JsErrorBox::generic("not available here"));
@@ -269,7 +291,8 @@ async fn op_kt_run(
         "python" | "python3" => Kind::Python,
         _ => return Err(JsErrorBox::generic("unknown runtime")),
     };
-    Ok(run_child(child, &c, meta, payload.to_vec()).await)
+    let out = run_child(child, &c, meta, payload.to_vec()).await;
+    HostBytes::adopt(budget_of(&state.borrow()), out, 0)
 }
 
 #[op2(fast)]
@@ -282,21 +305,32 @@ fn op_kt_cancel_run(state: &mut OpState, #[smi] run_id: u32) {
 // --- node/python read the run's files and stdin -------------------------------------------------------------------
 
 #[op2]
-#[buffer]
-fn op_kt_file(state: &mut OpState, #[string] path: &str) -> Result<Vec<u8>, JsErrorBox> {
-    let run = state
-        .try_borrow::<RunState>()
-        .ok_or_else(|| JsErrorBox::generic("no run"))?;
-    run.file(path).map_err(jerr)
+fn op_kt_file(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] path: &str,
+) -> Result<HostBytes, JsErrorBox> {
+    let bytes = {
+        let state = state.borrow();
+        let run = state
+            .try_borrow::<RunState>()
+            .ok_or_else(|| JsErrorBox::generic("no run"))?;
+        run.file(path).map_err(jerr)?
+    };
+    HostBytes::charge(isolate, &state, bytes)
 }
 
 #[op2]
-#[buffer]
-fn op_kt_input(state: &mut OpState) -> Vec<u8> {
-    state
+fn op_kt_input(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+) -> Result<HostBytes, JsErrorBox> {
+    let stdin = state
+        .borrow()
         .try_borrow::<RunState>()
         .map(|r| r.stdin.clone())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    HostBytes::charge(isolate, &state, stdin)
 }
 
 #[op2(fast)]
@@ -405,25 +439,32 @@ fn op_kt_syntax_error<'s>(
 // --- python: read a Pyodide asset, and its memory snapshot (its own copy, never a shared buffer) ------------------
 
 #[op2]
-#[buffer]
-fn op_kt_read_asset(state: &mut OpState, #[string] path: String) -> Result<Vec<u8>, JsErrorBox> {
-    let c = ctx_sync(state)?;
+fn op_kt_read_asset(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+    #[string] path: String,
+) -> Result<HostBytes, JsErrorBox> {
+    let c = ctx(&state)?;
     if c.kind != Kind::Python {
         return Err(JsErrorBox::generic("not available here"));
     }
-    engine().read_asset(&path).map_err(jerr)
+    let bytes = engine().read_asset(&path).map_err(jerr)?;
+    HostBytes::charge(isolate, &state, bytes)
 }
 
 #[op2]
-#[buffer]
-fn op_kt_python_snapshot(state: &mut OpState) -> Result<Vec<u8>, JsErrorBox> {
-    let c = ctx_sync(state)?;
+fn op_kt_python_snapshot(
+    isolate: &mut v8::Isolate,
+    state: Rc<RefCell<OpState>>,
+) -> Result<HostBytes, JsErrorBox> {
+    let c = ctx(&state)?;
     if c.kind != Kind::Python {
         return Err(JsErrorBox::generic("not available here"));
     }
-    // A fresh copy for this isolate: the guest never sees the shared source, and nothing it does can corrupt another
-    // isolate's snapshot (the #[buffer] return copies into a V8-owned ArrayBuffer).
-    engine().python_snapshot().map_err(jerr)
+    // A fresh copy for this isolate, charged to it: the guest never sees the shared source, and nothing it does can
+    // corrupt another isolate's snapshot.
+    let bytes = engine().python_snapshot().map_err(jerr)?;
+    HostBytes::charge(isolate, &state, bytes)
 }
 
 #[op2(fast)]
@@ -499,6 +540,7 @@ deno_core::extension!(
         op_kt_log,
         op_kt_random,
         op_kt_digest,
+        op_kt_encode,
         op_kt_zlib,
         op_kt_blob_read,
         op_kt_blob_put,

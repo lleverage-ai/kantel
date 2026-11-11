@@ -2,6 +2,7 @@
 // isolate per run. boot() loads it from --assets (the module loader allows nothing else); run() puts the sandbox's
 // files under /workspace, lazily (a file's body is read from the host only when Python opens it), runs the script
 // and returns what it printed and what it changed under /workspace.
+import { utf8 } from "../common/text.js";
 import { base64, Chunks, egressFetch, pack } from "../common/web.js";
 
 const ROOT = "/workspace";
@@ -126,7 +127,7 @@ export function createPython(ops, lockdown = () => {}) {
 			env: { HOME: ROOT },
 		};
 		if (cfg.makeSnapshot) config._makeSnapshot = true;
-		else config._loadSnapshot = new Uint8Array(ops.op_kt_python_snapshot());
+		else config._loadSnapshot = ops.op_kt_python_snapshot();
 		py = await loadPyodide(config);
 		delete config._loadSnapshot;
 		try {
@@ -244,7 +245,7 @@ export function createPython(ops, lockdown = () => {}) {
 			const a = args[i];
 			if ((a === "-c" || a === "-m") && i + 1 >= args.length) {
 				out.stderr.push(
-					core.encode(
+					utf8(
 						`Argument expected for the ${a} option\nusage: python [option] ... [-c cmd | -m mod | file | -] [arg] ...\nTry \`python -h' for more information.\n`,
 					),
 				);
@@ -260,14 +261,14 @@ export function createPython(ops, lockdown = () => {}) {
 				argv0 = module;
 				rest = args.slice(i + 1);
 				if (module === "pip" || module === "ensurepip" || module === "venv") {
-					out.stderr.push(core.encode(`python: ${module} is not available in an isolate. Use a microVM.\n`));
+					out.stderr.push(utf8(`python: ${module} is not available in an isolate. Use a microVM.\n`));
 					return finish(127, before, { command: "python", reason: "installing Python packages needs a microVM." });
 				}
 				code = "";
 				break;
 			}
 			if (a === "-V" || a === "--version") {
-				out.stdout.push(core.encode(`Python ${py.runPython("import sys; sys.version.split()[0]")}\n`));
+				out.stdout.push(utf8(`Python ${py.runPython("import sys; sys.version.split()[0]")}\n`));
 				return finish(0, before);
 			}
 			if (a === "-") {
@@ -282,7 +283,7 @@ export function createPython(ops, lockdown = () => {}) {
 			try {
 				code = td.decode(py.FS.readFile(full));
 			} catch {
-				out.stderr.push(core.encode(`python: can't open file '${full}': [Errno 2] No such file or directory\n`));
+				out.stderr.push(utf8(`python: can't open file '${full}': [Errno 2] No such file or directory\n`));
 				return finish(2, before);
 			}
 			filename = a;
@@ -366,7 +367,7 @@ export function createPython(ops, lockdown = () => {}) {
 			}
 			return all;
 		};
-		if (out.truncated) out.stderr.push(core.encode("python: output over 16 MiB was dropped\n"));
+		if (out.truncated) out.stderr.push(utf8("python: output over 16 MiB was dropped\n"));
 		const meta = {
 			exitCode,
 			stdout: chunks.add(join(out.stdout)),
