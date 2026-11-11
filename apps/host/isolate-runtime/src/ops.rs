@@ -71,6 +71,9 @@ fn op_kt_digest(#[string] alg: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, J
 
 // --- zlib (shell's gzip, node's zlib) -----------------------------------------------------------------------------
 
+/// Inflated output is bounded so a zip bomb can't take the process down.
+const ZLIB_MAX_OUTPUT: usize = 256 * 1024 * 1024;
+
 #[op2]
 #[buffer]
 fn op_kt_zlib(
@@ -78,48 +81,53 @@ fn op_kt_zlib(
     #[buffer] data: &[u8],
     #[smi] level: u32,
 ) -> Result<Vec<u8>, JsErrorBox> {
+    zlib(kind, data, level, ZLIB_MAX_OUTPUT).map_err(JsErrorBox::generic)
+}
+
+/// Compress or decompress `data`. A decompression answers the whole output, checked to its end (a gzip or zlib
+/// stream's checksum included), or an error: output over `cap` is refused, never cut short and called a success.
+fn zlib(kind: &str, data: &[u8], level: u32, cap: usize) -> Result<Vec<u8>, String> {
     use std::io::{Read, Write};
 
     use flate2::Compression;
     let lvl = Compression::new(level.min(9));
+    let err = |e: std::io::Error| format!("zlib: {e}");
+    fn inflate(mut decoder: impl Read, cap: usize) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        // One byte past the cap tells "exactly the cap" (the decoder reached its end, checksum checked) from "more".
+        (&mut decoder)
+            .take(cap as u64 + 1)
+            .read_to_end(&mut out)
+            .map_err(|e| format!("zlib: {e}"))?;
+        if out.len() > cap {
+            return Err(format!(
+                "zlib: the output is larger than {} MiB, the most an isolate inflates",
+                cap >> 20
+            ));
+        }
+        Ok(out)
+    }
     let mut out = Vec::new();
-    // Inflated output is bounded so a zip bomb can't take the process down.
-    let cap = 256u64 * 1024 * 1024;
     match kind {
         "gzip" => {
             let mut e = flate2::write::GzEncoder::new(&mut out, lvl);
-            e.write_all(data).map_err(jerr)?;
-            e.finish().map_err(jerr)?;
+            e.write_all(data).map_err(err)?;
+            e.finish().map_err(err)?;
         }
         "deflate" => {
             let mut e = flate2::write::ZlibEncoder::new(&mut out, lvl);
-            e.write_all(data).map_err(jerr)?;
-            e.finish().map_err(jerr)?;
+            e.write_all(data).map_err(err)?;
+            e.finish().map_err(err)?;
         }
         "deflateraw" => {
             let mut e = flate2::write::DeflateEncoder::new(&mut out, lvl);
-            e.write_all(data).map_err(jerr)?;
-            e.finish().map_err(jerr)?;
+            e.write_all(data).map_err(err)?;
+            e.finish().map_err(err)?;
         }
-        "gunzip" => {
-            flate2::read::MultiGzDecoder::new(data)
-                .take(cap)
-                .read_to_end(&mut out)
-                .map_err(jerr)?;
-        }
-        "inflate" => {
-            flate2::read::ZlibDecoder::new(data)
-                .take(cap)
-                .read_to_end(&mut out)
-                .map_err(jerr)?;
-        }
-        "inflateraw" => {
-            flate2::read::DeflateDecoder::new(data)
-                .take(cap)
-                .read_to_end(&mut out)
-                .map_err(jerr)?;
-        }
-        _ => return Err(JsErrorBox::generic("zlib: unknown mode")),
+        "gunzip" => return inflate(flate2::read::MultiGzDecoder::new(data), cap),
+        "inflate" => return inflate(flate2::read::ZlibDecoder::new(data), cap),
+        "inflateraw" => return inflate(flate2::read::DeflateDecoder::new(data), cap),
+        _ => return Err("zlib: unknown mode".into()),
     }
     Ok(out)
 }
@@ -531,4 +539,66 @@ pub fn manifest_shas(manifest: &Value) -> HashSet<String> {
         }
     }
     set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zlib;
+
+    const CAP: usize = 4096;
+
+    fn compress(kind: &str, data: &[u8]) -> Vec<u8> {
+        zlib(kind, data, 0, usize::MAX).expect("compress")
+    }
+
+    #[test]
+    fn decompression_is_whole_or_an_error() {
+        for (enc, dec) in [
+            ("gzip", "gunzip"),
+            ("deflate", "inflate"),
+            ("deflateraw", "inflateraw"),
+        ] {
+            // Below and exactly at the cap: the whole output.
+            for len in [0, 100, CAP - 1, CAP] {
+                let data: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+                let out = zlib(dec, &compress(enc, &data), 0, CAP)
+                    .unwrap_or_else(|e| panic!("{dec} {len}: {e}"));
+                assert_eq!(out, data, "{dec} {len}");
+            }
+            // Over the cap, by one byte and by a lot: refused, never a truncated success.
+            for len in [CAP + 1, CAP * 64] {
+                let data = vec![b'a'; len];
+                let err = zlib(dec, &compress(enc, &data), 0, CAP).expect_err(dec);
+                assert!(err.contains("larger than"), "{dec} {len}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bad_checksum_at_the_cap_is_an_error() {
+        let data = vec![b'z'; CAP];
+        // gzip: CRC-32 then ISIZE in the last 8 bytes; zlib: Adler-32 in the last 4.
+        for (enc, dec, from_end) in [("gzip", "gunzip", 8), ("deflate", "inflate", 4)] {
+            let mut stream = compress(enc, &data);
+            let at = stream.len() - from_end;
+            stream[at] ^= 0xff;
+            assert!(zlib(dec, &stream, 0, CAP).is_err(), "{dec}");
+        }
+    }
+
+    #[test]
+    fn a_truncated_stream_is_an_error() {
+        let data: Vec<u8> = (0..CAP).map(|i| (i * 31 % 256) as u8).collect();
+        for (enc, dec) in [
+            ("gzip", "gunzip"),
+            ("deflate", "inflate"),
+            ("deflateraw", "inflateraw"),
+        ] {
+            let stream = compress(enc, &data);
+            assert!(
+                zlib(dec, &stream[..stream.len() / 2], 0, CAP).is_err(),
+                "{dec}"
+            );
+        }
+    }
 }
