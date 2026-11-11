@@ -76,6 +76,10 @@ pub struct ServeArgs {
     /// Exit if the process can't apply its own Landlock policy fully (the systemd unit passes this).
     #[arg(long, env = "KANTEL_ISOLATE_REQUIRE_LANDLOCK", default_value_t = false)]
     pub require_landlock: bool,
+    /// The seccomp filter: `enforce` (refuse calls outside the allow-list), `log` (allow and have the kernel log
+    /// them, for finding what a new code path needs) or `off`. The kill list applies to `enforce` and `log`.
+    #[arg(long, env = "KANTEL_ISOLATE_SECCOMP", default_value = "enforce")]
+    pub seccomp: String,
     /// Allow running as root / with capabilities (tests and local experiments only).
     #[arg(long, env = "KANTEL_ISOLATE_ALLOW_ROOT", default_value_t = false)]
     pub allow_root: bool,

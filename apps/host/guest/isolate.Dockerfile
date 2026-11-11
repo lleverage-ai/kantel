@@ -30,6 +30,8 @@ COPY dist/isolate-assets-${TARGETARCH}/ /tmp/kantel-rootfs/opt/kantel-isolate/
 COPY guest/rootfs/usr/sbin/kantel-init /tmp/kantel-rootfs/usr/sbin/kantel-init
 COPY guest/rootfs/etc/systemd/system/kantel-guest.service /tmp/kantel-rootfs/etc/systemd/system/kantel-guest.service
 COPY guest/isolate/ /tmp/kantel-rootfs/
+# The runtime's unit lives with the runtime, its only copy.
+COPY isolate-runtime/systemd/kantel-isolate.service /tmp/kantel-rootfs/etc/systemd/system/kantel-isolate.service
 COPY guest/rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md /tmp/kantel-rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md
 RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs && cp -a /tmp/kantel-rootfs/. / && rm -rf /tmp/kantel-rootfs
 

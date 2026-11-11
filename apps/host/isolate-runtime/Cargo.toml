@@ -25,13 +25,17 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 landlock = "0.4"
+seccompiler = "0.5"
 libc = "0.2"
 md-5 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
 sha2 = "0.10"
-tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms", "background_threads"], optional = true }
+# Background threads are built in but off at start-up: main turns them on after the process has hardened itself,
+# so they inherit Landlock and seccomp (with "background_threads" they'd start at the first allocation, before).
+tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms", "background_threads_runtime_support"], optional = true }
+tikv-jemalloc-ctl = { version = "0.6", optional = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std", "ansi", "env-filter"] }
@@ -43,7 +47,7 @@ deno_v8 = { version = "0.4", default-features = false, features = ["v8"] }
 default = ["jemalloc"]
 # jemalloc replaces malloc for the whole process (V8 included): it returns freed memory to the OS and doesn't serialise
 # isolate threads the way glibc with few arenas does.
-jemalloc = ["dep:tikv-jemallocator"]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # V8's heap sandbox (pointer compression and the sandbox): needs a V8 built with it (RUSTY_V8_ARCHIVE or a source build;
 # see README.md). `kantel-isolate version` reports which one a binary has.
 v8-sandbox = ["deno_v8/v8_enable_sandbox", "deno_core/v8_enable_pointer_compression"]

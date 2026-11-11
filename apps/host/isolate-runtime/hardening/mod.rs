@@ -14,15 +14,20 @@
 //!    confinement (see `landlock.rs` and SECURITY.md). Signals and abstract Unix sockets are scoped to the process
 //!    with ABI 6 (Linux 6.12).
 //!
+//! 3. [`seccomp::install`], after Landlock and before the first thread: a kill list for the calls that matter most to
+//!    an attacker (exec, ptrace, mounts and namespaces, bpf, io_uring, …), and an allow-list with argument checks
+//!    for everything else (threads only, IPv4 and Unix sockets only, a few ioctls and prctls). See `seccomp.rs`.
+//!
 //! The systemd unit (`../systemd/kantel-isolate.service`) repeats the policy as a second, independent layer in the
 //! isolate VM; in native mode kantel-host's `startNative` has to provide the user, cgroup and namespaces (see
 //! `../SECURITY.md`).
 //!
 //! Include it from the crate's main.rs with `mod hardening;` (this directory as `src/hardening/`, or
 //! `#[path = "../hardening/mod.rs"] mod hardening;`). Dependencies: `landlock = "0.4"`,
-//! `libc = "0.2"`, `anyhow = "1"`.
+//! `libc = "0.2"`, `anyhow = "1"`, `seccompiler = "0.5"`.
 
 pub mod landlock;
+pub mod seccomp;
 
 use anyhow::{bail, Result};
 
