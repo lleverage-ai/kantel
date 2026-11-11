@@ -345,6 +345,8 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 			readonly startedAt?: number;
 			readonly stoppedAt?: number;
 			readonly lastActiveAt?: number;
+			/** Whether its backend had its egress as it was then (`egressApplied` no earlier than its `egressRevision`). */
+			readonly egressInSync?: boolean;
 		};
 		readonly size?: computeSchema.SandboxSizeName;
 		readonly shape?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };

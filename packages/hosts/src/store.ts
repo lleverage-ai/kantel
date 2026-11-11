@@ -71,6 +71,11 @@ export interface PlacementRecord {
 			readonly memoryMiB: number;
 			readonly diskGiB: number;
 		};
+		/**
+		 * Who is rolling it back (`by`, one rollback's own token) until when: the gateway that may send its compensating
+		 * calls, so two never roll back the same upgrade at once. Lapsed, its gateway is taken to be gone.
+		 */
+		readonly settling?: { readonly by: string; readonly until: number };
 	};
 	/** An upgraded microVM's isolate still to be deleted from its own host (`hostId`), once that host can be reached. */
 	readonly cleanup?: { readonly hostId: string; readonly operationId: string };

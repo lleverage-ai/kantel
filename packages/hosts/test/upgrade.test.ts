@@ -94,6 +94,8 @@ class Host {
 	upgradeAnswer?: "drop" | number;
 	/** `sandbox.create` makes the sandbox but its answer is dropped. */
 	dropCreateAnswer = false;
+	/** The next `sandbox.upgrade.thaw` is done, but answered only once this settles. */
+	holdThaw?: Promise<void>;
 	/** How long a file read takes to answer, in milliseconds, and the most answered at once so far. */
 	readDelayMs = 0;
 	private readsUnderWay = 0;
@@ -256,9 +258,16 @@ class Host {
 				});
 				return;
 			}
-			case "sandbox.upgrade.thaw":
+			case "sandbox.upgrade.thaw": {
 				if (this.frozen.get(id) === String(p.operationId)) this.frozen.delete(id);
+				const held = this.holdThaw;
+				this.holdThaw = undefined;
+				if (held !== undefined) {
+					void held.then(() => answer({ ok: true }));
+					return;
+				}
 				return answer({ ok: true });
+			}
 			case "sandbox.delete":
 				this.sandboxes.delete(id);
 				return answer({ ok: true });
@@ -969,6 +978,68 @@ describe("an upgrade that fails after its irreversible step", () => {
 		const placement = await service.sandboxes.placement(sandbox.id);
 		expect(placement).toMatchObject({ tier: "microvm", hostId: host.hostId });
 		expect(placement?.upgrade).toBeUndefined();
+	});
+});
+
+describe("an upgrade settled by more than one gateway", () => {
+	it("lets one roll it back at a time, and a late one neither restores the isolate nor touches a newer upgrade", async () => {
+		let at = 1_000_000;
+		const { root, service, hosts } = await setup(
+			[
+				{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+				{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+			],
+			{ callTimeoutMs: 200, clock: { now: () => at } },
+		);
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		isolates.sandboxes.get(sandbox.id)?.files.set("a.txt", { kind: "file", data: enc("a\n") });
+		// The microVM's create answer is lost, and the isolate's host can't be reached to thaw it: left to be settled.
+		vms.dropCreateAnswer = true;
+		isolates.refuseMethod = (method) =>
+			method === "sandbox.upgrade.thaw" ? { code: "unavailable", message: "away" } : undefined;
+		expect((await failure(root.upgradeSandbox(sandbox.id, {}))).status).toBe(503);
+		const operationId = (await service.sandboxes.placement(sandbox.id))?.upgrade?.operationId ?? "";
+		expect(operationId).toMatch(/^upg_/);
+		vms.dropCreateAnswer = false;
+		isolates.refuseMethod = undefined;
+
+		// One gateway settles it: the microVM deleted, the isolate thawed, and that answer held.
+		let releaseThaw: () => void = () => undefined;
+		isolates.holdThaw = new Promise<void>((resolve) => {
+			releaseThaw = resolve;
+		});
+		const thaws = () => isolates.methods().filter((method) => method === "sandbox.upgrade.thaw").length;
+		const thawed = thaws();
+		const late = service.sandboxes.settleUpgrade(sandbox.id, operationId);
+		for (let tries = 0; tries < 200 && thaws() === thawed; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(thaws()).toBe(thawed + 1);
+		// Another, meanwhile, is refused while the first has it, and sends nothing.
+		const deletes = () => vms.methods().filter((method) => method === "sandbox.delete").length;
+		const deleted = deletes();
+		await expect(service.sandboxes.settleUpgrade(sandbox.id, operationId)).rejects.toMatchObject({
+			code: "unavailable",
+		});
+		expect(deletes()).toBe(deleted);
+
+		// The first taken for gone once its claim lapses: another rolls it back, and a new upgrade makes the microVM.
+		at += 10 * 60_000;
+		expect(await service.sandboxes.settleUpgrade(sandbox.id, operationId)).toMatchObject({ state: "failed" });
+		expect((await service.sandboxes.placement(sandbox.id))?.upgrade).toBeUndefined();
+		const next = await service.sandboxes.upgrade(sandbox.id, { operationId: "upg_next" });
+		expect(next.hostId).toBe(vms.hostId);
+
+		// The first's answer comes at last: it restores nothing, and the newer microVM stays.
+		releaseThaw();
+		await late.catch(() => undefined);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "microvm", hostId: vms.hostId });
+		expect(placement?.upgrade).toBeUndefined();
+		expect(vms.sandboxes.get(sandbox.id)?.tier).toBe("microvm");
+		expect(text(vms.sandboxes.get(sandbox.id)?.files.get("/home/user/workspace/a.txt")?.data)).toBe("a\n");
 	});
 });
 

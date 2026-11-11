@@ -53,7 +53,7 @@ interface Options {
 	/** Stands in for the backend's settling of an upgrade: undefined lets the stub do it. */
 	readonly settle?: (sandboxId: string, operationId: string) => Promise<UpgradeOutcome> | undefined;
 	/** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
-	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined | Promise<ExecResult>;
+	readonly exec?: (sandboxId: string, request: ExecRequest) => ExecResult | undefined | Promise<ExecResult | undefined>;
 	/** Takes egress updates, as a host does; absent, the backend takes none (as the stub). */
 	readonly updateEgress?: (sandboxId: string, egress: BackendEgress | undefined, revision?: number) => Promise<void>;
 	/** Answers commands' results by their ID, as a host that keeps them does. */
@@ -62,10 +62,13 @@ interface Options {
 	readonly kill?: (sandboxId: string, commandId: string) => void;
 	readonly now?: () => number;
 	readonly store?: ComputeStore;
+	/** The stub to stand on: another gateway's, for one sharing its store. */
+	readonly stub?: ReturnType<typeof createStubBackend>;
+	readonly startHoldMs?: number;
 }
 
 function setup(options: Options = {}) {
-	const stub = createStubBackend();
+	const stub = options.stub ?? createStubBackend();
 	const upgrades: { readonly sandboxId: string; readonly spec: SandboxSpec; readonly operationId: string }[] = [];
 	const backend: SandboxBackend = {
 		...stub,
@@ -105,6 +108,7 @@ function setup(options: Options = {}) {
 		secretsKey: KEY,
 		...(options.store === undefined ? {} : { store: options.store }),
 		...(options.now === undefined ? {} : { now: options.now }),
+		...(options.startHoldMs === undefined ? {} : { startHoldMs: options.startHoldMs, startPollMs: 10 }),
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -464,6 +468,116 @@ describe("a command that needs a microVM", () => {
 	});
 });
 
+describe("commands that need a microVM, at once", () => {
+	/** `tar slow` answers, needing a microVM, only once `release`d; `tar fast` at once. Each runs in the microVM. */
+	function twoCommands() {
+		let upgraded = false;
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const ran: string[] = [];
+		const made = setup({
+			exec: async (_id, request) => {
+				if (!request.command.startsWith("tar ")) return undefined;
+				ran.push(request.command);
+				if (upgraded)
+					return { exitCode: 0, stdout: `${request.command} in the microVM\n`, stderr: "", timedOut: false };
+				// Run in the isolate: its answer comes once released, whenever the upgrade happens.
+				if (request.command === "tar slow") await gate;
+				return { ...NEEDS_TAR, timedOut: false };
+			},
+			upgrade: async (sandboxId, spec, operationId) => {
+				const placed = await (made.stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+		});
+		return { ...made, release: () => release(), ran };
+	}
+
+	it("runs each again once in the microVM, though another command's upgrade made it", async () => {
+		const { tom, upgrades, release, ran } = twoCommands();
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		const slow = tom.runCommand(sandbox.id, { command: "tar slow" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const fast = await tom.runCommand(sandbox.id, { command: "tar fast" });
+		expect(fast).toMatchObject({ exitCode: 0, rerunOf: expect.any(String) });
+		expect((await tom.getSandbox(sandbox.id)).type).toBe("microvm");
+		// Its answer comes once the sandbox is a microVM already: it is run again there all the same.
+		release();
+		const answered = await slow;
+		expect(answered).toMatchObject({ state: "exited", exitCode: 0, stdout: "tar slow in the microVM\n" });
+		const first = await tom.getCommand(sandbox.id, answered.rerunOf as string);
+		expect(first).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" }, rerunAs: answered.id });
+		expect(upgrades).toHaveLength(1);
+		expect(ran.filter((command) => command === "tar slow")).toHaveLength(2);
+	});
+
+	it("runs one again once another gateway's upgrade ends, however long that takes", async () => {
+		const store = createMemoryStore();
+		let upgraded = false;
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		// One gateway upgrades it for its own command, and is slow about it.
+		const a = setup({
+			store,
+			exec: (_id, request) =>
+				request.command === "tar fast" && !upgraded ? { ...NEEDS_TAR, timedOut: false } : undefined,
+			upgrade: async (sandboxId, spec, operationId) => {
+				await gate;
+				const placed = await (a.stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+		});
+		// Another, holding a start for 30 ms at a time, gets its command's answer while that upgrade is under way.
+		let answer: () => void = () => undefined;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const b = setup({
+			store,
+			stub: a.stub,
+			startHoldMs: 30,
+			exec: async (_id, request) => {
+				if (request.command !== "tar slow") return undefined;
+				if (upgraded) return { exitCode: 0, stdout: "in the microVM\n", stderr: "", timedOut: false };
+				await answered;
+				return { ...NEEDS_TAR, timedOut: false };
+			},
+		});
+		const sandbox = await a.tom.createSandbox({ autoUpgrade: true, wait: true });
+		const slow = b.tom.runCommand(sandbox.id, { command: "tar slow" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const fast = a.tom.runCommand(sandbox.id, { command: "tar fast" });
+		for (let tries = 0; tries < 100 && (await store.sandboxes.get(sandbox.id))?.upgrading === undefined; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		answer();
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		release();
+		expect(await slow).toMatchObject({ exitCode: 0, stdout: "in the microVM\n", rerunOf: expect.any(String) });
+		expect((await fast).rerunOf).toBeDefined();
+	});
+
+	it("isn't run again once autoUpgrade is turned off, though the sandbox upgraded meanwhile", async () => {
+		const { tom, release, ran } = twoCommands();
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		const slow = tom.runCommand(sandbox.id, { command: "tar slow" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await tom.runCommand(sandbox.id, { command: "tar fast" });
+		await tom.updateSandbox(sandbox.id, { autoUpgrade: false });
+		release();
+		const answered = await slow;
+		expect(answered).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
+		expect(answered.rerunAs).toBeUndefined();
+		expect(ran.filter((command) => command === "tar slow")).toHaveLength(1);
+	});
+});
+
 describe("a command killed while autoUpgrade runs it again", () => {
 	/** A sandbox with autoUpgrade whose `tar` needs a microVM, its upgrade held until `release`, and its runs in the microVM. */
 	function held(options: { readonly holdRerun?: boolean; readonly store?: ComputeStore } = {}) {
@@ -700,6 +814,75 @@ describe("an upgrade's outcome, when its answer is lost", () => {
 	});
 });
 
+describe("an upgrade settled by the sweep on more than one gateway", () => {
+	it("is settled by one of them at a time", async () => {
+		let at = 1_000_000;
+		const store = createMemoryStore();
+		let hang: (error: Error) => void = () => undefined;
+		const first = setup({
+			now: () => at,
+			store,
+			upgrade: () =>
+				new Promise<UpgradedPlacement>((_resolve, reject) => {
+					hang = reject;
+				}),
+		});
+		const sandbox = await first.tom.createSandbox({ wait: true, autoStopMinutes: null });
+		void first.tom.upgradeSandbox(sandbox.id, { wait: false });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// Two gateways' sweeps find it gone quiet; the first's settling is held.
+		let release: (outcome: UpgradeOutcome) => void = () => undefined;
+		const asked: string[] = [];
+		const a = setup({
+			now: () => at,
+			store,
+			settle: () => {
+				asked.push("a");
+				return new Promise<UpgradeOutcome>((resolve) => {
+					release = resolve;
+				});
+			},
+		});
+		const b = setup({
+			now: () => at,
+			store,
+			settle: () => {
+				asked.push("b");
+				return Promise.resolve({ state: "failed" as const });
+			},
+		});
+		at += UPGRADE_STALE_MS + 1;
+		const sweeping = a.api.service.sweep();
+		try {
+			for (let tries = 0; tries < 100 && asked.length === 0; tries++) {
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+			await b.api.service.sweep();
+			expect(asked).toEqual(["a"]);
+		} finally {
+			release({ state: "failed" });
+			await sweeping;
+			hang(new KantelError("unavailable", "the gateway went"));
+		}
+		expect(await store.sandboxes.get(sandbox.id)).toMatchObject({ state: "running", type: "isolate" });
+		// One that couldn't be told is let go at once, for the next sweep on any gateway.
+		const unknown = setup({
+			now: () => at,
+			store,
+			upgrade: () => Promise.reject(upgradeOutcomeUnknown("no answer")),
+			settle: () => Promise.reject(new KantelError("unavailable", "The host is away")),
+		});
+		const other = await unknown.tom.createSandbox({ wait: true, autoStopMinutes: null });
+		await failure(unknown.tom.upgradeSandbox(other.id, {}));
+		const quiet = (await store.sandboxes.get(other.id))?.upgrading?.heartbeatAt;
+		at += UPGRADE_STALE_MS + 1;
+		await unknown.api.service.sweep();
+		const left = await store.sandboxes.get(other.id);
+		expect(left).toMatchObject({ state: "starting", type: "isolate" });
+		expect(left?.upgrading?.heartbeatAt).toBe(quiet);
+	});
+});
+
 describe("an upgrade's egress and billing", () => {
 	it("enforces a grant revoked while it was upgrading before the microVM runs", async () => {
 		let release: () => void = () => undefined;
@@ -807,6 +990,140 @@ describe("an upgrade's egress and billing", () => {
 		expect(started).toMatchObject({ type: "microvm", state: "running" });
 	});
 
+	/** An upgrade held until `release`, then refused; the egress updates its backend takes, with the record's state then. */
+	function failingHeld(refuseEgress = false) {
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const updates: { revision?: number; hosts: string[]; state?: string }[] = [];
+		let storeOf: ComputeStore | undefined;
+		const made = setup({
+			upgrade: async () => {
+				await held;
+				throw new KantelError("exhausted", "No host has room for the microVM");
+			},
+			updateEgress: async (sandboxId, egress, revision) => {
+				const state = (await storeOf?.sandboxes.get(sandboxId))?.state;
+				updates.push({
+					...(revision === undefined ? {} : { revision }),
+					hosts: (egress?.grants ?? []).map((grant) => grant.host),
+					...(state === undefined ? {} : { state }),
+				});
+				if (refuseEgress && state === "starting") {
+					throw new KantelError("not_supported", "this host can't enforce egress grants");
+				}
+			},
+		});
+		storeOf = made.api.store;
+		return { ...made, release: () => release(), updates };
+	}
+
+	it("gives the isolate a grant revoked while it was upgrading before it runs again, when the upgrade fails", async () => {
+		const { tom, api, release, updates } = failingHeld();
+		const sandbox = await tom.createSandbox({ wait: true, autoStopMinutes: null });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		const before = await api.store.sandboxes.get(sandbox.id);
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// Revoked while the microVM is being made: a starting sandbox is left to reconcile as it comes back.
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		updates.length = 0;
+		release();
+		expect((await upgrading).status).toBe(429);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running", runs: before?.runs, stopsAt: before?.stopsAt });
+		expect(stored?.upgrading).toBeUndefined();
+		// Sent to the isolate, without the grant, while it was still starting: it never ran again with the old one.
+		expect(updates.at(0)).toMatchObject({ hosts: [], state: "starting", revision: stored?.egressRevision });
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("gives the isolate a revocation it never took before its upgrade, when the upgrade fails", async () => {
+		let away = false;
+		const updates: { hosts: string[]; state?: string }[] = [];
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let storeOf: ComputeStore | undefined;
+		const { tom, api } = setup({
+			upgrade: async () => {
+				await held;
+				throw new KantelError("exhausted", "No host has room for the microVM");
+			},
+			updateEgress: async (sandboxId, egress) => {
+				const state = (await storeOf?.sandboxes.get(sandboxId))?.state;
+				if (away) throw new KantelError("unavailable", "The host is away");
+				updates.push({
+					hosts: (egress?.grants ?? []).map((grant) => grant.host),
+					...(state === undefined ? {} : { state }),
+				});
+			},
+		});
+		storeOf = api.store;
+		const sandbox = await tom.createSandbox({ wait: true, autoStopMinutes: null });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// Revoked just before the upgrade, and never taken by the isolate's host: it still has the grant.
+		away = true;
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		away = false;
+		updates.length = 0;
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		release();
+		expect((await upgrading).status).toBe(429);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running" });
+		expect(updates.at(0)).toMatchObject({ hosts: [], state: "starting" });
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+	});
+
+	it("leaves a stopped isolate stopped when its upgrade fails, its egress left to its next start", async () => {
+		const { tom, api, release, updates } = failingHeld();
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		updates.length = 0;
+		release();
+		expect((await upgrading).status).toBe(429);
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ type: "isolate", state: "stopped" });
+		expect(updates).toEqual([]);
+	});
+
+	it("stops the isolate rather than run it with egress its host refuses, when the upgrade fails", async () => {
+		const { tom, api, release } = failingHeld(true);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "allow", host: "example.com" }] });
+		const states: string[] = [];
+		const update = api.store.sandboxes.update.bind(api.store.sandboxes);
+		api.store.sandboxes.update = async (id, change, expected) => {
+			const written = await update(id, change, expected);
+			if (written !== undefined) states.push(written.state);
+			return written;
+		};
+		const upgrading = failure(tom.upgradeSandbox(sandbox.id, {}));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		release();
+		await upgrading;
+		let stopped = await api.store.sandboxes.get(sandbox.id);
+		for (let tries = 0; stopped?.state !== "stopped" && tries < 300; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			stopped = await api.store.sandboxes.get(sandbox.id);
+		}
+		expect(stopped).toMatchObject({ type: "isolate", state: "stopped" });
+		expect(stopped?.upgrading).toBeUndefined();
+		// Never running again with the grant it had: straight from starting to its stop.
+		expect(states.slice(states.indexOf("starting"))).not.toContain("running");
+		expect(stopped?.runs.every((run) => run.to !== undefined)).toBe(true);
+	});
+
 	it("prices every run the isolate had as an isolate's, its stops and starts too", async () => {
 		let at = 1_000_000;
 		const { tom, api } = setup({ now: () => at });
@@ -905,5 +1222,49 @@ describe("autoUpgrade's limits", () => {
 		}
 		expect(ended).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
 		expect(ended.rerunAs).toBeDefined();
+	});
+});
+
+describe("an upgraded sandbox's snapshots from before", () => {
+	it("are an isolate's still: forked or saved from, they make isolates with its files", async () => {
+		const { tom, api } = setup();
+		const sandbox = await isolateWithFiles(tom);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const [automatic] = (await tom.listSnapshots({ sandboxId: sandbox.id })).items;
+		expect(automatic?.sandboxType).toBe("isolate");
+		await tom.startSandbox(sandbox.id, { wait: true });
+		await tom.upgradeSandbox(sandbox.id, {});
+		expect((await tom.getSandbox(sandbox.id)).type).toBe("microvm");
+		const snapshotId = automatic?.id as string;
+
+		const [fork] = (await tom.forkSandbox(sandbox.id, { snapshotId, wait: true })).items;
+		expect(fork).toMatchObject({ type: "isolate", state: "running" });
+		expect((await tom.runCommand(fork?.id as string, { command: "cat src/a.txt" })).stdout).toBe("hello\n");
+		expect((await api.store.sandboxes.get(fork?.id as string))?.image).toBeUndefined();
+
+		const saved = await tom.saveSnapshot({ name: "before-upgrade", sandboxId: sandbox.id, snapshotId });
+		expect(saved.sandboxType).toBe("isolate");
+		const made = await tom.createSandbox({ from: saved.id, wait: true });
+		expect(made.type).toBe("isolate");
+		expect((await tom.runCommand(made.id, { command: "cat src/a.txt" })).stdout).toBe("hello\n");
+
+		// Forked live, it is the microVM it is now.
+		const [live] = (await tom.forkSandbox(sandbox.id, { wait: true })).items;
+		expect(live?.type).toBe("microvm");
+	});
+
+	it("are never what the microVM resumes from once its own newest is deleted", async () => {
+		const { tom, api } = setup();
+		const sandbox = await isolateWithFiles(tom);
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		await tom.upgradeSandbox(sandbox.id, {});
+		const taken = await tom.takeSnapshot(sandbox.id, {});
+		expect(taken.sandboxType).toBe("microvm");
+		expect((await api.store.sandboxes.get(sandbox.id))?.latestSnapshotId).toBe(taken.id);
+		await tom.deleteSnapshot(taken.id);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored?.latestSnapshotId).toBeUndefined();
+		expect(stored?.latestSnapshotAt).toBeUndefined();
 	});
 });

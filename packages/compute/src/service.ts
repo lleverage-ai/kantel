@@ -2718,8 +2718,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Only for what was found unenforceable: the sandbox in the state and at the `egressRevision` the refused delivery
 	 * (or the boot) was for. A newer egress (a clear, a boot's fresh revision) or another lifecycle step since leaves it
 	 * to its own delivery, and it answers `false`. A boot gives its `placement`, written with the intent, so the stop
-	 * and its retries know the host, and what else its publishing changes (`publishing`: an upgrade's microVM, its type,
-	 * which its stop and snapshot are then). `wait` awaits the stop (never from inside the sandbox's own queued work,
+	 * and its retries know the host. `publishing` is what else changes with the intent: a boot's (an upgrade's microVM,
+	 * its type, which its stop and snapshot are then), or an undone upgrade's (the isolate's runs and stop times as they
+	 * were, `restoreUpgrade`). `wait` awaits the stop (never from inside the sandbox's own queued work,
 	 * which the stop queues behind).
 	 */
 	async function enforceStop(
@@ -2738,7 +2739,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
 						...current,
-						...(placement === undefined ? {} : publishing?.(current)),
+						...publishing?.(current),
 						...(placement === undefined
 							? {}
 							: {
@@ -7660,7 +7661,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (snapshot === undefined) throw new KantelError("conflict", "The sandbox has no snapshot to fork from");
 				}
 				const ref = snapshot === undefined ? undefined : readyRef(snapshot);
-				if (current.type === "isolate" && body.size !== undefined) {
+				// What they are: what the snapshot was taken of (an upgraded sandbox's snapshots from before are an isolate's),
+				// or forked live, what the source is now.
+				const type = snapshot?.sandboxType ?? current.type;
+				const sameType = type === current.type;
+				if (type === "isolate" && body.size !== undefined) {
 					throw new KantelError("invalid", "Isolates have no size");
 				}
 				const account = await store.accounts.get(current.accountId);
@@ -7671,7 +7676,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const hosts = requireHosts(
 					await ensureHosts(),
 					current.accountId,
-					current.type,
+					type,
 					current.hostLabels,
 					true,
 					await mayShare(principal),
@@ -7683,7 +7688,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// source's own, whatever `size` says: a host copies the running machine as it is.
 				const copies = snapshot !== undefined && recordsMachine(snapshot) ? snapshot : current;
 				const machine =
-					current.type !== "microvm"
+					type !== "microvm"
 						? undefined
 						: snapshot === undefined
 							? sandboxMachine({ copies: current }, {}, [])
@@ -7708,15 +7713,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								);
 				// What they will be given, where that is the machine they copy: on their records from the start, so a fork never
 				// reads as having no machine (shown as the smallest size) while it starts. Their placements then say what they got.
-				const resources = current.type === "microvm" ? copiedResources(copies, machine) : undefined;
+				const resources = type === "microvm" ? copiedResources(copies, machine) : undefined;
 				// The source's exposed ports, as they are now: each fork gets them once it runs (`copyPorts`).
 				// Only for a caller who may open them (`access`): a port is exposed as its caller, and stops working once they
 				// may not (`stillAllowed`), so one copied for a key without the scope would be listed but refuse everyone. Such a
 				// key still forks; its forks get no ports.
+				const forkCapabilities = sameType ? current.capabilities : ISOLATE_CAPABILITIES;
 				const sourcePorts =
-					current.capabilities.ports && mayUse(principal, "access", role)
-						? current.ports.map((port) => ({ ...port }))
-						: [];
+					forkCapabilities.ports && mayUse(principal, "access", role) ? current.ports.map((port) => ({ ...port })) : [];
 				const grantee = encodeGrantee(principal);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
@@ -7740,17 +7744,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						accountId: current.accountId,
 						name,
 						subdomain: subdomainFor(name),
-						type: current.type,
+						type,
 						size: machine?.size,
 						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
 						...(resources === undefined ? {} : { resources: { ...resources } }),
-						// An isolate asks for its source's memory.
-						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
-						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
-						image: current.image,
+						// An isolate asks for its source's memory, where its source is one.
+						...(type === "isolate" && sameType && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
+						...(type === "isolate" && sameType && current.resources !== undefined
+							? { resources: current.resources }
+							: {}),
+						// An isolate has no image: not the microVM's its source became.
+						image: sameType ? current.image : undefined,
 						state: "starting",
 						visibility: account?.kind === "personal" ? "private" : (body.visibility ?? current.visibility),
-						capabilities: current.capabilities,
+						capabilities: forkCapabilities,
 						labels: body.labels === undefined ? { ...current.labels } : { ...body.labels },
 						autoStopMinutes: current.autoStopMinutes,
 						idleStopMinutes: current.idleStopMinutes ?? null,
@@ -8169,11 +8176,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// An isolate with `autoUpgrade` whose command needed a microVM: upgraded, and the command run again there,
 				// once, where it ran (`/workspace` is the same files in the microVM), before the first is recorded as ended,
 				// with the run again's ID (`rerunAs`). A detached one's run again is detached too, and followed by its ID.
+				// Whichever command's upgrade made the microVM: one that ran in the isolate with it (`command.autoUpgrade`),
+				// whose answer comes once another's upgrade has begun or ended, is run again in that microVM, still opted in.
 				const beforeEnd = async (command: StoredCommand, result: ExecResult) => {
 					// Only what the isolate's runtime says: an inferred one is text the command may have printed.
 					if (result.needsMicrovm === undefined || result.needsMicrovm.inferred === true) return undefined;
-					const latest = await store.sandboxes.get(sandbox.id);
-					if (latest?.type !== "isolate" || latest.autoUpgrade !== true) return undefined;
+					if (command.autoUpgrade !== true) return undefined;
+					let latest = await store.sandboxes.get(sandbox.id);
+					// Another command's upgrade under way (on another gateway, whose queue this one doesn't see): its outcome is
+					// waited for as a command's is, start hold after start hold, for up to half the time a reader holds this
+					// command's end for it (`RERUN_CLAIM_MS`), then read again.
+					for (let round = 0; latest?.upgrading !== undefined && round * startHoldMs < RERUN_CLAIM_MS / 2; round++) {
+						await requireRunning(principal, sandbox.id).catch(() => delay(startPollMs).done);
+						latest = await store.sandboxes.get(sandbox.id);
+					}
+					if (latest?.autoUpgrade !== true) return undefined;
+					if (latest.type !== "isolate" && latest.upgradedFrom === undefined) return undefined;
 					// Claimed before the upgrade, so another reader of its end leaves it to this one.
 					const claimed = await store.commands.update(command.id, (stored) =>
 						stored.state === "running" ? { ...stored, rerunPending: stored.rerunPending ?? now() } : undefined,
@@ -8516,7 +8534,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (existing !== undefined && body.replace !== true) {
 					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
-				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && current.type !== "microvm") {
+				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
+				// own (`keepSnapshot`), since a host prunes automatic snapshots, and removes them with their sandbox. The
+				// entry stays in the sandbox's history, automatic, on its own ref.
+				const source =
+					body.snapshotId !== undefined
+						? await store.snapshots.get(body.snapshotId)
+						: current.state === "running" || current.latestSnapshotId === undefined
+							? undefined
+							: await store.snapshots.get(current.latestSnapshotId);
+				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
+					throw notFound("snapshot of this sandbox");
+				}
+				// What its bytes are of: a copied snapshot's own (an upgraded sandbox's from before are an isolate's), else what
+				// the sandbox is now.
+				const type = source?.sandboxType ?? current.type;
+				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && type !== "microvm") {
 					throw new KantelError("invalid", "Only a microVM's snapshot takes minMemoryMb");
 				}
 				// The least memory a sandbox made from it may have: as given, 0 for none, else the one it replaces keeps its own.
@@ -8540,20 +8573,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let memory = false;
 				// When the bytes were taken: a copied snapshot's own time (its source's, for one saved before this was kept), else now.
 				let takenAt: number | undefined;
-				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
-				let machine = recordedMachine(current);
-				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
-				// own (`keepSnapshot`), since a host prunes automatic snapshots, and removes them with their sandbox. The
-				// entry stays in the sandbox's history, automatic, on its own ref.
-				const source =
-					body.snapshotId !== undefined
-						? await store.snapshots.get(body.snapshotId)
-						: current.state === "running" || current.latestSnapshotId === undefined
-							? undefined
-							: await store.snapshots.get(current.latestSnapshotId);
-				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
-					throw notFound("snapshot of this sandbox");
-				}
+				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one, else the
+				// sandbox's where it is still what they were taken of (an isolate's records none).
+				let machine = type === current.type ? recordedMachine(current) : {};
 				if (source !== undefined) {
 					const from = readyRef(source);
 					await requireSnapshotHostReachable(from);
@@ -8594,7 +8616,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					description: body.description,
 					...(body.labels === undefined ? {} : { labels: body.labels }),
 					sandboxId: current.id,
-					sandboxType: current.type,
+					sandboxType: type,
 					state: "ready",
 					trigger: "save",
 					memory,
@@ -8672,11 +8694,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot.ref);
 			// Its running sandbox's newest moves back to the one before it, by `adopt` (expiry may be deleting that one): the
-			// first still there, else none; a pointer another write moved meanwhile is left as it is.
+			// first still there, else none; a pointer another write moved meanwhile is left as it is. Only one of what the
+			// sandbox is now: an upgraded sandbox's from before are an isolate's, which its microVM never starts from.
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
 				const older = newestFirst(
 					(await store.snapshots.list({ sandboxId: current.id, kind: "automatic" })).filter(
-						(entry) => entry.state === "ready",
+						(entry) => entry.state === "ready" && entry.sandboxType === current.type,
 					),
 				);
 				const pointAt = async (to: StoredSnapshot | undefined, was: string | undefined) =>
@@ -9844,6 +9867,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							...(latest.startedAt === undefined ? {} : { startedAt: latest.startedAt }),
 							...(latest.stoppedAt === undefined ? {} : { stoppedAt: latest.stoppedAt }),
 							...(latest.lastActiveAt === undefined ? {} : { lastActiveAt: latest.lastActiveAt }),
+							// Whether the isolate's host had its egress as it was (an update not yet delivered, it hadn't).
+							egressInSync:
+								latest.egressRevision === undefined ||
+								(latest.egressApplied ?? Number.NEGATIVE_INFINITY) >= latest.egressRevision,
 						},
 						...(machine.size === undefined ? {} : { size: machine.size }),
 						...(machine.shape === undefined ? {} : { shape: machine.shape }),
@@ -9933,29 +9960,81 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Puts an upgrading record back as it was before upgrade `operationId` (its state, runs and stop times), once its
 	 * backend has said it didn't happen. Nothing happens to one no longer upgrading by that operation.
+	 *
+	 * A running isolate runs again only with its egress as it is now. A change made while it upgraded (a grant revoked, a
+	 * protected variable unbound) skipped it, as one skips any starting sandbox, so it is sent to the isolate while the
+	 * record is still `starting`, and again for each change made while that was sent, as a boot does (`boot`). Where its
+	 * host refuses it, or it can't be got there in `BOOT_RECONCILE_ROUNDS`, the isolate is stopped instead (`enforceStop`),
+	 * never run with what it had. Nothing changed meanwhile (its revision the one the upgrade read), it runs again at
+	 * once. A stopped one is put back stopped: its next start sends its egress.
 	 */
 	async function restoreUpgrade(sandboxId: string, operationId: string): Promise<void> {
-		await transition(
-			sandboxId,
-			"starting",
-			(latest) => {
-				const upgrading = latest.upgrading;
-				if (upgrading === undefined) return latest;
-				const { before } = upgrading;
-				return {
-					...latest,
-					state: upgrading.from,
-					runs: before.runs,
-					stopsAt: before.stopsAt,
-					startedAt: before.startedAt,
-					stoppedAt: before.stoppedAt,
-					lastActiveAt: before.lastActiveAt,
-					upgrading: undefined,
-					lifecycle: (latest.lifecycle ?? 0) + 1,
-				};
-			},
-			(latest) => latest.upgrading?.operationId === operationId,
-		).catch(() => undefined);
+		const ours = (latest: StoredSandbox) => latest.upgrading?.operationId === operationId;
+		/** What it was before the upgrade, but its state. */
+		const before = (latest: StoredSandbox): Partial<StoredSandbox> => {
+			const upgrading = latest.upgrading;
+			if (upgrading === undefined) return {};
+			const { before } = upgrading;
+			return {
+				runs: before.runs,
+				stopsAt: before.stopsAt,
+				startedAt: before.startedAt,
+				stoppedAt: before.stoppedAt,
+				lastActiveAt: before.lastActiveAt,
+				upgrading: undefined,
+			};
+		};
+		try {
+			const read = await store.sandboxes.get(sandboxId);
+			const upgrading = read?.upgrading;
+			if (read === undefined || upgrading === undefined || !ours(read)) return;
+			const reconciles = upgrading.from === "running" && backend.updateEgress !== undefined;
+			// What the isolate's host has: the egress the upgrade read (the same as the isolate's before it), where its host
+			// had taken that; else none it can be said to have, so it is sent whatever changed.
+			let applied = upgrading.before.egressInSync === false ? undefined : upgrading.egressRevision;
+			let sent = false;
+			const restored = (latest: StoredSandbox): StoredSandbox => ({
+				...latest,
+				...before(latest),
+				state: latest.upgrading?.from ?? latest.state,
+				lifecycle: (latest.lifecycle ?? 0) + 1,
+				...(sent && applied !== undefined && (latest.egressApplied ?? Number.NEGATIVE_INFINITY) < applied
+					? { egressApplied: applied }
+					: {}),
+			});
+			const ready = (latest: StoredSandbox) =>
+				ours(latest) && (!reconciles || (applied !== undefined && latest.egressRevision === applied));
+			let result = await transition(sandboxId, "starting", restored, ready);
+			for (let round = 0; "lost" in result && result.lost.state === "starting" && ours(result.lost); round++) {
+				const lost = result.lost;
+				// Stopped, its isolate's time ending now, never running again with the egress it had.
+				const stop = (reason: string) =>
+					enforceStop(sandboxId, reason, false, lost, undefined, (latest) => {
+						const at = now();
+						const was = before(latest);
+						return {
+							...was,
+							runs: (was.runs ?? latest.runs).map((run) => (run.to === undefined ? { ...run, to: at } : run)),
+						};
+					});
+				if (round >= BOOT_RECONCILE_ROUNDS) {
+					if (await stop("Its egress couldn't be applied to it as its upgrade was undone")) return;
+				} else {
+					try {
+						await deliverEgress(lost);
+						applied = lost.egressRevision ?? applied;
+						sent = true;
+					} catch (error) {
+						// Refused for the egress it has still: stopped. One changed since is sent next round.
+						if (unenforceable(error) && (await stop(UNENFORCED))) return;
+						if (!unenforceable(error)) await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+					}
+				}
+				result = await transition(sandboxId, "starting", restored, ready);
+			}
+		} catch {
+			// Deleted meanwhile, or its store away: an upgrade still on the record is the sweep's to settle.
+		}
 	}
 
 	/**
@@ -10044,19 +10123,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * The sweep's settling of an upgrade whose gateway has gone quiet (`upgrading.heartbeatAt`), or whose outcome its
 	 * backend couldn't tell: done, published; failed, put back. One its backend still can't tell is left for next time.
+	 *
+	 * Taken on in the store every gateway shares first: its heartbeat moved on from the quiet one this sweep read, as
+	 * its upgrading gateway's would be, and kept moving while this gateway settles it. So another gateway's sweep finds
+	 * it under way and leaves it, and only one settles it at a time; one already taken on, or settled, is left.
 	 */
 	async function settleStuckUpgrade(sandbox: StoredSandbox): Promise<void> {
 		const upgrading = sandbox.upgrading;
 		if (upgrading === undefined) return;
 		const { operationId } = upgrading;
-		await track([sandbox.id], async () => {
-			const outcome: UpgradeOutcome =
-				backend.settleUpgrade === undefined
-					? { state: "failed" }
-					: await backend.settleUpgrade(sandbox.id, operationId);
-			if (outcome.state === "done") await commitUpgrade(sandbox.id, operationId, outcome.placement);
-			else await restoreUpgrade(sandbox.id, operationId);
-		});
+		// The heartbeat this gateway last wrote: moved on only from it, so a write by anyone else ends this one's hold.
+		let mine = upgrading.heartbeatAt;
+		const beat = async (to: number) => {
+			const from = mine;
+			const written = await patchSandbox(sandbox.id, (latest) =>
+				latest.upgrading?.operationId === operationId && latest.upgrading.heartbeatAt === from
+					? { ...latest, upgrading: { ...latest.upgrading, heartbeatAt: to } }
+					: undefined,
+			);
+			if (written !== undefined) mine = to;
+			return written !== undefined;
+		};
+		if (!(await beat(now()))) return;
+		const heartbeat = setInterval(() => beat(now()).catch(() => undefined), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		try {
+			await track([sandbox.id], async () => {
+				const outcome: UpgradeOutcome =
+					backend.settleUpgrade === undefined
+						? { state: "failed" }
+						: await backend.settleUpgrade(sandbox.id, operationId);
+				if (outcome.state === "done") await commitUpgrade(sandbox.id, operationId, outcome.placement);
+				else await restoreUpgrade(sandbox.id, operationId);
+			});
+		} catch (error) {
+			// Not settled (its backend can't tell yet): let go, quiet as it was, for the next sweep on any gateway.
+			clearInterval(heartbeat);
+			await beat(upgrading.heartbeatAt).catch(() => undefined);
+			throw error;
+		} finally {
+			clearInterval(heartbeat);
+		}
 	}
 
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */

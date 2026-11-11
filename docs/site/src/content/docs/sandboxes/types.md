@@ -91,13 +91,13 @@ The body takes `size` or `resources`, and `image`, as a [create](/sandboxes/life
 
 - **A running or a stopped isolate** can be upgraded. A stopped one comes back as a running microVM: the files go into a machine that runs. Stop it afterwards if you want it stopped. One that is starting, stopping or in `error` is `conflict`.
 - **Commands and file calls sent during the upgrade wait for it**, as calls during a start do, and then run in the microVM.
-- **If the microVM can't be made**, the call fails with why (`exhausted` when no host has room), and the isolate is left as it was: still running, or still stopped, with its files.
+- **If the microVM can't be made**, the call fails with why (`exhausted` when no host has room), and the isolate is left as it was: still running, or still stopped, with its files. A change to its egress made during the upgrade, such as a revoked grant, reaches a running isolate before it runs again; where its host can't take it, the isolate is stopped instead.
 - **If the microVM's egress can't be enforced**, such as a grant revoked during the upgrade that its host can't take, it is stopped before it runs, as any sandbox is. It is still a microVM: the isolate is gone, and starting it again starts the microVM.
 - **If its host doesn't answer**, Kantel doesn't guess. Each upgrade has an ID its host does at most once, and Kantel asks the host what became of it. Until the host can answer, the call fails `unavailable`, and the sandbox stays `starting`. Kantel's sweep then settles it as the microVM, or as the isolate it was, never both. The same goes for an upgrade whose gateway stopped part way.
 - **While its files move to another host, the isolate is held still.** A command already running in it ends first and its writes go with the files. A command or write after that is refused until the upgrade ends.
 - **Its cost** changes at the upgrade: its time as an isolate ends then, at the isolate's rate, and its time as a microVM begins, at its size's rate. A `sandbox.upgraded` [event and webhook](/monitoring/webhooks/) record it, with what moved (`data.files`, `data.bytes`) and how (`data.path`).
 - **Its environments' secret files and repositories** are set up again in the microVM, where a microVM keeps them, and an exposed port is exposed again on it.
-- Its snapshots from before the upgrade stay, as an isolate's: a sandbox made from one is an isolate.
+- Its snapshots from before the upgrade stay, as an isolate's: a sandbox made or forked from one is an isolate, a saved snapshot copied from one is an isolate's, and the microVM never starts from one.
 
 Where the files go: the isolate's own host makes the microVM when it runs microVMs too and has room, and moves the files from its own store into the microVM, never through Kantel. Otherwise the microVM goes on another host the sandbox may use, and Kantel moves the files there, up to 20,000 files and 256 MiB. Past that the upgrade is refused (`not_supported`), as soon as the files are listed and before a microVM is made, and the isolate stays as it is. If deleting the isolate from its old host fails once the microVM runs, Kantel deletes it when that host next connects.
 
@@ -131,6 +131,7 @@ Switching to SSH on the microVM, in /home/user/workspace.
 
 Without `autoUpgrade`, the pseudo-shell asks whether to upgrade instead.
 
+- **Each command that needed it runs again.** Two commands that need a microVM at once upgrade the isolate once, and each runs again in the microVM, whichever of them upgraded it, as long as `autoUpgrade` is still on when its answer comes.
 - **The whole command runs again**, not just the step that failed: in `curl -o data.json $URL && tar -xf a.tar`, the download happens twice. Write commands that can run again, or upgrade first.
 - **A kill stops the run again too.** Kill the command while the isolate upgrades and it isn't run again (the upgrade still finishes). Kill it once its run again has started, while it runs or after it ends naming it in `rerunAs`, and its run again is killed with it.
 - **Only what the isolate's runtime says counts.** Where the runtime doesn't say (an older host), Kantel reads `needsMicrovm` from the shell's answer and marks it `"inferred": true`. That is a hint for you: a command can print the same text itself, so `autoUpgrade` never acts on it.
