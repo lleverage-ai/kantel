@@ -172,15 +172,16 @@ fn evict_one_idle(sessions: &mut HashMap<String, Session>) -> bool {
     }
 }
 
-fn clamp_memory(body: &Value) -> Result<usize, Response> {
+/// The request's memoryMiB, or a 400 response (boxed: a Response is large, and the error path is rare).
+fn clamp_memory(body: &Value) -> Result<usize, Box<Response>> {
     match &body["memoryMiB"] {
         Value::Null => Ok(DEFAULT_MEMORY_MIB),
         v => match v.as_u64() {
             Some(m) if m >= MIN_MEMORY_MIB as u64 && m <= MAX_MEMORY_MIB as u64 => Ok(m as usize),
-            _ => Err(err(
+            _ => Err(Box::new(err(
                 StatusCode::BAD_REQUEST,
                 format!("memoryMiB must be an integer {MIN_MEMORY_MIB}–{MAX_MEMORY_MIB}"),
-            )),
+            ))),
         },
     }
 }
@@ -198,7 +199,7 @@ fn assign(
     app: &App,
     id: &str,
     mem_mib: usize,
-) -> std::result::Result<(Arc<ShellHandle>, &'static str), Response> {
+) -> std::result::Result<(Arc<ShellHandle>, &'static str), Box<Response>> {
     expire(app);
     let mut sessions = app.sessions.lock().unwrap();
     if let Some(s) = sessions.get_mut(id) {
@@ -206,11 +207,13 @@ fn assign(
         return Ok((s.handle.clone(), "session"));
     }
     if sessions.len() >= app.cfg.max_sandboxes && !evict_one_idle(&mut sessions) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "sandbox capacity reached on this host; retry", "retryable": true })),
-        )
-            .into_response());
+        return Err(Box::new(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "sandbox capacity reached on this host; retry", "retryable": true })),
+            )
+                .into_response(),
+        ));
     }
     let (handle, hit) = if mem_mib == DEFAULT_MEMORY_MIB {
         match app.pool.lock().unwrap().pop() {
@@ -254,11 +257,11 @@ async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
     };
     let mem_mib = match clamp_memory(&body) {
         Ok(m) => m,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let (handle, hit) = match assign(&app, &id, mem_mib) {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let _busy = begin(&app, &id);
     let (reply, rx) = tokio::sync::oneshot::channel();
@@ -280,11 +283,11 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
     };
     let mem_mib = match clamp_memory(&body) {
         Ok(m) => m,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let (handle, hit) = match assign(&app, &id, mem_mib) {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let _busy = begin(&app, &id);
     let wall = body["timeoutMs"]
@@ -337,10 +340,10 @@ fn is_warm(app: &App) -> bool {
 /// in main) seeds each new isolate's Math.random from the OS, so the VMs diverge. (Python's `random` is reseeded per
 /// run in the guest; `entropy` is accepted for the contract and mixed into the OS-seeded pool.)
 async fn reseed(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Value> {
-    if let Some(hex) = body["entropy"].as_str() {
-        if let Ok(bytes) = hex::decode(hex) {
-            crate::seed_entropy(&bytes);
-        }
+    if let Some(hex) = body["entropy"].as_str()
+        && let Ok(bytes) = hex::decode(hex)
+    {
+        crate::seed_entropy(&bytes);
     }
     app.sessions.lock().unwrap().clear();
     app.pool.lock().unwrap().clear();

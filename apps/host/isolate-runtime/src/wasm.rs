@@ -65,16 +65,13 @@ fn try_inspect(bytes: &[u8], allow_shared: bool) -> Result<Info, String> {
         let payload = payload.map_err(|e| format!("invalid wasm: {e}"))?;
         // Validate everything (types, that memory.grow targets a memory the module has, and so on). This is what
         // stops a hand-built module that lies about its sections.
-        match validator
+        if let ValidPayload::Func(f, body) = validator
             .payload(&payload)
             .map_err(|e| format!("invalid wasm: {e}"))?
         {
-            ValidPayload::Func(f, body) => {
-                f.into_validator(Default::default())
-                    .validate(&body)
-                    .map_err(|e| format!("invalid wasm: {e}"))?;
-            }
-            _ => {}
+            f.into_validator(Default::default())
+                .validate(&body)
+                .map_err(|e| format!("invalid wasm: {e}"))?;
         }
         match payload {
             Payload::ImportSection(reader) => {

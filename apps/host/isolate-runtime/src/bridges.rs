@@ -334,17 +334,18 @@ pub async fn egress_fetch(
             .await
             .map_err(|e| anyhow!("egress request: {e}"))?;
         let status = resp.status();
-        if req.follow && status.is_redirection() {
-            if let Some(loc) = resp.headers().get("location").and_then(|l| l.to_str().ok()) {
-                url = resolve_redirect(&uri, &authority, loc);
-                if status != hyper::StatusCode::TEMPORARY_REDIRECT
-                    && status != hyper::StatusCode::PERMANENT_REDIRECT
-                {
-                    method = "GET".into();
-                    body = Vec::new();
-                }
-                continue;
+        if req.follow
+            && status.is_redirection()
+            && let Some(loc) = resp.headers().get("location").and_then(|l| l.to_str().ok())
+        {
+            url = resolve_redirect(&uri, &authority, loc);
+            if status != hyper::StatusCode::TEMPORARY_REDIRECT
+                && status != hyper::StatusCode::PERMANENT_REDIRECT
+            {
+                method = "GET".into();
+                body = Vec::new();
             }
+            continue;
         }
         let mut headers = serde_json::Map::new();
         for (k, v) in resp.headers() {
