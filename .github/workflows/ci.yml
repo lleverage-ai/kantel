@@ -126,7 +126,7 @@ jobs:
     # (kantel-isolate-cargo) and the build, with V8's static library (about 100 MB a target, downloaded by rusty_v8's
     # build script), a directory in the runner's home, both kept between jobs.
     #
-    # V8: the sandboxed V8 build the crate pins (v8/fetch-v8-sandbox.sh, the rusty-v8-sandbox-v150.4.0-1 prerelease),
+    # V8: the sandboxed V8 build the crate pins (v8/fetch-v8-sandbox.sh, the rusty-v8-sandbox-v150.4.0-1 prerelease, x86_64 and aarch64),
     # which production images link, with the patched deno_core (v8/sandbox-crate.sh); the KANTEL_V8_SANDBOX repository
     # variable set to "0" checks the stock V8 instead. KANTEL_RUSTY_V8_ARCHIVE with KANTEL_RUSTY_V8_ARCHIVE_SHA256 picks
     # any other build; the script checks it against its SHA-256 before cargo sees it.
@@ -167,8 +167,7 @@ jobs:
         if: steps.crate.outputs.present == 'true'
         run: |
           apps/host/guest/isolate-runtime.sh amd64
-          # arm64 links the stock V8 until the sandboxed aarch64 build is published.
-          KANTEL_V8_SANDBOX=0 apps/host/guest/isolate-runtime.sh arm64
+          apps/host/guest/isolate-runtime.sh arm64
 
   cli-go:
     # kantel and kantel-admin (apps/cli) are Go too. The generated API client must match the OpenAPI document, and the
