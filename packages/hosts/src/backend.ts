@@ -39,6 +39,7 @@ import {
 	type SandboxTemplateBoot,
 	type TakenSnapshot,
 	type TemplateRuntime,
+	type UpgradedPlacement,
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
@@ -142,11 +143,18 @@ export const OLD_HOST_KILL =
 
 /** A host's `sandbox.exec` answer as the compute API takes it. */
 function execResult(result: HostExecResult): ExecResult {
+	const needs = result.needsMicrovm;
+	const terminated = result.terminated;
 	return {
 		exitCode: result.exitCode,
 		stdout: result.stdout,
 		stderr: result.stderr,
 		timedOut: result.timedOut === true,
+		// From an isolate, as its host said: what it needed a microVM for, and why its runtime stopped it.
+		...(needs !== undefined && typeof needs.command === "string" && typeof needs.reason === "string"
+			? { needsMicrovm: { command: needs.command, reason: needs.reason } }
+			: {}),
+		...(terminated === "cpu" || terminated === "memory" || terminated === "wall" ? { terminated } : {}),
 	};
 }
 
@@ -953,6 +961,28 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}
 			return out;
+		},
+		// On its own host where it can (the files never leave it), else on another the files are moved to.
+		async upgrade(sandboxId, spec): Promise<UpgradedPlacement> {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "isolate") throw new KantelError("conflict", "The sandbox is a microVM already");
+			const { sandbox, hostId, path, files, bytes, ...known } = await hosts.sandboxes.upgrade(sandboxId, {
+				...(spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+				...(spec.shape === undefined
+					? {}
+					: {
+							shape: {
+								vcpus: spec.shape.vcpus,
+								memoryMiB: spec.shape.memoryMb,
+								...(spec.shape.diskGb === undefined ? {} : { diskGiB: spec.shape.diskGb }),
+							},
+						}),
+				owner: spec.accountId,
+				env: spec.env,
+				hostIds: spec.eligibleHosts,
+				...egressOf(spec.egress),
+			});
+			return { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes };
 		},
 		async destroy(sandboxId) {
 			await options.ports?.forget(sandboxId);

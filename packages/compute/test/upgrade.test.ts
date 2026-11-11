@@ -11,6 +11,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { needsMicrovmOf } from "../src/needs-microvm.ts";
 import { PLACEHOLDER_RATES } from "../src/service.ts";
 import { createStubBackend } from "../src/stub-backend.ts";
+import { TarCheck, writeTar } from "../src/tar.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -404,5 +405,22 @@ describe("needsMicrovmOf", () => {
 		expect(needsMicrovmOf(result("bash: npm: command not found\n", 1))).toBeUndefined();
 		const said = { command: "pip install", reason: "Packages need a microVM." };
 		expect(needsMicrovmOf({ ...result("anything", 1), needsMicrovm: said })).toEqual(said);
+	});
+});
+
+describe("writeTar", () => {
+	it("writes a tar the archive check reads back, long names and links included", () => {
+		const long = `${"d".repeat(70)}/${"f".repeat(70)}.txt`;
+		const tar = writeTar([
+			{ kind: "directory", name: "src" },
+			{ kind: "file", name: "src/a.txt", bytes: new TextEncoder().encode("hello\n") },
+			{ kind: "directory", name: "d".repeat(70) },
+			{ kind: "file", name: long, mode: 0o755, bytes: new Uint8Array(1000) },
+			{ kind: "symlink", name: "link", target: "src/a.txt" },
+		]);
+		expect(tar.length % 512).toBe(0);
+		const check = new TarCheck({ maxBytes: 1 << 20 });
+		check.push(tar);
+		expect(check.end()).toEqual({ files: 2, directories: 2, symlinks: 1, bytes: 1006 });
 	});
 });

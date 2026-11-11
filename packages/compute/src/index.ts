@@ -17,6 +17,7 @@ export * from "./secrets.ts";
 export * from "./service.ts";
 export * from "./store.ts";
 export * from "./stub-backend.ts";
+export { type TarEntry, writeTar } from "./tar.ts";
 export * from "./telemetry.ts";
 /** How long a stored template build's lease lasts: the hosts service's build timeouts must stay within it. */
 export { TEMPLATE_BUILD_LEASE_MS } from "./templates.ts";

@@ -5,7 +5,8 @@
  * The public sandbox API (docs/site/src/content/docs/api/reference/sandboxes.md) is built over `sandboxes` here; this
  * package doesn't decide who may use which sandbox, only where it runs and how it is reached.
  */
-import { type Clock, KantelError, placementError, systemClock } from "@kantel/contracts";
+import { type TarEntry, UPGRADE_MOVE_LIMITS, UPGRADE_WORKSPACE, writeTar } from "@kantel/compute";
+import { type Clock, isKantelError, KantelError, placementError, systemClock } from "@kantel/contracts";
 import type { HostCluster } from "./cluster.ts";
 import {
 	parseHostCapacity,
@@ -35,6 +36,7 @@ import {
 	type HostEgress,
 	type HostEgressRecord,
 	type HostEnvAnswer,
+	type HostExecResult,
 	type HostFacts,
 	type HostHello,
 	type HostImageChannel,
@@ -230,6 +232,49 @@ export interface CreateSandboxInput {
 	 * and restores it only when it was built as the create's size or shape.
 	 */
 	readonly template?: HostTemplateBoot;
+}
+
+/** A microVM to make from an isolate (`sandboxes.upgrade`): a microVM create's input, without a template or snapshot. */
+export type UpgradeSandboxInput = Omit<CreateSandboxInput, "sandboxId" | "tier" | "from" | "mounts" | "template">;
+
+/** An upgrade's microVM: its placement, and whether its own host (`host`) or Kantel (`control-plane`) moved its files. */
+export interface UpgradedSandbox extends SandboxPlacement {
+	readonly path: "host" | "control-plane";
+	readonly files: number;
+	readonly bytes: number;
+}
+
+/** Where an upgrade's tar is put in the microVM before its host extracts it (and deletes it). */
+const UPGRADE_STAGING = "/tmp/.kantel-upgrade.tar";
+/** Makes `/workspace` a link to the upgraded files, as root: an empty directory there is replaced. */
+const UPGRADE_LINK = `set -e\nif [ -d /workspace ] && [ ! -L /workspace ]; then rmdir /workspace; fi\nln -sfn ${UPGRADE_WORKSPACE} /workspace`;
+/** How much of a file one read from an isolate's host takes, as Kantel moves its files to another host. */
+const UPGRADE_READ_BYTES = 8 * 1024 * 1024;
+/** The most of the tar one write carries to the microVM's host: a bigger one goes in parts, joined there. */
+const UPGRADE_WRITE_BYTES = 24 * 1024 * 1024;
+
+/** A file of a sandbox, as `sandbox.files.list` answers it. */
+interface ListedFile {
+	readonly path: string;
+	readonly type: string;
+	readonly size: number;
+	readonly mode?: number;
+	readonly target?: string;
+}
+
+function base64Of(bytes: Uint8Array): string {
+	let binary = "";
+	for (let at = 0; at < bytes.length; at += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+	}
+	return btoa(binary);
+}
+
+function bytesOf(base64: string): Uint8Array {
+	const binary = atob(base64);
+	const out = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index++) out[index] = binary.charCodeAt(index);
+	return out;
 }
 
 /** A template build as the compute plane asks for it: the host gives the disk, as it would for a create of the shape. */
@@ -506,6 +551,13 @@ export interface HostsService {
 				readonly mounts?: readonly HostMount[];
 			},
 		): Promise<SandboxPlacement>;
+		/**
+		 * Makes an isolate a microVM with the same ID and its files: on its own host where that host does it
+		 * (`HOST_FEATURES.isolateUpgrade`, with room), else on another that may take it, the files moved by Kantel (up to
+		 * `UPGRADE_MOVE_LIMITS`), the isolate deleted from its host once the microVM runs with them. A failure leaves the
+		 * isolate as it was, placed where it was. Answers the microVM's placement, how its files went and how many.
+		 */
+		upgrade(sandboxId: string, input: UpgradeSandboxInput): Promise<UpgradedSandbox>;
 		/** Any other method of a sandbox, on its host: stop, resume, exec, files, snapshots. */
 		call<T = unknown>(sandboxId: string, method: string, params?: object, options?: CallOptions): Promise<T>;
 		delete(sandboxId: string): Promise<void>;
@@ -1362,6 +1414,110 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		throw new KantelError("conflict", "A sandbox with that ID exists");
 	};
 
+	/**
+	 * Moves an isolate's `/workspace` from its host to a new microVM of the same ID on another (an upgrade its own host
+	 * can't make): each directory listed, each file read a part at a time, all of it as one tar (at most
+	 * `UPGRADE_MOVE_LIMITS`), written into the microVM, in parts where it is big, and extracted at `UPGRADE_WORKSPACE`
+	 * by the microVM's host with its own code, as an archive upload is.
+	 */
+	const moveFiles = async (
+		sandboxId: string,
+		fromHost: string,
+		toHost: string,
+	): Promise<{ readonly files: number; readonly bytes: number }> => {
+		const entries: TarEntry[] = [];
+		let bytes = 0;
+		const tooMuch = (what: string) =>
+			new KantelError(
+				"not_supported",
+				`The isolate has ${what} to move to a microVM on another host (at most ${UPGRADE_MOVE_LIMITS.files} files and ${UPGRADE_MOVE_LIMITS.bytes / (1024 * 1024)} MiB); upgrade it on a host that runs both isolates and microVMs`,
+			);
+		const queue = ["/workspace"];
+		for (let dir = queue.shift(); dir !== undefined; dir = queue.shift()) {
+			const { entries: listed } = await onHost<{ entries: ListedFile[] | null }>(fromHost, HostMethods.fileList, {
+				sandboxId,
+				path: dir,
+			});
+			for (const entry of listed ?? []) {
+				if (!entry.path.startsWith("/workspace/")) continue;
+				const name = entry.path.slice("/workspace/".length);
+				if (name === "" || name.split("/").includes("..")) continue;
+				if (entries.length >= UPGRADE_MOVE_LIMITS.files) throw tooMuch("too many files");
+				if (entry.type === "dir" || entry.type === "directory") {
+					entries.push({ kind: "directory", name });
+					queue.push(entry.path);
+				} else if (entry.type === "symlink") {
+					entries.push({ kind: "symlink", name, target: entry.target ?? "" });
+				} else {
+					bytes += entry.size;
+					if (bytes > UPGRADE_MOVE_LIMITS.bytes) throw tooMuch("too many bytes");
+					const parts: Uint8Array[] = [];
+					let size = entry.size;
+					for (let offset = 0; offset === 0 || offset < size; ) {
+						const read = await onHost<{ data: string; fileSize?: number }>(fromHost, HostMethods.fileRead, {
+							sandboxId,
+							path: entry.path,
+							offset,
+							length: UPGRADE_READ_BYTES,
+						});
+						const part = bytesOf(read.data);
+						parts.push(part);
+						size = read.fileSize ?? part.length;
+						offset += part.length;
+						if (part.length === 0) break;
+					}
+					const whole = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+					let at = 0;
+					for (const part of parts) {
+						whole.set(part, at);
+						at += part.length;
+					}
+					entries.push({ kind: "file", name, mode: (entry.mode ?? 0) & 0o777 || 0o644, bytes: whole });
+				}
+			}
+		}
+		const tar = writeTar(entries);
+		if (tar.length <= UPGRADE_WRITE_BYTES) {
+			await onHost(toHost, HostMethods.fileWrite, {
+				sandboxId,
+				path: UPGRADE_STAGING,
+				data: base64Of(tar),
+				mode: 0o600,
+			});
+		} else {
+			const names: string[] = [];
+			for (let at = 0; at < tar.length; at += UPGRADE_WRITE_BYTES) {
+				const name = `${UPGRADE_STAGING}.${String(names.length).padStart(6, "0")}`;
+				await onHost(toHost, HostMethods.fileWrite, {
+					sandboxId,
+					path: name,
+					data: base64Of(tar.subarray(at, at + UPGRADE_WRITE_BYTES)),
+					mode: 0o600,
+				});
+				names.push(name);
+			}
+			const joined = await onHost<HostExecResult>(toHost, HostMethods.exec, {
+				sandboxId,
+				argv: ["sh", "-c", `cat ${names.join(" ")} > ${UPGRADE_STAGING} && rm -f ${names.join(" ")}`],
+				user: "root",
+				timeoutMs: 120_000,
+			});
+			if (joined.exitCode !== 0) {
+				throw new KantelError(
+					"unavailable",
+					`The isolate's files couldn't be put together in the microVM: ${joined.stderr.trim()}`,
+				);
+			}
+		}
+		await onHost(
+			toHost,
+			HostMethods.fileExtract,
+			{ sandboxId, archive: UPGRADE_STAGING, target: UPGRADE_WORKSPACE },
+			{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+		);
+		return { files: entries.length, bytes };
+	};
+
 	const reserve = (hostId: string, memoryMiB: number, diskGiB: number) => {
 		reserved.set(hostId, [...(reserved.get(hostId) ?? []), { at: clock.now(), memoryMiB, diskGiB }]);
 	};
@@ -1781,6 +1937,154 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					};
 				} catch (error) {
 					throw await unplace(placement, await store.getHost(source.hostId), error);
+				}
+			},
+			async upgrade(sandboxId, input) {
+				const source = await placementOf(sandboxId);
+				if (source.tier !== "isolate") throw new KantelError("conflict", "The sandbox is a microVM already");
+				const shape = input.shape === undefined ? undefined : shapeIn(input.shape, "microvm");
+				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
+				const listed = (await store.listHosts())
+					.map(sane)
+					.filter((host) => only === undefined || only.has(host.id))
+					.filter((host) => host.accountId === undefined || host.accountId === input.owner)
+					.filter((host) => !needsEgressPolicy(input.egress) || enforcesPolicy(host));
+				const request = {
+					tier: "microvm" as const,
+					...(input.size === undefined ? {} : { size: input.size }),
+					...(shape === undefined ? {} : { shape }),
+					...(input.owner === undefined ? {} : { owner: input.owner }),
+					...(input.labels === undefined ? {} : { labels: input.labels }),
+				};
+				const candidateOf = (host: HostRecord): Candidate => {
+					const held = reservedOn(host);
+					return {
+						host,
+						connected: hub.connected(host.id),
+						reservedMemoryMiB: held.memoryMiB,
+						reservedDiskGiB: held.diskGiB,
+						heldMemory: held.memory,
+						owners: new Set(),
+					};
+				};
+				/** A create's params for the microVM, as `create` sends them for the size or shape placed. */
+				const paramsFor = (chosen: { readonly size: HostSize; readonly custom: boolean }) => ({
+					sandboxId,
+					tier: "microvm",
+					size: chosen.custom ? "" : chosen.size.name,
+					...(chosen.custom
+						? { vcpus: chosen.size.vcpus, memoryMiB: chosen.size.memoryMiB, diskGiB: chosen.size.diskGiB }
+						: {}),
+					...(input.owner === undefined ? {} : { owner: input.owner }),
+					...(input.env === undefined ? {} : { env: input.env }),
+					...(input.egress === undefined ? {} : { egress: input.egress }),
+				});
+				const placementOn = (host: HostRecord, size: HostSize): PlacementRecord => ({
+					sandboxId,
+					hostId: host.id,
+					tier: "microvm",
+					size: size.name,
+					...(input.owner === undefined ? {} : { owner: input.owner }),
+					vcpus: size.vcpus,
+					memoryMiB: size.memoryMiB,
+					diskGiB: size.diskGiB,
+					state: "starting",
+					createdAt: source.createdAt,
+					updatedAt: clock.now(),
+				});
+				// Its own host, where it makes microVMs from its isolates: the files go from its blob store into the microVM
+				// there, never through Kantel.
+				const own = listed.find(
+					(host) => host.id === source.hostId && host.facts?.features?.includes(HOST_FEATURES.isolateUpgrade) === true,
+				);
+				const here = own === undefined ? undefined : place(request, [candidateOf(own)]);
+				if (own !== undefined && here !== undefined && !isRefusal(here)) {
+					const placement = placementOn(own, here.size);
+					await store.putPlacement(placement);
+					reserve(own.id, here.size.memoryMiB, here.size.diskGiB);
+					try {
+						const sandbox = await onHost<HostSandbox>(
+							own.id,
+							HostMethods.upgrade,
+							paramsFor(here),
+							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+							own,
+						);
+						return {
+							sandbox,
+							hostId: own.id,
+							placement: await settle(placement, sandbox, own),
+							nestedVirtualisation: own.facts?.nested ?? false,
+							path: "host" as const,
+							files: sandbox.moved?.files ?? 0,
+							bytes: sandbox.moved?.bytes ?? 0,
+						};
+					} catch (error) {
+						// The host undid what it made: the isolate is as it was, and placed as it was.
+						await store.putPlacement(source);
+						// No room there after all: another host, as when it had none to begin with. Any other failure stands.
+						if (!isKantelError(error) || (error.code !== "exhausted" && error.code !== "not_supported")) throw error;
+						log(`[hosts] host ${own.id} couldn't upgrade ${sandboxId} itself (${error.message}); moving it`);
+					}
+				}
+				// Another host makes the microVM, under the same ID while the isolate still runs on its own (each host's
+				// events go by the placement, which stays the isolate's until the files are in), and Kantel moves the files.
+				const others = listed.filter(
+					(host) => host.id !== source.hostId && host.facts?.features?.includes(HOST_FEATURES.filesExtract) === true,
+				);
+				const chosen = place(request, others.map(candidateOf));
+				if (isRefusal(chosen)) {
+					throw placementError(
+						"exhausted",
+						chosen.code,
+						others.length === 0
+							? "No host can make a microVM from this isolate: its own host doesn't run microVMs, and no other that may take it does"
+							: chosen.reason,
+					);
+				}
+				const target = chosen.host;
+				reserve(target.id, chosen.size.memoryMiB, chosen.size.diskGiB);
+				let made = false;
+				try {
+					const sandbox = await onHost<HostSandbox>(
+						target.id,
+						HostMethods.create,
+						paramsFor(chosen),
+						undefined,
+						target,
+					);
+					made = true;
+					const moved = await moveFiles(sandboxId, source.hostId, target.id);
+					const linked = await onHost<HostExecResult>(target.id, HostMethods.exec, {
+						sandboxId,
+						argv: ["sh", "-c", UPGRADE_LINK],
+						user: "root",
+						timeoutMs: 30_000,
+					});
+					if (linked.exitCode !== 0) {
+						throw new KantelError(
+							"unavailable",
+							`/workspace couldn't be linked in the microVM: ${linked.stderr.trim()}`,
+						);
+					}
+					const placement = await settle(placementOn(target, chosen.size), sandbox, target);
+					// The microVM is the sandbox now: the isolate goes, its host's event for it no longer its placement's.
+					await onHost(source.hostId, HostMethods.delete, { sandboxId }).catch((error: unknown) =>
+						log(
+							`[hosts] the isolate ${sandboxId} on ${source.hostId} wasn't deleted after its upgrade: ${error instanceof Error ? error.message : String(error)}`,
+						),
+					);
+					return {
+						sandbox,
+						hostId: target.id,
+						placement,
+						nestedVirtualisation: target.facts?.nested ?? false,
+						path: "control-plane" as const,
+						...moved,
+					};
+				} catch (error) {
+					if (made) await onHost(target.id, HostMethods.delete, { sandboxId }).catch(() => undefined);
+					throw error;
 				}
 			},
 			async call<T>(sandboxId: string, method: string, params: object = {}, callOptions?: CallOptions) {
