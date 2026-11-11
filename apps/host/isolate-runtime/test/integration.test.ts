@@ -2,8 +2,10 @@
 // over kantel-host's protocol. Covers protocol parity with the behaviours sandbox.ts has, manifest semantics, node
 // and python features, egress tagging, needsMicrovm and terminated, and the B5 containment attacks with a
 // neighbour's latency checked. Skips with a message if the binary or assets aren't built.
+
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { available, client, type Harness, start } from "./harness";
+import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { available, BASE, client, type Harness, start } from "./harness";
 
 const skip = available();
 const RUN = skip === true;
@@ -448,10 +450,125 @@ d("review fixes: memory guards and limits", () => {
 	});
 });
 
+// memoryMiB bounds the V8 heap, ArrayBuffers and wasm memory together: holding ~60% of it in one and then taking
+// ~60% in the other is stopped (each alone fits, and before the limit was one figure each fitted on its own budget).
+d("one memory limit: heap, buffers and wasm together", () => {
+	beforeAll(async () => {
+		if (RUN) await c.load("mem", 256);
+	});
+	// 19 arrays of 1e6 doubles: ~152 MB of heap. 10 Uint8Arrays of 16 MiB: 160 MiB of buffers.
+	const heap = "const a=[];for(let i=0;i<19;i++)a.push(new Array(1e6).fill(i+0.5));";
+	const bufs = "const b=[];for(let i=0;i<10;i++)b.push(new Uint8Array(16*1024*1024));";
+	const pyHeap =
+		'mk=js.Function.new("n","const a=[];for(let i=0;i<n;i++)a.push(new Array(1e6).fill(i+0.5));return a")\nh=mk(19)\n';
+	const pyBufs = "b=[js.Uint8Array.new(16*1024*1024) for i in range(10)]\n";
+	// Then hold it for a moment, as a program using the memory would: a v8-sandbox build checks buffers taken on top
+	// of the heap at the next GC (which V8 runs as they grow) rather than in the allocation itself.
+	const hold = "const t=Date.now();while(Date.now()-t<500){}";
+	const pyHold = "import time\nt=time.time()\nwhile time.time()-t<0.5: pass\n";
+	const stopped = (r: Record<string, unknown>) => {
+		expect(r.exitCode).toBe(137);
+		expect(r.terminated).toBe("memory");
+	};
+
+	it("node: heap, then buffers", async () => {
+		stopped(await c.exec("mem", `node -e '${heap}${bufs}${hold}console.log(a.length,b.length)'`, {}, 15000));
+	});
+	it("node: buffers, then heap", async () => {
+		stopped(await c.exec("mem", `node -e '${bufs}${heap}${hold}console.log(a.length,b.length)'`, {}, 15000));
+	});
+	it("node: each alone fits, and so does a sum under the limit", async () => {
+		expect((await c.exec("mem", `node -e '${heap}console.log(a.length)'`, {}, 15000)).stdout).toBe("19\n");
+		expect((await c.exec("mem", `node -e '${bufs}console.log(b.length)'`, {}, 15000)).stdout).toBe("10\n");
+		const half =
+			"const a=[];for(let i=0;i<12;i++)a.push(new Array(1e6).fill(i+0.5));const b=[];for(let i=0;i<5;i++)b.push(new Uint8Array(16*1024*1024));";
+		expect((await c.exec("mem", `node -e '${half}console.log(a.length+b.length)'`, {}, 15000)).stdout).toBe("17\n");
+	});
+	it("python: heap, then buffers", async () => {
+		stopped(await c.exec("mem", `python -c 'import js\n${pyHeap}${pyBufs}${pyHold}print(len(b))'`, {}, 20000));
+	});
+	it("python: buffers, then heap", async () => {
+		stopped(await c.exec("mem", `python -c 'import js\n${pyBufs}${pyHeap}${pyHold}print(len(b))'`, {}, 20000));
+	});
+	it("python: heap, then wasm memory (a bytearray) fails", async () => {
+		const r = await c.exec(
+			"mem",
+			`python -c 'import js\n${pyHeap}b=bytearray(160*1024*1024)\nprint(len(b))'`,
+			{},
+			20000,
+		);
+		expect(r.exitCode).not.toBe(0);
+		expect(r.stdout).toBe("");
+		expect((await c.health()).ok).toBe(true);
+	});
+	it("ordinary work still fits in 256 MiB: a 20 MB JSON in node, a 100k-row CSV and numpy in python", async () => {
+		const rows = Array.from({ length: 150_000 }, (_, i) => ({
+			id: i,
+			name: `n${i}`,
+			v: i * 0.5,
+			tags: ["a", "b"],
+			s: "x".repeat(80),
+		}));
+		const json = JSON.stringify(rows);
+		expect(json.length).toBeGreaterThan(20_000_000);
+		const csv = `id,name,v\n${Array.from({ length: 100_000 }, (_, i) => `${i},name${i},${i * 0.5}`).join("\n")}\n`;
+		const manifest = { "d.json": await c.fileEntry(json), "d.csv": await c.fileEntry(csv) };
+		const node = await c.exec(
+			"mem",
+			'node -e \'const d=JSON.parse(require("fs").readFileSync("d.json","utf8"));console.log(d.length, d[149999].id)\'',
+			manifest,
+			20000,
+		);
+		expect(node.stdout).toBe("150000 149999\n");
+		const py = await c.exec(
+			"mem",
+			'python -c \'import csv; rows=list(csv.DictReader(open("d.csv"))); print(len(rows), sum(float(r["v"]) for r in rows))\'',
+			manifest,
+			20000,
+		);
+		expect(py.stdout).toBe("100000 2499975000.0\n");
+		const np = await c.exec(
+			"mem",
+			"python -c 'import numpy as np; a=np.arange(4e6).reshape(2000,2000); print(int(a.sum()), a.T.shape)'",
+			{},
+			20000,
+		);
+		expect(np.stdout).toBe("7999998000000 (2000, 2000)\n");
+	});
+});
+
+// The shell's own isolate: just-bash is slow with strings this size, so this runs on a runtime with a longer CPU limit.
+describe(RUN ? "one memory limit in the shell" : "one memory limit in the shell (skipped)", () => {
+	let hs: Harness;
+	let cs: ReturnType<typeof client>;
+	const ds = RUN ? it : it.skip;
+	beforeAll(async () => {
+		if (!RUN) return;
+		hs = await start({ cpuMs: 30000, pool: 1, basePort: BASE + 30 });
+		cs = client(hs);
+		await cs.load("mem-sh", 256);
+	});
+	afterAll(async () => {
+		if (hs) await hs.stop();
+	});
+	ds("shell: heap (four 30 MB strings), then buffers (reading a 60 MB file)", async () => {
+		const strings = [0, 1, 2, 3].map((i) => `s${i}=$(printf "%030000000d" ${i})`).join("; ");
+		const big = new Uint8Array(60_000_000).fill(97);
+		const manifest = { big: { kind: "file" as const, sha: await cs.put(big), size: big.length, mode: 0o644 } };
+		// Each alone fits.
+		expect((await cs.exec("mem-sh", "wc -c big", manifest, 30000)).stdout).toBe("60000000 big\n");
+		expect((await cs.exec("mem-sh", `${strings}; echo \${#s3}`, {}, 30000)).stdout).toBe("30000000\n");
+		const r = await cs.exec("mem-sh", `${strings}; wc -c big`, manifest, 30000);
+		expect(r.exitCode).toBe(137);
+		expect(r.terminated).toBe("memory");
+		expect((await cs.exec("mem-sh", "echo hi")).stdout).toBe("hi\n"); // the sandbox recovers
+	});
+});
+
 describe(RUN ? "review fixes: max-sandboxes capacity" : "review fixes: max-sandboxes capacity (skipped)", () => {
 	it("H6: a busy sandbox isn't evicted and a new one over the cap gets a retryable 503", async () => {
 		if (!RUN) return;
-		const h2 = await start({ maxSandboxes: 1, cpuMs: 5000, basePort: 29320 });
+		const h2 = await start({ maxSandboxes: 1, cpuMs: 5000, basePort: BASE + 10 });
 		try {
 			const c2 = client(h2);
 			await c2.load("busy");
@@ -468,5 +585,106 @@ describe(RUN ? "review fixes: max-sandboxes capacity" : "review fixes: max-sandb
 		} finally {
 			await h2.stop();
 		}
+	});
+});
+
+// Native mode's transport: the runtime listens on, and reaches the store and the egress proxy over, Unix sockets in one
+// 0700 directory, so seccomp allows it AF_UNIX sockets only and Landlock no TCP. A representative subset of the suite
+// runs over it. Where unprivileged user namespaces are available, the runtime runs in its own network namespace, so
+// that namespace's TCP/UDP tables hold only its own sockets (its /proc/<pid>/fd is unreadable: it is non-dumpable).
+const NETNS = RUN && Bun.spawnSync(["unshare", "--user", "--map-current-user", "--net", "true"]).exitCode === 0;
+
+describe(RUN ? "Unix-socket transport" : "Unix-socket transport (skipped)", () => {
+	let hu: Harness;
+	let cu: ReturnType<typeof client>;
+	const du = RUN ? it : it.skip;
+	beforeAll(async () => {
+		if (!RUN) return;
+		hu = await start({ unix: true, netns: NETNS, cpuMs: 5000, basePort: BASE + 20 });
+		cu = client(hu);
+	});
+	afterAll(async () => {
+		if (hu) await hu.stop();
+	});
+
+	du("serves healthz, load and exec on its socket, in a 0700 directory", async () => {
+		expect(statSync(hu.socketDir as string).mode & 0o777).toBe(0o700);
+		const health = await cu.health();
+		expect(health.ok).toBe(true);
+		expect((await cu.load("ux", 256)).ok).toBe(true);
+		const r = await cu.exec("ux", "echo hi");
+		expect(r.exitCode).toBe(0);
+		expect(r.stdout).toBe("hi\n");
+	});
+	du("reads a manifest file from the store's socket and uploads a changed one", async () => {
+		const manifest = { "in.txt": await cu.fileEntry("a\nb\nc\n") };
+		const r = await cu.exec("ux", "wc -l < in.txt; cp in.txt out.txt", manifest);
+		expect(r.stdout).toBe("3\n");
+		expect(r.changed).toContain("out.txt");
+		const out = (r.manifest as Record<string, { sha: string }>)["out.txt"];
+		expect(out.sha).toBe(manifest["in.txt"].sha);
+	});
+	du("node fetch goes through the egress socket, tagged with the sandbox", async () => {
+		await cu.load("ux-eg");
+		const r = await cu.exec(
+			"ux-eg",
+			"node -e 'fetch(\"http://example.test/json\").then(r=>r.json()).then(j=>console.log(j.n))'",
+		);
+		expect(r.stdout).toBe("7\n");
+		expect(hu.upstreamHits.some((x) => x.path === "/json" && x.sandbox === "ux-eg")).toBe(true);
+	});
+	du("python runs, with numpy and a manifest file", async () => {
+		const manifest = { "d.csv": await cu.fileEntry("v\n1\n2\n3\n") };
+		const r = await cu.exec(
+			"ux",
+			'python -c \'import csv, numpy as np; print(int(np.array([int(r["v"]) for r in csv.DictReader(open("d.csv"))]).sum()))\'',
+			manifest,
+			20000,
+		);
+		expect(r.stdout).toBe("6\n");
+	});
+	du("a node heap bomb is stopped (exit 137) and the process survives", async () => {
+		const r = await cu.exec("ux", "node -e 'const a=[];while(true)a.push(new Array(1e6).fill(1))'", {}, 8000);
+		expect(r.exitCode).toBe(137);
+		expect(r.terminated).toBe("memory");
+		expect((await cu.health()).ok).toBe(true);
+	});
+	du("the process has no TCP or UDP sockets, and a guest fetch still reaches the egress socket", async () => {
+		const pid = hu.pid;
+		const tables = ["tcp", "tcp6", "udp", "udp6", "raw", "raw6"];
+		// Socket inodes in the process's network namespace's tables (column 10 of each row).
+		const inet = new Set<string>();
+		for (const t of tables) {
+			const rows = readFileSync(`/proc/${pid}/net/${t}`, "utf8").trim().split("\n").slice(1);
+			for (const row of rows) inet.add(row.trim().split(/\s+/)[9]);
+		}
+		// The process's own sockets, where /proc lets us see them (not when it's non-dumpable, as it is hardened).
+		let fds: string[] | null = null;
+		try {
+			fds = readdirSync(`/proc/${pid}/fd`);
+		} catch {}
+		if (fds) {
+			const sockets = fds
+				.map((fd) => {
+					try {
+						return readlinkSync(`/proc/${pid}/fd/${fd}`);
+					} catch {
+						return "";
+					}
+				})
+				.map((l) => /^socket:\[(\d+)\]$/.exec(l)?.[1])
+				.filter((x): x is string => Boolean(x));
+			expect(sockets.length).toBeGreaterThan(0);
+			expect(sockets.filter((s) => inet.has(s))).toEqual([]);
+		}
+		if (NETNS) expect([...inet]).toEqual([]); // its own namespace: any TCP/UDP socket of its would be listed
+		expect(fds !== null || NETNS).toBe(true); // one of the two checks ran
+		// Its Unix sockets are there: the listener in the socket directory.
+		expect(readFileSync(`/proc/${pid}/net/unix`, "utf8")).toContain(hu.rtSocket as string);
+		// And the guest's network still works, through the egress socket.
+		const before = hu.upstreamHits.length;
+		const r = await cu.exec("ux-eg", "curl -s http://example.test/json");
+		expect(JSON.parse(r.stdout as string).n).toBe(7);
+		expect(hu.upstreamHits.slice(before).some((x) => x.sandbox === "ux-eg")).toBe(true);
 	});
 });
