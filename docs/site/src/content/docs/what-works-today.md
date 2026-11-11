@@ -37,6 +37,8 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 
 ## Shown in tests only
 
+- **The deno_core isolate runtime** (`kantel-isolate`): its integration suite covers the shell, `node` and `python`, egress tagging, and stopping runaway loops and memory bombs without slowing a neighbouring sandbox, on the stock V8 and on the build with V8's heap sandbox. Its real-VM test, through `kantel-host` in Firecracker, ran files, `node`, `python`, loop containment and restores from a template on the sandboxed build. Neither has been recorded on the bare-metal host or a deployed install.
+- **Upgrading an isolate to a microVM**: on one host, a real-VM test moved files, a link, an executable and a 4 MB file into the microVM. Across hosts, only with stand-in hosts.
 - **Snapshot history and restore**, and **saved snapshots**: their API and CLI run against the stub backend and the host stand-in.
 - **Webhooks**: an endpoint was added on a local install, but delivery and signing are checked in tests only.
 - **OpenTelemetry**: export is unit-tested. No run has checked a real collector receiving the data.
