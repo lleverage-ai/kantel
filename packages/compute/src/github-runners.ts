@@ -648,8 +648,17 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				await (await appOf(record)).removeRunner(installationId, scope, jit.runnerId).catch(() => undefined);
 				return;
 			}
+			// Still this pass's integration now its ID is kept? Cleanup takes the lease before it looks at any runner, so
+			// either it sees the ID (and takes it off GitHub), or this finds the lease gone and takes it off itself.
+			try {
+				await hold(lease);
+			} catch (error) {
+				if (error instanceof LeaseLost) {
+					await (await appOf(record)).removeRunner(installationId, scope, jit.runnerId).catch(() => undefined);
+				}
+				throw error;
+			}
 			if (registered.state !== "registering") return;
-			await hold(lease);
 			const commandId = await options.sandboxes.run(
 				principal,
 				machine.id,

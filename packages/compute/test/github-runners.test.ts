@@ -741,6 +741,24 @@ describe("GitHub runners", () => {
 		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
 	});
 
+	it("takes a registration off GitHub when cleanup took the lease while GitHub registered it", async () => {
+		const { job, sandboxes, runners, github, store, clock } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		// Account cleanup takes the lease (and finds no runner on GitHub yet) while GitHub registers this one.
+		github.state.onRegister = async () => {
+			await store.githubRunners.update("ghr_one", (current) => ({
+				...current,
+				lease: { owner: "cleanup", until: clock.now + 60_000 },
+			}));
+		};
+		await runners.tick();
+		github.state.onRegister = undefined;
+		expect(github.registered).toHaveLength(1);
+		expect(github.removed).toEqual([1]);
+		expect(sandboxes.runs).toEqual([]);
+	});
+
 	it("binds the installation only from its own owner's deliveries", async () => {
 		const { deliver, store, sandboxes } = await setUp();
 		const from = (owner: string, installation: number) =>
