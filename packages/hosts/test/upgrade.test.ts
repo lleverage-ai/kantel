@@ -10,7 +10,7 @@ import { createHostBackend } from "../src/backend.ts";
 import { HOST_FEATURES, type HostFacts, type HostMessage } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
-import { createMemoryHostStore } from "../src/store.ts";
+import { createMemoryHostStore, type HostStore, type PlacementRecord } from "../src/store.ts";
 import { createTunnelTickets } from "../src/tunnel.ts";
 
 const BOTH = ["microvm", "isolate"] as const;
@@ -825,5 +825,123 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 		expect(refused.message).toContain("too many bytes");
 		expect(vms.sandboxes.has(sandbox.id)).toBe(false);
 		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+	});
+});
+
+/** A memory store whose placement writes fail where `refuse` says: before the write lands, or after (`landed`). */
+function failingStore(refuse: (placement: PlacementRecord) => "before" | "landed" | undefined): HostStore {
+	const store = createMemoryHostStore();
+	const put = store.putPlacement.bind(store);
+	return {
+		...store,
+		putPlacement: async (placement) => {
+			const how = refuse(placement);
+			if (how === "before") throw new Error("the database went away");
+			await put(placement);
+			if (how === "landed") throw new Error("the database went away after the write");
+		},
+	};
+}
+
+describe("an upgrade that fails after its irreversible step", () => {
+	const crossHost = () => [
+		{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+		{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+	];
+
+	it("keeps the microVM, and owes the isolate's removal, when recording that removal fails", async () => {
+		// The write clearing `cleanup`, once the isolate is deleted from its host, fails.
+		let failing = true;
+		const store = failingStore((placement) =>
+			failing && placement.tier === "microvm" && placement.cleanup === undefined ? "before" : undefined,
+		);
+		const { root, service, hosts } = await setup(crossHost(), { store });
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		isolates.sandboxes.get(sandbox.id)?.files.set("a.txt", { kind: "file", data: enc("a\n") });
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: vms.hostId });
+		// The isolate is gone from its host; the microVM, the only copy, is kept, and the placement is its.
+		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		expect(text(vms.sandboxes.get(sandbox.id)?.files.get("/home/user/workspace/a.txt")?.data)).toBe("a\n");
+		expect(vms.methods()).not.toContain("sandbox.delete");
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "microvm", hostId: vms.hostId, cleanup: { hostId: isolates.hostId } });
+		// Its removal, still owed, is done once the host is back.
+		failing = false;
+		await isolates.connect();
+		isolates.heartbeat();
+		for (
+			let tries = 0;
+			tries < 100 && (await service.sandboxes.placement(sandbox.id))?.cleanup !== undefined;
+			tries++
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: vms.hostId });
+		expect((await service.sandboxes.placement(sandbox.id))?.cleanup).toBeUndefined();
+	});
+
+	it("takes the microVM when the write placing it lands but answers a failure", async () => {
+		let failing = true;
+		const store = failingStore((placement) => {
+			if (!failing || placement.tier !== "microvm" || placement.cleanup === undefined) return undefined;
+			failing = false;
+			return "landed";
+		});
+		const { root, service, hosts } = await setup(crossHost(), { store });
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: vms.hostId });
+		expect(vms.sandboxes.get(sandbox.id)?.tier).toBe("microvm");
+		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: vms.hostId });
+	});
+
+	it("rolls back as before when the write placing the microVM never lands", async () => {
+		let failing = true;
+		const store = failingStore((placement) => {
+			if (!failing || placement.tier !== "microvm" || placement.cleanup === undefined) return undefined;
+			failing = false;
+			return "before";
+		});
+		const { root, service, hosts } = await setup(crossHost(), { store });
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		await failure(root.upgradeSandbox(sandbox.id, {}));
+		expect(vms.sandboxes.has(sandbox.id)).toBe(false);
+		expect(isolates.sandboxes.get(sandbox.id)?.tier).toBe("isolate");
+		expect(isolates.frozen.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
+		expect(placement?.upgrade).toBeUndefined();
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ type: "isolate", state: "running" });
+	});
+
+	it("settles a same-host upgrade by its ID when recording the microVM fails, never taking it for refused", async () => {
+		let failing = true;
+		const store = failingStore((placement) => {
+			if (!failing || placement.tier !== "microvm") return undefined;
+			failing = false;
+			return "before";
+		});
+		const { root, service, hosts } = await setup(
+			[{ name: "both", facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade]) }],
+			{ store },
+		);
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		const upgraded = await root.upgradeSandbox(sandbox.id, {});
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: host.hostId });
+		expect(host.methods()).toContain("sandbox.upgrade.settle");
+		expect(host.sandboxes.get(sandbox.id)?.tier).toBe("microvm");
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "microvm", hostId: host.hostId });
+		expect(placement?.upgrade).toBeUndefined();
 	});
 });
