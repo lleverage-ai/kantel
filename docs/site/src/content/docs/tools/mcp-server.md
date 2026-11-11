@@ -83,6 +83,7 @@ pi doesn't take MCP servers. It uses the `kantel` command through its shell inst
 | `sandbox_create` | Make a sandbox and wait until it runs. The agent chooses `type`, `isolate` or `microvm`, and the tool's description says when each fits; `from` starts it from a snapshot, whose type it takes |
 | `sandbox_list`, `sandbox_get` | The account's sandboxes, or one with its state, capabilities and cost |
 | `sandbox_stop`, `sandbox_resume` | Stop one, keeping its disk (`pause` keeps a microVM's memory too), and bring it back |
+| `sandbox_upgrade` | Turn an isolate into a microVM with the same ID, files (in `/home/user/workspace`, `/workspace` linked there), env and grants, and wait until it runs. The tool's description tells the agent to use it when a command needs a microVM, and `autoUpgrade` on `sandbox_create` has an isolate do it by itself |
 | `sandbox_fork` | Copies of a sandbox, `count` at a time |
 | `sandbox_delete` | Delete one for good. An `agent` key isn't allowed to |
 | `sandbox_exec` | Run a command line and wait for it: its exit code, stdout and stderr, each cut to about 64 KiB. With `detached`, start it and answer its ID at once |
@@ -96,7 +97,9 @@ When Kantel refuses a call, such as `sandbox_delete` with an `agent` key or `bro
 
 ## Long calls
 
-`sandbox_exec` waits up to its `timeoutMs`: 30 seconds unless the agent asks for more, and at most 10 minutes, after which the command is killed. `sandbox_create`, `sandbox_fork` and `sandbox_resume` wait until the sandbox runs, `sandbox_stop` with `wait` until it has stopped, and `snapshot_save` until the snapshot is saved.
+A command that needed a microVM says so in its answer (`needsMicrovm`), with what to do: `sandbox_upgrade`, then run it again. In an isolate with `autoUpgrade`, `sandbox_exec` answers the command run again in the microVM (`rerunOf`), and `command_get` on a detached one that was run again names the new one (`rerunAs`).
+
+`sandbox_exec` waits up to its `timeoutMs`: 30 seconds unless the agent asks for more, and at most 10 minutes, after which the command is killed. `sandbox_create`, `sandbox_fork`, `sandbox_upgrade` and `sandbox_resume` wait until the sandbox runs, `sandbox_stop` with `wait` until it has stopped, and `snapshot_save` until the snapshot is saved.
 
 While a call waits, the server sends the client a progress notification every 15 seconds if the request asked for them with a progress token. Claude Code counts these against its idle timeout, but not its tool timeout. When the client cancels a call, the server stops waiting and sends no answer. What it started carries on: a command runs to its own timeout.
 

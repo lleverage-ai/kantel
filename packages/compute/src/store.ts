@@ -127,6 +127,11 @@ export interface StoredInvite {
 export interface RunPeriod {
 	readonly from: number;
 	readonly to?: number;
+	/**
+	 * What an hour of it cost, where that isn't the sandbox's rate now: an upgraded sandbox's isolate run, priced as the
+	 * isolate it was. Absent: the sandbox's rate.
+	 */
+	readonly ratePerHour?: number;
 }
 
 /** A CPU and memory reading of a running sandbox. */
@@ -323,6 +328,29 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * a retry may boot it on, among those the sandbox may use then.
 	 */
 	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
+	/**
+	 * An upgrade to a microVM under way (it is `starting`): its operation ID, which its backend does at most once and can
+	 * settle (`SandboxBackend.settleUpgrade`), when it began and when its gateway last said it was at it (`heartbeatAt`:
+	 * one gone quiet is settled by the sweep), what it was before (`from`, `before`: what a rollback puts back), the
+	 * microVM asked for, and the egress revision sent with it.
+	 */
+	readonly upgrading?: {
+		readonly operationId: string;
+		readonly at: number;
+		readonly heartbeatAt: number;
+		readonly from: "running" | "stopped";
+		readonly before: {
+			readonly runs: readonly RunPeriod[];
+			readonly stopsAt?: number;
+			readonly startedAt?: number;
+			readonly stoppedAt?: number;
+			readonly lastActiveAt?: number;
+		};
+		readonly size?: computeSchema.SandboxSizeName;
+		readonly shape?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };
+		readonly image?: string;
+		readonly egressRevision?: number;
+	};
 };
 
 export type StoredCommand = computeSchema.Command & {
@@ -331,6 +359,13 @@ export type StoredCommand = computeSchema.Command & {
 	readonly detached?: boolean;
 	/** Killed, and its kill not yet taken by its backend: a later kill sends it again. */
 	readonly killPending?: boolean;
+	/** Its sandbox was an isolate with `autoUpgrade` when it started: a needsMicrovm end may be run again. */
+	readonly autoUpgrade?: true;
+	/**
+	 * When its end, needing a microVM, was first seen while its sandbox upgrades and it runs again: until its owner records
+	 * that end with its run again (`rerunAs`), or `RERUN_CLAIM_MS` passes, no other reader records it ended.
+	 */
+	readonly rerunPending?: number;
 };
 
 /**

@@ -3999,7 +3999,7 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	req.Detached = p.Detached
 	if !p.Stream || onOutput == nil {
 		res, err := client.Exec(ctx, req)
-		return proto.ExecResult(res), err
+		return execResultOf(res), err
 	}
 	started := time.Now()
 	result := proto.ExecResult{}
@@ -4018,6 +4018,11 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	})
 	result.DurationMs = time.Since(started).Milliseconds()
 	return result, err
+}
+
+// execResultOf is a guest's command result as the host answers it.
+func execResultOf(r guest.ExecResult) proto.ExecResult {
+	return proto.ExecResult{ExitCode: r.ExitCode, Stdout: r.Stdout, Stderr: r.Stderr, Truncated: r.Truncated, TimedOut: r.TimedOut, DurationMs: r.DurationMs, Pid: r.Pid}
 }
 
 func execRequest(p proto.ExecParams) guest.ExecRequest {
@@ -4069,7 +4074,7 @@ func (m *Manager) CommandStatus(ctx context.Context, sandboxID, commandID string
 		out.Stdout, out.Stderr, out.Truncated = status.Stdout, status.Stderr, status.Truncated
 	}
 	if status.Result != nil {
-		r := proto.ExecResult(*status.Result)
+		r := execResultOf(*status.Result)
 		out.Result = &r
 	}
 	return out, nil

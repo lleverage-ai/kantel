@@ -56,6 +56,24 @@ export interface PlacementRecord {
 	readonly state: string;
 	readonly createdAt: number;
 	readonly updatedAt: number;
+	/**
+	 * An isolate's upgrade to a microVM under way, kept before anything is sent: its operation ID, the host its microVM
+	 * is (or may be) on and at what size, and whether that host does it itself (`host`) or Kantel copies the files to it
+	 * (`copy`), so one whose answer or gateway is lost is settled, not guessed.
+	 */
+	readonly upgrade?: {
+		readonly operationId: string;
+		readonly target: string;
+		readonly phase: "host" | "copy";
+		readonly size?: {
+			readonly name: string;
+			readonly vcpus: number;
+			readonly memoryMiB: number;
+			readonly diskGiB: number;
+		};
+	};
+	/** An upgraded microVM's isolate still to be deleted from its own host (`hostId`), once that host can be reached. */
+	readonly cleanup?: { readonly hostId: string; readonly operationId: string };
 }
 
 export interface HostStore {

@@ -101,7 +101,9 @@ const CHEAT_SHEET = `- Create one: \`id=$(kantel new --type microvm --json | jq 
 - \`--type isolate\` (the default without \`--type\`) starts in milliseconds and costs almost nothing, but is only a
   shell over files in /workspace: curl, jq, grep, rg, sed, awk, sort, diff, gzip. It has no git, node, python, package
   manager, Docker or SSH. Use one only for HTTP calls and text or JSON work, such as reading issues or logs with a token.
-  If it says \`command not found\` or \`not available in an isolate\`, make a microVM instead; if unsure, use a microVM.
+  If it says a command needs a microVM (\`command not found\`, \`not available in an isolate\`), \`kantel upgrade "$id"\`
+  makes it one with the same ID and files (in /home/user/workspace, /workspace linked) and you run it again; \`kantel
+  new --auto-upgrade\` does that by itself. If unsure, use a microVM.
 - Run a command: \`kantel exec "$id" -- npm test\`. Its output and exit code are the command's (30 s limit;
   \`--timeout 0\` = no limit, following its output).
 - A job you don't wait for: \`kantel exec "$id" --detach -- npm run build\` prints the command's ID; then

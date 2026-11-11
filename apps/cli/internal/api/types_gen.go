@@ -438,15 +438,31 @@ type Command struct {
 	EndedAt  *int64 `json:"endedAt,omitempty"`
 	ExitCode *int64 `json:"exitCode,omitempty"`
 	// The command's ID, such as `cmd_9a8b7c`.
-	ID        string `json:"id"`
-	SandboxID string `json:"sandboxId"`
+	ID           string               `json:"id"`
+	NeedsMicrovm *CommandNeedsMicrovm `json:"needsMicrovm,omitempty"`
+	// It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run again in the microVM.
+	RerunAs *string `json:"rerunAs,omitempty"`
+	// It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the command that answered `needsMicrovm` in the isolate.
+	RerunOf   *string `json:"rerunOf,omitempty"`
+	SandboxID string  `json:"sandboxId"`
 	// Epoch milliseconds, UTC.
 	StartedAt int64        `json:"startedAt"`
 	State     CommandState `json:"state"`
 	Stderr    string       `json:"stderr"`
 	// Its output, up to 1 MiB; `truncated` says if there was more. While it runs, its output so far where its sandbox reports it (a microVM on a current kantel-host), and empty elsewhere.
-	Stdout    string `json:"stdout"`
-	Truncated bool   `json:"truncated"`
+	Stdout     string              `json:"stdout"`
+	Terminated *CommandTermination `json:"terminated,omitempty"`
+	Truncated  bool                `json:"truncated"`
+}
+
+// In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`.
+type CommandNeedsMicrovm struct {
+	// What it ran that an isolate doesn't have, such as `tar`.
+	Command string `json:"command"`
+	// Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it.
+	Inferred *bool `json:"inferred,omitempty"`
+	// Why, in one sentence.
+	Reason string `json:"reason"`
 }
 
 type CommandPage struct {
@@ -462,6 +478,15 @@ const (
 	CommandStateExited   CommandState = "exited"
 	CommandStateKilled   CommandState = "killed"
 	CommandStateTimedOut CommandState = "timed_out"
+)
+
+// In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`).
+type CommandTermination string
+
+const (
+	CommandTerminationCPU    CommandTermination = "cpu"
+	CommandTerminationMemory CommandTermination = "memory"
+	CommandTerminationWall   CommandTermination = "wall"
 )
 
 // What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them.
@@ -562,6 +587,8 @@ type CreateSandboxBody struct {
 	Account *string `json:"account,omitempty"`
 	// Default 60. `null`: never stop by itself.
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
+	// For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is.
+	AutoUpgrade *bool `json:"autoUpgrade,omitempty"`
 	// Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.
 	Env map[string]string `json:"env,omitzero"`
 	// Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one.
@@ -895,19 +922,37 @@ type EventData struct {
 	Actor *CreatedBy `json:"actor,omitempty"`
 	// `sandbox.environments_changed`: the environment attached.
 	Attached *string `json:"attached,omitempty"`
+	// `sandbox.upgraded`: the files' bytes.
+	Bytes *int64 `json:"bytes,omitempty"`
 	// `sandbox.environments_changed`: the environment detached.
 	Detached *string `json:"detached,omitempty"`
+	// `sandbox.upgraded`: how long the upgrade took.
+	DurationMs *int64 `json:"durationMs,omitempty"`
 	// `sandbox.environments_changed`: the sandbox's environments now, in order.
 	EnvironmentIds []string `json:"environmentIds,omitzero"`
-	Name           *string  `json:"name,omitempty"`
+	// `sandbox.upgraded`: the files, links and directories moved.
+	Files *int64       `json:"files,omitempty"`
+	From  *SandboxType `json:"from,omitempty"`
+	Name  *string      `json:"name,omitempty"`
 	// `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading.
-	OOMKills        *int64           `json:"oomKills,omitempty"`
+	OOMKills *int64 `json:"oomKills,omitempty"`
+	// `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them.
+	Path            *EventDataPath   `json:"path,omitempty"`
 	PlacementReason *PlacementReason `json:"placementReason,omitempty"`
 	PreviousState   *SandboxState    `json:"previousState,omitempty"`
 	Reason          *string          `json:"reason,omitempty"`
 	Startup         *SandboxStartup  `json:"startup,omitempty"`
 	State           *SandboxState    `json:"state,omitempty"`
+	To              *SandboxType     `json:"to,omitempty"`
 }
+
+// `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them.
+type EventDataPath string
+
+const (
+	EventDataPathHost         EventDataPath = "host"
+	EventDataPathControlPlane EventDataPath = "control-plane"
+)
 
 type EventPage struct {
 	Items []Event `json:"items"`
@@ -915,7 +960,7 @@ type EventPage struct {
 	NextCursor *string `json:"nextCursor,omitempty"`
 }
 
-// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 type EventType string
 
 const (
@@ -928,6 +973,7 @@ const (
 	EventTypeSandboxRecovered           EventType = "sandbox.recovered"
 	EventTypeSandboxEnvironmentsChanged EventType = "sandbox.environments_changed"
 	EventTypeSandboxOOMKill             EventType = "sandbox.oom_kill"
+	EventTypeSandboxUpgraded            EventType = "sandbox.upgraded"
 	EventTypeSandboxDeleted             EventType = "sandbox.deleted"
 	EventTypeSnapshotSaved              EventType = "snapshot.saved"
 	EventTypeSnapshotDeleted            EventType = "snapshot.deleted"
@@ -1729,10 +1775,12 @@ type SSHAccessBody struct {
 type Sandbox struct {
 	AccountID string `json:"accountId"`
 	// How long after a start or resume it stops by itself; `null` never.
-	AutoStopMinutes Nullable[int64]     `json:"autoStopMinutes"`
-	Base            *SandboxBase        `json:"base,omitempty"`
-	Capabilities    SandboxCapabilities `json:"capabilities"`
-	Cost            Cost                `json:"cost"`
+	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes"`
+	// An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false.
+	AutoUpgrade  *bool               `json:"autoUpgrade,omitempty"`
+	Base         *SandboxBase        `json:"base,omitempty"`
+	Capabilities SandboxCapabilities `json:"capabilities"`
+	Cost         Cost                `json:"cost"`
 	// Epoch milliseconds, UTC.
 	CreatedAt int64     `json:"createdAt"`
 	CreatedBy CreatedBy `json:"createdBy"`
@@ -1784,11 +1832,12 @@ type Sandbox struct {
 	// When it will stop by itself, while running; the console's stops-in.
 	StopsAt *int64 `json:"stopsAt,omitempty"`
 	// Its name under the deployment's sandbox domain, which its public port URLs start with.
-	Subdomain  string            `json:"subdomain"`
-	Template   *SandboxTemplate  `json:"template,omitempty"`
-	Type       SandboxType       `json:"type"`
-	Usage      UsageSummary      `json:"usage"`
-	Visibility SandboxVisibility `json:"visibility"`
+	Subdomain    string            `json:"subdomain"`
+	Template     *SandboxTemplate  `json:"template,omitempty"`
+	Type         SandboxType       `json:"type"`
+	UpgradedFrom *SandboxUpgrade   `json:"upgradedFrom,omitempty"`
+	Usage        UsageSummary      `json:"usage"`
+	Visibility   SandboxVisibility `json:"visibility"`
 }
 
 // The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version.
@@ -2107,6 +2156,13 @@ const (
 	SandboxTypeIsolate SandboxType = "isolate"
 	SandboxTypeMicrovm SandboxType = "microvm"
 )
+
+// A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings.
+type SandboxUpgrade struct {
+	// Epoch milliseconds, UTC.
+	At   int64       `json:"at"`
+	Type SandboxType `json:"type"`
+}
 
 type SandboxUsage struct {
 	// Its own disk's size, as its guest counts it, when its host sends disk figures.
@@ -2657,6 +2713,8 @@ type UpdateMemberBody struct {
 
 type UpdateSandboxBody struct {
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
+	// Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade.
+	AutoUpgrade *bool `json:"autoUpgrade,omitempty"`
 	// Move `stopsAt` to this long from now.
 	ExtendMinutes *int64 `json:"extendMinutes,omitempty"`
 	// Its idle stop; `null` turns it off. A running sandbox's idle time counts from now.
@@ -2680,6 +2738,16 @@ type UpdateWebhookBody struct {
 	Events  []EventType `json:"events,omitzero"`
 	Name    *string     `json:"name,omitempty"`
 	URL     *string     `json:"url,omitempty"`
+}
+
+// The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM.
+type UpgradeSandboxBody struct {
+	// The microVM's base image. Default: the deployment's.
+	Image     *string            `json:"image,omitempty"`
+	Resources *SandboxShapeInput `json:"resources,omitempty"`
+	Size      *SandboxSizeName   `json:"size,omitempty"`
+	// Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was.
+	Wait *bool `json:"wait,omitempty"`
 }
 
 // A host's recent CPU and memory, for sparklines.

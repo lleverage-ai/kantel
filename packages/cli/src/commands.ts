@@ -302,6 +302,7 @@ const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.degraded",
 	"sandbox.recovered",
 	"sandbox.oom_kill",
+	"sandbox.upgraded",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
@@ -1065,6 +1066,8 @@ function printOutput(ctx: Context, command: Command): void {
 	if (command.stderr !== "") ctx.io.stderr.write(command.stderr);
 	if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
 	if (command.state === "killed") ctx.note("kantel: the command was killed");
+	if (command.terminated !== undefined) ctx.note(`kantel: the isolate stopped it: too much ${command.terminated} time`);
+	noteNeedsMicrovm(ctx, command.sandboxId, command);
 }
 
 /** `kantel exec --status`: the command as JSON, or its state and output so far. */
@@ -1192,6 +1195,16 @@ async function follow(
 		wait = Math.min(wait * 2, 1000);
 		command = await fetch();
 	}
+	// Its isolate upgraded itself to a microVM (`autoUpgrade`) and ran it again there: that one is what it came to.
+	if (command.rerunAs !== undefined) {
+		if (!ctx.json) {
+			const what = command.needsMicrovm === undefined ? "" : ` (${command.needsMicrovm.command})`;
+			ctx.note(
+				`kantel: it needed a microVM${what}; ${sandboxId} is one now, and it runs again there as ${command.rerunAs}`,
+			);
+		}
+		return follow(ctx, client, sandboxId, command.rerunAs, undefined, options);
+	}
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {
 		if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
@@ -1199,8 +1212,20 @@ async function follow(
 			const after = options.limitSeconds === undefined ? "" : ` after ${options.limitSeconds} s`;
 			ctx.note(`kantel: the command timed out${after} and was killed`);
 		} else if (command.state === "killed") ctx.note("kantel: the command was killed");
+		if (command.terminated !== undefined)
+			ctx.note(`kantel: the isolate stopped it: too much ${command.terminated} time`);
+		noteNeedsMicrovm(ctx, sandboxId, command);
 	}
 	return exitCodeOf(command);
+}
+
+/** An isolate's command that needed a microVM: what to do about it. */
+function noteNeedsMicrovm(ctx: Context, sandboxId: string, command: Command): void {
+	if (command.needsMicrovm === undefined) return;
+	ctx.note(
+		`kantel: ${command.needsMicrovm.command} needs a microVM. kantel upgrade ${sandboxId} turns this isolate into one, ` +
+			"its files and settings kept; then run it again",
+	);
 }
 
 /** `--host 3000` or `--host 8080:public`. */
@@ -1606,9 +1631,16 @@ const SECTIONS: readonly Section[] = [
 						value: "<k=v>",
 						description: "Run it only on a host with this label; repeat for more",
 					},
+					"auto-upgrade": {
+						type: "boolean",
+						description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again",
+					},
 					"no-wait": noWait,
 				},
 				details:
+					"--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command\n" +
+					"needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that\n" +
+					"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n\n" +
 					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
 					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
@@ -1657,6 +1689,9 @@ const SECTIONS: readonly Section[] = [
 						// one that holds its sandbox's memory, which has that sandbox's machine, before it makes anything.
 					}
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
+					if (ctx.boolean("auto-upgrade") && type === "microvm") {
+						throw new UsageError("--auto-upgrade is an isolate's: a microVM is one already");
+					}
 					// A variable has an =; an environment's name or ID never does.
 					const envs = ctx.list("env");
 					const environments = envs.filter((item) => !item.includes("="));
@@ -1688,6 +1723,7 @@ const SECTIONS: readonly Section[] = [
 						),
 						host: ctx.string("on"),
 						hostLabels: pairs(ctx.list("host-label"), "--host-label"),
+						...(ctx.boolean("auto-upgrade") ? { autoUpgrade: true } : {}),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
@@ -1814,6 +1850,72 @@ const SECTIONS: readonly Section[] = [
 			lifecycle("recover", "Restart the machine of a sandbox that is stuck or in error", {}, (client, sandboxId) =>
 				client.recoverSandbox(sandboxId),
 			),
+			{
+				name: "upgrade",
+				summary: "Turn an isolate into a microVM, with the same ID, files and settings",
+				args: ID_ARG,
+				flags: {
+					size: sizeFlag,
+					vcpus: {
+						type: "string",
+						value: "<n>",
+						description: "The microVM's vCPUs, in place of --size; with --memory",
+					},
+					memory: {
+						type: "string",
+						value: "<GB>",
+						description: "The microVM's memory in GB, in place of --size; with --vcpus",
+					},
+					disk: { type: "string", value: "<GB>", description: "The microVM's disk in GB (default: its size's)" },
+					image: { type: "string", value: "<image>", description: "The microVM's base image" },
+					wait: { type: "boolean", description: "Answer once the microVM runs (the default)" },
+					"no-wait": noWait,
+				},
+				details:
+					"Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, Node or Python\n" +
+					"packages, a build, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
+					"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
+					"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
+					"isolate is left as it was. Commands sent meanwhile wait for it.",
+				async run(ctx) {
+					const vcpus = whole(ctx.string("vcpus"), "--vcpus");
+					const memory = ctx.string("memory");
+					if (memory !== undefined && !(/^\d+(\.\d+)?$/.test(memory) && Number(memory) > 0)) {
+						throw new UsageError(`--memory is in GB, such as 16 or 0.5, not "${memory}"`);
+					}
+					const memoryMb = memory === undefined ? undefined : Math.round(Number(memory) * 1024);
+					if ((vcpus === undefined) !== (memoryMb === undefined))
+						throw new UsageError("give --vcpus and --memory together");
+					if (vcpus !== undefined && ctx.string("size") !== undefined) {
+						throw new UsageError("give --size or --vcpus and --memory, not both");
+					}
+					if (ctx.boolean("wait") && ctx.boolean("no-wait")) throw new UsageError("give --wait or --no-wait, not both");
+					const diskGb = whole(ctx.string("disk"), "--disk");
+					const sandbox = await (await ctx.client()).upgradeSandbox(ctx.arg(0), {
+						size: sizeOf(ctx.string("size")),
+						...(vcpus === undefined && diskGb === undefined
+							? {}
+							: {
+									resources: {
+										...(vcpus === undefined ? {} : { vcpus, memoryMb }),
+										...(diskGb === undefined ? {} : { diskGb }),
+									},
+								}),
+						image: ctx.string("image"),
+						wait: !ctx.boolean("no-wait"),
+					});
+					ctx.emit(sandbox, () =>
+						sandbox.state === "running"
+							? [
+									`Upgraded ${sandbox.id} (${sandbox.name}): ${kindOf(sandbox)}${diskOf(sandbox)}, ${stateOf(sandbox)}.`,
+									"  Its files:      /home/user/workspace (/workspace links there)",
+									`  Run a command:  kantel exec ${sandbox.id} -- git status`,
+								].join("\n")
+							: `${sandbox.id} ${stateOf(sandbox)}`,
+					);
+					return sandbox.state === "error" ? 1 : 0;
+				},
+			},
 			{
 				name: "fork",
 				summary: "Copy a sandbox into new ones",

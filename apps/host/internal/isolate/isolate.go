@@ -111,6 +111,10 @@ type meta struct {
 	// its /healthz says memoryEnforced), and the account VM's memory (Config.MemoryMiB), shared by the owner's
 	// isolates, is the ceiling besides.
 	MemoryMiB int `json:"memoryMiB,omitempty"`
+	// Frozen is the upgrade (its operation ID) that holds the sandbox still while its files go into a microVM
+	// (Freeze): its commands and file writes are refused until the upgrade commits (Dispose) or rolls back (Thaw).
+	// Kept on disk, so a host restart in the middle doesn't let a write in that the microVM would never get.
+	Frozen string `json:"frozen,omitempty"`
 }
 
 // An isolate's memory: what a sandbox gets when it asks for none, and the range it may ask for.
@@ -1305,12 +1309,15 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	s.exec.Lock()
 	defer s.exec.Unlock()
 	s.mu.Lock()
-	state, owner := s.meta.State, s.meta.Owner
+	state, owner, frozen := s.meta.State, s.meta.Owner, s.meta.Frozen
 	env := map[string]string{}
 	for k, v := range s.meta.Env {
 		env[k] = v
 	}
 	s.mu.Unlock()
+	if frozen != "" {
+		return proto.ExecResult{}, beingUpgraded(p.SandboxID)
+	}
 	if state != proto.StateRunning {
 		return proto.ExecResult{}, conflict("sandbox %s is %s, not running", p.SandboxID, state)
 	}
@@ -1349,6 +1356,9 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 		Stderr   string   `json:"stderr"`
 		Manifest Manifest `json:"manifest"`
 		Changed  []string `json:"changed"`
+		// From a runtime that says (the deno_core one): what the command needed a microVM for, and why it stopped it.
+		NeedsMicrovm *proto.NeedsMicrovm `json:"needsMicrovm,omitempty"`
+		Terminated   string              `json:"terminated,omitempty"`
 	}
 	cwd := p.Cwd
 	if strings.HasPrefix(cwd, "/workspace") {
@@ -1374,7 +1384,16 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	if onOutput != nil {
 		onOutput(res.Stdout, res.Stderr)
 	}
-	return proto.ExecResult{ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr, DurationMs: time.Since(started).Milliseconds()}, nil
+	out := proto.ExecResult{ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr, DurationMs: time.Since(started).Milliseconds(), NeedsMicrovm: res.NeedsMicrovm}
+	if out.NeedsMicrovm == nil {
+		// A runtime that doesn't say (workerd's): read from its shell's answer.
+		out.NeedsMicrovm = needsMicrovm(res.ExitCode, res.Stderr)
+	}
+	switch res.Terminated {
+	case "cpu", "memory", "wall":
+		out.Terminated = res.Terminated
+	}
+	return out, nil
 }
 
 // --- files ----------------------------------------------------------------------------------------------------------
@@ -1406,6 +1425,9 @@ func (m *Manager) withManifest(id string, write bool, fn func(s *sandbox, man Ma
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if write && s.meta.Frozen != "" {
+		return beingUpgraded(id)
+	}
 	man, err := readManifest(filepath.Join(s.dir, "manifest.json"))
 	if err != nil {
 		return err
