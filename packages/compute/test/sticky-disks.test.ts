@@ -1,14 +1,26 @@
 // Sticky disks through the HTTP API with the SDK, on the stub backend: a disk made empty, attached to sandboxes,
 // committed from one and started from by the next, and the checks a create's paths get.
 import { createKantelClient } from "@kantel/api/sdk";
+import type { SqlDriver } from "@kantel/sql";
+import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
+import {
+	type ComputeStore,
+	createMemoryStore,
+	type StoredStickyDisk,
+	type StoredStickyDiskVersion,
+	stickyDiskNameId,
+} from "../src/store.ts";
 import { createStubBackend } from "../src/stub-backend.ts";
 
 const opened: ComputeApi[] = [];
+const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
 	for (const api of opened.splice(0)) await api.close();
+	for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
 function setUp(stickyDisks = true, wrap: (backend: SandboxBackend) => SandboxBackend = (backend) => backend) {
@@ -138,6 +150,45 @@ describe("sticky disks", () => {
 		).rejects.toMatchObject({ code: "not_found" });
 	});
 
+	it("keeps an account's disks' tombstones past its deletion, so a host away then still has their versions deleted", async () => {
+		const host = { online: true, deleted: [] as string[] };
+		const tom = setUp(true, (backend) => ({
+			...backend,
+			async deleteStickyDisk(diskId) {
+				if (!host.online) throw new Error("the host holding it is offline");
+				host.deleted.push(diskId);
+				await backend.deleteStickyDisk?.(diskId);
+			},
+		}));
+		const disk = await tom.createStickyDisk({ name: "cache", sizeGb: 10 });
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "cache", path: "/cache" }],
+			wait: true,
+		});
+		await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.deleteSandbox(sandbox.id);
+		const { accounts } = await tom.getCaller();
+		host.online = false;
+		await tom.deleteCaller();
+		const store = tom.api.store;
+		expect(await store.accounts.get(accounts[0]?.id ?? "")).toBeUndefined();
+		expect((await store.stickyDisks.get(disk.id))?.deletedAt).toBeDefined();
+		expect(await store.stickyDiskVersions.list({ diskId: disk.id })).toEqual([]);
+		expect(await store.stickyDiskNames.list()).toEqual([]);
+		expect(host.deleted).toEqual([]);
+		// The host is back: the next sweep deletes the disk's versions there, until the tombstone expires.
+		host.online = true;
+		tom.clock.now += 11 * 60_000;
+		await tom.api.service.sweep();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(host.deleted).toContain(disk.id);
+		tom.clock.now += 31 * 24 * 3_600_000;
+		await tom.api.service.sweep();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(await store.stickyDisks.get(disk.id)).toBeUndefined();
+	});
+
 	it("answers not_supported while the deployment has them off", async () => {
 		const tom = setUp(false);
 		await expect(tom.createStickyDisk({ name: "one", sizeGb: 10 })).rejects.toMatchObject({ code: "not_supported" });
@@ -146,3 +197,116 @@ describe("sticky disks", () => {
 		).rejects.toMatchObject({ code: "not_supported" });
 	});
 });
+
+const disk = (id: string, name = "cache"): StoredStickyDisk => ({
+	id,
+	accountId: "acc_1",
+	name,
+	sizeGb: 10,
+	createdAt: 1,
+	updatedAt: 1,
+});
+const version = (id: string, diskId: string): StoredStickyDiskVersion => ({
+	id,
+	diskId,
+	accountId: "acc_1",
+	hostId: "host_1",
+	sandboxId: "sbx_1",
+	sizeBytes: 100,
+	allocatedBytes: 10,
+	seq: 0,
+	createdAt: 2,
+});
+
+/** A fresh SQL store over `kind`; with `interrupt.next` set, its next batch fails after its own statements have run. */
+async function sqlStore(kind: TestDatabaseKind, interrupt: { next: boolean }): Promise<ComputeStore> {
+	const database = await kind.open();
+	cleanups.push(() => database.close());
+	await migrateComputeStore(database.driver);
+	const driver: SqlDriver = {
+		dialect: database.driver.dialect,
+		query: (text, params) => database.driver.query(text, params),
+		async batch(statements) {
+			if (!interrupt.next) return database.driver.batch(statements);
+			interrupt.next = false;
+			await database.driver.batch([...statements, { sql: "SELECT no_such_column FROM no_such_table" }]);
+		},
+	};
+	return createSqlComputeStore(driver);
+}
+
+const STORES: readonly { readonly name: string; readonly kind?: TestDatabaseKind }[] = [
+	{ name: "the memory store" },
+	{ name: `a SQL store on ${pgliteDatabase.name}`, kind: pgliteDatabase },
+	{ name: `a SQL store on ${nodeSqliteDatabase.name}`, kind: nodeSqliteDatabase },
+];
+
+for (const each of STORES) {
+	const timeout = each.kind?.testTimeoutMs === undefined ? {} : { timeout: each.kind.testTimeoutMs };
+	const interrupt = { next: false };
+	const open = (): Promise<ComputeStore> =>
+		each.kind === undefined ? Promise.resolve(createMemoryStore()) : sqlStore(each.kind, interrupt);
+	const claimOf = async (store: ComputeStore, name = "cache") =>
+		(await store.stickyDiskNames.get(stickyDiskNameId("acc_1", name)))?.diskId;
+
+	describe(`sticky disk writes in ${each.name}`, timeout, () => {
+		it("give a name to one live disk at a time, and a delayed delete never frees a newer disk's name", async () => {
+			const store = await open();
+			const made = await Promise.all([
+				store.stickyDiskWrites.create(disk("sdk_a")),
+				store.stickyDiskWrites.create(disk("sdk_b")),
+			]);
+			expect(made.filter(Boolean)).toHaveLength(1);
+			const [winner, loser] = made[0] === true ? ["sdk_a", "sdk_b"] : ["sdk_b", "sdk_a"];
+			expect(await store.stickyDisks.get(loser)).toBeUndefined();
+			expect(await claimOf(store)).toBe(winner);
+			expect((await store.stickyDiskWrites.tombstone(winner, 5))?.deletedAt).toBe(5);
+			expect(await claimOf(store)).toBeUndefined();
+			expect(await store.stickyDiskWrites.create(disk("sdk_c"))).toBe(true);
+			// The old disk's delete again, late: its tombstone stays as it was, and the new disk keeps its name.
+			expect((await store.stickyDiskWrites.tombstone(winner, 9))?.deletedAt).toBe(5);
+			expect(await claimOf(store)).toBe("sdk_c");
+			expect(await store.stickyDiskWrites.tombstone("sdk_missing", 9)).toBeUndefined();
+		});
+
+		it("record a version with its live disk's head, in order, and none once the disk is tombstoned", async () => {
+			const store = await open();
+			await store.stickyDiskWrites.create(disk("sdk_a"));
+			const committed = await Promise.all([
+				store.stickyDiskWrites.commit(version("sdv_1", "sdk_a"), 3),
+				store.stickyDiskWrites.commit(version("sdv_2", "sdk_a"), 3),
+			]);
+			expect(committed.map((each) => each?.seq).sort()).toEqual([1, 2]);
+			const last = committed.find((each) => each?.seq === 2);
+			expect((await store.stickyDisks.get("sdk_a"))?.head).toBe(last?.id);
+			await store.stickyDiskWrites.tombstone("sdk_a", 4);
+			expect(await store.stickyDiskWrites.commit(version("sdv_3", "sdk_a"), 5)).toBeUndefined();
+			expect((await store.stickyDiskVersions.list({ diskId: "sdk_a" })).map((each) => each.id).sort()).toEqual([
+				"sdv_1",
+				"sdv_2",
+			]);
+			expect((await store.stickyDisks.get("sdk_a"))?.head).toBe(last?.id);
+		});
+
+		if (each.kind !== undefined) {
+			it("leave all of a create, a tombstone or a commit, or none of it, when the write is interrupted", async () => {
+				const store = await open();
+				interrupt.next = true;
+				await expect(store.stickyDiskWrites.create(disk("sdk_a"))).rejects.toThrow();
+				expect(await store.stickyDisks.get("sdk_a")).toBeUndefined();
+				expect(await claimOf(store)).toBeUndefined();
+				expect(await store.stickyDiskWrites.create(disk("sdk_b"))).toBe(true);
+
+				interrupt.next = true;
+				await expect(store.stickyDiskWrites.commit(version("sdv_1", "sdk_b"), 3)).rejects.toThrow();
+				expect((await store.stickyDisks.get("sdk_b"))?.head).toBeUndefined();
+				expect(await store.stickyDiskVersions.get("sdv_1")).toBeUndefined();
+
+				interrupt.next = true;
+				await expect(store.stickyDiskWrites.tombstone("sdk_b", 4)).rejects.toThrow();
+				expect((await store.stickyDisks.get("sdk_b"))?.deletedAt).toBeUndefined();
+				expect(await claimOf(store)).toBe("sdk_b");
+			});
+		}
+	});
+}

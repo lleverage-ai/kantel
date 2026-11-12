@@ -43,10 +43,12 @@ The sandbox must be running. Its filesystem is frozen for the moment the copy ta
 
 - Put a tool's working directory on the same disk as its cache. pnpm links packages into `node_modules` only within one filesystem, and copies them across two.
 - Prune before you commit (`pnpm store prune`, `docker system prune`), and delete working files you don't want in the next version. A disk only grows otherwise.
-- Pools of [GitHub Actions runners](/sandboxes/github-runners/) attach sticky disks and commit them after successful jobs on the branches you name.
+- Pools of [GitHub Actions runners](/sandboxes/github-runners/) attach sticky disks and commit them after successful scheduled jobs on the branch you name.
 
 ## Where the data lives
 
-A host keeps each version as a file cloned from the version before it, so a version takes only the blocks that changed. It keeps the two newest versions of each disk. Deleting a disk deletes its versions from every connected host; a sandbox keeps its copy until it is deleted.
+A host keeps each version as a file cloned from the version before it, so a version takes only the blocks that changed. It keeps the two newest versions of each disk. Deleting a disk deletes its versions from every connected host, and again from any host that was away, as it reconnects, for 30 days; deleting an account does the same for its disks. A sandbox keeps its copy until it is deleted.
+
+On a host whose filesystem can't clone files (XFS and btrfs can; ext4 can't), copying a disk means copying all of it: when a sandbox gets its copy, when it's made from a snapshot, and when it commits. Each full copy needs room for the disk's data and must leave 10 GiB of the host's disk free, or it fails for want of room; a sandbox's disk that couldn't be copied shows as `failed`, with why. A sandbox's snapshots need room for its sticky disks as well as its own disk.
 
 <!-- Sources: docs/design/disk-store.md, packages/compute/src/service.ts (stickyDisksFor, commitStickyDisk), packages/hosts/src/protocol.ts (HOST_FEATURES.stickyDisks), apps/host/internal/microvm (sticky disks) -->

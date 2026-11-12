@@ -2398,23 +2398,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		requireScope(principal, scope, role);
 		return stickyDiskIn(account.id, ref);
 	}
-	/** Forgets an account's sticky disks: its sandboxes go with it, and hosts keep a disk's versions only while it exists. */
-	async function forgetStickyDisks(accountId: string): Promise<void> {
-		for (const disk of await store.stickyDisks.list({ accountId })) {
-			await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
-			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
-				await store.stickyDiskVersions.delete(version.id);
-			}
-			await store.stickyDiskNames.delete(stickyDiskNameId(accountId, disk.name));
-			await store.stickyDisks.delete(disk.id);
+	/**
+	 * Deletes a sticky disk: a tombstone, with its name's claim released, so it is gone to callers and to a commit from
+	 * now on and its name is free; then its catalogue versions, and its versions on the hosts there are now. The tombstone
+	 * is kept (`STICKY_TOMBSTONE_MS`) for the sweep to delete its versions from hosts again, so a host away now, or a
+	 * commit finishing meanwhile, leaves nothing behind.
+	 */
+	async function deleteStickyDiskNow(diskId: string): Promise<void> {
+		if ((await store.stickyDiskWrites.tombstone(diskId, now())) === undefined) return;
+		for (const version of await store.stickyDiskVersions.list({ diskId })) {
+			await store.stickyDiskVersions.delete(version.id);
 		}
+		await backend.deleteStickyDisk?.(diskId).catch(() => undefined);
+	}
+	/**
+	 * Deletes an account's sticky disks, as a delete does: their sandboxes go with the account, and their tombstones
+	 * outlive it (the fence lets them be written in a closed account), so the sweep still deletes their versions from
+	 * hosts that were away. A disk made since is refused by the fence.
+	 */
+	async function forgetStickyDisks(accountId: string): Promise<void> {
+		for (const disk of await store.stickyDisks.list({ accountId })) await deleteStickyDiskNow(disk.id);
 	}
 
 	/** When the sweep last deleted tombstoned sticky disks' versions from hosts. */
 	let stickySweptAt = Number.NEGATIVE_INFINITY;
 	/**
 	 * Deletes deleted sticky disks' versions from every connected host again (a host away at the delete, or a commit
-	 * that finished after it), and forgets tombstones past `STICKY_TOMBSTONE_MS`.
+	 * that finished after it), and their catalogue versions a delete stopped before, and forgets tombstones past
+	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it.
 	 */
 	async function sweepStickyTombstones(): Promise<void> {
 		if (options.stickyDisks !== true || backend.deleteStickyDisk === undefined) return;
@@ -2423,6 +2434,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		stickySweptAt = t;
 		for (const disk of await store.stickyDisks.list()) {
 			if (disk.deletedAt === undefined) continue;
+			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
+				await store.stickyDiskVersions.delete(version.id);
+			}
 			await backend.deleteStickyDisk(disk.id).catch(() => undefined);
 			if (t - disk.deletedAt > STICKY_TOMBSTONE_MS) await store.stickyDisks.delete(disk.id);
 		}
@@ -9880,17 +9894,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
 			return once(principal, "createStickyDisk", { body, idempotencyKey }, async () => {
-				const id = randomId("sdk");
-				// The name's claim first, atomically: of two creates of one name, only one inserts it.
-				const claimed = await store.stickyDiskNames.insert({
-					id: stickyDiskNameId(account.id, body.name),
-					accountId: account.id,
-					diskId: id,
-				});
-				if (!claimed) throw new KantelError("conflict", `The account has a sticky disk named ${body.name}`);
 				const t = now();
 				const disk: StoredStickyDisk = {
-					id,
+					id: randomId("sdk"),
 					accountId: account.id,
 					name: body.name,
 					...(body.description === undefined ? {} : { description: body.description }),
@@ -9898,10 +9904,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdAt: t,
 					updatedAt: t,
 				};
-				await store.stickyDisks.put(disk).catch(async (error: unknown) => {
-					await store.stickyDiskNames.delete(stickyDiskNameId(account.id, body.name));
-					throw error;
-				});
+				// The disk with its name's claim, in one write: of two creates of one name only one lands, and an
+				// interrupted create leaves neither.
+				if (!(await store.stickyDiskWrites.create(disk))) {
+					throw new KantelError("conflict", `The account has a sticky disk named ${body.name}`);
+				}
 				return stickyDiskView(disk, true);
 			});
 		},
@@ -9915,17 +9922,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteStickyDisk: async (principal, { params }) => {
 			requireSticky();
 			const disk = await stickyDiskFor(principal, params.stickyDiskId, "account:admin");
-			// A tombstone: gone to callers and a commit from now on, its name free, its versions deleted from hosts by
-			// passes until it expires, so a host away now, or a commit finishing meanwhile, leaves nothing behind.
-			await store.stickyDisks.update(disk.id, (current) => ({ ...current, deletedAt: now(), updatedAt: now() }));
-			await store.stickyDiskNames.deleteIf(
-				stickyDiskNameId(disk.accountId, disk.name),
-				(claim) => claim.diskId === disk.id,
-			);
-			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
-				await store.stickyDiskVersions.delete(version.id);
-			}
-			await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
+			await deleteStickyDiskNow(disk.id);
 			return undefined;
 		},
 
@@ -9957,20 +9954,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				seq: 0,
 				createdAt: now(),
 			};
-			// The newest commit is the head, and takes the next place in the disk's order, in one conditional write: two
-			// from one version are both kept, and the later one wins. Deleted while it was made: its version goes from its
-			// host again rather than outliving its disk, and the catalogue never records it.
-			const headed = await store.stickyDisks.update(disk.id, (current) =>
-				current.deletedAt === undefined
-					? { ...current, head: id, commits: (current.commits ?? 0) + 1, updatedAt: now() }
-					: undefined,
-			);
-			if (headed === undefined) {
+			// The version and the disk's head, with the next place in its order, in one write that needs the disk live: two
+			// commits from one version are both kept, and the later one wins. Deleted while it was made (an account's
+			// teardown too): its version goes from its host again rather than outliving its disk, and the catalogue never
+			// records it.
+			const recorded = await store.stickyDiskWrites.commit(version, now());
+			if (recorded === undefined) {
 				await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
 				throw new KantelError("not_found", "The sticky disk was deleted");
 			}
-			const recorded = { ...version, seq: headed.commits ?? 1 };
-			await store.stickyDiskVersions.put(recorded);
 			return stickyVersionView(recorded);
 		},
 

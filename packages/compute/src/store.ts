@@ -862,11 +862,16 @@ export interface ComputeStore {
 	readonly githubRunners: Collection<StoredGithubRunners>;
 	readonly githubRunnerJobs: Collection<StoredGithubRunnerJob>;
 	readonly githubRunnerMachines: Collection<StoredGithubRunnerMachine>;
-	/** Sticky disks and their versions (docs/design/disk-store.md). */
+	/**
+	 * Sticky disks and their versions (docs/design/disk-store.md). A write that makes a disk, tombstones one or records a
+	 * version goes through `stickyDiskWrites`, with the disk's name claim or its version.
+	 */
 	readonly stickyDisks: Collection<StoredStickyDisk>;
 	readonly stickyDiskVersions: Collection<StoredStickyDiskVersion>;
-	/** Each live sticky disk's name in its account (`stickyDiskNameId`): an insert claims a name, atomically. */
+	/** Each live sticky disk's name in its account (`stickyDiskNameId`), claimed and released with its disk. */
 	readonly stickyDiskNames: Collection<StoredStickyDiskName>;
+	/** A sticky disk with its name's claim or its version, written together. */
+	readonly stickyDiskWrites: StickyDiskWrites;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -924,6 +929,33 @@ export interface StoredStickyDiskVersion {
 	/** Its place among its disk's commits, from 1: what orders them, as two may share a millisecond. */
 	readonly seq: number;
 	readonly createdAt: number;
+	/** The write that recorded it, in SQL: how that write tells it landed (`StickyDiskWrites.commit`). */
+	readonly writeId?: string;
+}
+
+/**
+ * Writes of a sticky disk that must land with another record or not at all, so no interruption leaves a name claimed
+ * without its live disk, or a disk's head without its version:
+ *
+ * - `create` inserts a disk and its name's claim together.
+ * - `tombstone` marks a disk deleted and releases its name's claim together, only a claim that names that disk, so a
+ *   delayed delete never frees a newer disk's name.
+ * - `commit` records a version and makes it the disk's head, numbered after its other commits, together, and only while
+ *   the disk is there and not tombstoned: once a tombstone lands, no version of the disk is recorded again.
+ */
+export interface StickyDiskWrites {
+	/** Inserts `disk` and claims its name in its account; false, writing neither, when the name or the ID is taken. */
+	create(disk: StoredStickyDisk): Promise<boolean>;
+	/**
+	 * Tombstones the disk (`deletedAt`) and releases its name's claim; one tombstoned already keeps its time and has its
+	 * claim released again. Answers the tombstoned disk, or undefined when there is none.
+	 */
+	tombstone(id: string, at: number): Promise<StoredStickyDisk | undefined>;
+	/**
+	 * Records `version` (its `seq` set to the disk's next) as its live disk's head. Answers the version recorded, or
+	 * undefined, writing nothing, when the disk is gone or tombstoned.
+	 */
+	commit(version: StoredStickyDiskVersion, at: number): Promise<StoredStickyDiskVersion | undefined>;
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -1021,6 +1053,43 @@ function memoryTemplateWrites(
 	};
 }
 
+/** `StickyDiskWrites` over memory tables: each write is made in one turn, so nothing reads half of it. */
+function memoryStickyDiskWrites(
+	disks: MemoryTable<StoredStickyDisk>,
+	names: MemoryTable<StoredStickyDiskName>,
+	versions: MemoryTable<StoredStickyDiskVersion>,
+): StickyDiskWrites {
+	return {
+		async create(disk) {
+			const claim = stickyDiskNameId(disk.accountId, disk.name);
+			if (disks.records.has(disk.id) || names.records.has(claim)) return false;
+			disks.records.set(disk.id, structuredClone(disk));
+			names.records.set(claim, { id: claim, accountId: disk.accountId, diskId: disk.id });
+			return true;
+		},
+		async tombstone(id, at) {
+			const current = disks.records.get(id);
+			if (current === undefined) return undefined;
+			const tombstoned = current.deletedAt === undefined ? { ...current, deletedAt: at, updatedAt: at } : current;
+			disks.records.set(id, structuredClone(tombstoned));
+			const claim = stickyDiskNameId(current.accountId, current.name);
+			if (names.records.get(claim)?.diskId === id) names.records.delete(claim);
+			return structuredClone(tombstoned);
+		},
+		async commit(version, at) {
+			const current = disks.records.get(version.diskId);
+			if (current === undefined || current.deletedAt !== undefined || versions.records.has(version.id)) {
+				return undefined;
+			}
+			const commits = (current.commits ?? 0) + 1;
+			const recorded = { ...version, seq: commits };
+			disks.records.set(current.id, { ...current, head: version.id, commits, updatedAt: at });
+			versions.records.set(version.id, structuredClone(recorded));
+			return structuredClone(recorded);
+		},
+	};
+}
+
 /** A `ComputeStore` in memory. */
 export function createMemoryStore(): ComputeStore {
 	const templates = memoryTable<StoredTemplate>(templateNameKey);
@@ -1028,6 +1097,9 @@ export function createMemoryStore(): ComputeStore {
 	const users = memoryTable<StoredUser>();
 	const accounts = memoryTable<StoredAccount>();
 	const members = memoryTable<StoredMember>();
+	const stickyDisks = memoryTable<StoredStickyDisk>();
+	const stickyDiskNames = memoryTable<StoredStickyDiskName>();
+	const stickyDiskVersions = memoryTable<StoredStickyDiskVersion>();
 	// Read and written with no await between, so nothing else runs in the middle.
 	const active = (userId: string) => {
 		const user = users.records.get(userId);
@@ -1080,9 +1152,10 @@ export function createMemoryStore(): ComputeStore {
 		githubRunners: memoryCollection(),
 		githubRunnerJobs: memoryCollection(),
 		githubRunnerMachines: memoryCollection(),
-		stickyDisks: memoryCollection(),
-		stickyDiskVersions: memoryCollection(),
-		stickyDiskNames: memoryCollection(),
+		stickyDisks: stickyDisks.collection,
+		stickyDiskVersions: stickyDiskVersions.collection,
+		stickyDiskNames: stickyDiskNames.collection,
+		stickyDiskWrites: memoryStickyDiskWrites(stickyDisks, stickyDiskNames, stickyDiskVersions),
 	};
 }
 
@@ -1126,7 +1199,7 @@ export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
 
 /**
  * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
- * deliveries, telemetry, proxy settings, join tokens, events, GitHub runner integrations and their jobs) fenced against its deletion: a write is checked once it
+ * deliveries, telemetry, proxy settings, join tokens, events, GitHub runner integrations and their jobs, new sticky disks) fenced against its deletion: a write is checked once it
  * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
  * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
  * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
@@ -1207,5 +1280,22 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		stickyDisks: fenced(store.stickyDisks, byAccount),
 		stickyDiskVersions: fenced(store.stickyDiskVersions, byAccount),
 		stickyDiskNames: fenced(store.stickyDiskNames, byAccount),
+		// A new disk only. Tombstones aren't fenced: an account's teardown writes them after it has closed, and they
+		// outlive it, so hosts that were away still have the disk's versions deleted (`STICKY_TOMBSTONE_MS`). A commit
+		// needs a live disk, and the teardown tombstones every disk before it reads their versions.
+		stickyDiskWrites: {
+			...store.stickyDiskWrites,
+			async create(disk) {
+				const created = await store.stickyDiskWrites.create(disk);
+				if (created && !(await open(disk.accountId))) {
+					await store.stickyDiskNames
+						.deleteIf(stickyDiskNameId(disk.accountId, disk.name), (claim) => claim.diskId === disk.id)
+						.catch(() => false);
+					await store.stickyDisks.delete(disk.id).catch(() => false);
+					throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
+				}
+				return created;
+			},
+		},
 	};
 }
