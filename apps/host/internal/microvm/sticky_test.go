@@ -100,7 +100,7 @@ func TestStickyDrivesFromASnapshot(t *testing.T) {
 	}
 	// Into another snapshot, and linked from it by a keep.
 	next, kept := t.TempDir(), t.TempDir()
-	if err := keepSticky(s.vmDir(), next, s.meta.StickyDisks); err != nil {
+	if err := m.keepSticky(s.vmDir(), next, s.meta.StickyDisks, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := linkSticky(next, kept, s.meta.StickyDisks); err != nil {

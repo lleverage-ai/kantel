@@ -284,6 +284,22 @@ func TestStickyFullCopiesReserveRoom(t *testing.T) {
 	if err := cloneWithin(context.Background(), src, dst+"2", deadline, m.reserveStickyCopy); err != nil {
 		t.Fatal(err)
 	}
+	// A live fork's snapshot, which reserves nothing for its sandbox's disk, reserves each sticky drive's full copy: refused
+	// without room, nothing left half copied; with room, copied, and the room given back.
+	_, s := stoppedSandbox(t)
+	if err := os.WriteFile(filepath.Join(s.vmDir(), stickyDriveFile(0)), bytes.Repeat([]byte("v"), 1<<18), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.meta.StickyDisks = []stickyDisk{{DiskID: "ci", Path: "/var/lib/ci", Slot: 0, State: proto.StickyMounted}}
+	forkDir := t.TempDir()
+	free = int64(snapshotHeadroom) + size - 1
+	if err := m.keepSticky(s.vmDir(), forkDir, s.meta.StickyDisks, false); !capacity(err) || fileExists(filepath.Join(forkDir, stickyDriveFile(0))) {
+		t.Fatalf("a live fork's sticky copy without room: %v", err)
+	}
+	free = int64(snapshotHeadroom) + size + 1<<20
+	if err := m.keepSticky(s.vmDir(), forkDir, s.meta.StickyDisks, false); err != nil {
+		t.Fatal(err)
+	}
 	// A copy that fails (nowhere to write it) gives its room back too.
 	if _, err := m.cloneStickyFile(src, filepath.Join(dir, "gone", "clone")); err == nil {
 		t.Fatal("a copy into a missing directory")

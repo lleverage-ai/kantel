@@ -3263,7 +3263,9 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 	if memErr == nil && diskErr == nil && len(s.meta.StickyDisks) > 0 {
 		// Still paused: once no write is in flight, its sticky drives are as its memory has them.
 		if diskErr = s.machine.Barrier(ctx); diskErr == nil {
-			diskErr = keepSticky(s.vmDir(), sdir, s.meta.StickyDisks)
+			// A save reserved their room with its disk; a live fork reserves nothing for its disk, which its create
+			// counts, so each sticky drive's full copy reserves its own.
+			diskErr = m.keepSticky(s.vmDir(), sdir, s.meta.StickyDisks, reserve != nil)
 		}
 		t.step("sticky", &start)
 	}
@@ -3357,7 +3359,7 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 	err = copyQuietDisk(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile), diskCopies, barrier)
 	if err == nil {
 		// Paused, with no write in flight (copyQuietDisk's last barrier): its sticky drives as they are with its disk.
-		err = keepSticky(s.vmDir(), sdir, s.meta.StickyDisks)
+		err = m.keepSticky(s.vmDir(), sdir, s.meta.StickyDisks, reserve != nil)
 	}
 	if rerr := resume(); rerr != nil {
 		err = errors.Join(err, rerr)
@@ -3553,7 +3555,7 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 	}
 	err := copySparse(filepath.Join(vm, fc.DiskFile), filepath.Join(sdir, fc.DiskFile))
 	if err == nil {
-		err = keepSticky(vm, sdir, s.meta.StickyDisks)
+		err = m.keepSticky(vm, sdir, s.meta.StickyDisks, true)
 	}
 	// Copied (its blocks now show in the free space) or not: the reservation has done its job either way.
 	release()

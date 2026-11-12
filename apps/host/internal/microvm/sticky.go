@@ -144,7 +144,10 @@ func (m *Manager) makeStickyDrives(s *sandbox, origin sandboxOrigin) error {
 		}
 		var err error
 		if origin.takeDisk {
-			_, err = takeFile(src, dst)
+			// A move; on another file system (never under one root, but if it were) a full copy, which reserves its room.
+			if err = os.Rename(src, dst); err != nil {
+				_, err = m.cloneStickyFile(src, dst)
+			}
 		} else {
 			_, err = m.cloneStickyFile(src, dst)
 		}
@@ -196,11 +199,20 @@ func attachedSticky(disks []stickyDisk) []stickyDisk {
 }
 
 // keepSticky clones a sandbox's sticky drives' files into a snapshot's directory (sdir), on the same drives: its VM is
-// stopped, or paused with no write in flight. Their room is reserved by the snapshot's own reservation, with its disk
-// (stickyUsage in roomForSnapshot and roomToSave), so a full copy here reserves nothing more.
-func keepSticky(vm, sdir string, disks []stickyDisk) error {
+// stopped, or paused with no write in flight. reserved says the snapshot's own reservation counts their room already,
+// with its disk (stickyUsage in roomForSnapshot and roomToSave), so a full copy here reserves nothing more; else (a live
+// fork's snapshot, whose disk is the fork's and counted by its create) each drive's full copy reserves its own room
+// (cloneStickyFile), and a reflink none.
+func (m *Manager) keepSticky(vm, sdir string, disks []stickyDisk, reserved bool) error {
 	for _, d := range attachedSticky(disks) {
-		if _, err := cloneDisk(filepath.Join(vm, stickyDriveFile(d.Slot)), filepath.Join(sdir, stickyDriveFile(d.Slot))); err != nil {
+		src, dst := filepath.Join(vm, stickyDriveFile(d.Slot)), filepath.Join(sdir, stickyDriveFile(d.Slot))
+		var err error
+		if reserved {
+			_, err = cloneDisk(src, dst)
+		} else {
+			_, err = m.cloneStickyFile(src, dst)
+		}
+		if err != nil {
 			return fmt.Errorf("its sticky disk %s: %w", d.DiskID, err)
 		}
 	}
