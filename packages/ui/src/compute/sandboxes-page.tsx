@@ -524,7 +524,7 @@ function SandboxToolbar({
 	const creators = creatorCount(sandboxes) > 1 || creator !== "all" ? creatorFilters(sandboxes, viewerId) : undefined;
 	return (
 		<div className="kt-sandbox-toolbar flex flex-wrap items-center gap-2">
-			<div className={narrow ? "w-full" : "w-(--kt-popover-width) max-w-full"}>
+			<div className={narrow ? "w-full" : "min-w-48 grow basis-48 max-w-(--kt-popover-width)"}>
 				<TextField
 					label="Search sandboxes"
 					hideLabel
@@ -1454,21 +1454,24 @@ function SelectionBar({
 	const allId = useId();
 	if (!narrow) {
 		return (
-			<div
-				className={`kt-selection-bar ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2 ${count === 0 ? "" : "pl-2"}`}
-			>
-				{/* Always there, so the count is read out as the first row is ticked. */}
-				<span className="text-sm text-fg tabular-nums" aria-live="polite">
+			// Its room is kept while nothing is ticked, only hidden (and so out of the tab order), so the row wraps the same
+			// way either side of the first tick and the table under it stays put.
+			<div className="kt-selection-bar ml-auto flex items-center gap-3 pl-2">
+				<span className="kt-sr-only" aria-live="polite">
 					{count === 0 ? "" : `${count} selected`}
 				</span>
-				{count === 0 ? null : (
-					<span className="flex flex-wrap items-center gap-2">
-						{actions}
-						<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
-							Clear
-						</Button>
-					</span>
-				)}
+				<span
+					aria-hidden="true"
+					className={`text-sm whitespace-nowrap text-fg tabular-nums ${count === 0 ? "invisible" : ""}`}
+				>
+					{count} selected
+				</span>
+				<span className={`flex items-center gap-2 ${count === 0 ? "invisible" : ""}`}>
+					{actions}
+					<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
+						Clear
+					</Button>
+				</span>
 			</div>
 		);
 	}
