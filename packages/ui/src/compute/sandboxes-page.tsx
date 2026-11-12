@@ -677,10 +677,46 @@ function SandboxList({
 		const failed = results.filter((result) => result.status === "rejected").length;
 		if (failed > 0) onNotice({ level: "error", text: `Kantel couldn't stop ${failed} of them. Try again.` });
 	};
+	const selectionBar = (
+		<SelectionBar
+			narrow={narrow}
+			count={selected.length}
+			all={allTicked}
+			some={someTicked}
+			disabled={selectable.length === 0}
+			onAll={tickAll}
+			actions={
+				<>
+					<Button
+						size="sm"
+						icon={<StopIcon size="sm" />}
+						disabled={stoppable.length === 0}
+						busy={stopping}
+						onClick={() => void stopSelected()}
+					>
+						Stop
+					</Button>
+					<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
+						Delete
+					</Button>
+				</>
+			}
+		/>
+	);
+	// The filters' own row is unpacked into this one, so the selection's actions take the end of their last line. The
+	// same element whether or not anything matches, so the search field keeps its focus as the last match goes.
+	const filterRow = narrow ? (
+		toolbar
+	) : (
+		<div className="flex min-w-0 flex-wrap items-center gap-2 [&>.kt-sandbox-toolbar]:contents">
+			{toolbar}
+			{selectionBar}
+		</div>
+	);
 	if (sandboxes.length === 0) {
 		return (
 			<>
-				{toolbar}
+				{filterRow}
 				<p className="m-0 flex items-center gap-2 text-sm text-muted">
 					No sandboxes match.
 					{narrowed ? (
@@ -793,43 +829,9 @@ function SandboxList({
 			</table>
 		</SideScroll>
 	);
-	const selectionBar = (
-		<SelectionBar
-			narrow={narrow}
-			count={selected.length}
-			all={allTicked}
-			some={someTicked}
-			disabled={selectable.length === 0}
-			onAll={tickAll}
-			actions={
-				<>
-					<Button
-						size="sm"
-						icon={<StopIcon size="sm" />}
-						disabled={stoppable.length === 0}
-						busy={stopping}
-						onClick={() => void stopSelected()}
-					>
-						Stop
-					</Button>
-					<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
-						Delete
-					</Button>
-				</>
-			}
-		/>
-	);
 	return (
 		<>
-			{narrow ? (
-				toolbar
-			) : (
-				// The filters' own row is unpacked into this one, so the selection's actions take the end of their last line.
-				<div className="flex min-w-0 flex-wrap items-center gap-2 [&>.kt-sandbox-toolbar]:contents">
-					{toolbar}
-					{selectionBar}
-				</div>
-			)}
+			{filterRow}
 			{/* The table fills the room under the header and filters (`kt-fill`, base.css), so New and the filters stay in
 			    view down a long list. On a phone, Select all sits right over the rows it ticks, closer than the page's gap. */}
 			<div className="kt-fill flex min-w-0 flex-col gap-2">
