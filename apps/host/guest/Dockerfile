@@ -39,10 +39,14 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 # that need no GPU: LXTerminal, PCManFM and Geany. hsetroot draws the background as a root pixmap, which tint2 and
 # rofi show through their rounded corners without a compositor; librsvg2-common lets GTK and rofi draw SVG icons;
 # xsettingsd hands the GTK apps the DPI a viewer's pixel ratio asks for (kantel-session).
+# While the snapshot applies, an index's own expiry date isn't checked: Debian's security suite (Chromium's, below)
+# says its index is valid for a week, so a snapshot pinned a week back would be refused as expired, though its index is
+# still checked against Debian's keys. The setting goes with APT::Snapshot, in the same file, wherever that moves.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
 	&& echo "APT::Snapshot \"$UBUNTU_SNAPSHOT\";" > /etc/apt/apt.conf.d/50kantel-snapshot \
 	&& echo 'Acquire::Snapshots::URI::Host::ports.ubuntu.com "https://snapshot.ubuntu.com/ubuntu/@SNAPSHOTID@/";' \
 		>> /etc/apt/apt.conf.d/50kantel-snapshot \
+	&& echo 'Acquire::Check-Valid-Until "false";' >> /etc/apt/apt.conf.d/50kantel-snapshot \
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		systemd systemd-sysv dbus dbus-user-session udev kmod util-linux-extra iproute2 iptables nftables iputils-ping procps psmisc \

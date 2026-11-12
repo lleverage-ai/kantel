@@ -105,10 +105,11 @@ Change a job's `runs-on` to the pool's label. `GET /v1/github-runners/{id}/jobs`
 
 ## The runner template
 
-A pool's template must have the [Actions runner](https://github.com/actions/runner) in it. By default Kantel starts it with:
+A pool's template must have the [Actions runner](https://github.com/actions/runner) in it. Kantel starts it as the sandbox's default user, `user`, which has passwordless `sudo` on Kantel's images. A sandbox reaches the internet only through its egress proxy, named in `HTTPS_PROXY` and the other proxy variables, so a command that switches user must keep them, or the runner can't reach GitHub. By default it runs:
 
 ```sh
-runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"
+sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY \
+  runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"
 ```
 
 Give the pool a `runnerCommand` to start it another way. A template like this one runs it on Kantel's default image, which has Docker:

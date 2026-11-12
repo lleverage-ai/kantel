@@ -66,6 +66,9 @@ func mcpRoutes(pollsUntilDone *atomic.Int64) routes {
 		"reason": "No host can take a microVM of size default (full)", "placementReason": "insufficient_capacity"})
 	return routes{
 		"POST /v1/sandboxes": func(call) any { return mcpSandbox(nil) },
+		"POST /v1/sandboxes/sbx_mcp1/upgrade": func(call) any {
+			return mcpSandbox(map[string]any{"type": "microvm", "size": "default"})
+		},
 		"POST /v1/sandboxes/sbx_mcp1/commands": func(c call) any {
 			if c.Body["detached"] == true {
 				return runningCommand(nil)
@@ -257,7 +260,7 @@ func TestMCPListsItsTools(t *testing.T) {
 			destructive = append(destructive, jsonAt(tool, "name").(string))
 		}
 	}
-	want := []string{"sandbox_create", "sandbox_list", "sandbox_get", "sandbox_stop", "sandbox_resume", "sandbox_fork",
+	want := []string{"sandbox_create", "sandbox_list", "sandbox_get", "sandbox_stop", "sandbox_resume", "sandbox_upgrade", "sandbox_fork",
 		"sandbox_delete", "sandbox_exec", "command_get", "command_list", "command_kill", "file_read", "file_write", "file_list",
 		"port_expose", "snapshot_save", "snapshot_list", "browser_open", "desktop_open"}
 	eq(t, "tools", strings.Join(names, " "), strings.Join(want, " "))
@@ -759,4 +762,30 @@ func TestMCPCancellationRightAfterItsCall(t *testing.T) {
 			t.Fatalf("try %d: the cancelled call was answered: %s", i, out.String())
 		}
 	}
+}
+
+func TestMCPUpgradesAnIsolate(t *testing.T) {
+	f := newMCPFixture(t, 5*time.Millisecond)
+	upgraded := resultOf(t, f.handle(t, toolCall(1, "sandbox_upgrade", map[string]any{"sandboxId": "sbx_mcp1", "size": "large"}), nil))
+	eq(t, "isError", upgraded.isError, false)
+	eq(t, "type", upgraded.structured["type"], any("microvm"))
+	contains(t, "text", upgraded.text, "/home/user/workspace")
+	calls := f.fake.Calls()
+	eq(t, "path", calls[0].Method+" "+calls[0].Path, "POST /v1/sandboxes/sbx_mcp1/upgrade")
+	eq(t, "body", string(calls[0].Raw), `{"size":"large","wait":true}`)
+	created := resultOf(t, f.handle(t, toolCall(2, "sandbox_create", map[string]any{"type": "isolate", "autoUpgrade": true}), nil))
+	eq(t, "isError", created.isError, false)
+	calls = f.fake.Calls()
+	eq(t, "create body", string(calls[1].Raw), `{"autoUpgrade":true,"type":"isolate","wait":true}`)
+}
+
+func TestMCPSaysACommandNeedsAMicrovm(t *testing.T) {
+	needs := commandResult(api.Command{ID: "cmd_1", SandboxID: "sbx_mcp1", State: api.CommandStateExited, ExitCode: api.Ptr(int64(127)),
+		NeedsMicrovm: &api.CommandNeedsMicrovm{Command: "git", Reason: "An isolate has no git; a microVM does."}})
+	contains(t, "needs", needs.Content[0].Text, "Call sandbox_upgrade with sandboxId sbx_mcp1")
+	rerun := commandResult(api.Command{ID: "cmd_2", SandboxID: "sbx_mcp1", State: api.CommandStateExited, RerunOf: api.Ptr("cmd_1")})
+	contains(t, "rerun", rerun.Content[0].Text, "this is the command run again there")
+	handedOn := commandResult(api.Command{ID: "cmd_1", SandboxID: "sbx_mcp1", State: api.CommandStateExited, RerunAs: api.Ptr("cmd_2"),
+		NeedsMicrovm: &api.CommandNeedsMicrovm{Command: "git", Reason: "x"}})
+	contains(t, "handed on", handedOn.Content[0].Text, "runs it again there as cmd_2")
 }

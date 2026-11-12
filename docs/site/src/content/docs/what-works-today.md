@@ -37,6 +37,8 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 
 ## Shown in tests only
 
+- **The deno_core isolate runtime** (`kantel-isolate`): its integration suite covers the shell, `node` and `python`, egress tagging, and stopping runaway loops and memory bombs without slowing a neighbouring sandbox, on the stock V8 and on the build with V8's heap sandbox. Its real-VM test, through `kantel-host` in Firecracker, ran files, `node`, `python`, loop containment and restores from a template on the sandboxed build. Neither has been recorded on the bare-metal host or a deployed install.
+- **Upgrading an isolate to a microVM**: on one host, a real-VM test moved files, a link, an executable and a 4 MB file into the microVM. Across hosts, only with stand-in hosts.
 - **Snapshot history and restore**, and **saved snapshots**: their API and CLI run against the stub backend and the host stand-in.
 - **Webhooks**: an endpoint was added on a local install, but delivery and signing are checked in tests only.
 - **OpenTelemetry**: export is unit-tested. No run has checked a real collector receiving the data.
@@ -56,7 +58,7 @@ Read these before relying on Kantel for real work.
 - **SSH and public ports on app.kantel.dev.** Their live checks were planned after deploy, and no result is recorded.
 - **Host updates.** `kantel-host update`, automatic updates, the console's **Update to** (tested against a host stand-in only), `revoke`, `uninstall` and the systemd service on a bare-metal host have not been run. Running sandboxes keeping going through an update is untested.
 - **arm64 hosts.** The arm64 `kantel-host` and images are boot-checked in emulation only, never on arm64 hardware.
-- **Hosts without KVM.** The `--isolate-runtime native` path hasn't been run, and there's no script yet to put `workerd` in a host's images.
+- **Hosts without KVM.** The `--isolate-runtime native` path has run only in `kantel-host`'s own tests, with an early build of `kantel-isolate`, not installed on a machine without KVM.
 - **macOS hosts.** Not built. A host is Linux only.
 - **Kantel Connect**, the link through kantel.dev for hosts and control planes that can't reach each other directly, is coming.
 - **Snapshots across image updates.** A snapshot is a layer over the image it was made on, so a host that replaces its image orphans older snapshots.

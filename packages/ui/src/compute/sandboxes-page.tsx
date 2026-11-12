@@ -2000,7 +2000,7 @@ export function NewSandboxDialog({
 							? "None of this organisation's hosts run microVMs, so only isolates can be made here."
 							: kind === "microvm"
 								? "A Firecracker microVM: root, Docker, systemd and /dev/kvm inside. Up in about a second."
-								: "A shell for HTTP calls and text or JSON work: curl, jq, grep, sed, awk. Up in milliseconds, nearly free. No git, Node, Python or Docker."}
+								: "A shell with node and python for HTTP calls, data work and short scripts. Up in milliseconds, nearly free. No git, packages or Docker."}
 					</span>
 				</div>
 				{/* A requested template stays in view when an isolate was picked for the user, refused until they choose. */}

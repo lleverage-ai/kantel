@@ -619,12 +619,18 @@ jobs:
           echo "TAG=host-images-$REFRESH.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
 
       # amd64 only: arm64 is published only once boot-check-arm64.sh has passed on its build, which needs QEMU here.
-      # KANTEL_NO_CACHE and the date reach rootfs.sh's docker build, as --no-cache and KANTEL_SECURITY_REFRESH.
+      # KANTEL_NO_CACHE and the date reach rootfs.sh's docker build, as --no-cache and KANTEL_SECURITY_REFRESH. The
+      # isolate image's runtime (kantel-isolate) is built in a Rust container by guest/isolate-runtime.sh; the
+      # KANTEL_V8_SANDBOX variable ("1") links the sandboxed V8 build the crate pins (v8/fetch-v8-sandbox.sh), and
+      # KANTEL_RUSTY_V8_ARCHIVE with KANTEL_RUSTY_V8_ARCHIVE_SHA256 any other, each checked against its SHA-256 first.
       - name: Build, and publish on main
         env:
           ARCHES: amd64
           KANTEL_SECURITY_REFRESH: ${{ needs.plan.outputs.refresh }}
           KANTEL_NO_CACHE: "1"
+          KANTEL_V8_SANDBOX: ${{ vars.KANTEL_V8_SANDBOX }}
+          RUSTY_V8_ARCHIVE: ${{ vars.KANTEL_RUSTY_V8_ARCHIVE }}
+          RUSTY_V8_ARCHIVE_SHA256: ${{ vars.KANTEL_RUSTY_V8_ARCHIVE_SHA256 }}
         run: |
           set -euo pipefail
           if [ "$PUBLISH" = true ]; then

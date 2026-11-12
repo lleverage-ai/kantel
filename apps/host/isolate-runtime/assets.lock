@@ -1,0 +1,10 @@
+# Pinned Pyodide assets for kantel-isolate, checked by build-assets.sh (SHA-256  path-relative-to-pyodide-dir).
+# Pyodide 314.0.7 (Python 3.14.2, abi 2026_0). The numpy line names the wheel build-assets fetches and verifies.
+# The tarball line pins the npm pyodide-<version>.tgz itself, checked before it is extracted.
+tarball 66b7949e5a0cba2250b586d7e368bf12fb482800748d182c4618254b685ffaa0
+6f1d60f7bf529beb300f0f47983c921d3982363640ba20af0e38efdddbc66109  pyodide.mjs
+f7cdc8ece80678ceb712f8e65ebe6d3a83203a180c399865f49612a051693635  pyodide.asm.mjs
+cc36e3cab04fdfc9a63ff13eb52eae2b911bf46c025cc7b281f394bd3de1d5e6  pyodide.asm.wasm
+fa1957e5777068fc4f7437f96d860ae2fbe9c19732ba06c84e004ec16dd7dd7a  python_stdlib.zip
+5dc2fc119108bc148c7457dc86e7675b5c87e1cafd420b9c34c1eaef7b36c010  pyodide-lock.json
+numpy numpy-2.4.6-cp314-cp314-pyemscripten_2026_0_wasm32.whl a292c1f5d7d8a2208cd5e94fc467604c131cabcd2fc14fed6eefde121e7fabdf

@@ -1,0 +1,89 @@
+name: rusty-v8-sandbox
+
+# Builds rusty_v8 with V8's heap sandbox for kantel-isolate (apps/host/isolate-runtime/v8/build-v8-sandbox.sh), for
+# x86_64 and aarch64 Linux, and uploads the files to a prerelease of this repository, creating it if it's missing.
+# By hand, once per `v8` crate version and patch revision (see apps/host/isolate-runtime/v8/README.md). Then copy the
+# SHA-256s from the run's summary (or the release's SHA256SUMS) into v8/fetch-v8-sandbox.sh: the build isn't
+# bit-for-bit reproducible, so the pinned checksums are what make a download trustworthy, and a rebuild uploaded over
+# the old files breaks every checkout that pins them. So an existing asset is replaced only when `replace` is set.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag (fetch-v8-sandbox.sh's TAG)
+        type: string
+        default: rusty-v8-sandbox-v150.4.0-1
+      replace:
+        description: Replace files already in the release (their pinned SHA-256s then need updating)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    # Kantel's own self-hosted runners (x86_64). Both targets build there: rusty_v8 downloads Chromium's clang, which
+    # has no Linux arm64 build, so aarch64 is cross-compiled, as rusty_v8's own CI does. About 20 minutes each at 16
+    # jobs, 5 GB of disk.
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          JOBS: "16"
+        run: apps/host/isolate-runtime/v8/build-v8-sandbox.sh "$RUNNER_TEMP/v8-out" "$RUNNER_TEMP/v8-work"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rusty-v8-sandbox-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/v8-out/*.gz
+            ${{ runner.temp }}/v8-out/*.rs
+            ${{ runner.temp }}/v8-out/*.gn
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Upload to the release
+    needs: build
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 30
+    permissions:
+      contents: write # the release and its assets
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rusty-v8-sandbox-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/v8-release
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPLACE: ${{ inputs.replace }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/v8-release"
+          sha256sum -- *.gz *.rs *.gn > SHA256SUMS
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" --title "$TAG" \
+              --notes "Sandboxed rusty_v8 for kantel-isolate (apps/host/isolate-runtime/v8). Built by the rusty-v8-sandbox workflow; the SHA-256s are pinned in fetch-v8-sandbox.sh."
+          clobber=()
+          [ "$REPLACE" = true ] && clobber=(--clobber)
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "${clobber[@]}" -- *.gz *.rs *.gn SHA256SUMS
+          {
+            echo "Uploaded to https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG. Pin these in fetch-v8-sandbox.sh:"
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -102,6 +102,8 @@ type Host struct {
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
 	bySlot map[int]egress.Rules
+	// held are the sandboxes being upgraded, whose events wait for the upgrade's end (holdEvents).
+	held map[string]int
 	// events go to the control plane while connected.
 	events func(proto.Event)
 	// link makes calls to the control plane while connected.
@@ -212,8 +214,16 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		log.Warn("microVM tier off: needs /dev/kvm, firecracker, a kernel and the sandbox image", "kvm", kvm, "firecracker", cfg.Firecracker, "kernel", cfg.Kernel, "image", cfg.SandboxImage)
 	}
 	isolateReady := false
+	binary, assets, legacyWorkerd, legacyBundle := cfg.IsolateBinary, cfg.IsolateAssets, "", ""
 	if cfg.IsolateRuntime == "native" {
-		isolateReady = fileExists(cfg.Workerd) && fileExists(cfg.IsolateBundle+"/config.capnp")
+		isolateReady = fileExists(binary) && fileExists(assets)
+		if workerd, bundle := cfg.legacyNativeRuntime(); !isolateReady && workerd != "" {
+			// A native host installed with workerd and updated to this binary alone (an update fetches kantel-host only):
+			// it keeps running workerd, rather than losing its isolates, until kantel-isolate is installed.
+			log.Warn("isolate tier on workerd, from before kantel-isolate: run the install command again to install kantel-isolate and its assets",
+				"workerd", workerd, "isolateBinary", binary, "isolateAssets", assets)
+			isolateReady, binary, assets, legacyWorkerd, legacyBundle = true, "", "", workerd, bundle
+		}
 	} else {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
@@ -225,13 +235,15 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		}
 		iso, err := isolate.New(isolate.Config{
 			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
-			Rootfs: isoRootfs, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
+			Rootfs: isoRootfs, Binary: binary, Assets: assets, LegacyWorkerd: legacyWorkerd, LegacyBundle: legacyBundle, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
 			return nil, err
 		}
 		h.add(isolate.Tier, iso)
+		// Its template (or, native, a first start), so the facts say what its runtime can do (Facts.Isolate).
+		go iso.Prepare(context.Background())
 	} else if want[isolate.Tier] {
 		log.Warn("isolate tier off: its runtime isn't installed", "runtime", cfg.IsolateRuntime)
 	}
@@ -305,6 +317,12 @@ func (h *Host) makeFacts() proto.Facts {
 	if _, ok := h.tiers[microvm.Tier]; ok {
 		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps)
 	}
+	if h.upgradesIsolates() {
+		features = append(features, proto.FeatureIsolateUpgrade)
+	}
+	if _, ok := h.tiers[isolate.Tier].(upgradeSource); ok {
+		features = append(features, proto.FeatureIsolateFreeze)
+	}
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(SnapshotMeasurer); ok {
 			features = append(features, proto.FeatureSnapshotSizes)
@@ -334,12 +352,16 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 }
 
-// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates.
+// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates, and
+// what its isolate runtime said it can do once it has (Isolate).
 func (h *Host) Facts() proto.Facts {
 	f := h.facts
 	if held := h.patching.facts.Load(); held != nil {
 		copied := *held
 		f.Images = &copied
+	}
+	if iso, ok := h.tiers[isolate.Tier].(*isolate.Manager); ok {
+		f.Isolate = iso.RuntimeInfo()
 	}
 	if h.canBuildTemplates(context.Background()) == nil {
 		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
@@ -436,7 +458,12 @@ func (h *Host) Close() {
 func (h *Host) sandboxEvent(info proto.SandboxInfo) {
 	h.mu.Lock()
 	fn := h.events
+	held := h.held[info.ID] > 0
 	h.mu.Unlock()
+	if held {
+		// Being upgraded: its microVM's create and its isolate's going are told as one, once it is done (upgrade.go).
+		return
+	}
 	if fn != nil {
 		fn(proto.Event{Kind: "sandbox", Sandbox: &info})
 	}
@@ -629,6 +656,31 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return info, nil
+	case proto.MethodUpgrade:
+		p, err := decode[proto.UpgradeParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.upgrade(ctx, p)
+	case proto.MethodUpgradeSettle:
+		p, err := decode[proto.UpgradeRef](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.settleUpgrade(ctx, p)
+	case proto.MethodUpgradeFreeze, proto.MethodUpgradeThaw:
+		p, err := decode[proto.UpgradeRef](params)
+		if err != nil {
+			return nil, err
+		}
+		// Both under the lifecycle lock, so a thaw (a rollback, perhaps on a new connection) can't answer before a
+		// freeze still waiting for a command or file write has frozen the isolate after it. The freeze can wait under
+		// it: commands and file writes take none.
+		defer h.lifecycle.lock(p.SandboxID)()
+		if method == proto.MethodUpgradeFreeze {
+			return map[string]bool{"ok": true}, h.freezeIsolate(p)
+		}
+		return map[string]bool{"ok": true}, h.thawIsolate(p)
 	case proto.MethodStop:
 		p, err := decode[proto.StopParams](params)
 		if err != nil {
@@ -780,7 +832,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		return info, nil
 	case proto.MethodDelete:
-		p, err := decode[proto.SandboxRef](params)
+		p, err := decode[proto.DeleteParams](params)
 		if err != nil {
 			return nil, err
 		}
@@ -789,7 +841,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		if err := t.Delete(ctx, p.SandboxID); err != nil {
+		// The isolate an upgrade to another host left goes as one upgraded here does, its snapshots kept.
+		if source, ok := t.(upgradeSource); ok && p.KeepSnapshots {
+			err = source.Dispose(p.SandboxID)
+		} else {
+			err = t.Delete(ctx, p.SandboxID)
+		}
+		if err != nil {
 			return nil, err
 		}
 		h.forgetSecrets(p.SandboxID)

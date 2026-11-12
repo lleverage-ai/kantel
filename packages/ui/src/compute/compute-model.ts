@@ -100,7 +100,7 @@ export interface AccountsSource {
 // Sandboxes
 
 /**
- * Where a sandbox runs. `isolate`: a V8 isolate on workerd running a bash written in TypeScript over its /workspace, up in milliseconds. `microvm`: a
+ * Where a sandbox runs. `isolate`: a V8 isolate (kantel-isolate) running a bash written in TypeScript over its /workspace, up in milliseconds. `microvm`: a
  * Firecracker microVM with its own kernel, root, Docker and /dev/kvm inside.
  */
 export type SandboxKind = "isolate" | "microvm";
@@ -918,6 +918,12 @@ export interface SandboxesSource {
 	/** Restarts a sandbox's machine that doesn't answer; the disk is kept. */
 	recover(id: string): Promise<Sandbox>;
 	/**
+	 * Makes an isolate a microVM with the same ID, its files (in `/home/user/workspace`, with `/workspace` linked there),
+	 * env, environments and grants, and answers it once it runs; a stopped one comes back running. A failure leaves the
+	 * isolate as it was. Absent: the console doesn't offer it.
+	 */
+	upgrade?(id: string): Promise<Sandbox>;
+	/**
 	 * Restarts a sandbox on the latest version of its base image: Kantel saves its disk, stops it and starts it again,
 	 * so running processes and memory are lost and its files stay. Absent: the console doesn't offer it.
 	 */
@@ -1730,6 +1736,7 @@ export type WebhookEvent =
 	| "sandbox.recovered"
 	| "sandbox.environments_changed"
 	| "sandbox.oom_kill"
+	| "sandbox.upgraded"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1744,6 +1751,7 @@ export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly l
 	{ event: "sandbox.recovered", label: "A sandbox recovered" },
 	{ event: "sandbox.environments_changed", label: "A sandbox's environments changed" },
 	{ event: "sandbox.oom_kill", label: "A sandbox ran out of memory" },
+	{ event: "sandbox.upgraded", label: "An isolate was upgraded to a microVM" },
 	{ event: "sandbox.deleted", label: "A sandbox was deleted" },
 	{ event: "snapshot.saved", label: "A snapshot was saved" },
 	{ event: "snapshot.deleted", label: "A snapshot was deleted" },

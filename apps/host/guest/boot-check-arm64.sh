@@ -41,8 +41,9 @@ docker run --rm -i -v "$OUT:/out" -e TIMEOUT="$TIMEOUT" -e DEBIAN_FRONTEND=nonin
 	d=$work/disk
 	mkdir -p "$d/root/usr/local/bin" "$d/root/etc/systemd/system/multi-user.target.wants" \
 		"$d/root/etc/systemd/system/docker.service.d"
-	# No host egress proxy here: Docker pulls directly over QEMU user networking.
-	printf "%s\n" "[Service]" "Environment=HTTP_PROXY= HTTPS_PROXY=" \
+	# No host egress proxy here: Docker pulls directly over QEMU user networking. Both spellings, since every service
+	# gets the lowercase ones too (system.conf.d/kantel-proxy.conf), and dockerd reads either.
+	printf "%s\n" "[Service]" "Environment=HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy=" \
 		>"$d/root/etc/systemd/system/docker.service.d/zz-boot-check.conf"
 	printf "%s\n" "[Unit]" "Description=Kantel arm64 boot check" "After=multi-user.target kantel-browser.service" \
 		"[Service]" "Type=oneshot" "ExecStart=/usr/local/bin/kantel-boot-check" "StandardOutput=tty" \

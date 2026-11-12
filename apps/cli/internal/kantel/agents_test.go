@@ -276,8 +276,9 @@ func TestTheGuidanceDescribesWhatAnIsolateIs(t *testing.T) {
 	for name, text := range map[string]string{"block": agentsBlock, "skill": skillMD, "mcp": mcpInstructions} {
 		notContains(t, name, text, "runs JavaScript")
 		notContains(t, name, text, "JavaScript shell")
+		contains(t, name, text, "python")
 	}
 	description := strings.SplitN(strings.SplitN(skillMD, "description: ", 2)[1], "\n", 2)[0]
-	contains(t, "skill description", description, "an isolate, a quick shell for HTTP calls and text work")
+	contains(t, "skill description", description, "an isolate, a quick shell with node and python for HTTP calls, data work and short scripts")
 	contains(t, "skill description", description, "a microVM with root, Docker")
 }

@@ -1,7 +1,8 @@
 name: CI
 
 # The pull request gate, kept quick for the two self-hosted runners: install, typecheck, lint and the generated API
-# files, no tests, beside the host's Go vet and unit tests (seconds). The TypeScript tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
+# files, no tests, beside the host's Go vet and unit tests (seconds) and the isolate runtime's Rust checks and tests
+# (minutes from cold, less with the runner's cargo cache warm). The TypeScript tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
 # and Sandbox image suites, and deploys only once all three pass. On a branch, `gh workflow run ci.yml --ref <branch>
 # -f tests=true` runs the tests too.
 on:
@@ -116,6 +117,57 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  isolate-runtime:
+    # The isolate runtime (apps/host/isolate-runtime, kantel-isolate: Rust on deno_core) is outside both: cargo fmt,
+    # clippy and test, in the same Rust container the images build it in (guest/isolate-runtime.sh test), and a release
+    # build for amd64 and arm64 (cross-compiled), so a change that breaks the image's build fails here. Nothing is
+    # restored from GitHub's cache: on the self-hosted runners cargo's registry is a Docker volume
+    # (kantel-isolate-cargo) and the build, with V8's static library (about 100 MB a target, downloaded by rusty_v8's
+    # build script), a directory in the runner's home, both kept between jobs.
+    #
+    # V8: the sandboxed V8 build the crate pins (v8/fetch-v8-sandbox.sh, the rusty-v8-sandbox-v150.4.0-1 prerelease, x86_64 and aarch64),
+    # which production images link, with the patched deno_core (v8/sandbox-crate.sh); the KANTEL_V8_SANDBOX repository
+    # variable set to "0" checks the stock V8 instead. KANTEL_RUSTY_V8_ARCHIVE with KANTEL_RUSTY_V8_ARCHIVE_SHA256 picks
+    # any other build; the script checks it against its SHA-256 before cargo sees it.
+    name: Rust check and test (apps/host/isolate-runtime)
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 45
+    env:
+      KANTEL_ISOLATE_TARGET: ${{ github.workspace }}/../.kantel-isolate-target
+      KANTEL_V8_SANDBOX: ${{ vars.KANTEL_V8_SANDBOX || '1' }}
+      RUSTY_V8_ARCHIVE: ${{ vars.KANTEL_RUSTY_V8_ARCHIVE }}
+      RUSTY_V8_ARCHIVE_SHA256: ${{ vars.KANTEL_RUSTY_V8_ARCHIVE_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The guest bundle (the shell, node and python guests) is built with Bun before cargo, since it's compiled into the
+      # binary. Bun 1.4, which wrote the crate's bun.lock (1.3 can't read it). From npm rather than oven-sh/setup-bun, which needs `unzip`: the runner has no system packages to add it
+      # with (as selfhosted-spike.yml does).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Bun
+        run: |
+          npm install --global bun@1.4.3
+          bun --version
+
+      # Until the runtime's source is in (apps/host/isolate-runtime/Cargo.toml), there is nothing to check.
+      - name: Has the runtime's source
+        id: crate
+        run: |
+          if [ -f apps/host/isolate-runtime/Cargo.toml ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Format, clippy and test
+        if: steps.crate.outputs.present == 'true'
+        run: apps/host/guest/isolate-runtime.sh test
+
+      # Each with its assets (build-assets.sh), as rootfs.sh builds them for the isolate image.
+      - name: Release build (amd64 and arm64)
+        if: steps.crate.outputs.present == 'true'
+        run: |
+          apps/host/guest/isolate-runtime.sh amd64
+          apps/host/guest/isolate-runtime.sh arm64
 
   cli-go:
     # kantel and kantel-admin (apps/cli) are Go too. The generated API client must match the OpenAPI document, and the

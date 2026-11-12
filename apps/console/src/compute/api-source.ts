@@ -743,6 +743,8 @@ function sandboxesSource(context: Context): SandboxesSource {
 			return view(fork);
 		},
 		recover: async (id) => view(await api.recoverSandbox(id)),
+		// Answers once the microVM runs with the isolate's files; a failure leaves the isolate as it was.
+		upgrade: async (id) => view(await api.upgradeSandbox(id, { wait: true })),
 		// Not in the generated SDK yet: the raw route, as `recoverSandbox` calls its own.
 		restartOnLatest: async (id) =>
 			view(

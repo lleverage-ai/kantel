@@ -56,6 +56,29 @@ export interface PlacementRecord {
 	readonly state: string;
 	readonly createdAt: number;
 	readonly updatedAt: number;
+	/**
+	 * An isolate's upgrade to a microVM under way, kept before anything is sent: its operation ID, the host its microVM
+	 * is (or may be) on and at what size, and whether that host does it itself (`host`) or Kantel copies the files to it
+	 * (`copy`), so one whose answer or gateway is lost is settled, not guessed.
+	 */
+	readonly upgrade?: {
+		readonly operationId: string;
+		readonly target: string;
+		readonly phase: "host" | "copy";
+		readonly size?: {
+			readonly name: string;
+			readonly vcpus: number;
+			readonly memoryMiB: number;
+			readonly diskGiB: number;
+		};
+		/**
+		 * Who is rolling it back (`by`, one rollback's own token) until when: the gateway that may send its compensating
+		 * calls, so two never roll back the same upgrade at once. Lapsed, its gateway is taken to be gone.
+		 */
+		readonly settling?: { readonly by: string; readonly until: number };
+	};
+	/** An upgraded microVM's isolate still to be deleted from its own host (`hostId`), once that host can be reached. */
+	readonly cleanup?: { readonly hostId: string; readonly operationId: string };
 }
 
 export interface HostStore {
@@ -78,11 +101,23 @@ export interface HostStore {
 	 */
 	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
+	/**
+	 * Changes a placement as it is now, atomically, as `updateHost` does a host: `change` is given the stored record and
+	 * answers the next (undefined leaves it), and a write that raced another is redone on the newer record. A host's
+	 * report goes through it, so one read before an upgrade's handover never writes back the placement it read. Resolves
+	 * what was written, or undefined.
+	 */
+	updatePlacement(
+		sandboxId: string,
+		change: (placement: PlacementRecord) => PlacementRecord | undefined,
+	): Promise<PlacementRecord | undefined>;
 	getPlacement(sandboxId: string): Promise<PlacementRecord | undefined>;
 	placementsOn(hostId: string): Promise<PlacementRecord[]>;
 	/** The placements on each of `hostIds`, in one read: a host with none is absent. */
 	placementsOnHosts(hostIds: readonly string[]): Promise<Map<string, PlacementRecord[]>>;
 	removePlacement(sandboxId: string): Promise<void>;
+	/** Removes a placement only if, as it is now, `should` says so: whether it did. */
+	removePlacementIf(sandboxId: string, should: (placement: PlacementRecord) => boolean): Promise<boolean>;
 }
 
 /** Placements grouped by their host, in the order given. */
@@ -145,6 +180,15 @@ export function createMemoryHostStore(): HostStore {
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
 		},
+		async updatePlacement(sandboxId, change) {
+			// Read, change and write with no await between them: nothing else runs in between.
+			const current = placements.get(sandboxId);
+			if (current === undefined) return undefined;
+			const next = change(copy(current));
+			if (next === undefined) return undefined;
+			placements.set(sandboxId, copy(next));
+			return copy(next);
+		},
 		async getPlacement(sandboxId) {
 			const placement = placements.get(sandboxId);
 			return placement === undefined ? undefined : copy(placement);
@@ -166,6 +210,11 @@ export function createMemoryHostStore(): HostStore {
 		},
 		async removePlacement(sandboxId) {
 			placements.delete(sandboxId);
+		},
+		async removePlacementIf(sandboxId, should) {
+			const current = placements.get(sandboxId);
+			if (current === undefined || !should(copy(current))) return false;
+			return placements.delete(sandboxId);
 		},
 	};
 }
@@ -306,6 +355,21 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
 			);
 		},
+		async updatePlacement(sandboxId, change) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
+				const [row] = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+				if (row === undefined) return undefined;
+				const read = String(row.data);
+				const next = change(JSON.parse(read) as PlacementRecord);
+				if (next === undefined) return undefined;
+				const won = await driver.query(
+					"UPDATE compute_placements SET host_id = ?, data = ? WHERE sandbox_id = ? AND data = ? RETURNING sandbox_id",
+					[next.hostId, JSON.stringify(next), sandboxId, read],
+				);
+				if (won.length > 0) return next;
+			}
+			throw new KantelError("unavailable", `The placement of ${sandboxId} kept changing; try again`);
+		},
 		async getPlacement(sandboxId) {
 			const rows = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
 			return rows[0] === undefined ? undefined : parse<PlacementRecord>(rows[0]);
@@ -327,6 +391,20 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 		},
 		async removePlacement(sandboxId) {
 			await driver.query("DELETE FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+		},
+		async removePlacementIf(sandboxId, should) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
+				const [row] = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+				if (row === undefined) return false;
+				const read = String(row.data);
+				if (!should(JSON.parse(read) as PlacementRecord)) return false;
+				const won = await driver.query(
+					"DELETE FROM compute_placements WHERE sandbox_id = ? AND data = ? RETURNING sandbox_id",
+					[sandboxId, read],
+				);
+				if (won.length > 0) return true;
+			}
+			throw new KantelError("unavailable", `The placement of ${sandboxId} kept changing; try again`);
 		},
 	};
 }

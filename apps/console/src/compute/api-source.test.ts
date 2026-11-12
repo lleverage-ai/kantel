@@ -528,8 +528,8 @@ describe("sandboxes", () => {
 		await sdk.writeFile(made.id, { path: "work/readme.txt", content: "Hello" });
 		const files = source.sandboxes.files;
 		if (files === undefined) throw new Error("No files");
-		const folder = await files.list(made.id, "home/user/work");
-		expect(folder.entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "home/user/work/readme.txt"]]);
+		const folder = await files.list(made.id, "workspace/work");
+		expect(folder.entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "workspace/work/readme.txt"]]);
 		expect(folder.more).toBe(false);
 		// A folder that runs on past the pages it reads says so, rather than looking complete.
 		let pages = 0;
@@ -546,9 +546,9 @@ describe("sandboxes", () => {
 		expect(pages).toBe(20);
 		// A part at a time, as the preview reads it: the bytes asked for, and the whole file's size.
 		const text = (part: { bytes: Uint8Array }) => new TextDecoder().decode(part.bytes);
-		const whole = await files.read(made.id, "home/user/work/readme.txt", { offset: 0, length: 256 * 1024 });
+		const whole = await files.read(made.id, "workspace/work/readme.txt", { offset: 0, length: 256 * 1024 });
 		expect([text(whole), whole.size]).toEqual(["Hello", 5]);
-		const part = await files.read(made.id, "home/user/work/readme.txt", { offset: 1, length: 3 });
+		const part = await files.read(made.id, "workspace/work/readme.txt", { offset: 1, length: 3 });
 		expect([text(part), part.size]).toEqual(["ell", 5]);
 
 		await sdk.runCommand(made.id, { command: "echo fine" });
@@ -659,13 +659,13 @@ describe("snapshots", () => {
 		expect(taken).toMatchObject({ sandboxId: sandbox.id, reason: "stop" });
 		if (taken === undefined) throw new Error("No snapshot");
 
-		const entries = await source.snapshots.list(taken.id, "home/user/work");
+		const entries = await source.snapshots.list(taken.id, "workspace/work");
 		expect(entries.map((entry) => [entry.kind, entry.path])).toEqual([
-			["folder", "home/user/work/notes"],
-			["file", "home/user/work/readme.txt"],
+			["folder", "workspace/work/notes"],
+			["file", "workspace/work/readme.txt"],
 		]);
 		expect(entries[1]?.sizeBytes).toBe(5);
-		const read = await source.snapshots.read(taken.id, "home/user/work/readme.txt", { offset: 0, length: 1024 });
+		const read = await source.snapshots.read(taken.id, "workspace/work/readme.txt", { offset: 0, length: 1024 });
 		expect([new TextDecoder().decode(read.bytes), read.size]).toEqual(["Hello", 5]);
 
 		const saved = await source.snapshots.save(sandbox.id, "golden");

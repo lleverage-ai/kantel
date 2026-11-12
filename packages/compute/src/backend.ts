@@ -37,6 +37,48 @@ export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
  * new env when it next boots.
  */
 export const SANDBOX_ENV_FEATURE = "sandbox-env";
+/**
+ * A host that makes a microVM from one of its isolates itself (`HOST_FEATURES.isolateUpgrade`, `sandbox.upgrade`): the
+ * isolate's files go from its blob store into the new microVM on the host, never through Kantel.
+ */
+export const ISOLATE_UPGRADE_FEATURE = "isolate-upgrade";
+/**
+ * A host that holds one of its isolates still for an upgrade (`HOST_FEATURES.isolateFreeze`), so Kantel can copy one
+ * version of its files to a microVM on another host while nothing writes to them.
+ */
+export const ISOLATE_FREEZE_FEATURE = "isolate-freeze";
+
+/** What a backend's upgrade whose outcome isn't known was refused with (`upgradeOutcomeUnknown`). */
+const unknownUpgrades = new WeakSet<KantelError>();
+
+/**
+ * An upgrade whose outcome isn't known: its host was sent it and didn't answer, and couldn't be asked since. Neither
+ * done nor failed: the caller keeps the sandbox as it is (starting) until `settleUpgrade` says which.
+ */
+export function upgradeOutcomeUnknown(message: string): KantelError {
+	const error = new KantelError("unavailable", message);
+	unknownUpgrades.add(error);
+	return error;
+}
+
+/** Whether `error` is `upgradeOutcomeUnknown`'s. */
+export function isUpgradeOutcomeUnknown(error: unknown): boolean {
+	return error instanceof KantelError && unknownUpgrades.has(error);
+}
+
+/** An upgrade's outcome as `settleUpgrade` answers it: done, with the microVM, or failed and rolled back. */
+export type UpgradeOutcome =
+	| { readonly state: "done"; readonly placement: UpgradedPlacement }
+	| { readonly state: "failed"; readonly reason?: string };
+
+/** Where an upgraded isolate's `/workspace` files are in its microVM; `/workspace` there is a link to it. */
+export const UPGRADE_WORKSPACE = "/home/user/workspace";
+
+/**
+ * How much an upgrade moves between two hosts (`upgrade` when the isolate's own host can't make the microVM): at most
+ * this many files and bytes, as the control plane carries them. Its own host moves any amount.
+ */
+export const UPGRADE_MOVE_LIMITS = { files: 20_000, bytes: 256 * 1024 * 1024 } as const;
 
 /**
  * What takes the space on a host's disk as the host measures it: `Host.diskUsage` with its snapshots in one
@@ -81,6 +123,12 @@ export interface BackendHost {
 	 * sandboxes get is enforced however they run (the stub).
 	 */
 	readonly features?: readonly string[];
+	/**
+	 * What its isolate runtime can do: whether its isolates' shells run `node` and `python`, and whether an isolate's
+	 * memory is a hard limit. Absent: it hasn't said (a host without the isolate tier, or from before its runtime said),
+	 * so neither, and not enforced.
+	 */
+	readonly isolate?: BackendIsolateRuntime;
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported, which placement admits a create against (`capacity.diskGb` is what it
@@ -104,6 +152,13 @@ export interface BackendHost {
 	/** The account it was added to as one of its own hosts, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
 	readonly lastSeenAt?: number;
+}
+
+/** A host's isolate runtime, as `BackendHost.isolate` says it. */
+export interface BackendIsolateRuntime {
+	readonly javascript: boolean;
+	readonly python: boolean;
+	readonly memoryEnforced: boolean;
 }
 
 /** What the deployment can run now. */
@@ -500,6 +555,24 @@ export interface ExecResult {
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly timedOut: boolean;
+	/** In an isolate: it failed because it ran something an isolate doesn't have (`Command.needsMicrovm`). */
+	readonly needsMicrovm?: {
+		readonly command: string;
+		readonly reason: string;
+		/** Read from the shell's answer, not said by the isolate's runtime: a hint, never acted on (`autoUpgrade`). */
+		readonly inferred?: true;
+	};
+	/** In an isolate: its runtime stopped it for using too much CPU time, memory or wall time. */
+	readonly terminated?: "cpu" | "memory" | "wall";
+}
+
+/** What `upgrade` answers: the microVM's placement, and how its files got there. */
+export interface UpgradedPlacement extends Placement {
+	/** `host`: the isolate's own host made the microVM and moved the files itself; `control-plane`: Kantel moved them. */
+	readonly path: "host" | "control-plane";
+	/** The files, links and directories moved, and the files' bytes. */
+	readonly files: number;
+	readonly bytes: number;
 }
 
 /**
@@ -669,6 +742,25 @@ export interface SandboxBackend {
 	recover(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/** Lets the machine go for good; its snapshots are deleted separately. */
 	destroy(sandboxId: string): Promise<void>;
+	/**
+	 * Makes an isolate a microVM with the same ID (`POST /sandboxes/{id}/upgrade`): a machine made as a create of `spec`
+	 * (type `microvm`) would make it, running, with the isolate's `/workspace` in `UPGRADE_WORKSPACE` and `/workspace` a
+	 * link to it; the isolate is let go only once the microVM runs with them. A stopped isolate's files are what it
+	 * stopped with (`spec.fromSnapshot`, its stop's snapshot, where the backend keeps them there). Its own host does it
+	 * where it can (`ISOLATE_UPGRADE_FEATURE`, in `spec.eligibleHosts`, with room); else the microVM goes on another host
+	 * and the files are moved to it, up to `UPGRADE_MOVE_LIMITS`, the isolate held still meanwhile
+	 * (`ISOLATE_FREEZE_FEATURE`). Rejects, with the isolate as it was, when the microVM can't be made or the files can't
+	 * be moved; `upgradeOutcomeUnknown` when that isn't known (`settleUpgrade` says). Sent again with the same
+	 * `operationId`, it answers the first's outcome. Absent: isolates aren't upgraded here (`not_supported`).
+	 */
+	upgrade?(sandboxId: string, spec: SandboxSpec, operationId: string): Promise<UpgradedPlacement>;
+	/**
+	 * The outcome of upgrade `operationId` (`upgrade`'s third argument), for one whose answer was lost: once one under
+	 * way has ended, done with its microVM, or failed, rolled back (any microVM made for it deleted, the isolate as it
+	 * was) so that it can't land later. Each upgrade is done at most once by its ID. Rejects `unavailable` while it can't
+	 * be told (the host away). Absent with `upgrade` absent.
+	 */
+	settleUpgrade?(sandboxId: string, operationId: string): Promise<UpgradeOutcome>;
 	/**
 	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
 	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.

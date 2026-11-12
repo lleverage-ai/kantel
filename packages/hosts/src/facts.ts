@@ -13,6 +13,7 @@ import type {
 	HostDiskUsage,
 	HostFacts,
 	HostImages,
+	HostIsolateRuntime,
 	HostMemoryAdmission,
 	HostMemoryMode,
 	HostMemoryReport,
@@ -117,6 +118,30 @@ function disk(value: unknown): HostDiskLimits | undefined {
 	return min >= 1 && min <= max ? { minGiB: min, maxGiB: max } : undefined;
 }
 
+/**
+ * What a host's isolate runtime says it can do (`HostIsolateRuntime`), or undefined where it says nothing or nothing
+ * shaped as kantel-host sends it: a host from before kantel-isolate said nothing, and its isolates have neither node nor
+ * python, so a malformed report is dropped (taken as nothing) rather than refused.
+ */
+export function isolateRuntime(value: unknown): HostIsolateRuntime | undefined {
+	if (!isObject(value)) return undefined;
+	const { javascript, python, memoryEnforced, runtime, version } = value;
+	if (typeof javascript !== "boolean" || typeof python !== "boolean" || typeof memoryEnforced !== "boolean") {
+		return undefined;
+	}
+	const label = (found: unknown) =>
+		typeof found === "string" && found !== "" && found.length <= MAX_TEXT ? found : undefined;
+	const name = label(runtime);
+	const named = label(version);
+	return {
+		...(name === undefined ? {} : { runtime: name }),
+		...(named === undefined ? {} : { version: named }),
+		javascript,
+		python,
+		memoryEnforced,
+	};
+}
+
 /** A string a host may leave out (Go's `omitempty`): absent when it does, or when it is empty. */
 function optionalText<K extends string>(value: Record<string, unknown>, field: K): { [key in K]?: string } {
 	const found = value[field];
@@ -131,6 +156,7 @@ function facts(value: unknown): HostFacts {
 	const kept = labels(value.labels);
 	const hostImages = images(value.images);
 	const hostDisk = disk(value.disk);
+	const isolate = isolateRuntime(value.isolate);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -153,6 +179,7 @@ function facts(value: unknown): HostFacts {
 		...optionalText(value, "firecracker"),
 		...optionalText(value, "guestKernel"),
 		...(hostImages === undefined ? {} : { images: hostImages }),
+		...(isolate === undefined ? {} : { isolate }),
 	};
 }
 
