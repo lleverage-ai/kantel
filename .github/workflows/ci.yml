@@ -5,6 +5,14 @@ name: CI
 # (minutes from cold, less with the runner's cargo cache warm). The TypeScript tests run on main instead: main.yml calls this with `tests: true`, alongside the self-hosted
 # and Sandbox image suites, and deploys only once all three pass. On a branch, `gh workflow run ci.yml --ref <branch>
 # -f tests=true` runs the tests too.
+#
+# Runners: a pull request from a fork runs every job on GitHub-hosted `ubuntu-latest`, never on the self-hosted
+# `harbour` runners. Those are persistent and on Sal's host, and they also run main's deploys (cloudflare-deploy.yml,
+# site-deploy.yml) with their secrets, so a fork's job could run outside code there or leave something behind (a
+# cache, the workspace, a process) for a later deploy to pick up (LLE-18883). Fork runs still need approval for all
+# external contributors. Same-repository branches, main and runs by hand stay on `harbour`; `gh workflow run ci.yml
+# --ref <branch> -f hosted=true` runs a branch the way a fork's pull request runs. Each job's `runs-on` repeats the
+# one expression; a pull request whose head repository is gone counts as a fork.
 on:
   pull_request:
   workflow_call:
@@ -16,6 +24,10 @@ on:
     inputs:
       tests:
         description: Run the tests too
+        type: boolean
+        default: false
+      hosted:
+        description: Run on GitHub-hosted runners, as a fork's pull request does
         type: boolean
         default: false
 
@@ -32,8 +44,9 @@ jobs:
   check:
     # The PR check keeps the workflow's name, `CI`, as the merge gate; the job's name says what ran.
     name: ${{ inputs.tests && 'Install, typecheck, lint and test' || 'Install, typecheck and lint' }}
-    # Kantel's own self-hosted runners: GitHub-hosted runners stopped at the Actions budget.
-    runs-on: [self-hosted, harbour]
+    # Kantel's own self-hosted runners: GitHub-hosted runners stopped at the Actions budget. A fork's pull request runs
+    # on GitHub-hosted (see the top).
+    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || inputs.hosted) && 'ubuntu-latest' || fromJSON('["self-hosted","harbour"]') }}
     # Without the tests about a minute. With them, four test workers on a shared host take about 7 minutes;
     # GitHub-hosted took about 4.
     timeout-minutes: 20
@@ -99,7 +112,7 @@ jobs:
     # changed: a check that's meant to be required can't be skipped by a path filter. The VM tests (the `vmtest` tag,
     # apps/host/test/) need KVM and stay out of it.
     name: Go vet and test (apps/host)
-    runs-on: [self-hosted, harbour]
+    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || inputs.hosted) && 'ubuntu-latest' || fromJSON('["self-hosted","harbour"]') }}
     timeout-minutes: 10
     defaults:
       run:
@@ -131,7 +144,7 @@ jobs:
     # variable set to "0" checks the stock V8 instead. KANTEL_RUSTY_V8_ARCHIVE with KANTEL_RUSTY_V8_ARCHIVE_SHA256 picks
     # any other build; the script checks it against its SHA-256 before cargo sees it.
     name: Rust check and test (apps/host/isolate-runtime)
-    runs-on: [self-hosted, harbour]
+    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || inputs.hosted) && 'ubuntu-latest' || fromJSON('["self-hosted","harbour"]') }}
     timeout-minutes: 45
     env:
       KANTEL_ISOLATE_TARGET: ${{ github.workspace }}/../.kantel-isolate-target
@@ -173,7 +186,7 @@ jobs:
     # kantel and kantel-admin (apps/cli) are Go too. The generated API client must match the OpenAPI document, and the
     # docs' command reference the command table.
     name: Go vet and test (apps/cli)
-    runs-on: [self-hosted, harbour]
+    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || inputs.hosted) && 'ubuntu-latest' || fromJSON('["self-hosted","harbour"]') }}
     timeout-minutes: 10
     defaults:
       run:
