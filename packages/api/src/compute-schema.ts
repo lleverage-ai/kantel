@@ -4322,7 +4322,8 @@ export const GithubRunnerPool = Type.Object(
 									branches: Type.Array(Type.String({ minLength: 1, maxLength: 255 }), {
 										minItems: 1,
 										maxItems: 20,
-										description: "Branches whose successful jobs commit the runner's copy, such as `main`.",
+										description:
+											"Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`.",
 									}),
 									beforeCommit: Type.Optional(
 										Type.String({
@@ -4336,8 +4337,10 @@ export const GithubRunnerPool = Type.Object(
 								{
 									title: "GithubRunnerStickyCommit",
 									description:
-										"When a runner's copy becomes the disk's next version: after a job that succeeded, on a run GitHub says is a " +
-										"push, schedule or manual run of one of `branches` in the job's own repository. Pull requests never commit.",
+										"When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run " +
+										"GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't " +
+										"commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. " +
+										"Pull requests never commit.",
 								},
 							),
 						),

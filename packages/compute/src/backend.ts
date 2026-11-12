@@ -532,6 +532,12 @@ export interface ExecRequest {
 	 * `timeoutMs`, and `commandResult` can fetch its result later, from any gateway, where the backend keeps it.
 	 */
 	readonly detached?: boolean;
+	/**
+	 * Run as root, not the sandbox's default user (`user` where its image has one): only Kantel's own commands, such as a
+	 * GitHub runner pool's `beforeCommit`, never a caller's. A backend whose sandboxes run commands as root already
+	 * may ignore it.
+	 */
+	readonly asRoot?: boolean;
 }
 
 /**

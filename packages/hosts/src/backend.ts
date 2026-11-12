@@ -1056,6 +1056,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
 				// Only to a host that takes them: an older one would run a "detached" command as a foreground one anyway.
 				...(controls ? { commandId: request.commandId } : {}),
+				...(request.asRoot === true ? { user: "root" } : {}),
 			};
 			if (controls && request.detached === true && request.commandId !== undefined) {
 				let started: HostExecStatus;

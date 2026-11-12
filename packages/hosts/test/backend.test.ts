@@ -774,7 +774,7 @@ describe("the compute API on kantel-host hosts", () => {
 	});
 
 	it("attaches sticky disks only on a host that runs them, and commits and deletes them there", async () => {
-		const { service, root } = setup();
+		const { service, root, backend } = setup();
 		const disk = await root.createStickyDisk({ name: "ci-cache", sizeGb: 50 });
 		const plain = await service.register({ token: (await root.createHostJoinToken({ name: "old" })).token, facts });
 		new FakeHost(service, plain.hostId).connect();
@@ -807,6 +807,13 @@ describe("the compute API on kantel-host hosts", () => {
 		const version = await root.commitStickyDisk(sandbox.id, "ci-cache");
 		expect(version).toMatchObject({ hostId, sandboxId: sandbox.id, sizeBytes: 100, allocatedBytes: 7 });
 		expect(sent("sticky.commit")).toEqual([{ sandboxId: sandbox.id, diskId: disk.id, version: version.id }]);
+		// A runner pool's beforeCommit runs as root, by the guest's own choice of user; any other command as the default.
+		await backend.exec(sandbox.id, { command: "echo prune", asRoot: true });
+		await backend.exec(sandbox.id, { command: "echo plain" });
+		expect(sent("sandbox.exec").map((params) => [params.command, params.user])).toEqual([
+			["echo prune", "root"],
+			["echo plain", undefined],
+		]);
 		await root.deleteStickyDisk(disk.id);
 		expect(sent("sticky.delete")).toEqual([{ diskId: disk.id }]);
 	});

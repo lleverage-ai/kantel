@@ -124,10 +124,19 @@ export interface RunnerStickyDisk {
 	readonly commit?: { readonly branches: readonly string[]; readonly beforeCommit?: string };
 }
 
-/** The run events whose jobs may commit: never a pull request's. */
-const COMMITTING_EVENTS: ReadonlySet<string> = new Set(["push", "schedule", "workflow_dispatch"]);
+/**
+ * The run events whose jobs may commit. Only `schedule`: GitHub runs a scheduled workflow on the latest commit of the
+ * repository's default branch and nowhere else, so its run's `head_branch` names that branch. A `push` or
+ * `workflow_dispatch` run may be of a tag, whose name GitHub gives in the same unqualified `head_branch`, and neither
+ * the run nor its job says which kind of ref it was (no full ref or ref type in either), so a tag named after a branch
+ * would pass for it: those runs never commit until there is evidence of the ref tied to the run. A pull request's
+ * never commit.
+ */
+const COMMITTING_EVENTS: ReadonlySet<string> = new Set(["schedule"]);
 /** How long a pool's `beforeCommit` may run. */
 const BEFORE_COMMIT_TIMEOUT_MS = 10 * 60_000;
+/** How often a pass renews its lease while it waits on a long step (`beforeCommit`): well within `LEASE_MS`. */
+export const LEASE_RENEW_MS = LEASE_MS / 4;
 
 /** A pool as the API answers it. */
 export const poolView = (pool: RunnerPool): computeSchema.GithubRunnerPool => ({
@@ -249,7 +258,10 @@ export interface StoredGithubRunnerMachine {
 	readonly checkedAt?: number;
 	/** It took a job: GitHub removes an ephemeral runner itself once its job ends. */
 	readonly tookJob?: boolean;
-	/** Its job succeeded and its pool commits sticky disks: the run to check before its copies are committed, once. */
+	/**
+	 * Its job succeeded on it (GitHub's runner ID for the job is `runnerId`) and its pool commits sticky disks: the run to
+	 * check before its copies are committed, once.
+	 */
 	readonly commit?: { readonly runId: number; readonly repository: string; readonly done?: boolean };
 	/** Ending: since when, why, whether its runner is gone from GitHub, and whether the pool keeps its backoff. */
 	readonly endingAt?: number;
@@ -378,6 +390,8 @@ interface WorkflowJobEvent {
 		readonly labels: readonly string[];
 		readonly conclusion?: string;
 		readonly runnerName?: string;
+		/** GitHub's ID of the runner that took it: what binds it to one registered runner, which a name can't. */
+		readonly runnerId?: number;
 	};
 	readonly repository: string;
 }
@@ -395,6 +409,7 @@ function parseWorkflowJob(body: unknown): WorkflowJobEvent | undefined {
 			labels?: unknown;
 			conclusion?: unknown;
 			runner_name?: unknown;
+			runner_id?: unknown;
 		};
 		repository?: { full_name?: unknown };
 	};
@@ -419,6 +434,7 @@ function parseWorkflowJob(body: unknown): WorkflowJobEvent | undefined {
 			labels: job.labels.filter((label): label is string => typeof label === "string"),
 			...(typeof job.conclusion === "string" ? { conclusion: job.conclusion } : {}),
 			...(typeof job.runner_name === "string" && job.runner_name !== "" ? { runnerName: job.runner_name } : {}),
+			...(typeof job.runner_id === "number" && job.runner_id > 0 ? { runnerId: job.runner_id } : {}),
 		},
 		repository: record.repository.full_name,
 	};
@@ -597,9 +613,11 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		// Not ending after all: it took a job before it could be ended for want of one.
 		if (machine.state !== "ending") return false;
 		if (machine.endingAt === t) log(`[github-runners] ending runner ${machine.id}: ${why}`);
-		// Its sticky disks first, while its sandbox runs: once, whatever the outcome.
+		// Its sticky disks first, while its sandbox runs: once, whatever the outcome, and only while this pass holds the
+		// lease (a pass that lost it stops before it publishes or records anything).
 		if (machine.commit !== undefined && machine.commit.done !== true) {
 			await commitCopies(lease, record, machine);
+			await hold(lease);
 			await store.githubRunnerMachines.update(machine.id, (current) =>
 				current.commit === undefined ? undefined : { ...current, commit: { ...current.commit, done: true } },
 			);
@@ -642,9 +660,11 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	}
 
 	/**
-	 * Commits a runner's copies of its pool's sticky disks, for a job that succeeded, when GitHub says its run is a push,
-	 * schedule or manual run of a branch the disk commits from, in the job's own repository. A failure is logged, never
-	 * thrown: the runner ends either way, and the disk keeps the version it had.
+	 * Commits a runner's copies of its pool's sticky disks, for a job that succeeded on it, when GitHub says its run is a
+	 * scheduled run (`COMMITTING_EVENTS`) of a branch the disk commits from, in the job's own repository. Each step holds
+	 * the lease, and `beforeCommit`, which may run for minutes, renews it as it runs (`holding`). A failure is logged,
+	 * never thrown: the runner ends either way, and the disk keeps the version it had. A lost lease is thrown: the pass
+	 * stops before its next effect.
 	 */
 	async function commitCopies(
 		lease: Lease,
@@ -671,20 +691,19 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			}
 			const branch = run.headBranch;
 			for (const sticky of rules) {
+				const beforeCommit = sticky.commit?.beforeCommit;
 				if (sticky.commit?.branches.includes(branch) !== true) continue;
 				await hold(lease);
-				if (sticky.commit.beforeCommit !== undefined) {
-					const code = await options.sandboxes.exec(
-						principal,
-						machine.id,
-						sticky.commit.beforeCommit,
-						BEFORE_COMMIT_TIMEOUT_MS,
+				if (beforeCommit !== undefined) {
+					const code = await holding(lease, () =>
+						options.sandboxes.exec(principal, machine.id, beforeCommit, BEFORE_COMMIT_TIMEOUT_MS),
 					);
 					if (code !== 0) {
 						log(`[github-runners] ${machine.id}: beforeCommit for ${sticky.disk} exited ${code}; not committed`);
 						continue;
 					}
 				}
+				await hold(lease);
 				await options.sandboxes.commit(principal, machine.id, sticky.disk);
 				log(`[github-runners] ${machine.id}: committed ${sticky.disk} from ${commit.repository}@${branch}`);
 			}
@@ -802,6 +821,33 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				: undefined,
 		);
 		if (held === undefined) throw new LeaseLost(lease.integrationId);
+	}
+
+	/**
+	 * Runs `work`, a step that may outlast `LEASE_MS`, renewing this pass's lease every `LEASE_RENEW_MS` while it runs,
+	 * then holds the lease once more: so no other gateway takes the lease from a pass still at work, and a pass whose
+	 * lease was lost meanwhile (taken over by account cleanup, or gone with its integration) throws `LeaseLost` before
+	 * anything it would do next. `work` itself can't be stopped: what it did stands, and nothing follows from it.
+	 */
+	async function holding<T>(lease: Lease, work: () => Promise<T>): Promise<T> {
+		let lost: LeaseLost | undefined;
+		const renew = setInterval(() => {
+			hold(lease).catch((error: unknown) => {
+				if (error instanceof LeaseLost) lost ??= error;
+			});
+		}, LEASE_RENEW_MS);
+		(renew as { unref?: () => void }).unref?.();
+		let result: T;
+		try {
+			result = await work();
+		} catch (error) {
+			throw lost ?? error;
+		} finally {
+			clearInterval(renew);
+		}
+		if (lost !== undefined) throw lost;
+		await hold(lease);
+		return result;
 	}
 
 	/**
@@ -977,7 +1023,21 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					try {
 						const status = await (await appOf(record)).getJob(installationId, job.repository, job.jobId);
 						if (status === undefined || status.status === "completed") {
-							await completeJob(record, job.jobId, status?.conclusion, machine.id);
+							// As its webhook would: the job's run, and GitHub's word on the runner that took it.
+							await completeJob(
+								record,
+								job.jobId,
+								status?.conclusion,
+								machine.id,
+								undefined,
+								status === undefined
+									? undefined
+									: {
+											runId: status.runId ?? job.runId,
+											repository: job.repository,
+											...(status.runnerId === undefined ? {} : { runnerId: status.runnerId }),
+										},
+							);
 						}
 					} catch (error) {
 						log(`[github-runners] checking job ${job.jobId} failed: ${messageOf(error)}`);
@@ -1135,7 +1195,12 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		return machine;
 	}
 
-	/** Marks a job ended, and its runner to end (which the next pass does). */
+	/**
+	 * Marks a job ended, and its runner to end (which the next pass does). Its sticky disks are to be committed only for
+	 * a job that succeeded on that very runner: GitHub's ID for the runner that ran it (`run.runnerId`, from a signed
+	 * delivery or GitHub's API) is the one it registered, since anyone able to register a runner where the job could run
+	 * may give theirs the same name.
+	 */
 	async function completeJob(
 		record: StoredGithubRunners,
 		jobId: number,
@@ -1143,7 +1208,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		runnerName: string | undefined,
 		/** The installation a delivery came from: a job another installation recorded is left as it is. */
 		installationId?: number,
-		run?: { readonly runId: number; readonly repository: string },
+		run?: { readonly runId: number; readonly repository: string; readonly runnerId?: number },
 	): Promise<void> {
 		const t = now();
 		await store.githubRunnerJobs.update(jobRecordId(record.id, jobId), (current) =>
@@ -1168,8 +1233,13 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		const commits =
 			conclusion === "success" &&
 			run !== undefined &&
+			run.runnerId !== undefined &&
+			run.runnerId === machine.runnerId &&
 			pool?.stickyDisks?.some((sticky) => sticky.commit !== undefined) === true;
-		await markEnding(machine.id, "its job ended", { tookJob: true, ...(commits ? { commit: { ...run } } : {}) });
+		await markEnding(machine.id, "its job ended", {
+			tookJob: true,
+			...(commits ? { commit: { runId: run.runId, repository: run.repository } } : {}),
+		});
 	}
 
 	async function onWorkflowJob(
@@ -1265,6 +1335,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			await completeJob(record, event.job.id, event.job.conclusion, runner, installationId, {
 				runId: event.job.runId,
 				repository: event.repository,
+				...(event.job.runnerId === undefined ? {} : { runnerId: event.job.runnerId }),
 			});
 		}
 	}

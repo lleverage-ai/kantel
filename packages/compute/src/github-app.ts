@@ -44,18 +44,30 @@ export interface GithubApp {
 	findRunner(installationId: number, scope: RunnerScope, name: string): Promise<number | undefined>;
 	/** Removes a runner GitHub still holds (one that never took a job); one already gone is no error. */
 	removeRunner(installationId: number, scope: RunnerScope, runnerId: number): Promise<void>;
-	/** A workflow run's event, branch and head repository, or undefined when GitHub doesn't know it. */
+	/**
+	 * A workflow run's event, `head_branch` and head repository, or undefined when GitHub doesn't know it. `head_branch`
+	 * is a name, not a ref: a tag's run has the tag's name there.
+	 */
 	getRun(
 		installationId: number,
 		repository: string,
 		runId: number,
 	): Promise<{ readonly event: string; readonly headBranch?: string; readonly headRepository?: string } | undefined>;
-	/** A job's status and conclusion, or undefined when GitHub doesn't know it. */
+	/** A job's status and conclusion, its run, and the runner that took it, or undefined when GitHub doesn't know it. */
 	getJob(
 		installationId: number,
 		repository: string,
 		jobId: number,
-	): Promise<{ readonly status: string; readonly conclusion?: string; readonly runnerName?: string } | undefined>;
+	): Promise<
+		| {
+				readonly status: string;
+				readonly conclusion?: string;
+				readonly runId?: number;
+				readonly runnerId?: number;
+				readonly runnerName?: string;
+		  }
+		| undefined
+	>;
 }
 
 /** The DER of a PKCS #8 RSA key around a PKCS #1 one: what Web Crypto imports. */
@@ -263,10 +275,19 @@ export function createGithubApp(options: GithubAppOptions): GithubApp {
 			);
 			if (response.status === 404) return undefined;
 			if (!response.ok) throw await githubError(response, "a job's status");
-			const body = (await response.json()) as { status?: unknown; conclusion?: unknown; runner_name?: unknown };
+			const body = (await response.json()) as {
+				status?: unknown;
+				conclusion?: unknown;
+				run_id?: unknown;
+				runner_id?: unknown;
+				runner_name?: unknown;
+			};
 			return {
 				status: typeof body.status === "string" ? body.status : "unknown",
 				...(typeof body.conclusion === "string" ? { conclusion: body.conclusion } : {}),
+				...(typeof body.run_id === "number" ? { runId: body.run_id } : {}),
+				// GitHub answers 0 or null for a job no runner has taken.
+				...(typeof body.runner_id === "number" && body.runner_id > 0 ? { runnerId: body.runner_id } : {}),
 				...(typeof body.runner_name === "string" && body.runner_name !== "" ? { runnerName: body.runner_name } : {}),
 			};
 		},

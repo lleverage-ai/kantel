@@ -1070,8 +1070,16 @@ const GITHUB_RUNNER_SCOPES: readonly computeSchema.ApiKeyScope[] = [
 	"sandboxes:write",
 	"sandboxes:delete",
 	"exec",
-	// Committing runners' copies of their pools' sticky disks.
-	"snapshots:write",
+];
+/** What a broker key needs as well while one of its integration's pools commits sticky disks. */
+const GITHUB_RUNNER_COMMIT_SCOPE: computeSchema.ApiKeyScope = "snapshots:write";
+/** Whether one of `pools` commits its runners' copies of its sticky disks. */
+const poolsCommit = (pools: readonly RunnerPool[]): boolean =>
+	pools.some((pool) => pool.stickyDisks?.some((sticky) => sticky.commit !== undefined) === true);
+/** The scopes a broker key needs for `pools`. */
+const githubRunnerScopes = (pools: readonly RunnerPool[]): computeSchema.ApiKeyScope[] => [
+	...GITHUB_RUNNER_SCOPES,
+	...(poolsCommit(pools) ? [GITHUB_RUNNER_COMMIT_SCOPE] : []),
 ];
 
 export const PROTECTED_VALUES_UNSUPPORTED =
@@ -2154,13 +2162,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 			},
 			async exec(principal, sandboxId, command, timeoutMs) {
-				const ran = answered(
-					await handlers.runCommand(
-						principal,
-						{ params: { sandboxId }, query: {}, body: { command, timeoutMs } },
-						internalRequest(),
-					),
-				);
+				// As root, as a pool's `beforeCommit` is documented to run (stopping Docker, say), whatever the image's default
+				// user: only this internal call can ask for that, never a caller's command.
+				const { sandbox } = await sandboxFor(principal, sandboxId, "exec");
+				const ran = await runCommandOnce(principal, sandbox.id, { command, timeoutMs }, { asRoot: true });
 				return ran.exitCode ?? 1;
 			},
 			async commit(principal, sandboxId, disk) {
@@ -2251,6 +2256,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 	/** Forgets an account's GitHub runner records: its sandboxes and keys go with it. */
 	const forgetGithubRunners = (accountId: string): Promise<void> => githubRunners.forgetAccount(accountId);
+	/**
+	 * Gives an integration's broker key the scope its runners' sticky disk commits need, when it lacks it: only from a
+	 * caller who may grant that scope, and never to a revoked key, which stays as it is.
+	 */
+	async function grantRunnerCommits(principal: Principal, keyId: string): Promise<void> {
+		const key = await store.apiKeys.get(keyId);
+		if (key === undefined || key.revokedAt !== undefined || key.scopes.includes(GITHUB_RUNNER_COMMIT_SCOPE)) return;
+		requireGrantable(principal, [GITHUB_RUNNER_COMMIT_SCOPE]);
+		await store.apiKeys.update(keyId, (current) =>
+			current.revokedAt !== undefined || current.scopes.includes(GITHUB_RUNNER_COMMIT_SCOPE)
+				? undefined
+				: { ...current, scopes: [...current.scopes, GITHUB_RUNNER_COMMIT_SCOPE] },
+		);
+	}
 
 	// Sticky disks.
 	const requireSticky = (): void => {
@@ -9992,8 +10011,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			await importAppKey(body.privateKey);
 			await checkPools(account.id, body.pools);
-			// Its key acts for runners with what a create, a command and a delete need, and no more.
-			requireGrantable(principal, GITHUB_RUNNER_SCOPES);
+			// Its key acts for runners with what a create, a command and a delete need, and a commit where a pool commits,
+			// and no more.
+			const scopes = githubRunnerScopes(body.pools);
+			requireGrantable(principal, scopes);
 			return once(
 				principal,
 				"createGithubRunners",
@@ -10008,7 +10029,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						accountId: account.id,
 						name: `GitHub runners: ${body.name}`.slice(0, 100),
 						prefix,
-						scopes: [...GITHUB_RUNNER_SCOPES],
+						scopes,
 						sandboxIds: undefined,
 						createdBy: actorOf(principal),
 						createdAt: t,
@@ -10054,6 +10075,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const record = await githubRunnersFor(principal, params.githubRunnersId);
 			if (body.privateKey !== undefined) await importAppKey(body.privateKey);
 			if (body.pools !== undefined) await checkPools(record.accountId, body.pools);
+			// Pools that commit need the key to commit: an integration made without that (or before it was granted) has its
+			// key given it, by a caller who may grant it. Before the pools change, so no pool commits with a key that can't.
+			if (body.pools !== undefined && poolsCommit(body.pools)) await grantRunnerCommits(principal, record.keyId);
 			const resealed =
 				body.privateKey === undefined
 					? undefined
@@ -10352,6 +10376,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			readonly rerunOf?: string;
 			/** Its ID, given beforehand (a run again's, `rerunStarting`). */
 			readonly id?: string;
+			/** Run as root (`ExecRequest.asRoot`): Kantel's own commands only, never a caller's. */
+			readonly asRoot?: boolean;
 			readonly beforeEnd?: (
 				command: StoredCommand,
 				result: ExecResult,
@@ -10450,6 +10476,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			signal: controller.signal,
 			commandId: command.id,
 			...(detached ? { detached: true } : {}),
+			...(how.asRoot === true ? { asRoot: true } : {}),
 		});
 		if (detached) {
 			keepGoing(run.then(finish, failed));

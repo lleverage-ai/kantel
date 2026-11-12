@@ -352,6 +352,11 @@ export interface HostExecParams {
 	 * limit but `timeoutMs` (an isolate's has its default), and its result is `sandbox.exec.get`'s once it ends.
 	 */
 	readonly detached?: boolean;
+	/**
+	 * The guest account it runs as (the Go side's `ExecParams.User`, which every host has passed to the guest agent since
+	 * the first): absent, the sandbox's default user, `user` where its image has one, else root.
+	 */
+	readonly user?: string;
 }
 
 /** What a command ended with: `sandbox.exec`'s answer, and an ended `HostExecStatus`'s `result`. */
