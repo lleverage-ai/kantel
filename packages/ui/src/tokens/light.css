@@ -96,9 +96,6 @@
 	--kt-shadow-float:
 		0 10px 30px rgb(30 30 20 / 0.12), 0 1px 3px rgb(30 30 20 / 0.06), 0 0 0 1px var(--kt-border); /* shadow-float, and an edge */
 	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.22);
-	/* Content cut off at a scroller's edge (SideScroll), cast inward from the start or the end. */
-	--kt-shadow-edge-start: inset 14px 0 12px -12px rgb(30 30 20 / 0.22);
-	--kt-shadow-edge-end: inset -14px 0 12px -12px rgb(30 30 20 / 0.22);
 	--kt-glass-outline: color-mix(in srgb, var(--kt-text) 12%, transparent);
 	--kt-glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.6);
 	--kt-logo-edge: 0 0 1px color-mix(in srgb, var(--kt-text) 30%, transparent);
