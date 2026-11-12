@@ -146,7 +146,7 @@ func (m *Manager) makeStickyDrives(s *sandbox, origin sandboxOrigin) error {
 		if origin.takeDisk {
 			_, err = takeFile(src, dst)
 		} else {
-			_, err = cloneDisk(src, dst)
+			_, err = m.cloneStickyFile(src, dst)
 		}
 		if err != nil {
 			return fmt.Errorf("a sticky disk: %w", err)
@@ -196,7 +196,8 @@ func attachedSticky(disks []stickyDisk) []stickyDisk {
 }
 
 // keepSticky clones a sandbox's sticky drives' files into a snapshot's directory (sdir), on the same drives: its VM is
-// stopped, or paused with no write in flight.
+// stopped, or paused with no write in flight. Their room is reserved by the snapshot's own reservation, with its disk
+// (stickyUsage in roomForSnapshot and roomToSave), so a full copy here reserves nothing more.
 func keepSticky(vm, sdir string, disks []stickyDisk) error {
 	for _, d := range attachedSticky(disks) {
 		if _, err := cloneDisk(filepath.Join(vm, stickyDriveFile(d.Slot)), filepath.Join(sdir, stickyDriveFile(d.Slot))); err != nil {
@@ -555,10 +556,51 @@ func (m *Manager) cloneStickyVersion(diskID, want, dst string) (string, error) {
 	if version == "" {
 		return "", nil
 	}
-	if _, err := cloneDisk(m.stickyVersionFile(diskID, version), dst); err != nil {
+	if _, err := m.cloneStickyFile(m.stickyVersionFile(diskID, version), dst); err != nil {
 		return "", err
 	}
 	return version, nil
+}
+
+// stickyUsage is the bytes s's attached sticky drives' files take (their allocated blocks, which a full copy writes
+// again): what a snapshot of s copies beside its disk. Called with s.mu held.
+func stickyUsage(s *sandbox) int64 {
+	var n int64
+	for _, d := range attachedSticky(s.meta.StickyDisks) {
+		n += diskUsage(filepath.Join(s.vmDir(), stickyDriveFile(d.Slot)))
+	}
+	return n
+}
+
+// cloneStickyFile is cloneDisk for a sticky disk's file outside a snapshot (an attach, or a sandbox made from a
+// snapshot): a reflink shares the source's blocks and takes no room, so it is never refused; a full copy, on a file
+// system without reflinks, first reserves the room it writes (reserveStickyCopy) beside every other copy under way,
+// and gives it back once it ends, however it ends.
+//
+// A create's admission (admit) doesn't count its sticky disks' sizes: their clones share blocks with the versions they
+// come from, so counting each sandbox's whole disk would refuse sandboxes on a host with room for them. What a full
+// copy really takes is reserved here instead, when it is made.
+func (m *Manager) cloneStickyFile(src, dst string) (string, error) {
+	if reflink(src, dst) == nil {
+		return proto.DiskReflink, nil
+	}
+	_ = os.Remove(dst)
+	release, err := m.reserveStickyCopy(src)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return cloneDisk(src, dst)
+}
+
+// reserveStickyCopy reserves the room a full copy of the sticky disk file src takes (its allocated blocks), refusing
+// (ErrCapacity) a copy that would leave the host less than snapshotHeadroom free beside the copies under way.
+func (m *Manager) reserveStickyCopy(src string) (release func(), err error) {
+	return m.reserveRoom(diskUsage(src), func(free, size int64) error {
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
+			"This host has %s of disk free, and a full copy of a sticky disk (its file system has no reflinks) needs %s and must leave %s free.",
+			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
+	})
 }
 
 // stickyFreezeLease is how long a commit's freeze holds in the guest before the guest thaws it by itself: the drive's
@@ -711,7 +753,7 @@ func (m *Manager) cloneFrozen(ctx context.Context, s *sandbox, d stickyDisk, dst
 		}
 		return nil, fmt.Errorf("freezing sticky disk %s: %w", d.DiskID, err)
 	}
-	err = cloneWithin(ctx, filepath.Join(s.vmDir(), stickyDriveFile(d.Slot)), dst, deadline)
+	err = cloneWithin(ctx, filepath.Join(s.vmDir(), stickyDriveFile(d.Slot)), dst, deadline, m.reserveStickyCopy)
 	thawErr = thaw()
 	if err != nil {
 		return nil, fmt.Errorf("sticky disk %s: %w", d.DiskID, err)
@@ -719,9 +761,10 @@ func (m *Manager) cloneFrozen(ctx context.Context, s *sandbox, d stickyDisk, dst
 	return thawErr, nil
 }
 
-// cloneWithin clones src to dst (cloneDisk) and fails unless the clone ended by deadline: a reflink is instant, a full
-// sparse copy is stopped at the deadline.
-func cloneWithin(ctx context.Context, src, dst string, deadline time.Time) error {
+// cloneWithin clones src to dst (cloneDisk) and fails unless the clone ended by deadline: a reflink is instant and takes
+// no room; a full sparse copy first reserves its room (reserve, given src; nil reserves nothing), and gives it back
+// however it ends, and is stopped at the deadline.
+func cloneWithin(ctx context.Context, src, dst string, deadline time.Time, reserve func(src string) (func(), error)) error {
 	late := func() error {
 		_ = os.Remove(dst)
 		return fmt.Errorf("its copy couldn't be made within the %s its file system is frozen for: this host's file system has no reflinks, so a commit copies the whole disk, and an unfinished copy isn't published", stickyFreezeLease)
@@ -736,6 +779,13 @@ func cloneWithin(ctx context.Context, src, dst string, deadline time.Time) error
 		return nil
 	}
 	_ = os.Remove(dst)
+	if reserve != nil {
+		release, err := reserve(src)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	cctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	out, err := exec.CommandContext(cctx, "cp", "--sparse=always", src, dst).CombinedOutput()
@@ -751,16 +801,30 @@ func cloneWithin(ctx context.Context, src, dst string, deadline time.Time) error
 
 // thawStickyAfterRestart thaws every sticky disk of a sandbox adopted running when the host starts: a commit the
 // previous run had under way may have left one frozen. Thawing one that isn't frozen is fine.
-func (m *Manager) thawStickyAfterRestart(s *sandbox) {
+//
+// In the background, so adopting isn't held up, but under s.mu for the whole of its guest calls, as a commit's
+// freeze, clone and thaw are (CommitSticky): a thaw sent while a new commit has the disk frozen would let the guest
+// write it during the clone. It thaws only while the sandbox still runs on the guest it was adopted with: one stopped,
+// paused or booted again meanwhile is left to its guest, which thaws a freeze by itself once its lease lapses. The
+// answer is closed once it is done (tests wait on it).
+func (m *Manager) thawStickyAfterRestart(s *sandbox) <-chan struct{} {
+	done := make(chan struct{})
 	paths := []string{}
 	for _, d := range attachedSticky(s.meta.StickyDisks) {
 		paths = append(paths, d.Path)
 	}
 	client := s.guest
 	if len(paths) == 0 || client == nil {
-		return
+		close(done)
+		return done
 	}
 	go func() {
+		defer close(done)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.guest != client || s.meta.State != proto.StateRunning {
+			return
+		}
 		for _, path := range paths {
 			ctx, cancel := context.WithTimeout(context.Background(), stickyFreezeLease)
 			if err := client.ThawSticky(ctx, path); err != nil && !guest.IsNotFound(err) {
@@ -769,6 +833,7 @@ func (m *Manager) thawStickyAfterRestart(s *sandbox) {
 			cancel()
 		}
 	}()
+	return done
 }
 
 // pruneStickyLocked deletes all but the disk's stickyKeep newest versions. Called with stickyMu held.

@@ -41,6 +41,17 @@ func (s *Server) mountSticky(w http.ResponseWriter, r *http.Request) {
 	}
 	stickyMu.Lock()
 	defer stickyMu.Unlock()
+	// A bucket mount a restored snapshot left where the sandbox now has a sticky disk (at, above or under its path) goes
+	// before the disk is mounted, as for a bundle (mountBundles): else the host's later POST /mounts, which no longer
+	// names it, would unmount the sticky disk in its place, and a read-only bucket above it would refuse its directory.
+	// Only valid paths: "/" would meet every mount. A sticky mount is no bucket mount, so one already in place stays.
+	var paths []string
+	for _, m := range req.Mounts {
+		if CheckMountPath(m.Path) == nil {
+			paths = append(paths, m.Path)
+		}
+	}
+	s.Mounts.Release(paths)
 	results := make([]StickyResult, 0, len(req.Mounts))
 	for _, m := range req.Mounts {
 		res := StickyResult{Path: m.Path}

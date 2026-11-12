@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -445,7 +446,56 @@ func TestStickyCommitsNeverShareOrReplaceAVersion(t *testing.T) {
 		t.Fatalf("the version was replaced: %q", raw)
 	}
 	dst := filepath.Join(t.TempDir(), "late")
-	if err := cloneWithin(context.Background(), tmp, dst, time.Now().Add(-time.Second)); err == nil || !strings.Contains(err.Error(), "no reflinks") || fileExists(dst) {
+	if err := cloneWithin(context.Background(), tmp, dst, time.Now().Add(-time.Second), nil); err == nil || !strings.Contains(err.Error(), "no reflinks") || fileExists(dst) {
 		t.Fatalf("a late copy: %v", err)
+	}
+}
+
+// A recovery thaw waits for the sandbox's lock, which a commit holds from its freeze to its thaw: it can't reach the
+// guest inside a commit's frozen copy, whichever starts first. One whose sandbox stopped meanwhile, or runs on another
+// guest now, sends nothing.
+func TestRecoveryThawWaitsForACommit(t *testing.T) {
+	// Short, for the sockets in it.
+	root, err := os.MkdirTemp("", "sticky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	m := &Manager{cfg: Config{Root: root}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	f := newStickyFixture(t, "sbx_a", m)
+	f.s.meta.StickyDisks = []stickyDisk{{DiskID: "ci", Path: "/var/lib/ci", Slot: 0, State: proto.StickyMounted}}
+	// The guest sees whether the sandbox's lock, which CommitSticky holds from its freeze to its thaw, is held as each
+	// thaw arrives: held by the recovery itself, no commit can be between its freeze and thaw.
+	var unlocked atomic.Int32
+	f.s.guest = guest.NewClient(fakeGuest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sticky/thaw" && f.s.mu.TryLock() {
+			f.s.mu.Unlock()
+			unlocked.Add(1)
+		}
+		f.agent(w, r)
+	}))
+
+	<-m.thawStickyAfterRestart(f.s)
+	if f.took("/sticky/thaw") != 1 || <-f.thawed != "/var/lib/ci" {
+		t.Fatalf("calls %v", f.calls)
+	}
+	if unlocked.Load() != 0 {
+		t.Fatal("a recovery thaw reached the guest without the sandbox's lock")
+	}
+
+	// Stopped, or running on another guest, by the time it has the lock: nothing is sent.
+	for name, change := range map[string]func(){
+		"stopped":       func() { f.s.meta.State = proto.StateStopped },
+		"another guest": func() { f.s.guest = guest.NewClient(fakeGuest(t, f.agent)) },
+	} {
+		f.s.mu.Lock()
+		done := m.thawStickyAfterRestart(f.s)
+		change()
+		f.s.mu.Unlock()
+		<-done
+		if n := f.took("/sticky/thaw"); n != 1 {
+			t.Fatalf("%s: %d thaws", name, n)
+		}
+		f.s.meta.State = proto.StateRunning
 	}
 }

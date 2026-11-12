@@ -363,8 +363,8 @@ type Manager struct {
 	// statfs measures the file system a stop's snapshot goes on (roomForSnapshot): syscall.Statfs when nil, tests
 	// replace it.
 	statfs func(path string, st *syscall.Statfs_t) error
-	// snapshotRoom guards snapshotReserved: the bytes stops' automatic snapshots have been let copy and haven't
-	// finished copying, which the file system's free space doesn't show yet (roomForSnapshot).
+	// snapshotRoom guards snapshotReserved: the bytes snapshots and sticky disks' full copies have been let copy and
+	// haven't finished copying, which the file system's free space doesn't show yet (reserveRoom).
 	snapshotRoom     sync.Mutex
 	snapshotReserved int64
 	spool            *spool
@@ -3590,7 +3590,8 @@ const snapshotHeadroom = 10 << 30
 // through, its copy's size is reserved until release is called, once the copy is done or has failed. A file system
 // that can't be measured is let through.
 func (m *Manager) roomForSnapshot(s *sandbox, disk string) (release func(), err error) {
-	return m.reserveSnapshotRoom(disk, 0, func(free, size int64) error {
+	// Its sticky drives are copied with its disk (keepSticky), so their room is reserved with it.
+	return m.reserveSnapshotRoom(disk, stickyUsage(s), func(free, size int64) error {
 		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", size+snapshotHeadroom)
 		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
 	})
@@ -3607,7 +3608,8 @@ func (m *Manager) roomToSave(s *sandbox, withMemory bool) (release func(), err e
 			memory = int64(size.MemoryMiB) << 20
 		}
 	}
-	return m.reserveSnapshotRoom(filepath.Join(s.vmDir(), fc.DiskFile), memory, func(free, size int64) error {
+	// Its sticky drives are copied with its disk (keepSticky), so their room is reserved with it.
+	return m.reserveSnapshotRoom(filepath.Join(s.vmDir(), fc.DiskFile), memory+stickyUsage(s), func(free, size int64) error {
 		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
 			"This host has %s of disk free, and a snapshot of this sandbox needs about %s and must leave %s free. Delete snapshots you no longer need, or free space on the host, and try again.",
 			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
@@ -3650,11 +3652,18 @@ func gibText(n int64) string {
 // release, when the file system has that and snapshotHeadroom free beside what other copies have reserved; else it
 // answers refuse's error, given the free bytes and the size. A file system that can't be measured is let through.
 func (m *Manager) reserveSnapshotRoom(disk string, extra int64, refuse func(free, size int64) error) (release func(), err error) {
+	return m.reserveRoom(diskUsage(disk)+extra, refuse)
+}
+
+// reserveRoom reserves size bytes of the host's disk for a copy until release, when the file system has that and
+// snapshotHeadroom free beside what other copies have reserved; else it answers refuse's error, given the free bytes
+// and the size. Every copy the host makes of a disk on its own initiative (snapshots, and sticky disks' full copies)
+// reserves here, so two never count the same free space. A file system that can't be measured is let through.
+func (m *Manager) reserveRoom(size int64, refuse func(free, size int64) error) (release func(), err error) {
 	statfs := m.statfs
 	if statfs == nil {
 		statfs = syscall.Statfs
 	}
-	size := diskUsage(disk) + extra
 	m.snapshotRoom.Lock()
 	defer m.snapshotRoom.Unlock()
 	// Memory still in the RAM spool reaches this disk once it is flushed: counted as taken already. Read before the

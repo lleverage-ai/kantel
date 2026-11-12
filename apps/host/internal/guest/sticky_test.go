@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -60,5 +62,30 @@ func TestFreezeOnlyAStickyMount(t *testing.T) {
 		if rec.Code != want {
 			t.Errorf("%s: %d %s, want %d", body, rec.Code, rec.Body, want)
 		}
+	}
+}
+
+// A sticky disk replacing a restored snapshot's bucket mount (at its path, above or under it) has that bucket mount
+// released before it is mounted, so the host's later bucket cleanup can't unmount the sticky disk; a bucket mount
+// elsewhere stays, and an invalid path releases nothing.
+func TestMountStickyReleasesOverlappingBucketMounts(t *testing.T) {
+	ms := &Mounts{byPath: map[string]*bucketMount{}}
+	for _, p := range []string{"/cache", "/var", "/var/lib/ci/sub", "/var/lib/cid", "/srv"} {
+		ms.byPath[p] = &bucketMount{ms: ms, spec: MountSpec{Path: p, Key: "k" + p}}
+	}
+	s := &Server{Mounts: ms}
+	rec := httptest.NewRecorder()
+	body := `{"mounts":[{"path":"/var/lib/ci","drive":99},{"path":"/","drive":99},{"path":"relative","drive":99}]}`
+	s.mountSticky(rec, httptest.NewRequest(http.MethodPost, "/sticky", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var left []string
+	for p := range ms.byPath {
+		left = append(left, p)
+	}
+	sort.Strings(left)
+	if want := []string{"/cache", "/srv", "/var/lib/cid"}; !reflect.DeepEqual(left, want) {
+		t.Fatalf("left %v, want %v", left, want)
 	}
 }
