@@ -1,13 +1,13 @@
 // What scrolls sideways when it's wider than its column: a table with more columns than the page has room for. Two
 // things a plain `overflow-x-auto` doesn't say. Its own scrollbar is at its bottom, which in a long list is far below
 // the window, so nobody knows there is more to the right: SideScroll's bar is pinned to the bottom of whatever scrolls
-// the page (sticky), and sits back under the content once its end is in view. And an edge with more past it casts a
-// shadow inward from it, under the text, so the cut-off column reads as cut off rather than as the end.
+// the page (sticky), and sits back right under the content once its end is in view. And an edge with more past it fades
+// the content into its ground, so the cut-off column reads as cut off rather than as the end. The fade deepens over the
+// first few pixels of scroll and thins over the last few, so it never pops in or out.
 //
-// With `fill`, the content can scroll down as well, in the room its page leaves it (a list page whose table fills the
-// window under its header and filters, base.css): while it does, its header row sticks and it shows its own vertical
-// scrollbar. The pinned bar stays its horizontal one either way, so which bars show never changes its height, and a
-// table near the height where it starts to scroll can't flicker between the two.
+// With `fill`, the content scrolls down as well, in the room its page leaves it (a list page whose table fills the
+// window under its header and filters, base.css). Its bottom is then always in view, so it shows its own scrollbars,
+// inside its frame, and there is no pinned bar; while it scrolls down its header row sticks.
 
 import { type ComponentProps, useLayoutEffect, useRef, useState } from "react";
 
@@ -21,8 +21,6 @@ interface Edges {
 	 * whatever stands between them (the scroller's border, its own vertical scrollbar).
 	 */
 	readonly range: number | undefined;
-	readonly start: boolean;
-	readonly end: boolean;
 	/** Something in the content takes focus, so Tab into it scrolls it into view; otherwise the scroller takes focus. */
 	readonly reachable: boolean;
 	/** The content is taller than the scroller: only with `fill`, where the page gives it a height. */
@@ -32,15 +30,43 @@ interface Edges {
 	 * and must keep its height rather than fill.
 	 */
 	readonly scrolls: boolean;
+	/**
+	 * Where its content shows, inside its border and clear of its own scrollbars, for the fades over its edges: they sit
+	 * over the scroller rather than in it, so they stay put as it scrolls.
+	 */
+	readonly view: View;
 }
 
-const fits: Edges = { range: undefined, start: false, end: false, reachable: true, tall: false, scrolls: true };
+interface View {
+	readonly top: number;
+	readonly left: number;
+	readonly width: number;
+	readonly height: number;
+}
+
+const noView: View = { top: 0, left: 0, width: 0, height: 0 };
+
+const fits: Edges = { range: undefined, reachable: true, tall: false, scrolls: true, view: noView };
+
+/** How far into its scroll, in pixels, an edge's fade takes to deepen fully, and from its end to thin away. */
+const FADE_RAMP = 32;
+
+/**
+ * Each fade's depth follows how far there is to scroll towards its edge, so it eases in and out with the scroll rather
+ * than switching. Set on the elements, not in state: it changes with every scroll event.
+ */
+function paintFades(box: HTMLElement, start: HTMLElement | null, end: HTMLElement | null) {
+	const past = Math.abs(box.scrollLeft);
+	const left = box.scrollWidth - box.clientWidth - past;
+	if (start !== null) start.style.opacity = `${Math.min(Math.max(past / FADE_RAMP, 0), 1)}`;
+	if (end !== null) end.style.opacity = `${Math.min(Math.max(left / FADE_RAMP, 0), 1)}`;
+}
 
 const focusable =
 	'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 function measure(scroller: HTMLElement): Edges {
-	const { scrollWidth, clientWidth, scrollLeft, scrollHeight, clientHeight } = scroller;
+	const { scrollWidth, clientWidth, scrollHeight, clientHeight, clientTop, clientLeft } = scroller;
 	// A pixel of slack: zoom and fractional sizes leave the scroll size a rounding over the client size.
 	const scrolls = getComputedStyle(scroller).overflowX !== "visible";
 	const wide = scrollWidth > clientWidth + 1;
@@ -48,25 +74,22 @@ function measure(scroller: HTMLElement): Edges {
 	if (!wide && !tall) return scrolls ? fits : { ...fits, scrolls };
 	return {
 		range: wide ? scrollWidth - clientWidth : undefined,
-		start: wide && scrollLeft > 1,
-		end: wide && scrollLeft + clientWidth < scrollWidth - 1,
 		reachable: [...scroller.querySelectorAll(focusable)].some((element) => element !== scroller),
 		tall,
 		scrolls,
+		view: wide ? { top: clientTop, left: clientLeft, width: clientWidth, height: clientHeight } : noView,
 	};
 }
 
-/** Which edges have more past them, for base.css's shadows. */
-const edgesData = (edges: Edges): string | undefined =>
-	edges.start && edges.end ? "both" : edges.start ? "start" : edges.end ? "end" : undefined;
-
 const same = (a: Edges, b: Edges) =>
 	a.range === b.range &&
-	a.start === b.start &&
-	a.end === b.end &&
 	a.reachable === b.reachable &&
 	a.tall === b.tall &&
-	a.scrolls === b.scrolls;
+	a.scrolls === b.scrolls &&
+	a.view.top === b.view.top &&
+	a.view.left === b.view.left &&
+	a.view.width === b.view.width &&
+	a.view.height === b.view.height;
 
 /**
  * The header row of a table in a scroller that scrolls down, stuck to its top on the content's ground: over a row's own
@@ -81,17 +104,24 @@ const stickyHead = {
 		"scroll-pt-control-md [&>table>thead_th]:sticky [&>table>thead_th]:top-0 [&>table>thead_th]:z-2 [&>table>thead_th]:bg-canvas [&>table>thead_th]:shadow-[inset_0_-1px_0_var(--kt-border)]",
 } as const;
 
+/** An edge's fade, from the content's ground at the edge to clear: over the rows, under nothing a pointer needs. */
+const fade = {
+	raised: { start: "bg-linear-to-r from-raised to-transparent", end: "bg-linear-to-l from-raised to-transparent" },
+	canvas: { start: "bg-linear-to-r from-canvas to-transparent", end: "bg-linear-to-l from-canvas to-transparent" },
+} as const;
+
 /**
  * A container that scrolls sideways when its content is wider than it is, with its scrollbar kept in the window and its
- * cut-off edges shaded. `className` styles the scroller itself (a table's frame); the bar is its next sibling, so in a
- * flex column it takes the column's gap above it. When the content fits there is no bar and no shadow.
+ * cut-off edges faded. `className` styles the scroller itself (a table's frame); it and its bar sit in a wrapper of
+ * their own, so the bar sits right under it. When the content fits there is no bar and no fade.
  *
  * Wheel, trackpad, touch and keyboard scroll the content as any scroller: Tab to a control in it brings it into view,
  * and content with no control in it makes the scroller itself a tab stop, for the arrow keys. The bar is the same
  * scroll for a pointer, so it's hidden from assistive tech and out of the tab order.
  *
- * `fill` lets it scroll down too, as tall as its page lets it be (base.css's `kt-fill`): while its content is taller
- * than that, its table's header row sticks and its own vertical scrollbar shows beside the pinned bar.
+ * `fill` lets it scroll down too, as tall as its page lets it be (base.css's `kt-fill`). Its bottom is then always in
+ * view, so it shows its own scrollbars inside its frame in place of the pinned bar, and while its content is taller
+ * than it, its table's header row sticks.
  */
 export function SideScroll({
 	children,
@@ -102,6 +132,8 @@ export function SideScroll({
 }: ComponentProps<"div"> & { surface?: SideScrollSurface; fill?: boolean }) {
 	const scroller = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
+	const startFade = useRef<HTMLDivElement>(null);
+	const endFade = useRef<HTMLDivElement>(null);
 	const [edges, setEdges] = useState<Edges>(fits);
 	useLayoutEffect(() => {
 		const box = scroller.current;
@@ -109,6 +141,7 @@ export function SideScroll({
 		const update = () => {
 			const next = measure(box);
 			setEdges((current) => (same(current, next) ? current : next));
+			paintFades(box, startFade.current, endFade.current);
 			const rail = bar.current;
 			if (rail !== null && rail.scrollLeft !== box.scrollLeft) rail.scrollLeft = box.scrollLeft;
 		};
@@ -129,36 +162,50 @@ export function SideScroll({
 			box.removeEventListener("scroll", update);
 		};
 	}, []);
+	// The fades mount once the content overflows: give them their depth before they paint.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: they mount and unmount as the overflow comes and goes
+	useLayoutEffect(() => {
+		if (scroller.current !== null) paintFades(scroller.current, startFade.current, endFade.current);
+	}, [edges.range]);
 	const follow = () => {
 		const box = scroller.current;
 		const rail = bar.current;
 		if (box !== null && rail !== null && box.scrollLeft !== rail.scrollLeft) box.scrollLeft = rail.scrollLeft;
 	};
-	// Scrolling down in its own room: it shows its own vertical scrollbar. Its horizontal one stays hidden for the pinned
-	// bar (WebKit and Chromium; Firefox can't hide one axis, so it shows both of its own, thin, beside the pinned bar),
-	// so its height is the same with or without its own bars.
-	const scrolling = fill && edges.tall;
+	// Filling its page, its bottom is in view: its own bars show, inside its frame. Otherwise they are hidden for the
+	// pinned bar (WebKit and Chromium; Firefox can't hide one axis, so it shows its own, thin, beside the pinned bar).
+	const filling = fill && edges.scrolls;
+	const wide = edges.range !== undefined;
 	return (
-		<>
+		<div className={`relative isolate min-w-0 ${filling ? "kt-fill flex min-h-0 flex-col" : ""}`}>
 			<div
 				{...(edges.reachable ? {} : { tabIndex: 0 })}
 				{...rest}
 				ref={scroller}
-				data-edges={edgesData(edges)}
-				className={`kt-side-scroll kt-focusable relative overflow-x-auto ${fill && edges.scrolls ? "kt-table-fill kt-scroll-rounded min-h-0 overflow-y-auto" : ""} ${scrolling ? `${stickyHead[surface]} [&::-webkit-scrollbar:horizontal]:h-0` : "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"} ${className ?? ""}`}
+				className={`kt-side-scroll kt-focusable relative overflow-x-auto ${filling ? "kt-table-fill kt-scroll-rounded min-h-0 overflow-y-auto" : "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"} ${filling && edges.tall ? stickyHead[surface] : ""} ${className ?? ""}`}
 			>
 				{children}
 			</div>
+			{wide ? (
+				<div
+					aria-hidden="true"
+					className="pointer-events-none absolute z-3 overflow-hidden rounded-panel"
+					style={{ ...edges.view }}
+				>
+					<div ref={startFade} className={`absolute inset-y-0 left-0 w-8 opacity-0 ${fade[surface].start}`} />
+					<div ref={endFade} className={`absolute inset-y-0 right-0 w-8 opacity-0 ${fade[surface].end}`} />
+				</div>
+			) : null}
 			<div
 				ref={bar}
 				aria-hidden="true"
 				tabIndex={-1}
-				hidden={edges.range === undefined}
+				hidden={!wide || filling}
 				onScroll={follow}
-				className="kt-side-scroll-bar sticky bottom-0 z-1 min-w-0 overflow-x-auto overflow-y-hidden bg-canvas"
+				className="kt-side-scroll-bar sticky bottom-0 z-4 min-w-0 overflow-x-auto overflow-y-hidden bg-canvas outline-none"
 			>
 				<div className="h-px" style={{ width: `calc(100% + ${edges.range ?? 0}px)` }} />
 			</div>
-		</>
+		</div>
 	);
 }

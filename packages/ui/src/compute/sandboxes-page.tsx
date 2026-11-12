@@ -405,34 +405,34 @@ export function SandboxesPage({
 					own kernel. Press New, or run kantel new.
 				</EmptyState>
 			) : (
-				<>
-					<SandboxToolbar
-						sandboxes={sandboxes}
-						filters={filters}
-						viewerId={viewerId}
-						now={now}
-						narrow={narrow}
-						onChange={setFilters}
-					/>
-					<SandboxList
-						sandboxes={shown ?? []}
-						{...(creatorOf === undefined ? {} : { creatorOf })}
-						hosting={hosting}
-						now={now}
-						fixedNow={fixedNow !== undefined}
-						narrow={narrow}
-						filtered={filtered(filters)}
-						onClearFilters={() => setFilters(NO_FILTERS)}
-						onMetrics={setMetricsId}
-						source={source}
-						{...(snapshots === undefined ? {} : { save: snapshots.save })}
-						{...(sandboxHref === undefined ? {} : { sandboxHref })}
-						{...(navigate === undefined ? {} : { navigate })}
-						onChange={change}
-						asked={(id) => changes.ask(id)}
-						onNotice={setNotice}
-					/>
-				</>
+				<SandboxList
+					toolbar={
+						<SandboxToolbar
+							sandboxes={sandboxes}
+							filters={filters}
+							viewerId={viewerId}
+							now={now}
+							narrow={narrow}
+							onChange={setFilters}
+						/>
+					}
+					sandboxes={shown ?? []}
+					{...(creatorOf === undefined ? {} : { creatorOf })}
+					hosting={hosting}
+					now={now}
+					fixedNow={fixedNow !== undefined}
+					narrow={narrow}
+					filtered={filtered(filters)}
+					onClearFilters={() => setFilters(NO_FILTERS)}
+					onMetrics={setMetricsId}
+					source={source}
+					{...(snapshots === undefined ? {} : { save: snapshots.save })}
+					{...(sandboxHref === undefined ? {} : { sandboxHref })}
+					{...(navigate === undefined ? {} : { navigate })}
+					onChange={change}
+					asked={(id) => changes.ask(id)}
+					onNotice={setNotice}
+				/>
 			)}
 			<NewSandboxDialog
 				open={newOpen}
@@ -604,8 +604,12 @@ type RowCalls = {
 	onMetrics?: (id: string) => void;
 };
 
-/** The table on a wide screen, rows on a phone, and what acts on the ticked ones. */
+/**
+ * The filters, the table on a wide screen or rows on a phone, and what acts on the ticked ones: on a wide screen at the
+ * end of the filters' row, so ticking a row doesn't move the table under the pointer.
+ */
 function SandboxList({
+	toolbar,
 	sandboxes,
 	hosting,
 	now,
@@ -623,6 +627,8 @@ function SandboxList({
 	asked,
 	onNotice,
 }: {
+	/** The search and filters, which the selection's actions share a row with. */
+	toolbar: ReactNode;
 	sandboxes: readonly Sandbox[];
 	hosting: HostingMode;
 	now: number;
@@ -673,14 +679,17 @@ function SandboxList({
 	};
 	if (sandboxes.length === 0) {
 		return (
-			<p className="m-0 flex items-center gap-2 text-sm text-muted">
-				No sandboxes match.
-				{narrowed ? (
-					<Button size="xs" variant="ghost" onClick={onClearFilters}>
-						Clear search and filters
-					</Button>
-				) : null}
-			</p>
+			<>
+				{toolbar}
+				<p className="m-0 flex items-center gap-2 text-sm text-muted">
+					No sandboxes match.
+					{narrowed ? (
+						<Button size="xs" variant="ghost" onClick={onClearFilters}>
+							Clear search and filters
+						</Button>
+					) : null}
+				</p>
+			</>
 		);
 	}
 	const calls: RowCalls = {
@@ -784,59 +793,73 @@ function SandboxList({
 			</table>
 		</SideScroll>
 	);
+	const selectionBar = (
+		<SelectionBar
+			narrow={narrow}
+			count={selected.length}
+			all={allTicked}
+			some={someTicked}
+			disabled={selectable.length === 0}
+			onAll={tickAll}
+			actions={
+				<>
+					<Button
+						size="sm"
+						icon={<StopIcon size="sm" />}
+						disabled={stoppable.length === 0}
+						busy={stopping}
+						onClick={() => void stopSelected()}
+					>
+						Stop
+					</Button>
+					<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
+						Delete
+					</Button>
+				</>
+			}
+		/>
+	);
 	return (
-		// Select all sits right over the rows it ticks, closer to them than the page's gap. The table fills the room under
-		// the header and filters (`kt-fill`, base.css), so New and the filters stay in view down a long list.
-		<div className="kt-fill flex min-w-0 flex-col gap-2">
-			<SelectionBar
-				narrow={narrow}
-				count={selected.length}
-				all={allTicked}
-				some={someTicked}
-				disabled={selectable.length === 0}
-				onAll={tickAll}
-				actions={
-					<>
-						<Button
-							size="sm"
-							icon={<StopIcon size="sm" />}
-							disabled={stoppable.length === 0}
-							busy={stopping}
-							onClick={() => void stopSelected()}
-						>
-							Stop
-						</Button>
-						<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
-							Delete
-						</Button>
-					</>
-				}
-			/>
-			{list}
-			<DeleteDialog
-				sandboxes={deleting}
-				onClose={() => setDeleting(undefined)}
-				onDelete={async (boxes) => {
-					const results = await Promise.allSettled(boxes.map((box) => source.remove(box.id)));
-					const gone = boxes.filter((_, at) => results[at]?.status === "fulfilled");
-					for (const box of gone) onChange(null, box.id);
-					const failure = results.find((result) => result.status === "rejected");
-					if (failure !== undefined) {
-						// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted, unless it was
-						// closed meanwhile or opened again on others.
-						setDeleting((current) => retryTargets(current, boxes, results));
-						throw failure.reason;
-					}
-					onNotice({
-						level: "info",
-						text:
-							gone.length === 1
-								? `Deleted ${gone[0]?.name} and its snapshots.`
-								: `Deleted ${gone.length} sandboxes and their snapshots.`,
-					});
-				}}
-			/>
-		</div>
+		<>
+			{narrow ? (
+				toolbar
+			) : (
+				// The filters' own row is unpacked into this one, so the selection's actions take the end of their last line.
+				<div className="flex min-w-0 flex-wrap items-center gap-2 [&>.kt-sandbox-toolbar]:contents">
+					{toolbar}
+					{selectionBar}
+				</div>
+			)}
+			{/* The table fills the room under the header and filters (`kt-fill`, base.css), so New and the filters stay in
+			    view down a long list. On a phone, Select all sits right over the rows it ticks, closer than the page's gap. */}
+			<div className="kt-fill flex min-w-0 flex-col gap-2">
+				{narrow ? selectionBar : null}
+				{list}
+				<DeleteDialog
+					sandboxes={deleting}
+					onClose={() => setDeleting(undefined)}
+					onDelete={async (boxes) => {
+						const results = await Promise.allSettled(boxes.map((box) => source.remove(box.id)));
+						const gone = boxes.filter((_, at) => results[at]?.status === "fulfilled");
+						for (const box of gone) onChange(null, box.id);
+						const failure = results.find((result) => result.status === "rejected");
+						if (failure !== undefined) {
+							// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted, unless it was
+							// closed meanwhile or opened again on others.
+							setDeleting((current) => retryTargets(current, boxes, results));
+							throw failure.reason;
+						}
+						onNotice({
+							level: "info",
+							text:
+								gone.length === 1
+									? `Deleted ${gone[0]?.name} and its snapshots.`
+									: `Deleted ${gone.length} sandboxes and their snapshots.`,
+						});
+					}}
+				/>
+			</div>
+		</>
 	);
 }
 
@@ -1407,8 +1430,9 @@ function TickBox({
 }
 
 /**
- * Over the list: what acts on the ticked sandboxes, once any are, and on a phone Select all, which the table's head has
- * on a wide screen. Nothing on a wide screen until something is ticked.
+ * What acts on the ticked sandboxes, once any are. On a wide screen it ends the filters' row, which is as tall with it
+ * as without, so the table doesn't move when a row is ticked. On a phone it sits over the rows, with Select all, which
+ * the table's head has on a wide screen.
  */
 function SelectionBar({
 	narrow,
@@ -1428,28 +1452,41 @@ function SelectionBar({
 	actions: ReactNode;
 }) {
 	const allId = useId();
-	if (!narrow && count === 0) return null;
+	if (!narrow) {
+		return (
+			<div
+				className={`kt-selection-bar ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2 ${count === 0 ? "" : "pl-2"}`}
+			>
+				{/* Always there, so the count is read out as the first row is ticked. */}
+				<span className="text-sm text-fg tabular-nums" aria-live="polite">
+					{count === 0 ? "" : `${count} selected`}
+				</span>
+				{count === 0 ? null : (
+					<span className="flex flex-wrap items-center gap-2">
+						{actions}
+						<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
+							Clear
+						</Button>
+					</span>
+				)}
+			</div>
+		);
+	}
 	return (
 		<div className="kt-selection-bar flex min-h-control-sm flex-wrap items-center gap-x-3 gap-y-2">
-			{narrow ? (
-				<span className="flex items-center gap-3 text-sm text-muted">
-					<TickBox
-						id={allId}
-						label="Select all"
-						checked={all}
-						indeterminate={some}
-						disabled={disabled}
-						onChange={onAll}
-					/>
-					<label htmlFor={allId} className="cursor-pointer">
-						{count === 0 ? "Select all" : `${count} selected`}
-					</label>
-				</span>
-			) : (
-				<span className="text-sm text-fg tabular-nums" aria-live="polite">
-					{count} selected
-				</span>
-			)}
+			<span className="flex items-center gap-3 text-sm text-muted">
+				<TickBox
+					id={allId}
+					label="Select all"
+					checked={all}
+					indeterminate={some}
+					disabled={disabled}
+					onChange={onAll}
+				/>
+				<label htmlFor={allId} className="cursor-pointer">
+					{count === 0 ? "Select all" : `${count} selected`}
+				</label>
+			</span>
 			{count === 0 ? null : (
 				<span className="ml-auto flex flex-wrap items-center gap-2">
 					{actions}
