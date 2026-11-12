@@ -930,7 +930,7 @@ Runners of one shape, picked by a `runs-on` label.
 | `environments` | string[] | no | Environments each runner starts with, IDs or names in the account, such as one holding a cache token. (at most 10 items) |
 | `maxRunners` | integer | no | The most runners the pool has at once, starting or running. Default 20. (minimum 1, maximum 500) |
 | `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
-| `runnerCommand` | string | no | The shell command that starts the runner, run as root with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
+| `runnerCommand` | string | no | The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
 
 ### GithubRunnerPoolStatus
 

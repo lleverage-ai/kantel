@@ -47,7 +47,14 @@ export const RUNNER_LABEL = "kantel.dev/github-runners";
 export const RUNNER_POOL_LABEL = "kantel.dev/github-runner-pool";
 export const DEFAULT_MAX_RUNNERS = 20;
 export const DEFAULT_TIMEOUT_MINUTES = 360;
+/**
+ * Commands run as the sandbox's default user (`user`, with passwordless sudo on Kantel's images), not root, and
+ * `runuser` needs root, so `sudo` comes first. `sudo` resets the environment, and a sandbox reaches the internet only
+ * through its egress proxy (`HTTPS_PROXY` and the rest; it has no DNS of its own), so those are kept: without them the
+ * runner can't resolve GitHub's hosts and never connects.
+ */
 export const DEFAULT_RUNNER_COMMAND =
+	"sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY " +
 	'runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"';
 /** How long a pool waits after a create found no room before it tries again, unless one of its runners goes first. */
 export const CAPACITY_BACKOFF_MS = 20_000;

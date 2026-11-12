@@ -4273,9 +4273,11 @@ export const GithubRunnerPool = Type.Object(
 				minLength: 1,
 				maxLength: 4096,
 				description:
-					"The shell command that starts the runner, run as root with the just-in-time configuration in " +
-					"`KANTEL_RUNNER_JITCONFIG`. Default `runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig " +
-					'"$KANTEL_RUNNER_JITCONFIG"`.',
+					"The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the " +
+					"just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n " +
+					"--preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY " +
+					"runuser -u runner -- " +
+					'/home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.',
 			}),
 		),
 	},
