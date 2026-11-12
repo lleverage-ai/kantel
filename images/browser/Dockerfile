@@ -16,13 +16,13 @@
 # from brwsr diffs cleanly: biome.json leaves it out of `pnpm lint`, and each
 # file's header says what Kantel changed.
 
-# Base images are pinned by digest (the one brwsr's production ran on 23 Oct
-# 2026), so the same Dockerfile always starts from the same image. To update,
+# Base images are pinned by digest (Node 22.23.5, the November 2026 Node.js
+# security release, published 11 Nov 2026), so the same Dockerfile always starts from the same image. To update,
 # replace the digest (docker buildx imagetools inspect node:22-bookworm-slim).
 # apt-get below still installs Debian's current packages whenever the image is
 # rebuilt.
 
-FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
 # Keep this on Debian's chromium build when Debian has it, so a context saved
 # by one engine opens in the other (Chrome won't open a profile from a newer
