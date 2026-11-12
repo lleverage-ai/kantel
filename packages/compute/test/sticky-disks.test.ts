@@ -289,6 +289,22 @@ for (const each of STORES) {
 		});
 
 		if (each.kind !== undefined) {
+			it("delete a disk whatever its description holds, and a repeated delete leaves a new disk's name", async () => {
+				const store = await open();
+				// A NUL and a lone surrogate: what a description may hold, and what Postgres's jsonb refuses.
+				for (const [n, description] of ["a\u0000b", "\udc00"].entries()) {
+					const name = `odd-${n}`;
+					const odd = { ...disk(`sdk_odd${n}`, name), description };
+					expect(await store.stickyDiskWrites.create(odd)).toBe(true);
+					expect((await store.stickyDiskWrites.tombstone(odd.id, 5))?.deletedAt).toBe(5);
+					expect(await claimOf(store, name)).toBeUndefined();
+					expect(await store.stickyDiskWrites.create({ ...disk(`sdk_new${n}`, name), description })).toBe(true);
+					expect((await store.stickyDiskWrites.tombstone(odd.id, 9))?.deletedAt).toBe(5);
+					expect(await claimOf(store, name)).toBe(`sdk_new${n}`);
+					expect((await store.stickyDiskWrites.commit(version(`sdv_${n}`, `sdk_new${n}`), 6))?.seq).toBe(1);
+				}
+			});
+
 			it("leave all of a create, a tombstone or a commit, or none of it, when the write is interrupted", async () => {
 				const store = await open();
 				interrupt.next = true;

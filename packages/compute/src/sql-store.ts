@@ -330,7 +330,12 @@ const STICKY_DISK_VERSIONS = "stickyDiskVersions";
  * - `create`: the name's claim, inserted unless the name is claimed, and the disk, inserted only when the claim then
  *   names it. Whether it landed is read back from the disk, whose ID is the create's own.
  * - `tombstone`: the disk's write over the version it read (as `update`), and the release of its name's claim, only a
- *   claim naming this disk and only once the disk's row holds a tombstone, whoever wrote it.
+ *   claim naming this disk and only while the disk's row holds exactly the tombstone written (or, tombstoned already,
+ *   read); another writer's change first means neither lands, and it reads again.
+ *
+ * Rows are matched by their exact stored text, never by a field read out of it: Postgres can't cast to `jsonb` the JSON
+ * JavaScript writes for a NUL or a lone surrogate, which a disk's description may hold, and such a disk must stay
+ * deletable. A claim's text is always `claimData`'s.
  * - `commit`: the disk's write over the live version it read, and the version's insert, only when the disk's row then
  *   holds exactly what was written, so a tombstone (or another commit) that came first means no version is recorded.
  *   Whether it landed is read back from the version, by its `writeId`, as `sqlTemplateWrites` does.
@@ -341,17 +346,18 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 		? "nextval('compute_api_records_seq')"
 		: "(SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?)";
 	const seqParams = (kind: string): SqlValue[] => (postgres ? [] : [kind]);
-	const json = (alias: string, name: string) =>
-		postgres ? `(${alias}.data::jsonb ->> '${name}')` : `json_extract(${alias}.data, '$.${name}')`;
 	const insertClaim = `INSERT INTO compute_api_records (kind, id, seq, version, data)
 		VALUES (?, ?, ${seq}, 1, ?) ON CONFLICT (kind, id) DO NOTHING`;
 	const insertDisk = `INSERT INTO compute_api_records (kind, id, seq, version, data)
 		SELECT ?, ?, ${seq}, 1, ?
-		WHERE EXISTS (SELECT 1 FROM compute_api_records n WHERE n.kind = ? AND n.id = ? AND ${json("n", "diskId")} = ?)
+		WHERE EXISTS (SELECT 1 FROM compute_api_records n WHERE n.kind = ? AND n.id = ? AND n.data = ?)
 		ON CONFLICT (kind, id) DO NOTHING`;
 	const releaseClaim = `DELETE FROM compute_api_records
-		WHERE kind = ? AND id = ? AND ${json("compute_api_records", "diskId")} = ?
-		AND EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND ${json("d", "deletedAt")} IS NOT NULL)`;
+		WHERE kind = ? AND id = ? AND data = ?
+		AND EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)`;
+	/** A disk's claim on its name, as `create` writes it: the text every claim of that disk has. */
+	const claimData = (disk: StoredStickyDisk): string =>
+		JSON.stringify({ id: stickyDiskNameId(disk.accountId, disk.name), accountId: disk.accountId, diskId: disk.id });
 	const insertVersion = `INSERT INTO compute_api_records (kind, id, seq, version, data)
 		SELECT ?, ?, ${seq}, 1, ?
 		WHERE EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)
@@ -363,9 +369,9 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 	return {
 		async create(disk) {
 			const claim = stickyDiskNameId(disk.accountId, disk.name);
-			const claimData = JSON.stringify({ id: claim, accountId: disk.accountId, diskId: disk.id });
+			const claimed = claimData(disk);
 			await driver.batch([
-				{ sql: insertClaim, params: [STICKY_DISK_NAMES, claim, ...seqParams(STICKY_DISK_NAMES), claimData] },
+				{ sql: insertClaim, params: [STICKY_DISK_NAMES, claim, ...seqParams(STICKY_DISK_NAMES), claimed] },
 				{
 					sql: insertDisk,
 					params: [
@@ -375,7 +381,7 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 						JSON.stringify(disk),
 						STICKY_DISK_NAMES,
 						claim,
-						disk.id,
+						claimed,
 					],
 				},
 			]);
@@ -387,22 +393,29 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 				const [row] = await driver.query(SELECT_VERSIONED, [STICKY_DISKS, id]);
 				if (row === undefined) return undefined;
 				const current = parse<StoredStickyDisk>(row);
-				const release = {
+				const claim = stickyDiskNameId(current.accountId, current.name);
+				// Released only while the disk's row is exactly `tombstone`: the one this attempt wrote, or read.
+				const release = (tombstone: string) => ({
 					sql: releaseClaim,
-					params: [STICKY_DISK_NAMES, stickyDiskNameId(current.accountId, current.name), id, STICKY_DISKS, id],
-				};
-				if (current.deletedAt !== undefined) {
-					await driver.batch([release]);
-					return current;
+					params: [STICKY_DISK_NAMES, claim, claimData(current), STICKY_DISKS, id, tombstone],
+				});
+				let tombstone = String(row.data);
+				if (current.deletedAt === undefined) {
+					tombstone = JSON.stringify({ ...current, deletedAt: at, updatedAt: at } satisfies StoredStickyDisk);
+					await driver.batch([
+						{ sql: UPDATE_VERSIONED, params: [tombstone, STICKY_DISKS, id, sqlNumber(row.version), String(row.data)] },
+						release(tombstone),
+					]);
+				} else {
+					await driver.batch([release(tombstone)]);
 				}
-				const data = JSON.stringify({ ...current, deletedAt: at, updatedAt: at } satisfies StoredStickyDisk);
-				await driver.batch([
-					{ sql: UPDATE_VERSIONED, params: [data, STICKY_DISKS, id, sqlNumber(row.version), String(row.data)] },
-					release,
-				]);
-				const now = await read<StoredStickyDisk>(STICKY_DISKS, id);
-				if (now === undefined) return undefined;
-				if (now.deletedAt !== undefined) return now;
+				// Done once the disk is tombstoned and holds no claim: lost to another writer, read again.
+				const [after] = await driver.query(SELECT_DATA, [STICKY_DISKS, id]);
+				if (after === undefined) return undefined;
+				const now = parse<StoredStickyDisk>(after);
+				if (now.deletedAt === undefined) continue;
+				const [held] = await driver.query(SELECT_DATA, [STICKY_DISK_NAMES, claim]);
+				if (held === undefined || String(held.data) !== claimData(current)) return now;
 			}
 			throw new Error(
 				`The sticky disk ${id} kept changing while it was deleted; gave up after ${UPDATE_ATTEMPTS} tries`,
