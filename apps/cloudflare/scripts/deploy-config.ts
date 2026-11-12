@@ -71,13 +71,15 @@ export const WORKER_SECRETS = ["KANTEL_RELEASE_CHECK_TOKEN"] as const;
  *   (`/v1/templates`).
  * - KANTEL_GITHUB_RUNNERS: GitHub Actions runners (`/v1/github-runners`), GitHub Apps whose `workflow_job` webhooks get
  *   an ephemeral microVM runner each.
+ * - KANTEL_STICKY_DISKS: sticky disks (`/v1/sticky-disks`).
  */
-export const EXPERIMENTAL_SWITCHES = ["KANTEL_TEMPLATES", "KANTEL_GITHUB_RUNNERS"] as const;
+export const EXPERIMENTAL_SWITCHES = ["KANTEL_TEMPLATES", "KANTEL_GITHUB_RUNNERS", "KANTEL_STICKY_DISKS"] as const;
 export type ExperimentalSwitch = (typeof EXPERIMENTAL_SWITCHES)[number];
 const SWITCH_CHECK = { test: (v: string) => v === "experimental" || v === "off", expect: "experimental or off" };
 const SWITCH_CHECKS: Readonly<Record<ExperimentalSwitch, typeof SWITCH_CHECK>> = {
 	KANTEL_TEMPLATES: SWITCH_CHECK,
 	KANTEL_GITHUB_RUNNERS: SWITCH_CHECK,
+	KANTEL_STICKY_DISKS: SWITCH_CHECK,
 };
 
 /** Set only to move the data: each overrides what `wrangler.jsonc` names. */

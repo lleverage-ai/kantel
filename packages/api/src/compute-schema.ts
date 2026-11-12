@@ -1003,6 +1003,35 @@ export const SandboxStartup = Type.Object(
 	},
 );
 
+// A sandbox's sticky disks (the disks themselves are further down).
+
+export const SandboxStickyDiskInput = Type.Object(
+	{
+		disk: Type.String({ minLength: 1, description: "The sticky disk, by ID or name." }),
+		path: Type.String({
+			pattern: "^/[^\\0]*$",
+			maxLength: 255,
+			description:
+				"Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory.",
+		}),
+	},
+	{ title: "SandboxStickyDiskInput" },
+);
+
+export const SandboxStickyDisk = Type.Object(
+	{
+		diskId: Type.String(),
+		name: Type.String(),
+		path: Type.String(),
+		version: Type.Optional(
+			Type.String({ description: "The version its copy was cloned from; absent for an empty disk." }),
+		),
+		state: Type.Union([Type.Literal("pending"), Type.Literal("mounted"), Type.Literal("failed")]),
+		reason: Type.Optional(Type.String()),
+	},
+	{ title: "SandboxStickyDisk" },
+);
+
 export const Sandbox = Type.Object(
 	{
 		id: id("The sandbox's ID, such as `sbx_4kq9x2mt`."),
@@ -1110,6 +1139,11 @@ export const Sandbox = Type.Object(
 		mounts: Type.Optional(
 			Type.Array(SandboxMount, {
 				description: `Its read-only mounts, as its create named them, each with its status. Absent: none. ${MOUNTS_EXPERIMENTAL}`,
+			}),
+		),
+		stickyDisks: Type.Optional(
+			Type.Array(SandboxStickyDisk, {
+				description: "Its sticky disks, each with the version its copy came from and its state. Absent: none.",
 			}),
 		),
 		createdBy: CreatedBy,
@@ -1236,6 +1270,14 @@ export const CreateSandboxBody = Type.Object(
 					"`size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with " +
 					"them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it " +
 					"fresh whatever its snapshot, running the setup with the sandbox's variables.",
+			}),
+		),
+		stickyDisks: Type.Optional(
+			Type.Array(SandboxStickyDiskInput, {
+				maxItems: 2,
+				description:
+					"Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted " +
+					"at its path. Needs a host that runs them.",
 			}),
 		),
 		hostLabels: Type.Optional(
@@ -4268,6 +4310,46 @@ export const GithubRunnerPool = Type.Object(
 					"How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.",
 			}),
 		),
+		stickyDisks: Type.Optional(
+			Type.Array(
+				Type.Object(
+					{
+						disk: Type.String({ minLength: 1, description: "A sticky disk of the account, by ID or name." }),
+						path: Type.String({ pattern: "^/[^\\0]*$", maxLength: 255, description: "Where each runner mounts it." }),
+						commit: Type.Optional(
+							Type.Object(
+								{
+									branches: Type.Array(Type.String({ minLength: 1, maxLength: 255 }), {
+										minItems: 1,
+										maxItems: 20,
+										description:
+											"Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`.",
+									}),
+									beforeCommit: Type.Optional(
+										Type.String({
+											maxLength: 4096,
+											description:
+												"A shell command run as root in the runner before its copy is committed, such as one that prunes the cache " +
+												"and stops Docker. A commit is skipped when it fails.",
+										}),
+									),
+								},
+								{
+									title: "GithubRunnerStickyCommit",
+									description:
+										"When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run " +
+										"GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't " +
+										"commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. " +
+										"Pull requests never commit.",
+								},
+							),
+						),
+					},
+					{ title: "GithubRunnerStickyDisk" },
+				),
+				{ maxItems: 2, description: "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)." },
+			),
+		),
 		runnerCommand: Type.Optional(
 			Type.String({
 				minLength: 1,
@@ -4443,3 +4525,72 @@ export type CreateGithubRunnersBody = Static<typeof CreateGithubRunnersBody>;
 export type UpdateGithubRunnersBody = Static<typeof UpdateGithubRunnersBody>;
 export type GithubRunnerJob = Static<typeof GithubRunnerJob>;
 export type GithubRunnerJobState = Static<typeof GithubRunnerJobState>;
+
+// Sticky disks: an account's named, versioned disks, cloned into microVMs and kept warm between them.
+
+const StickyDiskName = Type.String({
+	pattern: "^[a-z0-9][a-z0-9-]{0,62}$",
+	description: "Lower-case letters, digits and hyphens, unique in the account.",
+});
+
+export const StickyDiskVersion = Type.Object(
+	{
+		id: id("The version's ID, such as `sdv_3m4n5b`."),
+		parent: Type.Optional(Type.String({ description: "The version it was cloned from; absent for one made empty." })),
+		hostId: Type.String({ description: "The host it was committed on." }),
+		sandboxId: Type.String({ description: "The sandbox it was committed from." }),
+		sizeBytes: Type.Integer(),
+		allocatedBytes: Type.Integer({ description: "What it takes on its host's disk, blocks it shares included." }),
+		createdAt: Timestamp,
+	},
+	{ title: "StickyDiskVersion" },
+);
+
+export const StickyDisk = Type.Object(
+	{
+		id: id("The sticky disk's ID, such as `sdk_3m4n5b`."),
+		accountId: Type.String(),
+		name: StickyDiskName,
+		description: Type.Optional(Type.String()),
+		sizeGb: Type.Integer({ description: "Each copy's size: what a sandbox can fill." }),
+		head: Type.Optional(Type.String({ description: "The newest committed version; absent until one is." })),
+		versions: Type.Optional(Type.Array(StickyDiskVersion, { description: "The newest 20, newest first, on a get." })),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{
+		title: "StickyDisk",
+		description:
+			"A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the " +
+			"newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does " +
+			"unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm " +
+			"and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental.",
+	},
+);
+
+export const StickyDiskList = Type.Object({ items: Type.Array(StickyDisk) }, { title: "StickyDiskList" });
+
+export const StickyDiskPath = Type.Object(
+	{ stickyDiskId: id("The sticky disk's ID or name.") },
+	{ title: "StickyDiskPath" },
+);
+
+export const CreateStickyDiskBody = Type.Object(
+	{
+		account: accountQuery,
+		name: StickyDiskName,
+		description: Type.Optional(Type.String({ maxLength: 500 })),
+		sizeGb: Type.Integer({ minimum: 1, maximum: 2048 }),
+	},
+	{ title: "CreateStickyDiskBody" },
+);
+
+export const CommitStickyDiskPath = Type.Object(
+	{ sandboxId: id("The sandbox's ID."), stickyDiskId: id("The sticky disk's ID or name.") },
+	{ title: "CommitStickyDiskPath" },
+);
+
+export type StickyDisk = Static<typeof StickyDisk>;
+export type StickyDiskVersion = Static<typeof StickyDiskVersion>;
+export type SandboxStickyDisk = Static<typeof SandboxStickyDisk>;
+export type SandboxStickyDiskInput = Static<typeof SandboxStickyDiskInput>;

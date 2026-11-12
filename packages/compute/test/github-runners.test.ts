@@ -1,12 +1,15 @@
 import { createKantelClient } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { KeyPrincipal } from "../src/auth.ts";
 import { importAppKey } from "../src/github-app.ts";
 import {
 	CAPACITY_BACKOFF_MS,
 	createGithubRunners,
 	IDLE_GRACE_MS,
+	JOB_CHECK_EVERY_MS,
+	LEASE_MS,
+	LEASE_RENEW_MS,
 	poolFor,
 	RUNNER_LABEL,
 	type RunnerPool,
@@ -41,6 +44,10 @@ function fakeSandboxes(room: { value: number }) {
 	const deletedBy: string[] = [];
 	/** Runner commands that have ended. */
 	const ended = new Set<string>();
+	const execs: { sandboxId: string; command: string }[] = [];
+	const commits: { sandboxId: string; disk: string }[] = [];
+	/** What an exec answers, when set: a `beforeCommit` that takes as long as a test wants. */
+	const hooks: { onExec?: () => Promise<number> } = {};
 	let next = 0;
 	const failing = (call: "get" | "delete" | "run") => {
 		if (fail.has(call)) throw new KantelError("unavailable", `${call} failed`);
@@ -63,6 +70,13 @@ function fakeSandboxes(room: { value: number }) {
 			failing("delete");
 			deletedBy.push(principal.keyId);
 			if (sandboxes.delete(sandboxId)) room.value++;
+		},
+		async exec(_principal, sandboxId, command) {
+			execs.push({ sandboxId, command });
+			return (await hooks.onExec?.()) ?? 0;
+		},
+		async commit(_principal, sandboxId, disk) {
+			commits.push({ sandboxId, disk });
 		},
 		async run(_principal, sandboxId, command, env) {
 			failing("run");
@@ -87,6 +101,9 @@ function fakeSandboxes(room: { value: number }) {
 		fail,
 		deletedBy,
 		ended,
+		execs,
+		commits,
+		hooks,
 		/** Every starting sandbox is running now. */
 		boot() {
 			for (const sandbox of sandboxes.values()) if (sandbox.state === "starting") sandbox.state = "running";
@@ -100,11 +117,16 @@ function fakeGithub() {
 	const removed: number[] = [];
 	const removedFrom: unknown[] = [];
 	const state: { failRemove: boolean; onRegister?: (name: string) => Promise<void> } = { failRemove: false };
+	const runs = new Map<number, { event: string; headBranch?: string; headRepository?: string }>();
+	/** What GitHub says of a job when it is asked (polling); absent, it is in progress. */
+	const jobs = new Map<number, { status: string; conclusion?: string; runId?: number; runnerId?: number }>();
 	return {
 		registered,
 		removed,
 		removedFrom,
 		state,
+		runs,
+		jobs,
 		app: () => ({
 			async generateJitConfig(
 				_installation: number,
@@ -124,8 +146,11 @@ function fakeGithub() {
 				removed.push(runnerId);
 				removedFrom.push(scope);
 			},
-			async getJob() {
-				return { status: "in_progress" };
+			async getRun(_installation: number, _repository: string, runId: number) {
+				return runs.get(runId);
+			},
+			async getJob(_installation: number, _repository: string, jobId: number) {
+				return jobs.get(jobId) ?? { status: "in_progress" };
 			},
 		}),
 	};
@@ -774,6 +799,131 @@ describe("GitHub runners", () => {
 		expect(sandboxes.sandboxes.size).toBe(1);
 	});
 
+	const COMMITTING = {
+		stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci", commit: { branches: ["main"], beforeCommit: "prune" } }],
+	};
+	const SCHEDULED_MAIN = { event: "schedule", headBranch: "main", headRepository: "octo-org/app" };
+
+	it("commits a runner's sticky disk only after a successful scheduled job of a branch it commits from", async () => {
+		const cases = [
+			{ run: SCHEDULED_MAIN, conclusion: "success", commits: 1 },
+			// A tag named after the branch: GitHub's `head_branch` is the tag's name for a push or a manual run of it, and
+			// neither the run nor the job tells a tag from a branch, so neither event commits, whatever the name.
+			{ run: { ...SCHEDULED_MAIN, event: "push" }, conclusion: "success", commits: 0 },
+			{ run: { ...SCHEDULED_MAIN, event: "workflow_dispatch" }, conclusion: "success", commits: 0 },
+			// A fork's pull request from its own `main`: the run's event and head repository say so.
+			{
+				run: { event: "pull_request", headBranch: "main", headRepository: "fork/app" },
+				conclusion: "success",
+				commits: 0,
+			},
+			{ run: { ...SCHEDULED_MAIN, headRepository: "fork/app" }, conclusion: "success", commits: 0 },
+			{ run: { ...SCHEDULED_MAIN, headBranch: "feature" }, conclusion: "success", commits: 0 },
+			{ run: SCHEDULED_MAIN, conclusion: "failure", commits: 0 },
+		];
+		for (const { run, conclusion, commits } of cases) {
+			const { job, sandboxes, runners, github } = await setUp({ pool: COMMITTING });
+			github.runs.set(900, run);
+			await job("queued", 1);
+			sandboxes.boot();
+			await runners.tick();
+			const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+			await job("in_progress", 1, { runner_name: sandboxId, runner_id: 1 });
+			await job("completed", 1, { runner_name: sandboxId, runner_id: 1, conclusion });
+			await runners.tick();
+			expect(sandboxes.commits).toEqual(commits === 0 ? [] : [{ sandboxId, disk: "ci-cache" }]);
+			expect(sandboxes.execs).toEqual(commits === 0 ? [] : [{ sandboxId, command: "prune" }]);
+			expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+		}
+	});
+
+	it("commits only for a job GitHub ran on the very runner it registered, whatever that runner is named", async () => {
+		for (const scope of ["organization", "repository"] as const) {
+			// The runner it registered is GitHub's runner 1; another, given the same name, is runner 99.
+			for (const { runnerId, commits } of [
+				{ runnerId: 99, commits: 0 },
+				{ runnerId: 1, commits: 1 },
+			]) {
+				const { job, sandboxes, runners, github } = await setUp({ pool: COMMITTING, scope });
+				github.runs.set(900, SCHEDULED_MAIN);
+				await job("queued", 1);
+				sandboxes.boot();
+				await runners.tick();
+				const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+				// Its `in_progress` never came: the completion alone is enough.
+				await job("completed", 1, { runner_name: sandboxId, runner_id: runnerId, conclusion: "success" });
+				await runners.tick();
+				expect(sandboxes.commits).toHaveLength(commits);
+				expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+			}
+		}
+	});
+
+	it("commits when polling finds a job succeeded on its runner, as its webhook would have", async () => {
+		for (const { runnerId, commits } of [
+			{ runnerId: 1, commits: 1 },
+			{ runnerId: 99, commits: 0 },
+		]) {
+			const { job, sandboxes, runners, github, clock } = await setUp({ pool: COMMITTING });
+			github.runs.set(900, SCHEDULED_MAIN);
+			await job("queued", 1);
+			sandboxes.boot();
+			await runners.tick();
+			const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+			await job("in_progress", 1, { runner_name: sandboxId, runner_id: 1 });
+			// Its `completed` never comes; GitHub says, when asked, how it ended and on which runner.
+			github.jobs.set(1, { status: "completed", conclusion: "success", runId: 900, runnerId });
+			clock.now += JOB_CHECK_EVERY_MS + 1;
+			await runners.tick();
+			await runners.tick();
+			expect(sandboxes.commits).toHaveLength(commits);
+			expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+		}
+	});
+
+	it("keeps its lease through a long beforeCommit, so only it commits, and commits nothing once the lease is taken", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			for (const takenOver of [false, true]) {
+				const { job, sandboxes, runners, broker, github, clock } = await setUp({ pool: COMMITTING });
+				github.runs.set(900, SCHEDULED_MAIN);
+				await job("queued", 1);
+				sandboxes.boot();
+				await runners.tick();
+				const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+				let finish: (code: number) => void = () => undefined;
+				const started = new Promise<void>((resolve) => {
+					// The first waits until the test finishes it; any other gateway's would answer at once.
+					sandboxes.hooks.onExec = () => {
+						sandboxes.hooks.onExec = undefined;
+						resolve();
+						return new Promise<number>((done) => {
+							finish = done;
+						});
+					};
+				});
+				await job("in_progress", 1, { runner_name: sandboxId, runner_id: 1 });
+				// The completion's pass ends the runner, and waits on its beforeCommit.
+				const completed = job("completed", 1, { runner_name: sandboxId, runner_id: 1, conclusion: "success" });
+				await started;
+				clock.now += LEASE_MS - 1_000;
+				await vi.advanceTimersByTimeAsync(LEASE_RENEW_MS);
+				// Past the lease the pass took: renewed, so another gateway's pass leaves the runner to it.
+				clock.now += LEASE_MS - 1_000;
+				await broker("gw_two").tick();
+				expect(sandboxes.execs).toHaveLength(1);
+				// Account cleanup takes the lease whoever holds it: the pass stops before it publishes.
+				if (takenOver) await runners.forgetAccount("acc_org");
+				finish(0);
+				await completed;
+				expect(sandboxes.commits).toEqual(takenOver ? [] : [{ sandboxId, disk: "ci-cache" }]);
+				expect(sandboxes.execs).toHaveLength(1);
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("ignores jobs no pool takes, and records those of repositories it doesn't serve", async () => {
 		const { deliver, job, sandboxes, runners } = await setUp({ repositories: ["octo-org/other"] });
 		await deliver("workflow_job", {
@@ -929,6 +1079,60 @@ describe("GitHub runners through the API", () => {
 			expect(
 				(await tom.listApiKeys()).items.find((item) => item.name === "GitHub runners: ci")?.revokedAt,
 			).toBeDefined();
+		} finally {
+			await api.close();
+		}
+	});
+
+	it("lets an integration's key commit once a pool commits, granted only by a caller who may grant it", async () => {
+		const api = createComputeApi({
+			backend: createStubBackend(),
+			templates: true,
+			stickyDisks: true,
+			githubRunners: { app: fakeGithub().app },
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token"
+					? { userId: "usr_tom", name: "Tom", email: "tom@example.com" }
+					: undefined,
+		});
+		try {
+			const client = (token: string) =>
+				createKantelClient({
+					baseUrl: "http://compute.test/v1",
+					token,
+					fetch: (input, init) =>
+						api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+				});
+			const tom = client("tom-token");
+			await tom.createTemplate({ name: "ci", spec: { setup: "true" } });
+			await tom.createStickyDisk({ name: "ci-cache", sizeGb: 10 });
+			// Made without commits, its key has what an integration made before them had.
+			const { githubRunners } = await tom.createGithubRunners({
+				name: "ci",
+				appId: 1,
+				privateKey: await pem(),
+				owner: "octo-org",
+				runnerGroupId: 7,
+				pools: [POOL],
+			});
+			const scopes = async () =>
+				(await tom.listApiKeys()).items.find((item) => item.name === "GitHub runners: ci")?.scopes;
+			expect(await scopes()).not.toContain("snapshots:write");
+			const pools = [
+				{ ...POOL, stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci", commit: { branches: ["main"] } }] },
+			];
+			// An admin key that can't grant snapshots:write can't have the broker's key given it.
+			const capped = client(
+				(await tom.createApiKey({ name: "admin", scopes: ["account:read", "account:admin", "sandboxes:read"] })).secret,
+			);
+			await expect(capped.updateGithubRunners(githubRunners.id, { pools })).rejects.toMatchObject({
+				code: "forbidden",
+			});
+			expect(await scopes()).not.toContain("snapshots:write");
+			expect((await tom.getGithubRunners(githubRunners.id)).pools[0]?.stickyDisks).toBeUndefined();
+			await tom.updateGithubRunners(githubRunners.id, { pools });
+			expect(await scopes()).toContain("snapshots:write");
+			expect((await tom.getGithubRunners(githubRunners.id)).pools[0]?.stickyDisks?.[0]?.commit).toBeDefined();
 		} finally {
 			await api.close();
 		}

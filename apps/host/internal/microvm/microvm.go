@@ -19,7 +19,9 @@
 //	sandboxes/<id>/vm/                        Firecracker's working directory: rootfs.ext4 (a link to the image),
 //	                                          disk.ext4 (the sandbox's own disk), state and mem after a stop
 //	                                          bundle<n>.erofs (its bundle drives: an empty file, or a link to a bundle's
-//	                                          image in the host's bundle cache; bundles.go)
+//	                                          image in the host's bundle cache; bundles.go), sticky<n>.ext4 (its
+//	                                          sticky drives: an empty file, or its clone of a sticky disk; sticky.go)
+//	sticky/<disk>/<version>.img               the sticky disk versions the host holds (sticky.go)
 //	snapshots/<id>/{meta.json,disk.ext4,...}  automatic and saved snapshots, with links to the bundle images attached
 //	images/templates/<key>.ext4               templates' root filesystems, made from their pulled bases (rootfs.go)
 //	template-snapshots/<id>/                  templates' snapshots (templates.go), never under snapshots/
@@ -286,6 +288,10 @@ type meta struct {
 	// BundleSlots the digest of the bundle attached to each ("" none).
 	BundleDrives int      `json:"bundleDrives,omitempty"`
 	BundleSlots  []string `json:"bundleSlots,omitempty"`
+	// StickyDrives is how many sticky drives its VM has (StickyDrives, or none for a VM made before them), and
+	// StickyDisks the sticky disks attached to it (sticky.go).
+	StickyDrives int          `json:"stickyDrives,omitempty"`
+	StickyDisks  []stickyDisk `json:"stickyDisks,omitempty"`
 }
 
 type sandbox struct {
@@ -357,8 +363,8 @@ type Manager struct {
 	// statfs measures the file system a stop's snapshot goes on (roomForSnapshot): syscall.Statfs when nil, tests
 	// replace it.
 	statfs func(path string, st *syscall.Statfs_t) error
-	// snapshotRoom guards snapshotReserved: the bytes stops' automatic snapshots have been let copy and haven't
-	// finished copying, which the file system's free space doesn't show yet (roomForSnapshot).
+	// snapshotRoom guards snapshotReserved: the bytes snapshots and sticky disks' full copies have been let copy and
+	// haven't finished copying, which the file system's free space doesn't show yet (reserveRoom).
 	snapshotRoom     sync.Mutex
 	snapshotReserved int64
 	spool            *spool
@@ -400,6 +406,12 @@ type Manager struct {
 	ownBuildSeq int
 	// prepareOnce starts the shared templates' preparation once (PrepareTemplates).
 	prepareOnce sync.Once
+	// stickyMu guards the sticky disk versions the host holds (sticky.go): read while one is cloned, written while one
+	// is added or removed.
+	stickyMu sync.RWMutex
+	// stickyCommits are the versions being committed now, by "<disk>/<version>" (reserveStickyVersion). Guarded by
+	// stickyMu.
+	stickyCommits map[string]bool
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -411,12 +423,12 @@ const (
 )
 
 // bootConfig is a cold boot of a shape on kernel (kernelFor: its root filesystem's version's), with drives bundle
-// drives: through Kantel's initramfs when the host injects the agent, with its hotpluggable memory when it has some
+// drives and sticky sticky drives after them: through Kantel's initramfs when the host injects the agent, with its hotpluggable memory when it has some
 // (a shared template).
-func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, drives int) fc.BootConfig {
+func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, drives, sticky int) fc.BootConfig {
 	cfg := fc.BootConfig{
 		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
-		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: bundleDrives(drives),
+		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: append(bundleDrives(drives), stickyDrives(sticky)...),
 		Discard: m.cfg.Discard, FreePageReporting: m.cfg.FreePageReporting,
 	}
 	if m.cfg.Initrd != "" {
@@ -744,6 +756,7 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// Its machine's last health stamp, from its start on, kept once it stops: with the error of an exit the host didn't
 	// cause by a call, it names the machine that ended, so Kantel never takes a late report of it for a later run's.
 	info.HealthAt = s.healthAt
+	info.StickyDisks = stickyStatus(s.meta.StickyDisks)
 	return info
 }
 
@@ -1081,6 +1094,8 @@ func (m *Manager) adopt() error {
 				m.sandboxes[s.meta.ID] = s
 				// A bundle still being built when the host stopped: build it again, and attach it then.
 				m.finishBundles(s)
+				// A commit the previous run had under way may have left a sticky disk frozen.
+				m.thawStickyAfterRestart(s)
 				m.log.Info("adopted running sandbox", "sandbox", s.meta.ID, "pid", s.meta.Pid)
 				if s.meta.GrowDisk {
 					// The previous run answered its create but restarted before growing its disk.
@@ -1427,16 +1442,17 @@ func templateShape(size proto.Size) string {
 	return fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 }
 
-// shapeKey is a shape's part of its template's fingerprint: the size's, its bundle drives (a VM restored from it has
-// the drives it was made with, so a template with another number is rebuilt, not reused while a background rebuild
-// runs), and a shared template's hotpluggable memory and the boot arguments its guest needs to plug it.
+// shapeKey is a shape's part of its template's fingerprint: the size's, its bundle and sticky drives (a VM restored
+// from it has the drives it was made with, so a template with another number, or one made before sticky drives, is
+// rebuilt, not reused while a background rebuild runs), and a shared template's hotpluggable memory and the boot arguments its guest needs to plug it.
 func (m *Manager) shapeKey(sh shape) string {
-	key := templateShape(sh.Size)
+	// The sticky drives before the size, which tests and older keys have at the end of a shape without bundle drives.
+	key := fmt.Sprintf(" sticky=%d", StickyDrives) + templateShape(sh.Size)
 	if m.cfg.BundleDrives > 0 {
 		key += fmt.Sprintf(" bundles=%d", m.cfg.BundleDrives)
 	}
 	if sh.HotplugMiB > 0 {
-		key += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", "", 0, 0).BootArgs)
+		key += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", "", 0, 0, 0).BootArgs)
 	}
 	return key
 }
@@ -1593,6 +1609,10 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 	if err := emptyDrives(vm, m.cfg.BundleDrives); err != nil {
 		return nil, nil, "", err
 	}
+	// And the sticky drives, empty: a sandbox restored from it attaches its sticky disks to them.
+	if err := emptyStickyDrives(vm, StickyDrives); err != nil {
+		return nil, nil, "", err
+	}
 	t.step("disk", &start)
 	link, err := m.cfg.Network.Add(b.egress)
 	if err != nil {
@@ -1613,7 +1633,7 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 		<-machine.Done()
 	}()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, m.bootConfig(shape{Size: b.size, HotplugMiB: b.hotplugMiB}, kernel, link.Tap, link.MAC, m.cid(), m.cfg.BundleDrives)); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: b.size, HotplugMiB: b.hotplugMiB}, kernel, link.Tap, link.MAC, m.cid(), m.cfg.BundleDrives, StickyDrives)); err != nil {
 		return nil, nil, "", err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
@@ -1665,6 +1685,9 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 	_ = os.RemoveAll(vm)
 	// How many bundle drives it was made with: a VM restored from it has those (startMachine).
 	if err := writeSnapshotDriveCount(building, m.cfg.BundleDrives); err != nil {
+		return nil, nil, "", err
+	}
+	if err := writeSnapshotStickyCount(building, StickyDrives); err != nil {
 		return nil, nil, "", err
 	}
 	// Its record of its base moves with it: not while a prune walks the references.
@@ -2189,6 +2212,12 @@ type sandboxOrigin struct {
 	snapshotDir  string
 	bundleDrives int
 	bundleSlots  []string
+	// stickyDir and stickyDisks are a sandbox snapshot's sticky disks (p.From, with its memory or not), whose files are
+	// cloned onto the same drives (sticky.go); stickyDrives is how many sticky drives the snapshot's VM has when it
+	// restores its memory.
+	stickyDir    string
+	stickyDisks  []stickyDisk
+	stickyDrives int
 	// takeDisk moves the snapshot's disk into the new sandbox rather than copying it: a live fork's own snapshot, which
 	// nothing else uses and which is deleted once the fork has started (Fork).
 	takeDisk bool
@@ -2213,7 +2242,9 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 		}
 		sdir := m.snapshotDir(p.From)
 		origin := sandboxOrigin{rootfs: m.snapshotRootfs(snap), disk: filepath.Join(sdir, fc.DiskFile), source: "snapshot", guest: snap.Guest, unhold: unhold}
+		origin.stickyDir, origin.stickyDisks = sdir, append([]stickyDisk(nil), snap.StickyDisks...)
 		if snap.Memory {
+			origin.stickyDrives = snap.StickyDrives
 			origin.state, origin.mem = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			// Its memory holds the guest's mounts of the bundles on its drives then: the same images, on the same drives.
 			origin.snapshotDir, origin.bundleDrives = sdir, snap.BundleDrives
@@ -2277,6 +2308,12 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 		return proto.SandboxInfo{}, err
 	}
 	if err := m.validateMounts(p.Mounts); err != nil {
+		return proto.SandboxInfo{}, err
+	}
+	if err := validateStickyDisks(p.StickyDisks, p.Mounts); err != nil {
+		return proto.SandboxInfo{}, err
+	}
+	if err := m.validateInheritedSticky(p); err != nil {
 		return proto.SandboxInfo{}, err
 	}
 	t := timings{}
@@ -2388,6 +2425,13 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 		pending = m.attachBundles(ctx, s, m.bundleWait())
 		t.step("bundles", &start)
 	}
+	// Its sticky disks: those its snapshot had, on the same drives, then those it asks for. One that fails says so in
+	// its status; the sandbox runs without it.
+	if len(p.StickyDisks) > 0 || len(s.meta.StickyDisks) > 0 {
+		m.attachSticky(ctx, s, p.StickyDisks)
+		m.mountSticky(ctx, s)
+		t.step("sticky", &start)
+	}
 	if len(s.meta.Mounts) > 0 || p.From != "" {
 		m.applyMounts(ctx, s, p.From != "")
 		t.step("mounts", &start)
@@ -2455,6 +2499,22 @@ func (m *Manager) restoreSize(from string, size proto.Size) proto.Size {
 	return own
 }
 
+// validateInheritedSticky checks a create's sticky disks with those of the snapshot it is made from (p.From), whose
+// clones it inherits on the same drives, and its mounts (validateEffectiveSticky). A snapshot that can't be read is
+// startOf's to refuse.
+func (m *Manager) validateInheritedSticky(p proto.CreateParams) error {
+	if p.From == "" {
+		return nil
+	}
+	unhold := m.holdBases()
+	snap, err := m.readSnapshot(p.From)
+	unhold()
+	if err != nil {
+		return nil
+	}
+	return validateEffectiveSticky(snap.StickyDisks, p.StickyDisks, p.Mounts)
+}
+
 // DiskLimits are the disk a create may ask for a custom shape on this host.
 func (m *Manager) DiskLimits() proto.DiskLimits {
 	return DiskLimits(m.cfg.Sizes, m.cfg.MinDiskGiB, m.cfg.MaxDiskGiB)
@@ -2502,6 +2562,9 @@ func (m *Manager) keepAskedGuest(s *sandbox, fromTemplate bool, origin sandboxOr
 // restore its drives as they were, its images linked from the snapshot (bundles.go); a template snapshot's as many as
 // it was made with, empty.
 func (m *Manager) makeDrives(s *sandbox, origin sandboxOrigin) error {
+	if err := m.makeStickyDrives(s, origin); err != nil {
+		return err
+	}
 	vm := s.vmDir()
 	switch {
 	case origin.state == "":
@@ -2673,7 +2736,12 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size, ph *pro
 			}
 		}
 	}
-	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, kernel, s.link.Tap, s.link.MAC, s.meta.CID, s.meta.BundleDrives)); err != nil {
+	// Its sticky drives as they are: the guest mounts them again once it's up (mountSticky).
+	if err := keepStickyFiles(s); err != nil {
+		machine.Kill()
+		return err
+	}
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, kernel, s.link.Tap, s.link.MAC, s.meta.CID, s.meta.BundleDrives, s.meta.StickyDrives)); err != nil {
 		machine.Kill()
 		return err
 	}
@@ -2946,6 +3014,11 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		pending = m.attachBundles(ctx, s, m.bundleWait())
 		t.step("bundles", &start)
 	}
+	if len(s.meta.StickyDisks) > 0 {
+		// Restored, they are mounted still; cold-booted (a recovery too), they are mounted anew from the same files.
+		m.mountSticky(ctx, s)
+		t.step("sticky", &start)
+	}
 	if len(s.meta.Mounts) > 0 {
 		// Restored, its FUSE mounts are still there and reach the host again; cold-booted, it mounts them anew.
 		m.applyMounts(ctx, s, false)
@@ -3187,6 +3260,15 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 		diskErr = copySparse(disk, filepath.Join(sdir, fc.DiskFile))
 		t.step("disk.again", &again)
 	}
+	if memErr == nil && diskErr == nil && len(s.meta.StickyDisks) > 0 {
+		// Still paused: once no write is in flight, its sticky drives are as its memory has them.
+		if diskErr = s.machine.Barrier(ctx); diskErr == nil {
+			// A save reserved their room with its disk; a live fork reserves nothing for its disk, which its create
+			// counts, so each sticky drive's full copy reserves its own.
+			diskErr = m.keepSticky(s.vmDir(), sdir, s.meta.StickyDisks, reserve != nil)
+		}
+		t.step("sticky", &start)
+	}
 	t.step("capture", &start)
 	if err := errors.Join(memErr, diskErr); err != nil {
 		os.RemoveAll(sdir)
@@ -3275,6 +3357,10 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 		return s.machine.Barrier(bctx)
 	}
 	err = copyQuietDisk(filepath.Join(s.vmDir(), fc.DiskFile), filepath.Join(sdir, fc.DiskFile), diskCopies, barrier)
+	if err == nil {
+		// Paused, with no write in flight (copyQuietDisk's last barrier): its sticky drives as they are with its disk.
+		err = m.keepSticky(s.vmDir(), sdir, s.meta.StickyDisks, reserve != nil)
+	}
 	if rerr := resume(); rerr != nil {
 		err = errors.Join(err, rerr)
 	}
@@ -3400,6 +3486,10 @@ type snapshotMeta struct {
 	// restored from it gets the same, from the links in the snapshot's directory.
 	BundleDrives int      `json:"bundleDrives,omitempty"`
 	BundleSlots  []string `json:"bundleSlots,omitempty"`
+	// StickyDisks are the sandbox's sticky disks, their clones kept in the snapshot's directory on the same drives
+	// (sticky.go), memory or not; StickyDrives is how many sticky drives its VM had when its memory was taken.
+	StickyDisks  []stickyDisk `json:"stickyDisks,omitempty"`
+	StickyDrives int          `json:"stickyDrives,omitempty"`
 	// Transient is a live fork's own snapshot (Fork): its disk is moved into the fork and it is deleted once the fork
 	// has started. It is in no sandbox's history (snapshotsOf), and one a previous run left is deleted when the host
 	// starts (reapTransientSnapshots), since its disk may be gone.
@@ -3423,7 +3513,9 @@ func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, tran
 	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest, Transient: transient}
 	if snap.Memory {
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
+		sm.StickyDrives = s.meta.StickyDrives
 	}
+	sm.StickyDisks = attachedSticky(s.meta.StickyDisks)
 	raw, _ := json.MarshalIndent(sm, "", "  ")
 	// Durably, by a rename, so a published snapshot's record is never left half written.
 	return fsutil.WriteFileDurably(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
@@ -3462,6 +3554,9 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 		return err
 	}
 	err := copySparse(filepath.Join(vm, fc.DiskFile), filepath.Join(sdir, fc.DiskFile))
+	if err == nil {
+		err = m.keepSticky(vm, sdir, s.meta.StickyDisks, true)
+	}
 	// Copied (its blocks now show in the free space) or not: the reservation has done its job either way.
 	release()
 	if err != nil {
@@ -3497,7 +3592,8 @@ const snapshotHeadroom = 10 << 30
 // through, its copy's size is reserved until release is called, once the copy is done or has failed. A file system
 // that can't be measured is let through.
 func (m *Manager) roomForSnapshot(s *sandbox, disk string) (release func(), err error) {
-	return m.reserveSnapshotRoom(disk, 0, func(free, size int64) error {
+	// Its sticky drives are copied with its disk (keepSticky), so their room is reserved with it.
+	return m.reserveSnapshotRoom(disk, stickyUsage(s), func(free, size int64) error {
 		m.log.Warn("no automatic snapshot on a stop: the host's disk is nearly full", "sandbox", s.meta.ID, "freeBytes", free, "needBytes", size+snapshotHeadroom)
 		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf("sandbox %s is stopped, with its disk, but no snapshot was taken of it: the host has %d GiB of disk free, and a copy of its disk needs %d GiB and %d GiB to spare", s.meta.ID, max(free, 0)>>30, size>>30, snapshotHeadroom>>30)}
 	})
@@ -3514,7 +3610,8 @@ func (m *Manager) roomToSave(s *sandbox, withMemory bool) (release func(), err e
 			memory = int64(size.MemoryMiB) << 20
 		}
 	}
-	return m.reserveSnapshotRoom(filepath.Join(s.vmDir(), fc.DiskFile), memory, func(free, size int64) error {
+	// Its sticky drives are copied with its disk (keepSticky), so their room is reserved with it.
+	return m.reserveSnapshotRoom(filepath.Join(s.vmDir(), fc.DiskFile), memory+stickyUsage(s), func(free, size int64) error {
 		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
 			"This host has %s of disk free, and a snapshot of this sandbox needs about %s and must leave %s free. Delete snapshots you no longer need, or free space on the host, and try again.",
 			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
@@ -3557,11 +3654,18 @@ func gibText(n int64) string {
 // release, when the file system has that and snapshotHeadroom free beside what other copies have reserved; else it
 // answers refuse's error, given the free bytes and the size. A file system that can't be measured is let through.
 func (m *Manager) reserveSnapshotRoom(disk string, extra int64, refuse func(free, size int64) error) (release func(), err error) {
+	return m.reserveRoom(diskUsage(disk)+extra, refuse)
+}
+
+// reserveRoom reserves size bytes of the host's disk for a copy until release, when the file system has that and
+// snapshotHeadroom free beside what other copies have reserved; else it answers refuse's error, given the free bytes
+// and the size. Every copy the host makes of a disk on its own initiative (snapshots, and sticky disks' full copies)
+// reserves here, so two never count the same free space. A file system that can't be measured is let through.
+func (m *Manager) reserveRoom(size int64, refuse func(free, size int64) error) (release func(), err error) {
 	statfs := m.statfs
 	if statfs == nil {
 		statfs = syscall.Statfs
 	}
-	size := diskUsage(disk) + extra
 	m.snapshotRoom.Lock()
 	defer m.snapshotRoom.Unlock()
 	// Memory still in the RAM spool reaches this disk once it is flushed: counted as taken already. Read before the
@@ -3635,6 +3739,8 @@ func (m *Manager) pruneAuto(sandboxID string) {
 			// Without its memory it needs no bundle images: a sandbox made from it boots and mounts its own.
 			dropDrives(dir)
 			snap.BundleDrives, snap.BundleSlots = 0, nil
+			// Its sticky disks stay: a sandbox made from its disk gets them too, on a VM of the host's sticky drives.
+			snap.StickyDrives = 0
 			snap.Memory = false
 			raw, _ := json.MarshalIndent(snap, "", "  ")
 			_ = fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
@@ -3848,6 +3954,11 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		os.RemoveAll(sdir)
 		return proto.SnapshotInfo{}, err
 	}
+	// Its sticky disks' clones, which no one writes once in a snapshot, as its disk is.
+	if err := linkSticky(from, sdir, src.StickyDisks); err != nil {
+		os.RemoveAll(sdir)
+		return proto.SnapshotInfo{}, err
+	}
 	kept := src
 	// Its own save time, and its source's state's time (TakenAt).
 	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), Memory: src.Memory, Base: src.Base, Tier: Tier}
@@ -3868,7 +3979,7 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		}
 	}
 	if !kept.Memory {
-		kept.BundleDrives, kept.BundleSlots = 0, nil
+		kept.BundleDrives, kept.BundleSlots, kept.StickyDrives = 0, nil, 0
 	}
 	// Its own files in full: it shares them with its source, but it is the one kept (snapshotSizes counts them for it).
 	kept.SizeBytes = snapshotBytes(sdir)

@@ -32,6 +32,7 @@ import {
 	Command,
 	CommandPage,
 	CommandPath,
+	CommitStickyDiskPath,
 	CreateAccountJoinTokenBody,
 	CreateApiKeyBody,
 	CreateBucketSourceBody,
@@ -42,6 +43,7 @@ import {
 	CreateOrganisationBody,
 	CreatePersonalTokenBody,
 	CreateSandboxBody,
+	CreateStickyDiskBody,
 	CreateTemplateBody,
 	CreateWebhookBody,
 	DesktopAccess,
@@ -137,6 +139,10 @@ import {
 	SshAccess,
 	SshAccessBody,
 	StartDeviceLoginBody,
+	StickyDisk,
+	StickyDiskList,
+	StickyDiskPath,
+	StickyDiskVersion,
 	StopSandboxBody,
 	TakeSnapshotBody,
 	TelemetryExport,
@@ -1994,6 +2000,91 @@ export const watchEvents = defineRoute({
 });
 
 export const eventRoutes = { listEvents, watchEvents } as const;
+// Sticky disks.
+
+const STICKY_OFF = "`not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`).";
+
+export const listStickyDisks = defineRoute({
+	operationId: "listStickyDisks",
+	method: "GET",
+	path: "/sticky-disks",
+	tag: "sticky-disks",
+	summary: "List sticky disks",
+	description: describe(STICKY_OFF, scope("account:read")),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The account's sticky disks.", schema: StickyDiskList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createStickyDisk = defineRoute({
+	operationId: "createStickyDisk",
+	method: "POST",
+	path: "/sticky-disks",
+	tag: "sticky-disks",
+	summary: "Create a sticky disk",
+	description: describe(
+		"An empty disk until its first commit. Attach it to a microVM with `stickyDisks` in a create.",
+		STICKY_OFF,
+		scope("account:admin"),
+	),
+	body: CreateStickyDiskBody,
+	idempotent: true,
+	answer: { status: 201, description: "The sticky disk.", schema: StickyDisk },
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
+});
+
+export const getStickyDisk = defineRoute({
+	operationId: "getStickyDisk",
+	method: "GET",
+	path: "/sticky-disks/{stickyDiskId}",
+	tag: "sticky-disks",
+	summary: "Get a sticky disk",
+	description: describe("With its newest versions.", scope("account:read")),
+	params: StickyDiskPath,
+	answer: { status: 200, description: "The sticky disk.", schema: StickyDisk },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const deleteStickyDisk = defineRoute({
+	operationId: "deleteStickyDisk",
+	method: "DELETE",
+	path: "/sticky-disks/{stickyDiskId}",
+	tag: "sticky-disks",
+	summary: "Delete a sticky disk",
+	description: describe(
+		"Its versions go from every host. Sandboxes with a copy keep it until they are deleted.",
+		scope("account:admin"),
+	),
+	params: StickyDiskPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const commitStickyDisk = defineRoute({
+	operationId: "commitStickyDisk",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/sticky-disks/{stickyDiskId}/commit",
+	tag: "sticky-disks",
+	summary: "Commit a sandbox's copy of a sticky disk",
+	description: describe(
+		"Makes the sandbox's copy, as it is now, the disk's next version: later sandboxes on its host start from it. The",
+		"sandbox must be running; its filesystem is frozen for the moment the copy takes. Commit only from sandboxes you",
+		"trust: every later sandbox reads what this one wrote.",
+		scope("snapshots:write"),
+	),
+	params: CommitStickyDiskPath,
+	answer: { status: 201, description: "The new version.", schema: StickyDiskVersion },
+	errors: [...lifecycleErrors],
+});
+
+export const stickyDiskRoutes = {
+	listStickyDisks,
+	createStickyDisk,
+	getStickyDisk,
+	deleteStickyDisk,
+	commitStickyDisk,
+} as const;
+
 // GitHub Actions runners.
 
 const GITHUB_RUNNERS_OFF = "`not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`).";
@@ -2623,6 +2714,7 @@ export const computeRoutes = {
 	...eventRoutes,
 	...webhookRoutes,
 	...githubRunnerRoutes,
+	...stickyDiskRoutes,
 	...telemetryRoutes,
 	// Before the hosts' `/admin/hosts/{hostId}`, which would otherwise take `images` for a host's ID.
 	...baseImageRoutes,

@@ -124,7 +124,21 @@ Give the pool a `runnerCommand` to start it another way. A template like this on
 }
 ```
 
-Anything a job would download every time, such as its toolchain, Docker images or a dependency store, can go in the template's setup instead. Every runner starts from the template's snapshot, so it starts with all of it. Rebuild the template to bring it up to date.
+Anything a job would download every time, such as its toolchain, Docker images or a dependency store, can go in the template's setup instead. For caches that change with every merge, a [sticky disk](/sandboxes/sticky-disks/) suits better:
+
+```json
+"stickyDisks": [{
+  "disk": "ci-cache",
+  "path": "/var/lib/ci",
+  "commit": { "branches": ["main"], "beforeCommit": "pnpm store prune; systemctl stop docker" }
+}]
+```
+
+Each runner gets a copy of the disk's newest version. After a job that succeeds, Kantel checks with GitHub that the job ran on that very runner (by GitHub's runner ID, not its name) and asks about its run. It commits the runner's copy only when the run is a scheduled run of one of `branches` in the job's own repository. GitHub runs scheduled workflows only on the default branch, so name that branch, and warm the cache from a workflow with an `on: schedule` trigger, hourly say.
+
+Push and manual (`workflow_dispatch`) runs don't commit for now. GitHub gives a tag's run the tag's name where a branch's run has the branch's, and says nothing on the run or its jobs that tells the two apart, so a tag called `main` would pass for the branch. A pull request's jobs never commit, whatever their branch is called.
+
+`beforeCommit` runs first, as root, whatever the image's default user; if it fails, nothing is committed. The integration's key needs `snapshots:write` to commit: Kantel gives it that when a pool first commits, so the person or key changing the pools must be able to grant it. Every runner starts from the template's snapshot, so it starts with all of it. Rebuild the template to bring it up to date.
 
 ## Turn it on (operators)
 

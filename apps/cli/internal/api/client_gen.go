@@ -487,6 +487,21 @@ func (q *ListSnapshotsQuery) values() url.Values {
 	return v
 }
 
+// ListStickyDisksQuery is ListStickyDisks's query.
+type ListStickyDisksQuery struct {
+	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
+	Account *string
+}
+
+func (q *ListStickyDisksQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "account", q.Account)
+	return v
+}
+
 // ListTemplatesQuery is ListTemplates's query.
 type ListTemplatesQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
@@ -1554,6 +1569,15 @@ func (c *Client) StartSandbox(ctx context.Context, sandboxID string, body Resume
 	return &out, nil
 }
 
+// CommitStickyDisk POST /sandboxes/{sandboxId}/sticky-disks/{stickyDiskId}/commit: Commit a sandbox's copy of a sticky disk. Makes the sandbox's copy, as it is now, the disk's next version: later sandboxes on its host start from it. The sandbox must be running; its filesystem is frozen for the moment the copy takes. Commit only from sandboxes you trust: every later sandbox reads what this one wrote. A key needs `snapshots:write`.
+func (c *Client) CommitStickyDisk(ctx context.Context, sandboxID string, stickyDiskID string, opts ...CallOption) (*StickyDiskVersion, error) {
+	var out StickyDiskVersion
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/sticky-disks/%s/commit", url.PathEscape(sandboxID), url.PathEscape(stickyDiskID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // StopSandbox POST /sandboxes/{sandboxId}/stop: Stop or pause a sandbox. Saves its disk as a snapshot and lets the machine go; running programs end. With `keepMemory`, pauses it instead, keeping its memory too (microVMs only; `not_supported` on an isolate). A stopped sandbox costs nothing to run. A key needs `sandboxes:write`.
 func (c *Client) StopSandbox(ctx context.Context, sandboxID string, body StopSandboxBody, opts ...CallOption) (*Sandbox, error) {
 	var out Sandbox
@@ -1635,6 +1659,38 @@ func (c *Client) ReadSnapshotFile(ctx context.Context, snapshotID string, query 
 func (c *Client) ListSnapshotFiles(ctx context.Context, snapshotID string, query *ListSnapshotFilesQuery, opts ...CallOption) (*FileList, error) {
 	var out FileList
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/snapshots/%s/files", url.PathEscape(snapshotID)), Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListStickyDisks GET /sticky-disks: List sticky disks. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:read`.
+func (c *Client) ListStickyDisks(ctx context.Context, query *ListStickyDisksQuery, opts ...CallOption) (*StickyDiskList, error) {
+	var out StickyDiskList
+	if err := c.Do(ctx, Call{Method: "GET", Path: "/sticky-disks", Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateStickyDisk POST /sticky-disks: Create a sticky disk. An empty disk until its first commit. Attach it to a microVM with `stickyDisks` in a create. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:admin`.
+func (c *Client) CreateStickyDisk(ctx context.Context, body CreateStickyDiskBody, opts ...CallOption) (*StickyDisk, error) {
+	var out StickyDisk
+	if err := c.Do(ctx, Call{Method: "POST", Path: "/sticky-disks", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteStickyDisk DELETE /sticky-disks/{stickyDiskId}: Delete a sticky disk. Its versions go from every host. Sandboxes with a copy keep it until they are deleted. A key needs `account:admin`.
+func (c *Client) DeleteStickyDisk(ctx context.Context, stickyDiskID string, opts ...CallOption) error {
+	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/sticky-disks/%s", url.PathEscape(stickyDiskID)), Query: nil}, opts...)
+}
+
+// GetStickyDisk GET /sticky-disks/{stickyDiskId}: Get a sticky disk. With its newest versions. A key needs `account:read`.
+func (c *Client) GetStickyDisk(ctx context.Context, stickyDiskID string, opts ...CallOption) (*StickyDisk, error) {
+	var out StickyDisk
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sticky-disks/%s", url.PathEscape(stickyDiskID)), Query: nil, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

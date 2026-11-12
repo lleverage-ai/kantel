@@ -278,6 +278,14 @@ const FeatureExitStamps = "exit-stamps"
 // with its next boot.
 const FeatureSandboxEnv = "sandbox-env"
 
+// FeatureStickyDisks (HOST_FEATURES.stickyDisks): sticky disks on one host (docs/design/disk-store.md, "Phase 1: the
+// host protocol"). Every microVM has StickyDrives writable drives after its bundle drives; sandbox.create takes
+// StickyDisks, each a copy-on-write clone of one of the host's versions of the disk (or a new empty ext4) mounted
+// read-write at its path; SandboxInfo.StickyDisks says how each went; sticky.commit makes a sandbox's copy the disk's
+// next version and sticky.delete deletes versions; Capacity.StickyDisks lists the versions the host holds in every
+// report. Kantel sends sticky disks only to a host that reports it.
+const FeatureStickyDisks = "sticky-disks"
+
 // FeatureIsolateUpgrade (HOST_FEATURES.isolateUpgrade): the host takes sandbox.upgrade (CreateParams, Tier "microvm"):
 // it makes a microVM with an isolate's sandbox ID, as sandbox.create would make it, puts the isolate's /workspace files
 // in it at UpgradeWorkspace (from its own blob store, never through Kantel) with /workspace a link to them, and lets the
@@ -375,6 +383,9 @@ type Capacity struct {
 	// Disk is what takes the space on the host's disk, measured every few minutes; absent until it first is, and from a
 	// host from before it said.
 	Disk *DiskUsage `json:"disk,omitempty"`
+	// StickyDisks are the sticky disk versions the host holds (FeatureStickyDisks): in every report from a host with
+	// the feature, [] when it holds none; absent from one without it.
+	StickyDisks []StickyDiskHolding `json:"stickyDisks,omitzero"`
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.
 	Memory *MemoryReport `json:"memory,omitempty"`
@@ -521,6 +532,8 @@ type SandboxInfo struct {
 	Health       string `json:"health,omitempty"`
 	HealthReason string `json:"healthReason,omitempty"`
 	HealthAt     int64  `json:"healthAt,omitempty"`
+	// StickyDisks are the sandbox's sticky disks and how each is doing (FeatureStickyDisks).
+	StickyDisks []StickyDiskStatus `json:"stickyDisks,omitempty"`
 }
 
 // StartPhases is how long a microVM's start took on its host, in milliseconds, by phase: its disk made, its machine
@@ -883,6 +896,79 @@ type CreateParams struct {
 	// Mounts are read-only mounts (FeatureBucketMounts, FeatureBundleMounts), kept for as long as the sandbox exists:
 	// its starts, resumes and forks mount them again. A tier that has none refuses them as unsupported.
 	Mounts []Mount `json:"mounts,omitempty"`
+	// StickyDisks are the sticky disks attached to the sandbox (FeatureStickyDisks, microVMs only), at most
+	// StickyDisksMax. The sandbox keeps them for its life: its stops, starts, resumes and recoveries keep them, a fork
+	// gets clones of them, and its delete removes them.
+	StickyDisks []StickyDisk `json:"stickyDisks,omitempty"`
+}
+
+// StickyDisksMax is the most sticky disks a sandbox may have: the sticky drives every microVM has.
+const StickyDisksMax = 2
+
+// StickyDisk is one sticky disk a create attaches (FeatureStickyDisks): a copy-on-write clone of Version, or with no
+// Version of the host's newest version of the disk, or with none of a new empty ext4 of SizeGiB, mounted read-write
+// at Path (made if missing).
+type StickyDisk struct {
+	DiskID  string `json:"diskId"`
+	Path    string `json:"path"`
+	SizeGiB int    `json:"sizeGiB"`
+	Version string `json:"version,omitempty"`
+}
+
+// StickyDiskStatus states.
+const (
+	StickyMounted = "mounted"
+	StickyFailed  = "failed"
+)
+
+// StickyDiskStatus is how one of a sandbox's sticky disks is doing: Version is the version it was cloned from (absent
+// for a new disk), State StickyMounted or StickyFailed, with Reason saying why it failed.
+type StickyDiskStatus struct {
+	DiskID  string `json:"diskId"`
+	Path    string `json:"path"`
+	Version string `json:"version,omitempty"`
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// StickyCommitParams is sticky.commit's (Kantel → host, FeatureStickyDisks): the sandbox's copy of the disk becomes
+// the disk's version Version on the host. ErrConflict unless the sandbox is running; ErrNotFound when it has no such
+// disk.
+type StickyCommitParams struct {
+	SandboxID string `json:"sandboxId"`
+	DiskID    string `json:"diskId"`
+	Version   string `json:"version"`
+}
+
+// StickyCommitResult is sticky.commit's answer: the version's file's size, and the bytes it takes on the disk.
+type StickyCommitResult struct {
+	Version        string `json:"version"`
+	SizeBytes      int64  `json:"sizeBytes"`
+	AllocatedBytes int64  `json:"allocatedBytes"`
+	// ThawError, when set, is why the guest couldn't be told to thaw the disk after its copy was made (while frozen,
+	// so the version is whole): the guest thaws it by itself once its freeze's lease lapses.
+	ThawError string `json:"thawError,omitempty"`
+}
+
+// StickyDeleteParams is sticky.delete's (Kantel → host, FeatureStickyDisks): it deletes Version of the disk, or with
+// none every version of it. The answer is {}.
+type StickyDeleteParams struct {
+	DiskID  string `json:"diskId"`
+	Version string `json:"version,omitempty"`
+}
+
+// StickyDiskHolding is the versions of one sticky disk a host holds (Capacity.StickyDisks), newest first.
+type StickyDiskHolding struct {
+	DiskID   string                 `json:"diskId"`
+	Versions []StickyVersionHolding `json:"versions"`
+}
+
+// StickyVersionHolding is one version a host holds: the bytes it takes on the host's disk, and when it was made there
+// (Unix milliseconds).
+type StickyVersionHolding struct {
+	Version        string `json:"version"`
+	AllocatedBytes int64  `json:"allocatedBytes"`
+	At             int64  `json:"at"`
 }
 
 // TemplateBoot is how a sandbox made from a template boots.
@@ -1387,4 +1473,8 @@ const (
 	MethodMountsRefresh = "sandbox.mounts.refresh"
 	// MethodBucketResolve (host → Kantel, BucketResolveParams) answers a BucketSource (HostMethods.bucketFetch).
 	MethodBucketResolve = "bucket.fetch"
+	// MethodStickyCommit (Kantel → host, StickyCommitParams; FeatureStickyDisks) answers a StickyCommitResult.
+	MethodStickyCommit = "sticky.commit"
+	// MethodStickyDelete (Kantel → host, StickyDeleteParams; FeatureStickyDisks) answers {}.
+	MethodStickyDelete = "sticky.delete"
 )

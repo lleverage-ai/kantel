@@ -10022,6 +10022,441 @@
 				}
 			}
 		},
+		"/sticky-disks": {
+			"get": {
+				"operationId": "listStickyDisks",
+				"summary": "List sticky disks",
+				"description": "`not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:read`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The account's sticky disks.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDiskList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createStickyDisk",
+				"summary": "Create a sticky disk",
+				"description": "An empty disk until its first commit. Attach it to a microVM with `stickyDisks` in a create. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:admin`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateStickyDiskBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The sticky disk.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDisk"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sticky-disks/{stickyDiskId}": {
+			"get": {
+				"operationId": "getStickyDisk",
+				"summary": "Get a sticky disk",
+				"description": "With its newest versions. A key needs `account:read`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "stickyDiskId",
+						"in": "path",
+						"required": true,
+						"description": "The sticky disk's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The sticky disk.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDisk"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteStickyDisk",
+				"summary": "Delete a sticky disk",
+				"description": "Its versions go from every host. Sandboxes with a copy keep it until they are deleted. A key needs `account:admin`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "stickyDiskId",
+						"in": "path",
+						"required": true,
+						"description": "The sticky disk's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/sticky-disks/{stickyDiskId}/commit": {
+			"post": {
+				"operationId": "commitStickyDisk",
+				"summary": "Commit a sandbox's copy of a sticky disk",
+				"description": "Makes the sandbox's copy, as it is now, the disk's next version: later sandboxes on its host start from it. The sandbox must be running; its filesystem is frozen for the moment the copy takes. Commit only from sandboxes you trust: every later sandbox reads what this one wrote. A key needs `snapshots:write`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "stickyDiskId",
+						"in": "path",
+						"required": true,
+						"description": "The sticky disk's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"201": {
+						"description": "The new version.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDiskVersion"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/telemetry": {
 			"get": {
 				"operationId": "getTelemetry",
@@ -13935,6 +14370,14 @@
 						"type": "string",
 						"description": "Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables."
 					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxStickyDiskInput"
+						},
+						"maxItems": 2,
+						"description": "Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them."
+					},
 					"hostLabels": {
 						"type": "object",
 						"patternProperties": {
@@ -13968,6 +14411,31 @@
 				},
 				"title": "CreateSandboxBody",
 				"description": "Every field is optional: `{}` makes a running isolate in the caller's account."
+			},
+			"CreateStickyDiskBody": {
+				"type": "object",
+				"required": ["name", "sizeGb"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+						"description": "Lower-case letters, digits and hyphens, unique in the account."
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 500
+					},
+					"sizeGb": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 2048
+					}
+				},
+				"title": "CreateStickyDiskBody"
 			},
 			"CreateTemplateBody": {
 				"type": "object",
@@ -15229,6 +15697,14 @@
 						"maximum": 4320,
 						"description": "How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360."
 					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerStickyDisk"
+						},
+						"maxItems": 2,
+						"description": "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)."
+					},
 					"runnerCommand": {
 						"type": "string",
 						"minLength": 1,
@@ -15423,6 +15899,51 @@
 					}
 				},
 				"title": "GithubRunnersList"
+			},
+			"GithubRunnerStickyCommit": {
+				"type": "object",
+				"required": ["branches"],
+				"properties": {
+					"branches": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						},
+						"minItems": 1,
+						"maxItems": 20,
+						"description": "Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`."
+					},
+					"beforeCommit": {
+						"type": "string",
+						"maxLength": 4096,
+						"description": "A shell command run as root in the runner before its copy is committed, such as one that prunes the cache and stops Docker. A commit is skipped when it fails."
+					}
+				},
+				"title": "GithubRunnerStickyCommit",
+				"description": "When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. Pull requests never commit."
+			},
+			"GithubRunnerStickyDisk": {
+				"type": "object",
+				"required": ["disk", "path"],
+				"properties": {
+					"disk": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A sticky disk of the account, by ID or name."
+					},
+					"path": {
+						"type": "string",
+						"pattern": "^/[^\\0]*$",
+						"maxLength": 255,
+						"description": "Where each runner mounts it."
+					},
+					"commit": {
+						"$ref": "#/components/schemas/GithubRunnerStickyCommit"
+					}
+				},
+				"title": "GithubRunnerStickyDisk"
 			},
 			"GithubRunnersWithSecret": {
 				"type": "object",
@@ -17143,6 +17664,13 @@
 						},
 						"description": "Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`)."
 					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxStickyDisk"
+						},
+						"description": "Its sticky disks, each with the version its copy came from and its state. Absent: none."
+					},
 					"createdBy": {
 						"$ref": "#/components/schemas/CreatedBy"
 					},
@@ -17901,6 +18429,63 @@
 				"title": "SandboxState",
 				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots."
 			},
+			"SandboxStickyDisk": {
+				"type": "object",
+				"required": ["diskId", "name", "path", "state"],
+				"properties": {
+					"diskId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"path": {
+						"type": "string"
+					},
+					"version": {
+						"type": "string",
+						"description": "The version its copy was cloned from; absent for an empty disk."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "mounted"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							}
+						]
+					},
+					"reason": {
+						"type": "string"
+					}
+				},
+				"title": "SandboxStickyDisk"
+			},
+			"SandboxStickyDiskInput": {
+				"type": "object",
+				"required": ["disk", "path"],
+				"properties": {
+					"disk": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The sticky disk, by ID or name."
+					},
+					"path": {
+						"type": "string",
+						"pattern": "^/[^\\0]*$",
+						"maxLength": 255,
+						"description": "Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory."
+					}
+				},
+				"title": "SandboxStickyDiskInput"
+			},
 			"SandboxTemplate": {
 				"type": "object",
 				"required": ["id", "name", "version", "start"],
@@ -18548,6 +19133,99 @@
 					}
 				},
 				"title": "StartDeviceLoginBody"
+			},
+			"StickyDisk": {
+				"type": "object",
+				"required": ["id", "accountId", "name", "sizeGb", "createdAt", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The sticky disk's ID, such as `sdk_3m4n5b`."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+						"description": "Lower-case letters, digits and hyphens, unique in the account."
+					},
+					"description": {
+						"type": "string"
+					},
+					"sizeGb": {
+						"type": "integer",
+						"description": "Each copy's size: what a sandbox can fill."
+					},
+					"head": {
+						"type": "string",
+						"description": "The newest committed version; absent until one is."
+					},
+					"versions": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/StickyDiskVersion"
+						},
+						"description": "The newest 20, newest first, on a get."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "StickyDisk",
+				"description": "A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental."
+			},
+			"StickyDiskList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/StickyDisk"
+						}
+					}
+				},
+				"title": "StickyDiskList"
+			},
+			"StickyDiskVersion": {
+				"type": "object",
+				"required": ["id", "hostId", "sandboxId", "sizeBytes", "allocatedBytes", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The version's ID, such as `sdv_3m4n5b`."
+					},
+					"parent": {
+						"type": "string",
+						"description": "The version it was cloned from; absent for one made empty."
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it was committed on."
+					},
+					"sandboxId": {
+						"type": "string",
+						"description": "The sandbox it was committed from."
+					},
+					"sizeBytes": {
+						"type": "integer"
+					},
+					"allocatedBytes": {
+						"type": "integer",
+						"description": "What it takes on its host's disk, blocks it shares included."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "StickyDiskVersion"
 			},
 			"StopSandboxBody": {
 				"type": "object",

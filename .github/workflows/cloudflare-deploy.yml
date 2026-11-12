@@ -132,6 +132,8 @@ jobs:
       KANTEL_TEMPLATES: ${{ vars.KANTEL_TEMPLATES }}
       # Optional, experimental: GitHub Actions runners.
       KANTEL_GITHUB_RUNNERS: ${{ vars.KANTEL_GITHUB_RUNNERS }}
+      # Optional, experimental: sticky disks.
+      KANTEL_STICKY_DISKS: ${{ vars.KANTEL_STICKY_DISKS }}
       # Optional: where account hosts' latest kantel-host release is read (a URL, or off); unset, GitHub's latest.
       KANTEL_HOST_RELEASES: ${{ vars.KANTEL_HOST_RELEASES }}
     steps:

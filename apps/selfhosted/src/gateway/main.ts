@@ -223,6 +223,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(mailer === undefined ? {} : { invites: computeInvites(mailer, cfg.publicOrigin, components.identity) }),
 		...(cfg.compute.templates === true ? { templates: true } : {}),
 		...(cfg.compute.githubRunners === true ? { githubRunners: true } : {}),
+		...(cfg.compute.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(cfg.compute.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };

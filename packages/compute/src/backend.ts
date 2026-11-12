@@ -199,6 +199,32 @@ export interface SandboxSpec {
 	 * never leaves one looking mounted.
 	 */
 	readonly mounts?: readonly BackendMount[];
+	/** Sticky disks to attach (`stickyDisks`): it goes only where the backend can attach them. */
+	readonly stickyDisks?: readonly BackendStickyDisk[];
+}
+
+/** A sticky disk to attach at a create: a copy of the newest version its host holds, or a new disk of `sizeGiB`. */
+export interface BackendStickyDisk {
+	readonly diskId: string;
+	readonly path: string;
+	readonly sizeGiB: number;
+}
+
+/** A sandbox's sticky disk, as the backend answers it. */
+export interface BackendStickyDiskStatus {
+	readonly diskId: string;
+	readonly path: string;
+	/** The version its copy came from; absent for a new disk. */
+	readonly version?: string;
+	readonly state: "mounted" | "failed";
+	readonly reason?: string;
+}
+
+/** A committed sticky disk version, where it is. */
+export interface CommittedStickyDisk {
+	readonly hostId: string;
+	readonly sizeBytes: number;
+	readonly allocatedBytes: number;
 }
 
 /**
@@ -400,6 +426,8 @@ export interface Placement {
 	 * `ComputeService.reportMounts`.
 	 */
 	readonly mounts?: readonly BackendMountStatus[];
+	/** Its sticky disks' statuses, from a create that named some. */
+	readonly stickyDisks?: readonly BackendStickyDiskStatus[];
 	/**
 	 * A create from a template snapshot that booted the template fresh instead, running its setup: its host no longer
 	 * held the snapshot (or couldn't restore it), or had no room and another host booted it.
@@ -504,6 +532,12 @@ export interface ExecRequest {
 	 * `timeoutMs`, and `commandResult` can fetch its result later, from any gateway, where the backend keeps it.
 	 */
 	readonly detached?: boolean;
+	/**
+	 * Run as root, not the sandbox's default user (`user` where its image has one): only Kantel's own commands, such as a
+	 * GitHub runner pool's `beforeCommit`, never a caller's. A backend whose sandboxes run commands as root already
+	 * may ignore it.
+	 */
+	readonly asRoot?: boolean;
 }
 
 /**
@@ -905,6 +939,13 @@ export interface SandboxBackend {
 	deleteTemplateSnapshot?(bytes: TemplateSnapshotBytes): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
+	/**
+	 * Makes a running sandbox's copy of a sticky disk the disk's `version`, on its host (`sticky.commit`). Absent: the
+	 * backend has no sticky disks.
+	 */
+	commitStickyDisk?(sandboxId: string, diskId: string, version: string): Promise<CommittedStickyDisk>;
+	/** Deletes a sticky disk's versions from every host that runs sticky disks and is online now; idempotent. */
+	deleteStickyDisk?(diskId: string): Promise<void>;
 	/**
 	 * Asks a connected host to update its host agent to `latestVersion`, answering once it has the new one in place,
 	 * with the version it's moving to. Absent: hosts aren't updated from the control plane (the stub).

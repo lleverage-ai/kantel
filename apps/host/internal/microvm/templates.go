@@ -154,7 +154,7 @@ func linkTemplateRootfs(dir, rootfs string) error {
 // own kernel for its file), with the host's image when rootfs is Config.Rootfs itself: an update replaces that in
 // place, whereas a host image version's file, like a pulled base's root filesystem under its key, never changes.
 // With free page reporting on, it says so too: the balloon is a device the snapshot keeps, so one made without
-// reporting is booted afresh instead (and one made with it isn't restored once it is off).
+// reporting is booted afresh instead (and one made with it isn't restored once it is off). So do the sticky drives.
 func (m *Manager) runtimeFingerprint(rootfs string) string {
 	var fp string
 	if rootfs == m.cfg.Rootfs {
@@ -162,6 +162,8 @@ func (m *Manager) runtimeFingerprint(rootfs string) string {
 	} else {
 		fp = fc.Fingerprint(m.cfg.Firecracker, m.kernelFor(rootfs))
 	}
+	// A snapshot restores the drives it was made with: one from before the sticky drives is booted afresh instead.
+	fp += fmt.Sprintf("+sticky=%d", StickyDrives)
 	if m.cfg.FreePageReporting {
 		fp += "+free-page-reporting"
 	}

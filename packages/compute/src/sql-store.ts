@@ -22,8 +22,12 @@ import {
 	type ComputeStore,
 	matches,
 	type PersonWrites,
+	type StickyDiskWrites,
+	type StoredStickyDisk,
+	type StoredStickyDiskVersion,
 	type StoredTemplate,
 	type StoredTemplateVersion,
+	stickyDiskNameId,
 	type TemplateWrites,
 	UniqueViolation,
 } from "./store.ts";
@@ -315,6 +319,152 @@ function sqlTemplateWrites(driver: SqlDriver): TemplateWrites {
 	};
 }
 
+/** The kinds `sqlStickyDiskWrites` writes, as `createSqlComputeStore` names their collections. */
+const STICKY_DISKS = "stickyDisks";
+const STICKY_DISK_NAMES = "stickyDiskNames";
+const STICKY_DISK_VERSIONS = "stickyDiskVersions";
+
+/**
+ * `StickyDiskWrites` in SQL, each a batch (one transaction), so an interruption leaves all of a write or none of it:
+ *
+ * - `create`: the name's claim, inserted unless the name is claimed, and the disk, inserted only when the claim then
+ *   names it. Whether it landed is read back from the disk, whose ID is the create's own.
+ * - `tombstone`: the disk's write over the version it read (as `update`), and the release of its name's claim, only a
+ *   claim naming this disk and only while the disk's row holds exactly the tombstone written (or, tombstoned already,
+ *   read); another writer's change first means neither lands, and it reads again.
+ *
+ * Rows are matched by their exact stored text, never by a field read out of it: Postgres can't cast to `jsonb` the JSON
+ * JavaScript writes for a NUL or a lone surrogate, which a disk's description may hold, and such a disk must stay
+ * deletable. A claim's text is always `claimData`'s.
+ * - `commit`: the disk's write over the live version it read, and the version's insert, only when the disk's row then
+ *   holds exactly what was written, so a tombstone (or another commit) that came first means no version is recorded.
+ *   Whether it landed is read back from the version, by its `writeId`, as `sqlTemplateWrites` does.
+ */
+function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
+	const postgres = driver.dialect === "postgres";
+	const seq = postgres
+		? "nextval('compute_api_records_seq')"
+		: "(SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?)";
+	const seqParams = (kind: string): SqlValue[] => (postgres ? [] : [kind]);
+	const insertClaim = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		VALUES (?, ?, ${seq}, 1, ?) ON CONFLICT (kind, id) DO NOTHING`;
+	const insertDisk = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		SELECT ?, ?, ${seq}, 1, ?
+		WHERE EXISTS (SELECT 1 FROM compute_api_records n WHERE n.kind = ? AND n.id = ? AND n.data = ?)
+		ON CONFLICT (kind, id) DO NOTHING`;
+	const releaseClaim = `DELETE FROM compute_api_records
+		WHERE kind = ? AND id = ? AND data = ?
+		AND EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)`;
+	/** A disk's claim on its name, as `create` writes it: the text every claim of that disk has. */
+	const claimData = (disk: StoredStickyDisk): string =>
+		JSON.stringify({ id: stickyDiskNameId(disk.accountId, disk.name), accountId: disk.accountId, diskId: disk.id });
+	const insertVersion = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		SELECT ?, ?, ${seq}, 1, ?
+		WHERE EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)
+		ON CONFLICT (kind, id) DO NOTHING`;
+	const read = async <T>(kind: string, id: string): Promise<T | undefined> => {
+		const [row] = await driver.query(SELECT_DATA, [kind, id]);
+		return row === undefined ? undefined : parse<T>(row);
+	};
+	return {
+		async create(disk) {
+			const claim = stickyDiskNameId(disk.accountId, disk.name);
+			const claimed = claimData(disk);
+			await driver.batch([
+				{ sql: insertClaim, params: [STICKY_DISK_NAMES, claim, ...seqParams(STICKY_DISK_NAMES), claimed] },
+				{
+					sql: insertDisk,
+					params: [
+						STICKY_DISKS,
+						disk.id,
+						...seqParams(STICKY_DISKS),
+						JSON.stringify(disk),
+						STICKY_DISK_NAMES,
+						claim,
+						claimed,
+					],
+				},
+			]);
+			const [row] = await driver.query(SELECT_DATA, [STICKY_DISKS, disk.id]);
+			return row !== undefined && String(row.data) === JSON.stringify(disk);
+		},
+		async tombstone(id, at) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const [row] = await driver.query(SELECT_VERSIONED, [STICKY_DISKS, id]);
+				if (row === undefined) return undefined;
+				const current = parse<StoredStickyDisk>(row);
+				const claim = stickyDiskNameId(current.accountId, current.name);
+				// Released only while the disk's row is exactly `tombstone`: the one this attempt wrote, or read.
+				const release = (tombstone: string) => ({
+					sql: releaseClaim,
+					params: [STICKY_DISK_NAMES, claim, claimData(current), STICKY_DISKS, id, tombstone],
+				});
+				let tombstone = String(row.data);
+				if (current.deletedAt === undefined) {
+					tombstone = JSON.stringify({ ...current, deletedAt: at, updatedAt: at } satisfies StoredStickyDisk);
+					await driver.batch([
+						{ sql: UPDATE_VERSIONED, params: [tombstone, STICKY_DISKS, id, sqlNumber(row.version), String(row.data)] },
+						release(tombstone),
+					]);
+				} else {
+					await driver.batch([release(tombstone)]);
+				}
+				// Done once the disk is tombstoned and holds no claim: lost to another writer, read again.
+				const [after] = await driver.query(SELECT_DATA, [STICKY_DISKS, id]);
+				if (after === undefined) return undefined;
+				const now = parse<StoredStickyDisk>(after);
+				if (now.deletedAt === undefined) continue;
+				const [held] = await driver.query(SELECT_DATA, [STICKY_DISK_NAMES, claim]);
+				if (held === undefined || String(held.data) !== claimData(current)) return now;
+			}
+			throw new Error(
+				`The sticky disk ${id} kept changing while it was deleted; gave up after ${UPDATE_ATTEMPTS} tries`,
+			);
+		},
+		async commit(version, at) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const [row] = await driver.query(SELECT_VERSIONED, [STICKY_DISKS, version.diskId]);
+				if (row === undefined) return undefined;
+				const current = parse<StoredStickyDisk>(row);
+				if (current.deletedAt !== undefined) return undefined;
+				const commits = (current.commits ?? 0) + 1;
+				const data = JSON.stringify({
+					...current,
+					head: version.id,
+					commits,
+					updatedAt: at,
+				} satisfies StoredStickyDisk);
+				const recorded: StoredStickyDiskVersion = { ...version, seq: commits, writeId: crypto.randomUUID() };
+				await driver.batch([
+					{
+						sql: UPDATE_VERSIONED,
+						params: [data, STICKY_DISKS, version.diskId, sqlNumber(row.version), String(row.data)],
+					},
+					{
+						sql: insertVersion,
+						params: [
+							STICKY_DISK_VERSIONS,
+							version.id,
+							...seqParams(STICKY_DISK_VERSIONS),
+							JSON.stringify(recorded),
+							STICKY_DISKS,
+							version.diskId,
+							data,
+						],
+					},
+				]);
+				const stored = await read<StoredStickyDiskVersion>(STICKY_DISK_VERSIONS, version.id);
+				if (stored?.writeId === recorded.writeId) return stored;
+				// Recorded by another write under this ID: never this commit's.
+				if (stored !== undefined) return undefined;
+			}
+			throw new Error(
+				`The sticky disk ${version.diskId} kept changing while a version was committed; gave up after ${UPDATE_ATTEMPTS} tries`,
+			);
+		},
+	};
+}
+
 /** A `ComputeStore` in SQL. Run `migrateComputeStore` first. */
 export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 	return {
@@ -354,6 +504,10 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		githubRunners: sqlCollection(driver, "githubRunners"),
 		githubRunnerJobs: sqlCollection(driver, "githubRunnerJobs"),
 		githubRunnerMachines: sqlCollection(driver, "githubRunnerMachines"),
+		stickyDisks: sqlCollection(driver, STICKY_DISKS),
+		stickyDiskVersions: sqlCollection(driver, STICKY_DISK_VERSIONS),
+		stickyDiskNames: sqlCollection(driver, STICKY_DISK_NAMES),
+		stickyDiskWrites: sqlStickyDiskWrites(driver),
 	};
 }
 

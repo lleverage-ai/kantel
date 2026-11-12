@@ -341,6 +341,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBundle}) {
 		features = append(features, proto.FeatureBundleMounts)
 	}
+	if _, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
+		features = append(features, proto.FeatureStickyDisks)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -396,6 +399,9 @@ func (h *Host) Capacity() proto.Capacity {
 		}
 	}
 	c.Disk = h.diskUsage()
+	if t, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
+		c.StickyDisks = t.StickyHoldings()
+	}
 	return c
 }
 
@@ -622,6 +628,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		if len(p.Mounts) > 0 && !supportsMounts(t, p.Mounts...) {
 			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier on this host doesn't take these mounts", h.tierName(p.Tier))}
+		}
+		if _, ok := t.(StickyDisks); len(p.StickyDisks) > 0 && !ok {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier on this host has no sticky disks", h.tierName(p.Tier))}
 		}
 		defer h.lifecycle.lock(p.SandboxID)()
 		if _, err := h.tierOf(p.SandboxID); err == nil {
@@ -1044,6 +1053,32 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
+	case proto.MethodStickyCommit:
+		p, err := decode[proto.StickyCommitParams](params)
+		if err != nil {
+			return nil, err
+		}
+		// With the lifecycle calls: a stop waits for the commit's freeze, clone and thaw.
+		defer h.lifecycle.lock(p.SandboxID)()
+		t, err := h.tierOf(p.SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		sticky, ok := t.(StickyDisks)
+		if !ok {
+			return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s has no sticky disk %s", p.SandboxID, p.DiskID)}
+		}
+		return sticky.CommitSticky(ctx, p)
+	case proto.MethodStickyDelete:
+		p, err := decode[proto.StickyDeleteParams](params)
+		if err != nil {
+			return nil, err
+		}
+		sticky, ok := h.tiers[microvm.Tier].(StickyDisks)
+		if !ok {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host has no sticky disks"}
+		}
+		return map[string]any{}, sticky.DeleteSticky(p)
 	case proto.MethodHostImages:
 		return h.hostImages(params)
 	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:
@@ -1071,6 +1106,16 @@ func (h *Host) DialPort(ctx context.Context, id string, port int) (net.Conn, err
 }
 
 var _ = exec.Command
+
+// StickyDisks is a tier with sticky disks (FeatureStickyDisks): the microVM tier.
+type StickyDisks interface {
+	CommitSticky(ctx context.Context, p proto.StickyCommitParams) (proto.StickyCommitResult, error)
+	DeleteSticky(p proto.StickyDeleteParams) error
+	StickyHoldings() []proto.StickyDiskHolding
+}
+
+// The microVM tier has sticky disks: without this, the host would stop reporting FeatureStickyDisks unnoticed.
+var _ StickyDisks = (*microvm.Manager)(nil)
 
 // SnapshotMeasurer is a tier that measures its snapshots as they are on the disk now (FeatureSnapshotSizes): the
 // host's snapshot.list answers its snapshots with those sizes, not the ones they had when they were made.
