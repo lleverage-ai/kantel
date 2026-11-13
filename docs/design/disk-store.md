@@ -1,4 +1,4 @@
-# The disk store: sticky disks, and keeping disks in sync across an organisation's hosts
+# The disk store: sticky disks, and keeping disks in sync across a pool's hosts
 
 Status: phase 1 merged (#838, 11 Nov 2026). Phases 2 to 5 are proposed. Phase 2's plan and the design for moving a sandbox to another host (phase 4) were added on 13 Nov 2026, with their decisions made the same day.
 
@@ -20,9 +20,20 @@ Bucket mounts stay what they are: a read-only view of an object store someone el
 
 The two meet in one place (phase 4): a host can ask a peer for a bucket chunk before it asks the bucket, saving GCS egress and latency on multi-host organisations. The chunk is identified as the mount cache already identifies it (store, bucket, key, version, credential), so a peer only serves a chunk read with the same credential.
 
+## Pools
+
+An organisation's hosts are split into pools, and a pool is the boundary for everything in this design. Lleverage, for example, will have around ten hosts: a CI pool, and pools for agent sandboxes and workflow runtimes. Hosts only need to reach, and share data with, the other hosts in their pool. Decided (13 Nov 2026):
+
+- **A pool is a set of an account's hosts, and each host is in exactly one.** The operator's shared hosts are in the operator's own pools. Every account starts with a `default` pool, and existing hosts and data go into it, so an account with one pool sees no change.
+- **The mesh is per pool.** Hosts peer with, sync with and hold copies for hosts in their own pool only. Pools never peer, whether they belong to the same account, different accounts or the operator.
+- **Data belongs to one pool.** A sticky disk, a saved snapshot, and a sandbox's disk live in the pool where they were made, and sandboxes from them are placed only in that pool. A template stays an account-wide definition; each pool builds it once and its hosts share that build.
+- **Placement is by pool, then labels.** A create names a pool, or gets the account's default pool, and labels still choose among that pool's hosts.
+- **GitHub runners live inside a pool.** A pool has optional runner kinds, one for each `runs-on` label, each with its template, size, sticky disks and repositories. They replace runner pools and their `hostLabels`, so the CI pool's small and large runners share its hosts and its sticky caches. The runner pool API stays as an alias while callers move.
+- **Moving a host to another pool** is an explicit action. It drains the host, removes it from the old pool's mesh, and lets the old pool's data on it go once other hosts hold the required copies.
+
 ## Sticky disks
 
-A sticky disk is a named, versioned ext4 disk in an organisation, attached to a microVM as an extra drive and mounted at a path in the guest.
+A sticky disk is a named, versioned ext4 disk in an organisation's pool, attached to a microVM as an extra drive and mounted at a path in the guest.
 
 - Each sandbox gets its own copy-on-write clone of a version: instant on XFS or btrfs (`FICLONE`), whatever the disk's size. It may write anything, Docker's data directory included, because no other sandbox uses that copy.
 - A sandbox's writes are thrown away when it goes, unless it was asked to commit. Committing makes its copy the disk's next version. Commits come only from callers the disk's policy trusts. For GitHub runners that's a job on a protected ref such as `refs/heads/main`, so pull request jobs never write the shared cache. That is stricter than the CI hosts today, whose caches any PR job writes, and it lets the merge queue use the warm cache too.
@@ -70,7 +81,7 @@ Which hosts hold what:
 
 - **Sticky disks**: the hosts that run sandboxes using the disk prefetch its head after each commit. Others fetch on first use. No copy is required to survive: a lost disk is a cold cache.
 - **Template snapshots**: fetched from a peer that built them, instead of every host building its own. A host still builds one when no peer has it.
-- **Saved snapshots**: kept on two hosts when the organisation has two or more, so losing a host doesn't lose a person's work. This costs disk, so it's a per-organisation setting, on by default.
+- **Saved snapshots**: kept on two hosts when the pool has two or more, so losing a host doesn't lose a person's work. This costs disk, so it's a per-organisation setting, on by default.
 
 Placement prefers a host that already holds a sandbox's sticky disk's head, or its snapshot, as it prefers a host with the owner's isolates today. It doesn't insist, because the fetch is in the background.
 
@@ -79,10 +90,10 @@ Placement prefers a host that already holds a sandbox's sticky disk's head, or i
 Hosts today take no inbound connections: they dial out to the control plane. Peer sync needs one host to reach another. The choices:
 
 1. **A peer port on each host, on the organisation's network.** The host listens on a port bound to its private or direct address (the same addresses the direct and private-network host links use: a LAN, a Tailscale tailnet, Hetzner's vSwitch). Each request carries the control plane's grant, and peers authenticate each other with certificates the control plane issues at join. Fast (block transfers at disk speed), simple, no outside dependency. Hosts that can't reach each other (behind different NATs, no shared network) can't sync this way.
-2. **A mesh Kantel sets up**: WireGuard between an organisation's hosts, keys exchanged through the control plane, NAT traversal with a relay for the hard cases. Works everywhere, but it's a project of its own (Kantel Connect territory).
+2. **A mesh Kantel sets up**: WireGuard between the hosts of a pool, keys exchanged through the control plane, NAT traversal with a relay for the hard cases. Works everywhere, but it's a project of its own (Kantel Connect territory).
 3. **Relay through the control plane.** Works everywhere with no inbound ports, but every block goes through the gateway: too slow and too costly for disks of hundreds of GB.
 
-Decided (11 Nov 2026): 2, the mesh. It works whatever networks the hosts are on, and it's the start of Kantel Connect. Each host gets a WireGuard key and a mesh address at join; the control plane hands each host its organisation's peers (keys, addresses and the endpoints it has seen them at); hosts punch through NAT with the control plane coordinating, and fall back to a relay when they can't. Peer sync is plain HTTP over the mesh, so everything above it doesn't care how the bytes travel. Hosts with public addresses (Lleverage's Hetzner machines) connect directly.
+Decided (11 Nov 2026): 2, the mesh. It works whatever networks the hosts are on, and it's the start of Kantel Connect. Each host gets a WireGuard key and a mesh address at join; the control plane hands each host its pool's peers (keys, addresses and the endpoints it has seen them at); hosts punch through NAT with the control plane coordinating, and fall back to a relay when they can't. Peer sync is plain HTTP over the mesh, so everything above it doesn't care how the bytes travel. Hosts with public addresses (Lleverage's Hetzner machines) connect directly.
 
 Saved snapshots are kept on two hosts by default (decided 11 Nov 2026).
 
@@ -93,12 +104,12 @@ An organisation may add an object store (R2, GCS, S3) as a member that holds blo
 ## Phases
 
 1. **Sticky disks on one host.** The catalogue in the control plane (disks, versions, holders), the API, attaching a version's clone as a drive, commit from a trusted caller, retention and the host's budget. GitHub runner pools get `stickyDisks` with a commit rule. Enough for CI on one host. Merged (#838).
-2. **The mesh, block maps and host-to-host sync.** The WireGuard mesh between an organisation's hosts, block maps with extent-based change detection, grants, fetches by changed block, prefetch of heads, placement preference. Sticky disks are its first user. Planned below.
+2. **Pools, the mesh, block maps and host-to-host sync.** Pools (above), the WireGuard mesh between a pool's hosts, block maps with extent-based change detection, grants, fetches by changed block, prefetch of heads, placement preference. Sticky disks are its first user. Planned below.
 3. **Templates and saved snapshots on the disk store.** Template snapshots fetched from peers; saved snapshots kept on two hosts; their disks become versions like any other; a create from a saved snapshot runs on any host that holds it or can fetch it.
 4. **Moving a sandbox to another host**, from the API, the CLI and the console, and draining a host by moving its sandboxes off. Designed below.
 5. **The optional object store, and peers for bucket mount caches.**
 
-Phases 2 to 4 are what lets an organisation treat its hosts as one pool, which is what Lleverage needs to run agent sandboxes and workflow runtimes on Kantel. The object store moved to last because nothing in 2 to 4 depends on it.
+Phases 2 to 4 are what lets an organisation treat each pool of hosts as one, which is what Lleverage needs to run agent sandboxes and workflow runtimes on Kantel. The object store moved to last because nothing in 2 to 4 depends on it.
 
 ## Open questions
 
@@ -132,13 +143,13 @@ Where things stand: a host dials one WebSocket out to the control plane (`/v1/ho
 
 ### 2a. The mesh
 
-**Membership.** A mesh is a fleet: the hosts of one account (an organisation or a personal space), or the operator's shared hosts. Hosts in different fleets are never peers, so no host ever has a route to another account's hosts, and a revoked host leaves its fleet's peer lists at once. Decided (13 Nov 2026): shared hosts and an account's own hosts stay apart. Revisit only if a need appears, such as moving a sandbox from shared hosts to an account's own.
+**Membership.** A mesh is a pool (see Pools). Hosts in different pools are never peers, so no host ever has a route to another pool's hosts, whether that pool is the same account's, another account's or the operator's. A revoked host, or one moved to another pool, leaves its pool's peer lists at once.
 
-**Keys and addresses.** A host makes its WireGuard key pair when it first starts with the `mesh` feature, keeps the private key under its root (mode 0600) and never sends it anywhere. It reports the public key in `Hello` (`Facts.Mesh: { publicKey, listenPort, endpoints }`). The control plane gives the host a mesh address in `Welcome`. Addresses are IPv6 ULAs: one `/48` per fleet, derived from the fleet's ID, and one `/128` per host, stored on its record. IPv6 can't clash with the sandboxes' `10.231.0.0/16` or with whatever IPv4 network the host is on. A reinstall makes a new key, and the record's key is replaced on the next `Hello`.
+**Keys and addresses.** A host makes its WireGuard key pair when it first starts with the `mesh` feature, keeps the private key under its root (mode 0600) and never sends it anywhere. It reports the public key in `Hello` (`Facts.Mesh: { publicKey, listenPort, endpoints }`). The control plane gives the host a mesh address in `Welcome`. Addresses are IPv6 ULAs: one `/48` per pool, derived from the pool's ID, and one `/128` per host, stored on its record. IPv6 can't clash with the sandboxes' `10.231.0.0/16` or with whatever IPv4 network the host is on. A reinstall makes a new key, and the record's key is replaced on the next `Hello`.
 
-**Peers.** `Welcome.mesh` carries `{ address, prefix, peers: [{ hostId, publicKey, address, endpoints }] }`. A `mesh.peers` message brings the whole list again whenever a fleet member joins, leaves, is revoked or reports new endpoints. The host applies it as the desired state: it adds, updates and removes WireGuard peers to match.
+**Peers.** `Welcome.mesh` carries `{ address, prefix, peers: [{ hostId, publicKey, address, endpoints }] }`. A `mesh.peers` message brings the whole list again whenever a pool member joins, leaves, is revoked or reports new endpoints. The host applies it as the desired state: it adds, updates and removes WireGuard peers to match.
 
-**The device.** `kantel-host` runs WireGuard in-process (`golang.zx2c4.com/wireguard`) over a TUN device named `kmesh0`. It mustn't start with `kt`, because the firewall treats every `kt+` interface as a sandbox's TAP device. The in-process implementation is chosen over the kernel module for two reasons. Finding a NAT's mapping (STUN) needs to send from the same UDP socket WireGuard uses, which the kernel module doesn't allow but a custom `conn.Bind` does. And it needs no kernel module or `wg` tools on the host. Throughput is the risk, so the first PR measures it (below). The firewall accepts only the peer sync port on `kmesh0`, and only from the fleet's prefix. Forwarding stays off, and sandboxes can't reach mesh addresses.
+**The device.** `kantel-host` runs WireGuard in-process (`golang.zx2c4.com/wireguard`) over a TUN device named `kmesh0`. It mustn't start with `kt`, because the firewall treats every `kt+` interface as a sandbox's TAP device. The in-process implementation is chosen over the kernel module for two reasons. Finding a NAT's mapping (STUN) needs to send from the same UDP socket WireGuard uses, which the kernel module doesn't allow but a custom `conn.Bind` does. And it needs no kernel module or `wg` tools on the host. Throughput is the risk, so the first PR measures it (below). The firewall accepts only the peer sync port on `kmesh0`, and only from the pool's prefix. Forwarding stays off, and sandboxes can't reach mesh addresses.
 
 **Endpoints, in three steps.** Each step is useful without the next:
 
@@ -177,7 +188,7 @@ Each host has a sync bandwidth limit (`--sync-rate`, both directions, default 50
 ### 2d. Placement and prefetch
 
 - The scheduler's ranking (`packages/hosts/src/scheduler.ts`) gets one more preference after the isolate one: a host that already holds the head of each sticky disk the sandbox attaches. It is a preference only; projected fullness still decides between hosts that hold the same.
-- After a commit, the control plane sends `disk.fetch` for the new head to every host in the fleet that ran a sandbox with that disk in the last 7 days.
+- After a commit, the control plane sends `disk.fetch` for the new head to every host in the pool that ran a sandbox with that disk in the last 7 days.
 - A sandbox placed on a host with no version of its sticky disk starts with an empty disk, as now, and the host fetches the head in the background for the next one. A sticky disk is a cache, so a sandbox never waits for a sync.
 
 ### Protocol
@@ -192,23 +203,24 @@ Each host has a sync bandwidth limit (`--sync-rate`, both directions, default 50
 Each step is one PR with its own tests:
 
 1. **Spike: WireGuard throughput.** Two Hetzner hosts, in-process WireGuard over TUN against the kernel module, iperf3 and a 50 GB file over HTTP/2. Decided (13 Nov 2026): if in-process is under about 70% of the kernel's speed, hosts that reach each other directly hand the same keys and addresses to the kernel module, and the in-process code stays for NAT traversal and the relay.
-2. **The mesh with direct endpoints (2a step 1):** keys, addresses, `Welcome.mesh` and `mesh.peers`, the device and firewall, peer health on the host page. Test: `local-stack.sh` with two hosts in network namespaces.
-3. **Block maps (2b)** for sticky disk versions, made at commit.
-4. **The catalogue's holders, grants and peer sync (2c)** for sticky disks.
-5. **Placement and prefetch (2d).**
-6. **NAT traversal (2a step 2)**, then **the relay (2a step 3).** Decided (13 Nov 2026): these are a separate, later epic. Lleverage's hosts have public addresses and don't need them.
+2. **Pools:** pool records, a host's pool (join tokens name it), placement by pool, data belonging to a pool, then GitHub runner kinds inside pools.
+3. **The mesh with direct endpoints (2a step 1):** keys, addresses, `Welcome.mesh` and `mesh.peers`, the device and firewall, peer health on the host page. Test: `local-stack.sh` with two hosts in network namespaces.
+4. **Block maps (2b)** for sticky disk versions, made at commit.
+5. **The catalogue's holders, grants and peer sync (2c)** for sticky disks.
+6. **Placement and prefetch (2d).**
+7. **NAT traversal (2a step 2)**, then **the relay (2a step 3).** Decided (13 Nov 2026): these are a separate, later epic. Lleverage's hosts have public addresses and don't need them.
 
-Lleverage's hosts have public addresses, so steps 1 to 5 give it sticky disks across hosts. Phase 3 then gives it templates and saved snapshots across hosts, and phase 4 gives it moves.
+Lleverage's hosts have public addresses, so steps 1 to 6 give it sticky disks across hosts. Phase 3 then gives it templates and saved snapshots across hosts, and phase 4 gives it moves.
 
 ## Phase 3 notes: what a snapshot depends on
 
 Phase 3 puts template snapshots and saved snapshots on the same holders and fetches, but a snapshot is more than one disk file:
 
 - **Its disk is an overlay's upper layer**, not a whole filesystem: `kantel-init` mounts the sandbox's disk over the shared read-only root image. A snapshot is only usable on a host that has the same root image: the same host image version (`host-images-*`, which the host downloads from a release itself) or the same template root filesystem (`images/templates/<key>.ext4`). A template's root filesystem becomes an object on the disk store too, keyed by its `KeyHash`, so a host fetches it from a peer instead of building it.
-- **Its memory and machine state restore only on a matching runtime.** `restorableTemplateSnapshot` already refuses a snapshot whose Firecracker, kernel, host image or balloon setting differs (`runtimeFingerprint`). Across hosts the CPU matters too: Firecracker restores a snapshot only on a CPU with the same features, and Kantel sets no CPU template. Each host reports a CPU fingerprint (vendor, family, model and a hash of its CPUID features) beside its runtime fingerprint. Memory travels only to a host that matches both. Otherwise only the disk travels, and the sandbox cold-boots on its disk, which is what a disk-only saved snapshot does anyway; a template snapshot is built again on that host from the template's root filesystem. Decided (13 Nov 2026): match CPUs and cold-boot otherwise, with no Firecracker CPU template, because a template hides CPU features from every sandbox and changing it makes existing snapshots unusable. Revisit if Lleverage's fleet ends up with mixed CPUs.
+- **Its memory and machine state restore only on a matching runtime.** `restorableTemplateSnapshot` already refuses a snapshot whose Firecracker, kernel, host image or balloon setting differs (`runtimeFingerprint`). Across hosts the CPU matters too: Firecracker restores a snapshot only on a CPU with the same features, and Kantel sets no CPU template. Each host reports a CPU fingerprint (vendor, family, model and a hash of its CPUID features) beside its runtime fingerprint. Memory travels only to a host that matches both. Otherwise only the disk travels, and the sandbox cold-boots on its disk, which is what a disk-only saved snapshot does anyway; a template snapshot is built again on that host from the template's root filesystem. Decided (13 Nov 2026): match CPUs and cold-boot otherwise, with no Firecracker CPU template, because a template hides CPU features from every sandbox and changing it makes existing snapshots unusable. Revisit if one of Lleverage's pools ends up with mixed CPUs.
 - **Its files**: `disk.ext4` and `mem` are synced as block-mapped versions (most of a memory file is zero blocks, which cost nothing), and `state` and `meta.json` go whole.
 - **Its reference stops naming a host.** A saved snapshot's backend ref is `{hostId}/{snapshotId}` today, and `mayUse` refuses a create anywhere else. New refs are the snapshot ID alone, with its hosts in `disk_holders`. Old refs keep parsing, and their host becomes their first holder. A create from a snapshot goes to a holder if one has room; otherwise it goes to another eligible host, which fetches the snapshot first and reports it as the create's `fetch` phase.
-- **Two copies.** After a save, the control plane picks a second host in the fleet (the least full that matches the snapshot's root image) and sends `disk.fetch`. When a holder is revoked, or has been offline for 24 hours, it does the same again from the remaining holder.
+- **Two copies.** After a save, the control plane picks a second host in the pool (the least full that matches the snapshot's root image) and sends `disk.fetch`. When a holder is revoked, or has been offline for 24 hours, it does the same again from the remaining holder.
 
 ## Moving a sandbox to another host (phase 4 design)
 
@@ -237,4 +249,4 @@ Decided (13 Nov 2026): a move keeps memory by default when the hosts match, beca
 
 **Draining a host.** A draining host already takes no new sandboxes. Phase 4 adds "Move sandboxes off" to a host's page: it moves each running and stopped sandbox in turn, at most two at a time, and with that a host can be updated, resized or retired without anyone losing a sandbox.
 
-A move never crosses fleets: the target is one of the sandbox's own account's hosts, or a shared host for a sandbox on shared hosts (see Membership above).
+A move never leaves the sandbox's pool (see Pools). Moving work to another pool is a new sandbox there.
