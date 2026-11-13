@@ -209,6 +209,11 @@ export interface PeerTransport {
 	call(peer: ReplicaRecord, hostId: string, method: string, params: unknown, options: CallOptions): Promise<unknown>;
 	openPort(peer: ReplicaRecord, hostId: string, sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
 	rewelcome(peer: ReplicaRecord, hostId: string, welcome: HostWelcome): Promise<void>;
+	/**
+	 * Has the peer send a host connected there its mesh peers (`HostHub.remesh`), which it reads itself. Absent (a
+	 * transport from before the mesh), a host connected to another replica gets them in its next welcome.
+	 */
+	remesh?(peer: ReplicaRecord, hostId: string): Promise<void>;
 	disconnect(peer: ReplicaRecord, hostId: string, code: number, reason: string): Promise<void>;
 	/** Passes a usage tick from a host connected here on to a peer, which keeps it too (`HostCluster.shareUsage`). */
 	usage?(peer: ReplicaRecord, hostId: string, usage: unknown): Promise<void>;
@@ -545,6 +550,16 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 					safely(
 						`welcoming host ${hostId} again`,
 						ownerOf(hostId).then((peer) => peer && transport.rewelcome(peer, hostId, welcome)),
+					);
+				},
+				remesh(hostId) {
+					// As a rewelcome: here, or held for after the welcome of a hello still being answered; elsewhere, its owner
+					// reads and sends them.
+					local.remesh(hostId);
+					if (local.connected(hostId) || transport.remesh === undefined) return;
+					safely(
+						`sending host ${hostId} its mesh peers`,
+						ownerOf(hostId).then((peer) => peer && transport.remesh?.(peer, hostId)),
 					);
 				},
 				disconnect(hostId, code, reason) {

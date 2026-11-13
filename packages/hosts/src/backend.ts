@@ -924,6 +924,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+					...(host.meshAddress === undefined ? {} : { meshAddress: host.meshAddress }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
@@ -1660,6 +1661,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async hostHolds(hostId) {
 			return hosts.holds(hostId);
+		},
+		async updatePool(poolId) {
+			await hosts.poolChanged(poolId);
 		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {

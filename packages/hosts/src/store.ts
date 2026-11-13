@@ -37,6 +37,13 @@ export interface HostRecord {
 	 */
 	readonly poolId?: string;
 	/**
+	 * Its address in its pool's mesh (`HOST_FEATURES.mesh`), and the pool it was given in: one /128 in the pool's /48
+	 * (`mesh.ts`), kept so it stays the same across reconnects, and given again once the host is in another pool. Its
+	 * public key and endpoints are its facts' (`HostFacts.mesh`), as its last hello said. Absent until a host with the
+	 * feature is in a pool.
+	 */
+	readonly mesh?: { readonly poolId: string; readonly address: string };
+	/**
 	 * The latest drain or undrain the compute plane ordered (`StoredHost.drainEpoch`): one older than it isn't taken, so
 	 * one held up can't undo a later one. Absent until one is ordered.
 	 */

@@ -436,6 +436,7 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### CreateApiKeyBody
 
@@ -533,6 +534,7 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### CreateSandboxBody
 
@@ -1436,6 +1438,7 @@ A set of an account's hosts (or of the deployment's shared hosts), each host in 
 | `accountId` | string | no | The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts. |
 | `default` | boolean | yes | Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. |
 | `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
+| `sync` | boolean | yes | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### PoolList
@@ -2500,6 +2503,7 @@ A template version's definition, never changed once made. Answered with every de
 | --- | --- | --- | --- |
 | `name` | string | no |  |
 | `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### UpdateSandboxBody
 

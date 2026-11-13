@@ -95,7 +95,7 @@ function setUp(
 			["pool_a", "a"],
 			["pool_b", "b"],
 		] as const) {
-			await api.store.pools.put({ id, owner: OPERATOR_POOLS, name, createdAt: clock.now });
+			await api.store.pools.put({ id, owner: OPERATOR_POOLS, name, createdAt: clock.now, sync: true });
 		}
 		hosts.pooled = true;
 		// Listing the hosts, as Tom administers the deployment, records them.
@@ -253,6 +253,15 @@ describe("disk holders", () => {
 		expect(await verifyGrant(publicKey, `${widened}.${signature}`, tom.clock.now)).toBeUndefined();
 		// Pool B's host is refused: the disk is pool A's, and pools never share data.
 		await expect(tom.api.service.locateDisk("host_c", request)).rejects.toMatchObject({ code: "not_found" });
+		// With pool A's sync off its hosts' mesh is down: no holder there either.
+		await tom.api.store.pools.update("pool_a", (pool) => ({ ...pool, sync: false }));
+		expect(await tom.api.service.locateDisk(STUB_HOST_ID, request)).toEqual({ holders: [] });
+		await tom.api.store.pools.update("pool_a", (pool) => ({ ...pool, sync: true }));
+		// A move to pool B saved here but not yet in the registry: it isn't offered in pool A, and pool B is still refused.
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolId: "pool_b" }));
+		expect((await tom.api.service.locateDisk(STUB_HOST_ID, request)).holders).toEqual([]);
+		await expect(tom.api.service.locateDisk("host_c", request)).rejects.toMatchObject({ code: "not_found" });
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolId: "pool_a" }));
 		// A revoked host, and a version or kind that isn't there, are refused.
 		await expect(tom.api.service.locateDisk("host_e", request)).rejects.toMatchObject({ code: "not_found" });
 		await expect(tom.api.service.locateDisk("host_b", { ...request, version: "sdv_missing" })).rejects.toMatchObject({
