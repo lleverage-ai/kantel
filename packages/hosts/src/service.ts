@@ -815,6 +815,13 @@ const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 /** How often a connected host is told again which images Kantel wants it on (image patching): 15 minutes. */
 export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
 
+/**
+ * How often a connected host that runs the mesh has what it was last told of its pool's mesh checked against what it
+ * should have now, on a heartbeat: a telling missed (a read that failed, a replica that couldn't be reached, a change
+ * whose telling failed after it was written) is made good within this.
+ */
+export const MESH_REFRESH_MS = 60 * 1000;
+
 /** How often a connected host's snapshot list is read again for their sizes (`HOST_FEATURES.snapshotSizes`). */
 export const SNAPSHOT_SIZES_REFRESH_MS = 10 * 60 * 1000;
 
@@ -1037,8 +1044,57 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const meshPeersNow = async (hostId: string): Promise<HostMeshPeer[] | undefined> => {
 		const host = await store.getHost(hostId);
 		if (host === undefined || !meshable(host)) return undefined;
-		if ((await compute?.poolSync?.(host.poolId)) !== true) return [];
-		return meshPeersAmong(host, await store.listHosts());
+		const peers =
+			(await compute?.poolSync?.(host.poolId)) === true ? meshPeersAmong(host, await store.listHosts()) : [];
+		const told = meshTold.get(hostId);
+		if (told !== undefined) meshTold.set(hostId, { ...told, peers: JSON.stringify(peers) });
+		return peers;
+	};
+
+	/**
+	 * What each host that runs the mesh, connected here, was last told of its pool's mesh: its address and prefix (none,
+	 * its mesh down) by its last welcome, and its peers by that or a later `mesh.peers`.
+	 */
+	const meshTold = new Map<
+		string,
+		{ readonly mesh?: { readonly address: string; readonly prefix: string }; readonly peers?: string }
+	>();
+	/** When each host's mesh was last checked (`reconcileMesh`). */
+	const meshCheckedAt = new Map<string, number>();
+
+	/**
+	 * Tells a host connected here what it should have of its pool's mesh now, where that differs from what it was last
+	 * told, every `MESH_REFRESH_MS` on its heartbeat: its welcome again when its mesh should come up, go down or move,
+	 * else its peers when they differ. So a telling missed is made good: the tellings on a change are only the fast way.
+	 * A read that fails is tried on a later heartbeat.
+	 */
+	const reconcileMesh = (hostId: string) => {
+		const told = meshTold.get(hostId);
+		if (told === undefined || compute?.poolSync === undefined) return;
+		const at = clock.now();
+		if (at - (meshCheckedAt.get(hostId) ?? Number.NEGATIVE_INFINITY) < MESH_REFRESH_MS) return;
+		meshCheckedAt.set(hostId, at);
+		report(
+			(async () => {
+				const host = await store.getHost(hostId);
+				if (host === undefined || host.revoked) return;
+				const wanted = await meshFor(host);
+				if (wanted?.address !== told.mesh?.address || wanted?.prefix !== told.mesh?.prefix) {
+					rewelcome(host);
+				} else if (wanted !== undefined && JSON.stringify(wanted.peers) !== told.peers) {
+					hub.remesh(hostId);
+				}
+			})(),
+		);
+	};
+
+	/** Runs a telling of hosts on a change, logging rather than failing it: `reconcileMesh` makes good one that fails. */
+	const tellMesh = async (work: Promise<void>) => {
+		await work.catch((error: unknown) => {
+			log(
+				`[hosts] couldn't tell hosts of a mesh change (made good later): ${error instanceof Error ? error.message : String(error)}`,
+			);
+		});
 	};
 
 	/**
@@ -1226,7 +1282,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			log(`[hosts] no mesh address for host ${hostId}: ${error instanceof Error ? error.message : String(error)}`);
 			return reported;
 		});
-		if (meshPeerChanged(before, addressed)) report(remeshPool(addressed.poolId, hostId));
+		if (meshPeerChanged(before, addressed)) report(tellMesh(remeshPool(addressed.poolId, hostId)));
+		meshCheckedAt.set(hostId, now);
 		reserved.delete(hostId);
 		// Reconcile: what the host holds is the truth about state; a placement the host no longer has is lost.
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
@@ -1323,7 +1380,22 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const welcomeNow = async (hostId: string): Promise<HostWelcome> => {
 		const latest = await store.getHost(hostId);
 		if (latest === undefined || latest.revoked) throw new Error("This host is revoked");
-		return welcomeFor(latest);
+		// What it is told of the mesh, for `reconcileMesh`: only a host that runs it. A welcome made at once is answered at
+		// once, with no await more than before.
+		const noted = (welcome: HostWelcome): HostWelcome => {
+			const mesh = welcome.mesh;
+			if (!runsMesh(latest)) meshTold.delete(hostId);
+			else if (mesh === undefined) meshTold.set(hostId, {});
+			else {
+				meshTold.set(hostId, {
+					mesh: { address: mesh.address, prefix: mesh.prefix },
+					peers: JSON.stringify(mesh.peers),
+				});
+			}
+			return welcome;
+		};
+		const welcome = welcomeFor(latest);
+		return welcome instanceof Promise ? welcome.then(noted) : noted(welcome);
 	};
 
 	/** When each host still reporting warm machines was last told to keep none. */
@@ -1377,6 +1449,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const capacity = parsed.value;
 			reserved.delete(hostId);
 			refreshImages(hostId);
+			reconcileMesh(hostId);
 			readSnapshots(hostId);
 			runCleanups(hostId);
 			report(
@@ -1508,6 +1581,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			snapshotSizesReadAt.delete(hostId);
 			measuresSnapshots.delete(hostId);
 			poolsEnded.delete(hostId);
+			meshTold.delete(hostId);
+			meshCheckedAt.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {
@@ -2390,8 +2465,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const settled = moved ? await withMeshAddress(next) : next;
 			if (redrained || (moved && runsMesh(settled))) rewelcome(settled);
 			if (moved && runsMesh(host)) {
-				await remeshPool(host.poolId, hostId);
-				await remeshPool(settled.poolId, hostId);
+				await tellMesh(remeshPool(host.poolId, hostId));
+				await tellMesh(remeshPool(settled.poolId, hostId));
 			}
 			return view(settled);
 		},
@@ -2456,7 +2531,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			await store.putHost(next);
 			hub.disconnect(hostId, HOST_CLOSE_REVOKED, "The host's credential was revoked");
 			// Out of its pool's mesh at once: its peers are sent their list without it.
-			if (runsMesh(host)) await remeshPool(host.poolId, hostId);
+			if (runsMesh(host)) await tellMesh(remeshPool(host.poolId, hostId));
 			return view(next);
 		},
 		async poolChanged(poolId) {

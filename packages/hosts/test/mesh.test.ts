@@ -10,7 +10,7 @@ import { parseHostFacts } from "../src/facts.ts";
 import { formatIPv6, meshAddressCandidate, meshAddressFor, meshPrefix } from "../src/mesh.ts";
 import { HOST_FEATURES, type HostMeshFacts, type HostMeshPeer, type HostWelcome } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
-import { createHostsService } from "../src/service.ts";
+import { createHostsService, MESH_REFRESH_MS } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { createTunnelTickets } from "../src/tunnel.ts";
 import { FakeHost, facts } from "./fake-host.ts";
@@ -34,7 +34,9 @@ const meshOf = (byte: number, endpoints: readonly string[] = [`[2001:db8::${byte
 });
 
 function setup() {
-	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
+	/** The hosts service's clock, which a test moves on. */
+	const clock = { at: Date.now(), now: () => clock.at };
+	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test", clock });
 	const api: ComputeApi = createComputeApi({
 		backend: createHostBackend({
 			hosts: service,
@@ -83,8 +85,15 @@ function setup() {
 		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 		return host;
 	};
-	return { service, api, root, join, gate };
+	return { service, api, root, join, gate, clock };
 }
+
+/** A host's heartbeat, as kantel-host sends one every few seconds. */
+const heartbeat = (host: FakeHost) =>
+	host.send({
+		type: "heartbeat",
+		heartbeat: { capacity: { freeMemoryMiB: 20_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0.1 } },
+	});
 
 const welcomes = (host: FakeHost): HostWelcome[] =>
 	host.sent.flatMap((message) =>
@@ -284,6 +293,41 @@ describe("Pool meshes", () => {
 		await root.updateHost(a.hostId, { draining: false });
 		await vi.waitFor(() => expect(welcomes(a).length).toBe(count + 1));
 		expect(lastWelcome(a)?.mesh).toBeDefined();
+	});
+
+	it("makes good on a later heartbeat a telling that failed after its change was written", async () => {
+		const { root, join, gate, clock } = setup();
+		await root.createPool({ name: "ci", sync: true });
+		await root.createPool({ name: "web", sync: true });
+		const a = await join("ci", meshOf(1));
+		const b = await join("ci", meshOf(2));
+		const c = await join("ci", meshOf(3));
+		const w = await join("web", meshOf(4));
+		await vi.waitFor(() => expect(lastPeers(a)).toEqual([b.hostId, c.hostId]));
+		// The revoke and the move are written, and answered, but their tellings fail.
+		gate.fail = true;
+		await root.revokeHost(c.hostId);
+		await root.updateHost(b.hostId, { draining: true });
+		await root.updateHost(b.hostId, { pool: "web" });
+		expect(lastPeers(a)).toEqual([b.hostId, c.hostId]);
+		expect(peerLists(w)).toEqual([]);
+		gate.fail = false;
+		// Within MESH_REFRESH_MS nothing is checked; once past it, each host's next heartbeat sets it right.
+		heartbeat(a);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(lastPeers(a)).toEqual([b.hostId, c.hostId]);
+		clock.at += MESH_REFRESH_MS + 1;
+		for (const host of [a, b, w]) heartbeat(host);
+		await vi.waitFor(() => expect(lastPeers(a)).toEqual([]));
+		await vi.waitFor(() => expect(lastPeers(w)).toEqual([b.hostId]));
+		const webPrefix = await meshPrefix((await root.listPools()).items.find((pool) => pool.name === "web")?.id ?? "");
+		await vi.waitFor(() => expect(lastWelcome(b)?.mesh?.prefix).toBe(webPrefix));
+		// Told, it isn't told again on the next.
+		const sent = a.sent.length;
+		clock.at += MESH_REFRESH_MS + 1;
+		heartbeat(a);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(a.sent.length).toBe(sent);
 	});
 
 	it("takes a revoked host out of its peers' lists at once", async () => {
