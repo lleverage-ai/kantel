@@ -43,6 +43,7 @@ import { HostDiskUsage } from "./host-disk.tsx";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostMemoryUsage } from "./host-memory.tsx";
 import {
+	AccountHostsHeading,
 	DeletePoolDialog,
 	EmptyPool,
 	MoveHostDialog,
@@ -197,7 +198,14 @@ export function HostsPage({
 		[source],
 	);
 	const [poolsLocal, setPoolsLocal] = useState<ReadonlyMap<string, Pool | null>>(new Map());
-	const listedPools = poolsRead.state.status === "ready" ? poolsRead.state.value : undefined;
+	// The last pools read: a later read that fails keeps them, so a pool chosen in Add host never quietly goes.
+	const [lastPools, setLastPools] = useState<readonly Pool[]>();
+	useEffect(() => {
+		if (poolsRead.state.status === "ready") setLastPools(poolsRead.state.value);
+	}, [poolsRead.state]);
+	const listedPools = poolsRead.state.status === "ready" ? poolsRead.state.value : lastPools;
+	// The source has pools, but none could be read: the hosts are listed ungrouped, and Add host says so.
+	const poolsFailed = source.pools !== undefined && poolsRead.state.status === "error" && listedPools === undefined;
 	const pools = useMemo(() => {
 		if (listedPools === undefined) return undefined;
 		const byId = new Map(listedPools.map((pool) => [pool.id, pool]));
@@ -228,7 +236,11 @@ export function HostsPage({
 	};
 	// Read with every read of the hosts, so a pool made or a host moved elsewhere shows in its place.
 	useReloadOn(listed, poolsRead.reload);
-	const groups = hosts === undefined || pools === undefined ? undefined : poolGroups(hosts, pools);
+	// A super-admin's list has accounts' own hosts too, which are in their accounts' pools, not the deployment's: they
+	// are listed after the deployment's pools, and aren't moved from here.
+	const accountHosts = owner === undefined ? (hosts?.filter((host) => host.accountId !== undefined) ?? []) : [];
+	const pooledHosts = owner === undefined ? hosts?.filter((host) => host.accountId === undefined) : hosts;
+	const groups = pooledHosts === undefined || pools === undefined ? undefined : poolGroups(pooledHosts, pools);
 	const poolsSource = source.pools;
 	const poolActions = (group: PoolGroup): PoolActions => ({
 		onAdd: () => {
@@ -318,7 +330,7 @@ export function HostsPage({
 		onRemove: () => setRemoving(host),
 		...(source.update === undefined ? {} : { onUpdate: () => setUpdatingId(host.id) }),
 		...(source.setSnapshotLimit === undefined ? {} : { onLimit: () => setLimitingId(host.id) }),
-		...(moves ? { onMove: () => setMovingId(host.id) } : {}),
+		...(moves && (owner !== undefined || host.accountId === undefined) ? { onMove: () => setMovingId(host.id) } : {}),
 		opened: host.id === opened,
 	});
 	const newPoolButton =
@@ -393,7 +405,7 @@ export function HostsPage({
 					{notice.text}
 				</Notice>
 			)}
-			{poolsRead.state.status === "error" && listedPools === undefined ? (
+			{poolsFailed && poolsRead.state.status === "error" ? (
 				<Notice
 					level="error"
 					action={
@@ -418,10 +430,10 @@ export function HostsPage({
 				</Notice>
 			) : hosts === undefined || (source.pools !== undefined && poolsRead.state.status === "loading") ? (
 				<HostsSkeleton />
-			) : groups !== undefined && (hosts.length > 0 || groups.length > 1) ? (
-				// Grouped by pool once the pools are read; an account with no hosts and one pool sees the empty state.
+			) : groups !== undefined ? (
+				// Grouped by pool once the pools are read, each pool shown even with no hosts, so it can be renamed.
 				<>
-					<HostsSummary hosts={hosts} />
+					{hosts.length === 0 ? null : <HostsSummary hosts={hosts} />}
 					{narrow ? (
 						<div className="flex min-w-0 flex-col gap-6">
 							{groups.map((group) => (
@@ -446,6 +458,18 @@ export function HostsPage({
 									)}
 								</section>
 							))}
+							{accountHosts.length === 0 ? null : (
+								<section className="kt-pool flex min-w-0 flex-col" aria-label="Accounts' own hosts">
+									<div className="border-b border-border pb-2">
+										<AccountHostsHeading hosts={accountHosts} />
+									</div>
+									<ul className="kt-host-rows m-0 flex list-none flex-col p-0">
+										{accountHosts.map((host) => (
+											<HostPhoneRow key={host.id} {...rows(host)} />
+										))}
+									</ul>
+								</section>
+							)}
 						</div>
 					) : (
 						<SideScroll className={tableFrame}>
@@ -458,7 +482,7 @@ export function HostsPage({
 											<th
 												className={`${cell} bg-panel text-left font-regular ${index === 0 ? "" : "border-t"}`}
 												colSpan={COLUMNS}
-												scope="colgroup"
+												scope="rowgroup"
 											>
 												<PoolHeading group={group} actions={poolActions(group)} />
 											</th>
@@ -474,6 +498,22 @@ export function HostsPage({
 										)}
 									</tbody>
 								))}
+								{accountHosts.length === 0 ? null : (
+									<tbody className="kt-pool">
+										<tr>
+											<th
+												className={`${cell} border-t bg-panel text-left font-regular`}
+												colSpan={COLUMNS}
+												scope="rowgroup"
+											>
+												<AccountHostsHeading hosts={accountHosts} />
+											</th>
+										</tr>
+										{accountHosts.map((host) => (
+											<HostRow key={host.id} {...rows(host)} />
+										))}
+									</tbody>
+								)}
 							</table>
 						</SideScroll>
 					)}
@@ -518,6 +558,7 @@ export function HostsPage({
 				{...(pools === undefined ? {} : { pools })}
 				{...(addPool === undefined ? {} : { pool: addPool })}
 				poolsLoading={source.pools !== undefined && poolsRead.state.status === "loading"}
+				poolsFailed={poolsFailed}
 				now={now}
 				poll={poll}
 				onJoined={(host) => {
@@ -943,6 +984,7 @@ function AddHostDialog({
 	pools,
 	pool,
 	poolsLoading = false,
+	poolsFailed = false,
 	now,
 	poll,
 	onJoined,
@@ -956,6 +998,8 @@ function AddHostDialog({
 	pool?: string;
 	/** The pools are still being read: the command waits for them, so it isn't made twice. */
 	poolsLoading?: boolean;
+	/** The pools couldn't be read: the host joins the default, and the dialog says so. */
+	poolsFailed?: boolean;
 	now: number;
 	poll: boolean;
 	onJoined: (host: Host) => void;
@@ -979,6 +1023,7 @@ function AddHostDialog({
 				</div>
 			) : open ? (
 				<AddHostBody
+					poolsFailed={poolsFailed}
 					source={source}
 					{...(pools === undefined ? {} : { pools })}
 					{...(pool === undefined ? {} : { pool })}
@@ -995,6 +1040,7 @@ function AddHostBody({
 	source,
 	pools,
 	pool: poolAtFirst,
+	poolsFailed = false,
 	now,
 	poll,
 	onJoined,
@@ -1002,6 +1048,7 @@ function AddHostBody({
 	source: HostsSource;
 	pools?: readonly Pool[];
 	pool?: string;
+	poolsFailed?: boolean;
 	now: number;
 	poll: boolean;
 	onJoined: (host: Host) => void;
@@ -1026,6 +1073,9 @@ function AddHostBody({
 	return (
 		<div className="flex min-w-0 flex-col gap-3 pt-1 text-fg">
 			{choosing && pool !== undefined ? <PoolPicker pools={pools} value={pool} onChange={setChosen} /> : null}
+			{poolsFailed ? (
+				<Notice level="warning">Kantel couldn't read the pools, so this host joins the default pool.</Notice>
+			) : null}
 			<span className="text-sm font-medium">Run this on the host</span>
 			<HostJoinCommand source={source} input={joining} now={now} onJoined={onJoined} poll={poll} />
 			<Disclosure summary="Name and labels">

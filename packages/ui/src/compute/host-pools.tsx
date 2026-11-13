@@ -119,6 +119,21 @@ export function PoolHeading({ group, actions }: { group: PoolGroup; actions: Poo
 	);
 }
 
+/**
+ * The heading over accounts' own hosts on a super-admin's page: they are in their accounts' pools, not the deployment's,
+ * so they have no pool menu here.
+ */
+export function AccountHostsHeading({ hosts }: { hosts: readonly Host[] }) {
+	return (
+		<div className="kt-pool-heading flex min-w-0 flex-col gap-0.5">
+			<span className="font-medium text-fg">Accounts' own hosts</span>
+			<span className="text-sm font-regular text-muted">
+				{poolSummaryText(hosts)}. They're in their accounts' pools, which each account manages.
+			</span>
+		</div>
+	);
+}
+
 /** What a pool with no hosts says under its heading, with Add host here. */
 export function EmptyPool({ onAdd }: { onAdd: () => void }) {
 	return (

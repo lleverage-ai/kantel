@@ -1827,6 +1827,7 @@ function hostOf(host: Host): UiHost {
 				}),
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+		...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 	};
 }
 

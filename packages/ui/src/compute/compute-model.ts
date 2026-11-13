@@ -1873,6 +1873,11 @@ export interface Host {
 	readonly savedSnapshotLimitBytes?: number;
 	/** The pool it is in (`Pool`). Absent from a host the control plane hasn't put in one yet: its owner's default. */
 	readonly poolId?: string;
+	/**
+	 * The account whose own host it is, which runs only that account's sandboxes and is in that account's pools. Absent
+	 * from a deployment's shared host.
+	 */
+	readonly accountId?: string;
 }
 
 /**

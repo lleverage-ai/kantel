@@ -215,3 +215,11 @@ MobileLongContent.meta = { width: 390 };
 /** Move to pool on a phone. */
 export const MobileMove: Story = () => <Scenario narrow moving={FIRST} />;
 MobileMove.meta = { width: 390 };
+
+/** No hosts and one pool, as a new account starts: the default pool's heading, so it can be renamed, and Add host. */
+export const EmptyOnePool: Story = () => <Scenario options={{ empty: true, pools: "one" }} />;
+
+/** A super-admin's list with an account's own host: listed after the deployment's pools, with no Move to pool. */
+export const WithAccountHosts: Story = () => (
+	<Scenario options={{ hostOverrides: { hst_mac: { accountId: "acc_ada", poolId: "pool_ada_default" } } }} />
+);

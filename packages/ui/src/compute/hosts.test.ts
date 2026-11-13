@@ -1,8 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Host, Pool } from "./compute-model.ts";
 import { createComputeFixtures, HOSTS } from "./fixtures.ts";
 import { looksLikeOrigin } from "./host-join.tsx";
-import { poolGroups, poolNameError, poolSummaryText } from "./host-pools.tsx";
+import { MoveHostDialog, poolGroups, poolNameError, poolSummaryText } from "./host-pools.tsx";
 import { limitBytes, limitText, parseLabels } from "./hosts-page.tsx";
 
 describe("the public URL field", () => {
@@ -134,5 +136,43 @@ describe("the sample hosts' pools", () => {
 		await expect(pools.remove("pool_ci")).rejects.toThrow("2 hosts");
 		await pools.remove("pool_workflows");
 		expect((await pools.list()).map((each) => each.name)).toEqual(["default", "ci"]);
+	});
+});
+
+describe("Move to pool", () => {
+	const pools: Pool[] = [
+		{ id: "pool_default", name: "default", default: true, hosts: 2, createdAt: 0 },
+		{ id: "pool_ci", name: "ci", default: false, hosts: 2, createdAt: 0 },
+	];
+	const render = (host: Host) =>
+		renderToStaticMarkup(
+			createElement(MoveHostDialog, {
+				host,
+				pools,
+				onClose: () => {},
+				onDrain: async () => {},
+				onMove: async () => {},
+			}),
+		);
+	const sample = (id: string): Host => HOSTS.find((each) => each.id === id) as Host;
+
+	it("says the rule, and that an online host isn't drained, with Drain", () => {
+		const html = render(sample("hst_hetzner_1"));
+		expect(html).toContain("Only a drained host with no sandboxes moves.");
+		expect(html).toContain("not drained.");
+		expect(html).toContain(">Drain<");
+		// Only the pools it isn't in.
+		expect(html).toContain('value="pool_default"');
+		expect(html).not.toContain('value="pool_ci"');
+	});
+
+	it("says a drained host still has sandboxes", () => {
+		expect(render(sample("hst_hetzner_2"))).toContain("still has 7 sandboxes");
+	});
+
+	it("has nothing in the way for a drained host with none", () => {
+		const html = render({ ...sample("hst_mac"), state: "draining" });
+		expect(html).not.toContain("not drained");
+		expect(html).not.toContain("still has");
 	});
 });
