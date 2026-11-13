@@ -542,6 +542,53 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(refused.message).toContain("pool_gone");
 	});
 
+	it("upgrades an isolate into a snapshot in its own pool, and refuses one in another as a create naming its pool", async () => {
+		const store = await make();
+		const other = await hostLike("host_ci");
+		const { backend } = hostsBackend(() => [other]);
+		const { root, tom } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost("host_ci", { draining: true });
+		await root.updateHost("host_ci", { pool: "ci" });
+		await root.updateHost("host_ci", { draining: false });
+		const source = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: source.id });
+
+		// In the snapshot's pool: upgraded into it, its pool kept.
+		const here = await tom.createSandbox({ type: "isolate", autoStopMinutes: null, wait: true });
+		expect(here.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const upgraded = await tom.upgradeSandbox(here.id, { from: saved.id });
+		expect(upgraded).toMatchObject({
+			type: "microvm",
+			poolId: firstPoolId(OPERATOR_POOLS),
+			upgradedFrom: { snapshotId: saved.id },
+		});
+
+		// Kept to ci, whose hosts don't hold it: refused before anything changes, as a create from it naming ci is.
+		const there = await tom.createSandbox({ type: "isolate", autoStopMinutes: null, wait: true });
+		await store.sandboxes.update(there.id, (latest) => ({ ...latest, poolId: ci.id }));
+		const before = await store.sandboxes.get(there.id);
+		const created = await failure(tom.createSandbox({ from: saved.id, pool: "ci" }));
+		const refused = await failure(tom.upgradeSandbox(there.id, { from: saved.id }));
+		expect(refused.code).toBe(created.code);
+		expect(refused.details).toMatchObject({ reason: "host_unavailable" });
+		expect(refused.message).toBe(created.message);
+		expect(await store.sandboxes.get(there.id)).toEqual(before);
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(1);
+
+		// Its automatic upgrade's snapshot, by the same rule as it is set.
+		const patched = await failure(tom.updateSandbox(there.id, { autoUpgrade: true, autoUpgradeFrom: "golden" }));
+		expect(patched.message).toBe(created.message);
+		expect((await store.sandboxes.get(there.id))?.autoUpgradeFrom).toBeUndefined();
+		const count = (await store.sandboxes.list({ accountId: there.accountId })).length;
+		const made = await failure(
+			tom.createSandbox({ type: "isolate", pool: "ci", autoUpgrade: true, autoUpgradeFrom: "golden" }),
+		);
+		expect(made.message).toBe(created.message);
+		expect(await store.sandboxes.list({ accountId: there.accountId })).toHaveLength(count);
+	});
+
 	it("offers the shapes of the pool a create would go in", async () => {
 		const store = await make();
 		const big = {

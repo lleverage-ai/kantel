@@ -526,6 +526,9 @@ export const UPGRADE_OUTCOME_UNKNOWN =
 export const UPGRADE_UNSUPPORTED =
 	"This deployment's hosts don't upgrade isolates to microVMs; make a microVM and copy the files across";
 
+/** What an upgrade into a snapshot whose pool can't be told is told to do instead (`snapshotPool`). */
+const UPGRADE_IN_POOL = "upgrade into a snapshot saved in the sandbox's pool";
+
 export const SHARED_HOSTS_REFUSED =
 	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
 
@@ -3100,11 +3103,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * The pools a sandbox placed before may be placed in again: its own (`poolId`) only; any, for one from before pools;
 	 * none, where its pool has gone (it isn't placed elsewhere).
 	 */
-	async function poolOfSandbox(sandbox: StoredSandbox): Promise<PoolChoice | undefined> {
+	async function poolOfSandbox(sandbox: Pick<StoredSandbox, "poolId">): Promise<PoolChoice | undefined> {
 		if (sandbox.poolId === undefined) return undefined;
 		const pool = await store.pools.get(sandbox.poolId);
 		if (pool === undefined) return { name: sandbox.poolId };
 		return pool.owner === OPERATOR_POOLS ? { shared: pool.id, name: pool.name } : { own: pool.id, name: pool.name };
+	}
+
+	/**
+	 * The pool of the host that holds `snapshot` (its ref's, else its sandbox's), where that can be told. A sandbox made from
+	 * it runs only there, so one that must be in a pool (`kept`: the pool a create named, or the one an upgrading sandbox is
+	 * kept to) is refused when the snapshot is in another, or when its pool can't be told (a backend's opaque ref, its
+	 * sandbox gone), which isn't guessed. `name`: that pool as the caller knows it; `instead`: what to do then.
+	 */
+	async function snapshotPool(
+		snapshot: StoredSnapshot,
+		hosts: readonly StoredHost[],
+		kept?: { readonly id: string; readonly name: string; readonly instead: string },
+	): Promise<string | undefined> {
+		const holderId = await hostOfSnapshot(snapshot);
+		const holderPool = holderId === undefined ? undefined : hosts.find((host) => host.id === holderId)?.poolId;
+		if (kept !== undefined && holderPool !== kept.id) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				holderPool === undefined
+					? `The snapshot's pool can't be told, so it can't be made in ${kept.name}: ${kept.instead}`
+					: `The snapshot is in another pool than ${kept.name}: a sandbox made from it runs only where it is`,
+			);
+		}
+		return holderPool;
+	}
+
+	/** The pool a sandbox is kept to (`poolOfSandbox`), as `snapshotPool` takes it; none for one kept to none. */
+	function keptPool(pool: PoolChoice | undefined, instead: string) {
+		const id = pool?.own ?? pool?.shared;
+		return id === undefined || pool?.name === undefined ? undefined : { id, name: pool.name, instead };
 	}
 
 	/**
@@ -5276,9 +5310,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
-	/** What an isolate's automatic upgrade is to start from (`autoUpgradeFrom`), checked as its upgrade will take it. */
-	async function checkAutoUpgradeFrom(principal: Principal, accountId: string, from: string): Promise<void> {
-		requireMicrovmSnapshot(await snapshotFrom(principal, accountId, from));
+	/**
+	 * What an isolate's automatic upgrade is to start from (`autoUpgradeFrom`), checked as its upgrade will take it: the
+	 * snapshot's pool too, by the caller, once the sandbox's is known (`snapshotPool`).
+	 */
+	async function checkAutoUpgradeFrom(principal: Principal, accountId: string, from: string): Promise<StoredSnapshot> {
+		const snapshot = await snapshotFrom(principal, accountId, from);
+		requireMicrovmSnapshot(snapshot);
+		return snapshot;
 	}
 
 	/**
@@ -8302,10 +8341,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw placementError("unavailable", reason, `No host runs ${type} sandboxes`);
 				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
+				let autoUpgradeFrom: StoredSnapshot | undefined;
 				if (body.autoUpgradeFrom !== undefined) {
 					if (type !== "isolate")
 						throw new KantelError("invalid", "autoUpgradeFrom is an isolate's: a microVM isn't upgraded");
-					await checkAutoUpgradeFrom(principal, account.id, body.autoUpgradeFrom);
+					autoUpgradeFrom = await checkAutoUpgradeFrom(principal, account.id, body.autoUpgradeFrom);
 				}
 				// A size takes a disk beside it (`resources.diskGb` alone), but not vCPUs or memory.
 				if (
@@ -8349,21 +8389,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					pool,
 				);
 				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the pool of the host
-				// that holds it (its ref's, else its sandbox's), which must be the pool it named.
-				const holderId = from === undefined ? undefined : await hostOfSnapshot(from);
+				// that holds it (`snapshotPool`), which must be the pool it named.
 				const named = pool?.name === undefined ? undefined : (pool.own ?? pool.shared);
 				const holderPool =
-					holderId === undefined ? undefined : (await known).find((host) => host.id === holderId)?.poolId;
+					from === undefined
+						? undefined
+						: await snapshotPool(
+								from,
+								await known,
+								named === undefined ? undefined : { id: named, name: body.pool ?? named, instead: "name no pool" },
+							);
 				const placedPool = from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : holderPool;
-				// Naming a pool, the snapshot must be found in it: one whose host can't be told (a backend's opaque ref, its
-				// sandbox gone) can't be, and isn't guessed.
-				if (from !== undefined && named !== undefined && holderPool !== named) {
-					throw placementError(
-						"unavailable",
-						"host_unavailable",
-						holderPool === undefined
-							? `The snapshot's pool can't be told, so it can't be made in ${body.pool}: name no pool`
-							: `The snapshot is in another pool than ${body.pool}: a sandbox made from it runs only where it is`,
+				// What its automatic upgrade is to start from, in the pool it is placed in, as its upgrade will check it.
+				if (autoUpgradeFrom !== undefined) {
+					await snapshotPool(
+						autoUpgradeFrom,
+						await known,
+						keptPool(await poolOfSandbox({ poolId: placedPool }), UPGRADE_IN_POOL),
 					);
 				}
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
@@ -8585,7 +8627,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (current.type !== "isolate") {
 						throw new KantelError("invalid", "autoUpgradeFrom is an isolate's: this sandbox is a microVM already");
 					}
-					await checkAutoUpgradeFrom(principal, current.accountId, body.autoUpgradeFrom);
+					await snapshotPool(
+						await checkAutoUpgradeFrom(principal, current.accountId, body.autoUpgradeFrom),
+						await ensureHosts(),
+						keptPool(await poolOfSandbox(current), UPGRADE_IN_POOL),
+					);
 				}
 				const updated = await patchSandbox(current.id, (latest) => {
 					let stopsAt = latest.stopsAt;
@@ -11080,6 +11126,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// The hosts its microVM may go on, as a create of one would choose: its labels, pin and pool kept. From a snapshot,
 		// as a create from it: its host draining too, where only that host holds it.
+		const pool = await poolOfSandbox(current);
 		const hosts = requireHosts(
 			await known,
 			current.accountId,
@@ -11088,8 +11135,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			from !== undefined,
 			await mayShare(principal),
 			current.hostPin,
-			await poolOfSandbox(current),
+			pool,
 		);
+		// From a snapshot, in the pool the sandbox is kept to, as a create naming that pool takes one (`snapshotPool`).
+		if (from !== undefined) await snapshotPool(from, await known, keptPool(pool, UPGRADE_IN_POOL));
 		// From a snapshot, the microVM goes only on the host that holds it: refused now, the isolate untouched, when that
 		// host isn't one the sandbox may use.
 		const holder = from?.ref === undefined ? undefined : refHost(from.ref);

@@ -1611,16 +1611,55 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 	it("is refused before anything is sent when the snapshot's host is not one the sandbox may use", async () => {
 		const vmFacts = factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]);
 		const { root, api, service, hosts } = await setup([
-			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+			{
+				name: "isolates",
+				facts: {
+					...factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]),
+					labels: { site: "home" },
+				},
+			},
 			{ name: "holder", facts: vmFacts },
 		]);
 		const [isolates, holder] = hosts;
 		if (isolates === undefined || holder === undefined) throw new Error("no hosts");
-		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
-		await savedOn(api, sandbox.accountId, "hst_elsewhere");
+		const sandbox = await root.createSandbox({ type: "isolate", hostLabels: { site: "home" }, wait: true });
+		// Held in the sandbox's pool, by a host outside its labels.
+		await savedOn(api, sandbox.accountId, holder.hostId);
 		const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
 		expect(refused.status).toBe(503);
 		expect(refused.message).toContain("on a host this sandbox can't use now");
+		// Held by a host Kantel doesn't know: its pool can't be told, refused as a create naming a pool is.
+		await savedOn(api, sandbox.accountId, "hst_elsewhere");
+		const unknown = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
+		expect(unknown.status).toBe(503);
+		expect(unknown.message).toContain("The snapshot's pool can't be told");
+		expect(isolates.methods()).not.toContain("sandbox.upgrade.freeze");
+		expect(holder.methods()).not.toContain("sandbox.create");
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
+	});
+
+	it("is refused before anything is sent when the snapshot's host is in another pool, as a create naming the sandbox's is", async () => {
+		const vmFacts = factsOf(
+			["microvm"],
+			[HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.guestFeatures],
+		);
+		const { root, api, service, hosts } = await setup([
+			{ name: "isolates", facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+			{ name: "holder", facts: vmFacts },
+		]);
+		const [isolates, holder] = hosts;
+		if (isolates === undefined || holder === undefined) throw new Error("no hosts");
+		await root.createPool({ name: "ci" });
+		await root.updateHost(holder.hostId, { draining: true });
+		await root.updateHost(holder.hostId, { pool: "ci" });
+		await root.updateHost(holder.hostId, { draining: false });
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		await savedOn(api, sandbox.accountId, holder.hostId);
+		const created = await failure(root.createSandbox({ from: "project", pool: "default" }));
+		const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
+		expect(refused.status).toBe(503);
+		expect(refused.message).toBe(created.message);
+		expect(refused.message).toContain("another pool than default");
 		expect(isolates.methods()).not.toContain("sandbox.upgrade.freeze");
 		expect(holder.methods()).not.toContain("sandbox.create");
 		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
