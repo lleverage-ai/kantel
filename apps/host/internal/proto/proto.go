@@ -1254,11 +1254,14 @@ type ProcessList struct {
 }
 
 // FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
-// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted.
+// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted. With
+// RealTarget, a link at Target or above it is refused rather than followed (an upgrade's), by guest agents that know
+// it: an older one ignores it, so whoever needs it checks too.
 type FileExtractParams struct {
-	SandboxID string `json:"sandboxId"`
-	Archive   string `json:"archive"`
-	Target    string `json:"target"`
+	SandboxID  string `json:"sandboxId"`
+	Archive    string `json:"archive"`
+	Target     string `json:"target"`
+	RealTarget bool   `json:"realTarget,omitempty"`
 }
 
 type FileEntry struct {

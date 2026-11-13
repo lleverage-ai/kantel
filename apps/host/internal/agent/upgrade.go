@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,7 +34,8 @@ import (
 // The microVM may start from one of this host's microVM snapshots (From) or a template (Template), as a create from
 // them does (FeatureIsolateUpgradeFrom), its memory restored where the snapshot holds it: the files go in after it
 // runs, laid over what the snapshot has at UpgradeWorkspace (an isolate's file replaces the snapshot's, nothing of the
-// snapshot's is deleted).
+// snapshot's is deleted). A snapshot with a link at UpgradeWorkspace or any directory above it is refused
+// (realWorkspace) before a file goes in: the files would land wherever the link points.
 
 // upgradeSource is the isolate tier as an upgrade's source.
 type upgradeSource interface {
@@ -234,6 +236,9 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 		thaw()
 		return failed(cause)
 	}
+	if err := realWorkspace(ctx, mv, p.SandboxID); err != nil {
+		return undo(err)
+	}
 	moved, err := h.moveFiles(ctx, source, streamer, extractor, p.SandboxID)
 	if err != nil {
 		return undo(fmt.Errorf("moving the isolate's files into the microVM: %w", err))
@@ -369,10 +374,39 @@ func (h *Host) moveFiles(ctx context.Context, source upgradeSource, streamer Fil
 	if werr != nil {
 		return moved, werr
 	}
-	if err := extractor.ExtractArchive(ctx, proto.FileExtractParams{SandboxID: id, Archive: upgradeStaging, Target: proto.UpgradeWorkspace}); err != nil {
+	if err := extractor.ExtractArchive(ctx, proto.FileExtractParams{SandboxID: id, Archive: upgradeStaging, Target: proto.UpgradeWorkspace, RealTarget: true}); err != nil {
 		return moved, err
 	}
 	return moved, nil
+}
+
+// realWorkspace refuses a microVM with a link, or something that isn't a directory, at UpgradeWorkspace or any
+// directory above it, as a snapshot may have: the isolate's files would be extracted through it to somewhere else and
+// the upgrade would still succeed. Read from the guest's listing, which every guest agent answers without following a
+// link, so it holds for a snapshot whose agent is older than the extractor's own check (RealTarget), which an agent
+// running from the snapshot's image or memory may be. The first directory missing ends it: the extraction makes the
+// rest.
+func realWorkspace(ctx context.Context, mv Tier, id string) error {
+	at := "/"
+	for _, name := range strings.Split(strings.TrimPrefix(proto.UpgradeWorkspace, "/"), "/") {
+		entries, err := mv.ListFiles(ctx, proto.FileParams{SandboxID: id, Path: at})
+		if err != nil {
+			return fmt.Errorf("reading %s in the microVM: %w", at, err)
+		}
+		i := slices.IndexFunc(entries, func(e proto.FileEntry) bool { return e.Name == name })
+		if i < 0 {
+			return nil
+		}
+		at = filepath.Join(at, name)
+		switch entries[i].Type {
+		case "dir":
+		case "symlink":
+			return invalid("%s in the microVM is a symbolic link: the isolate's files go only into a real directory at %s", at, proto.UpgradeWorkspace)
+		default:
+			return invalid("%s in the microVM isn't a directory: the isolate's files go only into a real directory at %s", at, proto.UpgradeWorkspace)
+		}
+	}
+	return nil
 }
 
 // upgradesIsolates says the host runs both tiers, its isolates can give their files and its microVMs take them.

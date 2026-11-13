@@ -233,6 +233,115 @@ func TestExtractTarOverWhatIsThere(t *testing.T) {
 	}
 }
 
+// Into a real directory (an upgrade's, into a /home/user/workspace a snapshot laid out): a link at the target, or at a
+// directory above it, is refused before anything is written, and what it points at is as it was; a real directory
+// merges and a missing one is made, as ExtractTar does. ExtractTar itself still goes through such a link, as an upload
+// into /workspace on an upgraded microVM does.
+func TestExtractTarIntoRealDir(t *testing.T) {
+	archive := func(t *testing.T) string {
+		return writeTar(t, entry{name: "src/", kind: tar.TypeDir}, entry{name: "src/a.txt", kind: tar.TypeReg, body: "isolate"})
+	}
+	outsideOf := func(t *testing.T, root string) string {
+		t.Helper()
+		outside := filepath.Join(root, "opt", "project")
+		if err := os.MkdirAll(filepath.Join(outside, "src"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outside, "src", "a.txt"), []byte("theirs"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return outside
+	}
+	unchanged := func(t *testing.T, outside string) {
+		t.Helper()
+		if got, err := os.ReadFile(filepath.Join(outside, "src", "a.txt")); err != nil || string(got) != "theirs" {
+			t.Fatalf("what the link points at: %q %v", got, err)
+		}
+		if names, _ := os.ReadDir(filepath.Join(outside, "src")); len(names) != 1 {
+			t.Fatalf("%d in what the link points at", len(names))
+		}
+	}
+	refused := func(t *testing.T, err error, at string) {
+		t.Helper()
+		var refusal *errArchive
+		if !errors.As(err, &refusal) || !strings.Contains(err.Error(), at+" is a symbolic link") {
+			t.Fatalf("got %v, want %s refused", err, at)
+		}
+	}
+
+	t.Run("a link at the target", func(t *testing.T) {
+		root := t.TempDir()
+		outside := outsideOf(t, root)
+		target := filepath.Join(root, "home", "user", "workspace")
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, target); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, ExtractTarIntoRealDir(archive(t), target, -1, -1), target)
+		unchanged(t, outside)
+	})
+	t.Run("a link above it", func(t *testing.T) {
+		root := t.TempDir()
+		outside := outsideOf(t, root)
+		if err := os.MkdirAll(filepath.Join(root, "home"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// /home/user -> /opt, so /home/user/project would have been /opt/project, its src/a.txt written over.
+		if err := os.Symlink(filepath.Dir(outside), filepath.Join(root, "home", "user")); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, ExtractTarIntoRealDir(archive(t), filepath.Join(root, "home", "user", "project"), -1, -1), filepath.Join(root, "home", "user"))
+		unchanged(t, outside)
+		if names, _ := os.ReadDir(filepath.Dir(outside)); len(names) != 1 {
+			t.Fatalf("%d made beside what the link points at", len(names))
+		}
+	})
+	t.Run("a real directory merges", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), "workspace")
+		if err := os.MkdirAll(filepath.Join(target, "src"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, "src", "theirs.txt"), []byte("theirs"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := ExtractTarIntoRealDir(archive(t), target, -1, -1); err != nil {
+			t.Fatal(err)
+		}
+		for name, want := range map[string]string{"src/theirs.txt": "theirs", "src/a.txt": "isolate"} {
+			if got, err := os.ReadFile(filepath.Join(target, name)); err != nil || string(got) != want {
+				t.Errorf("%s: %q %v", name, got, err)
+			}
+		}
+	})
+	t.Run("a missing directory is made", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), "home", "user", "workspace")
+		if err := ExtractTarIntoRealDir(archive(t), target, -1, -1); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := os.ReadFile(filepath.Join(target, "src", "a.txt")); err != nil || string(got) != "isolate" {
+			t.Fatalf("src/a.txt: %q %v", got, err)
+		}
+	})
+	t.Run("ExtractTar still follows one", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, "home", "user", "workspace")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(dir, filepath.Join(root, "workspace")); err != nil {
+			t.Fatal(err)
+		}
+		if err := ExtractTar(archive(t), filepath.Join(root, "workspace"), -1, -1); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := os.ReadFile(filepath.Join(dir, "src", "a.txt")); err != nil || string(got) != "isolate" {
+			t.Fatalf("src/a.txt: %q %v", got, err)
+		}
+	})
+}
+
 // The agent's route extracts a staged tar into its target and deletes the tar; a refused one is a 400 that says why,
 // and its tar goes too.
 func TestExtractArchiveRoute(t *testing.T) {
@@ -242,7 +351,7 @@ func TestExtractArchiveRoute(t *testing.T) {
 	archive := writeTar(t, entry{name: "hi.txt", kind: tar.TypeReg, body: "hi"})
 	// The route chowns to the sandbox's user, which a test that isn't root can't; ExtractTar is tested above, so here
 	// only refusals and the tar's removal are checked unless running as root.
-	err := client.ExtractArchive(ctx, archive, target)
+	err := client.ExtractArchive(ctx, archive, target, false)
 	if os.Geteuid() == 0 {
 		if err != nil {
 			t.Fatal(err)
@@ -255,19 +364,28 @@ func TestExtractArchiveRoute(t *testing.T) {
 		t.Fatalf("the tar was left: %v", err)
 	}
 	bad := writeTar(t, entry{name: "/etc/x", kind: tar.TypeReg, body: "x"})
-	err = client.ExtractArchive(ctx, bad, target)
+	err = client.ExtractArchive(ctx, bad, target, false)
 	if !IsRefused(err) || !strings.Contains(RefusalMessage(err), "absolute name") {
 		t.Fatalf("a bad archive: %v", err)
 	}
 	if _, err := os.Stat(bad); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("the refused tar was left: %v", err)
 	}
-	if err := client.ExtractArchive(ctx, archive, ""); !IsRefused(err) {
+	if err := client.ExtractArchive(ctx, archive, "", false); !IsRefused(err) {
 		t.Fatalf("no target: %v", err)
+	}
+	// Asked for a real target, a link there is a 400 that says so.
+	linked := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(t.TempDir(), linked); err != nil {
+		t.Fatal(err)
+	}
+	ok := writeTar(t, entry{name: "hi.txt", kind: tar.TypeReg, body: "hi"})
+	if err := client.ExtractArchive(ctx, ok, linked, true); !IsRefused(err) || !strings.Contains(RefusalMessage(err), "is a symbolic link") {
+		t.Fatalf("a linked target: %v", err)
 	}
 	// An agent from before the route answers 404 or 405.
 	older := clientFor(t, http.NewServeMux())
-	if err := older.ExtractArchive(ctx, archive, target); !IsUnknownRoute(err) {
+	if err := older.ExtractArchive(ctx, archive, target, false); !IsUnknownRoute(err) {
 		t.Fatalf("an older agent: %v", err)
 	}
 }

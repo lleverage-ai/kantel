@@ -39,7 +39,11 @@ func (s *Server) extractArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	// Owned by the sandbox's default user, as a file write's are: 1000 on Kantel's image, an injected image's own user.
 	uid, gid := s.owner("")
-	err = ExtractTar(archive, target, uid, gid)
+	extract := ExtractTar
+	if r.URL.Query().Get("realTarget") == "1" {
+		extract = ExtractTarIntoRealDir
+	}
+	err = extract(archive, target, uid, gid)
 	// The tar goes whatever happened: it was only ever staged for this.
 	_ = os.Remove(archive)
 	var refused *errArchive
@@ -59,14 +63,32 @@ func (s *Server) extractArchive(w http.ResponseWriter, r *http.Request) {
 // name, one with "..", or one under a symbolic link (the archive's or one already there) is refused, as is a link
 // that is absolute or climbs out lexically (Kantel checked how links resolve through each other before staging it,
 // but nothing here relies on that: no link is ever followed). An existing file or link is replaced, never written
-// through; an existing directory is kept. Modes are kept but setuid and setgid, and so are modification times.
+// through; an existing directory is kept. Modes are kept but setuid and setgid, and so are modification times. A link
+// at target or above it is followed, as for any path a caller names: an upload into /workspace on an upgraded microVM
+// goes through its link.
 func ExtractTar(archive, target string, uid, gid int) error {
+	return extractTar(archive, target, uid, gid, false)
+}
+
+// ExtractTarIntoRealDir is ExtractTar into a target that is a directory all the way down from /: a link at target or
+// at any directory above it, or something there that isn't a directory, is refused before anything is written, so
+// nothing goes somewhere else a link there points at. An upgrade's files go in this way, into a /home/user/workspace a
+// snapshot laid out.
+func ExtractTarIntoRealDir(archive, target string, uid, gid int) error {
+	return extractTar(archive, target, uid, gid, true)
+}
+
+func extractTar(archive, target string, uid, gid int, realTarget bool) error {
 	f, err := os.Open(archive)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := mkdirAllOwned(target, uid, gid); err != nil {
+	mkdir := mkdirAllOwned
+	if realTarget {
+		mkdir = realDirAll
+	}
+	if err := mkdir(target, uid, gid); err != nil {
 		return err
 	}
 	links := map[string]bool{}
@@ -271,6 +293,16 @@ func dirMode(raw int64) os.FileMode {
 		mode |= os.ModeSticky
 	}
 	return mode
+}
+
+// realDirAll is mkdirAllOwned walking down from / without following a link: one at dir or above it, or anything
+// there that isn't a directory, is refused.
+func realDirAll(dir string, uid, gid int) error {
+	rel := strings.TrimPrefix(filepath.Clean(dir), "/")
+	if rel == "" {
+		rel = "."
+	}
+	return dirsUnder("/", rel, uid, gid)
 }
 
 // mkdirAllOwned makes dir and what it needs above it, each one it makes owned by uid:gid.

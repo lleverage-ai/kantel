@@ -4270,7 +4270,7 @@ func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams)
 	if err != nil {
 		return err
 	}
-	err = client.ExtractArchive(ctx, p.Archive, p.Target)
+	err = client.ExtractArchive(ctx, p.Archive, p.Target, p.RealTarget)
 	switch {
 	case err == nil:
 		return nil

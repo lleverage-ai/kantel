@@ -401,10 +401,14 @@ func (c *Client) WriteFileStream(ctx context.Context, path string, r io.Reader, 
 }
 
 // ExtractArchive has the agent extract the tar at archive into the directory target with its own code (ExtractTar),
-// then delete the tar. An archive it won't extract is the agent's 400 (IsRefused); an agent from before it, 404 or
-// 405 (IsUnknownRoute).
-func (c *Client) ExtractArchive(ctx context.Context, archive, target string) error {
+// then delete the tar; with realTarget, into a target with no link at or above it (ExtractTarIntoRealDir), which an
+// agent from before it ignores. An archive it won't extract is the agent's 400 (IsRefused); an agent from before it,
+// 404 or 405 (IsUnknownRoute).
+func (c *Client) ExtractArchive(ctx context.Context, archive, target string, realTarget bool) error {
 	q := url.Values{"archive": {archive}, "target": {target}}
+	if realTarget {
+		q.Set("realTarget", "1")
+	}
 	res, err := c.do(ctx, http.MethodPost, "/files/extract?"+q.Encode(), nil, nil)
 	if err != nil {
 		return err
