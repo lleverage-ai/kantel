@@ -1,6 +1,7 @@
 package memplan
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +284,51 @@ func TestGroupLimitIsCritical(t *testing.T) {
 	p.ObserveHost(t0.Add(3*time.Second), near)
 	if level, _ := p.Level(); level != LevelCritical {
 		t.Fatalf("near its limit: %v", level)
+	}
+}
+
+// The production host of LLE-19010 (Kantel 0.5.0): a 48 GiB group limit, 4915 MiB kept back, its microVMs resident
+// about 10 GiB, the rest of the group clean page cache, the machine with 105 GiB available. These are the figures
+// hostinfo reads from that group (TestReadMemoryIncident); inactive is the inactive page cache it counts free today.
+const (
+	incidentTotal   = int64(49152)
+	incidentReserve = int64(4915)
+)
+
+var incidentReadings = []Reading{
+	{ID: "sbx_sxnqh685ul", UsedMiB: 6454, RSSMiB: 7413, Guest: true},
+	{ID: "sbx_acgjzi17s0", UsedMiB: 1110, RSSMiB: 2236, Guest: true},
+}
+
+func incidentMemory(inactive, limitHits int64) hostinfo.Memory {
+	return hostinfo.Memory{TotalMiB: incidentTotal, AvailableMiB: 33 + inactive, PressureSome: 3.1, PressureFull: 0.4,
+		Limited: true, GroupMaxMiB: incidentTotal, GroupHeadroomMiB: 33, GroupLimitHits: limitHits}
+}
+
+// What made the incident's host critical: with its group at its limit, the headroom the group has left, whatever
+// share of its cache is inactive; with the kernel keeping a twentieth inactive, what is available too; and with a
+// write through the cache meeting the limit since the last reading, the limit.
+func TestIncidentReadings(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		inactive  int64
+		limitHits int64
+		want      []string
+	}{
+		{"a twentieth inactive", 1952, 1200, []string{WhyAvailable, WhyGroupHeadroom}},
+		{"half inactive", 19184, 1200, []string{WhyGroupHeadroom}},
+		{"a write meeting the limit", 19184, 1201, []string{WhyAtLimit, WhyGroupHeadroom}},
+	} {
+		p := New(on(), incidentTotal-incidentReserve, incidentReserve, 1.5)
+		p.Observe(t0, incidentReadings, incidentMemory(c.inactive, 1200))
+		p.Observe(t0.Add(time.Second), incidentReadings, incidentMemory(c.inactive, c.limitHits))
+		level, run := p.Level()
+		p.mu.Lock()
+		why := p.criticalLocked()
+		p.mu.Unlock()
+		if level != LevelCritical || run != 2 || !slices.Equal(why, c.want) {
+			t.Errorf("%s: %v (%d in a row) for %v, want critical for %v", c.name, level, run, why, c.want)
+		}
 	}
 }
 

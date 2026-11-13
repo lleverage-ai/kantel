@@ -138,6 +138,45 @@ func TestReadMemorySharedLimitAbove(t *testing.T) {
 	}
 }
 
+// The production host of LLE-19010: an operator's MemoryMax of 48 GiB on kantel-host.service, the group at its
+// limit, nearly all of it clean page cache from copying disk images and the VMs' disk files (the kernel keeps about a
+// twentieth of that much file cache inactive), about 10 GiB anonymous, no swap, and the machine with over 100 GiB
+// available.
+const (
+	incidentMeminfo = "MemTotal:       131072000 kB\nMemAvailable:   110100480 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\n"
+	incidentGroup   = "cgroup/system.slice/kantel-host.service/"
+	incidentStat    = "anon 11005853696\nfile 40231763968\nkernel 268435456\nshmem 16777216\nfile_mapped 1073741824\n" +
+		"file_dirty 50331648\nfile_writeback 0\nactive_anon 11005853696\ninactive_anon 16777216\n" +
+		"active_file 38168166400\ninactive_file 2046820352\n"
+)
+
+func incidentFiles() map[string]string {
+	return map[string]string{
+		"proc/meminfo":                        incidentMeminfo,
+		"proc/vmstat":                         "pswpout 0\n",
+		"proc/self/cgroup":                    "0::/system.slice/kantel-host.service\n",
+		"cgroup/system.slice/memory.max":      "max\n",
+		incidentGroup + "memory.max":          "51539607552\n",
+		incidentGroup + "memory.current":      "51505004544\n",
+		incidentGroup + "memory.stat":         incidentStat,
+		incidentGroup + "memory.events":       "low 0\nhigh 0\nmax 1200\noom 0\noom_kill 0\n",
+		incidentGroup + "memory.pressure":     "some avg10=3.10 avg60=1 avg300=0 total=1\nfull avg10=0.40 avg60=0 avg300=0 total=1\n",
+		incidentGroup + "memory.swap.current": "0\n",
+	}
+}
+
+func TestReadMemoryIncident(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, incidentFiles())
+	m := memoryPaths{proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup")}.read()
+	// Today: 33 MiB to the limit, and only the inactive cache counted free.
+	want := Memory{TotalMiB: 49152, AvailableMiB: 33 + 1952, PressureSome: 3.1, PressureFull: 0.4, Limited: true,
+		GroupMaxMiB: 49152, GroupHeadroomMiB: 33, GroupLimitHits: 1200}
+	if m != want {
+		t.Fatalf("got %+v\nwant %+v", m, want)
+	}
+}
+
 // Over-commit caps the host's own group: memory.max and no swap, where unset, recorded so the cap isn't then read as
 // the machine's memory; an operator's limit is left as it is.
 func TestConfineMemory(t *testing.T) {

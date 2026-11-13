@@ -278,6 +278,33 @@ func (p *Plan) Forget(id string) {
 	p.mu.Unlock()
 }
 
+// The readings that make the host critical, named as the guard's log names its figures.
+const (
+	WhyAvailable     = "available"
+	WhyPressure      = "pressureFull"
+	WhyAtLimit       = "atLimit"
+	WhyGroupHeadroom = "groupHeadroom"
+)
+
+// criticalLocked is why the host is critical at the last observation: none when it isn't.
+func (p *Plan) criticalLocked() []string {
+	h, r := p.host, p.reserveMiB
+	var why []string
+	if h.AvailableMiB < r/2 {
+		why = append(why, WhyAvailable)
+	}
+	if h.PressureFull >= criticalPressureFull {
+		why = append(why, WhyPressure)
+	}
+	if p.atLimit {
+		why = append(why, WhyAtLimit)
+	}
+	if h.GroupMaxMiB > 0 && h.GroupHeadroomMiB < r/4 {
+		why = append(why, WhyGroupHeadroom)
+	}
+	return why
+}
+
 func (p *Plan) levelLocked() Level {
 	if p.hostAt.IsZero() {
 		return LevelOK
@@ -285,8 +312,7 @@ func (p *Plan) levelLocked() Level {
 	h, r := p.host, p.reserveMiB
 	swapping := len(p.swap) > 1 && p.swap[len(p.swap)-1].mib-p.swap[0].mib >= swappingMiB
 	switch {
-	case h.AvailableMiB < r/2 || h.PressureFull >= criticalPressureFull || p.atLimit ||
-		(h.GroupMaxMiB > 0 && h.GroupHeadroomMiB < r/4):
+	case len(p.criticalLocked()) > 0:
 		return LevelCritical
 	case h.AvailableMiB < r || h.PressureSome >= refusingPressureSome || swapping:
 		return LevelRefusing
