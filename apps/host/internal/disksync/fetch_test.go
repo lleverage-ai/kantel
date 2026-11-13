@@ -16,8 +16,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -588,6 +591,44 @@ func TestFetchOfAVersionHeldDropsItsPartial(t *testing.T) {
 	if got, _ := os.ReadFile(f.local.img("v2")); !bytes.Equal(got, data) {
 		t.Fatal("the version held changed")
 	}
+}
+
+// Where holes can't be punched, zero blocks are cleared by writing zeros over the data they have only, taking no room:
+// a version's zero blocks fetched onto an empty file write nothing, and a block of the base's that is zeros now is
+// written over.
+func TestFetchClearsZerosWithoutHoles(t *testing.T) {
+	punch := punchHole
+	punchHole = func(*os.File, int64, int64) error { return unix.EOPNOTSUPP }
+	t.Cleanup(func() { punchHole = punch })
+	f := newFixture(t, 1)
+	empty := make([]byte, 64*block)
+	f.put("v2", empty)
+	if _, err := wait(t, f.fetcher().Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})); err != nil {
+		t.Fatal(err)
+	}
+	f.checkHeld("v2", empty)
+	var st syscall.Stat_t
+	if err := syscall.Stat(f.local.img("v2"), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Blocks*512 > block {
+		t.Fatalf("a 256 MiB version of zeros took %d bytes", st.Blocks*512)
+	}
+	if f.local.most != 0 {
+		t.Fatalf("reserved %d for zeros", f.local.most)
+	}
+
+	g := newFixture(t, 1)
+	old := disk(t, 3, 0)
+	g.local.put(t, "v1", old)
+	g.local.base = "v1"
+	data := append([]byte{}, old...)
+	clear(data[block : 2*block])
+	g.put("v2", data)
+	if _, err := wait(t, g.fetcher().Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})); err != nil {
+		t.Fatal(err)
+	}
+	g.checkHeld("v2", data)
 }
 
 // A map that isn't the catalogue's is refused.
