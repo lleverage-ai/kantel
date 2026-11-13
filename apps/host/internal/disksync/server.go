@@ -50,6 +50,8 @@ type Server struct {
 	Now func() time.Time
 	// Port is the TCP port it listens on (default Port).
 	Port int
+	// Limit holds what it serves to the host's --sync-rate (nil: no limit).
+	Limit *Limiter
 
 	mu   sync.Mutex
 	addr netip.Addr
@@ -146,7 +148,7 @@ func (s *Server) Handler() http.Handler {
 		defer f.Close()
 		w.Header().Set("Content-Type", "application/octet-stream")
 		// A version's file never changes once it is published: no validators, so a Range is always served.
-		http.ServeContent(w, r, "", time.Time{}, f)
+		http.ServeContent(limitedWriter{ResponseWriter: w, ctx: r.Context(), l: s.Limit}, r, "", time.Time{}, f)
 	})
 	return mux
 }

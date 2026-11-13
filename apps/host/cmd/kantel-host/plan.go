@@ -55,7 +55,7 @@ type installOptions struct {
 	controlPlane, token, name, images, root, configPath, tiers, isolateRuntime string
 	labels                                                                     map[string]string
 	proxyDataPath, injectGuestAgent, noStart, dryRun                           bool
-	meshPort                                                                   int
+	meshPort, syncRate                                                         int
 	meshEndpoints                                                              []string
 }
 
@@ -206,6 +206,12 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 	}
 	if len(o.meshEndpoints) > 0 {
 		cfg.MeshEndpoints = o.meshEndpoints
+	}
+	if o.syncRate != 0 {
+		if o.syncRate < -1 {
+			return nil, usageErrorf("install", "--sync-rate %d: want Mbit/s, or -1 for no limit", o.syncRate)
+		}
+		cfg.SyncRateMbit = o.syncRate
 	}
 	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.IsolateBinary, cfg.IsolateAssets, cfg.GuestAgent = "", image, "", "", "", "", agentBin
 	cfg.Defaults()

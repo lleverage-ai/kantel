@@ -106,6 +106,7 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 	meshPort := fs.Int("mesh-port", 0, "The UDP `port` of the WireGuard mesh with the other hosts of this host's pool (default 51820; -1: no mesh)")
 	meshEndpoints := &listFlag{}
 	fs.Var(meshEndpoints, "mesh-endpoint", "Where the host's mesh peers reach it besides its own addresses, `host:port`, such as a forwarded port (repeatable, or comma-separated)")
+	syncRate := fs.Int("sync-rate", 0, "The most peer sync moves over the mesh each way, in `Mbit/s` (default half the link the host detects; -1: no limit)")
 	noStart := fs.Bool("no-start", false, "Install and register, but don't start the service")
 	dryRun := fs.Bool("dry-run", false, "Print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
 	if err := fs.parse(args); err != nil {
@@ -131,6 +132,7 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
 		tiers: *tiers, isolateRuntime: *isolateRuntime, labels: labels, proxyDataPath: *proxyDataPath,
 		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun, meshPort: *meshPort, meshEndpoints: *meshEndpoints,
+		syncRate: *syncRate,
 	}, nil
 }
 

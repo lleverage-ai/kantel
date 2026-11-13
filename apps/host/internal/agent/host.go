@@ -125,8 +125,11 @@ type Host struct {
 	guard memoryGuard
 	// mesh is the host's side of its pool's WireGuard mesh (mesh.go), nil when the host doesn't offer it.
 	mesh hostMesh
-	// peers serves the versions the host holds to its mesh peers (peersync.go), nil without the mesh.
-	peers *disksync.Server
+	// peers serves the versions the host holds to its mesh peers (peersync.go), and fetcher fetches versions from them;
+	// nil without the mesh. syncStop ends the fetches.
+	peers    *disksync.Server
+	fetcher  *disksync.Fetcher
+	syncStop context.CancelFunc
 	// grantKey is the control plane's grant key from its last welcome ("" none), and welcomeID the host ID it named.
 	grantKey  atomic.Pointer[string]
 	welcomeID atomic.Pointer[string]
@@ -204,7 +207,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
-			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
+			FetchSticky: h.fetchStickyLater,
+			Root:        cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events:         h.sandboxEvent,
@@ -365,6 +369,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.mesh != nil {
 		features = append(features, proto.FeatureMesh)
 	}
+	if h.fetchesSticky() {
+		features = append(features, proto.FeatureDiskSync)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -477,6 +484,7 @@ func (h *Host) Close() {
 	h.stopImagePatching()
 	if h.peers != nil {
 		h.peers.Close()
+		h.syncStop()
 	}
 	if h.mesh != nil {
 		h.mesh.Close()
@@ -1123,6 +1131,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host has no sticky disks"}
 		}
 		return map[string]any{}, sticky.DeleteSticky(p)
+	case proto.MethodDiskFetch:
+		return h.diskFetch(params)
 	case proto.MethodHostImages:
 		return h.hostImages(params)
 	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:
