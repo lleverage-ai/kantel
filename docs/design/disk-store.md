@@ -150,7 +150,7 @@ Where things stand: a host dials one WebSocket out to the control plane (`/v1/ho
 
 **Peers.** `Welcome.mesh` carries `{ address, prefix, peers: [{ hostId, publicKey, address, endpoints }] }`. A `mesh.peers` message brings the whole list again whenever a pool member joins, leaves, is revoked or reports new endpoints. The host applies it as the desired state: it adds, updates and removes WireGuard peers to match.
 
-**The device.** `kantel-host` runs WireGuard in-process (`golang.zx2c4.com/wireguard`) over a TUN device named `kmesh0`. It mustn't start with `kt`, because the firewall treats every `kt+` interface as a sandbox's TAP device. The in-process implementation is chosen over the kernel module for two reasons. Finding a NAT's mapping (STUN) needs to send from the same UDP socket WireGuard uses, which the kernel module doesn't allow but a custom `conn.Bind` does. And it needs no kernel module or `wg` tools on the host. Throughput is the risk, so the first PR measures it (below). The firewall accepts only the peer sync port on `kmesh0`, and only from the pool's prefix. Forwarding stays off, and sandboxes can't reach mesh addresses.
+**The device.** `kantel-host` runs WireGuard in-process (`golang.zx2c4.com/wireguard`) over a TUN device named `kmesh0`. It mustn't start with `kt`, because the firewall treats every `kt+` interface as a sandbox's TAP device. The in-process implementation is chosen over the kernel module for two reasons. Finding a NAT's mapping (STUN) needs to send from the same UDP socket WireGuard uses, which the kernel module doesn't allow but a custom `conn.Bind` does. And it needs no kernel module or `wg` tools on the host. Throughput was the risk; the spike (below) found it keeps up with the kernel module. The firewall accepts only the peer sync port on `kmesh0`, and only from the pool's prefix. Forwarding stays off, and sandboxes can't reach mesh addresses.
 
 **Endpoints, in three steps.** Each step is useful without the next:
 
@@ -204,6 +204,31 @@ Each host has a sync bandwidth limit (`--sync-rate`, both directions, default 50
 Each step is one PR with its own tests:
 
 1. **Spike: WireGuard throughput.** Two Hetzner hosts, in-process WireGuard over TUN against the kernel module, iperf3 and a 50 GB file over HTTP/2. Decided (13 Nov 2026): if in-process is under about 70% of the kernel's speed, hosts that reach each other directly hand the same keys and addresses to the kernel module, and the in-process code stays for NAT traversal and the relay.
+
+   Result (13 Nov 2026): in-process is at least as fast as the kernel, so every host uses it and the kernel path isn't built. Measured between `lleverage-ci-5` and `lleverage-ci-6` (AX102, Ryzen 9 7950X3D, Ubuntu kernel 6.8, wireguard-go of 24 Oct 2026 with its TUN and UDP offloads on), each figure the median of 3 runs, while CI jobs ran on the hosts (up to 2 at once, load average up to 13). TCP ran for 20 seconds; the download was a 20 GiB file of random data on the XFS data volume, dropped from the page cache before each run, fetched over one HTTP/2 connection without TLS as 64 MiB ranges with 8 in flight. CPU is in cores, counting the test's processes, the kernel's worker and softirq threads and interrupt time, so the CI jobs' own work is left out.
+
+   | Between the hosts (1 Gbit/s link) | No tunnel | Kernel WireGuard | In-process | In-process / kernel |
+   | --- | --- | --- | --- | --- |
+   | TCP, 1 stream | 0.928 Gbit/s | 0.878 Gbit/s | 0.889 Gbit/s | 101% |
+   | TCP, 8 streams | 0.928 Gbit/s | 0.889 Gbit/s | 0.889 Gbit/s | 100% |
+   | HTTP/2 download from disk | 0.925 Gbit/s | 0.883 Gbit/s | 0.884 Gbit/s | 100% |
+   | CPU, sender / receiver, TCP 1 stream | 0.02 / 0.14 | 0.57 / 0.90 | 0.36 / 0.73 | |
+   | CPU, sender / receiver, TCP 8 streams | 0.02 / 0.32 | 0.71 / 1.83 | 0.51 / 0.81 | |
+   | CPU, server / client, download | 0.33 / 0.29 | 0.98 / 1.39 | 0.86 / 1.05 | |
+
+   The hosts' links are 1 Gbit/s, so both tunnels run at the link's speed less WireGuard's overhead, and in-process uses less CPU doing it. To see past the link, the same tests ran on one host between two network namespaces joined by a veth pair (both ends share the machine's CPUs):
+
+   | One host, two namespaces | No tunnel | Kernel WireGuard | In-process | In-process / kernel |
+   | --- | --- | --- | --- | --- |
+   | TCP, 1 stream | 41.7 Gbit/s | 3.30 Gbit/s | 15.8 Gbit/s | 480% |
+   | TCP, 8 streams | 211 Gbit/s | 3.28 Gbit/s | 11.5 Gbit/s | 352% |
+   | HTTP/2 download from disk | 4.66 Gbit/s | 3.19 Gbit/s | 5.11 Gbit/s | 160% |
+   | CPU, both ends, TCP 1 stream | 2.1 | 7.1 | 8.1 | |
+   | CPU, both ends, TCP 8 streams | 15.9 | 7.1 | 6.9 | |
+   | CPU, both ends, download | 3.3 | 9.4 | 9.3 | |
+
+   The download without a tunnel is bound by reading the file, and in-process reaches that bound; kernel WireGuard over a veth pair stops at about 3.3 Gbit/s. Two things for step 3: the Robot firewall in front of Lleverage's CI hosts filters IPv4 only and lets in nothing but SSH, ICMP and replies, so the spike ran over the hosts' public IPv6 addresses, and the mesh there needs the same (or a Robot rule for the mesh port); and with 1 Gbit/s links, `--sync-rate`'s default of half the link is about 60 MB/s. The spike's code is on the unmerged branch `tvd/lle-18987-wg-spike` (`apps/host/cmd/wgspike`).
+
 2. **Pools:** pool records, a host's pool (join tokens name it), placement by pool, data belonging to a pool, then GitHub runner kinds inside pools.
 3. **The mesh with direct endpoints (2a step 1):** keys, addresses, `Welcome.mesh` and `mesh.peers`, the device and firewall, peer health on the host page. Test: `local-stack.sh` with two hosts in network namespaces.
 4. **Block maps (2b)** for sticky disk versions, made at commit.
