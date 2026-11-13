@@ -3953,6 +3953,45 @@ describe("hosts", () => {
 		expect((await root.listHosts()).items[0]?.memory).toBeUndefined();
 	});
 
+	it("shows how a host reaches its mesh peers as the backend last said, without writing it to the host's record", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const report: computeSchema.HostMesh = {
+			address: "fd4b:91c2:7e10:0:5a1e:3f20:9c4d:1b07",
+			peers: [
+				{
+					hostId: "host_b",
+					path: "direct",
+					endpoint: "203.0.113.24:51820",
+					lastHandshake: 1_700_000_000_000,
+					rttMs: 0.4,
+				},
+				{ hostId: "host_c", path: "none" },
+			],
+		};
+		let mesh: computeSchema.HostMesh | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				return {
+					...read,
+					hosts: (read.hosts ?? []).map((host) => (mesh === undefined ? host : { ...host, mesh })),
+				};
+			},
+		};
+		const { root } = setup(backend, { store });
+		expect((await root.getHost(STUB_HOST_ID)).mesh).toBeUndefined();
+		mesh = report;
+		expect((await root.getHost(STUB_HOST_ID)).mesh).toEqual(report);
+		expect((await root.listHosts()).items[0]?.mesh).toEqual(report);
+		const written = await store.hosts.get(STUB_HOST_ID);
+		expect(written).not.toHaveProperty("mesh");
+		// A host whose mesh went down (its pool's sync off) has none.
+		mesh = undefined;
+		expect((await root.listHosts()).items[0]?.mesh).toBeUndefined();
+	});
+
 	it("shows what takes a host's disk as the host last measured it, its snapshots split by their records", async () => {
 		const store = createMemoryStore();
 		const stub = createStubBackend();
