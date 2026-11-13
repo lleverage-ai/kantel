@@ -47,6 +47,7 @@ import {
 	DeletePoolDialog,
 	EmptyPool,
 	MoveHostDialog,
+	oneAtATime,
 	type PoolActions,
 	type PoolGroup,
 	PoolHeading,
@@ -249,23 +250,32 @@ export function HostsPage({
 		},
 		onRename: () => setPoolDialog({ kind: "rename", pool: group.pool.id }),
 		onMakeDefault: () => void makeDefault(group.pool),
+		defaulting,
 		onDelete: () => setPoolDialog({ kind: "delete", pool: group.pool.id }),
 	});
-	const makeDefault = async (pool: Pool) => {
-		if (poolsSource === undefined) return;
-		try {
-			changePool(pool.id, await poolsSource.makeDefault(pool.id));
-			setNotice({
-				level: "info",
-				text: `${pool.name} is the default pool now. New hosts join it unless you choose another.`,
-			});
-		} catch (caught) {
-			setNotice({
-				level: "error",
-				text: messageOf(caught, `Kantel couldn't make ${pool.name} the default. Try again.`),
-			});
-		}
-	};
+	// One change of default at a time, from any pool's menu: Kantel makes the one it handles last the default, so two in
+	// flight could land in either order. Make default is greyed out on every pool until the change settles.
+	const [defaultGate] = useState(oneAtATime);
+	const [defaulting, setDefaulting] = useState(false);
+	const makeDefault = (pool: Pool) =>
+		defaultGate.run(async () => {
+			if (poolsSource === undefined) return;
+			setDefaulting(true);
+			try {
+				changePool(pool.id, await poolsSource.makeDefault(pool.id));
+				setNotice({
+					level: "info",
+					text: `${pool.name} is the default pool now. New hosts join it unless you choose another.`,
+				});
+			} catch (caught) {
+				setNotice({
+					level: "error",
+					text: messageOf(caught, `Kantel couldn't make ${pool.name} the default. Try again.`),
+				});
+			} finally {
+				setDefaulting(false);
+			}
+		});
 	const shownPool = (id: string) => pools?.find((pool) => pool.id === id);
 
 	const drain = async (host: Host, on: boolean) => {

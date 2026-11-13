@@ -404,7 +404,9 @@ default pool comes first, then the rest by name, and a host in no pool the page 
 puts it. Every pool shows, even with no hosts at all, so a new account's one pool can be renamed. On a super-admin's
 page, accounts' own hosts are in their accounts' pools, not the deployment's: they're listed after the deployment's
 pools under their own heading (`AccountHostsHeading`), with no pool menu and no Move to pool. New pool and Rename take a name the API takes (lower-case letters, digits and dashes), checked as it's typed
-(`PoolNameDialog`); Delete asks first (`DeletePoolDialog`).
+(`PoolNameDialog`); Delete asks first, and says that a join command made for the pool and not yet used still works,
+its host joining the default (`DeletePoolDialog`). Make default runs one change at a time, greyed out on every pool
+while one is under way (`oneAtATime`), as Kantel makes the change it handles last the default.
 
 A host's menu has Move to pool where the source has `move` and there's another pool. Kantel moves only a drained host
 with no sandboxes, so `MoveHostDialog` says so first, then what stands in the way as the page last read it (not

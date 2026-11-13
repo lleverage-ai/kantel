@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Host, Pool } from "./compute-model.ts";
 import { createComputeFixtures, HOSTS } from "./fixtures.ts";
 import { looksLikeOrigin } from "./host-join.tsx";
-import { MoveHostDialog, poolGroups, poolNameError, poolSummaryText } from "./host-pools.tsx";
+import { MoveHostDialog, oneAtATime, poolGroups, poolNameError, poolSummaryText } from "./host-pools.tsx";
 import { limitBytes, limitText, parseLabels } from "./hosts-page.tsx";
 
 describe("the public URL field", () => {
@@ -174,5 +174,45 @@ describe("Move to pool", () => {
 		const html = render({ ...sample("hst_mac"), state: "draining" });
 		expect(html).not.toContain("not drained");
 		expect(html).not.toContain("still has");
+	});
+});
+
+describe("one change of default at a time", () => {
+	/** A task that waits until it's told to settle. */
+	const deferred = () => {
+		let settle: (fail: boolean) => void = () => {};
+		const task = () =>
+			new Promise<void>((resolve, reject) => {
+				settle = (fail) => (fail ? reject(new Error("refused")) : resolve());
+			});
+		return { task, settle: (fail = false) => settle(fail) };
+	};
+
+	it("doesn't start another while one is under way, and takes the next once it succeeds", async () => {
+		const gate = oneAtATime();
+		const first = deferred();
+		const running = gate.run(first.task);
+		expect(gate.busy()).toBe(true);
+		let ran = false;
+		expect(
+			await gate.run(async () => {
+				ran = true;
+			}),
+		).toBe(false);
+		expect(ran).toBe(false);
+		first.settle();
+		expect(await running).toBe(true);
+		expect(gate.busy()).toBe(false);
+		expect(await gate.run(async () => {})).toBe(true);
+	});
+
+	it("takes the next once one fails", async () => {
+		const gate = oneAtATime();
+		const first = deferred();
+		const running = gate.run(first.task);
+		first.settle(true);
+		await expect(running).rejects.toThrow("refused");
+		expect(gate.busy()).toBe(false);
+		expect(await gate.run(async () => {})).toBe(true);
 	});
 });

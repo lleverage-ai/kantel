@@ -63,7 +63,33 @@ export interface PoolActions {
 	readonly onAdd: () => void;
 	readonly onRename: () => void;
 	readonly onMakeDefault: () => void;
+	/** A change of default is under way: Make default waits for it on every pool. */
+	readonly defaulting?: boolean;
 	readonly onDelete: () => void;
+}
+
+/**
+ * Runs one task at a time: a task asked for while another is under way isn't run, and `run` answers false. Kantel makes
+ * whichever pool's change it handles last the default, so two changes of default in flight could land in either order.
+ */
+export function oneAtATime(): {
+	readonly busy: () => boolean;
+	readonly run: (task: () => Promise<void>) => Promise<boolean>;
+} {
+	let running = false;
+	return {
+		busy: () => running,
+		run: async (task) => {
+			if (running) return false;
+			running = true;
+			try {
+				await task();
+				return true;
+			} finally {
+				running = false;
+			}
+		},
+	};
 }
 
 /** A pool's ⋯: Add host here, Rename, Make default (not on the default), then Delete, only for an empty other pool. */
@@ -81,6 +107,7 @@ function poolMenu(group: PoolGroup, actions: PoolActions) {
 						id: "default",
 						label: "Make default",
 						icon: <DefaultIcon />,
+						disabled: actions.defaulting === true,
 						onSelect: actions.onMakeDefault,
 					},
 				]),
@@ -284,7 +311,8 @@ export function DeletePoolDialog({
 			}
 		>
 			<p>
-				<strong className="wrap-anywhere">{pool?.name}</strong> has no hosts. Join commands made for it stop working.
+				<strong className="wrap-anywhere">{pool?.name}</strong> has no hosts. A join command made for it that hasn't
+				been used still works until it expires, and its host joins the default pool instead.
 			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
