@@ -1,7 +1,8 @@
 // The disk store's catalogue of copies (docs/design/disk-store.md, 2c): holders reconciled from hosts' reports,
 // `disk.locate`'s answers within a pool, signed fetch grants, and the sweep keeping a version another host holds.
+import { createRequire } from "node:module";
 import { createKantelClient } from "@kantel/api/sdk";
-import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kantel/sql/testing";
+import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
@@ -420,5 +421,84 @@ describe("disk holders", () => {
 		// Sticky disks off: none either.
 		expect(await setUp({ stickyDisks: false }).api.service.grantPublicKey()).toBeUndefined();
 		expect(await setUp().api.service.grantPublicKey()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+	});
+});
+
+// Two connections to a real Postgres (KANTEL_TEST_POSTGRES_URL): a reconcile's batch under way, and a newer report's claim.
+const postgresUrl = process.env.KANTEL_TEST_POSTGRES_URL;
+describe.skipIf(postgresUrl === undefined || postgresUrl === "")("disk holders, Postgres, two connections", () => {
+	it("makes a newer report's claim wait for an older reconcile under way, then read what it wrote", async () => {
+		const kind = testDatabaseKinds().find((candidate) => candidate.name === "Postgres");
+		if (kind === undefined) throw new Error("No Postgres kind");
+		const database = await kind.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		const store = createSqlComputeStore(database.driver);
+		await store.stickyDiskVersions.put(VERSION);
+		// The older report's reconcile, as this store writes it, to be held open on a second connection before it commits.
+		let recorded: readonly { readonly sql: string; readonly params?: readonly unknown[] }[] = [];
+		const recording = createSqlComputeStore({
+			dialect: database.driver.dialect,
+			query: (text, params) => database.driver.query(text, params),
+			async batch(statements) {
+				recorded = statements;
+			},
+		});
+		expect(await store.diskHolderWrites.claim("host_b", 10)).toBe(true);
+		await recording.diskHolderWrites.reconcile("host_b", 10, { hold: [holder("host_b", 10)], release: [] });
+		expect(recorded.length).toBeGreaterThan(0);
+		// `pg` is @kantel/sql's, not this package's: its client, as much of it as this needs.
+		const pg = createRequire(import.meta.resolve("@kantel/sql/testing"))("pg") as {
+			Client: new (config: {
+				connectionString: string;
+				options: string;
+			}) => {
+				connect(): Promise<void>;
+				query(text: string, values?: unknown[]): Promise<unknown>;
+				end(): Promise<void>;
+			};
+		};
+		const [{ search_path: schema }] = (await database.driver.query("SHOW search_path")) as [{ search_path: string }];
+		const other = new pg.Client({ connectionString: postgresUrl ?? "", options: `-c search_path=${schema}` });
+		await other.connect();
+		const numbered = (text: string) => {
+			let next = 0;
+			return text.replace(/\?/g, () => `$${++next}`);
+		};
+		const [{ pid }] = ((await other.query("SELECT pg_backend_pid() AS pid")) as { rows: [{ pid: number }] }).rows;
+		let settled = false;
+		let claiming: Promise<boolean> | undefined;
+		try {
+			await other.query("BEGIN");
+			for (const statement of recorded) await other.query(numbered(statement.sql), [...(statement.params ?? [])]);
+			// The newer report's claim waits for the older batch, so it can't read the holders before that batch lands: it is
+			// seen blocked by the other connection, and hasn't settled.
+			claiming = store.diskHolderWrites.claim("host_b", 20).finally(() => {
+				settled = true;
+			});
+			const deadline = Date.now() + 10_000;
+			for (;;) {
+				const blocked = await database.driver.query(
+					"SELECT 1 FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid))",
+					[pid],
+				);
+				if (blocked.length > 0) break;
+				expect(settled).toBe(false);
+				if (Date.now() > deadline) throw new Error("The claim was never seen waiting for the other connection");
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			expect(settled).toBe(false);
+			await other.query("COMMIT");
+		} finally {
+			// On any failure the other connection's transaction goes before the schema is dropped, and the claim is let finish.
+			await other.end().catch(() => undefined);
+			await claiming?.catch(() => false);
+		}
+		expect(await claiming).toBe(true);
+		// It reads the older batch's holder, and its own empty inventory lets it go; the older report changes nothing more.
+		expect(await store.diskHolders.list()).toEqual([holder("host_b", 10)]);
+		await store.diskHolderWrites.reconcile("host_b", 20, { hold: [], release: [holder("host_b", 10)] });
+		await store.diskHolderWrites.reconcile("host_b", 10, { hold: [holder("host_b", 10)], release: [] });
+		expect(await store.diskHolders.list()).toEqual([]);
 	});
 });
