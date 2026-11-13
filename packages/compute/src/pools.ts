@@ -7,6 +7,7 @@
 import type { accountHostRoutes, computeSchema, hostRoutes, RouteHandlers, SignedInComputeRoutes } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
 import { actingAccount, type Principal, requireScope } from "./auth.ts";
+import type { RunnerPool } from "./github-runners.ts";
 import { type ComputeStore, OPERATOR_POOLS, type StoredHost, type StoredPool, UniqueViolation } from "./store.ts";
 import { randomId } from "./util.ts";
 
@@ -53,6 +54,8 @@ export interface PoolServiceOptions {
 	 * (`SandboxBackend.updatePool`). A rejection is answered `unavailable`, the sync kept. Absent, nothing is told.
 	 */
 	readonly syncChanged?: (poolId: string, sync: boolean) => Promise<void>;
+	/** An account's pools' GitHub runner kinds, where the deployment runs GitHub runners. */
+	readonly runners?: PoolRunners;
 	/** Refuses with `not_supported` while account hosts are off (`KANTEL_ACCOUNT_HOSTS`). */
 	readonly requireAccountHosts: () => void;
 	/** Does `work` once for the call's `Idempotency-Key` and request, answering a retry the first answer (the service's). */
@@ -62,6 +65,17 @@ export interface PoolServiceOptions {
 		input: { readonly params?: unknown; readonly body?: unknown; readonly idempotencyKey?: string },
 		work: () => Promise<T>,
 	) => Promise<T>;
+}
+
+/** A runner kind as a pool's `runners` are given it: `computeSchema.GithubRunnerKind`, read-only through and through. */
+export type RunnerKindInput = Omit<RunnerPool, "poolId"> & { readonly integration: string };
+
+/** The GitHub runner kinds in an account's pools (`StoredGithubRunners.pools`, each kind naming its pool). */
+export interface PoolRunners {
+	/** The kinds in each of an account's `pools`, by pool ID. */
+	of(owner: string, pools: readonly StoredPool[]): Promise<ReadonlyMap<string, computeSchema.GithubRunnerKind[]>>;
+	/** Makes `kinds` the account pool's own, for a caller who may administer its account. */
+	set(principal: Principal, pool: StoredPool, kinds: readonly RunnerKindInput[]): Promise<void>;
 }
 
 export interface PoolService {
@@ -124,6 +138,12 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 	async function viewsOf(pools: readonly StoredPool[]): Promise<computeSchema.Pool[]> {
 		const hosts = await options.hosts();
 		const chosen = defaultPoolOf(pools);
+		const owner = pools[0]?.owner;
+		// Runner kinds are an account's: the deployment's pools answer none.
+		const runners =
+			options.runners === undefined || owner === undefined || owner === OPERATOR_POOLS
+				? undefined
+				: await options.runners.of(owner, pools);
 		return pools.map((pool) => ({
 			id: pool.id,
 			name: pool.name,
@@ -131,6 +151,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			default: pool.id === chosen?.id,
 			hosts: hosts.filter((host) => host.poolId === pool.id && host.state !== "revoked").length,
 			sync: pool.sync === true,
+			...(runners === undefined ? {} : { runners: runners.get(pool.id) ?? [] }),
 			createdAt: pool.createdAt,
 		}));
 	}
@@ -157,7 +178,23 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		return viewOf(pool);
 	}
 
-	async function change(pool: StoredPool, body: computeSchema.UpdatePoolBody): Promise<computeSchema.Pool> {
+	async function change(
+		principal: Principal,
+		pool: StoredPool,
+		body: Readonly<Omit<computeSchema.UpdatePoolBody, "runners">> & {
+			readonly runners?: readonly RunnerKindInput[];
+		},
+	): Promise<computeSchema.Pool> {
+		// Its runner kinds first, checked whole: a call they refuse changes nothing.
+		if (body.runners !== undefined) {
+			if (pool.owner === OPERATOR_POOLS) {
+				throw new KantelError("invalid", "GitHub runner kinds are in an account's pools, not the deployment's");
+			}
+			if (options.runners === undefined) {
+				throw new KantelError("not_supported", "This deployment doesn't run GitHub runners");
+			}
+			await options.runners.set(principal, pool, body.runners);
+		}
 		// Past every default the owner has had, so it is the default whatever the clocks of the gateways that made those.
 		const latest = Math.max(now(), ...(await poolsOf(pool.owner)).map((other) => (other.defaultAt ?? 0) + 1));
 		const changed = await naming(pool.owner, body.name ?? pool.name, () =>
@@ -217,6 +254,17 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 				`${pool.name} still has ${what} in it, which are used only in their pool: delete them first`,
 			);
 		}
+		// Nor while GitHub runner kinds are in it, whose runners are made only there.
+		const kinds =
+			options.runners === undefined || pool.owner === OPERATOR_POOLS
+				? []
+				: ((await options.runners.of(pool.owner, [pool])).get(pool.id) ?? []);
+		if (kinds.length > 0) {
+			throw new KantelError(
+				"conflict",
+				`${pool.name} still has the GitHub runner ${kinds.length === 1 ? "kind" : "kinds"} ${kinds.map((kind) => kind.label).join(", ")} in it: move or remove them first`,
+			);
+		}
 		// A host another gateway joins or moves to it meanwhile is in its owner's default once it has gone, as the next
 		// read of the hosts puts it (`ensureHosts`); a pool made the default meanwhile hands the default back to the one
 		// that was. Either way every host is in a pool that exists, and its owner has a default. Data given it meanwhile
@@ -262,7 +310,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		},
 		updatePool: async (principal, { params, body }) => {
 			requireScope(principal, "hosts:admin");
-			return change(await poolIn(OPERATOR_POOLS, params.poolId), body);
+			return change(principal, await poolIn(OPERATOR_POOLS, params.poolId), body);
 		},
 		deletePool: async (principal, { params }) => {
 			requireScope(principal, "hosts:admin");
@@ -283,7 +331,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			);
 		},
 		updateAccountPool: async (principal, { params, body }) =>
-			change(await accountPoolFor(principal, params.poolId, "account:admin"), body),
+			change(principal, await accountPoolFor(principal, params.poolId, "account:admin"), body),
 		deleteAccountPool: async (principal, { params }) =>
 			remove(await accountPoolFor(principal, params.poolId, "account:admin")),
 	};

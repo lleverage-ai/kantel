@@ -491,7 +491,7 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `scope` | `"organization"` or `"repository"` | no | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
 | `runnerGroupId` | integer | no |  (minimum 1) |
 | `repositories` | string[] | no |  (at most 500 items) |
-| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | yes |  (at most 20 items) |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | no | Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it. (at most 20 items) |
 
 ### CreateHostJoinTokenBody
 
@@ -953,16 +953,34 @@ A short-lived URL for one file of one sandbox, streamed to or from the sandbox's
 | --- | --- | --- | --- |
 | `items` | [GithubRunnerJob](/api/reference/types/#githubrunnerjob)[] | yes | The newest 200, newest first. |
 
+### GithubRunnerKind
+
+Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `integration` | string | yes | The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`. |
+| `label` | string | yes | The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. |
+| `template` | string | yes | The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. |
+| `resources` | [GithubRunnerResources](/api/reference/types/#githubrunnerresources) | yes |  |
+| `hostLabels` | Record&lt;string, string&gt; | no | Of the pool's hosts, run only on those with each of these labels. |
+| `environments` | string[] | no | Environments each runner starts with, IDs or names in the account, such as one holding a cache token. (at most 10 items) |
+| `maxRunners` | integer | no | The most runners the pool has at once, starting or running. Default 20. (minimum 1, maximum 500) |
+| `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
+| `stickyDisks` | [GithubRunnerStickyDisk](/api/reference/types/#githubrunnerstickydisk)[] | no | Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). (at most 2 items) |
+| `runnerCommand` | string | no | The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
+| `repositories` | string[] | no | Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. (at most 500 items) |
+
 ### GithubRunnerPool
 
-Runners of one shape, picked by a `runs-on` label.
+Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `label` | string | yes | The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. |
 | `template` | string | yes | The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. |
 | `resources` | [GithubRunnerResources](/api/reference/types/#githubrunnerresources) | yes |  |
-| `hostLabels` | Record&lt;string, string&gt; | no | Run only on hosts with each of these labels. |
+| `hostLabels` | Record&lt;string, string&gt; | no | Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select. |
 | `environments` | string[] | no | Environments each runner starts with, IDs or names in the account, such as one holding a cache token. (at most 10 items) |
 | `maxRunners` | integer | no | The most runners the pool has at once, starting or running. Default 20. (minimum 1, maximum 500) |
 | `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
@@ -1468,6 +1486,7 @@ A set of an account's hosts (or of the deployment's shared hosts), each host in 
 | `default` | boolean | yes | Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. |
 | `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
 | `sync` | boolean | yes | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. |
+| `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### PoolList
@@ -2533,6 +2552,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  |
 | `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
 | `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
+| `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. (at most 100 items) |
 
 ### UpdateSandboxBody
 

@@ -104,8 +104,16 @@ const JOB_ORDER: { readonly [state in computeSchema.GithubRunnerJobState]: numbe
 	completed: 3,
 };
 
-/** A pool as it is kept and read: `computeSchema.GithubRunnerPool`, read-only through and through. */
+/**
+ * A runner kind as it is kept and read: `computeSchema.GithubRunnerPool` (the API's runner pool, its name before kinds
+ * lived in pools), with the pool it is in, read-only through and through.
+ */
 export interface RunnerPool {
+	/**
+	 * The pool its runners are made in: an account's pool, or for an account on the deployment's shared hosts one of
+	 * the deployment's. Absent from one kept before kinds were in pools, until it is placed (`GithubRunnersOptions.place`).
+	 */
+	readonly poolId?: string;
 	readonly label: string;
 	readonly template: string;
 	readonly resources: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };
@@ -140,7 +148,7 @@ const BEFORE_COMMIT_TIMEOUT_MS = 10 * 60_000;
 /** How often a pass renews its lease while it waits on a long step (`beforeCommit`): well within `LEASE_MS`. */
 export const LEASE_RENEW_MS = LEASE_MS / 4;
 
-/** A pool as the API answers it. */
+/** A kind as the integration's `pools` answer it: as a runner pool was answered, without its pool. */
 export const poolView = (pool: RunnerPool): computeSchema.GithubRunnerPool => ({
 	label: pool.label,
 	template: pool.template,
@@ -169,6 +177,12 @@ export const poolView = (pool: RunnerPool): computeSchema.GithubRunnerPool => ({
 			}),
 });
 
+/** A kind of `integrationId` as its pool's `runners` answer it. */
+export const kindView = (integrationId: string, kind: RunnerPool): computeSchema.GithubRunnerKind => ({
+	integration: integrationId,
+	...poolView(kind),
+});
+
 export interface StoredGithubRunners {
 	readonly id: string;
 	readonly accountId: string;
@@ -178,6 +192,7 @@ export interface StoredGithubRunners {
 	readonly scope: computeSchema.GithubRunnersScope;
 	readonly runnerGroupId?: number;
 	readonly repositories?: readonly string[];
+	/** Its runner kinds, in whichever of the account's pools each is. */
 	readonly pools: readonly RunnerPool[];
 	readonly enabled: boolean;
 	/** The API key its runners act through. */
@@ -331,6 +346,12 @@ export interface GithubRunnersOptions {
 	/** Asks the deployment to run a pass at `at` (`ComputeServiceOptions.wakeAt`). */
 	readonly wakeAt?: (at: number) => Promise<void> | void;
 	readonly log?: (message: string) => void;
+	/**
+	 * Puts the integration's kinds that have no pool (kept before kinds were in pools, or whose pool has gone) in one,
+	 * and answers the record as it is then. Absent, they stay without one, and their runners go where a create naming no
+	 * pool goes.
+	 */
+	readonly place?: (record: StoredGithubRunners) => Promise<StoredGithubRunners>;
 	/** This gateway's name in leases. Default a random one per process. */
 	readonly gatewayId?: string;
 }
@@ -904,7 +925,10 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		}
 	}
 
-	async function passHolding(lease: Lease, record: StoredGithubRunners): Promise<boolean> {
+	async function passHolding(lease: Lease, taken: StoredGithubRunners): Promise<boolean> {
+		// Its kinds with no pool (kept before kinds were in pools, or whose pool went) are put in one first, so their
+		// runners are made there.
+		const record = taken.retiringAt === undefined && options.place !== undefined ? await options.place(taken) : taken;
 		const machines = await store.githubRunnerMachines.list({ integrationId: record.id });
 		const t = now();
 
@@ -1168,6 +1192,8 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				name: `gh-${pool.label}`.slice(0, 63),
 				type: "microvm",
 				template: pool.template,
+				// Its kind's pool, whose hosts alone it runs on; labels then choose among them.
+				...(pool.poolId === undefined ? {} : { pool: pool.poolId }),
 				resources: { ...pool.resources },
 				...(pool.hostLabels === undefined ? {} : { hostLabels: { ...pool.hostLabels } }),
 				...(pool.environments === undefined || pool.environments.length === 0

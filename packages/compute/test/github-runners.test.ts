@@ -1,7 +1,9 @@
 import { createKantelClient } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { pgliteDatabase } from "@kantel/sql/testing";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { KeyPrincipal } from "../src/auth.ts";
+import type { SandboxBackend } from "../src/backend.ts";
 import { importAppKey } from "../src/github-app.ts";
 import {
 	CAPACITY_BACKOFF_MS,
@@ -16,10 +18,30 @@ import {
 	type RunnerSandboxes,
 	type StoredGithubRunners,
 } from "../src/github-runners.ts";
-import { createComputeApi } from "../src/http.ts";
+import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer } from "../src/secrets.ts";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import { createMemoryStore } from "../src/store.ts";
-import { createStubBackend } from "../src/stub-backend.ts";
+import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
+
+const opened: ComputeApi[] = [];
+const databases: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+	for (const api of opened.splice(0)) await api.close();
+	for (const database of databases.splice(0)) await database.close();
+});
+const sqlTimeout = pgliteDatabase.testTimeoutMs === undefined ? {} : { timeout: pgliteDatabase.testTimeoutMs };
+
+/** A GitHub App's private key, as GitHub gives it (PEM). */
+async function testPem(): Promise<string> {
+	const pair = await crypto.subtle.generateKey(
+		{ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+		true,
+		["sign", "verify"],
+	);
+	const der = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+	return `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...der))}\n-----END PRIVATE KEY-----\n`;
+}
 
 const POOL: RunnerPool = { label: "kantel-8vcpu", template: "ci", resources: { vcpus: 8, memoryMb: 16_384 } };
 const PRINCIPAL: KeyPrincipal = {
@@ -1206,5 +1228,263 @@ describe("GitHub runners through the API", () => {
 		} finally {
 			await api.close();
 		}
+	});
+});
+
+describe.each([
+	{ name: "in memory", make: async () => createMemoryStore() },
+	{
+		name: "in SQL",
+		make: async () => {
+			const database = await pgliteDatabase.open();
+			databases.push(database);
+			await migrateComputeStore(database.driver);
+			return createSqlComputeStore(database.driver);
+		},
+	},
+])("GitHub runner kinds in pools, stored $name", sqlTimeout, ({ make }) => {
+	/** The account's two hosts: the stub's, which makes sandboxes, and one beside it that can't. */
+	async function setUpPools() {
+		const store = await make();
+		const github = fakeGithub();
+		const stub = createStubBackend();
+		const account: { id?: string } = {};
+		const backend: SandboxBackend = {
+			...stub,
+			async capabilities() {
+				const base = await stub.capabilities();
+				const [own] = base.hosts;
+				if (own === undefined || account.id === undefined) return base;
+				return {
+					...base,
+					hosts: [
+						{ ...own, accountId: account.id },
+						{ ...own, id: "host_other", name: "other", accountId: account.id, labels: { site: "remote" } },
+					],
+				};
+			},
+		};
+		const api = createComputeApi({
+			store,
+			backend,
+			templates: true,
+			stickyDisks: true,
+			accountHosts: true,
+			// A persistent store seals the App's key only with a secrets key.
+			secretsKey: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))),
+			githubRunners: { app: github.app },
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer tom-token"
+					? { userId: "usr_tom", name: "Tom", email: "tom@example.com" }
+					: undefined,
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: "http://compute.test/v1",
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		account.id = (await tom.getCaller()).accountId;
+		// The stub's host into a pool of its own, `ci`; the other stays in the default pool.
+		const ci = await tom.createAccountPool({ name: "ci" });
+		await tom.listAccountHosts({});
+		await tom.updateAccountHost(STUB_HOST_ID, { draining: true });
+		await tom.updateAccountHost(STUB_HOST_ID, { pool: "ci" });
+		await tom.updateAccountHost(STUB_HOST_ID, { draining: false });
+		const defaultPool = (await tom.listAccountPools({})).items.find((pool) => pool.default);
+		if (defaultPool === undefined) throw new Error("No default pool");
+		await tom.createTemplate({ name: "ci", spec: { setup: "true" } });
+		await tom.createStickyDisk({ name: "ci-cache", sizeGb: 10 });
+		return { store, github, api, tom, ci, defaultPool };
+	}
+
+	/** Delivers a signed `workflow_job` to the integration's webhook. */
+	async function deliver(api: ComputeApi, url: string, secret: string, payload: object): Promise<number | undefined> {
+		const body = JSON.stringify(payload);
+		const key = await crypto.subtle.importKey(
+			"raw",
+			new TextEncoder().encode(secret),
+			{ name: "HMAC", hash: "SHA-256" },
+			false,
+			["sign"],
+		);
+		const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
+		const response = await api.fetch(
+			new Request(url, {
+				method: "POST",
+				headers: {
+					"x-github-event": "workflow_job",
+					"x-hub-signature-256": `sha256=${[...mac].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`,
+				},
+				body,
+			}),
+		);
+		return response?.status;
+	}
+
+	const BIG: RunnerPool = {
+		label: "kantel-8vcpu",
+		template: "ci",
+		resources: { vcpus: 8, memoryMb: 16_384 },
+		hostLabels: { site: "local" },
+		maxRunners: 4,
+		repositories: ["octo-org/app"],
+		stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci", commit: { branches: ["main"], beforeCommit: "true" } }],
+	};
+	const SMALL: RunnerPool = { label: "kantel-2vcpu", template: "ci", resources: { vcpus: 2, memoryMb: 4096 } };
+
+	it("puts each runner pool kept before pools in the pool its host labels select, and the old API answers as before", async () => {
+		const { store, api, tom, ci, defaultPool } = await setUpPools();
+		// One whose labels select the other host, but whose sticky disk is in `ci`: its runners went there, so it goes there.
+		await tom.createStickyDisk({ name: "cached", sizeGb: 10, pool: "ci" });
+		const CACHED: RunnerPool = {
+			...SMALL,
+			label: "kantel-cached",
+			hostLabels: { site: "remote" },
+			stickyDisks: [{ disk: "cached", path: "/cache" }],
+		};
+		const { githubRunners } = await tom.createGithubRunners({
+			name: "ci",
+			appId: 1,
+			privateKey: await testPem(),
+			owner: "octo-org",
+			runnerGroupId: 7,
+			pools: [BIG, SMALL, CACHED],
+		});
+		const before = await tom.getGithubRunners(githubRunners.id);
+		const listed = await tom.listGithubRunners({});
+		expect(before.pools).toEqual([BIG, SMALL, CACHED]);
+		// As a control plane from before kinds were in pools kept it: no pool on either.
+		await store.githubRunners.update(githubRunners.id, (current) => ({
+			...current,
+			pools: current.pools.map(({ poolId: _pool, ...kind }) => kind),
+		}));
+
+		// Each in its pool, once read: the labelled one where its labels select (the stub's host), the other the default.
+		const pools = (await tom.listAccountPools({})).items;
+		expect(pools.find((pool) => pool.id === ci.id)?.runners).toEqual([
+			{ integration: githubRunners.id, ...BIG },
+			{ integration: githubRunners.id, ...CACHED },
+		]);
+		expect(pools.find((pool) => pool.id === defaultPool.id)?.runners).toEqual([
+			{ integration: githubRunners.id, ...SMALL },
+		]);
+		expect((await store.githubRunners.get(githubRunners.id))?.pools.map((kind) => [kind.label, kind.poolId])).toEqual([
+			["kantel-8vcpu", ci.id],
+			["kantel-2vcpu", defaultPool.id],
+			["kantel-cached", ci.id],
+		]);
+		// The integration's pools answer as they did, a get and a list alike, and a write through them keeps each kind's pool.
+		expect(await tom.getGithubRunners(githubRunners.id)).toEqual(before);
+		expect(await tom.listGithubRunners({})).toEqual(listed);
+		await tom.updateGithubRunners(githubRunners.id, { pools: [SMALL, { ...BIG, maxRunners: 6 }, CACHED] });
+		expect((await store.githubRunners.get(githubRunners.id))?.pools.map((kind) => [kind.label, kind.poolId])).toEqual([
+			["kantel-2vcpu", defaultPool.id],
+			["kantel-8vcpu", ci.id],
+			["kantel-cached", ci.id],
+		]);
+		expect((await tom.getGithubRunners(githubRunners.id)).pools).toEqual([SMALL, { ...BIG, maxRunners: 6 }, CACHED]);
+		await api.service.idle();
+	});
+
+	it("makes a kind's runners only on its pool's hosts, and commits its sticky disk in that pool", async () => {
+		const { store, github, api, tom, ci, defaultPool } = await setUpPools();
+		const { githubRunners, webhookSecret } = await tom.createGithubRunners({
+			name: "ci",
+			appId: 1,
+			privateKey: await testPem(),
+			owner: "octo-org",
+			runnerGroupId: 7,
+		});
+		expect(githubRunners.pools).toEqual([]);
+		// Through the pools: the big kind in `ci`, the small one in the default pool, whose only host can't make it.
+		const { hostLabels: _labels, ...big } = BIG;
+		await tom.updateAccountPool("ci", { runners: [{ integration: githubRunners.id, ...big }] });
+		await tom.updateAccountPool(defaultPool.id, { runners: [{ integration: githubRunners.id, ...SMALL }] });
+		expect((await tom.getGithubRunners(githubRunners.id)).pools).toEqual([big, SMALL]);
+		const job = (action: string, id: number, label: string, extra: object = {}) =>
+			deliver(api, githubRunners.webhookUrl, webhookSecret, {
+				action,
+				installation: { id: 42 },
+				repository: { full_name: "octo-org/app" },
+				workflow_job: { id, run_id: 900, name: `job ${id}`, labels: [label], ...extra },
+			});
+		expect(await job("queued", 1, "kantel-8vcpu")).toBe(200);
+		expect(await job("queued", 2, "kantel-2vcpu")).toBe(200);
+		await api.service.idle();
+		const runners = (await tom.listSandboxes()).items.filter((sandbox) => sandbox.labels?.[RUNNER_LABEL] !== undefined);
+		const [runner] = runners;
+		expect(runners).toHaveLength(1);
+		expect(runner?.labels?.["kantel.dev/github-runner-pool"]).toBe("kantel-8vcpu");
+		expect(runner?.poolId).toBe(ci.id);
+		expect((await store.sandboxes.get(runner?.id ?? ""))?.hostId).toBe(STUB_HOST_ID);
+		// The small kind's job waits: its pool's host can't make it, and no other pool's host is tried.
+		expect((await tom.getGithubRunners(githubRunners.id)).status).toContainEqual(
+			expect.objectContaining({ label: "kantel-2vcpu", queued: 1, starting: 0 }),
+		);
+
+		// Its job, a scheduled run of main, succeeds on it: its copy of the disk is committed, in `ci`.
+		// Registered once its sandbox runs (the stub's runs at once); its command, which the stub can't run, has ended by
+		// the next pass, so GitHub gives it its job before then.
+		if (github.registered.length === 0) await api.service.tickGithubRunners();
+		expect(github.registered.map((each) => each.name)).toEqual([runner?.id]);
+		github.runs.set(900, { event: "schedule", headBranch: "main", headRepository: "octo-org/app" });
+		const sandboxId = runner?.id ?? "";
+		expect(await job("in_progress", 1, "kantel-8vcpu", { runner_name: sandboxId, runner_id: 1 })).toBe(200);
+		expect(
+			await job("completed", 1, "kantel-8vcpu", { runner_name: sandboxId, runner_id: 1, conclusion: "success" }),
+		).toBe(200);
+		await api.service.idle();
+		const disk = await tom.getStickyDisk("ci-cache");
+		expect(disk.poolId).toBe(ci.id);
+		expect(disk.head).toBeDefined();
+		expect((await store.stickyDiskVersions.get(disk.head ?? ""))?.hostId).toBe(STUB_HOST_ID);
+	});
+
+	it("moves a kind between pools, keeps its sticky disk's pool, and keeps a pool with kinds in it", async () => {
+		const { tom, ci, defaultPool } = await setUpPools();
+		const { githubRunners } = await tom.createGithubRunners({
+			name: "ci",
+			appId: 1,
+			privateKey: await testPem(),
+			owner: "octo-org",
+			runnerGroupId: 7,
+			pools: [BIG, SMALL],
+		});
+		const kind = (pool: RunnerPool) => ({ integration: githubRunners.id, ...pool });
+		// The small kind moves to `ci` when `ci` names it: one kind of each label, in one pool.
+		await tom.updateAccountPool("ci", { runners: [kind(BIG), kind(SMALL)] });
+		const pools = (await tom.listAccountPools({})).items;
+		expect(pools.find((pool) => pool.id === ci.id)?.runners?.map((each) => each.label)).toEqual([
+			"kantel-8vcpu",
+			"kantel-2vcpu",
+		]);
+		expect(pools.find((pool) => pool.id === defaultPool.id)?.runners).toEqual([]);
+		// Not a label twice, nor an integration of no account's, nor a sticky disk of another pool (`ci-cache` is
+		// in `ci` once a runner used it; here the label picks `ci` for it from the start, so it goes there first).
+		await expect(tom.updateAccountPool("ci", { runners: [kind(SMALL), kind(SMALL)] })).rejects.toMatchObject({
+			code: "invalid",
+		});
+		await expect(
+			tom.updateAccountPool("ci", { runners: [{ ...kind(SMALL), integration: "ghr_nowhere" }] }),
+		).rejects.toMatchObject({ code: "not_found" });
+		await tom.createStickyDisk({ name: "elsewhere", sizeGb: 10, pool: "ci" });
+		await expect(
+			tom.updateAccountPool(defaultPool.id, {
+				runners: [kind({ ...SMALL, stickyDisks: [{ disk: "elsewhere", path: "/cache" }] })],
+			}),
+		).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("is in pool ci") });
+		// A pool with kinds in it isn't deleted, hosts or none; emptied, it is.
+		await tom.createAccountPool({ name: "spare" });
+		await tom.updateAccountPool("spare", { runners: [kind(SMALL)] });
+		await expect(tom.deleteAccountPool("spare")).rejects.toMatchObject({
+			code: "conflict",
+			message: expect.stringContaining("the GitHub runner kind kantel-2vcpu"),
+		});
+		await tom.updateAccountPool("spare", { runners: [] });
+		await tom.deleteAccountPool("spare");
+		await tom.updateAccountPool("ci", { runners: [] });
+		expect((await tom.getGithubRunners(githubRunners.id)).pools).toEqual([]);
 	});
 });
