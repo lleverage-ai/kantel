@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
+	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -152,6 +155,30 @@ func (h *Host) reconnectOnIsolateRuntime(ctx context.Context, sent *proto.Isolat
 	}
 }
 
+// runtimesCheck is how often a connection checks whether its hello's microVM runtimes still hold.
+const runtimesCheck = time.Minute
+
+// reconnectOnRuntimes ends the connection (Run connects again, with a new hello) once the microVM runtimes the host
+// would report now (current: Facts.Runtimes) differ from what the hello said (sent): an image update adds one, a prune
+// takes one away, and a new Firecracker changes them all. Facts go only in a hello, so the control plane would
+// otherwise go on with the old ones until the next reconnect.
+func reconnectOnRuntimes(ctx context.Context, log *slog.Logger, sent []proto.HostRuntime, every time.Duration, current func() []proto.HostRuntime, reconnect func()) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if now := current(); !slices.Equal(now, sent) {
+			log.Info("the microVM runtimes changed: reconnecting to report them", "had", len(sent), "have", len(now))
+			reconnect()
+			return
+		}
+	}
+}
+
 func connectURL(origin string) string {
 	u := strings.TrimRight(origin, "/") + "/v1/hosts/connect"
 	if strings.HasPrefix(u, "https://") {
@@ -199,6 +226,9 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		return err
 	}
 	go h.reconnectOnIsolateRuntime(ctx, facts.Isolate, isolateRuntimeCheck, cancel)
+	if _, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
+		go reconnectOnRuntimes(ctx, h.log, facts.Runtimes, runtimesCheck, h.runtimes, cancel)
+	}
 	kind, raw, err := ws.Read(ctx)
 	if err != nil {
 		if ce, revoked := revokedClose(err); revoked {

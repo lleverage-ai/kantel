@@ -2,7 +2,9 @@ package microvm
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
@@ -45,7 +47,8 @@ func (m *Manager) CPU() *proto.CPUFingerprint {
 	return &cpu
 }
 
-// identify is read(path), kept while the file's local fingerprint stays the same.
+// identify is read(path), kept while the file's local fingerprint stays the same. An empty answer (the file couldn't
+// be read, or Firecracker didn't answer) isn't kept: it is asked again next time.
 func (m *Manager) identify(path string, read func(string) string) string {
 	local := fc.Fingerprint(path)
 	f := &m.fingerprints
@@ -56,6 +59,9 @@ func (m *Manager) identify(path string, read func(string) string) string {
 		return known.id
 	}
 	id := read(path)
+	if id == "" {
+		return ""
+	}
 	f.mu.Lock()
 	if f.files == nil {
 		f.files = map[string]fileIdentity{}
@@ -65,12 +71,12 @@ func (m *Manager) identify(path string, read func(string) string) string {
 	return id
 }
 
-// runtimeImage is what portableRuntime says of rootfs: for a host image version's file, the version, and with it
-// `@sha256:` and a prefix of the digest it was downloaded with where that was recorded (a version made of an older
-// install's plain files is "initial" on every host); for a host image that isn't versioned (Config.Rootfs, a plain
-// file), `sha256:` and the prefix; "" for a template's own root filesystem (images/templates/<key>.ext4), which, as in
-// runtimeFingerprint, is no part of the runtime (it is keyed by its image already). ok is false when rootfs can't be
-// told: a host image that isn't versioned and has no recorded digest.
+// runtimeImage is what portableRuntime says of rootfs: for a host image version's file, the version, `@sha256:` and a
+// prefix of the digest it was downloaded with (images.Fetch records it beside every file it downloads); for a host
+// image that isn't versioned (Config.Rootfs, a plain file), `sha256:` and the prefix; "" for a template's own root
+// filesystem (images/templates/<key>.ext4), which, as in runtimeFingerprint, is no part of the runtime (it is keyed by
+// its image already). ok is false when rootfs can't be told: a host image without a recorded digest, such as one an
+// older install put in place and its migration named "initial", which on another host may be another image.
 func (m *Manager) runtimeImage(rootfs string) (image string, ok bool) {
 	if rootfs != "" && rootfs == m.cfg.Rootfs {
 		// The default path, which with versioned images is a link to the current version's file.
@@ -89,7 +95,7 @@ func (m *Manager) runtimeImage(rootfs string) (image string, ok bool) {
 		if d := digest(); d != "" {
 			return v + "@" + d, true
 		}
-		return v, true
+		return "", false
 	}
 	if m.pulledRootfs(rootfs) {
 		return "", true
@@ -159,4 +165,32 @@ func (m *Manager) Runtimes(versions []string) []proto.HostRuntime {
 	add(m.cfg.Rootfs)
 	add(filepath.Join(m.cfg.Root, "images", "templates", "template.ext4"))
 	return out
+}
+
+// restoredRuntime is the runtime of a machine restored from memory made on made (a snapshot's record): its kernel and
+// image are the snapshot's, and its Firecracker the one just launched, which takes its snapshots from now on. Empty
+// when either can't be told.
+func (m *Manager) restoredRuntime(made string) string {
+	_, rest, ok := strings.Cut(made, ";")
+	if !ok || !strings.HasPrefix(made, "firecracker=") {
+		return ""
+	}
+	firecracker := m.identify(m.cfg.Firecracker, hostinfo.FirecrackerVersion)
+	if firecracker == "" {
+		return ""
+	}
+	return "firecracker=" + firecracker + ";" + rest
+}
+
+// templateRuntimeFile, in a size's or shared template's directory, is the portable runtime it was booted with.
+const templateRuntimeFile = "runtime"
+
+// sizeTemplateRuntime is what a size's or shared template in dir was booted with (templateRuntimeFile); "" for one
+// made before it was kept.
+func sizeTemplateRuntime(dir string) string {
+	raw, err := os.ReadFile(filepath.Join(dir, templateRuntimeFile))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }

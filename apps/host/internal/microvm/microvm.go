@@ -295,6 +295,9 @@ type meta struct {
 	// StickyDisks the sticky disks attached to it (sticky.go).
 	StickyDrives int          `json:"stickyDrives,omitempty"`
 	StickyDisks  []stickyDisk `json:"stickyDisks,omitempty"`
+	// Runtime is the portable runtime fingerprint of the machine it runs (fingerprint.go), as it was when it booted,
+	// or restored: its snapshots record it. Empty when it can't be told, such as a machine started before it was kept.
+	Runtime string `json:"runtime,omitempty"`
 }
 
 type sandbox struct {
@@ -1537,6 +1540,10 @@ func (m *Manager) buildTemplate(ctx context.Context, sh shape, dir string) (timi
 	t, caps, _, err := m.bootSnapshot(ctx, snapshotBoot{
 		dir: dir, name: size.Name, rootfs: m.cfg.Rootfs, size: size, hotplugMiB: sh.HotplugMiB, egress: network.EgressNone,
 		record: func(building, rootfs string) error {
+			// And its runtime as it boots (fingerprint.go), which the sandboxes restored from it run.
+			if err := os.WriteFile(filepath.Join(building, templateRuntimeFile), []byte(m.portableRuntime(rootfs)), 0o600); err != nil {
+				return err
+			}
 			return os.WriteFile(filepath.Join(building, "rootfs"), []byte(rootfs), 0o600)
 		},
 	})
@@ -2226,6 +2233,9 @@ type sandboxOrigin struct {
 	// takeDisk moves the snapshot's disk into the new sandbox rather than copying it: a live fork's own snapshot, which
 	// nothing else uses and which is deleted once the fork has started (Fork).
 	takeDisk bool
+	// runtime is the portable runtime the memory it restores was made on (fingerprint.go): the snapshot's or template
+	// snapshot's own record, "" when that has none.
+	runtime string
 }
 
 // startOf is a new sandbox's origin as a machine of size: p.From, a snapshot; p.Template, a template's snapshot or its
@@ -2254,6 +2264,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 			// Its memory holds the guest's mounts of the bundles on its drives then: the same images, on the same drives.
 			origin.snapshotDir, origin.bundleDrives = sdir, snap.BundleDrives
 			origin.bundleSlots = append([]string(nil), snap.BundleSlots...)
+			origin.runtime = snap.Runtime
 		}
 		return origin, nil
 	}
@@ -2270,7 +2281,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 			return sandboxOrigin{}, err
 		}
 		unhold := m.holdBases()
-		return sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold, reshape: &sh}, nil
+		return sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold, reshape: &sh, runtime: sizeTemplateRuntime(tpl)}, nil
 	}
 	if isCustom(size.Name) || fits || m.sharedOn() {
 		// No template: a fresh disk, then a cold boot (and, when it fits, its shared template is being made), on the
@@ -2286,7 +2297,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 		return sandboxOrigin{}, err
 	}
 	unhold := m.holdBases()
-	origin := sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold}
+	origin := sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold, runtime: sizeTemplateRuntime(tpl)}
 	if tt != nil {
 		origin.source = "boot"
 	}
@@ -2353,7 +2364,15 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 		origin.takeDisk = takeDisk && p.From != ""
 		// A template snapshot that didn't restore leaves what it got to: the fresh boot's phases replace them.
 		*ph = proto.StartPhases{}
-		return m.startMachine(ctx, s, origin, size, p.Egress, t, ph)
+		if err := m.startMachine(ctx, s, origin, size, p.Egress, t, ph); err != nil {
+			return err
+		}
+		if origin.state == "" {
+			s.meta.Runtime = m.portableRuntime(vmRootfs(s.vmDir()))
+		} else {
+			s.meta.Runtime = m.restoredRuntime(origin.runtime)
+		}
+		return nil
 	})
 	if err != nil {
 		return fail(err)
@@ -2985,6 +3004,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 			return proto.SandboxInfo{}, err
 		}
 		s.machine, s.guest = machine, client
+		s.meta.Runtime = m.restoredRuntime(s.meta.Runtime)
 		t.step("restore", &start)
 	} else {
 		if err := m.boot(ctx, s, size, ph); err != nil {
@@ -2992,6 +3012,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 			s.link = nil
 			return proto.SandboxInfo{}, err
 		}
+		s.meta.Runtime = m.portableRuntime(vmRootfs(vm))
 		source = "boot"
 		t.step("boot", &start)
 		if coldBoot && p.Rebase {
@@ -3515,7 +3536,7 @@ func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, tran
 	defer m.holdBases()()
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
-	snap.CPU, snap.Runtime = m.CPU(), m.portableRuntime(rootfs)
+	snap.CPU, snap.Runtime = m.CPU(), s.meta.Runtime
 	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest, Transient: transient}
 	if snap.Memory {
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots

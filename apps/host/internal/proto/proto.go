@@ -766,8 +766,9 @@ type SnapshotInfo struct {
 	// Shared, on snapshot.keep's answer only: the groups of files the new snapshot shares with others.
 	Shared []SharedBytes `json:"shared,omitempty"`
 	// CPU and Runtime are what a microVM snapshot was made on: its host's CPU (Facts.CPU) and the runtime fingerprint
-	// of its sandbox's host image (HostRuntime.Runtime; empty when it can't be told, which matches nothing). Its memory
-	// restores only onto a host with both. Absent from an isolate's, and from a host from before they were kept.
+	// of the machine it was taken of, as that booted or was restored (HostRuntime.Runtime; empty when it can't be told,
+	// such as a machine started before it was kept, which matches nothing). Its memory restores only onto a host with
+	// both. Absent from an isolate's, and from a host from before they were kept.
 	CPU     *CPUFingerprint `json:"cpu,omitempty"`
 	Runtime string          `json:"runtime,omitempty"`
 }

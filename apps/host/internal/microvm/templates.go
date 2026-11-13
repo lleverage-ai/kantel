@@ -300,9 +300,14 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	build := &sandbox{meta: meta{ID: p.SnapshotID, Env: p.Env, Egress: p.Egress, Owner: p.Owner}}
 	// The host's image boots as the version it resolves to now, which the snapshot keeps (its rootfs link, from the
 	// build's directory on) and a restore links: a prune keeps that version while the snapshot is there.
+	// Its runtime as it boots, before the setup runs (which may take many minutes, while the host's files change).
+	var madeOn string
 	booted, caps, booting, err := m.bootSnapshot(ctx, snapshotBoot{
 		dir: dir, name: p.SnapshotID, rootfs: rootfs, size: size, egress: egressMode(p.Egress),
-		record: linkTemplateRootfs,
+		record: func(building, rootfs string) error {
+			madeOn = m.portableRuntime(rootfs)
+			return linkTemplateRootfs(building, rootfs)
+		},
 		prepare: func(ctx context.Context, client *guest.Client, link network.Link) error {
 			build.link = &link
 			m.attach(build, link.Slot)
@@ -321,7 +326,7 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	}
 	kept := templateSnapshotMeta{
 		SnapshotID: p.SnapshotID, KeyHash: p.KeyHash, Rootfs: booting, Runtime: m.runtimeFingerprint(booting),
-		CPU: m.CPU(), PortableRuntime: m.portableRuntime(booting),
+		CPU: m.CPU(), PortableRuntime: madeOn,
 		BuiltFrom: builtFrom,
 		VCPUs:     size.VCPUs, MemoryMiB: size.MemoryMiB, DiskGiB: size.DiskGiB, CreatedAt: time.Now().UnixMilli(), Timings: t,
 		Guest: caps,
@@ -442,7 +447,7 @@ func (m *Manager) restorableTemplateSnapshot(id string, size proto.Size) (sandbo
 		return sandboxOrigin{}, fmt.Errorf("built with a %d GiB disk, more than %d", kept.DiskGiB, size.DiskGiB)
 	}
 	dir := m.templateSnapshotDir(id)
-	origin := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: id, templateDiskGiB: kept.DiskGiB, guest: kept.Guest}
+	origin := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: id, templateDiskGiB: kept.DiskGiB, guest: kept.Guest, runtime: kept.PortableRuntime}
 	for _, file := range []string{origin.rootfs, origin.state, origin.mem, origin.disk} {
 		if !fileExists(file) {
 			return sandboxOrigin{}, fmt.Errorf("%s is missing", file)
