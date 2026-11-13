@@ -1017,7 +1017,7 @@ export interface GithubRunnerJob {
 	readonly labels: readonly string[];
 	/** The pool whose label it matched. */
 	readonly pool?: string;
-	/** `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for. */
+	/** `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for. */
 	readonly state: "queued" | "in_progress" | "completed" | "ignored";
 	readonly conclusion?: string;
 	/** The runner's sandbox that took it. */
@@ -1059,6 +1059,8 @@ export interface GithubRunnerPool {
 	readonly stickyDisks?: readonly GithubRunnerStickyDisk[];
 	/** The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. */
 	readonly runnerCommand?: string;
+	/** Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. */
+	readonly repositories?: readonly string[];
 }
 
 export interface GithubRunnerPoolStatus {

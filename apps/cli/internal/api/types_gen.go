@@ -1151,7 +1151,7 @@ type GithubRunnerJob struct {
 	SandboxID *string `json:"sandboxId,omitempty"`
 	// Epoch milliseconds, UTC.
 	StartedAt *int64 `json:"startedAt,omitempty"`
-	// `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for.
+	// `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for.
 	State GithubRunnerJobState `json:"state"`
 }
 
@@ -1160,7 +1160,7 @@ type GithubRunnerJobList struct {
 	Items []GithubRunnerJob `json:"items"`
 }
 
-// `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for.
+// `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for.
 type GithubRunnerJobState string
 
 const (
@@ -1179,8 +1179,10 @@ type GithubRunnerPool struct {
 	// The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.
 	Label string `json:"label"`
 	// The most runners the pool has at once, starting or running. Default 20.
-	MaxRunners *int64                `json:"maxRunners,omitempty"`
-	Resources  GithubRunnerResources `json:"resources"`
+	MaxRunners *int64 `json:"maxRunners,omitempty"`
+	// Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels.
+	Repositories []string              `json:"repositories,omitzero"`
+	Resources    GithubRunnerResources `json:"resources"`
 	// The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.
 	RunnerCommand *string `json:"runnerCommand,omitempty"`
 	// Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`).
