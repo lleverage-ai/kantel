@@ -1025,7 +1025,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * pool, or whose pool has sync off. Rejects when that can't be read: a welcome without the mesh takes the host's mesh
 	 * down, so none is sent then (a hello is refused, and the host tries again; a rewelcome is skipped).
 	 */
-	const meshFor = async (host: HostRecord): Promise<HostWelcomeMesh | undefined> => {
+	const meshFor = async (
+		host: HostRecord,
+		/** The hosts to find its peers among: read now unless given. */
+		hosts?: readonly HostRecord[],
+	): Promise<HostWelcomeMesh | undefined> => {
 		if (!meshable(host)) return undefined;
 		if ((await compute?.poolSync?.(host.poolId)) !== true) return undefined;
 		const addressed = await withMeshAddress(host);
@@ -1033,7 +1037,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return {
 			address: addressed.mesh.address,
 			prefix: await meshPrefix(host.poolId),
-			peers: meshPeersAmong(addressed, await store.listHosts()),
+			peers: meshPeersAmong(addressed, hosts ?? (await store.listHosts())),
 		};
 	};
 
@@ -1061,6 +1065,23 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	>();
 	/** When each host's mesh was last checked (`reconcileMesh`). */
 	const meshCheckedAt = new Map<string, number>();
+	/**
+	 * Every host, as read for the checks of one `MESH_REFRESH_MS`: one read of the registry a pass for all the hosts
+	 * connected here, not one each. A check that finds a difference has the hub read afresh what it sends, so a stale
+	 * read sends nothing stale, and a difference it misses is found on the next pass.
+	 */
+	let meshHosts: { readonly at: number; readonly read: Promise<HostRecord[]> } | undefined;
+	const meshHostsNow = (): Promise<HostRecord[]> => {
+		const at = clock.now();
+		if (meshHosts === undefined || at - meshHosts.at >= MESH_REFRESH_MS) {
+			const read = store.listHosts();
+			meshHosts = { at, read };
+			read.catch(() => {
+				if (meshHosts?.read === read) meshHosts = undefined;
+			});
+		}
+		return meshHosts.read;
+	};
 
 	/**
 	 * Tells a host connected here what it should have of its pool's mesh now, where that differs from what it was last
@@ -1076,9 +1097,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		meshCheckedAt.set(hostId, at);
 		report(
 			(async () => {
-				const host = await store.getHost(hostId);
+				const hosts = await meshHostsNow();
+				const host = hosts.find((each) => each.id === hostId);
 				if (host === undefined || host.revoked) return;
-				const wanted = await meshFor(host);
+				const wanted = await meshFor(host, hosts);
 				if (wanted?.address !== told.mesh?.address || wanted?.prefix !== told.mesh?.prefix) {
 					rewelcome(host);
 				} else if (wanted !== undefined && JSON.stringify(wanted.peers) !== told.peers) {
