@@ -254,23 +254,22 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 		return Stats{}, err
 	}
 	defer p.file.Close()
+	// Room for everything the fetch writes from here, before it writes any of it: the blocks it fetches, and the blocks
+	// of zeros it clears, which take none when a hole is punched but may where one can't be.
+	release, err := f.Store.Reserve(req.Ref, p.left())
+	if err != nil {
+		return Stats{}, err
+	}
+	defer release()
+	if err := p.clearZeros(); err != nil {
+		return Stats{}, err
+	}
 	st := Stats{Blocks: m.Blocks(), Resumed: p.resumed}
 	runs := p.runs()
 	for _, r := range runs {
 		st.Fetched += r.last - r.first + 1
 	}
 	st.Reused = st.Blocks - st.Fetched
-	var writes int64
-	for _, r := range runs {
-		start, _ := m.Range(r.first)
-		_, end := m.Range(r.last)
-		writes += end - start
-	}
-	release, err := f.Store.Reserve(req.Ref, writes)
-	if err != nil {
-		return st, err
-	}
-	defer release()
 	fetched, err := f.fetchRuns(ctx, src, p, runs)
 	st.FetchedBytes = fetched
 	if err != nil {
@@ -508,7 +507,7 @@ func writeBitmap(path, digest string, done []byte) error {
 }
 
 // prepare opens the version's partial file to go on with, as its bitmap says, or makes it afresh from the host's
-// nearest version, and clears every block of zeros not yet in place.
+// nearest version (whose full copy, where there are no reflinks, holds its own room).
 func (f *Fetcher) prepare(r Ref, path string, m *blockmap.Map, digest string) (*partial, error) {
 	p := &partial{m: m, digest: digest, bitmapPath: path + ".done"}
 	if done := readBitmap(p.bitmapPath, digest, m.Blocks()); done != nil {
@@ -525,30 +524,43 @@ func (f *Fetcher) prepare(r Ref, path string, m *blockmap.Map, digest string) (*
 			return nil, err
 		}
 	}
+	return p, nil
+}
+
+// left is the bytes of the blocks not yet in place: the most the rest of the fetch can write.
+func (p *partial) left() int64 {
+	var n int64
+	for i := range p.m.Blocks() {
+		if !p.isDone(i) {
+			start, end := p.m.Range(i)
+			n += end - start
+		}
+	}
+	return n
+}
+
+// clearZeros clears each block of zeros not yet in place, then syncs the file and records it, with what fresh found
+// in place, in the bitmap.
+func (p *partial) clearZeros() error {
 	changed := false
-	for i := range m.Blocks() {
-		if p.isDone(i) || m.Hash(i) != ([blockmap.HashSize]byte{}) {
+	for i := range p.m.Blocks() {
+		if p.isDone(i) || p.m.Hash(i) != ([blockmap.HashSize]byte{}) {
 			continue
 		}
-		start, end := m.Range(i)
+		start, end := p.m.Range(i)
 		if err := zero(p.file, start, end); err != nil {
-			p.file.Close()
-			return nil, err
+			return err
 		}
 		p.setDone(i)
 		changed = true
 	}
-	if changed || !p.resumed {
-		if err := p.file.Sync(); err != nil {
-			p.file.Close()
-			return nil, err
-		}
-		if err := writeBitmap(p.bitmapPath, digest, p.done); err != nil {
-			p.file.Close()
-			return nil, err
-		}
+	if !changed && p.resumed {
+		return nil
 	}
-	return p, nil
+	if err := p.file.Sync(); err != nil {
+		return err
+	}
+	return writeBitmap(p.bitmapPath, p.digest, p.done)
 }
 
 // fresh makes the partial file anew: a clone of the nearest version cut to the version's size, whose blocks that
