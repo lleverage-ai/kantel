@@ -419,8 +419,9 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			// one already writing it is waited for and read as it then is (draining, and refused): a move's check, made after
 			// its drain, sees every placement that got in. SQLite (D1 too) has one writer at a time, so needs no lock.
 			const lock = driver.dialect === "postgres" ? " FOR UPDATE" : "";
-			// In the pool it was chosen in, where the host's row says one: its `poolId` as a whole JSON value.
-			const pooled = poolId === undefined ? "" : ` AND (data NOT LIKE '%"poolId":%' OR data LIKE ? ESCAPE '\\')`;
+			// In the pool it was chosen in, where the host's row says one: its own top-level `poolId` (not a label's).
+			const field = driver.dialect === "postgres" ? "(data::jsonb ->> 'poolId')" : "json_extract(data, '$.poolId')";
+			const pooled = poolId === undefined ? "" : ` AND (${field} IS NULL OR ${field} = ?)`;
 			const rows = await driver.query(
 				`WITH taking AS (
 					SELECT id FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${pooled}${lock}
@@ -434,7 +435,7 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 					placement.hostId,
 					DRAINING_PATTERN,
 					REVOKED_PATTERN,
-					...(poolId === undefined ? [] : [`%"poolId":${likeValue(poolId)}%`]),
+					...(poolId === undefined ? [] : [poolId]),
 					placement.sandboxId,
 					placement.hostId,
 					placement.createdAt,

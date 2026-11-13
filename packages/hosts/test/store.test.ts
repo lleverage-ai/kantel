@@ -131,6 +131,12 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.placeOnTakingHost(placement("s2", "host_a", 2), "pool_b")).toBe(false);
 		expect(await store.placeOnTakingHost(placement("s3", "host_a", 3), "pool_")).toBe(false);
 		expect(await store.placeOnTakingHost(placement("s4", "host_a", 4), "poolXa")).toBe(false);
+		// Its own pool, not a label that says one.
+		await store.insertHost({ ...host("host_l", 3), poolId: "pool_b", labels: { poolId: "pool_a" } });
+		expect(await store.placeOnTakingHost(placement("s6", "host_l", 6), "pool_a")).toBe(false);
+		expect(await store.placeOnTakingHost(placement("s7", "host_l", 7), "pool_b")).toBe(true);
+		await store.insertHost({ ...host("host_m", 4), labels: { poolId: "pool_b" } });
+		expect(await store.placeOnTakingHost(placement("s8", "host_m", 8), "pool_a")).toBe(true);
 		// A host whose pool the registry hasn't been told yet takes it.
 		expect(await store.placeOnTakingHost(placement("s5", "host_n", 5), "pool_a")).toBe(true);
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
