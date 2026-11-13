@@ -360,7 +360,8 @@ export const HOST_FEATURES = {
 	 * The pool's WireGuard mesh (docs/design/disk-store.md, "2a. The mesh"): the host reports its public key, listen port
 	 * and endpoints in `HostFacts.mesh`, brings its mesh device up with the address `HostWelcome.mesh` gives it (and down
 	 * on a welcome without one), and makes its peers match each `mesh.peers`. Kantel sends neither to a host without it,
-	 * nor to a host whose pool has sync off.
+	 * nor to a host whose pool has sync off. While its mesh is up, the host also serves the disk versions it holds to its
+	 * peers, on TCP 7480 at its mesh address, to a peer with a grant `HostWelcome.grantKey` signed.
 	 */
 	mesh: "mesh",
 } as const;

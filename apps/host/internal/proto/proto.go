@@ -174,7 +174,8 @@ type IsolateRuntime struct {
 // FeatureMesh: the host runs its pool's WireGuard mesh (docs/design/disk-store.md, "2a. The mesh"): it reports its
 // public key, listen port and endpoints in Facts.Mesh, brings up the device kmesh0 with the address Welcome.Mesh gives it
 // (taking it down again on a welcome without one), makes its peers match each mesh.peers, and reports each peer's
-// health in Capacity.Mesh.
+// health in Capacity.Mesh. While the device is up it serves the disk versions it holds to its peers on TCP 7480 at its
+// mesh address (internal/disksync), to a peer with a grant Welcome.GrantKey signed.
 const FeatureMesh = "mesh"
 
 // MeshFacts are a host's WireGuard key and where peers can reach it: PublicKey is its Curve25519 public key (base64,

@@ -208,6 +208,26 @@ func (m *Manager) openStickyForMap(diskID, version, parent string) (*os.File, *b
 	return f, nil, nil
 }
 
+// OpenStickyVersion opens a version the host holds for a peer to fetch (disksync.Source): its file and its map's file,
+// read-locked so neither is removed between the two. fs.ErrNotExist when the host doesn't hold it, or has no map of it
+// yet. Open, the file stays readable whatever is deleted after.
+func (m *Manager) OpenStickyVersion(diskID, version string) (*os.File, []byte, error) {
+	if !validID(diskID) || !validID(version) {
+		return nil, nil, fs.ErrNotExist
+	}
+	m.stickyMu.RLock()
+	defer m.stickyMu.RUnlock()
+	raw, err := os.ReadFile(m.stickyMapFile(diskID, version))
+	if err != nil {
+		return nil, nil, err
+	}
+	f, err := os.Open(m.stickyVersionFile(diskID, version))
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, raw, nil
+}
+
 // removeStickyMap removes a version's map, with the version or before it is committed (one an older version of that
 // name left). Called with stickyMu held.
 func (m *Manager) removeStickyMap(diskID, version string) {

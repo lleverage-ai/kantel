@@ -358,6 +358,7 @@ func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Update
 			h.log.Error("the mesh couldn't be brought up", "error", err)
 		}
 	}
+	h.followPeerSync(w)
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {

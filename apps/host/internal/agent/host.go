@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
@@ -124,6 +125,11 @@ type Host struct {
 	guard memoryGuard
 	// mesh is the host's side of its pool's WireGuard mesh (mesh.go), nil when the host doesn't offer it.
 	mesh hostMesh
+	// peers serves the versions the host holds to its mesh peers (peersync.go), nil without the mesh.
+	peers *disksync.Server
+	// grantKey is the control plane's grant key from its last welcome ("" none), and welcomeID the host ID it named.
+	grantKey  atomic.Pointer[string]
+	welcomeID atomic.Pointer[string]
 }
 
 // New starts the tiers the host can run.
@@ -147,6 +153,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	dest.Denied = h.meshDenied
 	h.proxy.Destinations = dest
 	h.startMesh()
+	h.startPeerSync()
 	want := map[string]bool{}
 	for _, t := range cfg.Tiers {
 		want[t] = true
@@ -466,6 +473,9 @@ func (h *Host) WaitTemplate(ctx context.Context, tier string, p proto.CreatePara
 
 func (h *Host) Close() {
 	h.stopImagePatching()
+	if h.peers != nil {
+		h.peers.Close()
+	}
 	if h.mesh != nil {
 		h.mesh.Close()
 	}
