@@ -355,6 +355,10 @@ const STICKY_DISK_VERSIONS = "stickyDiskVersions";
  *   and while the version's row is still at the version it was read at, before its holders were: a commit (or
  *   tombstone) that came first, or a holder recorded meanwhile (`sqlDiskHolderWrites` changes the row's version as it
  *   records one), means it reads again.
+ * - `pool`: each disk with no pool written over the version it read, only while every other disk being given the pool
+ *   still holds what was read of it or what this write gives it, so a disk another writer changed since it was read
+ *   means none lands, and it reads again. On Postgres their rows are locked first (`FOR UPDATE`), so none changes
+ *   between the batch's statements; SQLite (D1 too) has one writer at a time.
  */
 function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 	const postgres = driver.dialect === "postgres";
@@ -511,6 +515,69 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 			}
 			throw new Error(
 				`The sticky disk version ${id} kept changing while it was forgotten; gave up after ${UPDATE_ATTEMPTS} tries`,
+			);
+		},
+		async pool(ids, poolId) {
+			const unique = [...new Set(ids)].sort();
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const read: { id: string; version: SqlValue; was: string; disk: StoredStickyDisk }[] = [];
+				for (const id of unique) {
+					const [row] = await driver.query(SELECT_VERSIONED, [STICKY_DISKS, id]);
+					if (row === undefined) continue;
+					const disk = parse<StoredStickyDisk>(row);
+					if (disk.deletedAt !== undefined) continue;
+					if (disk.poolId !== undefined && disk.poolId !== poolId) return { diskId: id, poolId: disk.poolId };
+					read.push({ id, version: sqlNumber(row.version), was: String(row.data), disk });
+				}
+				const giving = read
+					.filter((each) => each.disk.poolId === undefined)
+					.map((each) => ({ ...each, next: JSON.stringify({ ...each.disk, poolId } satisfies StoredStickyDisk) }));
+				if (giving.length === 0) return undefined;
+				const marks = giving.map(() => "?").join(", ");
+				const statements: { sql: string; params: SqlValue[] }[] = postgres
+					? [
+							{
+								sql: `SELECT id FROM compute_api_records WHERE kind = ? AND id IN (${marks}) ORDER BY id FOR UPDATE`,
+								params: [STICKY_DISKS, ...giving.map((each) => each.id)],
+							},
+						]
+					: [];
+				for (const each of giving) {
+					const others = giving.filter((other) => other.id !== each.id);
+					// Every other disk as it was read, or as this write gives it.
+					const unchanged = others
+						.map(
+							() =>
+								" AND EXISTS (SELECT 1 FROM compute_api_records o WHERE o.kind = ? AND o.id = ? AND (o.data = ? OR o.data = ?))",
+						)
+						.join("");
+					statements.push({
+						sql: `UPDATE compute_api_records SET data = ?, version = version + 1
+							WHERE kind = ? AND id = ? AND version = ? AND data = ?${unchanged}`,
+						params: [
+							each.next,
+							STICKY_DISKS,
+							each.id,
+							each.version,
+							each.was,
+							...others.flatMap((other) => [STICKY_DISKS, other.id, other.was, other.next]),
+						],
+					});
+				}
+				await driver.batch(statements);
+				// Landed, all of it, or none: read again to tell which.
+				let landed = true;
+				for (const each of giving) {
+					const [row] = await driver.query(SELECT_DATA, [STICKY_DISKS, each.id]);
+					if (row === undefined) continue;
+					const now = parse<StoredStickyDisk>(row);
+					if (now.deletedAt !== undefined) continue;
+					if (now.poolId !== poolId) landed = false;
+				}
+				if (landed) return undefined;
+			}
+			throw new Error(
+				`The sticky disks ${unique.join(", ")} kept changing while they were given a pool; gave up after ${UPDATE_ATTEMPTS} tries`,
 			);
 		},
 	};

@@ -661,6 +661,48 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(split.message).toContain("in different pools (ci and default)");
 	});
 
+	it("deletes a pool only once no snapshot or sticky disk is left in it, and takes data whose pool went to have none", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { root, tom } = setup(store, backend, true, true);
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		const move = async (to: string) => {
+			await root.updateHost(STUB_HOST_ID, { draining: true });
+			await root.updateHost(STUB_HOST_ID, { pool: to });
+			await root.updateHost(STUB_HOST_ID, { draining: false });
+		};
+		// A snapshot saved in ci, its sandbox gone and its host moved back to the default pool: ci has no hosts, but holds it.
+		await move(ci.id);
+		const source = await tom.createSandbox({ type: "microvm", pool: "ci", autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: source.id });
+		await tom.deleteSandbox(source.id);
+		await move("default");
+		const held = await failure(root.deletePool(ci.id));
+		expect(held.code).toBe("conflict");
+		expect(held.message).toBe("ci still has a snapshot in it, which are used only in their pool: delete them first");
+		await tom.deleteSnapshot(saved.id);
+		// A sticky disk named in it holds it too, until it is deleted.
+		await tom.createStickyDisk({ name: "cache", sizeGb: 10, pool: ci.id });
+		expect((await failure(root.deletePool(ci.id))).message).toContain("ci still has a sticky disk in it");
+		await tom.deleteStickyDisk("cache");
+		await root.deletePool(ci.id);
+		expect((await root.listPools()).items.map((pool) => pool.name)).toEqual(["default"]);
+
+		// One whose pool was deleted under it (a delete racing its create) has none: its next sandbox gives it its own.
+		const late = await root.createPool({ name: "late" });
+		const disk = await tom.createStickyDisk({ name: "orphan", sizeGb: 10, pool: late.id });
+		await store.pools.delete(late.id);
+		const attached = await tom.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "orphan", path: "/orphan" }],
+			autoStopMinutes: null,
+			wait: true,
+		});
+		expect(attached.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect((await tom.getStickyDisk(disk.id)).poolId).toBe(firstPoolId(OPERATOR_POOLS));
+	});
+
 	it("gives a sticky disk with no pool the pool of one of two sandboxes attaching it at once, refusing the other", async () => {
 		const store = await make();
 		const other = await hostLike("host_other");

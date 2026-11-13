@@ -2680,6 +2680,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const hostMemory = new Map<string, computeSchema.HostMemory>();
 	// Each host's mesh address as the backend last said, for `disk.locate`'s answers; not stored either.
 	const hostMeshAddress = new Map<string, string>();
+	// Each host's mesh health as the backend last said, kept as its memory is: it moves on every heartbeat too.
+	const hostMesh = new Map<string, computeSchema.HostMesh>();
 	const ensureHosts = (read?: Promise<BackendCapabilities>): Promise<StoredHost[]> => {
 		hostsReady ??= (async () => {
 			const [capabilities, records, allPools] = await Promise.all([
@@ -2694,6 +2696,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			hostMeshAddress.clear();
 			// Mesh addresses are up only in pools with sync on: a host in another is no holder to fetch from (taken below).
 			const syncing = new Set(allPools.filter((pool) => pool.sync === true).map((pool) => pool.id));
+			hostMesh.clear();
 			// Each owner's pools, read in the one statement above; an owner with none gets its default made.
 			const ownerPools = new Map<string, Promise<StoredPool[]>>();
 			const grouped = new Map<string, StoredPool[]>();
@@ -2728,6 +2731,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
+				if (host.mesh !== undefined) hostMesh.set(host.id, host.mesh);
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
@@ -3116,6 +3120,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return pool.owner === OPERATOR_POOLS ? { shared: pool.id, name: pool.name } : { own: pool.id, name: pool.name };
 	}
 
+	/**
+	 * `poolId` where that pool is still there (as the hosts' read had the pools, else read now), else undefined: data
+	 * whose pool was deleted under it (a delete racing its create) is taken to have none, so it isn't left unusable.
+	 */
+	async function livePool(poolId: string | undefined): Promise<string | undefined> {
+		if (poolId === undefined) return undefined;
+		if (poolsRead.some((pool) => pool.id === poolId)) return poolId;
+		return (await store.pools.get(poolId)) === undefined ? undefined : poolId;
+	}
+
 	/** A pool's name for a message, or its ID where it has gone; "no pool" for none. */
 	async function poolName(poolId: string | undefined): Promise<string> {
 		if (poolId === undefined) return "no pool";
@@ -3124,21 +3138,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * The pool a sandbox made or forked from `snapshot` goes in: the snapshot's own (`poolId`), else (one from before
-	 * pools) the pool of the host holding it, among `hosts`. Refused, `host_unavailable`, when that host is in another
-	 * pool than the snapshot's now (moved since): a snapshot stays in its pool, and nothing is made from it in another.
-	 * Undefined where neither can be told.
+	 * pools, or whose pool has since been deleted) the pool of the host holding it, among `hosts`. Refused,
+	 * `host_unavailable`, when that host is in another pool than the snapshot's now (moved since): a snapshot stays in its
+	 * pool, and nothing is made from it in another. Undefined where neither can be told.
 	 */
 	async function poolOfSnapshot(snapshot: StoredSnapshot, hosts: readonly StoredHost[]): Promise<string | undefined> {
 		const holderId = await hostOfSnapshot(snapshot);
 		const holderPool = holderId === undefined ? undefined : hosts.find((host) => host.id === holderId)?.poolId;
-		if (snapshot.poolId !== undefined && holderPool !== undefined && holderPool !== snapshot.poolId) {
+		const recorded = await livePool(snapshot.poolId);
+		if (recorded !== undefined && holderPool !== undefined && holderPool !== recorded) {
 			throw placementError(
 				"unavailable",
 				"host_unavailable",
-				`The snapshot is in pool ${await poolName(snapshot.poolId)}, and the host holding it is in pool ${await poolName(holderPool)} now: nothing is made from it outside its pool`,
+				`The snapshot is in pool ${await poolName(recorded)}, and the host holding it is in pool ${await poolName(holderPool)} now: nothing is made from it outside its pool`,
 			);
 		}
-		return snapshot.poolId ?? holderPool;
+		return recorded ?? holderPool;
 	}
 
 	/**
@@ -3153,9 +3168,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		let held: { readonly poolId: string; readonly disk: string } | undefined;
 		for (const each of attached) {
 			const disk = await store.stickyDisks.get(each.diskId);
-			const head = disk?.poolId !== undefined || disk?.head === undefined ? undefined : disk.head;
+			const recorded = await livePool(disk?.poolId);
+			const head = recorded !== undefined || disk?.head === undefined ? undefined : disk.head;
 			const madeOn = head === undefined ? undefined : (await store.stickyDiskVersions.get(head))?.hostId;
-			const poolId = disk?.poolId ?? hosts.find((host) => host.id === madeOn)?.poolId;
+			const poolId = recorded ?? hosts.find((host) => host.id === madeOn)?.poolId;
 			if (poolId === undefined) continue;
 			if (held !== undefined && held.poolId !== poolId) {
 				throw new KantelError(
@@ -3178,25 +3194,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Gives each of a sandbox's sticky disks with no pool yet the sandbox's, `poolId`, once: only where it still has none,
-	 * so of two sandboxes in different pools attaching a new disk at once, one gives it its pool and the other is refused.
+	 * Gives a sandbox's sticky disks with no pool yet the sandbox's, `poolId`, all of them or none
+	 * (`StickyDiskWrites.pool`): refused, naming both pools, while any is in another. So of two sandboxes in different
+	 * pools attaching new disks at once, one gives them its pool and the other is refused, leaving none in its own.
 	 */
 	async function bindStickyDisks(attached: readonly computeSchema.SandboxStickyDisk[], poolId: string): Promise<void> {
+		// A disk whose pool was deleted under it (a delete racing its create) has none again, only while it still names it.
 		for (const each of attached) {
-			const disk = await store.stickyDisks.get(each.diskId);
-			if (disk === undefined || disk.poolId === poolId) continue;
-			const bound =
-				disk.poolId ??
-				(
-					await store.stickyDisks.update(
-						disk.id,
-						(current) => (current.poolId === undefined ? { ...current, poolId } : undefined),
-						disk,
-					)
-				)?.poolId ??
-				(await store.stickyDisks.get(disk.id))?.poolId;
-			if (bound !== undefined && bound !== poolId) throw await stickyPoolRefusal(each.name, bound, poolId);
+			const gone = (await store.stickyDisks.get(each.diskId))?.poolId;
+			if (gone === undefined || gone === poolId || (await livePool(gone)) !== undefined) continue;
+			await store.stickyDisks.update(each.diskId, ({ poolId: was, ...rest }) => (was === gone ? rest : undefined));
 		}
+		const other = await store.stickyDiskWrites.pool(
+			attached.map((disk) => disk.diskId),
+			poolId,
+		);
+		if (other === undefined) return;
+		const name = attached.find((disk) => disk.diskId === other.diskId)?.name ?? other.diskId;
+		throw await stickyPoolRefusal(name, other.poolId, poolId);
 	}
 
 	/**
@@ -4474,6 +4489,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return memory === undefined ? {} : { memory: { ...memory } };
 	}
 
+	/** How a host reaches its mesh peers, as it last reported it, when it is connected and has a mesh. */
+	function hostMeshOf(hostId: string): { mesh?: computeSchema.HostMesh } {
+		const mesh = hostMesh.get(hostId);
+		return mesh === undefined
+			? {}
+			: { mesh: { address: mesh.address, peers: mesh.peers.map((peer) => ({ ...peer })) } };
+	}
+
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
@@ -4492,6 +4515,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
 			...hostMemoryOf(host.id),
+			// A revoked or dropped host's last report says nothing about now (a revoke answers before the next read).
+			...(host.state === "revoked" || host.state === "unreachable" ? {} : hostMeshOf(host.id)),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),

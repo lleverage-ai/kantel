@@ -919,6 +919,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
 					// What it admits against is the scheduler's (`freeMemoryOn`), not the API's.
 					...(host.memory === undefined ? {} : { memory: withoutAdmission(host.memory) }),
+					...(host.mesh === undefined
+						? {}
+						: { mesh: { address: host.mesh.address, peers: host.mesh.peers.map((peer) => ({ ...peer })) } }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },

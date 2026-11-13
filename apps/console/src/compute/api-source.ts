@@ -695,9 +695,16 @@ function sandboxesSource(context: Context): SandboxesSource {
 			]);
 			return sandboxes.map(view);
 		},
-		shapes: async (accountId, hostId) =>
-			shapesOf(await api.getSandboxShapes({ account: accountId, ...(hostId === undefined ? {} : { host: hostId }) })),
+		shapes: async (accountId, hostId, poolId) =>
+			shapesOf(
+				await api.getSandboxShapes({
+					account: accountId,
+					...(hostId === undefined ? {} : { host: hostId }),
+					...(poolId === undefined ? {} : { pool: poolId }),
+				}),
+			),
 		hosts: (accountId) => hostChoices(context, accountId),
+		pools: (accountId) => sandboxPools(context, accountId),
 		create: async (input) => {
 			const made = await api.createSandbox({
 				account: input.accountId,
@@ -733,6 +740,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 				autoStopMinutes: input.autoStopMinutes ?? null,
 				...(input.idleStopMinutes === undefined ? {} : { idleStopMinutes: input.idleStopMinutes }),
 				...(input.hostId === undefined ? {} : { host: input.hostId }),
+				...(input.poolId === undefined ? {} : { pool: input.poolId }),
 			});
 			await learnEnvironmentNames(context, made.accountId, [made]);
 			return view(made);
@@ -1752,7 +1760,21 @@ async function hostChoices({ api, caller }: Context, accountId: string): Promise
 			state: UI_HOST_STATES[host.state],
 			kinds: host.tiers,
 			shared: host.accountId === undefined,
+			...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		}));
+}
+
+/**
+ * The account's pools, for New sandbox's pool picker: none where the deployment has account hosts off (`not_supported`)
+ * or the caller may not read them (`forbidden`), so there is no picker, as with one pool.
+ */
+async function sandboxPools({ api }: Context, accountId: string): Promise<readonly UiPool[]> {
+	try {
+		return (await api.listAccountPools({ account: accountId })).items.map(poolOf);
+	} catch (caught) {
+		if (caught instanceof KantelApiError && (caught.code === "not_supported" || caught.code === "forbidden")) return [];
+		throw caught;
+	}
 }
 
 function hostOf(host: Host): UiHost {
@@ -1828,6 +1850,20 @@ function hostOf(host: Host): UiHost {
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+		...(host.mesh === undefined
+			? {}
+			: {
+					mesh: {
+						address: host.mesh.address,
+						peers: host.mesh.peers.map((peer) => ({
+							hostId: peer.hostId,
+							path: peer.path,
+							...(peer.endpoint === undefined ? {} : { endpoint: peer.endpoint }),
+							...(peer.lastHandshake === undefined ? {} : { lastHandshake: peer.lastHandshake }),
+							...(peer.rttMs === undefined ? {} : { rttMs: peer.rttMs }),
+						})),
+					},
+				}),
 	};
 }
 
