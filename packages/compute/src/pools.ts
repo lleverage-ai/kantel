@@ -185,8 +185,16 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			readonly runners?: readonly RunnerKindInput[];
 		},
 	): Promise<computeSchema.Pool> {
-		// Its runner kinds first, checked whole: a call they refuse changes nothing.
+		// Its runner kinds first, checked whole: a call they refuse changes nothing. A name another pool has is refused
+		// before them, so a call refused for it hasn't changed the kinds.
 		if (body.runners !== undefined) {
+			const name = body.name;
+			if (
+				name !== undefined &&
+				(await poolsOf(pool.owner)).some((other) => other.id !== pool.id && other.name === name)
+			) {
+				throw nameTaken(pool.owner, name);
+			}
 			if (pool.owner === OPERATOR_POOLS) {
 				throw new KantelError("invalid", "GitHub runner kinds are in an account's pools, not the deployment's");
 			}

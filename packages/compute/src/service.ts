@@ -2359,10 +2359,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** What the broker logs: the deployment's runner log, else the process's. */
 	const runnerLog = (message: string): void => (runnerSettings?.log ?? console.log)(`[github-runners] ${message}`);
 	/**
-	 * The pool a runner kind with none goes in, and why: the pool its sticky disks are in (where its runners went before
-	 * kinds were in pools); else the one pool whose hosts, of those its integration's runners may run on, its
-	 * `hostLabels` select (its account's own hosts first, as placement prefers them); else, with no labels or labels
-	 * that select hosts in several pools or none, the default pool a create naming none goes in.
+	 * The pool a runner kind with none goes in, and why. The pool its sticky disks are in, where its runners went before
+	 * kinds were in pools; else the one pool whose hosts its `hostLabels` select, of the hosts that could run its runners
+	 * (microVM hosts its integration's runners may use, the account's own first, as placement prefers them); else, with
+	 * no labels or labels that select hosts in several pools or none, the default pool its runners went to before: the
+	 * account's own default where one of its hosts there could run them, else the deployment's where it may use that.
+	 * Judged on the hosts as they are, not whether each is online now, so a host away for a moment doesn't move it. A
+	 * failed read rejects, so the kind is placed on a later try rather than from what couldn't be read.
 	 */
 	async function kindPool(
 		accountId: string,
@@ -2372,25 +2375,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<{ readonly poolId: string; readonly why: string }> {
 		const hosts = await ensureHosts();
 		if ((kind.stickyDisks?.length ?? 0) > 0) {
-			const attached = await stickyDisksFor(accountId, kind.stickyDisks ?? []).catch(() => undefined);
-			const held = attached === undefined ? undefined : await poolOfStickyDisks(attached, hosts).catch(() => undefined);
+			// A disk gone, or two in different pools, says nothing of a pool; any other failure is thrown.
+			const settled = (error: unknown) => {
+				if (error instanceof KantelError && (error.code === "not_found" || error.code === "invalid")) return undefined;
+				throw error;
+			};
+			const attached = await stickyDisksFor(accountId, kind.stickyDisks ?? []).catch(settled);
+			const held = attached === undefined ? undefined : await poolOfStickyDisks(attached, hosts).catch(settled);
 			if (held !== undefined) return { poolId: held.poolId, why: `its sticky disk ${held.disk} is there` };
 		}
-		const fallback = async (why: string) => {
-			const choice = await placementPool(accountId, undefined, hosts, shared);
-			const poolId = choice.own ?? choice.shared ?? (await pools.defaultPool(accountId)).id;
-			return { poolId, why };
-		};
 		const labels = Object.entries(kind.hostLabels ?? {});
-		if (labels.length === 0) return fallback("it has no host labels");
-		const matching = hosts.filter(
+		const could = hosts.filter(
 			(host) =>
 				host.state !== "revoked" &&
+				host.tiers.includes("microvm") &&
 				(host.accountId === accountId || (shared && host.accountId === undefined)) &&
 				labels.every(([name, value]) => host.labels[name] === value),
 		);
-		const own = matching.filter((host) => host.accountId === accountId);
-		const selected = unique((own.length > 0 ? own : matching).flatMap((host) => host.poolId ?? []));
+		const fallback = async (why: string) => {
+			const choice = await placementPool(accountId, undefined, hosts, shared);
+			const ran = (poolId: string | undefined) => poolId !== undefined && could.some((host) => host.poolId === poolId);
+			const poolId = ran(choice.own) ? choice.own : ran(choice.shared) ? choice.shared : (choice.own ?? choice.shared);
+			return { poolId: poolId ?? (await pools.defaultPool(accountId)).id, why };
+		};
+		if (labels.length === 0) return fallback("it has no host labels, so it went in the default pool");
+		const own = could.filter((host) => host.accountId === accountId);
+		const selected = unique((own.length > 0 ? own : could).flatMap((host) => host.poolId ?? []));
 		const [only] = selected;
 		if (selected.length === 1 && only !== undefined) return { poolId: only, why: "its host labels select hosts there" };
 		return fallback(
@@ -2511,12 +2521,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Kinds that commit need the key to commit, given it first, as the integration's own update does.
 				if (poolsCommit(next)) await grantRunnerCommits(principal, record.keyId);
 			}
+			// Each integration's write merges into its kinds as they are then, held to the limit again. Each is atomic; a call
+			// changing several integrations writes them one after another.
 			for (const id of records.keys()) {
-				await store.githubRunners.update(id, (current) =>
-					current.retiringAt !== undefined
-						? undefined
-						: { ...current, pools: merged(id, current.pools), updatedAt: now() },
-				);
+				await store.githubRunners.update(id, (current) => {
+					if (current.retiringAt !== undefined) return undefined;
+					const next = merged(id, current.pools);
+					if (next.length > MAX_RUNNER_KINDS) {
+						throw new KantelError("invalid", `${current.name} would have more than ${MAX_RUNNER_KINDS} runner kinds`);
+					}
+					return { ...current, pools: next, updatedAt: now() };
+				});
 			}
 		},
 	};

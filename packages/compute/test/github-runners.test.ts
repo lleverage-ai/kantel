@@ -1260,6 +1260,15 @@ describe.each([
 					hosts: [
 						{ ...own, accountId: account.id },
 						{ ...own, id: "host_other", name: "other", accountId: account.id, labels: { site: "remote" } },
+						// Labelled as the stub's host is, but it runs no microVMs, so no runner ever went there.
+						{
+							...own,
+							id: "host_isolates",
+							name: "isolates",
+							accountId: account.id,
+							tiers: ["isolate"],
+							labels: { site: "local" },
+						},
 					],
 				};
 			},
@@ -1276,15 +1285,20 @@ describe.each([
 			authenticatePerson: async (request) =>
 				request.headers.get("authorization") === "Bearer tom-token"
 					? { userId: "usr_tom", name: "Tom", email: "tom@example.com" }
-					: undefined,
+					: request.headers.get("authorization") === "Bearer ann-token"
+						? { userId: "usr_ann", name: "Ann", email: "ann@example.com" }
+						: undefined,
 		});
 		opened.push(api);
-		const tom = createKantelClient({
-			baseUrl: "http://compute.test/v1",
-			token: "tom-token",
-			fetch: (input, init) =>
-				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
-		});
+		const client = (token: string) =>
+			createKantelClient({
+				baseUrl: "http://compute.test/v1",
+				token,
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+		const tom = client("tom-token");
+		const ann = client("ann-token");
 		account.id = (await tom.getCaller()).accountId;
 		// The stub's host into a pool of its own, `ci`; the other stays in the default pool.
 		const ci = await tom.createAccountPool({ name: "ci" });
@@ -1296,7 +1310,7 @@ describe.each([
 		if (defaultPool === undefined) throw new Error("No default pool");
 		await tom.createTemplate({ name: "ci", spec: { setup: "true" } });
 		await tom.createStickyDisk({ name: "ci-cache", sizeGb: 10 });
-		return { store, github, api, tom, ci, defaultPool };
+		return { store, github, api, tom, ann, ci, defaultPool };
 	}
 
 	/** Delivers a signed `workflow_job` to the integration's webhook. */
@@ -1443,7 +1457,7 @@ describe.each([
 	});
 
 	it("moves a kind between pools, keeps its sticky disk's pool, and keeps a pool with kinds in it", async () => {
-		const { tom, ci, defaultPool } = await setUpPools();
+		const { store, tom, ann, ci, defaultPool } = await setUpPools();
 		const { githubRunners } = await tom.createGithubRunners({
 			name: "ci",
 			appId: 1,
@@ -1475,6 +1489,29 @@ describe.each([
 				runners: [kind({ ...SMALL, stickyDisks: [{ disk: "elsewhere", path: "/cache" }] })],
 			}),
 		).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("is in pool ci") });
+		// Nor another account's integration, which is as good as none.
+		const theirs = await ann.createGithubRunners({
+			name: "theirs",
+			appId: 1,
+			privateKey: await testPem(),
+			owner: "octo-org",
+			runnerGroupId: 7,
+		});
+		await expect(
+			tom.updateAccountPool("ci", { runners: [{ ...kind(SMALL), integration: theirs.githubRunners.id }] }),
+		).rejects.toMatchObject({ code: "not_found" });
+		// A call refused for its name changes no kinds.
+		await expect(tom.updateAccountPool("ci", { name: "default", runners: [] })).rejects.toMatchObject({
+			code: "conflict",
+		});
+		expect((await tom.getGithubRunners(githubRunners.id)).pools.map((each) => each.label)).toEqual([
+			"kantel-8vcpu",
+			"kantel-2vcpu",
+		]);
+		// The integration's pools never say a pool: one given there is not kept.
+		const injected = { ...SMALL, maxRunners: 3, poolId: defaultPool.id } as RunnerPool;
+		await tom.updateGithubRunners(githubRunners.id, { pools: [BIG, injected] }).catch(() => undefined);
+		expect((await store.githubRunners.get(githubRunners.id))?.pools.map((each) => each.poolId)).toEqual([ci.id, ci.id]);
 		// A pool with kinds in it isn't deleted, hosts or none; emptied, it is.
 		await tom.createAccountPool({ name: "spare" });
 		await tom.updateAccountPool("spare", { runners: [kind(SMALL)] });
