@@ -427,6 +427,25 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(made.registry.get(STUB_HOST_ID)).toBe(ci.id);
 	});
 
+	it("places a sandbox in the deployment's pool it names, keeps its pool, and says which pool when none can take it", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		// Naming none: the deployment's default, as before pools, kept on the sandbox and its fork.
+		const plain = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		expect(plain.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect((await store.sandboxes.get(plain.id))?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const named = await tom.createSandbox({ type: "microvm", pool: "default", wait: true });
+		expect(named.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// The empty pool can't take it: refused, saying which.
+		const refused = await failure(tom.createSandbox({ type: "microvm", pool: "ci" }));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.details).toMatchObject({ reason: "no_host" });
+		expect(refused.message).toContain("pool ci");
+		expect((await failure(tom.createSandbox({ type: "microvm", pool: "nowhere" }))).code).toBe("not_found");
+	});
+
 	it("deletes an account's pools with the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();

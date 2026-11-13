@@ -646,7 +646,9 @@ type CreateSandboxBody struct {
 	// Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 	Mounts []Mount `json:"mounts,omitzero"`
 	// Default: a generated name, such as `brave-otter`.
-	Name      *string            `json:"name,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. `unavailable` saying which pool when none of its hosts can take it now. Default: the account's default pool when the account has hosts of its own, else the deployment's default pool, as before pools.
+	Pool      *string            `json:"pool,omitempty"`
 	Resources *SandboxShapeInput `json:"resources,omitempty"`
 	Size      *SandboxSizeName   `json:"size,omitempty"`
 	// Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them.
@@ -2050,6 +2052,8 @@ type Sandbox struct {
 	Mounts          []SandboxMount   `json:"mounts,omitzero"`
 	Name            string           `json:"name"`
 	PlacementReason *PlacementReason `json:"placementReason,omitempty"`
+	// The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools.
+	PoolID *string `json:"poolId,omitempty"`
 	// Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none.
 	Reason    *string           `json:"reason,omitempty"`
 	Resources *SandboxResources `json:"resources,omitempty"`

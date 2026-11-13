@@ -144,6 +144,7 @@ Give --env &lt;env&gt; more than once for several environments, in order (up to 
 | `-e, --env <K=V\|env>` | K=V: a variable every command sees (not a secret); or an environment to start from. Repeat it for more |
 | `--host <port[:public]>` | Give this port an HTTPS URL once it runs; repeat it |
 | `--on <host>` | Run it on this host, its name or ID (kantel hosts list shows them) |
+| `--pool <pool>` | Run it in this pool, its name or ID (kantel pools list shows them); default the account's default pool |
 | `--host-label <k=v>` | Run it only on a host with this label; repeat for more |
 | `--auto-upgrade` | An isolate that becomes a microVM by itself when a command needs one, and runs it again |
 | `--no-wait` | Answer at once rather than once it runs |
