@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -88,7 +89,9 @@ type request struct {
 	Mesh    *proto.WelcomeMesh `json:"mesh,omitempty"`
 	Peers   []proto.MeshPeer   `json:"peers,omitempty"`
 	Address string             `json:"address,omitempty"`
-	Port    int                `json:"port,omitempty"`
+	// Address6 is a start's IPv6 address for its link, beside Address.
+	Address6 string `json:"address6,omitempty"`
+	Port     int    `json:"port,omitempty"`
 	// Wait is how long a dial keeps trying, in seconds.
 	Wait int `json:"wait,omitempty"`
 }
@@ -168,18 +171,21 @@ func outerRole(t *testing.T) {
 	sh(t, "ip", "link", "add", "sb0", "type", "veth", "peer", "name", "kt9")
 	sh(t, "ip", "link", "set", "kt9", "netns", fmt.Sprint(a.cmd.Process.Pid))
 
-	factsA := a.do(t, request{Op: "start", Address: "192.0.2.1/24"})
-	factsB := b.do(t, request{Op: "start", Address: "192.0.2.2/24"})
+	// Each host's link has IPv4 and IPv6, and like Lleverage's Hetzner hosts, whose provider's firewall drops inbound
+	// IPv4 UDP but not IPv6, takes WireGuard over IPv6 only.
+	factsA := a.do(t, request{Op: "start", Address: "192.0.2.1/24", Address6: "2001:db8:1::1/64"})
+	factsB := b.do(t, request{Op: "start", Address: "192.0.2.2/24", Address6: "2001:db8:1::2/64"})
 	if factsA.Error != "" || factsB.Error != "" {
 		t.Fatal(factsA.Error, factsB.Error)
 	}
-	// The endpoints are the hosts' own interface addresses, found as a host finds them.
-	if !strings.Contains(strings.Join(factsB.Facts.Endpoints, " "), "192.0.2.2:51820") {
-		t.Fatalf("host b's endpoints: %v", factsB.Facts.Endpoints)
+	// The endpoints are the hosts' own interface addresses, found as a host finds them, IPv6 first.
+	if want := []string{"[2001:db8:1::2]:51820", "192.0.2.2:51820"}; !slices.Equal(factsB.Facts.Endpoints, want) {
+		t.Fatalf("host b's endpoints: %v, want %v", factsB.Facts.Endpoints, want)
 	}
 	peerA := proto.MeshPeer{HostID: "host_a", PublicKey: factsA.Facts.PublicKey, Address: addrA, Endpoints: factsA.Facts.Endpoints}
-	// An endpoint that goes nowhere first: b is reached on its next.
-	peerB := proto.MeshPeer{HostID: "host_b", PublicKey: factsB.Facts.PublicKey, Address: addrB, Endpoints: append([]string{"192.0.2.99:51820"}, factsB.Facts.Endpoints...)}
+	// For a, b's endpoints start with one that goes nowhere and one whose IPv4 is dropped: a moves on from them, or b
+	// reaches a over IPv6 and a answers there.
+	peerB := proto.MeshPeer{HostID: "host_b", PublicKey: factsB.Facts.PublicKey, Address: addrB, Endpoints: []string{"192.0.2.99:51820", "192.0.2.2:51820", "[2001:db8:1::2]:51820"}}
 	for c, w := range map[*child]*proto.WelcomeMesh{
 		a: {Address: addrA, Prefix: meshPrefix, Peers: []proto.MeshPeer{peerB}},
 		b: {Address: addrB, Prefix: meshPrefix, Peers: []proto.MeshPeer{peerA}},
@@ -201,7 +207,7 @@ func outerRole(t *testing.T) {
 	}
 	h := a.do(t, request{Op: "health"}).Health
 	if h == nil || len(h.Peers) != 1 || h.Peers[0].HostID != "host_b" || h.Peers[0].Path != proto.MeshPathDirect ||
-		h.Peers[0].Endpoint != "192.0.2.2:51820" || h.Peers[0].LastHandshake == 0 {
+		h.Peers[0].Endpoint != "[2001:db8:1::2]:51820" || h.Peers[0].LastHandshake == 0 {
 		t.Fatalf("a's health: %+v", h)
 	}
 	// The round trip, from a's probes of b's sync port, within a probe or two.
@@ -291,7 +297,13 @@ func hostRole(t *testing.T) {
 		switch req.Op {
 		case "start":
 			dev := "v" + role
-			for _, args := range [][]string{{"ip", "link", "set", "lo", "up"}, {"ip", "addr", "add", req.Address, "dev", dev}, {"ip", "link", "set", dev, "up"}} {
+			for _, args := range [][]string{
+				{"ip", "link", "set", "lo", "up"},
+				{"ip", "addr", "add", req.Address, "dev", dev},
+				{"ip", "-6", "addr", "add", req.Address6, "dev", dev, "nodad"},
+				{"ip", "link", "set", dev, "up"},
+				{"iptables", "-w", "-t", "raw", "-I", "PREROUTING", "-p", "udp", "--dport", fmt.Sprint(DefaultPort), "-j", "DROP"},
+			} {
 				if err == nil {
 					err = runCommand(args...)
 				}

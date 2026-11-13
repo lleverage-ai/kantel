@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -93,7 +94,7 @@ func newHarness(t *testing.T, dir string) *harness {
 		Dir: dir, Log: slog.New(slog.DiscardHandler), Firewall: h.firewall,
 		Endpoints: []string{"mesh.example.com:6000", "203.0.113.9"},
 		Addresses: func() []netip.Addr {
-			return []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("198.51.100.7")}
+			return []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("fd00::5"), netip.MustParseAddr("2001:db8::5")}
 		},
 		Run: func(args ...string) error {
 			h.commands = append(h.commands, strings.Join(args, " "))
@@ -138,6 +139,7 @@ func TestKeyKeptAcrossStarts(t *testing.T) {
 	if strings.Contains(string(facts), strings.TrimSpace(string(raw))) {
 		t.Fatal("the facts carry the private key")
 	}
+	first.Close()
 	second := newHarness(t, dir).m
 	if first.PublicKey() != second.PublicKey() || first.Facts().PublicKey != second.Facts().PublicKey {
 		t.Fatal("a restart made a new key")
@@ -147,11 +149,49 @@ func TestKeyKeptAcrossStarts(t *testing.T) {
 	}
 }
 
-// The hello's endpoints: the operator's first (a bare host gets the port), then the host's public addresses, then its
-// private ones.
+// A key that doesn't parse is refused without saying what it was: it may be the private key.
+func TestKeyErrorsDontCarryTheKey(t *testing.T) {
+	dir := t.TempDir()
+	k, err := newPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := k.String() + "!"
+	if err := os.WriteFile(filepath.Join(dir, keyFile), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = LoadKey(dir)
+	if err == nil || strings.Contains(err.Error(), k.String()[:8]) {
+		t.Fatalf("error %v", err)
+	}
+}
+
+// One process owns the mesh at a time: another (a second run, the installer's or bench's host while the daemon runs)
+// gets ErrOwned and touches nothing of it, and takes it over once the owner has closed.
+func TestOneOwner(t *testing.T) {
+	dir := t.TempDir()
+	owner := newHarness(t, dir)
+	if err := owner.m.Apply(welcome()); err != nil {
+		t.Fatal(err)
+	}
+	var cleaned []string
+	_, err := New(Config{Dir: dir, Log: slog.New(slog.DiscardHandler), Firewall: owner.firewall,
+		Run: func(args ...string) error { cleaned = append(cleaned, strings.Join(args, " ")); return nil }})
+	if !errors.Is(err, ErrOwned) || len(cleaned) != 0 || owner.firewall.downs != 1 || owner.device().closed {
+		t.Fatalf("second: %v; cleaned %v, firewall downs %d", err, cleaned, owner.firewall.downs)
+	}
+	owner.m.Close()
+	next := newHarness(t, dir)
+	if !slices.Contains(next.commands, "ip link del kmesh0") || next.firewall.downs != 1 {
+		t.Fatalf("the next owner didn't clean up: %v", next.commands)
+	}
+}
+
+// The hello's endpoints: the operator's first (a bare host gets the port), then the host's public IPv6 addresses, its
+// public IPv4 ones, then its private ones.
 func TestFactsEndpoints(t *testing.T) {
 	f := newHarness(t, t.TempDir()).m.Facts()
-	want := []string{"mesh.example.com:6000", "203.0.113.9:51820", "[2001:db8::5]:51820", "198.51.100.7:51820", "10.0.0.5:51820"}
+	want := []string{"mesh.example.com:6000", "203.0.113.9:51820", "[2001:db8::5]:51820", "198.51.100.7:51820", "10.0.0.5:51820", "[fd00::5]:51820"}
 	if f.ListenPort != DefaultPort || !slices.Equal(f.Endpoints, want) {
 		t.Fatalf("facts %+v, want endpoints %v", f, want)
 	}
@@ -317,6 +357,32 @@ func TestEndpointsTriedInTurn(t *testing.T) {
 	h.m.rotate(context.Background())
 	if d.peers[b].Endpoint.String() != "192.0.2.9:51820" {
 		t.Fatalf("endpoint %s, want the peer's new one", d.peers[b].Endpoint)
+	}
+}
+
+// A handshake that comes while a rotation looks its next endpoint up keeps the endpoint it came over.
+func TestRotationDroppedOnceReached(t *testing.T) {
+	h := newHarness(t, t.TempDir())
+	b := testKey(t)
+	pb := proto.MeshPeer{HostID: "host_b", PublicKey: b.String(), Address: "fd12:3456:789a::2", Endpoints: []string{"192.0.2.2:51820", "b.example.com:51820"}}
+	if err := h.m.Apply(welcome(pb)); err != nil {
+		t.Fatal(err)
+	}
+	d := h.device()
+	was := lookup
+	t.Cleanup(func() { lookup = was })
+	lookup = func(ctx context.Context, endpoint string) netip.AddrPort {
+		d.mu.Lock()
+		d.stats[b] = PeerStats{LastHandshake: time.Now()}
+		d.mu.Unlock()
+		return netip.MustParseAddrPort("198.51.100.2:51820")
+	}
+	h.m.mu.Lock()
+	h.m.peers[b].triedAt = time.Now().Add(-endpointTry)
+	h.m.mu.Unlock()
+	h.m.rotate(context.Background())
+	if got := d.peers[b].Endpoint.String(); got != "192.0.2.2:51820" {
+		t.Fatalf("endpoint %s: a peer reached during the lookup was moved", got)
 	}
 }
 

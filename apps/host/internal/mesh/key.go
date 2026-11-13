@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +33,8 @@ func ParseKey(s string) (Key, error) {
 	var k Key
 	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
 	if err != nil || len(b) != len(k) {
-		return k, fmt.Errorf("not a WireGuard key: %q", s)
+		// Never the input: it may be the host's private key.
+		return k, errors.New("not a WireGuard key: want 32 bytes in base64")
 	}
 	copy(k[:], b)
 	return k, nil

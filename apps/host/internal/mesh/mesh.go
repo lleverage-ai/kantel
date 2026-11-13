@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -85,6 +86,9 @@ type Mesh struct {
 	key Key
 	log *slog.Logger
 
+	// lock is the open lock file whose lock says this process owns the mesh device and its rules.
+	lock *os.File
+
 	mu sync.Mutex
 	// dev is the device while it is up; addr and prefix are its address and the pool's prefix.
 	dev    Device
@@ -121,8 +125,15 @@ func Available() error {
 	return nil
 }
 
-// New loads (or on first start makes) the host's key, and takes down any device and rules a previous run left. The
-// device stays down until Apply is given a mesh.
+// lockFile, beside the key, is locked by the process that owns the mesh for as long as it does.
+const lockFile = "lock"
+
+// ErrOwned is New's error while another process (a running daemon) owns the mesh.
+var ErrOwned = errors.New("another kantel-host process owns the mesh")
+
+// New loads (or on first start makes) the host's key, takes ownership of the mesh (ErrOwned while another process
+// has it: then nothing of that process's mesh is touched), and takes down any device and rules a previous owner left.
+// The device stays down until Apply is given a mesh; Close gives ownership up.
 func New(cfg Config) (*Mesh, error) {
 	if cfg.Port == 0 {
 		cfg.Port = DefaultPort
@@ -155,7 +166,19 @@ func New(cfg Config) (*Mesh, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mesh key: %w", err)
 	}
-	m := &Mesh{cfg: cfg, key: key, log: cfg.Log, peers: map[Key]*peer{}}
+	lock, err := os.OpenFile(filepath.Join(cfg.Dir, lockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("mesh lock: %w", err)
+	}
+	// Released when the file is closed, or the process ends however it ends.
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, ErrOwned
+		}
+		return nil, fmt.Errorf("mesh lock: %w", err)
+	}
+	m := &Mesh{cfg: cfg, key: key, log: cfg.Log, peers: map[Key]*peer{}, lock: lock}
 	_ = cfg.Run("ip", "link", "del", cfg.Device)
 	cfg.Firewall.Down(cfg.Device, cfg.Port)
 	return m, nil
@@ -177,7 +200,9 @@ func (m *Mesh) Facts() *proto.MeshFacts {
 	return &proto.MeshFacts{PublicKey: m.PublicKey().String(), ListenPort: m.cfg.Port, Endpoints: m.endpoints()}
 }
 
-// endpoints are the operator's endpoints, then the host's interface addresses (public before private) with its port.
+// endpoints are the operator's endpoints, then the host's interface addresses with its port: public IPv6 first (a
+// firewall in front of a host, such as Hetzner's, may drop inbound IPv4 UDP but leave IPv6 alone), then public IPv4,
+// then private addresses.
 func (m *Mesh) endpoints() []string {
 	out := []string{}
 	for _, e := range m.cfg.Endpoints {
@@ -193,10 +218,17 @@ func (m *Mesh) endpoints() []string {
 		}
 	}
 	addrs := m.cfg.Addresses()
-	// Public addresses first: a private one is only any use to a peer on the same network.
-	slices.SortStableFunc(addrs, func(a, b netip.Addr) int {
-		return boolInt(private(a)) - boolInt(private(b))
-	})
+	rank := func(a netip.Addr) int {
+		switch {
+		case private(a):
+			// Only any use to a peer on the same network.
+			return 2
+		case a.Is4():
+			return 1
+		}
+		return 0
+	}
+	slices.SortStableFunc(addrs, func(a, b netip.Addr) int { return rank(a) - rank(b) })
 	for _, a := range addrs {
 		e := netip.AddrPortFrom(a, uint16(m.cfg.Port)).String()
 		if !slices.Contains(out, e) {
@@ -204,13 +236,6 @@ func (m *Mesh) endpoints() []string {
 		}
 	}
 	return out
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
@@ -396,8 +421,16 @@ func (m *Mesh) downLocked() {
 	m.log.Info("mesh down", "device", m.cfg.Device)
 }
 
-// Close takes the device down.
-func (m *Mesh) Close() { m.down() }
+// Close takes the device down and gives up ownership of the mesh.
+func (m *Mesh) Close() {
+	m.down()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lock != nil {
+		m.lock.Close()
+		m.lock = nil
+	}
+}
 
 // setPeersLocked makes the device's peers the list's: a peer not in it is removed, a new one added with its first
 // endpoint (as resolved, looked up before the lock was taken), and one whose address or endpoints changed updated. A
@@ -492,7 +525,8 @@ func resolveEndpoints(endpoints []string) map[string]netip.AddrPort {
 	return out
 }
 
-func lookup(ctx context.Context, endpoint string) netip.AddrPort {
+// lookup resolves a "name:port" endpoint (a variable, so tests can stand in for DNS).
+var lookup = func(ctx context.Context, endpoint string) netip.AddrPort {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
 		return netip.AddrPort{}
@@ -589,10 +623,14 @@ func (m *Mesh) rotate(ctx context.Context) {
 	resolved := resolveEndpoints(endpoints)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	stats = m.statsLocked()
+	now = time.Now()
 	for _, d := range list {
 		ep := resolved[d.endpoint]
-		// Still the same peer (not removed, or the mesh brought up again meanwhile) on the same endpoint.
-		if m.dev == nil || m.peers[d.key] != d.peer || d.peer.endpoints[d.peer.try] != d.endpoint || !ep.IsValid() {
+		// Still the same peer (not removed, or the mesh brought up again meanwhile) on the same endpoint, and still not
+		// reached: a handshake during the lookup keeps the endpoint it came over.
+		if m.dev == nil || m.peers[d.key] != d.peer || d.peer.endpoints[d.peer.try] != d.endpoint || !ep.IsValid() ||
+			fresh(stats[d.key], now) {
 			continue
 		}
 		m.log.Debug("mesh peer not reached: trying its next endpoint", "host", d.peer.hostID, "endpoint", ep)
