@@ -83,6 +83,7 @@ import {
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
 	SNAPSHOT_KEEP_FEATURE,
+	type SnapshotMadeOn,
 	type TakenSnapshot,
 	type UpgradedPlacement,
 	type UpgradeOutcome,
@@ -1403,6 +1404,22 @@ function bytesText(bytes: number): string {
 	return gib >= 1 ? `${gib.toFixed(1)} GiB` : `${Math.round(bytes / 2 ** 20)} MiB`;
 }
 
+/** What a snapshot was made on (`SnapshotMadeOn`), copied for another record: none where it says none. */
+function madeOnOf(made: SnapshotMadeOn): SnapshotMadeOn {
+	return {
+		...(made.cpu === undefined ? {} : { cpu: { ...made.cpu } }),
+		...(made.runtime === undefined ? {} : { runtime: made.runtime }),
+	};
+}
+
+/** A host's CPU and runtime fingerprints as its backend says them now, for its record: none where it says none. */
+function fingerprintsOf(host: BackendHost): Pick<StoredHost, "cpuFingerprint" | "runtimeFingerprints"> {
+	return {
+		...(host.cpuFingerprint === undefined ? {} : { cpuFingerprint: host.cpuFingerprint }),
+		...(host.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: [...host.runtimeFingerprints] }),
+	};
+}
+
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
 	const { lastSeenAt: knownSeen, ...knownRest } = known;
 	const { lastSeenAt: nextSeen, ...nextRest } = next;
@@ -2598,6 +2615,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						updateAvailable: _available,
 						updating,
 						diskUsage: keptDisk,
+						cpuFingerprint: _cpu,
+						runtimeFingerprints: _runtimes,
 						...rest
 					} = current;
 					const pending =
@@ -2616,6 +2635,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						tiers: [...host.tiers],
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
+						...fingerprintsOf(host),
 						capacity: { ...host.capacity },
 						// What its disk holds: the latest measure it sent, else the one kept.
 						...(host.diskUsage === undefined
@@ -2646,6 +2666,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					tiers: [...host.tiers],
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
+					...fingerprintsOf(host),
 					capacity: { ...host.capacity },
 					...(host.diskUsage === undefined ? {} : { diskUsage: { ...host.diskUsage } }),
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
@@ -5608,6 +5629,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
 					...(taken.base === undefined ? {} : { base: taken.base }),
+					...madeOnOf(taken),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
@@ -9073,6 +9095,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
 					...(taken.base === undefined ? {} : { base: taken.base }),
+					...madeOnOf(taken),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
@@ -9137,6 +9160,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let base: string | undefined;
 				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
 				let memory = false;
+				// What its memory was made on, where its host said.
+				let made: SnapshotMadeOn = {};
 				// When the bytes were taken: a copied snapshot's own time (its source's, for one saved before this was kept), else now.
 				let takenAt: number | undefined;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one, else the
@@ -9153,6 +9178,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// Sharing its source's ref: the source's full size, where recorded (else read from the host when counted).
 					fullSizeBytes = kept === undefined ? source.fullSizeBytes : kept.sizeBytes;
 					base = kept?.base ?? source.base;
+					made = madeOnOf(kept?.runtime === undefined ? source : kept);
 					memory = kept?.memory ?? (await holdsMemory(source));
 					takenAt = source.takenAt ?? (source.kind === "automatic" ? source.createdAt : undefined);
 					if (recordsMachine(source)) machine = recordedMachine(source);
@@ -9168,6 +9194,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
 					fullSizeBytes = taken.sizeBytes;
 					base = taken.base;
+					made = madeOnOf(taken);
 					memory = taken.memory === true;
 				} else {
 					throw new KantelError("conflict", "The sandbox has no state to save yet");
@@ -9196,6 +9223,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdBy: actorOf(principal),
 					ref,
 					...(base === undefined ? {} : { base }),
+					...made,
 				};
 				await admitSave(snapshot, existing);
 				await holdSnapshot(snapshot);

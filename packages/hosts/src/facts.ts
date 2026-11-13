@@ -8,6 +8,7 @@ import type { Placement } from "@kantel/compute";
 import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
+	HostCpuFingerprint,
 	HostDiskLimits,
 	HostDiskMade,
 	HostDiskUsage,
@@ -20,6 +21,7 @@ import type {
 	HostMemorySource,
 	HostMemoryState,
 	HostMountStatus,
+	HostRuntime,
 	HostSandboxUsage,
 	HostSize,
 	HostStickyHolding,
@@ -142,6 +144,70 @@ export function isolateRuntime(value: unknown): HostIsolateRuntime | undefined {
 	};
 }
 
+/** The longest runtime fingerprint kept: a host image version may be 128 characters of it. */
+const MAX_RUNTIME = 512;
+
+/**
+ * A CPU fingerprint as kantel-host sends it (`HostCpuFingerprint`), or undefined where it sends none or none shaped as
+ * one: a host from before it said is taken as one whose snapshots' memory goes nowhere else, so a malformed one is
+ * dropped rather than refused.
+ */
+export function cpuFingerprint(value: unknown): HostCpuFingerprint | undefined {
+	if (!isObject(value)) return undefined;
+	const { vendor, family, model, featuresHash } = value;
+	const label = (found: unknown): found is string =>
+		typeof found === "string" && found !== "" && found.length <= MAX_TEXT;
+	const whole = (found: unknown): found is number =>
+		typeof found === "number" && Number.isSafeInteger(found) && found >= 0;
+	if (!label(vendor) || !label(featuresHash) || !whole(family) || !whole(model)) return undefined;
+	return { vendor, family, model, featuresHash };
+}
+
+/** A host's runtime fingerprints (`HostRuntime`): an entry that isn't one is left out, and none is undefined. */
+function hostRuntimes(value: unknown): HostRuntime[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const out: HostRuntime[] = [];
+	for (const entry of value.slice(0, MAX_ITEMS)) {
+		if (!isObject(entry)) continue;
+		const { image, runtime } = entry;
+		if (typeof image !== "string" || image.length > MAX_TEXT) continue;
+		if (typeof runtime !== "string" || runtime === "" || runtime.length > MAX_RUNTIME) continue;
+		out.push({ image, runtime });
+	}
+	return out.length === 0 ? undefined : out;
+}
+
+/** Two CPU fingerprints restore each other's snapshots: both known, and vendor, family, model and features all equal. */
+export function sameCpu(a: HostCpuFingerprint | undefined, b: HostCpuFingerprint | undefined): boolean {
+	return (
+		a !== undefined &&
+		b !== undefined &&
+		a.featuresHash !== "" &&
+		a.vendor === b.vendor &&
+		a.family === b.family &&
+		a.model === b.model &&
+		a.featuresHash === b.featuresHash
+	);
+}
+
+/**
+ * Whether a snapshot's memory, made on `made` (its `cpu` and `runtime`), restores on a host with these facts: the same
+ * CPU (`sameCpu`), and the snapshot's runtime among the host's. A snapshot or host from before either was kept never
+ * matches: it cold-boots on its disk instead.
+ */
+export function memoryRestoresOn(
+	facts: Pick<HostFacts, "cpu" | "runtimes"> | undefined,
+	made: { readonly cpu?: HostCpuFingerprint; readonly runtime?: string },
+): boolean {
+	if (facts === undefined || made.runtime === undefined || made.runtime === "") return false;
+	return sameCpu(facts.cpu, made.cpu) && (facts.runtimes ?? []).some((each) => each.runtime === made.runtime);
+}
+
+/** A CPU fingerprint as a host's details show it: `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. */
+export function cpuFingerprintText(cpu: HostCpuFingerprint): string {
+	return `${cpu.vendor} family ${cpu.family} model ${cpu.model}, features ${cpu.featuresHash}`;
+}
+
 /** A string a host may leave out (Go's `omitempty`): absent when it does, or when it is empty. */
 function optionalText<K extends string>(value: Record<string, unknown>, field: K): { [key in K]?: string } {
 	const found = value[field];
@@ -157,6 +223,8 @@ function facts(value: unknown): HostFacts {
 	const hostImages = images(value.images);
 	const hostDisk = disk(value.disk);
 	const isolate = isolateRuntime(value.isolate);
+	const cpu = cpuFingerprint(value.cpu);
+	const runtimes = hostRuntimes(value.runtimes);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -180,6 +248,8 @@ function facts(value: unknown): HostFacts {
 		...optionalText(value, "guestKernel"),
 		...(hostImages === undefined ? {} : { images: hostImages }),
 		...(isolate === undefined ? {} : { isolate }),
+		...(cpu === undefined ? {} : { cpu }),
+		...(runtimes === undefined ? {} : { runtimes }),
 	};
 }
 

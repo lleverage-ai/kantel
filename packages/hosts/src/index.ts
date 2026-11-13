@@ -1,6 +1,13 @@
 export * from "./backend.ts";
 export * from "./cluster.ts";
-export { MAX_USAGE_SANDBOXES, parseHostUsage } from "./facts.ts";
+export {
+	cpuFingerprint,
+	cpuFingerprintText,
+	MAX_USAGE_SANDBOXES,
+	memoryRestoresOn,
+	parseHostUsage,
+	sameCpu,
+} from "./facts.ts";
 export * from "./http.ts";
 export * from "./hub.ts";
 export * from "./protocol.ts";

@@ -1376,11 +1376,13 @@ type GuestOS struct {
 // A machine that runs sandboxes. It dials out to the control plane; it takes no inbound ports.
 type Host struct {
 	// The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use.
-	AccountID *string        `json:"accountId,omitempty"`
-	Allocated HostAllocated  `json:"allocated"`
-	Arch      *HostArch      `json:"arch,omitempty"`
-	Capacity  HostCapacity   `json:"capacity"`
-	DiskUsage *HostDiskUsage `json:"diskUsage,omitempty"`
+	AccountID *string       `json:"accountId,omitempty"`
+	Allocated HostAllocated `json:"allocated"`
+	Arch      *HostArch     `json:"arch,omitempty"`
+	Capacity  HostCapacity  `json:"capacity"`
+	// Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said.
+	CPUFingerprint *string        `json:"cpuFingerprint,omitempty"`
+	DiskUsage      *HostDiskUsage `json:"diskUsage,omitempty"`
 	// The host's ID, such as `host_6t5r4e`.
 	ID string `json:"id"`
 	// Epoch milliseconds, UTC.
@@ -1395,6 +1397,8 @@ type Host struct {
 	Name                 string      `json:"name"`
 	NestedVirtualisation bool        `json:"nestedVirtualisation"`
 	OS                   *string     `json:"os,omitempty"`
+	// The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said.
+	RuntimeFingerprints []string `json:"runtimeFingerprints,omitzero"`
 	// The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit.
 	SavedSnapshotBytesLimit *int64    `json:"savedSnapshotBytesLimit,omitempty"`
 	State                   HostState `json:"state"`

@@ -679,6 +679,8 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 										ref: built.ref,
 										sizeBytes: built.sizeBytes,
 										readyAt: now(),
+										...(built.cpu === undefined ? {} : { cpu: { ...built.cpu } }),
+										...(built.runtime === undefined ? {} : { runtime: built.runtime }),
 										builtFrom: {
 											...current.builtFrom,
 											...(built.imageDigest === undefined ? {} : { imageDigest: built.imageDigest }),

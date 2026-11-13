@@ -534,6 +534,21 @@ describe("rebuilding", () => {
 });
 
 describe("creating from a template", () => {
+	it("keeps what a template snapshot was made on where its host says, and never answers it", async () => {
+		const { api, tom, root, build } = setup();
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		const template = await tom.createTemplate({ name: "web", spec: SPEC });
+		const cpu = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+		const runtime = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=4";
+		(await build(0)).releaseWith((built) => ({ ...built, cpu, runtime }));
+		await api.service.idle();
+		const ready = (await tom.getTemplate(template.id)).build.ready;
+		expect(await api.store.templateSnapshots.get(ready?.id ?? "")).toMatchObject({ state: "ready", cpu, runtime });
+		const listed = (await tom.listTemplateSnapshots(template.id)).items[0];
+		expect(listed).not.toHaveProperty("cpu");
+		expect(listed).not.toHaveProperty("runtime");
+	});
+
 	it("starts from the newest ready snapshot, on its host", async () => {
 		const { api, tom, root, build, created } = setup();
 		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
