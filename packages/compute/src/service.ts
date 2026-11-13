@@ -3007,8 +3007,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const named = (list: readonly StoredPool[], name: string) =>
 			list.find((pool) => pool.id === name) ?? list.find((pool) => pool.name === name);
 		if (ref !== undefined) {
-			// Read again where the read of the hosts didn't have it: one made since.
-			// The account's pools as they are: none made by naming one.
+			// The account's pools as the hosts' read had them, else read again (one made since): none made by naming one.
 			const mine =
 				named(
 					poolsRead.filter((pool) => pool.owner === accountId),
