@@ -2860,13 +2860,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", "The host still has sandboxes: move it once they are deleted");
 		}
 		const from = host.poolId;
-		const drain = host.drainToken;
+		const drain = host.drainEpoch;
 		let refused: string | undefined;
 		const moved = await store.hosts.update(host.id, (current) => {
 			refused =
 				current.state === "revoked"
 					? "The host is revoked"
-					: current.state !== "draining" || current.drainToken !== drain
+					: current.state !== "draining" || current.drainEpoch !== drain
 						? "The host was undrained meanwhile: drain it again to move it"
 						: current.poolId !== from
 							? "The host was moved meanwhile"
@@ -4246,7 +4246,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, diskUsage, drainToken: _drain, ...rest } = host;
+		const { updating, diskUsage, drainEpoch: _drain, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
 			...rest,
@@ -6204,39 +6204,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			return hostView(await moveHost(host, await pools.poolIn(poolOwnerOf(host), body.pool)));
 		}
-		const tellRegistry = () =>
-			backend.updateHost?.(host.id, {
-				...(body.name === undefined ? {} : { name: body.name }),
-				...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
-				...(body.draining === undefined ? {} : { draining: body.draining }),
+		// A drain or undrain takes the next place in order here first (an undrain ending the drain here with it, so a move
+		// checked under the drain won't land), then is told the registry with it, which takes it only over an older one.
+		let epoch: number | undefined;
+		if (body.draining !== undefined) {
+			const draining = body.draining;
+			const ordered = await store.hosts.update(host.id, (current) => {
+				if (current.state === "revoked") return undefined;
+				const next = (current.drainEpoch ?? 0) + 1;
+				return {
+					...current,
+					drainEpoch: next,
+					...(draining === false && current.state === "draining" ? { state: "online" as const } : {}),
+				};
 			});
-		// A drain shuts the registry's admission before it is recorded here, with its own token; an undrain ends the drain
-		// here (its token gone, so a move checked under it won't land) before the registry takes sandboxes again.
-		const undraining = body.draining === false;
-		if (!undraining) await tellRegistry();
+			if (ordered === undefined) throw new KantelError("conflict", "The host is revoked");
+			epoch = ordered.drainEpoch;
+		}
+		await backend.updateHost?.(host.id, {
+			...(body.name === undefined ? {} : { name: body.name }),
+			...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
+			...(body.draining === undefined ? {} : { draining: body.draining, drainEpoch: epoch }),
+		});
 		// On the record as it is now: a revocation that landed meanwhile stays (and the change is refused).
 		let revoked = false;
 		const updated = await store.hosts.update(host.id, (current) => {
 			revoked = current.state === "revoked";
 			if (revoked) return undefined;
 			let state = current.state;
-			if (body.draining === true) state = "draining";
-			if (body.draining === false && current.state === "draining") state = "online";
-			const { savedSnapshotBytesLimit: kept, drainToken, ...rest } = current;
+			// A drain only while it is still the latest: a later undrain stands.
+			if (body.draining === true && current.drainEpoch === epoch) state = "draining";
+			const { savedSnapshotBytesLimit: kept, ...rest } = current;
 			const limit = body.savedSnapshotBytesLimit === undefined ? kept : (body.savedSnapshotBytesLimit ?? undefined);
-			const token = state !== "draining" ? undefined : current.state === "draining" ? drainToken : randomId("drn");
 			return {
 				...rest,
 				name: body.name ?? current.name,
 				labels: body.labels === undefined ? current.labels : { ...body.labels },
 				state,
-				...(token === undefined ? {} : { drainToken: token }),
 				...(limit === undefined ? {} : { savedSnapshotBytesLimit: limit }),
 			};
 		});
 		if (revoked) throw new KantelError("conflict", "The host is revoked");
 		if (updated === undefined) throw new KantelError("not_found", "No such host");
-		if (undraining) await tellRegistry();
 		return hostView(updated);
 	}
 

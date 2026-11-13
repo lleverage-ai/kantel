@@ -1016,6 +1016,8 @@ export interface SandboxBackend {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** The drain's or undrain's place in order (`StoredHost.drainEpoch`): an older one than the registry's is passed over. */
+			readonly drainEpoch?: number;
 			readonly poolId?: string;
 		},
 	): Promise<void>;

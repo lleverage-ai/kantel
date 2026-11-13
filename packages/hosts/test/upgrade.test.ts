@@ -891,14 +891,17 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 		await root.updateHost(isolates.hostId, { draining: true });
 		expect((await failure(root.updateHost(isolates.hostId, { pool: "elsewhere" }))).code).toBe("conflict");
 
-		// Its host back, the isolate goes, and with it the record: the host may move.
-		isolates.refuseMethod = undefined;
-		await isolates.connect();
-		isolates.heartbeat();
+		// Its host back, on the other gateway (which owes it nothing of its own), the isolate goes, and with it the
+		// record: the host may move.
+		const back = new Host(other, isolates.hostId, isolates.facts);
+		for (const [id, held] of isolates.sandboxes) back.sandboxes.set(id, held);
+		await back.connect();
+		back.heartbeat();
 		for (let tries = 0; tries < 100 && (await store.getPlacement(sandbox.id)) !== undefined; tries++) {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
-		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		expect(back.sandboxes.has(sandbox.id)).toBe(false);
+		expect(back.methods()).toContain("sandbox.delete");
 		expect(await store.getPlacement(sandbox.id)).toBeUndefined();
 		expect(await service.holds(isolates.hostId)).toBe(false);
 		expect((await root.updateHost(isolates.hostId, { pool: "elsewhere" })).state).toBe("draining");

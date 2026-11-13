@@ -85,7 +85,7 @@ import {
 	shapeOn,
 	sizeOn,
 } from "./scheduler.ts";
-import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
+import { type HostRecord, type HostStore, isLeftover, type PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
 export const enforcesPolicy = (host: HostRecord): boolean =>
@@ -688,6 +688,8 @@ export interface HostsService {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** The drain's or undrain's place in the compute plane's order: taken only over an older one. */
+			readonly drainEpoch?: number;
 			/** The pool the compute plane put it in: a move, once it has drained. */
 			readonly poolId?: string;
 		},
@@ -1131,7 +1133,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// it was away is caught up.
 		const watchesHealth = facts.value.features?.includes(HOST_FEATURES.guestHealth) === true;
 		const exits: { sandboxId: string; error: string; healthAt?: number }[] = [];
+		// What is left here of sandboxes deleted since their upgrade, isolates still to delete (`forgetPlacement`): owed
+		// this host, not reconciled as its sandboxes are, on any gateway, after any restart.
+		const leftovers = new Set<string>();
 		for (const placement of await store.placementsOn(hostId)) {
+			if (isLeftover(placement)) {
+				leftovers.add(placement.sandboxId);
+				held.delete(placement.sandboxId);
+				continue;
+			}
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
 			if (latest !== placement) {
@@ -1189,7 +1199,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		else measuresSnapshots.delete(hostId);
 		// Isolates upgrades left here, their microVMs placed elsewhere: deleted once it is welcomed. Those already owed it
 		// stay owed (one deleted whose removal wasn't recorded, which it no longer names): each is checked when it is done.
-		const owed = new Set<string>(cleanupsDue.get(hostId) ?? []);
+		const owed = new Set<string>([...(cleanupsDue.get(hostId) ?? []), ...leftovers]);
 		for (const sandboxId of held.keys()) {
 			if ((await store.getPlacement(sandboxId))?.cleanup?.hostId === hostId) owed.add(sandboxId);
 		}
@@ -1290,6 +1300,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// as it is now, still this host's and of the sandbox's tier: an upgrade's handover since stands.
 				const tier = (sandbox as { tier?: unknown }).tier ?? placement.tier;
 				if (sandbox.state === "deleted") {
+					// What was left here of a sandbox deleted since its upgrade: its isolate is gone, as this host says.
+					if (await store.removePlacementIf(sandbox.id, (latest) => isLeftover(latest) && latest.hostId === hostId)) {
+						return;
+					}
 					await forgetPlacement(sandbox.id, (latest) => latest.hostId === hostId && latest.tier === tier);
 					return;
 				}
@@ -2016,20 +2030,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return undefined;
 			}
 		}
-		// What was left of a sandbox deleted since (`forgetPlacement`) goes with its isolate.
-		if (
-			await store.removePlacementIf(
-				sandboxId,
-				(latest) => latest.hostId === hostId && latest.cleanup?.hostId === hostId,
-			)
-		) {
-			return undefined;
-		}
+		// The isolate is gone: what was left of a sandbox deleted since (`forgetPlacement`) goes with it, and a live
+		// sandbox's placement no longer owes it. A delete that leaves the placement here meanwhile is caught by the second
+		// removal.
+		const leftoverHere = (latest: PlacementRecord) => isLeftover(latest) && latest.hostId === hostId;
+		if (await store.removePlacementIf(sandboxId, leftoverHere)) return undefined;
 		const cleaned = await store.updatePlacement(sandboxId, (latest) => {
-			if (latest.cleanup?.hostId !== hostId) return undefined;
+			if (latest.cleanup?.hostId !== hostId || leftoverHere(latest)) return undefined;
 			const { cleanup: _done, ...placed } = latest;
 			return { ...placed, updatedAt: clock.now() };
 		});
+		if (cleaned === undefined && (await store.removePlacementIf(sandboxId, leftoverHere))) return undefined;
 		return cleaned ?? (await store.getPlacement(sandboxId));
 	};
 
@@ -2041,7 +2052,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 */
 	const forgetPlacement = async (
 		sandboxId: string,
-		should: (placement: PlacementRecord) => boolean = () => true,
+		should: (placement: PlacementRecord) => boolean,
 	): Promise<boolean> => {
 		const left = await store.updatePlacement(sandboxId, (latest) => {
 			const owed = latest.cleanup;
@@ -2055,7 +2066,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (hub.connected(owedHost)) runCleanups(owedHost);
 			return true;
 		}
-		return store.removePlacementIf(sandboxId, should);
+		// Never what is left: only `cleanUpSource`, once the isolate is gone, removes that.
+		return store.removePlacementIf(sandboxId, (latest) => !isLeftover(latest) && should(latest));
 	};
 
 	/** The isolates upgrades left on each host, deleted on its next heartbeat (once it is welcomed). */
@@ -2248,16 +2260,23 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 			const labels = change.labels === undefined ? undefined : labelsOf(change.labels);
 			// On the host as stored now, so a report that lands meanwhile neither undoes this nor is undone by it.
-			const next = await store.updateHost(hostId, (latest) => ({
-				...latest,
-				...(change.name === undefined ? {} : { name: change.name }),
-				...(labels === undefined ? {} : { labels }),
-				...(change.draining === undefined ? {} : { draining: change.draining === true }),
-				...(change.poolId === undefined ? {} : { poolId: change.poolId }),
-			}));
+			const next = await store.updateHost(hostId, (latest) => {
+				// A drain or undrain ordered before the latest one taken is passed over (its other changes stand).
+				const ordered =
+					change.draining !== undefined &&
+					(change.drainEpoch === undefined || change.drainEpoch > (latest.drainEpoch ?? 0));
+				return {
+					...latest,
+					...(change.name === undefined ? {} : { name: change.name }),
+					...(labels === undefined ? {} : { labels }),
+					...(ordered ? { draining: change.draining === true } : {}),
+					...(ordered && change.drainEpoch !== undefined ? { drainEpoch: change.drainEpoch } : {}),
+					...(change.poolId === undefined ? {} : { poolId: change.poolId }),
+				};
+			});
 			if (next === undefined) throw new KantelError("not_found", "No such host");
 			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
-			const redrained = change.draining !== undefined && change.draining !== host.draining;
+			const redrained = next.draining !== host.draining;
 			if (redrained) hub.rewelcome(hostId, await welcomeFor(next));
 			return view(next);
 		},
@@ -2802,7 +2821,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					// Its host was revoked (or removed) by an operator: it never connects again to say, so deleting the sandbox
 					// writes off its placement. That is the operator's decision; nothing here claims the machine is gone.
 					log(`[hosts] sandbox ${sandboxId} written off: its host ${placement.hostId} is revoked`);
-					await forgetPlacement(sandboxId);
+					await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
 					return;
 				}
 				try {
@@ -2811,7 +2830,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					// Gone on the host already is gone.
 					if (!(error instanceof KantelError && error.code === "not_found")) throw error;
 				}
-				await forgetPlacement(sandboxId);
+				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
+				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
 			},
 			placement(sandboxId) {
 				return store.getPlacement(sandboxId);

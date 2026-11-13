@@ -297,4 +297,29 @@ describe("Account hosts", () => {
 		await tom.updateAccountHost(holder.hostId, { draining: false });
 		expect((await service.get(holder.hostId)).state).toBe("online");
 	});
+
+	it("takes a drain or undrain only over an older one, so an undrain held up can't undo a later drain", async () => {
+		const { tom, join, service } = setup();
+		const host = await join((await tom.createAccountJoinToken({ name: "box" })).token);
+		await tom.createAccountPool({ name: "ci" });
+		await tom.updateAccountHost(host.hostId, { draining: true });
+		// An undrain held up on its way to the registry while another call drains the host again.
+		const update = service.update.bind(service);
+		let meanwhile: (() => Promise<unknown>) | undefined = () => tom.updateAccountHost(host.hostId, { draining: true });
+		service.update = async (hostId, change) => {
+			const run = change.draining === false ? meanwhile : undefined;
+			if (run !== undefined) {
+				meanwhile = undefined;
+				await run();
+			}
+			return update(hostId, change);
+		};
+		await tom.updateAccountHost(host.hostId, { draining: false });
+		// The later drain stands, in the registry and here, and the host moves under it.
+		expect((await service.get(host.hostId)).state).toBe("draining");
+		expect((await tom.getAccountHost(host.hostId)).state).toBe("draining");
+		const moved = await tom.updateAccountHost(host.hostId, { pool: "ci" });
+		expect(moved.state).toBe("draining");
+		expect((await service.get(host.hostId)).state).toBe("draining");
+	});
 });

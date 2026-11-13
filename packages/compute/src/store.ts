@@ -624,11 +624,12 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
 	readonly diskUsage?: BackendDiskUsage;
 	/**
-	 * This drain's own token, while it is `draining`: written once its registry has stopped taking sandboxes, and gone
-	 * (here first) before an undrain lets the registry take them again. A move to another pool lands only with the token
-	 * its check of the host's sandboxes was made under, so admission stayed shut from the check to the move.
+	 * Counts its drains and undrains, each taking the next here before its registry is told, with it: the registry takes
+	 * a drain or undrain only over an older one's, so one held up can't undo a later one there. A move to another pool
+	 * lands only under the count its check of the host's sandboxes was made under, still draining, so admission stayed
+	 * shut from the check to the move.
 	 */
-	readonly drainToken?: string;
+	readonly drainEpoch?: number;
 };
 
 export interface StoredJoinToken {

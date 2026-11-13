@@ -36,6 +36,11 @@ export interface HostRecord {
 	 * joined before pools, or with the registry's own join token, until the compute plane says.
 	 */
 	readonly poolId?: string;
+	/**
+	 * The latest drain or undrain the compute plane ordered (`StoredHost.drainEpoch`): one older than it isn't taken, so
+	 * one held up can't undo a later one. Absent until one is ordered.
+	 */
+	readonly drainEpoch?: number;
 }
 
 export interface JoinTokenRecord {
@@ -137,6 +142,14 @@ export interface HostStore {
 	removePlacement(sandboxId: string): Promise<void>;
 	/** Removes a placement only if, as it is now, `should` says so: whether it did. */
 	removePlacementIf(sandboxId: string, should: (placement: PlacementRecord) => boolean): Promise<boolean>;
+}
+
+/**
+ * Whether a placement is what is left of a sandbox deleted while its upgrade still owed its old host the isolate's
+ * removal: on that host, with its `cleanup` naming it.
+ */
+export function isLeftover(placement: PlacementRecord): boolean {
+	return placement.cleanup !== undefined && placement.cleanup.hostId === placement.hostId;
 }
 
 /**
