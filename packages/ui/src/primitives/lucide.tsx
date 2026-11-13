@@ -33,6 +33,7 @@ import {
 	FileSpreadsheet,
 	FileText,
 	FolderClosed,
+	FolderInput,
 	KeyRound,
 	Laptop,
 	Layers,
@@ -62,6 +63,7 @@ import {
 	SkipForward,
 	SquareCode,
 	SquareTerminal,
+	Star,
 	Sun,
 	Trash2,
 	Unplug,
@@ -157,6 +159,10 @@ export const PlugIcon = lucide(Plug, "PlugIcon");
 export const UnplugIcon = lucide(Unplug, "UnplugIcon");
 export const CatalogueIcon = lucide(Blocks, "CatalogueIcon");
 export const ServerIcon = lucide(Server, "ServerIcon");
+/** A host moved to another pool. */
+export const MoveIcon = lucide(FolderInput, "MoveIcon");
+/** Made the default: a pool new hosts join. */
+export const DefaultIcon = lucide(Star, "DefaultIcon");
 // An environment: what a sandbox starts with (variables, protected values, secret files, repos and grants).
 export const EnvironmentIcon = lucide(Layers, "EnvironmentIcon");
 export const KeyRoundIcon = lucide(KeyRound, "KeyRoundIcon");

@@ -2,9 +2,10 @@
 // else, where the deployment allows it, the account's own (`owner`), in Settings, which run only its sandboxes. The
 // machines that run sandboxes, each with its state, platform, live CPU and memory, disk in use, the sandboxes on it and
 // its host agent's version, flagged when it's out of date; opening a row shows its CPU, memory and disk as graphs over
-// the last 10 minutes. A host can be drained, so no new sandboxes land on it, updated to the version it should run
-// (where the source offers it; the page reads again every few seconds until it's back on it), or removed, which
-// revokes its credential. Add host makes a one-time join command to run on the new machine and waits for it to join; the host
+// the last 10 minutes. Where the source has pools, the hosts are grouped by the pool they are in, each pool with its
+// menu, and a host's menu moves it to another (host-pools.tsx). A host can be drained, so no new sandboxes land on it,
+// updated to the version it should run (where the source offers it; the page reads again every few seconds until it's
+// back on it), or removed, which revokes its credential. Add host makes a one-time join command to run on the new machine and waits for it to join; the host
 // agent dials out, so a host needs no inbound ports. Every call goes through the `HostsSource` the host binds; stories
 // bind it to fixtures.
 
@@ -14,8 +15,16 @@ import { Disclosure, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { bytesText, compactAge } from "../primitives/format.ts";
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "../primitives/icons.tsx";
-import { useLoad } from "../primitives/load.ts";
-import { DownloadIcon, EllipsisIcon, PauseIcon, PlayIcon, SettingsIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { useLoad, useReloadOn } from "../primitives/load.ts";
+import {
+	DownloadIcon,
+	EllipsisIcon,
+	MoveIcon,
+	PauseIcon,
+	PlayIcon,
+	SettingsIcon,
+	TrashIcon,
+} from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { SideScroll } from "../primitives/side-scroll.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
@@ -27,11 +36,25 @@ import {
 	type Host,
 	type HostingMode,
 	type HostsSource,
+	type Pool,
 	usedShare,
 } from "./compute-model.ts";
 import { HostDiskUsage } from "./host-disk.tsx";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostMemoryUsage } from "./host-memory.tsx";
+import {
+	AccountHostsHeading,
+	DeletePoolDialog,
+	EmptyPool,
+	MoveHostDialog,
+	oneAtATime,
+	type PoolActions,
+	type PoolGroup,
+	PoolHeading,
+	PoolNameDialog,
+	PoolPicker,
+	poolGroups,
+} from "./host-pools.tsx";
 import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
 import { lineOf, ROW_SPAN_MS, seriesOf } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline, table, tableFrame } from "./parts.tsx";
@@ -43,6 +66,8 @@ export interface HostsPageProps {
 	readonly hosting: HostingMode;
 	/** Open Add host at once, for a story or an `?add` link. */
 	readonly adding?: boolean;
+	/** The pool Add host starts on when it opens at once, for a story; absent, the default. */
+	readonly addingTo?: string;
 	/** The account whose own hosts these are; absent, they are the deployment's, for a super-admin. */
 	readonly owner?: { readonly name: string; readonly kind: "personal" | "organisation" };
 	/** A phone: a row per host instead of the table. */
@@ -55,7 +80,16 @@ export interface HostsPageProps {
 	readonly confirmUpdate?: string;
 	/** The host whose saved snapshot limit dialog is open at first, for a story. */
 	readonly limiting?: string;
+	/** The host whose Move to pool dialog is open at first, for a story. */
+	readonly moving?: string;
+	/** A pool dialog open at first, for a story: New pool, or Rename or Delete of the pool with this ID. */
+	readonly poolDialog?: PoolDialogState;
 }
+
+type PoolDialogState =
+	| { readonly kind: "new" }
+	| { readonly kind: "rename"; readonly pool: string }
+	| { readonly kind: "delete"; readonly pool: string };
 
 type NoticeState = { level: "info" | "error"; text: string };
 
@@ -102,21 +136,28 @@ export function HostsPage({
 	now: fixedNow,
 	hosting,
 	adding = false,
+	addingTo,
 	owner,
 	narrow = false,
 	poll = true,
 	opened,
 	confirmUpdate,
 	limiting: limitingAtFirst,
+	moving: movingAtFirst,
+	poolDialog: poolDialogAtFirst,
 }: HostsPageProps) {
 	const { state, reload, pending } = useLoad(() => source.list(), [source]);
 	// Hosts changed here, ahead of the next read: a drain shows at once; null is a removed host.
 	const [local, setLocal] = useState<ReadonlyMap<string, Host | null>>(new Map());
 	const [addOpen, setAddOpen] = useState(adding);
+	// The pool Add host starts on, when it was opened from a pool's menu.
+	const [addPool, setAddPool] = useState(addingTo);
 	const [removing, setRemoving] = useState<Host>();
 	// By ID, so the dialog shows the host as last read.
 	const [updatingId, setUpdatingId] = useState(confirmUpdate);
 	const [limitingId, setLimitingId] = useState(limitingAtFirst);
+	const [movingId, setMovingId] = useState(movingAtFirst);
+	const [poolDialog, setPoolDialog] = useState<PoolDialogState | undefined>(poolDialogAtFirst);
 	const [notice, setNotice] = useState<NoticeState>();
 	const now = fixedNow ?? Date.now();
 
@@ -151,6 +192,92 @@ export function HostsPage({
 		setLocal((current) => new Map(current).set(id, host));
 	}, []);
 
+	// The pools, where the source has them: read once, and again after each change here. Until a read has a change, the
+	// page shows its own copy, as with the hosts.
+	const poolsRead = useLoad(
+		() => (source.pools === undefined ? Promise.resolve(undefined) : source.pools.list()),
+		[source],
+	);
+	const [poolsLocal, setPoolsLocal] = useState<ReadonlyMap<string, Pool | null>>(new Map());
+	// The last pools read: a later read that fails keeps them, so a pool chosen in Add host never quietly goes.
+	const [lastPools, setLastPools] = useState<readonly Pool[]>();
+	useEffect(() => {
+		if (poolsRead.state.status === "ready") setLastPools(poolsRead.state.value);
+	}, [poolsRead.state]);
+	const listedPools = poolsRead.state.status === "ready" ? poolsRead.state.value : lastPools;
+	// The source has pools, but none could be read: the hosts are listed ungrouped, and Add host says so.
+	const poolsFailed = source.pools !== undefined && poolsRead.state.status === "error" && listedPools === undefined;
+	const pools = useMemo(() => {
+		if (listedPools === undefined) return undefined;
+		const byId = new Map(listedPools.map((pool) => [pool.id, pool]));
+		for (const [id, pool] of poolsLocal) {
+			if (pool === null) byId.delete(id);
+			else byId.set(id, pool);
+		}
+		// One default: the pool last made the default here ends the one before.
+		const chosen = [...poolsLocal.values()].findLast((pool) => pool?.default === true);
+		return [...byId.values()].map((pool) =>
+			chosen !== undefined && chosen !== null && pool.id !== chosen.id && pool.default
+				? { ...pool, default: false }
+				: pool,
+		);
+	}, [listedPools, poolsLocal]);
+	useEffect(() => {
+		if (listedPools === undefined) return;
+		setPoolsLocal((current) => (current.size === 0 ? current : new Map()));
+	}, [listedPools]);
+	// Last in the map, so the pool changed last wins.
+	const changePool = (id: string, pool: Pool | null) => {
+		setPoolsLocal((current) => {
+			const next = new Map(current);
+			next.delete(id);
+			return next.set(id, pool);
+		});
+		poolsRead.reload();
+	};
+	// Read with every read of the hosts, so a pool made or a host moved elsewhere shows in its place.
+	useReloadOn(listed, poolsRead.reload);
+	// A super-admin's list has accounts' own hosts too, which are in their accounts' pools, not the deployment's: they
+	// are listed after the deployment's pools, and aren't moved from here.
+	const accountHosts = owner === undefined ? (hosts?.filter((host) => host.accountId !== undefined) ?? []) : [];
+	const pooledHosts = owner === undefined ? hosts?.filter((host) => host.accountId === undefined) : hosts;
+	const groups = pooledHosts === undefined || pools === undefined ? undefined : poolGroups(pooledHosts, pools);
+	const poolsSource = source.pools;
+	const poolActions = (group: PoolGroup): PoolActions => ({
+		onAdd: () => {
+			setAddPool(group.pool.id);
+			setAddOpen(true);
+		},
+		onRename: () => setPoolDialog({ kind: "rename", pool: group.pool.id }),
+		onMakeDefault: () => void makeDefault(group.pool),
+		defaulting,
+		onDelete: () => setPoolDialog({ kind: "delete", pool: group.pool.id }),
+	});
+	// One change of default at a time, from any pool's menu: Kantel makes the one it handles last the default, so two in
+	// flight could land in either order. Make default is greyed out on every pool until the change settles.
+	const [defaultGate] = useState(oneAtATime);
+	const [defaulting, setDefaulting] = useState(false);
+	const makeDefault = (pool: Pool) =>
+		defaultGate.run(async () => {
+			if (poolsSource === undefined) return;
+			setDefaulting(true);
+			try {
+				changePool(pool.id, await poolsSource.makeDefault(pool.id));
+				setNotice({
+					level: "info",
+					text: `${pool.name} is the default pool now. New hosts join it unless you choose another.`,
+				});
+			} catch (caught) {
+				setNotice({
+					level: "error",
+					text: messageOf(caught, `Kantel couldn't make ${pool.name} the default. Try again.`),
+				});
+			} finally {
+				setDefaulting(false);
+			}
+		});
+	const shownPool = (id: string) => pools?.find((pool) => pool.id === id);
+
 	const drain = async (host: Host, on: boolean) => {
 		// Shown at once; the answer replaces it, and a failure puts it back.
 		change(host.id, { ...host, state: on ? "draining" : "online" });
@@ -171,7 +298,10 @@ export function HostsPage({
 		}
 	};
 
-	const openAdd = () => setAddOpen(true);
+	const openAdd = () => {
+		setAddPool(undefined);
+		setAddOpen(true);
+	};
 	const addButton = (
 		<Button variant="primary" size="md" icon={<PlusIcon size="sm" />} onClick={openAdd}>
 			{narrow ? "Add" : "Add host"}
@@ -200,6 +330,8 @@ export function HostsPage({
 			setChecking(false);
 		}
 	};
+	// Move to pool, where the source moves hosts and there is another pool to move one to.
+	const moves = source.move !== undefined && pools !== undefined && pools.length > 1;
 	const rows = (host: Host) => ({
 		host,
 		source,
@@ -208,24 +340,62 @@ export function HostsPage({
 		onRemove: () => setRemoving(host),
 		...(source.update === undefined ? {} : { onUpdate: () => setUpdatingId(host.id) }),
 		...(source.setSnapshotLimit === undefined ? {} : { onLimit: () => setLimitingId(host.id) }),
+		...(moves && (owner !== undefined || host.accountId === undefined) ? { onMove: () => setMovingId(host.id) } : {}),
 		opened: host.id === opened,
 	});
+	const newPoolButton =
+		poolsSource === undefined || pools === undefined ? null : (
+			<Button size="md" onClick={() => setPoolDialog({ kind: "new" })}>
+				New pool
+			</Button>
+		);
+	const headRow = (
+		<tr>
+			<th className={head} scope="col">
+				Name
+			</th>
+			<th className={head} scope="col">
+				State
+			</th>
+			<th className={head} scope="col">
+				Machine
+			</th>
+			<th className={head} scope="col">
+				{source.usage === undefined ? "CPU (vCPU)" : "CPU"}
+			</th>
+			<th className={head} scope="col">
+				Memory (GB)
+			</th>
+			<th className={head} scope="col">
+				Disk (GB)
+			</th>
+			<th className={`${head} text-right`} scope="col">
+				Sandboxes
+			</th>
+			<th className={head} scope="col">
+				Agent
+			</th>
+			<th className={head} scope="col">
+				<span className="kt-sr-only">Actions</span>
+			</th>
+		</tr>
+	);
 
 	return (
 		<div className={computePage}>
 			{/* The title and Add on one line, on a phone too, as Sandboxes has them. */}
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center justify-between gap-4 border-b border-border pb-3">
-				<h1 className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}>Hosts</h1>
-				{check === undefined ? (
-					addButton
-				) : (
-					<div className="flex flex-none items-center gap-2">
+				<h1 className={`kt-page-header-title m-0 flex-none font-strong leading-tight text-fg text-heading`}>Hosts</h1>
+				{/* The buttons wrap under one another before the title is cut short. */}
+				<div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+					{check === undefined ? null : (
 						<Button size="md" icon={<DownloadIcon size="sm" />} busy={checking} onClick={() => void checkForUpdates()}>
 							{narrow ? "Updates" : "Check for updates"}
 						</Button>
-						{addButton}
-					</div>
-				)}
+					)}
+					{newPoolButton}
+					{addButton}
+				</div>
 			</header>
 			{owner === undefined ? null : (
 				<p className="m-0 max-w-[60ch] text-muted">
@@ -245,6 +415,18 @@ export function HostsPage({
 					{notice.text}
 				</Notice>
 			)}
+			{poolsFailed && poolsRead.state.status === "error" ? (
+				<Notice
+					level="error"
+					action={
+						<Button size="sm" onClick={poolsRead.reload}>
+							Try again
+						</Button>
+					}
+				>
+					{messageOf(poolsRead.state.error, "Kantel couldn't read the pools, so the hosts aren't grouped by pool.")}
+				</Notice>
+			) : null}
 			{state.status === "error" && hosts === undefined ? (
 				<Notice
 					level="error"
@@ -256,8 +438,96 @@ export function HostsPage({
 				>
 					{messageOf(state.error, "Kantel couldn't read the hosts.")}
 				</Notice>
-			) : hosts === undefined ? (
+			) : hosts === undefined || (source.pools !== undefined && poolsRead.state.status === "loading") ? (
 				<HostsSkeleton />
+			) : groups !== undefined ? (
+				// Grouped by pool once the pools are read, each pool shown even with no hosts, so it can be renamed.
+				<>
+					{hosts.length === 0 ? null : <HostsSummary hosts={hosts} />}
+					{narrow ? (
+						<div className="flex min-w-0 flex-col gap-6">
+							{groups.map((group) => (
+								<section
+									key={group.pool.id}
+									className="kt-pool flex min-w-0 flex-col"
+									aria-label={`Pool ${group.pool.name}`}
+								>
+									<div className="border-b border-border pb-2">
+										<PoolHeading group={group} actions={poolActions(group)} />
+									</div>
+									{group.hosts.length === 0 ? (
+										<div className="py-3">
+											<EmptyPool onAdd={poolActions(group).onAdd} />
+										</div>
+									) : (
+										<ul className="kt-host-rows m-0 flex list-none flex-col p-0">
+											{group.hosts.map((host) => (
+												<HostPhoneRow key={host.id} {...rows(host)} />
+											))}
+										</ul>
+									)}
+								</section>
+							))}
+							{accountHosts.length === 0 ? null : (
+								<section className="kt-pool flex min-w-0 flex-col" aria-label="Accounts' own hosts">
+									<div className="border-b border-border pb-2">
+										<AccountHostsHeading hosts={accountHosts} />
+									</div>
+									<ul className="kt-host-rows m-0 flex list-none flex-col p-0">
+										{accountHosts.map((host) => (
+											<HostPhoneRow key={host.id} {...rows(host)} />
+										))}
+									</ul>
+								</section>
+							)}
+						</div>
+					) : (
+						<SideScroll className={tableFrame}>
+							<table className={table}>
+								<thead>{headRow}</thead>
+								{groups.map((group, index) => (
+									<tbody key={group.pool.id} className="kt-pool">
+										<tr>
+											{/* A hairline over every pool but the first: the frame drops the line under each tbody's last row. */}
+											<th
+												className={`${cell} bg-panel text-left font-regular ${index === 0 ? "" : "border-t"}`}
+												colSpan={COLUMNS}
+												scope="rowgroup"
+											>
+												<PoolHeading group={group} actions={poolActions(group)} />
+											</th>
+										</tr>
+										{group.hosts.length === 0 ? (
+											<tr>
+												<td className={`${cell} pl-8`} colSpan={COLUMNS}>
+													<EmptyPool onAdd={poolActions(group).onAdd} />
+												</td>
+											</tr>
+										) : (
+											group.hosts.map((host) => <HostRow key={host.id} {...rows(host)} />)
+										)}
+									</tbody>
+								))}
+								{accountHosts.length === 0 ? null : (
+									<tbody className="kt-pool">
+										<tr>
+											<th
+												className={`${cell} border-t bg-panel text-left font-regular`}
+												colSpan={COLUMNS}
+												scope="rowgroup"
+											>
+												<AccountHostsHeading hosts={accountHosts} />
+											</th>
+										</tr>
+										{accountHosts.map((host) => (
+											<HostRow key={host.id} {...rows(host)} />
+										))}
+									</tbody>
+								)}
+							</table>
+						</SideScroll>
+					)}
+				</>
 			) : hosts.length === 0 ? (
 				<EmptyState
 					title="No hosts yet"
@@ -281,37 +551,7 @@ export function HostsPage({
 					) : (
 						<SideScroll className={tableFrame}>
 							<table className={table}>
-								<thead>
-									<tr>
-										<th className={head} scope="col">
-											Name
-										</th>
-										<th className={head} scope="col">
-											State
-										</th>
-										<th className={head} scope="col">
-											Machine
-										</th>
-										<th className={head} scope="col">
-											{source.usage === undefined ? "CPU (vCPU)" : "CPU"}
-										</th>
-										<th className={head} scope="col">
-											Memory (GB)
-										</th>
-										<th className={head} scope="col">
-											Disk (GB)
-										</th>
-										<th className={`${head} text-right`} scope="col">
-											Sandboxes
-										</th>
-										<th className={head} scope="col">
-											Agent
-										</th>
-										<th className={head} scope="col">
-											<span className="kt-sr-only">Actions</span>
-										</th>
-									</tr>
-								</thead>
+								<thead>{headRow}</thead>
 								<tbody>
 									{hosts.map((host) => (
 										<HostRow key={host.id} {...rows(host)} />
@@ -325,6 +565,10 @@ export function HostsPage({
 			<AddHostDialog
 				open={addOpen}
 				source={source}
+				{...(pools === undefined ? {} : { pools })}
+				{...(addPool === undefined ? {} : { pool: addPool })}
+				poolsLoading={source.pools !== undefined && poolsRead.state.status === "loading"}
+				poolsFailed={poolsFailed}
 				now={now}
 				poll={poll}
 				onJoined={(host) => {
@@ -375,6 +619,58 @@ export function HostsPage({
 					setNotice({ level: "info", text: `Removed ${host.name}. Its credential no longer works.` });
 				}}
 			/>
+			{pools === undefined ? null : (
+				<MoveHostDialog
+					host={hosts?.find((host) => host.id === movingId)}
+					pools={pools}
+					onClose={() => setMovingId(undefined)}
+					onDrain={async (host) => {
+						change(host.id, await source.drain(host.id));
+					}}
+					onMove={async (host, pool) => {
+						if (source.move === undefined) return;
+						change(host.id, await source.move(host.id, pool.id));
+						poolsRead.reload();
+						setNotice({
+							level: "info",
+							text: `Moved ${host.name} to ${pool.name}. It's still drained: undrain it when it should take sandboxes.`,
+						});
+					}}
+				/>
+			)}
+			{poolsSource === undefined ? null : (
+				<>
+					<PoolNameDialog
+						open={
+							poolDialog?.kind === "new" || (poolDialog?.kind === "rename" && shownPool(poolDialog.pool) !== undefined)
+						}
+						{...(poolDialog?.kind === "rename" && shownPool(poolDialog.pool) !== undefined
+							? { pool: shownPool(poolDialog.pool) as Pool }
+							: {})}
+						onClose={() => setPoolDialog(undefined)}
+						onSave={async (name) => {
+							if (poolDialog?.kind === "rename") {
+								const before = shownPool(poolDialog.pool);
+								changePool(poolDialog.pool, await poolsSource.rename(poolDialog.pool, name));
+								setNotice({ level: "info", text: `Renamed ${before?.name ?? "the pool"} to ${name}.` });
+								return;
+							}
+							const made = await poolsSource.create(name);
+							changePool(made.id, made);
+							setNotice({ level: "info", text: `Made ${made.name}. Add hosts to it, or move drained ones in.` });
+						}}
+					/>
+					<DeletePoolDialog
+						pool={poolDialog?.kind === "delete" ? shownPool(poolDialog.pool) : undefined}
+						onClose={() => setPoolDialog(undefined)}
+						onDelete={async (pool) => {
+							await poolsSource.remove(pool.id);
+							changePool(pool.id, null);
+							setNotice({ level: "info", text: `Deleted ${pool.name}.` });
+						}}
+					/>
+				</>
+			)}
 		</div>
 	);
 }
@@ -436,6 +732,7 @@ function hostMenu(
 	onRemove: () => void,
 	onUpdate?: () => void,
 	onLimit?: () => void,
+	onMove?: () => void,
 ) {
 	const update: MenuEntry[] =
 		onUpdate === undefined || host.updateAvailable === undefined || host.updating !== undefined
@@ -463,6 +760,9 @@ function hostMenu(
 					disabled: host.state !== "online",
 					onSelect: () => onDrain(true),
 				},
+		...(onMove === undefined
+			? []
+			: [{ kind: "item" as const, id: "move", label: "Move to pool", icon: <MoveIcon />, onSelect: onMove }]),
 		...(onLimit === undefined
 			? []
 			: [
@@ -537,6 +837,8 @@ type RowProps = {
 	onUpdate?: () => void;
 	/** Absent: the saved snapshot limit isn't set from here. */
 	onLimit?: () => void;
+	/** Absent: hosts aren't moved between pools from here. */
+	onMove?: () => void;
 	/** Its graphs show at first. */
 	opened: boolean;
 };
@@ -551,7 +853,7 @@ const Chevron = ({ open }: { open: boolean }) => (
 	</span>
 );
 
-function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, opened }: RowProps) {
+function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
 	const labels = Object.entries(host.labels);
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
@@ -607,7 +909,7 @@ function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, open
 					<Agent host={host} />
 				</td>
 				<td className={`${open ? cellOpen : cell} w-0 text-right`}>
-					{hostMenu(host, onDrain, onRemove, onUpdate, onLimit)}
+					{hostMenu(host, onDrain, onRemove, onUpdate, onLimit, onMove)}
 				</td>
 			</tr>
 			{open ? (
@@ -629,7 +931,7 @@ function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, open
  * A phone's row: the name with its CPU line and state beside it, then the machine, its vCPU and sandboxes, and ⋯.
  * Tapping it opens its graphs under it.
  */
-function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, opened }: RowProps) {
+function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
 	const graphsId = `host-graphs-${host.id}`;
@@ -669,7 +971,7 @@ function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit,
 						)}
 					</span>
 				</button>
-				{hostMenu(host, onDrain, onRemove, onUpdate, onLimit)}
+				{hostMenu(host, onDrain, onRemove, onUpdate, onLimit, onMove)}
 			</div>
 			{open ? (
 				<div id={graphsId} className="flex min-w-0 flex-col gap-6">
@@ -689,6 +991,10 @@ function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit,
 function AddHostDialog({
 	open,
 	source,
+	pools,
+	pool,
+	poolsLoading = false,
+	poolsFailed = false,
 	now,
 	poll,
 	onJoined,
@@ -696,6 +1002,14 @@ function AddHostDialog({
 }: {
 	open: boolean;
 	source: HostsSource;
+	/** The pools a host may join: with more than one, a picker. */
+	pools?: readonly Pool[];
+	/** The pool chosen at first; absent, the default. */
+	pool?: string;
+	/** The pools are still being read: the command waits for them, so it isn't made twice. */
+	poolsLoading?: boolean;
+	/** The pools couldn't be read: the host joins the default, and the dialog says so. */
+	poolsFailed?: boolean;
 	now: number;
 	poll: boolean;
 	onJoined: (host: Host) => void;
@@ -713,22 +1027,49 @@ function AddHostDialog({
 				</>
 			}
 		>
-			{open ? <AddHostBody source={source} now={now} poll={poll} onJoined={onJoined} /> : null}
+			{open && poolsLoading ? (
+				<div aria-busy="true">
+					<Skeleton lines={2} />
+				</div>
+			) : open ? (
+				<AddHostBody
+					poolsFailed={poolsFailed}
+					source={source}
+					{...(pools === undefined ? {} : { pools })}
+					{...(pool === undefined ? {} : { pool })}
+					now={now}
+					poll={poll}
+					onJoined={onJoined}
+				/>
+			) : null}
 		</Dialog>
 	);
 }
 
 function AddHostBody({
 	source,
+	pools,
+	pool: poolAtFirst,
+	poolsFailed = false,
 	now,
 	poll,
 	onJoined,
 }: {
 	source: HostsSource;
+	pools?: readonly Pool[];
+	pool?: string;
+	poolsFailed?: boolean;
 	now: number;
 	poll: boolean;
 	onJoined: (host: Host) => void;
 }) {
+	// The pool to join, chosen only where there is more than one: else the token names none and the host joins the
+	// default. It goes with the token at once, so a change makes the command again.
+	const choosing = pools !== undefined && pools.length > 1;
+	const [chosen, setChosen] = useState(poolAtFirst);
+	const pool = choosing
+		? (pools.find((each) => each.id === chosen) ?? pools.find((each) => each.default) ?? pools[0])?.id
+		: undefined;
 	const [name, setName] = useState("");
 	const [labelsText, setLabelsText] = useState("");
 	const [input, setInput] = useState<HostJoinInput>({});
@@ -738,10 +1079,15 @@ function AddHostBody({
 		...(Object.keys(labels).length === 0 ? {} : { labels }),
 	};
 	const changed = JSON.stringify(pending) !== JSON.stringify(input);
+	const joining: HostJoinInput = { ...input, ...(choosing && pool !== undefined ? { pool } : {}) };
 	return (
 		<div className="flex min-w-0 flex-col gap-3 pt-1 text-fg">
+			{choosing && pool !== undefined ? <PoolPicker pools={pools} value={pool} onChange={setChosen} /> : null}
+			{poolsFailed ? (
+				<Notice level="warning">Kantel couldn't read the pools, so this host joins the default pool.</Notice>
+			) : null}
 			<span className="text-sm font-medium">Run this on the host</span>
-			<HostJoinCommand source={source} input={input} now={now} onJoined={onJoined} poll={poll} />
+			<HostJoinCommand source={source} input={joining} now={now} onJoined={onJoined} poll={poll} />
 			<Disclosure summary="Name and labels">
 				<div className="flex min-w-0 flex-col gap-3">
 					<TextField
