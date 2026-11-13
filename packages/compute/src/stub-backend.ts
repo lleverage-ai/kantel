@@ -60,7 +60,16 @@ export interface StubBackendOptions {
 	readonly sandboxDomain?: string;
 	/** For its usage readings' times. Default `Date.now`. */
 	readonly now?: () => number;
+	/**
+	 * Refs of snapshots saved with a guest agent from before it extracted into a real directory alone (`realTarget`):
+	 * an upgrade into one is refused, as kantel-host refuses it, before anything is written. It may change as it runs.
+	 */
+	readonly olderGuestSnapshots?: ReadonlySet<string>;
 }
+
+/** What kantel-host answers an upgrade into a snapshot whose guest agent predates `realTarget`. */
+const OLDER_GUEST_AGENT =
+	"the snapshot was saved with an older Kantel guest agent, which can't lay an isolate's files into it safely: save it again from a sandbox started afresh on a current host to upgrade into it";
 
 /** The stub host's memory and disk, as its usage reports them. */
 const STUB_HOST_MEMORY_BYTES = 256 * 1024 ** 3;
@@ -490,8 +499,13 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 					: spec.fromSnapshot === undefined
 						? undefined
 						: snapshotTree(spec.fromSnapshot);
-			// From a microVM's snapshot, as a create from it, the isolate's files laid over what it has.
+			// From a microVM's snapshot, as a create from it, the isolate's files laid over what it has, only by a guest agent
+			// that extracts into a real directory alone: one older is refused once the machine is made, before anything is
+			// written into it.
 			const fs = await restore(spec.intoSnapshot === undefined ? undefined : snapshotTree(spec.intoSnapshot));
+			if (spec.intoSnapshot !== undefined && options.olderGuestSnapshots?.has(spec.intoSnapshot) === true) {
+				throw new KantelError("not_supported", OLDER_GUEST_AGENT);
+			}
 			const moved = (path: string) =>
 				path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)
 					? `${UPGRADE_WORKSPACE}${path.slice(WORKSPACE.length)}`
@@ -521,19 +535,17 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			let files = 0;
 			let bytes = 0;
 			try {
-				// A link at UPGRADE_WORKSPACE or above it (a snapshot's) is refused before anything goes in, as a host does:
-				// the files would land wherever it points.
+				// A link at UPGRADE_WORKSPACE or above it (a snapshot's) is refused before anything goes in, as the guest agent's
+				// extraction into a real directory refuses it: the files would land wherever it points.
 				let at = "";
 				for (const part of UPGRADE_WORKSPACE.split("/").filter((each) => each !== "")) {
 					at = `${at}/${part}`;
 					const there = await fs.lstat(at).catch(() => undefined);
 					if (there === undefined) break;
-					if (there.isSymbolicLink || !there.isDirectory) {
-						throw new KantelError(
-							"invalid",
-							`${at} in the microVM ${there.isSymbolicLink ? "is a symbolic link" : "isn't a directory"}: the isolate's files go only into a real directory at ${UPGRADE_WORKSPACE}`,
-						);
+					if (there.isSymbolicLink) {
+						throw new KantelError("invalid", `${at} is a symbolic link; nothing is extracted through one`);
 					}
+					if (!there.isDirectory) throw new KantelError("invalid", `${at} isn't a directory`);
 				}
 				await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
 				for (const dir of [...(tree?.dirs.keys() ?? [])].sort()) {

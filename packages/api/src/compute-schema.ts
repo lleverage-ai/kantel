@@ -1393,7 +1393,9 @@ export const UpgradeSandboxBody = Type.Object(
 					"account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the " +
 					"host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: " +
 					"where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's " +
-					"disk, so not with `resources.diskGb`. Default: a new microVM of `image`.",
+					"disk, so not with `resources.diskGb`. Only a snapshot whose guest agent lays files into a real directory " +
+					"alone (saved from a sandbox on a current host) can be upgraded into; one older is refused, `not_supported`. " +
+					"Default: a new microVM of `image`.",
 			}),
 		),
 		wait: Type.Optional(

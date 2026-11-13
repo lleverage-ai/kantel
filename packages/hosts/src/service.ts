@@ -34,6 +34,7 @@ import {
 	type PortStream,
 } from "./hub.ts";
 import {
+	GUEST_FEATURES,
 	HOST_CLOSE_REVOKED,
 	HOST_FEATURES,
 	type HostBucketSource,
@@ -1795,40 +1796,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		await onHost(
 			toHost,
 			HostMethods.fileExtract,
-			// Only into a real directory, by a guest agent that knows to refuse a link there; `realWorkspace` holds for one
-			// that doesn't.
+			// Only into a real directory, refusing a link at or above it: the guest agent's own check, the one place the rule
+			// is kept. A microVM from a snapshot was made only with an agent that reports it (`GUEST_FEATURES`); one of the
+			// host's own image, with nothing of the account's in it yet, may have an older agent, which ignores it.
 			{ sandboxId, archive: UPGRADE_STAGING, target: UPGRADE_WORKSPACE, realTarget: true },
 			{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 		);
 		return { files: entries.length, bytes };
-	};
-
-	/**
-	 * Refuses a microVM with a link, or something that isn't a directory, at `UPGRADE_WORKSPACE` or any directory above
-	 * it, as a snapshot may have: the isolate's files would be extracted through it to somewhere else and the upgrade
-	 * would still succeed. Read from its host's listing, which every guest agent answers without following a link, so it
-	 * holds for a snapshot whose agent (run from its own image or memory) is older than the extraction's own check
-	 * (`realTarget`); read again once the files are in, for a link put there meanwhile. The first directory missing ends
-	 * it: the extraction makes the rest.
-	 */
-	const realWorkspace = async (sandboxId: string, hostId: string): Promise<void> => {
-		let at = "";
-		for (const name of UPGRADE_WORKSPACE.split("/").filter((part) => part !== "")) {
-			const { entries } = await onHost<{ entries: ListedFile[] | null }>(hostId, HostMethods.fileList, {
-				sandboxId,
-				path: at === "" ? "/" : at,
-			});
-			const next = `${at}/${name}`;
-			const entry = (entries ?? []).find((each) => each.path === next);
-			if (entry === undefined) return;
-			if (entry.type !== "dir" && entry.type !== "directory") {
-				throw new KantelError(
-					"invalid",
-					`${next} in the microVM ${entry.type === "symlink" ? "is a symbolic link" : "isn't a directory"}: the isolate's files go only into a real directory at ${UPGRADE_WORKSPACE}`,
-				);
-			}
-			at = next;
-		}
 	};
 
 	const reserve = (hostId: string, memoryMiB: number, diskGiB: number) => {
@@ -2545,6 +2519,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						? { vcpus: chosen.size.vcpus, memoryMiB: chosen.size.memoryMiB, diskGiB: chosen.size.diskGiB }
 						: {}),
 					...(input.from === undefined ? {} : { from: input.from }),
+					// Its files go in only through a guest agent that extracts into a real directory alone: the snapshot's own agent
+					// (its image's, or the one its memory held) may predate that, and is refused before anything is written.
+					...(input.from === undefined ? {} : { guestFeatures: [GUEST_FEATURES.extractRealTarget] }),
 					...(input.owner === undefined ? {} : { owner: input.owner }),
 					...(input.env === undefined ? {} : { env: input.env }),
 					...(input.egress === undefined ? {} : { egress: input.egress }),
@@ -2634,7 +2611,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const others = listed.filter(
 					(host) => host.id !== source.hostId && host.facts?.features?.includes(HOST_FEATURES.filesExtract) === true,
 				);
-				const chosen = place(request, others.map(candidateOf));
+				// From a snapshot, only a host that asks the snapshot's guest agent what it can do before the files go in (and
+				// knows `realTarget`): one from before it would ignore both.
+				const able =
+					input.from === undefined
+						? others
+						: others.filter((host) => host.facts?.features?.includes(HOST_FEATURES.isolateUpgradeFrom) === true);
+				const chosen = place(request, able.map(candidateOf));
+				if (isRefusal(chosen) && able.length < others.length && !isRefusal(place(request, others.map(candidateOf)))) {
+					throw placementError(
+						"not_supported",
+						"host_unavailable",
+						"The snapshot's host can't make a microVM from a snapshot in an upgrade; upgrade its kantel-host",
+					);
+				}
 				if (isRefusal(chosen) && pinnedHere) {
 					throw placementError(
 						"exhausted",
@@ -2647,7 +2637,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					throw placementError(
 						"exhausted",
 						input.from !== undefined && chosen.code === "no_host" ? "host_unavailable" : chosen.code,
-						others.length === 0 && input.from === undefined
+						able.length === 0 && input.from === undefined
 							? "No host can make a microVM from this isolate: its own host doesn't run microVMs, and no other that may take it does"
 							: chosen.reason,
 					);
@@ -2697,11 +2687,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						input.from === undefined ? undefined : { timeoutMs: DISK_COPY_TIMEOUT_MS },
 						target,
 					);
-					await realWorkspace(sandboxId, target.id);
 					moved = await moveFiles(sandboxId, listing, source.hostId, target.id);
-					// Again once they are in: a guest agent older than `realTarget` follows a link what runs in the snapshot put
-					// there meanwhile, and the microVM is deleted with whatever went through it.
-					await realWorkspace(sandboxId, target.id);
 					const linked = await onHost<HostExecResult>(target.id, HostMethods.exec, {
 						sandboxId,
 						argv: ["sh", "-c", UPGRADE_LINK],

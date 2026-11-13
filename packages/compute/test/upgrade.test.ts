@@ -1548,7 +1548,7 @@ describe("upgrading an isolate into a snapshot", () => {
 		const sandbox = await isolateWithFiles(tom);
 		const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
 		expect(refused.status).toBe(400);
-		expect(refused.message).toContain("/home/user/workspace in the microVM is a symbolic link");
+		expect(refused.message).toContain("/home/user/workspace is a symbolic link; nothing is extracted through one");
 		const stored = await api.store.sandboxes.get(sandbox.id);
 		expect(stored).toMatchObject({ type: "isolate", state: "running" });
 		expect(stored?.upgrading).toBeUndefined();
@@ -1558,6 +1558,31 @@ describe("upgrading an isolate into a snapshot", () => {
 		const fromIt = await tom.createSandbox({ from: saved.id, wait: true });
 		const kept = await tom.runCommand(fromIt.id, { command: `ls -A ${outside}; cat ${outside}/kept.txt` });
 		expect(kept.stdout).toBe("kept.txt\ntheirs\n");
+	});
+
+	it("refuses a snapshot saved with an older guest agent before anything is written, the isolate as it was", async () => {
+		const older = new Set<string>();
+		const { tom, api } = setup({ stub: createStubBackend({ olderGuestSnapshots: older }) });
+		const saved = await projectSnapshot(tom);
+		const ref = (await api.store.snapshots.get(saved.id))?.ref;
+		if (ref === undefined) throw new Error("no ref");
+		older.add(ref);
+		const sandbox = await isolateWithFiles(tom);
+		const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
+		expect(refused.status).toBe(501);
+		expect(refused.code).toBe("not_supported");
+		expect(refused.message).toContain(
+			"the snapshot was saved with an older Kantel guest agent, which can't lay an isolate's files into it safely: save it again from a sandbox started afresh on a current host to upgrade into it",
+		);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running" });
+		expect(stored?.upgrading).toBeUndefined();
+		const isolate = await tom.runCommand(sandbox.id, { command: "cat src/a.txt; ./run.sh" });
+		expect(isolate.stdout).toBe("hello\nrun\n");
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(0);
+		// Saved again from a sandbox on a current agent, it upgrades.
+		older.clear();
+		expect((await tom.upgradeSandbox(sandbox.id, { from: saved.id })).type).toBe("microvm");
 	});
 
 	it("takes the snapshot by its ID, and gives a saved name's newest", async () => {

@@ -286,7 +286,7 @@ kantel upgrade <id> [flags]
 
 Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the isolate is left as it was. Commands sent meanwhile wait for it.
 
---from starts the microVM from a snapshot of a microVM, as kantel new --from does, such as one with a repository cloned and its dependencies installed. The isolate's files are laid over what the snapshot has in /home/user/workspace: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with --disk.
+--from starts the microVM from a snapshot of a microVM, as kantel new --from does, such as one with a repository cloned and its dependencies installed. The isolate's files are laid over what the snapshot has in /home/user/workspace: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with --disk. A snapshot saved with an older guest agent is refused: save it again from a sandbox started afresh on a current host, and upgrade into that.
 
 | Flag | What it does |
 | --- | --- |

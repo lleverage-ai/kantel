@@ -2284,7 +2284,8 @@ const SECTIONS: readonly Section[] = [
 					"--from starts the microVM from a snapshot of a microVM, as kantel new --from does, such as one with a\n" +
 					"repository cloned and its dependencies installed. The isolate's files are laid over what the snapshot has\n" +
 					"in /home/user/workspace: where both have a file the isolate's wins, and nothing of the snapshot's is\n" +
-					"deleted. It keeps the snapshot's disk, so not with --disk.",
+					"deleted. It keeps the snapshot's disk, so not with --disk. A snapshot saved with an older guest agent is\n" +
+					"refused: save it again from a sandbox started afresh on a current host, and upgrade into that.",
 				async run(ctx) {
 					const vcpus = whole(ctx.string("vcpus"), "--vcpus");
 					const memory = ctx.string("memory");

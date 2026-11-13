@@ -283,8 +283,10 @@ export const HOST_FEATURES = {
 	/**
 	 * `sandbox.upgrade` takes a create's `from` (one of the host's microVM snapshots) or `template` too: the microVM
 	 * starts from it as `sandbox.create` would make it, the snapshot's memory restored, and the isolate's files are laid
-	 * over what it has at `/home/user/workspace`. Without it, an upgrade from a snapshot on the isolate's own host is
-	 * refused.
+	 * over what it has at `/home/user/workspace`, only by a guest agent that reports `GUEST_FEATURES.extractRealTarget`.
+	 * `sandbox.create` takes `guestFeatures` too, refusing (`not_supported`, the microVM deleted) one whose guest agent
+	 * doesn't report each before anything is written into it. Without it, an upgrade from a snapshot on the host is
+	 * refused, whether the isolate is there or on another host.
 	 */
 	isolateUpgradeFrom: "isolate-upgrade-from",
 	/**
@@ -293,6 +295,15 @@ export const HOST_FEATURES = {
 	 * files to a microVM on another host, and let go if that upgrade rolls back.
 	 */
 	isolateFreeze: "isolate-freeze",
+} as const;
+
+/**
+ * What a microVM's guest agent can report it does (its health's `features`), for a create's `guestFeatures` to
+ * require: an agent from before one reports none.
+ */
+export const GUEST_FEATURES = {
+	/** It extracts with `realTarget` into a real directory only, refusing a link at the target or above it. */
+	extractRealTarget: "extract-real-target",
 } as const;
 
 /** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
@@ -1141,7 +1152,8 @@ export const HostMethods = {
 	 * `{ sandboxId, archive, target, realTarget? }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into
 	 * the directory `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted.
 	 * Answered `{}`. With `realTarget`, a link at `target` or above it is refused rather than followed, by guest agents
-	 * that know it: an older one, or an older host, ignores it, so whoever needs it checks too.
+	 * that report `GUEST_FEATURES.extractRealTarget`: an older one, or an older host, ignores it, so whoever needs it
+	 * requires that feature first (a create's `guestFeatures`, on a host with `HOST_FEATURES.isolateUpgradeFrom`).
 	 */
 	fileExtract: "sandbox.files.extract",
 	/**
