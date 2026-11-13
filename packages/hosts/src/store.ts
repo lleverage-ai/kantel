@@ -109,6 +109,12 @@ export interface HostStore {
 	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
 	/**
+	 * Puts a new sandbox's placement only while its host is neither draining nor revoked, as one write: whether it did. A
+	 * create that read its host before a drain is refused here, so a host drained, found empty and moved to another pool
+	 * never takes one after (the compute plane's move).
+	 */
+	placeOnTakingHost(placement: PlacementRecord): Promise<boolean>;
+	/**
 	 * Changes a placement as it is now, atomically, as `updateHost` does a host: `change` is given the stored record and
 	 * answers the next (undefined leaves it), and a write that raced another is redone on the newer record. A host's
 	 * report goes through it, so one read before an upgrade's handover never writes back the placement it read. Resolves
@@ -186,6 +192,12 @@ export function createMemoryHostStore(): HostStore {
 		},
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
+		},
+		async placeOnTakingHost(placement) {
+			const host = hosts.get(placement.hostId);
+			if (host === undefined || host.draining || host.revoked) return false;
+			placements.set(placement.sandboxId, copy(placement));
+			return true;
 		},
 		async updatePlacement(sandboxId, change) {
 			// Read, change and write with no await between them: nothing else runs in between.
@@ -267,6 +279,9 @@ const parse = <T>(row: Record<string, unknown>): T => JSON.parse(String(row.data
  * and facts' values are strings, so a `"revoked"` inside one is escaped.
  */
 const REVOKED_PATTERN = '%"revoked":true%';
+
+/** A draining host's row, as `JSON.stringify` writes it: as `REVOKED_PATTERN`, nothing else in a record can match. */
+const DRAINING_PATTERN = '%"draining":true%';
 
 /** How many times `updateHost` reads again after losing a write to another, before it gives up. */
 const UPDATE_ATTEMPTS = 8;
@@ -361,6 +376,27 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				["sandbox_id", "host_id", "created_at", "data"],
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
 			);
+		},
+		async placeOnTakingHost(placement) {
+			const rows = await driver.query(
+				`INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
+				SELECT ?, ?, ?, ? WHERE EXISTS (
+					SELECT 1 FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?
+				)
+				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
+					data = excluded.data
+				RETURNING sandbox_id`,
+				[
+					placement.sandboxId,
+					placement.hostId,
+					placement.createdAt,
+					JSON.stringify(placement),
+					placement.hostId,
+					DRAINING_PATTERN,
+					REVOKED_PATTERN,
+				],
+			);
+			return rows.length > 0;
 		},
 		async updatePlacement(sandboxId, change) {
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {

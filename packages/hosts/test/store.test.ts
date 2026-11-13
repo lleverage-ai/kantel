@@ -105,6 +105,22 @@ function behaves(open: () => Promise<HostStore>) {
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
 	});
 
+	it("places a new sandbox only on a host that is neither draining nor revoked, in one write", async () => {
+		const store = await open();
+		await store.insertHost({ ...host("host_a", 1), labels: { note: '"draining":true' } });
+		await store.insertHost({ ...host("host_d", 2), draining: true });
+		await store.insertHost({ ...host("host_r", 3), revoked: true });
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1))).toBe(true);
+		expect(await store.placeOnTakingHost(placement("s2", "host_d", 2))).toBe(false);
+		expect(await store.placeOnTakingHost(placement("s3", "host_r", 3))).toBe(false);
+		expect(await store.placeOnTakingHost(placement("s4", "host_none", 4))).toBe(false);
+		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		expect(await store.placementsOn("host_d")).toEqual([]);
+		// Drained since it was read: refused.
+		await store.updateHost("host_a", (current) => ({ ...current, draining: true }));
+		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBe(false);
+	});
+
 	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {
 		const store = await open();
 		await store.putPlacement(placement("s1", "host_a", 1));

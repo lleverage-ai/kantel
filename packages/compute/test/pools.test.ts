@@ -293,6 +293,9 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		placing = sandbox.id;
 		await root.updateHost(STUB_HOST_ID, { draining: true });
 		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "ci" }))).code).toBe("conflict");
+		// One whose create was never answered, which its host may still have made, holds it too.
+		await store.sandboxes.update(sandbox.id, (current) => ({ ...current, state: "error" }));
+		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "ci" }))).code).toBe("conflict");
 		placing = undefined;
 		await store.sandboxes.update(sandbox.id, (current) => ({ ...current, state: "deleted" }));
 		expect((await root.updateHost(STUB_HOST_ID, { pool: "ci" })).state).toBe("draining");
@@ -316,6 +319,45 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		await store.hosts.update(STUB_HOST_ID, (current) => ({ ...current, poolId: ci.id }));
 		await root.listHosts();
 		expect((await store.hosts.get(STUB_HOST_ID))?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+	});
+
+	it("keeps a host in a pool made after the pools were read, and makes no pools for an account that has gone", async () => {
+		const store = await make();
+		let stale: string | undefined;
+		const made: string[] = [];
+		const viewed: ComputeStore = {
+			...store,
+			pools: {
+				...store.pools,
+				insert: async (pool) => {
+					made.push(pool.owner);
+					return store.pools.insert(pool);
+				},
+				// A read of the pools from before one was made (another connection's).
+				list: async (where) => (await store.pools.list(where)).filter((pool) => pool.id !== stale),
+			},
+		};
+		let own: BackendHost | undefined;
+		const { backend } = hostsBackend(() => (own === undefined ? [] : [own]));
+		const { root, tom } = setup(viewed, backend);
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await store.hosts.update(STUB_HOST_ID, (current) => ({ ...current, poolId: ci.id }));
+		stale = ci.id;
+		await root.listHosts();
+		expect((await store.hosts.get(STUB_HOST_ID))?.poolId).toBe(ci.id);
+		stale = undefined;
+
+		// An organisation's host, the organisation deleted: its pools aren't made again on every read.
+		const org = await tom.createOrganisation({ name: "Acme" });
+		own = await hostLike("host_org", org.id);
+		await root.listHosts();
+		await tom.deleteOrganisation(org.id);
+		made.splice(0);
+		await root.listHosts();
+		await root.listHosts();
+		expect(made).not.toContain(org.id);
+		expect(await store.pools.list({ owner: org.id })).toEqual([]);
 	});
 
 	it("tells the registry again where a move's call to it failed", async () => {

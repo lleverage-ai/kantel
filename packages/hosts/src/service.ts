@@ -688,6 +688,8 @@ export interface HostsService {
 		},
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
+	/** Whether a sandbox is placed on the host, one being made there included (a lost one not). */
+	holds(hostId: string): Promise<boolean>;
 	/**
 	 * Asks a connected host to update its kantel-host to `latestVersion`: it fetches the binary, checks it against the
 	 * release's SHA256SUMS and restarts into it, its sandboxes running on. Answers once the binary is in place, with the
@@ -2265,6 +2267,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				throw new KantelError("unavailable", error instanceof Error ? error.message : String(error));
 			}
 		},
+		async holds(hostId) {
+			return (await store.placementsOn(hostId)).some((placement) => placement.state !== "lost");
+		},
 		async revoke(hostId) {
 			const host = await hostOf(hostId);
 			const next = { ...host, revoked: true };
@@ -2383,7 +2388,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					createdAt: now,
 					updatedAt: now,
 				};
-				await store.putPlacement(placement);
+				// Only while its host still takes sandboxes: a drain since the hosts were read refuses it.
+				if (!(await store.placeOnTakingHost(placement))) {
+					throw placementError("unavailable", "host_unavailable", `The host ${chosen.host.name} is draining`);
+				}
 				reserve(chosen.host.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				const mounts = mountHandoff(chosen.host.facts?.features, input.mounts);
 				try {

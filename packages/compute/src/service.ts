@@ -2591,12 +2591,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const poolFor = async (owner: string, wanted: string | undefined): Promise<string | undefined> => {
 				let read = ownerPools.get(owner);
 				if (read === undefined) {
-					read = pools.poolsOf(owner).catch(() => []);
+					// An account gone or closing gets none made: its hosts are being revoked.
+					read = (async () => {
+						if (owner !== OPERATOR_POOLS) {
+							const account = await store.accounts.get(owner);
+							if (account === undefined || account.closedAt !== undefined) return [];
+						}
+						return pools.poolsOf(owner).catch(() => []);
+					})();
 					ownerPools.set(owner, read);
 				}
 				const known = await read;
-				if (wanted !== undefined && known.some((pool) => pool.id === wanted)) return wanted;
-				return defaultPoolOf(known)?.id;
+				if (wanted === undefined) return defaultPoolOf(known)?.id;
+				if (known.some((pool) => pool.id === wanted)) return wanted;
+				// Not in the pools read: made since (a move into it read after them) unless it has gone.
+				const since = await store.pools.get(wanted);
+				if (since !== undefined && since.owner === owner) return wanted;
+				return defaultPoolOf(known)?.id ?? wanted;
 			};
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
@@ -2768,16 +2779,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Whether a host holds a sandbox: a create or fork under way there that doesn't name it yet, found by where its
-	 * backend placed it (as `strandOn` finds them), or one whose record names it, in any state but `deleted`. Read in that
-	 * order, so one that comes to name it between the two reads is found by the second.
+	 * Whether a host holds a sandbox. Its backend's scheduler says first where it can (`hostHolds`: a placement, one
+	 * being made included, which a drained host takes no more of). Then the records here: a create, fork or upgrade that
+	 * doesn't name the host yet (starting, or `error` from a call never answered, which the host may still have made),
+	 * found by where its backend placed it, as `strandOn` finds them; and one whose record names the host, in any state
+	 * but `deleted`. Read in that order, so one that comes to name it between the reads is found by the last.
 	 */
 	async function holdsSandboxes(hostId: string): Promise<boolean> {
+		if ((await backend.hostHolds?.(hostId)) === true) return true;
 		if (backend.placedOn !== undefined) {
-			const starting = (await store.sandboxes.list({ state: "starting" })).filter(
-				(sandbox) => sandbox.hostId === undefined,
-			);
-			for (const sandbox of starting) {
+			const unnamed = (
+				await Promise.all([store.sandboxes.list({ state: "starting" }), store.sandboxes.list({ state: "error" })])
+			)
+				.flat()
+				.filter((sandbox) => sandbox.hostId === undefined);
+			for (const sandbox of unnamed) {
 				if ((await backend.placedOn(sandbox.id)) === hostId) return true;
 			}
 		}

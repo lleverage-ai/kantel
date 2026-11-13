@@ -810,6 +810,11 @@ export interface SandboxBackend {
 	 * sources go to no host until it is placed.
 	 */
 	placedOn?(sandboxId: string): Promise<string | undefined>;
+	/**
+	 * Whether the backend's scheduler has a sandbox placed on the host, one being made there included: what a host's move
+	 * to another pool waits for. Absent, the compute plane's own records alone say.
+	 */
+	hostHolds?(hostId: string): Promise<boolean>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
 	/**
