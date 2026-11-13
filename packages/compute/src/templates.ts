@@ -357,6 +357,8 @@ export interface TemplateService {
 			readonly shape: BackendShape;
 			readonly eligibleHosts: readonly string[];
 			readonly restoreOn?: readonly string[];
+			/** Each host's pool now: a build is used only on a host still in the pool it was built in. */
+			readonly hostPools?: ReadonlyMap<string, string | undefined>;
 		},
 	): Promise<TemplateStart>;
 	/**
@@ -841,13 +843,15 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			customSource(template.spec.image),
 		]);
 		const hostRuntimes = runtimesFor(eligible);
-		// Whether an entry's host may serve creates from it now, on the runtime it was built for.
+		// Whether an entry's host may serve creates from it now, on the runtime it was built for, in the pool it was built
+		// in (any, for one built before pools).
 		const servedBy = (entry: StoredTemplateSnapshot) =>
 			eligible.some(
 				(runtime) =>
 					runtime.hostId === entry.hostId &&
 					runtime.kernel === entry.key.kernel &&
-					runtime.firecracker === entry.key.firecracker,
+					runtime.firecracker === entry.key.firecracker &&
+					(entry.key.poolId === undefined || runtime.poolId === entry.key.poolId),
 			);
 		// By each wanted key's hash (a custom image's as it is claimed, before its build names its digest), one for each
 		// runtime in each pool; none while no host can make its shape.
@@ -1164,10 +1168,17 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			readonly shape: BackendShape;
 			readonly eligibleHosts: readonly string[];
 			readonly restoreOn?: readonly string[];
+			/** Each host's pool now: a build is used only on a host still in the pool it was built in. */
+			readonly hostPools?: ReadonlyMap<string, string | undefined>;
 		},
 	): Promise<TemplateStart> {
 		const { spec } = template;
 		const { shape } = start;
+		// Built in its host's pool as it is now (or before pools): a host moved since serves the old pool's build no more.
+		const inItsPool = (entry: StoredTemplateSnapshot): boolean =>
+			entry.key.poolId === undefined ||
+			start.hostPools === undefined ||
+			(entry.hostId !== undefined && start.hostPools.get(entry.hostId) === entry.key.poolId);
 		// Where its snapshots may be restored: with a disk asked for, only on a host that gives it that disk from one.
 		const restores = (hostId: string): boolean =>
 			shape.diskGb === undefined || start.restoreOn === undefined || start.restoreOn.includes(hostId);
@@ -1191,7 +1202,9 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					: "No host this sandbox may use can boot templates; upgrade its kantel-host",
 			);
 		}
-		if (custom) return startCustom(template, start.shape, base, hostRuntimes, entries, eligible, restores);
+		if (custom) {
+			return startCustom(template, start.shape, base, hostRuntimes, entries.filter(inItsPool), eligible, restores);
+		}
 		// A snapshot is the machine it was built as: only one built as this sandbox's shape will do, so a restore and a
 		// fresh boot give it the same machine.
 		const [snapshot] = newestFirst(
@@ -1205,6 +1218,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					entry.hostId !== undefined &&
 					eligible.includes(entry.hostId) &&
 					restores(entry.hostId) &&
+					inItsPool(entry) &&
 					hostRuntimes.some(
 						(runtime) =>
 							runtime.hostId === entry.hostId &&

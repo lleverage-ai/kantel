@@ -1651,6 +1651,38 @@ describe("a template's build host", () => {
 		expect(specOf(created, sandbox.id).template?.snapshot).toBe(inCi?.ref);
 	});
 
+	it("isn't served by a host moved to another pool since it was built there, its new pool's build not ready yet", async () => {
+		const { api, tom, root, build, releaseAll } = setup();
+		const web = await tom.createTemplate({ name: "web", spec: SPEC });
+		await tom.createTemplate({
+			name: "rg",
+			spec: { ...SPEC, image: { kind: "dockerfile", dockerfile: "ARG KANTEL_BASE\nFROM $KANTEL_BASE\n" } },
+		});
+		await Promise.all([build(0), build(1)]);
+		await releaseAll(() => api.service.idle());
+		expect((await tom.getTemplate(web.id)).build.state).toBe("ready");
+		// The stub's host, which holds both builds, is moved (drained, empty) to ci.
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		await root.updateHost(STUB_HOST_ID, { pool: ci.id });
+		await root.updateHost(STUB_HOST_ID, { draining: false });
+		// ci's own builds are asked for, and held.
+		await api.service.sweep();
+		await Promise.all([build(2), build(3)]);
+		// Meanwhile the default pool's builds serve nothing in ci: a Kantel base boots fresh, a custom image waits.
+		const fresh = await tom.createSandbox({ template: "web", pool: "ci", wait: true });
+		expect(fresh.template).toMatchObject({ start: "boot" });
+		expect(fresh.template?.snapshotId).toBeUndefined();
+		const waiting = await failure(tom.createSandbox({ template: "rg", pool: "ci" }));
+		expect(waiting.code).toBe("unavailable");
+		await releaseAll(() => api.service.idle());
+		const built = await tom.createSandbox({ template: "web", pool: "ci", wait: true });
+		expect(built.template).toMatchObject({ start: "snapshot" });
+		const ready = await api.store.templateSnapshots.get(built.template?.snapshotId ?? "");
+		expect(ready?.key.poolId).toBe(ci.id);
+	});
+
 	it("is one that can make its shape, of each runtime, not merely the first host with that runtime", async () => {
 		const { api, tom, build, hostSizes, runtimeHosts } = setup({ sizes: HOST_SIZES, moreHosts: ["host_small"] });
 		// The small host comes first, and makes only `small`, not the template's 2 vCPUs and 4096 MB.

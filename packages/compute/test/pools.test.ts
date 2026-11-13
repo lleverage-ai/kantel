@@ -556,6 +556,13 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(taken.poolId).toBe(firstPoolId(OPERATOR_POOLS));
 		expect(saved.poolId).toBe(firstPoolId(OPERATOR_POOLS));
 		expect((await tom.getSnapshot(saved.id)).poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// Of a sandbox from before pools, its host's pool too, though the stub's refs don't name their host; so is a stop's.
+		const legacy = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		await store.sandboxes.update(legacy.id, ({ poolId: _pool, ...rest }) => rest);
+		expect((await tom.takeSnapshot(legacy.id, {})).poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const stopped = await tom.stopSandbox(legacy.id, { wait: true });
+		expect((await tom.getSnapshot(stopped.latestSnapshotId ?? "")).poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		await tom.deleteSandbox(legacy.id);
 		// Its sandbox deleted, its host (drained, empty) moves to ci, the snapshot still on it. A host backend's ref names
 		// its host, as the stub's doesn't: given one here, so the snapshot's host is known once its sandbox has gone.
 		await tom.deleteSandbox(source.id);
@@ -603,7 +610,7 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 			tom.createSandbox({ type: "microvm", pool: "default", stickyDisks: [{ disk: "cache", path: "/cache" }] }),
 		);
 		expect(refused.code).toBe("unavailable");
-		expect(refused.message).toContain("The sticky disk cache is in pool ci, and this sandbox would be in pool default");
+		expect(refused.message).toContain("The sticky disk cache is in pool ci, not pool default");
 		expect(await store.sandboxes.list()).toHaveLength(before);
 		// A disk with no pool gets its first sandbox's, then holds the next to it.
 		const loose = await tom.createStickyDisk({ name: "loose", sizeGb: 10 });
@@ -617,6 +624,28 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		});
 		expect((await tom.getStickyDisk("loose")).poolId).toBe(ci.id);
 		expect((await tom.listStickyDisks()).items.map((disk) => disk.poolId)).toEqual([ci.id, ci.id]);
+		// A create refused after its pool was chosen (no host makes the machine it asks for) gives a new disk no pool.
+		await tom.createStickyDisk({ name: "untouched", sizeGb: 10 });
+		const huge = await failure(
+			tom.createSandbox({
+				type: "microvm",
+				pool: "ci",
+				resources: { vcpus: 64, memoryMb: 262_144 },
+				stickyDisks: [{ disk: "untouched", path: "/untouched" }],
+			}),
+		);
+		expect(huge.code).not.toBe("internal");
+		expect((await tom.getStickyDisk("untouched")).poolId).toBeUndefined();
+		// A commit from a sandbox from before pools gives a disk with none its host's pool, and one in another pool is
+		// refused, naming both.
+		await store.sandboxes.update(runner.id, ({ poolId: _pool, ...rest }) => rest);
+		await store.stickyDisks.update(named.id, ({ poolId: _pool, ...rest }) => rest);
+		await tom.commitStickyDisk(runner.id, "cache");
+		expect((await tom.getStickyDisk("cache")).poolId).toBe(ci.id);
+		await store.stickyDisks.update(named.id, (current) => ({ ...current, poolId: firstPoolId(OPERATOR_POOLS) }));
+		const commit = await failure(tom.commitStickyDisk(runner.id, "cache"));
+		expect(commit.message).toContain("The sticky disk cache is in pool default, not pool ci");
+		await store.stickyDisks.update(named.id, (current) => ({ ...current, poolId: ci.id }));
 		// Two disks of different pools can't be attached together.
 		await tom.createStickyDisk({ name: "elsewhere", sizeGb: 10, pool: "default" });
 		const split = await failure(
