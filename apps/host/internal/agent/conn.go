@@ -377,6 +377,10 @@ func toError(err error) *proto.Error {
 }
 
 func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
+	if m.Method == proto.MethodTemplateBuild {
+		s.host.templateBuilds.Add(1)
+		defer s.host.templateBuilds.Add(-1)
+	}
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error

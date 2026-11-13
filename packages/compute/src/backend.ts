@@ -229,6 +229,8 @@ export interface CommittedStickyDisk {
 	readonly hostId: string;
 	readonly sizeBytes: number;
 	readonly allocatedBytes: number;
+	/** Its block map's digest, when its host made the map in time (a later holdings report may give it). */
+	readonly mapDigest?: string;
 }
 
 /** What a connected host last reported holding of sticky disks (`SandboxBackend.stickyHoldings`). */
@@ -240,7 +242,12 @@ export interface BackendStickyHoldings {
 	 * The versions it holds of each disk; a disk it holds none of isn't listed. Absent: it doesn't say (a host without
 	 * sticky disks, or from before them), which isn't holding none.
 	 */
-	readonly disks?: readonly { readonly diskId: string; readonly versions: readonly string[] }[];
+	readonly disks?: readonly {
+		readonly diskId: string;
+		readonly versions: readonly string[];
+		/** The block map digests of the versions it has made maps of, by version. */
+		readonly mapDigests?: Readonly<Record<string, string>>;
+	}[];
 }
 
 /**

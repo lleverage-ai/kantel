@@ -918,7 +918,10 @@ export interface StoredStickyDiskName {
 
 export const stickyDiskNameId = (accountId: string, name: string): string => `${accountId}:${name}`;
 
-/** One committed version of a sticky disk: where it was made, from what. Never changed. */
+/**
+ * One committed version of a sticky disk: where it was made, from what. Never changed, but for its `mapDigest` given
+ * after its commit.
+ */
 export interface StoredStickyDiskVersion {
 	readonly id: string;
 	readonly diskId: string;
@@ -928,6 +931,11 @@ export interface StoredStickyDiskVersion {
 	readonly sandboxId: string;
 	readonly sizeBytes: number;
 	readonly allocatedBytes: number;
+	/**
+	 * Its block map's digest (`sha256:` and hex; docs/design/disk-store.md, 2b): from the commit's answer, or, when the
+	 * map took longer, from its host's next report of what it holds. Absent until then, and for a host from before maps.
+	 */
+	readonly mapDigest?: string;
 	/** Its place among its disk's commits, from 1: what orders them, as two may share a millisecond. */
 	readonly seq: number;
 	readonly createdAt: number;

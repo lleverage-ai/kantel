@@ -41,14 +41,10 @@ func (h *Host) withRuntime(f proto.Facts) proto.Facts {
 	return f
 }
 
-// buildingTemplates says whether template builds are under way (their calls end with the connection).
+// buildingTemplates says whether template.build calls are being answered (from their arrival, through the checks
+// before a build is admitted, until their answer is sent), which end with the connection.
 func (h *Host) buildingTemplates() bool {
-	t, err := h.templateTier()
-	if err != nil {
-		return false
-	}
-	ids, _, _ := t.TemplateBuilds()
-	return len(ids) > 0
+	return h.templateBuilds.Load() > 0
 }
 
 // runtimes are the microVM tier's runtime fingerprints (Facts.Runtimes), for the host image versions it has now: an
