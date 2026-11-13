@@ -751,20 +751,31 @@ func TestOpenStickyVersionForAPeer(t *testing.T) {
 		}
 	}
 	for _, c := range [][2]string{{"ci", "v1"}, {"ci", "v2"}, {"other", "v1"}, {"../ci", "v1"}} {
-		if _, _, err := m.OpenStickyVersion(c[0], c[1]); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("%v: %v, want not found", c, err)
+		for _, withMap := range []bool{true, false} {
+			if _, _, err := m.OpenStickyVersion(c[0], c[1], withMap); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%v: %v, want not found", c, err)
+			}
 		}
 	}
 	if err := os.WriteFile(m.stickyMapFile("ci", "v1"), []byte("map"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f, raw, err := m.OpenStickyVersion("ci", "v1")
+	f, raw, err := m.OpenStickyVersion("ci", "v1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 	data, _ := io.ReadAll(f)
+	f.Close()
 	if string(data) != "data" || string(raw) != "map" {
 		t.Fatalf("%q %q", data, raw)
+	}
+	// For a range of its data, the map isn't read.
+	f, raw, err = m.OpenStickyVersion("ci", "v1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if raw != nil {
+		t.Fatalf("map read for data: %q", raw)
 	}
 }

@@ -65,7 +65,7 @@ func (h *Host) followPeerSync(w *proto.Welcome) {
 // StickyServer is a tier whose sticky disk versions the host serves to its peers: the microVM tier.
 type StickyServer interface {
 	// OpenStickyVersion opens a version the host holds, and its map, for a peer to fetch (fs.ErrNotExist: not held).
-	OpenStickyVersion(diskID, version string) (*os.File, []byte, error)
+	OpenStickyVersion(diskID, version string, withMap bool) (*os.File, []byte, error)
 }
 
 var _ StickyServer = (*microvm.Manager)(nil)
@@ -73,10 +73,10 @@ var _ StickyServer = (*microvm.Manager)(nil)
 // peerSource is the versions the host holds, for its peers: sticky disks' on the microVM tier.
 type peerSource struct{ h *Host }
 
-func (s peerSource) Open(kind, objectID, version string) (*os.File, []byte, error) {
+func (s peerSource) Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error) {
 	sticky, ok := s.h.tiers[microvm.Tier].(StickyServer)
 	if kind != "sticky" || !ok {
 		return nil, nil, fs.ErrNotExist
 	}
-	return sticky.OpenStickyVersion(objectID, version)
+	return sticky.OpenStickyVersion(objectID, version, withMap)
 }

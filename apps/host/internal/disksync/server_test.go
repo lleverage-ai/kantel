@@ -22,11 +22,14 @@ type fakeSource struct {
 	raw  []byte
 }
 
-func (f fakeSource) Open(kind, objectID, version string) (*os.File, []byte, error) {
+func (f fakeSource) Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error) {
 	if kind != "sticky" || objectID != "sdk_1" || version != "sdv_1" {
 		return nil, nil, fs.ErrNotExist
 	}
 	file, err := os.Open(f.path)
+	if !withMap {
+		return file, nil, err
+	}
 	return file, f.raw, err
 }
 

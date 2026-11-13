@@ -31,9 +31,9 @@ const Port = 7480
 
 // Source is the versions the host holds.
 type Source interface {
-	// Open opens a version: its file, and its block map's file. fs.ErrNotExist when the host doesn't hold it, or has no
-	// map of it yet. The file stays readable while open, whatever is deleted meanwhile.
-	Open(kind, objectID, version string) (*os.File, []byte, error)
+	// Open opens a version: its file, and with withMap its block map's file. fs.ErrNotExist when the host doesn't hold
+	// it, or has no map of it yet. The file stays readable while open, whatever is deleted meanwhile.
+	Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error)
 }
 
 // Server serves the versions the host holds to its mesh peers.
@@ -129,7 +129,7 @@ func (s *Server) stopLocked() {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/map", func(w http.ResponseWriter, r *http.Request) {
-		f, raw, ok := s.open(w, r)
+		f, raw, ok := s.open(w, r, true)
 		if !ok {
 			return
 		}
@@ -138,7 +138,8 @@ func (s *Server) Handler() http.Handler {
 		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
 	})
 	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/data", func(w http.ResponseWriter, r *http.Request) {
-		f, _, ok := s.open(w, r)
+		// The map isn't read for a range of the data: only whether there is one.
+		f, _, ok := s.open(w, r, false)
 		if !ok {
 			return
 		}
@@ -152,7 +153,7 @@ func (s *Server) Handler() http.Handler {
 
 // open checks the request's grant and opens the version it names, or answers why not: 401 without a valid grant, 403
 // with one that isn't for this version, this host or the asking peer, 404 for a version the host doesn't hold.
-func (s *Server) open(w http.ResponseWriter, r *http.Request) (*os.File, []byte, bool) {
+func (s *Server) open(w http.ResponseWriter, r *http.Request, withMap bool) (*os.File, []byte, bool) {
 	kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
 	key := s.Key()
 	if key == "" {
@@ -184,7 +185,7 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) (*os.File, []byte,
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return nil, nil, false
 	}
-	f, raw, err := s.Source.Open(kind, id, version)
+	f, raw, err := s.Source.Open(kind, id, version, withMap)
 	if errors.Is(err, fs.ErrNotExist) {
 		http.Error(w, "this host doesn't hold that version", http.StatusNotFound)
 		return nil, nil, false
