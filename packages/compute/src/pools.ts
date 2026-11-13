@@ -200,9 +200,28 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 				`${pool.name} still has ${held.length === 1 ? "a host" : `${held.length} hosts`} in it: move them to another pool first`,
 			);
 		}
+		// Nor while data belongs to it: a snapshot (until it is deleted) or a sticky disk, which are used only in their pool.
+		const [snapshots, disks] = await Promise.all([
+			store.snapshots.list({ poolId: pool.id }),
+			store.stickyDisks.list({ poolId: pool.id }),
+		]);
+		const kept = snapshots.filter((snapshot) => snapshot.state !== "deleting").length;
+		const live = disks.filter((disk) => disk.deletedAt === undefined).length;
+		if (kept > 0 || live > 0) {
+			const what = [
+				...(kept === 0 ? [] : [kept === 1 ? "a snapshot" : `${kept} snapshots`]),
+				...(live === 0 ? [] : [live === 1 ? "a sticky disk" : `${live} sticky disks`]),
+			].join(" and ");
+			throw new KantelError(
+				"conflict",
+				`${pool.name} still has ${what} in it, which are used only in their pool: delete them first`,
+			);
+		}
 		// A host another gateway joins or moves to it meanwhile is in its owner's default once it has gone, as the next
 		// read of the hosts puts it (`ensureHosts`); a pool made the default meanwhile hands the default back to the one
-		// that was. Either way every host is in a pool that exists, and its owner has a default.
+		// that was. Either way every host is in a pool that exists, and its owner has a default. Data given it meanwhile
+		// (a sticky disk made naming it) is taken to have no pool once it has gone, and gets one again where it is next
+		// used: a snapshot its host's, a sticky disk its next sandbox's.
 		await store.pools.delete(pool.id);
 		return undefined;
 	}

@@ -2465,6 +2465,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sizeGb: disk.sizeGb,
 			...(disk.head === undefined ? {} : { head: disk.head }),
 			...(versions === undefined ? {} : { versions }),
+			...pooled(disk.poolId),
 			createdAt: disk.createdAt,
 			updatedAt: disk.updatedAt,
 		};
@@ -2606,8 +2607,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		keepGoing,
 		buildHosts: async (accountId, userId) => {
 			const shared = options.sharedHosts === undefined || (await options.sharedHosts(userId));
+			const known = await ensureHosts();
 			try {
-				return requireHosts(await ensureHosts(), accountId, "microvm", {}, false, shared);
+				return requireHosts(known, accountId, "microvm", {}, false, shared).map((id) => ({
+					id,
+					...pooled(known.find((host) => host.id === id)?.poolId),
+				}));
 			} catch {
 				return [];
 			}
@@ -3105,10 +3110,108 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * none, where its pool has gone (it isn't placed elsewhere).
 	 */
 	async function poolOfSandbox(sandbox: StoredSandbox): Promise<PoolChoice | undefined> {
-		if (sandbox.poolId === undefined) return undefined;
-		const pool = await store.pools.get(sandbox.poolId);
-		if (pool === undefined) return { name: sandbox.poolId };
+		return sandbox.poolId === undefined ? undefined : poolChoiceOf(sandbox.poolId);
+	}
+
+	/** The pool `poolId` as a placement's choice: that pool only; none, where it has gone. */
+	async function poolChoiceOf(poolId: string): Promise<PoolChoice> {
+		const pool = await store.pools.get(poolId);
+		if (pool === undefined) return { name: poolId };
 		return pool.owner === OPERATOR_POOLS ? { shared: pool.id, name: pool.name } : { own: pool.id, name: pool.name };
+	}
+
+	/**
+	 * `poolId` where that pool is still there (as the hosts' read had the pools, else read now), else undefined: data
+	 * whose pool was deleted under it (a delete racing its create) is taken to have none, so it isn't left unusable.
+	 */
+	async function livePool(poolId: string | undefined): Promise<string | undefined> {
+		if (poolId === undefined) return undefined;
+		if (poolsRead.some((pool) => pool.id === poolId)) return poolId;
+		return (await store.pools.get(poolId)) === undefined ? undefined : poolId;
+	}
+
+	/** A pool's name for a message, or its ID where it has gone; "no pool" for none. */
+	async function poolName(poolId: string | undefined): Promise<string> {
+		if (poolId === undefined) return "no pool";
+		return (await store.pools.get(poolId))?.name ?? poolId;
+	}
+
+	/**
+	 * The pool a sandbox made or forked from `snapshot` goes in: the snapshot's own (`poolId`), else (one from before
+	 * pools, or whose pool has since been deleted) the pool of the host holding it, among `hosts`. Refused,
+	 * `host_unavailable`, when that host is in another pool than the snapshot's now (moved since): a snapshot stays in its
+	 * pool, and nothing is made from it in another. Undefined where neither can be told.
+	 */
+	async function poolOfSnapshot(snapshot: StoredSnapshot, hosts: readonly StoredHost[]): Promise<string | undefined> {
+		const holderId = await hostOfSnapshot(snapshot);
+		const holderPool = holderId === undefined ? undefined : hosts.find((host) => host.id === holderId)?.poolId;
+		const recorded = await livePool(snapshot.poolId);
+		if (recorded !== undefined && holderPool !== undefined && holderPool !== recorded) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				`The snapshot is in pool ${await poolName(recorded)}, and the host holding it is in pool ${await poolName(holderPool)} now: nothing is made from it outside its pool`,
+			);
+		}
+		return recorded ?? holderPool;
+	}
+
+	/**
+	 * The pool a sandbox's sticky disks hold it to, and the disk that says so: each disk's own (`StoredStickyDisk.poolId`),
+	 * or for one from before pools with versions, the pool of the host its newest was made on, among `hosts`. Undefined
+	 * where none has a pool yet. `invalid` when two are in different pools.
+	 */
+	async function poolOfStickyDisks(
+		attached: readonly computeSchema.SandboxStickyDisk[],
+		hosts: readonly StoredHost[],
+	): Promise<{ readonly poolId: string; readonly disk: string } | undefined> {
+		let held: { readonly poolId: string; readonly disk: string } | undefined;
+		for (const each of attached) {
+			const disk = await store.stickyDisks.get(each.diskId);
+			const recorded = await livePool(disk?.poolId);
+			const head = recorded !== undefined || disk?.head === undefined ? undefined : disk.head;
+			const madeOn = head === undefined ? undefined : (await store.stickyDiskVersions.get(head))?.hostId;
+			const poolId = recorded ?? hosts.find((host) => host.id === madeOn)?.poolId;
+			if (poolId === undefined) continue;
+			if (held !== undefined && held.poolId !== poolId) {
+				throw new KantelError(
+					"invalid",
+					`The sticky disks ${held.disk} and ${each.name} are in different pools (${await poolName(held.poolId)} and ${await poolName(poolId)}): a sandbox's sticky disks are all of its pool`,
+				);
+			}
+			held = { poolId, disk: each.name };
+		}
+		return held;
+	}
+
+	/** Refusal of a sticky disk in pool `diskPool` for a sandbox in `sandboxPool`, naming both. */
+	async function stickyPoolRefusal(disk: string, diskPool: string, sandboxPool: string | undefined) {
+		return placementError(
+			"unavailable",
+			"host_unavailable",
+			`The sticky disk ${disk} is in pool ${await poolName(diskPool)}, not ${sandboxPool === undefined ? "no pool" : `pool ${await poolName(sandboxPool)}`}: a sticky disk is attached only to sandboxes in its own pool`,
+		);
+	}
+
+	/**
+	 * Gives a sandbox's sticky disks with no pool yet the sandbox's, `poolId`, all of them or none
+	 * (`StickyDiskWrites.pool`): refused, naming both pools, while any is in another. So of two sandboxes in different
+	 * pools attaching new disks at once, one gives them its pool and the other is refused, leaving none in its own.
+	 */
+	async function bindStickyDisks(attached: readonly computeSchema.SandboxStickyDisk[], poolId: string): Promise<void> {
+		// A disk whose pool was deleted under it (a delete racing its create) has none again, only while it still names it.
+		for (const each of attached) {
+			const gone = (await store.stickyDisks.get(each.diskId))?.poolId;
+			if (gone === undefined || gone === poolId || (await livePool(gone)) !== undefined) continue;
+			await store.stickyDisks.update(each.diskId, ({ poolId: was, ...rest }) => (was === gone ? rest : undefined));
+		}
+		const other = await store.stickyDiskWrites.pool(
+			attached.map((disk) => disk.diskId),
+			poolId,
+		);
+		if (other === undefined) return;
+		const name = attached.find((disk) => disk.diskId === other.diskId)?.name ?? other.diskId;
+		throw await stickyPoolRefusal(name, other.poolId, poolId);
 	}
 
 	/**
@@ -3370,6 +3473,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createdBy: snapshot.createdBy,
 		expiresAt: snapshot.expiresAt,
 		base: baseView(snapshot.base),
+		...pooled(snapshot.poolId),
 	});
 
 	/** A version of a base image as the admin list answers it: what the index says of it, its commit left out. */
@@ -5962,6 +6066,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref: taken.ref,
 					...(taken.base === undefined ? {} : { base: taken.base }),
 					...madeOnOf(taken),
+					...pooled(await poolOfTaken(was, taken.ref)),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
@@ -6166,6 +6271,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * The host a snapshot's bytes are on: its ref's (`<hostId>/<id>`, a host backend's), else its sandbox's while that
 	 * is placed. Undefined when neither says.
 	 */
+	/**
+	 * The pool a snapshot of `sandbox` at `ref` belongs to (`StoredSnapshot.poolId`): its host's, the host the ref names
+	 * (else, a backend's opaque ref, the sandbox's host), where Kantel knows it; else the sandbox's pool. Absent only for a
+	 * sandbox from before pools on a host with none.
+	 */
+	async function poolOfTaken(sandbox: StoredSandbox, ref: string | undefined): Promise<string | undefined> {
+		const hostId = (ref === undefined ? undefined : refHost(ref)) ?? sandbox.hostId;
+		const host = hostId === undefined ? undefined : await store.hosts.get(hostId);
+		return host?.poolId ?? sandbox.poolId;
+	}
+
 	async function hostOfSnapshot(snapshot: StoredSnapshot): Promise<string | undefined> {
 		const named = snapshot.ref === undefined ? undefined : refHost(snapshot.ref);
 		if (named !== undefined) return named;
@@ -8258,10 +8374,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					body.host === undefined ? undefined : pinnableHost(principal, account.id, await known, body.host).id;
 				// The pool it goes in, by name or the default (`placementPool`): one it named that the caller has none of is
 				// `not_found`. Made from a snapshot, or on a host it named, it goes there, in a pool it named only.
+				// From a snapshot, the snapshot's pool (`poolOfSnapshot`: refused where its host has since gone to another).
+				// With sticky disks that have a pool, theirs (`poolOfStickyDisks`), naming none.
+				const snapshotPool = from === undefined ? undefined : await poolOfSnapshot(from, await known);
+				const stickyPool =
+					sandboxSticky === undefined ? undefined : await poolOfStickyDisks(sandboxSticky, await known);
 				const pool =
-					(from !== undefined || hostPin !== undefined) && body.pool === undefined
-						? undefined
-						: await placementPool(account.id, body.pool, await known, await mayShare(principal));
+					body.pool !== undefined
+						? await placementPool(account.id, body.pool, await known, await mayShare(principal))
+						: from !== undefined
+							? undefined
+							: stickyPool !== undefined
+								? await poolChoiceOf(stickyPool.poolId)
+								: hostPin !== undefined
+									? undefined
+									: await placementPool(account.id, undefined, await known, await mayShare(principal));
+				const named = body.pool === undefined ? undefined : (pool?.own ?? pool?.shared);
+				if (stickyPool !== undefined && named !== undefined && named !== stickyPool.poolId) {
+					throw await stickyPoolRefusal(stickyPool.disk, stickyPool.poolId, named);
+				}
 				// From a snapshot, a pin can only be the host that holds it: refused now, before anything is stored, rather than
 				// left as a sandbox that can never start.
 				if (hostPin !== undefined && from?.ref !== undefined) {
@@ -8335,23 +8466,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					hostPin,
 					pool,
 				);
-				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the pool of the host
-				// that holds it (its ref's, else its sandbox's), which must be the pool it named.
-				const holderId = from === undefined ? undefined : await hostOfSnapshot(from);
-				const named = pool?.name === undefined ? undefined : (pool.own ?? pool.shared);
-				const holderPool =
-					holderId === undefined ? undefined : (await known).find((host) => host.id === holderId)?.poolId;
-				const placedPool = from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : holderPool;
-				// Naming a pool, the snapshot must be found in it: one whose host can't be told (a backend's opaque ref, its
-				// sandbox gone) can't be, and isn't guessed.
-				if (from !== undefined && named !== undefined && holderPool !== named) {
+				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the snapshot's, which
+				// must be the pool it named.
+				const placedPool =
+					from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : snapshotPool;
+				// Naming a pool, the snapshot must be in it: one whose pool can't be told (from before pools, its host's ref
+				// opaque and its sandbox gone) can't be, and isn't guessed.
+				if (from !== undefined && named !== undefined && snapshotPool !== named) {
 					throw placementError(
 						"unavailable",
 						"host_unavailable",
-						holderPool === undefined
+						snapshotPool === undefined
 							? `The snapshot's pool can't be told, so it can't be made in ${body.pool}: name no pool`
-							: `The snapshot is in another pool than ${body.pool}: a sandbox made from it runs only where it is`,
+							: `The snapshot is in pool ${await poolName(snapshotPool)}, not ${body.pool}: a sandbox made from it runs only in its pool`,
 					);
+				}
+				// Its sticky disks are in its pool (those with none yet are given it just before it is stored).
+				if (stickyPool !== undefined && placedPool !== stickyPool.poolId) {
+					throw await stickyPoolRefusal(stickyPool.disk, stickyPool.poolId, placedPool);
 				}
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
 				// its template's resources (unless it names a size), which a template snapshot was built as.
@@ -8424,6 +8556,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: await templates.startFor(template, {
 								shape: machine.shape,
 								eligibleHosts: hosts,
+								hostPools: new Map((await known).map((host) => [host.id, host.poolId])),
 								// A disk asked for is given from a template snapshot only by hosts that say their disk limits (this
 								// kantel-host and later), which grow the snapshot's disk to it or boot fresh where it is bigger.
 								restoreOn: eligible.filter((host) => host.disk !== undefined).map((host) => host.id),
@@ -8482,6 +8615,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(sandboxMounts === undefined ? {} : { mounts: sandboxMounts }),
 					...(sandboxSticky === undefined ? {} : { stickyDisks: sandboxSticky }),
 				};
+				// Its sticky disks with no pool yet get its pool, once every check that could refuse it has passed: a create
+				// refused never gives a disk its pool.
+				if (sandboxSticky !== undefined && placedPool !== undefined) await bindStickyDisks(sandboxSticky, placedPool);
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
 				const put = () => store.sandboxes.put(sandbox);
@@ -8648,8 +8784,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
 				await requireCapacity(current.accountId, count);
+				const known = await ensureHosts();
+				// Their pool: from a snapshot, the snapshot's (refused where its host has since gone to another), else the
+				// source's, whose host they stay on.
+				const forkPool =
+					snapshot === undefined ? current.poolId : ((await poolOfSnapshot(snapshot, known)) ?? current.poolId);
 				const hosts = requireHosts(
-					await ensureHosts(),
+					known,
 					current.accountId,
 					type,
 					current.hostLabels,
@@ -8757,7 +8898,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						egressRevision,
 						hostLabels: { ...current.hostLabels },
 						...(current.hostPin === undefined ? {} : { hostPin: current.hostPin }),
-						...pooled(current.poolId),
+						...pooled(forkPool),
 						runs: [],
 						samples: [],
 						ports: [],
@@ -9504,6 +9645,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref: taken.ref,
 					...(taken.base === undefined ? {} : { base: taken.base }),
 					...madeOnOf(taken),
+					...pooled(await poolOfTaken(current, taken.ref)),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
@@ -9632,6 +9774,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref,
 					...(base === undefined ? {} : { base }),
 					...made,
+					// A copy's is its source's: the pool it was taken in.
+					...pooled(source?.poolId ?? (await poolOfTaken(current, ref))),
 				};
 				await admitSave(snapshot, existing);
 				await holdSnapshot(snapshot);
@@ -10409,6 +10553,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
 			return once(principal, "createStickyDisk", { body, idempotencyKey }, async () => {
+				// The pool it names, as a sandbox's create names one; naming none, the first sandbox's it is attached to.
+				const pool =
+					body.pool === undefined
+						? undefined
+						: await placementPool(account.id, body.pool, await ensureHosts(), await mayShare(principal));
 				const t = now();
 				const disk: StoredStickyDisk = {
 					id: randomId("sdk"),
@@ -10416,6 +10565,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					name: body.name,
 					...(body.description === undefined ? {} : { description: body.description }),
 					sizeGb: body.sizeGb,
+					...pooled(pool?.own ?? pool?.shared),
 					createdAt: t,
 					updatedAt: t,
 				};
@@ -10453,7 +10603,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (disk === undefined || disk.deletedAt !== undefined || disk.accountId !== sandbox.accountId) {
 				throw new KantelError("not_found", "The sticky disk was deleted");
 			}
-			await requireRunning(principal, sandbox.id);
+			const running = await requireRunning(principal, sandbox.id);
+			// Its versions are made in its pool only: one attached before disks had pools gets the sandbox's now (its host's,
+			// for a sandbox from before pools), and one in another pool is refused.
+			const inPool =
+				running.poolId ?? (running.hostId === undefined ? undefined : (await store.hosts.get(running.hostId))?.poolId);
+			if (inPool !== undefined) await bindStickyDisks([attached], inPool);
 			const id = randomId("sdv");
 			const committed = await backend.commitStickyDisk?.(sandbox.id, disk.id, id);
 			if (committed === undefined) throw new KantelError("not_supported", STICKY_DISKS_OFF);

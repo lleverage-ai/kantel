@@ -205,12 +205,14 @@ export function createDiskHolders(options: {
 			if (disk === undefined || disk.deletedAt !== undefined) throw missing();
 			const hosts = new Map((await options.hosts()).map((host) => [host.id, host]));
 			const asker = hosts.get(hostId);
-			// A host an account added may have only that account's data; a shared host may have any account's.
+			// A host an account added may have only that account's data; a shared host may have any account's. A disk with a
+			// pool is only its pool's hosts'.
 			if (
 				asker === undefined ||
 				asker.state === "revoked" ||
 				asker.poolId === undefined ||
-				(asker.accountId !== undefined && asker.accountId !== version.accountId)
+				(asker.accountId !== undefined && asker.accountId !== version.accountId) ||
+				(disk.poolId !== undefined && disk.poolId !== asker.poolId)
 			) {
 				throw missing();
 			}
