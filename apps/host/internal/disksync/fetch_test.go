@@ -307,8 +307,8 @@ func TestFetchFromNothing(t *testing.T) {
 	if st.Blocks != 6 || st.Fetched != 5 || st.FetchedBytes != int64(4*block+1000) || f.locates.Load() != 1 {
 		t.Fatalf("stats %+v, locates %d", st, f.locates.Load())
 	}
-	// It held room for what it wrote, and gave it back.
-	if f.local.most != int64(4*block+1000) || f.local.reserved != 0 {
+	// It held room for what it might write (the blocks it fetched and the block of zeros), and gave it back.
+	if f.local.most != int64(5*block+1000) || f.local.reserved != 0 {
 		t.Fatalf("reserved %d at most, %d now", f.local.most, f.local.reserved)
 	}
 	if f.holders[0].data.Load() == 0 || f.holders[1].data.Load() == 0 {
@@ -614,8 +614,16 @@ func TestFetchClearsZerosWithoutHoles(t *testing.T) {
 	if st.Blocks*512 > block {
 		t.Fatalf("a 256 MiB version of zeros took %d bytes", st.Blocks*512)
 	}
-	if f.local.most != 0 {
-		t.Fatalf("reserved %d for zeros", f.local.most)
+	// Room was held for the zeros all the same: where holes can't be punched, clearing may write.
+	if f.local.most != int64(len(empty)) || f.local.reserved != 0 {
+		t.Fatalf("reserved %d at most, %d now", f.local.most, f.local.reserved)
+	}
+	// Without that room, nothing is cleared or written.
+	h := newFixture(t, 1)
+	h.put("v2", empty)
+	h.local.room = block
+	if _, err := wait(t, h.fetcher().Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})); !isCapacity(err) {
+		t.Fatalf("zeros without room: %v", err)
 	}
 
 	g := newFixture(t, 1)
