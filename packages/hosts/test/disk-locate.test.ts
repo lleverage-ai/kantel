@@ -93,6 +93,38 @@ describe("the disk store on the host link", () => {
 		await vi.waitFor(() => expect(welcomes()).toEqual([expect.anything(), expect.anything(), keys]));
 	});
 
+	it("sends a host its welcome again on the first heartbeat once a key it was told of begins signing", async () => {
+		const at = Date.UTC(2026, 10, 13);
+		let keys: HostGrantKey[] = [
+			{ id: "key_1", publicKey: "A".repeat(43) },
+			{ id: "key_2", publicKey: "B".repeat(43), from: at + 3 * 60_000 },
+		];
+		const { host, clock } = await setup({ grantKeys: async () => keys });
+		const welcomes = () =>
+			host.sent.filter((message) => message.type === "welcome").map((message) => message.welcome?.grantKey);
+		const heartbeat = () => host.send({ type: "heartbeat", heartbeat: { capacity } });
+		// Checked half a minute before its time: nothing to tell yet.
+		clock.at = at + 3 * 60_000 - 30_000;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toEqual(["A".repeat(43)]);
+		// Its time comes within the minute between checks: on the next heartbeat, a host that holds only `grantKey` (one
+		// from before rotation) is given the key that signs now.
+		keys = [
+			{ id: "key_2", publicKey: "B".repeat(43) },
+			{ id: "key_1", publicKey: "A".repeat(43), until: at + 19 * 60_000 },
+		];
+		clock.at = at + 3 * 60_000;
+		heartbeat();
+		await vi.waitFor(() => expect(welcomes()).toEqual(["A".repeat(43), "B".repeat(43)]));
+		// Then nothing more until something changes.
+		heartbeat();
+		clock.at += GRANT_KEYS_REFRESH_MS;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toHaveLength(2);
+	});
+
 	it("passes each report's sticky disk holdings on, and none from a report that doesn't say", async () => {
 		const recordStickyHoldings = vi.fn(async () => undefined);
 		const { host, hostId } = await setup({ recordStickyHoldings });

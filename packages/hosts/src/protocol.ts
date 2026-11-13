@@ -1163,9 +1163,10 @@ export interface HostWelcome {
 	 */
 	readonly grantKey?: string;
 	/**
-	 * Every grant key a host accepts grants from now: the one that signs first, then those rotated out, each until its
-	 * `until`. A host that reads it serves a grant signed by any of them (by the key its `kid` names) and keeps the list
-	 * until a welcome brings another; one from before rotation reads only `grantKey`. Absent with `grantKey`.
+	 * Every grant key a host accepts grants from now: the one that signs first, then one a rotation published (signing
+	 * from its `from`), then those rotated out, each until its `until`. A host that reads it serves a grant signed by any
+	 * of them (by the key its `kid` names) and keeps the list until a welcome brings another; one from before rotation
+	 * reads only `grantKey`. Absent with `grantKey`.
 	 */
 	readonly grantKeys?: readonly HostGrantKey[];
 }
@@ -1178,6 +1179,11 @@ export interface HostGrantKey {
 	readonly publicKey: string;
 	/** For a key rotated out, when it stops being accepted, in milliseconds since the epoch. */
 	readonly until?: number;
+	/**
+	 * For a key a rotation published, when it begins signing, in milliseconds since the epoch: a host accepts it already,
+	 * and is sent its welcome again then, with it first.
+	 */
+	readonly from?: number;
 }
 
 /**

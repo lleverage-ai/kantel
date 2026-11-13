@@ -4107,14 +4107,28 @@ export const GrantKeys = Type.Object(
 			},
 			{ description: "The key that signs grants now." },
 		),
+		next: Type.Optional(
+			Type.Object(
+				{
+					id: GrantKeyId,
+					publicKey: GrantPublicKey,
+					from: Type.Integer({ description: "When it begins signing: epoch milliseconds, UTC." }),
+				},
+				{
+					description:
+						"The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the " +
+						"rotation, once every connected host has it. Absent between rotations.",
+				},
+			),
+		),
 		retired: Type.Array(
 			Type.Object({
 				id: GrantKeyId,
 				publicKey: GrantPublicKey,
 				until: Type.Integer({
 					description:
-						"When hosts stop accepting grants it signed, a grant's lifetime and a minute after its rotation: epoch " +
-						"milliseconds, UTC.",
+						"When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began " +
+						"signing: epoch milliseconds, UTC.",
 				}),
 			}),
 			{ description: "Keys rotated out that hosts still accept, oldest first." },

@@ -11516,7 +11516,7 @@
 			"get": {
 				"operationId": "getGrantKeys",
 				"summary": "Get the grant keys",
-				"description": "The Ed25519 key the control plane signs hosts' fetch grants with, made on first use, and the keys rotated out that hosts still accept. Only public keys: the private key is kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"responses": {
 					"200": {
@@ -11576,7 +11576,7 @@
 			"post": {
 				"operationId": "rotateGrantKey",
 				"summary": "Rotate the grant key",
-				"description": "Makes a new grant key, which signs every grant from now on, and sends connected hosts their welcome again with it. The key it replaces is still accepted for 16 minutes, a grant's lifetime and a minute, so fetches under way finish; hosts too old to hold more than one key take the new one at once, and fetch again a grant the old one signed. Each call rotates again. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"responses": {
 					"200": {
@@ -16942,6 +16942,25 @@
 						},
 						"description": "The key that signs grants now."
 					},
+					"next": {
+						"type": "object",
+						"required": ["id", "publicKey", "from"],
+						"properties": {
+							"id": {
+								"type": "string",
+								"description": "The key's ID, which each grant it signs names as `kid`."
+							},
+							"publicKey": {
+								"type": "string",
+								"description": "The Ed25519 public key, its 32 raw bytes in base64url."
+							},
+							"from": {
+								"type": "integer",
+								"description": "When it begins signing: epoch milliseconds, UTC."
+							}
+						},
+						"description": "The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the rotation, once every connected host has it. Absent between rotations."
+					},
 					"retired": {
 						"type": "array",
 						"items": {
@@ -16958,7 +16977,7 @@
 								},
 								"until": {
 									"type": "integer",
-									"description": "When hosts stop accepting grants it signed, a grant's lifetime and a minute after its rotation: epoch milliseconds, UTC."
+									"description": "When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began signing: epoch milliseconds, UTC."
 								}
 							}
 						},

@@ -1060,6 +1060,7 @@ When a runner's copy becomes the disk's next version: after a job that succeeded
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `current` | object | yes | The key that signs grants now. |
+| `next` | object | no | The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the rotation, once every connected host has it. Absent between rotations. |
 | `retired` | object[] | yes | Keys rotated out that hosts still accept, oldest first. |
 
 ### GuestAgent

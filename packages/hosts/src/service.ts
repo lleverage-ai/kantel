@@ -1168,8 +1168,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		);
 	};
 
-	/** The grant keys each host connected here was last told by a welcome, as their IDs in order ("" none). */
-	const grantKeysTold = new Map<string, string>();
+	/**
+	 * The grant keys each host connected here was last told by a welcome, as their IDs in order ("" none), and when a key
+	 * it was told of begins signing, if one does: its welcome is due again then, with that key first.
+	 */
+	const grantKeysTold = new Map<string, { readonly ids: string; readonly due?: number }>();
 	/** When each host's grant keys were last checked (`reconcileGrantKeys`). */
 	const grantKeysCheckedAt = new Map<string, number>();
 	const grantKeyIds = (keys: readonly HostGrantKey[] | undefined) => (keys ?? []).map((key) => key.id).join(" ");
@@ -1189,22 +1192,31 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 
 	/**
 	 * Sends a host connected here its welcome again when the grant keys it was last told aren't the control plane's now,
-	 * every `GRANT_KEYS_REFRESH_MS` on its heartbeat: a rotation's telling that missed it, a rotated-out key whose time
-	 * is up, or a welcome that went without them when they couldn't be read. A read that fails is tried on a later pass.
+	 * every `GRANT_KEYS_REFRESH_MS` on its heartbeat, and on the first heartbeat after a key it was told of begins signing:
+	 * a rotation's telling that missed it, a published key now signing, a rotated-out key whose time is up, or a welcome
+	 * that went without them when they couldn't be read. A read that fails is tried on a later pass.
 	 */
 	const reconcileGrantKeys = (hostId: string) => {
 		const told = grantKeysTold.get(hostId);
 		const read = compute?.grantKeys;
 		if (told === undefined || read === undefined) return;
 		const at = clock.now();
-		if (at - (grantKeysCheckedAt.get(hostId) ?? Number.NEGATIVE_INFINITY) < GRANT_KEYS_REFRESH_MS) return;
+		// A key it was told of begins signing: checked on this heartbeat, with a read of its own, so a host that holds one
+		// key only (from before rotation) has the new one within seconds.
+		const due = told.due !== undefined && told.due <= at;
+		if (!due && at - (grantKeysCheckedAt.get(hostId) ?? Number.NEGATIVE_INFINITY) < GRANT_KEYS_REFRESH_MS) return;
 		grantKeysCheckedAt.set(hostId, at);
 		report(
 			(async () => {
-				if ((await grantKeysNow(read)) === told) return;
+				if (!due && (await grantKeysNow(read)) === told.ids) return;
 				// Read again before telling: the pass's read may be from before a change this host was told already.
 				const latest = grantKeyIds(await read());
-				if (latest === grantKeysTold.get(hostId)) return;
+				const known = grantKeysTold.get(hostId);
+				if (latest === known?.ids) {
+					// Nothing new yet (the control plane's clock behind this one's): the regular check follows it from here.
+					if (known?.due !== undefined) grantKeysTold.set(hostId, { ids: known.ids });
+					return;
+				}
 				const host = await store.getHost(hostId);
 				if (host !== undefined && !host.revoked) rewelcome(host);
 			})(),
@@ -1539,7 +1551,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// What it is told of the mesh, for `reconcileMesh`: only a host that runs it. A welcome made at once is answered at
 		// once, with no await more than before.
 		const noted = (welcome: HostWelcome): HostWelcome => {
-			grantKeysTold.set(hostId, grantKeyIds(welcome.grantKeys));
+			const due = welcome.grantKeys?.find((key) => key.from !== undefined)?.from;
+			grantKeysTold.set(hostId, { ids: grantKeyIds(welcome.grantKeys), ...(due === undefined ? {} : { due }) });
 			const mesh = welcome.mesh;
 			if (!runsMesh(latest)) meshTold.delete(hostId);
 			else if (mesh === undefined) meshTold.set(hostId, {});

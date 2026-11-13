@@ -746,7 +746,8 @@ export interface ComputeService {
 	grantPublicKey(): Promise<string | undefined>;
 	/**
 	 * Every grant key hosts accept grants from now, for their welcomes (`HostWelcome.grantKeys`): the one that signs first,
-	 * then those rotated out, each until it stops being accepted. Undefined as for `grantPublicKey`.
+	 * then one a rotation published (with when it signs), then those rotated out, each until it stops being accepted.
+	 * Undefined as for `grantPublicKey`.
 	 */
 	grantKeys(): Promise<readonly GrantKeyView[] | undefined>;
 	/**
@@ -6237,6 +6238,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	function grantKeysView(keys: GrantKeyring): computeSchema.GrantKeys {
 		return {
 			current: { id: keys.current.id, publicKey: keys.current.publicKey, since: keys.since },
+			...(keys.next === undefined
+				? {}
+				: { next: { id: keys.next.id, publicKey: keys.next.publicKey, from: keys.next.from } }),
 			retired: keys.retired.map((key) => ({ id: key.id, publicKey: key.publicKey, until: key.until })),
 		};
 	}
@@ -12065,7 +12069,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		grantPublicKey: async () => (await diskHolders.keys())?.current.publicKey,
 		grantKeys: async () => {
 			const keys = await diskHolders.keys();
-			return keys === undefined ? undefined : [keys.current, ...keys.retired];
+			return keys === undefined
+				? undefined
+				: [keys.current, ...(keys.next === undefined ? [] : [keys.next]), ...keys.retired];
 		},
 
 		async serveFileUrl(token, request) {

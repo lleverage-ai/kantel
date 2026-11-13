@@ -468,9 +468,10 @@ type Welcome struct {
 	// a peer's fetch only with a grant it signed (DiskLocateResult.Grant). Empty while the control plane has none. It is
 	// the first of GrantKeys, for hosts from before rotation.
 	GrantKey string `json:"grantKey,omitempty"`
-	// GrantKeys are every grant key a host accepts grants from now: the one that signs first, then those rotated out,
-	// each until its Until. A host serves a grant any of them signed (by the key its kid names) and keeps the list until
-	// a welcome brings another. Empty from a control plane from before rotation, which sends GrantKey alone.
+	// GrantKeys are every grant key a host accepts grants from now: the one that signs first, then one a rotation
+	// published (signing from its From), then those rotated out, each until its Until. A host serves a grant any of them
+	// signed (by the key its kid names) and keeps the list until a welcome brings another. Empty from a control plane
+	// from before rotation, which sends GrantKey alone.
 	GrantKeys []GrantKey `json:"grantKeys,omitempty"`
 	// Mesh is the host's place in its pool's mesh (FeatureMesh), sent only to a host in a pool with sync on. A welcome
 	// without it takes the host's mesh device down.
@@ -483,8 +484,11 @@ type GrantKey struct {
 	ID string `json:"id"`
 	// PublicKey is its 32 raw bytes, in base64url.
 	PublicKey string `json:"publicKey"`
-	// Until is when a key rotated out stops being accepted, in milliseconds since the epoch; 0 for the key that signs.
+	// Until is when a key rotated out stops being accepted, in milliseconds since the epoch; 0 for the others.
 	Until int64 `json:"until,omitempty"`
+	// From is when a key a rotation published begins signing, in milliseconds since the epoch; 0 for the others. A host
+	// accepts it already.
+	From int64 `json:"from,omitempty"`
 }
 
 // Capacity is what is free now.
