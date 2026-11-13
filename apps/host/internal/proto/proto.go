@@ -50,6 +50,11 @@ type Message struct {
 	// welcome had UsageAcks, is a usage.ack (Kantel → host) whose Acked is the Seq of the newest tick Kantel has taken,
 	// covering every earlier one (FeatureUsageAcks).
 	Usage *UsageSample `json:"usage,omitempty"`
+
+	// mesh.peers (Kantel → host, FeatureMesh): the whole list of the host's mesh peers, sent whenever a member of its
+	// pool joins, leaves, is revoked or reports new endpoints. The host makes its WireGuard peers match it; an empty
+	// list is no peers.
+	Peers []MeshPeer `json:"peers,omitempty"`
 }
 
 // FileStreamAckBytes is about how often a host sends a file write stream's stream.ack.
@@ -128,6 +133,8 @@ type Facts struct {
 	// it has (one for its image, without versioned images): a snapshot's memory restores only onto a host with its
 	// Runtime among them and the same CPU. Absent on a host without the microVM tier, or from before it said.
 	Runtimes []HostRuntime `json:"runtimes,omitempty"`
+	// Mesh is the host's WireGuard side of its pool's mesh (FeatureMesh): absent from a host without the feature.
+	Mesh *MeshFacts `json:"mesh,omitempty"`
 }
 
 // CPUFingerprint is what a CPU is to a guest: its vendor (`AuthenticAMD`), family and model as /proc/cpuinfo has them,
@@ -162,6 +169,62 @@ type IsolateRuntime struct {
 	JavaScript     bool   `json:"javascript"`
 	Python         bool   `json:"python"`
 	MemoryEnforced bool   `json:"memoryEnforced"`
+}
+
+// FeatureMesh: the host runs its pool's WireGuard mesh (docs/design/disk-store.md, "2a. The mesh"): it reports its
+// public key, listen port and endpoints in Facts.Mesh, brings up the device kmesh0 with the address Welcome.Mesh gives it
+// (taking it down again on a welcome without one), makes its peers match each mesh.peers, and reports each peer's
+// health in Capacity.Mesh.
+const FeatureMesh = "mesh"
+
+// MeshFacts are a host's WireGuard key and where peers can reach it: PublicKey is its Curve25519 public key (base64,
+// as WireGuard writes keys; the private key never leaves the host), ListenPort the UDP port it listens on, and
+// Endpoints the addresses peers try, "ip:port" (IPv6 in brackets) or "name:port": the operator's own (--mesh-endpoint)
+// first, then the host's interface addresses with ListenPort.
+type MeshFacts struct {
+	PublicKey  string   `json:"publicKey"`
+	ListenPort int      `json:"listenPort"`
+	Endpoints  []string `json:"endpoints"`
+}
+
+// WelcomeMesh is a host's place in its pool's mesh: its own mesh address (an IPv6 ULA, one /128 per host, stable
+// across reconnects), the pool's prefix (its /48) and the pool's other hosts.
+type WelcomeMesh struct {
+	Address string     `json:"address"`
+	Prefix  string     `json:"prefix"`
+	Peers   []MeshPeer `json:"peers"`
+}
+
+// MeshPeer is another host in the pool: its WireGuard public key, its mesh address, and the endpoints it reported.
+type MeshPeer struct {
+	HostID    string   `json:"hostId"`
+	PublicKey string   `json:"publicKey"`
+	Address   string   `json:"address"`
+	Endpoints []string `json:"endpoints"`
+}
+
+// Mesh peer paths (MeshPeerHealth.Path): reached over one of its endpoints, or not reached (no handshake in the last
+// 3 minutes, after which WireGuard drops its session keys). NAT traversal and the relay, later, add "punched" and "relayed".
+const (
+	MeshPathDirect = "direct"
+	MeshPathNone   = "none"
+)
+
+// MeshHealth is how a host reaches its mesh peers, in each capacity report while its device is up (FeatureMesh).
+type MeshHealth struct {
+	Address string           `json:"address"`
+	Peers   []MeshPeerHealth `json:"peers"`
+}
+
+// MeshPeerHealth is one peer as the host reaches it: the path, the endpoint it uses now, its last handshake (Unix ms,
+// absent before the first) and the round-trip time of the host's last probe of its mesh address (absent when that
+// probe got no answer).
+type MeshPeerHealth struct {
+	HostID        string  `json:"hostId"`
+	Path          string  `json:"path"`
+	Endpoint      string  `json:"endpoint,omitempty"`
+	LastHandshake int64   `json:"lastHandshake,omitempty"`
+	RTTMs         float64 `json:"rttMs,omitempty"`
 }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
@@ -395,6 +458,9 @@ type Welcome struct {
 	// UsageAcks says Kantel acknowledges usage ticks on this connection (usage.ack, FeatureUsageAcks). The connection's
 	// first welcome decides it; a later one doesn't change it.
 	UsageAcks bool `json:"usageAcks,omitempty"`
+	// Mesh is the host's place in its pool's mesh (FeatureMesh), sent only to a host in a pool with sync on. A welcome
+	// without it takes the host's mesh device down.
+	Mesh *WelcomeMesh `json:"mesh,omitempty"`
 }
 
 // Capacity is what is free now.
@@ -422,6 +488,8 @@ type Capacity struct {
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.
 	Memory *MemoryReport `json:"memory,omitempty"`
+	// Mesh is how the host reaches its mesh peers (FeatureMesh), while its mesh device is up.
+	Mesh *MeshHealth `json:"mesh,omitempty"`
 }
 
 // MemoryModeReserved and MemoryModeUsed are MemoryReport.Mode: the host admits sandboxes by the memory they were

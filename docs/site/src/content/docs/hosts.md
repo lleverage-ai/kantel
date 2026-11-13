@@ -233,12 +233,18 @@ It ends with what install leaves to the service, as above. The real output has t
 | `--isolate-runtime native` | Run isolates with `kantel-isolate` on the host itself, with no KVM. For trusted code only |
 | `--proxy-data-path` | Send sandboxes' traffic on to the account's [upstream proxy](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy). Experimental |
 | `--inject-guest-agent` | Boot microVMs through Kantel's initramfs, which puts the guest agent into [any Linux image](/sandboxes/custom-images/). Experimental |
+| `--mesh-port PORT` | The UDP port of the WireGuard mesh with the other hosts in the host's pool. Default `51820`; `-1` turns the mesh off. See [The pool mesh](#the-pool-mesh) |
+| `--mesh-endpoint HOST:PORT` | Where the host's pool peers reach it besides its own addresses, such as a forwarded port. Repeat it, or separate several with commas |
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
 | `--dry-run` | Print what the install would do, and change nothing. See [See what install will do](#see-what-install-will-do) |
 
 Put any of these after the token in the join command. `sudo kantel-admin host join --url … --token …` on the machine runs the same installer, and `kantel-admin host add --ssh root@builder-1` runs the printed command on the machine over SSH.
+
+### The pool mesh
+
+Hosts in a pool with sync on join a WireGuard mesh with each other, for moving disks between them. Each host makes its key the first time it starts (kept in `/var/lib/kantel-host/mesh`, never sent anywhere) and brings up a device named `kmesh0` with an IPv6 address the control plane gives it. Peers connect directly to each other's addresses on UDP port 51820, so that port must be reachable between the pool's hosts. `kantel-host` accepts it itself in iptables. Over the mesh a host accepts only the peer sync port (TCP 7480) from its pool's addresses, forwards nothing, and its sandboxes can't reach it. A host in a pool without sync keeps the device down. The mesh needs `ip6tables` and `/dev/net/tun`.
 
 ### Without KVM
 

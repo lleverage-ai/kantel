@@ -20,6 +20,9 @@ type Destinations struct {
 	Allow []netip.Prefix
 	// Deny is refused even when Allow names it (the host's sandbox subnet).
 	Deny []netip.Prefix
+	// Denied is refused too, read at each check, even when Allow names it: the pool mesh's prefix while the host is in
+	// one (package mesh), so a sandbox can't reach another host's mesh address through the proxy.
+	Denied func() []netip.Prefix
 	// Local lists the host's own addresses and the networks they are on; default the host's interfaces, read at each
 	// check.
 	Local func() []netip.Prefix
@@ -74,6 +77,13 @@ func (d Destinations) Check(ip netip.Addr) error {
 	for _, p := range d.Deny {
 		if p.Contains(ip) {
 			return fmt.Errorf("%s is a sandbox's address: %w", ip, ErrDestination)
+		}
+	}
+	if d.Denied != nil {
+		for _, p := range d.Denied() {
+			if p.Contains(ip) {
+				return fmt.Errorf("%s is a mesh address: %w", ip, ErrDestination)
+			}
 		}
 	}
 	for _, p := range d.Allow {
