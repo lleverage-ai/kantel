@@ -383,8 +383,10 @@ type Capacity struct {
 	// Disk is what takes the space on the host's disk, measured every few minutes; absent until it first is, and from a
 	// host from before it said.
 	Disk *DiskUsage `json:"disk,omitempty"`
-	// StickyDisks are the sticky disk versions the host holds (FeatureStickyDisks): in every report from a host with
-	// the feature, [] when it holds none; absent from one without it.
+	// StickyDisks are the sticky disk versions the host holds (FeatureStickyDisks): [] when it holds none, absent
+	// (nil, which omitzero leaves out, unlike an empty slice) from a host without the feature and from a report whose
+	// inventory couldn't be read in full. The control plane forgets versions missing from a report, never on an absent
+	// one, so the two must stay distinct.
 	StickyDisks []StickyDiskHolding `json:"stickyDisks,omitzero"`
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.

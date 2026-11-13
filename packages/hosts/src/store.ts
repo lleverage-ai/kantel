@@ -24,6 +24,8 @@ export interface HostRecord {
 	readonly facts?: HostFacts;
 	/** As it last said in a hello or heartbeat. */
 	readonly capacity?: HostCapacity;
+	/** When Kantel received `capacity`. Absent from a record kept before it was written. */
+	readonly capacityAt?: number;
 	/**
 	 * The account whose own host it is: only that account's sandboxes go on it. Absent for a host
 	 * the operator joined, which every account shares.

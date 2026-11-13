@@ -56,6 +56,7 @@ import {
 	type HostSecrets,
 	type HostSize,
 	type HostStickyDisk,
+	type HostStickyHolding,
 	type HostTemplateBoot,
 	type HostTemplateBuild,
 	type HostTemplateBuilt,
@@ -621,10 +622,21 @@ export interface SandboxPlacement {
 	readonly mounts?: readonly HostMountStatus[];
 }
 
+/** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
+export interface HostStickyReport {
+	readonly hostId: string;
+	/** When Kantel received the report: the host measured it a moment before. */
+	readonly at: number;
+	/** The versions it holds. Absent: it doesn't say (a host without sticky disks, or from before them), not none. */
+	readonly stickyDisks?: readonly HostStickyHolding[];
+}
+
 export interface HostsService {
 	readonly hub: HostHub;
 	/** Deletes a sticky disk's version (or all its versions) from a host that runs sticky disks; `unavailable` if away. */
 	stickyDelete(hostId: string, diskId: string, version?: string): Promise<void>;
+	/** What each host connected here last reported holding of sticky disks, and when that report arrived. */
+	stickyReports(): Promise<HostStickyReport[]>;
 	/** Registration spends join tokens from here from now on, not the registry's own. */
 	useJoinTokens(tokens: ExternalJoinTokens): void;
 	/**
@@ -1090,6 +1102,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			...latest,
 			facts: facts.value,
 			capacity: capacity.value,
+			capacityAt: now,
 			lastSeenAt: now,
 		}));
 		if (reported === undefined || reported.revoked) throw new Error("This host is revoked");
@@ -1222,6 +1235,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			return welcomeNow(hostId);
 		},
 		onHeartbeat(hostId, reported) {
+			const receivedAt = clock.now();
 			const parsed = parseHostCapacity(reported);
 			if (!parsed.ok) {
 				log(`[hosts] host ${hostId} sent a heartbeat that isn't valid (${parsed.reason}); ignored`);
@@ -1235,7 +1249,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			runCleanups(hostId);
 			report(
 				(async () => {
-					await store.updateHost(hostId, (host) => ({ ...host, capacity, lastSeenAt: clock.now() }));
+					await store.updateHost(hostId, (host) => ({
+						...host,
+						capacity,
+						capacityAt: receivedAt,
+						lastSeenAt: clock.now(),
+					}));
 				})(),
 			);
 		},
@@ -2056,6 +2075,21 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		async stickyDelete(hostId, diskId, version) {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.stickyDelete, { diskId, ...(version === undefined ? {} : { version }) });
+		},
+		async stickyReports() {
+			// Only hosts connected here: one away (or on another replica) is left to whoever holds it now.
+			const reports: HostStickyReport[] = [];
+			for (const host of await store.listHosts()) {
+				if (host.revoked || host.capacityAt === undefined || !hub.connected(host.id)) continue;
+				const capacity = storedCapacity(host.capacity);
+				if (capacity === undefined) continue;
+				reports.push({
+					hostId: host.id,
+					at: host.capacityAt,
+					...(capacity.stickyDisks === undefined ? {} : { stickyDisks: capacity.stickyDisks }),
+				});
+			}
+			return reports;
 		},
 		async createJoinToken(input) {
 			const minutes = input.expiresInMinutes ?? 60;

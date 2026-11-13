@@ -4,7 +4,7 @@ import { createKantelClient } from "@kantel/api/sdk";
 import type { SqlDriver } from "@kantel/sql";
 import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SandboxBackend } from "../src/backend.ts";
+import type { BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import {
@@ -119,6 +119,40 @@ describe("sticky disks", () => {
 		await tom.api.service.sweep();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(deleted).toEqual([disk.id, disk.id, disk.id]);
+	});
+
+	it("forgets a version its host no longer reports holding, but never the head or a version newer than the report", async () => {
+		let reports: BackendStickyHoldings[] = [];
+		const tom = setUp(true, (backend) => ({ ...backend, stickyHoldings: async () => reports }));
+		const disk = await tom.createStickyDisk({ name: "cache", sizeGb: 10 });
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "cache", path: "/cache" }],
+			wait: true,
+		});
+		const old = await tom.commitStickyDisk(sandbox.id, disk.id);
+		const kept = await tom.commitStickyDisk(sandbox.id, disk.id);
+		const listed = async () => (await tom.getStickyDisk(disk.id)).versions?.map((each) => each.id);
+		const sweep = async () => {
+			tom.clock.now += 11 * 60_000;
+			await tom.api.service.sweep();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		};
+		// A host from before sticky disks says nothing of what it holds: that isn't holding none.
+		reports = [{ hostId: old.hostId, reportedAt: tom.clock.now + 11 * 60_000 }];
+		await sweep();
+		expect(await listed()).toEqual([kept.id, old.id]);
+		// A report taken a moment before two more commits: the old version is gone from it, the newer ones not yet in it.
+		reports = [{ hostId: old.hostId, reportedAt: tom.clock.now, disks: [{ diskId: disk.id, versions: [kept.id] }] }];
+		const recent = await tom.commitStickyDisk(sandbox.id, disk.id);
+		const head = await tom.commitStickyDisk(sandbox.id, disk.id);
+		await sweep();
+		expect(await listed()).toEqual([head.id, recent.id, kept.id]);
+		// The host holds none of the disk now: everything but the head, which stays until a commit replaces it.
+		reports = [{ hostId: old.hostId, reportedAt: tom.clock.now + 11 * 60_000, disks: [] }];
+		await sweep();
+		expect(await listed()).toEqual([head.id]);
+		expect((await tom.getStickyDisk(disk.id)).head).toBe(head.id);
 	});
 
 	it("refuses a disk at a system path, twice, inside another, or on an isolate", async () => {
@@ -286,6 +320,11 @@ for (const each of STORES) {
 				"sdv_2",
 			]);
 			expect((await store.stickyDisks.get("sdk_a"))?.head).toBe(last?.id);
+			// Forgetting the head is refused; any other version is forgotten.
+			const first = committed.find((each) => each?.seq === 1);
+			expect(await store.stickyDiskWrites.forget(last?.id ?? "")).toBe(false);
+			expect(await store.stickyDiskWrites.forget(first?.id ?? "")).toBe(true);
+			expect((await store.stickyDiskVersions.list({ diskId: "sdk_a" })).map((each) => each.id)).toEqual([last?.id]);
 		});
 
 		if (each.kind !== undefined) {

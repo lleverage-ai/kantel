@@ -1593,6 +1593,20 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					),
 			);
 		},
+		async stickyHoldings() {
+			return (await hosts.stickyReports()).map((report) => ({
+				hostId: report.hostId,
+				reportedAt: report.at,
+				...(report.stickyDisks === undefined
+					? {}
+					: {
+							disks: report.stickyDisks.map((holding) => ({
+								diskId: holding.diskId,
+								versions: holding.versions.map((held) => held.version),
+							})),
+						}),
+			}));
+		},
 		async revokeHost(hostId) {
 			await hosts.revoke(hostId).catch((error: unknown) => {
 				if (!(error instanceof KantelError && error.code === "not_found")) throw error;

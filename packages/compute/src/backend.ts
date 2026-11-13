@@ -227,6 +227,18 @@ export interface CommittedStickyDisk {
 	readonly allocatedBytes: number;
 }
 
+/** What a connected host last reported holding of sticky disks (`SandboxBackend.stickyHoldings`). */
+export interface BackendStickyHoldings {
+	readonly hostId: string;
+	/** When the report arrived: the host measured it a moment before, so a version committed since may be missing. */
+	readonly reportedAt: number;
+	/**
+	 * The versions it holds of each disk; a disk it holds none of isn't listed. Absent: it doesn't say (a host without
+	 * sticky disks, or from before them), which isn't holding none.
+	 */
+	readonly disks?: readonly { readonly diskId: string; readonly versions: readonly string[] }[];
+}
+
 /**
  * A mount as the backend is given it. A bundle's bytes are fetched by digest (`ComputeService.bundleForHost`, or over
  * HTTP at `GET /v1/hosts/bundles/{digest}?sandboxId=` with the host's credential); a bucket source's settings and
@@ -946,6 +958,11 @@ export interface SandboxBackend {
 	commitStickyDisk?(sandboxId: string, diskId: string, version: string): Promise<CommittedStickyDisk>;
 	/** Deletes a sticky disk's versions from every host that runs sticky disks and is online now; idempotent. */
 	deleteStickyDisk?(diskId: string): Promise<void>;
+	/**
+	 * What each connected host last reported holding of sticky disks. Absent: the backend doesn't say, and the catalogue
+	 * keeps every version.
+	 */
+	stickyHoldings?(): Promise<readonly BackendStickyHoldings[]>;
 	/**
 	 * Asks a connected host to update its host agent to `latestVersion`, answering once it has the new one in place,
 	 * with the version it's moving to. Absent: hosts aren't updated from the control plane (the stub).

@@ -339,6 +339,8 @@ const STICKY_DISK_VERSIONS = "stickyDiskVersions";
  * - `commit`: the disk's write over the live version it read, and the version's insert, only when the disk's row then
  *   holds exactly what was written, so a tombstone (or another commit) that came first means no version is recorded.
  *   Whether it landed is read back from the version, by its `writeId`, as `sqlTemplateWrites` does.
+ * - `forget`: the version's delete, only while its disk's row holds exactly what was read, which named another head;
+ *   a commit (or tombstone) that came first means it reads again.
  */
 function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 	const postgres = driver.dialect === "postgres";
@@ -362,6 +364,9 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 		SELECT ?, ?, ${seq}, 1, ?
 		WHERE EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)
 		ON CONFLICT (kind, id) DO NOTHING`;
+	const deleteVersion = `DELETE FROM compute_api_records
+		WHERE kind = ? AND id = ?
+		AND EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)`;
 	const read = async <T>(kind: string, id: string): Promise<T | undefined> => {
 		const [row] = await driver.query(SELECT_DATA, [kind, id]);
 		return row === undefined ? undefined : parse<T>(row);
@@ -460,6 +465,26 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 			}
 			throw new Error(
 				`The sticky disk ${version.diskId} kept changing while a version was committed; gave up after ${UPDATE_ATTEMPTS} tries`,
+			);
+		},
+		async forget(id) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const version = await read<StoredStickyDiskVersion>(STICKY_DISK_VERSIONS, id);
+				if (version === undefined) return true;
+				const [row] = await driver.query(SELECT_DATA, [STICKY_DISKS, version.diskId]);
+				if (row !== undefined && parse<StoredStickyDisk>(row).head === id) return false;
+				await driver.batch([
+					row === undefined
+						? { sql: "DELETE FROM compute_api_records WHERE kind = ? AND id = ?", params: [STICKY_DISK_VERSIONS, id] }
+						: {
+								sql: deleteVersion,
+								params: [STICKY_DISK_VERSIONS, id, STICKY_DISKS, version.diskId, String(row.data)],
+							},
+				]);
+				if ((await read<StoredStickyDiskVersion>(STICKY_DISK_VERSIONS, id)) === undefined) return true;
+			}
+			throw new Error(
+				`The sticky disk version ${id} kept changing while it was forgotten; gave up after ${UPDATE_ATTEMPTS} tries`,
 			);
 		},
 	};
