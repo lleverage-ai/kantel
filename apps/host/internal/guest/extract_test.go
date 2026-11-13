@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // entry is one tar entry for a test archive.
@@ -516,6 +519,27 @@ func TestExtractArchiveRoute(t *testing.T) {
 	older := clientFor(t, http.NewServeMux())
 	if err := older.ExtractArchive(ctx, archive, target, false); !IsUnknownRoute(err) {
 		t.Fatalf("an older agent: %v", err)
+	}
+}
+
+// The agent's health says it extracts into a real directory (RealTarget), which the host requires before an upgrade
+// into a snapshot relies on it; an agent from before it says nothing, so it reports no features.
+func TestHealthReportsExtractingIntoARealDirectory(t *testing.T) {
+	ctx := context.Background()
+	h, err := clientFor(t, (&Server{}).Handler()).Health(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(h.Features, proto.GuestFeatureRealTarget) {
+		t.Fatalf("its features %v don't say %s", h.Features, proto.GuestFeatureRealTarget)
+	}
+	older := http.NewServeMux()
+	older.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]any{"ok": true, "version": "0.1.0", "ready": []string{"ssh"}})
+	})
+	h, err = clientFor(t, older).Health(ctx)
+	if err != nil || len(h.Features) != 0 {
+		t.Fatalf("an older agent: %v %v", h.Features, err)
 	}
 }
 

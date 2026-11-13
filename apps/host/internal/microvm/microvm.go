@@ -4282,6 +4282,20 @@ func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams)
 	return err
 }
 
+// GuestFeatures is what a running sandbox's guest agent reports it can do (guest.Health.Features), asked now: after a
+// restore, the agent the snapshot's memory held. An agent too old to say reports none.
+func (m *Manager) GuestFeatures(ctx context.Context, id string) ([]string, error) {
+	client, err := m.running(id)
+	if err != nil {
+		return nil, err
+	}
+	h, err := client.Health(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return h.Features, nil
+}
+
 func (m *Manager) DeleteFile(ctx context.Context, p proto.FileParams) error {
 	client, err := m.running(p.SandboxID)
 	if err != nil {

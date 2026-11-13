@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
@@ -650,6 +651,18 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		p.Egress = e
 		info, err := t.Create(ctx, p)
 		if err != nil {
+			if fresh {
+				_ = h.cas.Forget(p.SandboxID)
+			}
+			return nil, err
+		}
+		if err := requireGuest(ctx, t, p); err != nil {
+			// Its own context: the call's may be what ended.
+			cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if derr := t.Delete(cleanup, p.SandboxID); derr != nil {
+				h.log.Warn("create: the sandbox its guest agent can't serve couldn't be deleted", "sandbox", p.SandboxID, "err", derr)
+			}
 			if fresh {
 				_ = h.cas.Forget(p.SandboxID)
 			}

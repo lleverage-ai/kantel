@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -149,8 +150,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		id = s.identity.SandboxID
 	}
 	s.mu.Unlock()
-	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready, Expect: expect})
+	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready, Expect: expect, Features: Features})
 }
+
+// Features is what this agent reports in Health.Features.
+var Features = []string{proto.GuestFeatureRealTarget}
 
 // expected is what an injected agent's image runs, from what it has, so a template of a plain image (no ReadyFile)
 // doesn't wait for a desktop it will never have. Always ssh: the agent's own, so never empty (which would mean "the

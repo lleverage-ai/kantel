@@ -34,8 +34,13 @@ import (
 // The microVM may start from one of this host's microVM snapshots (From) or a template (Template), as a create from
 // them does (FeatureIsolateUpgradeFrom), its memory restored where the snapshot holds it: the files go in after it
 // runs, laid over what the snapshot has at UpgradeWorkspace (an isolate's file replaces the snapshot's, nothing of the
-// snapshot's is deleted). A snapshot with a link at UpgradeWorkspace or any directory above it is refused
-// (realWorkspace) before a file goes in: the files would land wherever the link points.
+// snapshot's is deleted). The files go only into a real directory there: the guest agent extracts them with
+// RealTarget, refusing a link at UpgradeWorkspace or any directory above it, and holding the directory it checked for
+// as long as it writes. That agent is the snapshot's (its image's on a cold boot, unless the host injects its own; the
+// very process its memory held on a restore; a template's, whose setup ran in it), so an upgrade into a snapshot or a
+// template first requires it to report GuestFeatureRealTarget (requireGuest): one too old to is refused before a file
+// is written, the microVM deleted and the isolate thawed. Without either, the microVM is the host's own image, in which
+// nothing of the account's has run and which has no link there, so any agent does.
 
 // upgradeSource is the isolate tier as an upgrade's source.
 type upgradeSource interface {
@@ -214,6 +219,9 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 		return failed(err)
 	}
 	p.Egress = e
+	if (p.From != "" || p.Template != nil) && !slices.Contains(p.GuestFeatures, proto.GuestFeatureRealTarget) {
+		p.GuestFeatures = append(slices.Clone(p.GuestFeatures), proto.GuestFeatureRealTarget)
+	}
 	info, err := mv.Create(ctx, p.CreateParams)
 	if err != nil {
 		if fresh {
@@ -236,17 +244,12 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 		thaw()
 		return failed(cause)
 	}
-	if err := realWorkspace(ctx, mv, p.SandboxID); err != nil {
+	if err := requireGuest(ctx, mv, p.CreateParams); err != nil {
 		return undo(err)
 	}
 	moved, err := h.moveFiles(ctx, source, streamer, extractor, p.SandboxID)
 	if err != nil {
 		return undo(fmt.Errorf("moving the isolate's files into the microVM: %w", err))
-	}
-	// Again once they are in: a guest agent older than RealTarget follows a link what runs in the snapshot put there
-	// meanwhile, and the microVM is deleted with whatever went through it.
-	if err := realWorkspace(ctx, mv, p.SandboxID); err != nil {
-		return undo(err)
 	}
 	res, err := mv.Exec(ctx, proto.ExecParams{SandboxID: p.SandboxID, Argv: []string{"sh", "-c", upgradeLink}, User: "root", TimeoutMs: 30_000}, nil)
 	if err == nil && res.ExitCode != 0 {
@@ -385,33 +388,50 @@ func (h *Host) moveFiles(ctx context.Context, source upgradeSource, streamer Fil
 	return moved, nil
 }
 
-// realWorkspace refuses a microVM with a link, or something that isn't a directory, at UpgradeWorkspace or any
-// directory above it, as a snapshot may have: the isolate's files would be extracted through it to somewhere else and
-// the upgrade would still succeed. Read from the guest's listing, which every guest agent answers without following a
-// link, so it holds for a snapshot whose agent is older than the extractor's own check (RealTarget), which an agent
-// running from the snapshot's image or memory may be; read again once the files are in, for a link put there
-// meanwhile. The first directory missing ends it: the extraction makes the rest.
-func realWorkspace(ctx context.Context, mv Tier, id string) error {
-	at := "/"
-	for _, name := range strings.Split(strings.TrimPrefix(proto.UpgradeWorkspace, "/"), "/") {
-		entries, err := mv.ListFiles(ctx, proto.FileParams{SandboxID: id, Path: at})
+// GuestReporter is a tier whose sandboxes run Kantel's guest agent, which says what it can do (the microVM tier).
+type GuestReporter interface {
+	GuestFeatures(ctx context.Context, id string) ([]string, error)
+}
+
+// requireGuest refuses a sandbox just made from p, as unsupported, unless its guest agent reports each of
+// p.GuestFeatures: asked of the agent running in it now (after a restore, the one the snapshot's memory held), before
+// anything is written into it. An agent too old to say reports none, and a tier that can't ask has none. The caller
+// deletes the sandbox.
+func requireGuest(ctx context.Context, t Tier, p proto.CreateParams) error {
+	if len(p.GuestFeatures) == 0 {
+		return nil
+	}
+	var have []string
+	if r, ok := t.(GuestReporter); ok {
+		got, err := r.GuestFeatures(ctx, p.SandboxID)
 		if err != nil {
-			return fmt.Errorf("reading %s in the microVM: %w", at, err)
+			return fmt.Errorf("asking the microVM's guest agent what it can do: %w", err)
 		}
-		i := slices.IndexFunc(entries, func(e proto.FileEntry) bool { return e.Name == name })
-		if i < 0 {
-			return nil
+		have = got
+	}
+	for _, want := range p.GuestFeatures {
+		if slices.Contains(have, want) {
+			continue
 		}
-		at = filepath.Join(at, name)
-		switch entries[i].Type {
-		case "dir":
-		case "symlink":
-			return invalid("%s in the microVM is a symbolic link: the isolate's files go only into a real directory at %s", at, proto.UpgradeWorkspace)
-		default:
-			return invalid("%s in the microVM isn't a directory: the isolate's files go only into a real directory at %s", at, proto.UpgradeWorkspace)
+		if want == proto.GuestFeatureRealTarget {
+			return &proto.Error{Code: proto.ErrUnsupported, Message: olderGuest(p)}
 		}
+		return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the microVM's guest agent is older than this needs: it doesn't report %s", want)}
 	}
 	return nil
+}
+
+// olderGuest is why an upgrade into p's snapshot or template is refused when the guest agent running in it predates
+// RealTarget, saying what to do about it.
+func olderGuest(p proto.CreateParams) string {
+	const why = "an older Kantel guest agent, which can't lay an isolate's files into it safely"
+	switch {
+	case p.From != "":
+		return fmt.Sprintf("the snapshot was saved with %s: save it again from a sandbox started afresh on a current host to upgrade into it", why)
+	case p.Template != nil:
+		return fmt.Sprintf("the template runs %s: build it again on a current host to upgrade into it", why)
+	}
+	return fmt.Sprintf("the microVM runs %s", why)
 }
 
 // upgradesIsolates says the host runs both tiers, its isolates can give their files and its microVMs take them.

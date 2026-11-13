@@ -125,11 +125,21 @@ type upgradeMicrovmTier struct {
 	// snapshotLinks are a snapshot's links by path under the guest's root, each pointing relative to where it is.
 	snapshotLinks map[string]map[string]string
 	created       []proto.CreateParams
-	// olderAgent extracts as a guest agent from before RealTarget does, ignoring it; linkOnExtract are links (by path
-	// under the guest's root, pointing relative to where they are) put there as the extraction starts, as what runs in
-	// a snapshot restored with its memory might after the host's first reading.
+	// olderAgent is a guest agent from before RealTarget: it reports no features, and extracts ignoring RealTarget;
+	// linkOnExtract are links (by path under the guest's root, pointing relative to where they are) put there as the
+	// extraction starts, as what runs in a snapshot restored with its memory might.
 	olderAgent    bool
 	linkOnExtract map[string]string
+	// written counts what went into the guest: file writes and extractions.
+	written int
+}
+
+// GuestFeatures is what its guest agent reports: a current agent's, or none from an older one.
+func (f *upgradeMicrovmTier) GuestFeatures(context.Context, string) ([]string, error) {
+	if f.olderAgent {
+		return nil, nil
+	}
+	return guest.Features, nil
 }
 
 func (f *upgradeMicrovmTier) HasSnapshot(id string) bool {
@@ -197,6 +207,7 @@ func (f *upgradeMicrovmTier) ReadFileStream(context.Context, proto.FileParams) (
 }
 
 func (f *upgradeMicrovmTier) WriteFileStream(_ context.Context, p proto.FileParams, r io.Reader) (int64, error) {
+	f.written++
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return 0, err
@@ -209,6 +220,7 @@ func (f *upgradeMicrovmTier) WriteFileStream(_ context.Context, p proto.FilePara
 }
 
 func (f *upgradeMicrovmTier) ExtractArchive(_ context.Context, p proto.FileExtractParams) error {
+	f.written++
 	archive := filepath.Join(f.root, p.Archive)
 	defer os.Remove(archive)
 	for name, target := range f.linkOnExtract {
@@ -513,62 +525,70 @@ func TestUpgradeIntoASnapshotRefusesAFileOrLinkOverItsDirectory(t *testing.T) {
 	}
 }
 
-// A snapshot with a link at /home/user/workspace, or at a directory above it, is refused before any of the isolate's
-// files go in, by the host's own reading of the guest's directories, so it holds whether the snapshot's guest agent
-// checks the extraction's target itself or is older and would follow the link: what the link points at is as it was,
-// the microVM deleted and the isolate kept.
+// A snapshot with a link at /home/user/workspace, or at a directory above it, is refused by the guest agent's
+// extraction into a real directory (RealTarget), the one place the rule is kept: what the link points at is as it
+// was, the microVM deleted and the isolate kept.
 func TestUpgradeIntoASnapshotRefusesALinkedWorkspace(t *testing.T) {
-	for name, layout := range map[string]struct {
-		files   map[string]string
-		links   map[string]string
-		outside string
-		linked  string
-	}{
-		"at the workspace": {
-			files:   map[string]string{"opt/project/kept.txt": "theirs\n"},
-			links:   map[string]string{"home/user/workspace": "../../opt/project"},
-			outside: "opt/project",
-			linked:  "/home/user/workspace",
-		},
-		"above it": {
-			files:   map[string]string{"srv/user/workspace/kept.txt": "theirs\n"},
-			links:   map[string]string{"home/user": "../srv/user"},
-			outside: "srv/user/workspace",
-			linked:  "/home/user",
-		},
-	} {
-		for agent, older := range map[string]bool{"its agent current": false, "its agent older": true} {
-			t.Run(name+", "+agent, func(t *testing.T) {
-				h, iso, mv, events := newUpgradeHost(t)
-				mv.snapshots = map[string]map[string]string{"snap_linked": layout.files}
-				mv.snapshotLinks = map[string]map[string]string{"snap_linked": layout.links}
-				mv.olderAgent = older
-				_, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up", From: "snap_linked"})
-				if codeOf(err) != proto.ErrInvalid || !strings.Contains(err.Error(), layout.linked+" in the microVM is a symbolic link") {
-					t.Fatalf("got %v, want the link refused", err)
-				}
-				entries, err := os.ReadDir(filepath.Join(mv.root, layout.outside))
-				if err != nil || len(entries) != 1 || entries[0].Name() != "kept.txt" {
-					t.Fatalf("what the link points at: %v %v", entries, err)
-				}
-				if got, err := os.ReadFile(filepath.Join(mv.root, layout.outside, "kept.txt")); err != nil || string(got) != "theirs\n" {
-					t.Fatalf("kept.txt: %q %v", got, err)
-				}
-				if len(mv.deleted) != 1 || len(iso.disposed) != 0 || iso.frozen != "" || len(*events) != 0 || mv.execCount() != 0 {
-					t.Fatalf("deleted %v, disposed %v, frozen %q, events %v, %d execs", mv.deleted, iso.disposed, iso.frozen, *events, mv.execCount())
-				}
-				if _, name, err := h.tierOfNamed("sbx_up"); err != nil || name != isolate.Tier {
-					t.Fatalf("sbx_up is %s (%v)", name, err)
-				}
-			})
-		}
+	for name, layout := range linkedLayouts {
+		t.Run(name, func(t *testing.T) {
+			h, iso, mv, events := newUpgradeHost(t)
+			mv.snapshots = map[string]map[string]string{"snap_linked": layout.files}
+			mv.snapshotLinks = map[string]map[string]string{"snap_linked": layout.links}
+			_, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up", From: "snap_linked"})
+			if err == nil || !strings.Contains(err.Error(), layout.linked+" is a symbolic link; nothing is extracted through one") {
+				t.Fatalf("got %v, want the link refused", err)
+			}
+			layout.untouched(t, mv)
+			if len(mv.deleted) != 1 || len(iso.disposed) != 0 || iso.frozen != "" || len(*events) != 0 || mv.execCount() != 0 {
+				t.Fatalf("deleted %v, disposed %v, frozen %q, events %v, %d execs", mv.deleted, iso.disposed, iso.frozen, *events, mv.execCount())
+			}
+			if _, name, err := h.tierOfNamed("sbx_up"); err != nil || name != isolate.Tier {
+				t.Fatalf("sbx_up is %s (%v)", name, err)
+			}
+		})
 	}
 }
 
-// A link put at /home/user/workspace after the host's first reading (by what runs in a snapshot restored with its
-// memory) is refused by a current guest agent's extraction, and found by the host's second reading when an older
-// agent went through it: either way the upgrade fails, the microVM (and whatever went through the link in it) is
-// deleted and the isolate kept.
+// linkedLayout is a snapshot with a link at or above /home/user/workspace pointing at outside, which holds one file
+// of the snapshot's, kept.txt.
+type linkedLayout struct {
+	files   map[string]string
+	links   map[string]string
+	outside string
+	linked  string
+}
+
+var linkedLayouts = map[string]linkedLayout{
+	"at the workspace": {
+		files:   map[string]string{"opt/project/kept.txt": "theirs\n"},
+		links:   map[string]string{"home/user/workspace": "../../opt/project"},
+		outside: "opt/project",
+		linked:  "/home/user/workspace",
+	},
+	"above it": {
+		files:   map[string]string{"srv/user/workspace/kept.txt": "theirs\n"},
+		links:   map[string]string{"home/user": "../srv/user"},
+		outside: "srv/user/workspace",
+		linked:  "/home/user",
+	},
+}
+
+// untouched fails unless what the link points at holds only the snapshot's kept.txt, as it was.
+func (l linkedLayout) untouched(t *testing.T, mv *upgradeMicrovmTier) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(mv.root, l.outside))
+	if err != nil || len(entries) != 1 || entries[0].Name() != "kept.txt" {
+		t.Fatalf("what the link points at: %v %v", entries, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(mv.root, l.outside, "kept.txt")); err != nil || string(got) != "theirs\n" {
+		t.Fatalf("kept.txt: %q %v", got, err)
+	}
+}
+
+// A link put at /home/user/workspace as the files go in (by what runs in a snapshot restored with its memory) is
+// refused by the guest agent's extraction, and the upgrade fails with the microVM deleted and the isolate kept. A
+// guest agent from before RealTarget, which would go through it, is never asked to extract: the upgrade is refused
+// before anything is written.
 func TestUpgradeIntoASnapshotRefusesALinkPutThereMeanwhile(t *testing.T) {
 	for agent, older := range map[string]bool{"current": false, "older": true} {
 		t.Run(agent, func(t *testing.T) {
@@ -580,15 +600,14 @@ func TestUpgradeIntoASnapshotRefusesALinkPutThereMeanwhile(t *testing.T) {
 			mv.linkOnExtract = map[string]string{"home/user/workspace": "../../opt/project"}
 			mv.olderAgent = older
 			_, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up", From: "snap_project"})
-			if err == nil || !strings.Contains(err.Error(), "is a symbolic link") {
-				t.Fatalf("got %v, want the link refused", err)
-			}
+			want := "is a symbolic link"
 			if older {
-				// Gone through by the older agent: in the microVM that was deleted for it.
-				if _, err := os.Stat(filepath.Join(mv.root, "opt", "project", "notes.md")); err != nil {
-					t.Fatalf("the older agent didn't go through the link: %v", err)
-				}
-			} else if entries, err := os.ReadDir(filepath.Join(mv.root, "opt", "project")); err != nil || len(entries) != 1 {
+				want = "older Kantel guest agent"
+			}
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("got %v, want %q", err, want)
+			}
+			if entries, err := os.ReadDir(filepath.Join(mv.root, "opt", "project")); err != nil || len(entries) != 1 {
 				t.Fatalf("what the link points at: %v %v", entries, err)
 			}
 			if len(mv.deleted) != 1 || len(iso.disposed) != 0 || iso.frozen != "" || len(*events) != 0 || mv.execCount() != 0 {
@@ -598,6 +617,101 @@ func TestUpgradeIntoASnapshotRefusesALinkPutThereMeanwhile(t *testing.T) {
 				t.Fatalf("sbx_up is %s (%v)", name, err)
 			}
 		})
+	}
+}
+
+// An upgrade into a snapshot or a template whose guest agent predates RealTarget (one that doesn't report it in its
+// health) is refused as unsupported once the microVM runs and before anything is written into it, saying what to do:
+// the microVM deleted, the isolate thawed and kept, nothing told to Kantel, and the refusal kept for the operation sent
+// again. A link the snapshot has there changes nothing: it is never reached.
+func TestUpgradeIntoASnapshotRefusesAnOlderGuestAgent(t *testing.T) {
+	layout := linkedLayouts["at the workspace"]
+	for name, c := range map[string]struct {
+		params proto.CreateParams
+		says   string
+	}{
+		"snapshot": {
+			params: proto.CreateParams{SandboxID: "sbx_up", From: "snap_linked"},
+			says:   "the snapshot was saved with an older Kantel guest agent, which can't lay an isolate's files into it safely: save it again from a sandbox started afresh on a current host to upgrade into it",
+		},
+		"template": {
+			params: proto.CreateParams{SandboxID: "sbx_up", Template: &proto.TemplateBoot{BaseImage: "kantel/sandbox"}},
+			says:   "the template runs an older Kantel guest agent, which can't lay an isolate's files into it safely: build it again on a current host to upgrade into it",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, iso, mv, events := newUpgradeHost(t)
+			mv.snapshots = map[string]map[string]string{"snap_linked": layout.files}
+			mv.snapshotLinks = map[string]map[string]string{"snap_linked": layout.links}
+			mv.olderAgent = true
+			_, err := upgradeCall(t, h, c.params)
+			var refused *proto.Error
+			if !errors.As(err, &refused) || refused.Code != proto.ErrUnsupported || refused.Message != c.says {
+				t.Fatalf("got %v, want %s: %q", err, proto.ErrUnsupported, c.says)
+			}
+			if len(mv.created) != 1 || !slices.Equal(mv.created[0].GuestFeatures, []string{proto.GuestFeatureRealTarget}) {
+				t.Fatalf("created %+v", mv.created)
+			}
+			if mv.written != 0 || mv.execCount() != 0 {
+				t.Fatalf("%d writes and %d execs in the guest", mv.written, mv.execCount())
+			}
+			if name == "snapshot" {
+				layout.untouched(t, mv)
+			}
+			if len(mv.deleted) != 1 || len(iso.disposed) != 0 || iso.frozen != "" || len(*events) != 0 {
+				t.Fatalf("deleted %v, disposed %v, frozen %q, events %v", mv.deleted, iso.disposed, iso.frozen, *events)
+			}
+			if _, name, err := h.tierOfNamed("sbx_up"); err != nil || name != isolate.Tier {
+				t.Fatalf("sbx_up is %s (%v)", name, err)
+			}
+			mv.olderAgent = false
+			if _, err := upgradeCall(t, h, c.params); codeOf(err) != proto.ErrUnsupported || len(mv.created) != 1 {
+				t.Fatalf("sent again: %v, created %d", err, len(mv.created))
+			}
+		})
+	}
+}
+
+// An upgrade with no snapshot or template makes its microVM of the host's own image, with nothing of the account's in
+// it, so it asks nothing of the guest agent: one from before RealTarget upgrades as before.
+func TestUpgradeWithoutASnapshotTakesAnOlderGuestAgent(t *testing.T) {
+	h, iso, mv, _ := newUpgradeHost(t)
+	mv.olderAgent = true
+	info, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"})
+	if err != nil || info.Moved == nil || info.Moved.Files != 2 {
+		t.Fatalf("got %+v %v", info, err)
+	}
+	if len(mv.created) != 1 || len(mv.created[0].GuestFeatures) != 0 || len(iso.disposed) != 1 {
+		t.Fatalf("created %+v, disposed %v", mv.created, iso.disposed)
+	}
+	if got, err := os.ReadFile(filepath.Join(mv.root, "home", "user", "workspace", "notes.md")); err != nil || string(got) != "# notes\n" {
+		t.Fatalf("notes.md: %q %v", got, err)
+	}
+}
+
+// sandbox.create with GuestFeatures (another host's upgrade into a snapshot here) makes the microVM, then refuses it
+// as unsupported and deletes it unless its guest agent reports each; a current agent's is made.
+func TestACreateRequiringGuestFeaturesRefusesAnOlderAgent(t *testing.T) {
+	h, _, mv, _ := newUpgradeHost(t)
+	mv.snapshots = map[string]map[string]string{"snap_project": {}}
+	params := proto.CreateParams{SandboxID: "sbx_new", Tier: microvm.Tier, From: "snap_project", GuestFeatures: []string{proto.GuestFeatureRealTarget}}
+	mv.olderAgent = true
+	err := call(t, h, proto.MethodCreate, params)
+	if codeOf(err) != proto.ErrUnsupported || !strings.Contains(err.Error(), "older Kantel guest agent") {
+		t.Fatalf("got %v, want %s", err, proto.ErrUnsupported)
+	}
+	if !slices.Equal(mv.deleted, []string{"sbx_new"}) || mv.written != 0 {
+		t.Fatalf("deleted %v, %d writes", mv.deleted, mv.written)
+	}
+	if _, err := mv.Get("sbx_new"); codeOf(err) != proto.ErrNotFound {
+		t.Fatalf("the microVM is still there: %v", err)
+	}
+	mv.olderAgent = false
+	if err := call(t, h, proto.MethodCreate, params); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mv.Get("sbx_new"); err != nil {
+		t.Fatal(err)
 	}
 }
 

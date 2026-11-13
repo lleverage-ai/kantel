@@ -101,6 +101,9 @@ type Health struct {
 	// Expect lists the services the image says it runs (ReadyFile), which a template waits for before its
 	// snapshot; empty when the image doesn't say.
 	Expect []string `json:"expect,omitempty"`
+	// Features are what this agent can do that one before it couldn't (Features, such as proto.GuestFeatureRealTarget),
+	// for the host to require before it relies on one: an older agent reports none.
+	Features []string `json:"features,omitempty"`
 }
 
 // ReadyFile, in an image, lists the services (one per line, from Ready's names) its template waits for before the
