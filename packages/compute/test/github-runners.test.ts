@@ -21,7 +21,7 @@ import {
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer } from "../src/secrets.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { createMemoryStore } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const opened: ComputeApi[] = [];
@@ -1245,7 +1245,22 @@ describe.each([
 ])("GitHub runner kinds in pools, stored $name", sqlTimeout, ({ make }) => {
 	/** The account's two hosts: the stub's, which makes sandboxes, and one beside it that can't. */
 	async function setUpPools() {
-		const store = await make();
+		const made = await make();
+		/** Runs once before the next write of an integration's record: another call landing between its read and write. */
+		const meanwhile: { hook?: () => Promise<void> } = {};
+		const integrations = made.githubRunners;
+		const store: ComputeStore = {
+			...made,
+			githubRunners: {
+				...integrations,
+				async update(id, change) {
+					const hook = meanwhile.hook;
+					meanwhile.hook = undefined;
+					await hook?.();
+					return integrations.update(id, change);
+				},
+			},
+		};
 		const github = fakeGithub();
 		const stub = createStubBackend();
 		const account: { id?: string } = {};
@@ -1287,7 +1302,9 @@ describe.each([
 					? { userId: "usr_tom", name: "Tom", email: "tom@example.com" }
 					: request.headers.get("authorization") === "Bearer ann-token"
 						? { userId: "usr_ann", name: "Ann", email: "ann@example.com" }
-						: undefined,
+						: request.headers.get("authorization") === "Bearer root-token"
+							? { userId: "usr_root", name: "Root", email: "root@example.com", superAdmin: true }
+							: undefined,
 		});
 		opened.push(api);
 		const client = (token: string) =>
@@ -1299,6 +1316,7 @@ describe.each([
 			});
 		const tom = client("tom-token");
 		const ann = client("ann-token");
+		const root = client("root-token");
 		account.id = (await tom.getCaller()).accountId;
 		// The stub's host into a pool of its own, `ci`; the other stays in the default pool.
 		const ci = await tom.createAccountPool({ name: "ci" });
@@ -1310,7 +1328,7 @@ describe.each([
 		if (defaultPool === undefined) throw new Error("No default pool");
 		await tom.createTemplate({ name: "ci", spec: { setup: "true" } });
 		await tom.createStickyDisk({ name: "ci-cache", sizeGb: 10 });
-		return { store, github, api, tom, ann, ci, defaultPool };
+		return { store, made, meanwhile, github, api, tom, ann, root, ci, defaultPool };
 	}
 
 	/** Delivers a signed `workflow_job` to the integration's webhook. */
@@ -1457,7 +1475,7 @@ describe.each([
 	});
 
 	it("moves a kind between pools, keeps its sticky disk's pool, and keeps a pool with kinds in it", async () => {
-		const { store, tom, ann, ci, defaultPool } = await setUpPools();
+		const { store, made, meanwhile, tom, ann, root, ci, defaultPool } = await setUpPools();
 		const { githubRunners } = await tom.createGithubRunners({
 			name: "ci",
 			appId: 1,
@@ -1512,6 +1530,38 @@ describe.each([
 		const injected = { ...SMALL, maxRunners: 3, poolId: defaultPool.id } as RunnerPool;
 		await tom.updateGithubRunners(githubRunners.id, { pools: [BIG, injected] }).catch(() => undefined);
 		expect((await store.githubRunners.get(githubRunners.id))?.pools.map((each) => each.poolId)).toEqual([ci.id, ci.id]);
+		// A kind moved to another pool while an alias write was under way isn't moved back by it: the write is refused, and
+		// tried again it keeps the kind where it went.
+		await tom.createAccountPool({ name: "moved" });
+		const moved = (await tom.listAccountPools({})).items.find((pool) => pool.name === "moved");
+		if (moved === undefined) throw new Error("No pool moved");
+		meanwhile.hook = async () => {
+			await made.githubRunners.update(githubRunners.id, (current) => ({
+				...current,
+				pools: current.pools.map((each) => (each.label === SMALL.label ? { ...each, poolId: moved.id } : each)),
+			}));
+		};
+		await expect(
+			tom.updateGithubRunners(githubRunners.id, { pools: [BIG, { ...SMALL, maxRunners: 2 }] }),
+		).rejects.toMatchObject({ code: "conflict" });
+		await tom.updateGithubRunners(githubRunners.id, { pools: [BIG, { ...SMALL, maxRunners: 2 }] });
+		expect((await store.githubRunners.get(githubRunners.id))?.pools.map((each) => [each.label, each.poolId])).toEqual([
+			["kantel-8vcpu", ci.id],
+			["kantel-2vcpu", moved.id],
+		]);
+		await tom.updateAccountPool("ci", { runners: [kind(BIG), kind(SMALL)] });
+		// One of the deployment's pools that a kind is in (its runners use the shared hosts) isn't deleted either.
+		const shared = await root.createPool({ name: "shared-ci" });
+		await made.githubRunners.update(githubRunners.id, (current) => ({
+			...current,
+			pools: current.pools.map((each) => (each.label === SMALL.label ? { ...each, poolId: shared.id } : each)),
+		}));
+		await expect(root.deletePool("shared-ci")).rejects.toMatchObject({
+			code: "conflict",
+			message: expect.stringContaining("a GitHub runner kind"),
+		});
+		await tom.updateAccountPool("ci", { runners: [kind(BIG), kind(SMALL)] });
+		await root.deletePool("shared-ci");
 		// A pool with kinds in it isn't deleted, hosts or none; emptied, it is.
 		await tom.createAccountPool({ name: "spare" });
 		await tom.updateAccountPool("spare", { runners: [kind(SMALL)] });

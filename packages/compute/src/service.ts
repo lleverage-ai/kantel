@@ -2484,6 +2484,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			return byPool;
 		},
+		async in(pool) {
+			const labels: string[] = [];
+			const integrations =
+				pool.owner === OPERATOR_POOLS
+					? await store.githubRunners.list()
+					: await store.githubRunners.list({ accountId: pool.owner });
+			for (const found of integrations) {
+				if (found.retiringAt !== undefined) continue;
+				const record = await placeRunnerKinds(found);
+				for (const kind of record.pools) if (kind.poolId === pool.id) labels.push(kind.label);
+			}
+			return labels;
+		},
 		async set(principal, pool, kinds) {
 			requireGithubRunners();
 			const accountId = pool.owner;
@@ -10952,6 +10965,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? undefined
 					: await requireSealer().seal(body.privateKey, sealedAt("githubRunners", record.id, "privateKey"));
 			const updated = await store.githubRunners.update(record.id, (current) => {
+				// Its kinds were placed and checked in the pools they were in then: a kind moved meanwhile (through a pool's
+				// `runners`) isn't moved back, and the call is tried again from where it now is.
+				const was = (pools: readonly RunnerPool[], label: string) => pools.find((kind) => kind.label === label)?.poolId;
+				if (kinds?.some((kind) => was(current.pools, kind.label) !== was(record.pools, kind.label)) === true) {
+					throw new KantelError("conflict", "The integration's runner kinds moved between pools meanwhile: try again");
+				}
 				const scope = body.scope ?? current.scope;
 				const runnerGroupId = body.runnerGroupId === null ? undefined : (body.runnerGroupId ?? current.runnerGroupId);
 				if (scope === "organization" && runnerGroupId === undefined) {

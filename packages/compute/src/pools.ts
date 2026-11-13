@@ -74,6 +74,8 @@ export type RunnerKindInput = Omit<RunnerPool, "poolId"> & { readonly integratio
 export interface PoolRunners {
 	/** The kinds in each of an account's `pools`, by pool ID. */
 	of(owner: string, pools: readonly StoredPool[]): Promise<ReadonlyMap<string, computeSchema.GithubRunnerKind[]>>;
+	/** The labels of the live runner kinds in `pool`, whichever account's integrations they are (a deployment's pool's too). */
+	in(pool: StoredPool): Promise<readonly string[]>;
 	/** Makes `kinds` the account pool's own, for a caller who may administer its account. */
 	set(principal: Principal, pool: StoredPool, kinds: readonly RunnerKindInput[]): Promise<void>;
 }
@@ -262,16 +264,17 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 				`${pool.name} still has ${what} in it, which are used only in their pool: delete them first`,
 			);
 		}
-		// Nor while GitHub runner kinds are in it, whose runners are made only there.
-		const kinds =
-			options.runners === undefined || pool.owner === OPERATOR_POOLS
-				? []
-				: ((await options.runners.of(pool.owner, [pool])).get(pool.id) ?? []);
+		// Nor while GitHub runner kinds are in it, whose runners are made only there: an account's integrations' kinds may
+		// be in one of the deployment's pools too, where its runners use the shared hosts.
+		const kinds = options.runners === undefined ? [] : await options.runners.in(pool);
 		if (kinds.length > 0) {
-			throw new KantelError(
-				"conflict",
-				`${pool.name} still has the GitHub runner ${kinds.length === 1 ? "kind" : "kinds"} ${kinds.map((kind) => kind.label).join(", ")} in it: move or remove them first`,
-			);
+			const which =
+				pool.owner === OPERATOR_POOLS
+					? kinds.length === 1
+						? "a GitHub runner kind"
+						: `${kinds.length} GitHub runner kinds`
+					: `the GitHub runner ${kinds.length === 1 ? "kind" : "kinds"} ${kinds.join(", ")}`;
+			throw new KantelError("conflict", `${pool.name} still has ${which} in it: move or remove them first`);
 		}
 		// A host another gateway joins or moves to it meanwhile is in its owner's default once it has gone, as the next
 		// read of the hosts puts it (`ensureHosts`); a pool made the default meanwhile hands the default back to the one
