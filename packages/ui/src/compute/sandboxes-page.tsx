@@ -47,6 +47,7 @@ import {
 	memoryText,
 	microvmsAvailable,
 	onGrid,
+	type Pool,
 	presetOf,
 	SANDBOX_KIND_LABELS,
 	type Sandbox,
@@ -68,6 +69,7 @@ import {
 	type Template,
 	vcpuRangeFor,
 } from "./compute-model.ts";
+import { PoolPicker } from "./host-pools.tsx";
 import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, SandboxStateLabel, tableFrame, td, th } from "./parts.tsx";
@@ -123,6 +125,8 @@ export interface SandboxesPageProps {
 	readonly templates?: (accountId: string) => Promise<readonly Template[]>;
 	/** The template New sandbox starts with picked: a template page's New sandbox. */
 	readonly template?: string;
+	/** The pool New sandbox starts with picked, by ID, where the account has it; absent, the default. */
+	readonly pool?: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 	/** How often the list is read again while a sandbox is starting or stopping, in milliseconds. Default 1000. */
@@ -208,6 +212,7 @@ export function SandboxesPage({
 	environments,
 	templates,
 	template,
+	pool,
 	now: fixedNow,
 	pollMs = 1000,
 	creating = false,
@@ -438,8 +443,12 @@ export function SandboxesPage({
 				open={newOpen}
 				account={account}
 				hosting={hosting}
-				{...(source.shapes === undefined ? {} : { shapes: (hostId) => readShapes(source, account.id, hostId) })}
+				{...(source.shapes === undefined
+					? {}
+					: { shapes: (hostId, poolId) => readShapes(source, account.id, hostId, poolId) })}
 				{...(source.hosts === undefined ? {} : { hosts: () => source.hosts?.(account.id) ?? Promise.resolve([]) })}
+				{...(source.pools === undefined ? {} : { pools: () => source.pools?.(account.id) ?? Promise.resolve([]) })}
+				{...(pool === undefined ? {} : { pool })}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
 				{...(environments === undefined ? {} : { environments: () => environments(account.id) })}
 				{...(templates === undefined ? {} : { templates: () => templates(account.id) })}
@@ -1504,9 +1513,14 @@ function SelectionBar({
 	);
 }
 
-/** The account's shapes from its source, or one host's; the dialog asks only where the source can say. */
-const readShapes = (source: SandboxesSource, accountId: string, hostId?: string): Promise<SandboxShapes> =>
-	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId, hostId);
+/** The account's shapes from its source, or one host's or pool's; the dialog asks only where the source can say. */
+const readShapes = (
+	source: SandboxesSource,
+	accountId: string,
+	hostId?: string,
+	poolId?: string,
+): Promise<SandboxShapes> =>
+	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId, hostId, poolId);
 
 /**
  * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold, then its
@@ -1739,6 +1753,8 @@ export interface NewSandboxForm {
 	readonly idleStop?: string;
 	/** The host it goes on; absent or empty: Kantel picks. */
 	readonly host?: string;
+	/** The pool it goes in, by ID; absent or empty: the default (`CreateSandboxInput.poolId`). */
+	readonly pool?: string;
 }
 
 /**
@@ -1765,6 +1781,7 @@ export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
 		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
 		...(form.idleStop === undefined || form.idleStop === "never" ? {} : { idleStopMinutes: Number(form.idleStop) }),
 		...(form.host === undefined || form.host === "" ? {} : { hostId: form.host }),
+		...(form.pool === undefined || form.pool === "" ? {} : { poolId: form.pool }),
 	};
 }
 
@@ -1790,6 +1807,38 @@ export function hostOptions(
 			.filter((host) => why(host) === undefined || host.id === picked)
 			.map((host) => ({ value: host.id, label: label(host) })),
 	];
+}
+
+/**
+ * The hosts New sandbox's host picker offers in the pool picked: every host for the default (a host picked there goes
+ * on that host, in whatever pool it is), else that pool's hosts alone.
+ */
+export const hostsInPool = (hosts: readonly HostChoice[], pool: string): readonly HostChoice[] =>
+	pool === "" ? hosts : hosts.filter((host) => host.poolId === pool);
+
+/** What New sandbox knows of the account's pools: being read, read, or not read (it goes in the default). */
+export type PoolsRead =
+	| { readonly status: "loading" }
+	| { readonly status: "ready"; readonly pools: readonly Pool[] }
+	| { readonly status: "failed" };
+
+/**
+ * The pools New sandbox's picker offers, or undefined for no picker: only once they're read and there's more than one,
+ * so an account with one pool (or pools not read yet, or not read at all) sees nothing new.
+ */
+export function poolChoices(read: PoolsRead): readonly Pool[] | undefined {
+	return read.status === "ready" && read.pools.length > 1 ? read.pools : undefined;
+}
+
+/**
+ * The pool New sandbox sends for the one picked (`pool`, an ID; empty is the default): none for the default, or for
+ * one the account no longer has, so the create goes in the default pools as it would naming none. Naming the account's
+ * default pool would keep the sandbox off the deployment's shared hosts, which a create naming none may use.
+ */
+export function poolSent(pools: readonly Pool[] | undefined, pool: string): string {
+	if (pools === undefined || pool === "") return "";
+	const picked = pools.find((each) => each.id === pool);
+	return picked === undefined || picked.default ? "" : picked.id;
 }
 
 /** Why the picked host can't take a sandbox of `kind` now, or undefined when it can (or none is picked). */
@@ -1857,6 +1906,8 @@ export function NewSandboxDialog({
 	templates,
 	template: initialTemplate,
 	hosts: loadHosts,
+	pools: loadPools,
+	pool: initialPool,
 	now,
 	onClose,
 	onCreate,
@@ -1864,10 +1915,14 @@ export function NewSandboxDialog({
 	open: boolean;
 	account: ComputeAccount;
 	hosting: HostingMode;
-	/** What the hosts offer: all the account may use, or with `hostId` that one host's. */
-	shapes?: (hostId?: string) => Promise<SandboxShapes>;
+	/** What the hosts offer: all the account may use, or with `hostId` that one host's, or with `poolId` that pool's. */
+	shapes?: (hostId?: string, poolId?: string) => Promise<SandboxShapes>;
 	/** The hosts it may be put on (`SandboxesSource.hosts`); absent or none, no picker. */
 	hosts?: () => Promise<readonly HostChoice[]>;
+	/** The account's pools (`SandboxesSource.pools`); absent, or one, no picker. */
+	pools?: () => Promise<readonly Pool[]>;
+	/** The pool picked at first, by ID; absent, the default. */
+	pool?: string;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
 	environments?: () => Promise<readonly Environment[]>;
 	templates?: () => Promise<readonly Template[]>;
@@ -1892,6 +1947,11 @@ export function NewSandboxDialog({
 	const [envs, setEnvs] = useState<readonly Environment[]>([]);
 	const [hostList, setHostList] = useState<readonly HostChoice[]>([]);
 	const [host, setHost] = useState("");
+	const [poolsRead, setPoolsRead] = useState<PoolsRead>(
+		loadPools === undefined ? { status: "ready", pools: [] } : { status: "loading" },
+	);
+	// The pool picked, by ID; empty is the default.
+	const [pool, setPool] = useState(initialPool ?? "");
 	// A source that says what its hosts offer: nothing may be chosen or created until it has, so a create never goes
 	// with the sample's figures. One that can't say keeps the defaults.
 	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
@@ -1903,11 +1963,11 @@ export function NewSandboxDialog({
 	// The newest read of the shapes: one for a host picked before it lands is dropped.
 	const shapesReads = useRef(0);
 	const readShapesNow = useCallback(
-		(hostId?: string) => {
+		(hostId: string, poolId: string) => {
 			if (loadShapes === undefined) return;
 			const read = ++shapesReads.current;
 			setShapesRead("reading");
-			loadShapes(hostId === undefined || hostId === "" ? undefined : hostId).then(
+			loadShapes(hostId === "" ? undefined : hostId, poolId === "" ? undefined : poolId).then(
 				(shapesOf) => {
 					if (read !== shapesReads.current) return;
 					// Set on each read, before any slider can move: the controls show only once this lands.
@@ -1936,6 +1996,20 @@ export function NewSandboxDialog({
 		},
 		[loadShapes],
 	);
+	// Pools it can't read leave the sandbox to go in the default pool, and the dialog says so.
+	const readPools = useCallback(() => {
+		if (loadPools === undefined) return;
+		setPoolsRead({ status: "loading" });
+		loadPools().then(
+			(pools) => setPoolsRead({ status: "ready", pools }),
+			() => setPoolsRead({ status: "failed" }),
+		);
+	}, [loadPools]);
+	// The pool the create names, and the shapes are read for: none for the default (`poolSent`).
+	const choices = poolChoices(poolsRead);
+	const sentPool = poolSent(choices, pool);
+	// The shapes were last read for this pool: a change of pool (or the pools landing with one picked) reads them again.
+	const shapesPool = useRef("");
 	useEffect(() => {
 		if (!open || asked.current) return;
 		asked.current = true;
@@ -1943,8 +2017,16 @@ export function NewSandboxDialog({
 		environments?.().then(setEnvs, () => setEnvs([]));
 		// Hosts it can't read leave Kantel to pick, as with none.
 		loadHosts?.().then(setHostList, () => setHostList([]));
-		readShapesNow();
-	}, [open, savedSnapshots, environments, loadHosts, readShapesNow]);
+		readPools();
+		readShapesNow("", "");
+	}, [open, savedSnapshots, environments, loadHosts, readPools, readShapesNow]);
+	useEffect(() => {
+		if (!open || sentPool === shapesPool.current) return;
+		shapesPool.current = sentPool;
+		// What that pool's hosts offer, or the default pools' again: the sliders start over from its defaults.
+		setShapeChosen(false);
+		readShapesNow(host, sentPool);
+	}, [open, sentPool, host, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
 	const type = newSandboxType(chosenKind, !noMicrovms);
@@ -1971,9 +2053,17 @@ export function NewSandboxDialog({
 				: { vcpus, memoryMb, ...disk };
 	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds, and any disk in range.
 	const hostError = hostProblem(hostList, kind, host);
+	const pooledHosts = hostsInPool(hostList, sentPool);
+	const pickedPool = choices?.find((each) => each.id === sentPool);
+	// A pool with no hosts can't take a sandbox: said here rather than refused once Create is pressed.
+	const poolError =
+		pickedPool !== undefined && pickedPool.hosts === 0
+			? `No host is in ${pickedPool.name} yet. Add one to it under Hosts, or pick another pool.`
+			: undefined;
 	const ready =
 		valid &&
 		hostError === undefined &&
+		poolError === undefined &&
 		shapesRead === "ready" &&
 		(ownShape || keepsMachine || shapeCreatable(shapes, kind, shape)) &&
 		!requested.pending &&
@@ -1994,6 +2084,7 @@ export function NewSandboxDialog({
 				autoStop,
 				idleStop,
 				host,
+				pool: sentPool,
 			}),
 		);
 		setName("");
@@ -2039,7 +2130,11 @@ export function NewSandboxDialog({
 					/>
 					<span className="text-xs text-muted">
 						{noMicrovms
-							? "None of this organisation's hosts run microVMs, so only isolates can be made here."
+							? pickedPool !== undefined
+								? poolError !== undefined
+									? `No host is in ${pickedPool.name} yet, so nothing can be made in it.`
+									: `None of the hosts in ${pickedPool.name} run microVMs, so only isolates can be made in it.`
+								: "None of this organisation's hosts run microVMs, so only isolates can be made here."
 							: kind === "microvm"
 								? "A Firecracker microVM: root, Docker, systemd and /dev/kvm inside. Up in about a second."
 								: "A shell with node and python for HTTP calls, data work and short scripts. Up in milliseconds, nearly free. No git, packages or Docker."}
@@ -2083,7 +2178,7 @@ export function NewSandboxDialog({
 					<Notice
 						level="error"
 						action={
-							<Button size="sm" onClick={() => readShapesNow(host)}>
+							<Button size="sm" onClick={() => readShapesNow(host, sentPool)}>
 								Try again
 							</Button>
 						}
@@ -2133,7 +2228,33 @@ export function NewSandboxDialog({
 						}}
 					/>
 				)}
-				{hostList.length === 0 ? null : (
+				{choices === undefined ? null : (
+					<PoolPicker
+						pools={choices}
+						value={sentPool === "" ? (choices.find((each) => each.default)?.id ?? "") : sentPool}
+						onChange={(picked) => {
+							const next = choices.find((each) => each.id === picked)?.default === true ? "" : picked;
+							setPool(next);
+							// A host picked in another pool isn't this one's: Kantel picks among this pool's again.
+							if (host !== "" && !hostsInPool(hostList, next).some((each) => each.id === host)) setHost("");
+						}}
+						hint="It runs on this pool's hosts, and stays in the pool."
+						{...(poolError === undefined ? {} : { error: poolError })}
+					/>
+				)}
+				{poolsRead.status === "failed" ? (
+					<Notice
+						level="warning"
+						action={
+							<Button size="sm" onClick={readPools}>
+								Try again
+							</Button>
+						}
+					>
+						Kantel couldn't read the pools, so the sandbox goes in the default pool.
+					</Notice>
+				) : null}
+				{pooledHosts.length === 0 ? null : (
 					<SelectField
 						label="Host"
 						value={host}
@@ -2142,9 +2263,9 @@ export function NewSandboxDialog({
 							setHost(picked);
 							// What that host offers, or every host's again: the sliders start over from its defaults.
 							setShapeChosen(false);
-							readShapesNow(picked);
+							readShapesNow(picked, sentPool);
 						}}
-						options={hostOptions(hostList, kind, host)}
+						options={hostOptions(pooledHosts, kind, host)}
 						hint="It stays on the host it starts on."
 						{...(hostError === undefined ? {} : { error: hostError })}
 					/>

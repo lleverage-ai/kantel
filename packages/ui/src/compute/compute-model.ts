@@ -682,6 +682,11 @@ export interface CreateSandboxInput {
 	readonly templateId?: string;
 	/** The host it goes on, which it then stays on. Absent: Kantel picks. */
 	readonly hostId?: string;
+	/**
+	 * The pool it goes in (`Pool`'s ID), one of the account's other than its default: its host is that pool's. Absent: the
+	 * default, which is the account's default pool for its own hosts and the deployment's for shared ones.
+	 */
+	readonly poolId?: string;
 }
 
 /** A host New sandbox may put a sandbox on: one of the account's own, or for a super-admin a shared one. */
@@ -693,6 +698,8 @@ export interface HostChoice {
 	readonly kinds: readonly SandboxKind[];
 	/** One of the deployment's shared hosts, rather than the account's own. */
 	readonly shared: boolean;
+	/** The pool it is in (`Pool`'s ID), where Kantel says. */
+	readonly poolId?: string;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -892,11 +899,15 @@ export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
 
 export interface SandboxesSource {
 	/**
-	 * What New sandbox's sliders may choose, from the hosts the account may use (or with `hostId` that one host), and
-	 * what each costs. Absent:
-	 * `DEFAULT_SANDBOX_SHAPES`.
+	 * What New sandbox's sliders may choose, from the hosts the account may use (with `hostId` that one host, with
+	 * `poolId` that pool's hosts), and what each costs. Absent: `DEFAULT_SANDBOX_SHAPES`.
 	 */
-	shapes?(accountId: string, hostId?: string): Promise<SandboxShapes>;
+	shapes?(accountId: string, hostId?: string, poolId?: string): Promise<SandboxShapes>;
+	/**
+	 * The account's pools, for New sandbox's pool picker, which it shows only for more than one. Absent: no picker, and
+	 * a sandbox goes in the default pool.
+	 */
+	pools?(accountId: string): Promise<readonly Pool[]>;
 	/**
 	 * The hosts New sandbox may put a sandbox on, for its host picker: the account's own, and for a super-admin the
 	 * shared ones. Absent, or none: no picker, and Kantel picks.
