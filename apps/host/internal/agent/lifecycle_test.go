@@ -938,7 +938,9 @@ func TestStickyCommitWaitsForItsMapOutsideTheLock(t *testing.T) {
 	// While the commit waits for its map, the sandbox's lifecycle calls go on.
 	<-tier.waiting
 	done := make(chan error, 1)
-	go func() { done <- call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: protectedEgress(1, "b.example.com")}) }()
+	go func() {
+		done <- call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: protectedEgress(1, "b.example.com")})
+	}()
 	select {
 	case err := <-done:
 		if err != nil {
