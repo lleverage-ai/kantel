@@ -4868,8 +4868,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const placement = await backend.create({
 			...boot,
 			eligibleHosts,
-			// Placed afresh, from no disk of its own: in its pool, kept to it as the host admits it.
-			...(sandbox.source === undefined ? pooled(sandbox.poolId) : {}),
+			// Placed afresh (from its source's snapshot too): in its pool, kept to it as the host admits it.
+			...pooled(sandbox.poolId),
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
 			type: sandbox.type,
@@ -8439,8 +8439,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								image: sandbox.image,
 								env: sandbox.env,
 								eligibleHosts: start?.eligibleHosts ?? hosts,
-								// Placed afresh in its pool: kept to it as the host admits it.
-								...(from === undefined ? pooled(sandbox.poolId) : {}),
+								// Kept to its pool as the host admits it, from a snapshot too (its host's pool, as recorded).
+								...pooled(sandbox.poolId),
 								fromSnapshot: from?.ref,
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,

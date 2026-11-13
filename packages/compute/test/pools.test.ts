@@ -449,7 +449,15 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 	it("keeps a sandbox from a snapshot to the snapshot's pool, and one whose pool has gone to none", async () => {
 		const store = await make();
 		const other = await hostLike("host_ci");
-		const { backend } = hostsBackend(() => [other]);
+		const made = hostsBackend(() => [other]);
+		const specs: { readonly sandboxId: string; readonly poolId?: string }[] = [];
+		const backend: SandboxBackend = {
+			...made.backend,
+			create: async (spec) => {
+				specs.push({ sandboxId: spec.sandboxId, ...(spec.poolId === undefined ? {} : { poolId: spec.poolId }) });
+				return made.backend.create(spec);
+			},
+		};
 		const { root, tom } = setup(store, backend);
 		await root.createPool({ name: "ci" });
 		// Another shared host, in ci.
@@ -462,6 +470,9 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		// Made from it, in its host's pool; naming another pool is refused, not left to run elsewhere later.
 		const restored = await tom.createSandbox({ from: saved.id, autoStopMinutes: null, wait: true });
 		expect(restored.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// Its admission is kept to that pool too, as a fresh create's is.
+		expect(specs.find((spec) => spec.sandboxId === restored.id)?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect(specs.find((spec) => spec.sandboxId === source.id)?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
 		const elsewhere = await failure(tom.createSandbox({ from: saved.id, pool: "ci" }));
 		expect(elsewhere.code).toBe("unavailable");
 		expect(elsewhere.message).toContain("another pool");
