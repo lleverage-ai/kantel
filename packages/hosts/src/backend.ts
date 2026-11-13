@@ -922,6 +922,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
@@ -1654,6 +1655,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async checkHostUpdates() {
 			return hosts.checkForUpdates();
+		},
+		async hostHolds(hostId) {
+			return hosts.holds(hostId);
 		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {

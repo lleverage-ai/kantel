@@ -73,7 +73,7 @@ A key needs `account:read`. Experimental: `not_supported` unless the deployment 
 
 `PATCH /v1/hosts/{hostId}` (SDK method `updateAccountHost`)
 
-Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 
 **Path parameters**
 
@@ -148,3 +148,79 @@ Asks the host to update its host agent to `latestVersion`, which it does when `u
 - `200`: [Host](/api/reference/types/#host) (`application/json`). The host, updating.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## List an account's pools
+
+`GET /v1/pools` (SDK method `listAccountPools`)
+
+The pools the account's own hosts are in, the default first made if there is none yet. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+
+**Answers**
+
+- `200`: [PoolList](/api/reference/types/#poollist) (`application/json`). The pools.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Make a pool of an account's hosts
+
+`POST /v1/pools` (SDK method `createAccountPool`)
+
+An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
+**Body**: [CreateAccountPoolBody](/api/reference/types/#createaccountpoolbody)
+
+**Answers**
+
+- `201`: [Pool](/api/reference/types/#pool) (`application/json`). The pool.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Change one of an account's pools
+
+`PATCH /v1/pools/{poolId}` (SDK method `updateAccountPool`)
+
+Renames it, or makes it the account's default pool. A name is looked for in the caller's own account (its personal account, or an API key's). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolId` | string | yes | The pool's ID or name. |
+
+**Body**: [UpdatePoolBody](/api/reference/types/#updatepoolbody)
+
+**Answers**
+
+- `200`: [Pool](/api/reference/types/#pool) (`application/json`). The pool.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Delete one of an account's pools
+
+`DELETE /v1/pools/{poolId}` (SDK method `deleteAccountPool`)
+
+Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolId` | string | yes | The pool's ID or name. |
+
+**Answers**
+
+- `204`: no body. Deleted.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).

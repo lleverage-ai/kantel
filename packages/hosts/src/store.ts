@@ -31,6 +31,16 @@ export interface HostRecord {
 	 * the operator joined, which every account shares.
 	 */
 	readonly accountId?: string;
+	/**
+	 * The pool it is in, as the compute plane keeps pools: from the join token it spent, or a move. Absent for a host
+	 * joined before pools, or with the registry's own join token, until the compute plane says.
+	 */
+	readonly poolId?: string;
+	/**
+	 * The latest drain or undrain the compute plane ordered (`StoredHost.drainEpoch`): one older than it isn't taken, so
+	 * one held up can't undo a later one. Absent until one is ordered.
+	 */
+	readonly drainEpoch?: number;
 }
 
 export interface JoinTokenRecord {
@@ -104,6 +114,18 @@ export interface HostStore {
 	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
 	/**
+	 * Puts a new sandbox's placement only while its host is neither draining nor revoked, as one write: whether it did. A
+	 * create that read its host before a drain is refused here, so a host drained, found empty and moved to another pool
+	 * never takes one after (the compute plane's move).
+	 */
+	placeOnTakingHost(placement: PlacementRecord): Promise<boolean>;
+	/**
+	 * Everything that has something on `hostId`, in one read: its own placements (a lost one not), and placements on
+	 * other hosts with an upgrade under way whose microVM is (or may be) there, or an upgraded isolate there still to be
+	 * deleted (`cleanup`). One read, so a handover between hosts (one write) is seen on one side of it or the other.
+	 */
+	occupying(hostId: string): Promise<PlacementRecord[]>;
+	/**
 	 * Changes a placement as it is now, atomically, as `updateHost` does a host: `change` is given the stored record and
 	 * answers the next (undefined leaves it), and a write that raced another is redone on the newer record. A host's
 	 * report goes through it, so one read before an upgrade's handover never writes back the placement it read. Resolves
@@ -120,6 +142,23 @@ export interface HostStore {
 	removePlacement(sandboxId: string): Promise<void>;
 	/** Removes a placement only if, as it is now, `should` says so: whether it did. */
 	removePlacementIf(sandboxId: string, should: (placement: PlacementRecord) => boolean): Promise<boolean>;
+}
+
+/**
+ * Whether a placement is what is left of a sandbox deleted while its upgrade still owed its old host the isolate's
+ * removal: on that host, with its `cleanup` naming it.
+ */
+export function isLeftover(placement: PlacementRecord): boolean {
+	return placement.cleanup !== undefined && placement.cleanup.hostId === placement.hostId;
+}
+
+/**
+ * Whether a placement has something on `hostId`: it is there (and not lost), or it is elsewhere with its upgrade's
+ * microVM or an isolate to delete there.
+ */
+function occupies(placement: PlacementRecord, hostId: string): boolean {
+	if (placement.hostId === hostId) return placement.state !== "lost";
+	return placement.upgrade?.target === hostId || placement.cleanup?.hostId === hostId;
 }
 
 /** Placements grouped by their host, in the order given. */
@@ -181,6 +220,15 @@ export function createMemoryHostStore(): HostStore {
 		},
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
+		},
+		async occupying(hostId) {
+			return [...placements.values()].filter((placement) => occupies(placement, hostId)).map(copy);
+		},
+		async placeOnTakingHost(placement) {
+			const host = hosts.get(placement.hostId);
+			if (host === undefined || host.draining || host.revoked) return false;
+			placements.set(placement.sandboxId, copy(placement));
+			return true;
 		},
 		async updatePlacement(sandboxId, change) {
 			// Read, change and write with no await between them: nothing else runs in between.
@@ -262,6 +310,9 @@ const parse = <T>(row: Record<string, unknown>): T => JSON.parse(String(row.data
  * and facts' values are strings, so a `"revoked"` inside one is escaped.
  */
 const REVOKED_PATTERN = '%"revoked":true%';
+
+/** A draining host's row, as `JSON.stringify` writes it: as `REVOKED_PATTERN`, nothing else in a record can match. */
+const DRAINING_PATTERN = '%"draining":true%';
 
 /** How many times `updateHost` reads again after losing a write to another, before it gives up. */
 const UPDATE_ATTEMPTS = 8;
@@ -356,6 +407,42 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				["sandbox_id", "host_id", "created_at", "data"],
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
 			);
+		},
+		async placeOnTakingHost(placement) {
+			// The host's row is read locked on Postgres (`FOR UPDATE`), so a drain writing it waits for this placement, and
+			// one already writing it is waited for and read as it then is (draining, and refused): a move's check, made after
+			// its drain, sees every placement that got in. SQLite (D1 too) has one writer at a time, so needs no lock.
+			const lock = driver.dialect === "postgres" ? " FOR UPDATE" : "";
+			const rows = await driver.query(
+				`WITH taking AS (
+					SELECT id FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${lock}
+				)
+				INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
+				SELECT ?, ?, ?, ? FROM taking WHERE true
+				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
+					data = excluded.data
+				RETURNING sandbox_id`,
+				[
+					placement.hostId,
+					DRAINING_PATTERN,
+					REVOKED_PATTERN,
+					placement.sandboxId,
+					placement.hostId,
+					placement.createdAt,
+					JSON.stringify(placement),
+				],
+			);
+			return rows.length > 0;
+		},
+		async occupying(hostId) {
+			// One statement, so one snapshot. Narrowed by the host's column, and by its ID as a whole JSON string value (a
+			// `target`, or a cleanup's `hostId`: quoted, so an ID that starts another's doesn't match), then checked exactly.
+			const quoted = JSON.stringify(hostId).replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+			const rows = await driver.query(
+				"SELECT data FROM compute_placements WHERE host_id = ? OR data LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\'",
+				[hostId, `%"target":${quoted}%`, `%"hostId":${quoted}%`],
+			);
+			return rows.map((row) => parse<PlacementRecord>(row)).filter((placement) => occupies(placement, hostId));
 		},
 		async updatePlacement(sandboxId, change) {
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {

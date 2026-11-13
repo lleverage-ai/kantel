@@ -155,6 +155,8 @@ export interface BackendHost {
 	readonly connected?: boolean;
 	/** The account it was added to as one of its own hosts, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
+	/** The pool it is in, as its registry has it (from its join token, or a move); absent where it keeps none. */
+	readonly poolId?: string;
 	readonly lastSeenAt?: number;
 }
 
@@ -837,6 +839,11 @@ export interface SandboxBackend {
 	 * sources go to no host until it is placed.
 	 */
 	placedOn?(sandboxId: string): Promise<string | undefined>;
+	/**
+	 * Whether the backend's scheduler has a sandbox placed on the host, one being made there included: what a host's move
+	 * to another pool waits for. Absent, the compute plane's own records alone say.
+	 */
+	hostHolds?(hostId: string): Promise<boolean>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
 	/**
@@ -1002,13 +1009,16 @@ export interface SandboxBackend {
 	 * once every 30 seconds (`checked` false within it). Absent: no release is read here (the stub).
 	 */
 	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
-	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */
+	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,
 		change: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** The drain's or undrain's place in order (`StoredHost.drainEpoch`): an older one than the registry's is passed over. */
+			readonly drainEpoch?: number;
+			readonly poolId?: string;
 		},
 	): Promise<void>;
 }
