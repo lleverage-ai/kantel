@@ -673,6 +673,11 @@ export interface StoredPool {
 	 * a pool that never was.
 	 */
 	readonly defaultAt?: number;
+	/**
+	 * Whether its hosts sync with each other: those that run the mesh peer over WireGuard (docs/design/disk-store.md,
+	 * "2a. The mesh"). Off (absent) by default.
+	 */
+	readonly sync?: boolean;
 }
 
 /** The key no two pools may share: an owner's and a name, so the store refuses a second pool of a name in an owner. */

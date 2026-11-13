@@ -467,6 +467,8 @@ export interface CreateAccountPoolBody {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly name: string;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
+	readonly sync?: boolean;
 }
 
 /** Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks. */
@@ -569,6 +571,8 @@ export interface CreatePersonalTokenBody {
 
 export interface CreatePoolBody {
 	readonly name: string;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
+	readonly sync?: boolean;
 }
 
 /** Any other field is refused as `invalid`. */
@@ -1650,6 +1654,8 @@ export interface Pool {
 	readonly default: boolean;
 	/** How many hosts are in it, revoked ones not counted. */
 	readonly hosts: number;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. */
+	readonly sync: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 }
@@ -2823,6 +2829,8 @@ export interface UpdatePoolBody {
 	readonly name?: string;
 	/** Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. */
 	readonly default?: true;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
+	readonly sync?: boolean;
 }
 
 export interface UpdateSandboxBody {

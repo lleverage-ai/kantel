@@ -1009,6 +1009,11 @@ export interface SandboxBackend {
 	 * once every 30 seconds (`checked` false within it). Absent: no release is read here (the stub).
 	 */
 	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
+	/**
+	 * A pool's settings changed: its sync was turned on or off. The backend's hosts in it that run the pool's mesh are
+	 * brought into it or taken out (`ComputeService.poolSync` says which pools have sync on). Absent, nothing to do.
+	 */
+	updatePool?(poolId: string, change: { readonly sync: boolean }): Promise<void>;
 	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,

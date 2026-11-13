@@ -697,6 +697,8 @@ export async function gatewayCompute(options: {
 		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
 		reportExit: (...report) => api.service.reportExit(...report),
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
+		// Which pools' hosts peer in their pool's mesh.
+		poolSync: (poolId) => api.service.poolSync(poolId),
 	});
 	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
 	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));

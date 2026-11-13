@@ -197,6 +197,49 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect((await root.listPools()).items.map((pool) => pool.name)).toEqual(["default"]);
 	});
 
+	it("keeps a pool's sync, off by default, and tells the backend when it is turned on or off", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const pools: { readonly poolId: string; readonly sync: boolean }[] = [];
+		const { api, root, tom } = setup(store, {
+			...backend,
+			updatePool: async (poolId, change) => {
+				pools.push({ poolId, ...change });
+			},
+		});
+		const ci = await root.createPool({ name: "ci" });
+		expect(ci.sync).toBe(false);
+		expect(await api.service.poolSync(ci.id)).toBe(false);
+		const synced = await root.createPool({ name: "builds", sync: true });
+		expect(synced.sync).toBe(true);
+		expect(await api.service.poolSync(synced.id)).toBe(true);
+		// A new pool has no hosts to tell.
+		expect(pools).toEqual([]);
+
+		expect(await root.updatePool("ci", { sync: true })).toMatchObject({ sync: true });
+		expect(await api.service.poolSync(ci.id)).toBe(true);
+		// A change that leaves it as it was tells nothing; a rename keeps it.
+		expect(await root.updatePool("ci", { sync: true, name: "web" })).toMatchObject({ name: "web", sync: true });
+		expect(await root.updatePool("web", { sync: false })).toMatchObject({ sync: false });
+		expect(await api.service.poolSync(ci.id)).toBe(false);
+		expect(pools).toEqual([
+			{ poolId: ci.id, sync: true },
+			{ poolId: ci.id, sync: false },
+		]);
+		expect((await root.listPools()).items.map((pool) => [pool.name, pool.sync])).toEqual([
+			["default", false],
+			["web", false],
+			["builds", true],
+		]);
+		expect(await api.service.poolSync("pool_gone")).toBe(false);
+
+		// An account's pools too.
+		const own = await tom.createAccountPool({ name: "ci", sync: true });
+		expect(own.sync).toBe(true);
+		expect(await tom.updateAccountPool(own.id, { sync: false })).toMatchObject({ sync: false });
+		expect(pools.at(-1)).toEqual({ poolId: own.id, sync: false });
+	});
+
 	it("keeps an account's pools to the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();

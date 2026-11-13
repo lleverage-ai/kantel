@@ -724,6 +724,11 @@ export interface ComputeService {
 	 */
 	reportHostConnection(hostId: string, connected: boolean): Promise<void>;
 	/**
+	 * Whether a pool has sync on (`Pool.sync`): its hosts that run the mesh peer with each other. False for a pool that
+	 * has gone.
+	 */
+	poolSync(poolId: string): Promise<boolean>;
+	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
 	 * `hostId` holds its placement); a path the sandbox doesn't mount is ignored. `mountsAt` is when the host set them:
@@ -2571,6 +2576,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		store,
 		now,
 		hosts: () => ensureHosts(),
+		syncChanged: async (poolId, sync) => {
+			await backend.updatePool?.(poolId, { sync });
+		},
 		requireAccountHosts: () => requireAccountHosts(),
 		once: (principal, operation, input, work) => once(principal, operation, input, work),
 	});
@@ -11632,6 +11640,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		reportExit,
 		reportHostConnection,
+
+		async poolSync(poolId) {
+			return (await store.pools.get(poolId))?.sync === true;
+		},
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

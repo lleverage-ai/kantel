@@ -14644,6 +14644,10 @@
 					"name": {
 						"type": "string",
 						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
 					}
 				},
 				"title": "CreateAccountPoolBody"
@@ -14945,6 +14949,10 @@
 					"name": {
 						"type": "string",
 						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
 					}
 				},
 				"title": "CreatePoolBody"
@@ -17755,7 +17763,7 @@
 			},
 			"Pool": {
 				"type": "object",
-				"required": ["id", "name", "default", "hosts", "createdAt"],
+				"required": ["id", "name", "default", "hosts", "sync", "createdAt"],
 				"properties": {
 					"id": {
 						"type": "string",
@@ -17778,6 +17786,10 @@
 						"type": "integer",
 						"minimum": 0,
 						"description": "How many hosts are in it, revoked ones not counted."
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default."
 					},
 					"createdAt": {
 						"type": "integer",
@@ -20876,6 +20888,10 @@
 						"type": "boolean",
 						"const": true,
 						"description": "Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again."
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
 					}
 				},
 				"title": "UpdatePoolBody"

@@ -144,7 +144,7 @@ Where things stand: a host dials one WebSocket out to the control plane (`/v1/ho
 
 ### 2a. The mesh
 
-**Membership.** A mesh is a pool (see Pools). Hosts in different pools are never peers, so no host ever has a route to another pool's hosts, whether that pool is the same account's, another account's or the operator's. A revoked host, or one moved to another pool, leaves its pool's peer lists at once.
+**Membership.** A mesh is a pool (see Pools). Hosts in different pools are never peers, so no host ever has a route to another pool's hosts, whether that pool is the same account's, another account's or the operator's. A revoked host, or one moved to another pool, leaves its pool's peer lists at once. The mesh is opt-in per pool (decided 13 Nov 2026): a pool's `sync` setting, off by default, and only hosts in a pool with it on get `Welcome.mesh` and `mesh.peers`. Turning it off sends them an empty list and a welcome without the mesh. The default flips once the mesh is verified on real hosts.
 
 **Keys and addresses.** A host makes its WireGuard key pair when it first starts with the `mesh` feature, keeps the private key under its root (mode 0600) and never sends it anywhere. It reports the public key in `Hello` (`Facts.Mesh: { publicKey, listenPort, endpoints }`). The control plane gives the host a mesh address in `Welcome`. Addresses are IPv6 ULAs: one `/48` per pool, derived from the pool's ID, and one `/128` per host, stored on its record. IPv6 can't clash with the sandboxes' `10.231.0.0/16` or with whatever IPv4 network the host is on. A reinstall makes a new key, and the record's key is replaced on the next `Hello`.
 
