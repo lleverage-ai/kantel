@@ -954,6 +954,13 @@ export interface ExtractedArchive {
 	readonly bytes: number;
 }
 
+export interface FetchHostStickyDiskBody {
+	/** The sticky disk's ID. */
+	readonly stickyDiskId: string;
+	/** The version to fetch: one a host in the same pool holds. */
+	readonly version: string;
+}
+
 /** A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`. */
 export interface FileContent {
 	readonly path: string;
@@ -3659,6 +3666,8 @@ export interface KantelClient {
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Fetch a sticky disk version onto a host. Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/sticky-disk-fetches` */
+	fetchHostStickyDisk(hostId: string, body: FetchHostStickyDiskBody, options?: CallOptions): Promise<void>;
 	/** Check for host updates. Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/check-for-updates` */
 	checkHostUpdates(options?: CallOptions): Promise<HostReleaseCheck>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
@@ -4153,6 +4162,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		updateHostAgent: (hostId, callOptions) =>
 			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
+		fetchHostStickyDisk: (hostId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/sticky-disk-fetches`, body },
+				callOptions,
+			),
 		checkHostUpdates: (callOptions) =>
 			send(options, { method: "POST", path: "/admin/hosts/check-for-updates" }, callOptions),
 		revokeHost: (hostId, callOptions) =>

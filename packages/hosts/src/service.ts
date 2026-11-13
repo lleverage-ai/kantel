@@ -40,6 +40,7 @@ import {
 	HOST_FEATURES,
 	type HostBucketSource,
 	type HostCapacity,
+	type HostDiskFetchParams,
 	type HostDiskLimits,
 	type HostDiskLocateParams,
 	type HostDiskLocateResult,
@@ -679,6 +680,11 @@ export interface HostsService {
 	stickyDelete(hostId: string, diskId: string, version?: string): Promise<void>;
 	/** What each host connected here last reported holding of sticky disks, and when that report arrived. */
 	stickyReports(): Promise<HostStickyReport[]>;
+	/**
+	 * Has a host fetch a disk version from its peers (`disk.fetch`, `HOST_FEATURES.diskSync`), resolving once the fetch
+	 * has started; `unavailable` if away.
+	 */
+	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<void>;
 	/** Registration spends join tokens from here from now on, not the registry's own. */
 	useJoinTokens(tokens: ExternalJoinTokens): void;
 	/**
@@ -2411,6 +2417,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		async stickyDelete(hostId, diskId, version) {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.stickyDelete, { diskId, ...(version === undefined ? {} : { version }) });
+		},
+		async diskFetch(hostId, params) {
+			// Routed as any call to a host: on this replica's connection or another's.
+			await onHost(hostId, HostMethods.diskFetch, params);
 		},
 		async stickyReports() {
 			// Only hosts connected here: one away (or on another replica) is left to whoever holds it now.

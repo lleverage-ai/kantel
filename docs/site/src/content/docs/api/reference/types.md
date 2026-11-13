@@ -851,6 +851,13 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 | `symlinks` | integer | yes | Symbolic links made. |
 | `bytes` | integer | yes | Bytes of the files written. |
 
+### FetchHostStickyDiskBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stickyDiskId` | string | yes | The sticky disk's ID. |
+| `version` | string | yes | The version to fetch: one a host in the same pool holds. |
+
 ### FileContent
 
 A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.

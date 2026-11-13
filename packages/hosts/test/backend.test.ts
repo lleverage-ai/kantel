@@ -160,6 +160,8 @@ class FakeHost {
 			case "sticky.delete":
 				this.stickyHeads.delete(String(p.diskId));
 				return answer({});
+			case "disk.fetch":
+				return answer({});
 			case "sandbox.stop":
 			case "snapshot.save": {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
@@ -843,6 +845,38 @@ describe("the compute API on kantel-host hosts", () => {
 		const started = await root.startSandbox(sandbox.id, { wait: true });
 		expect(started).toMatchObject({ state: "error", placementReason: "host_unavailable" });
 		expect(started.reason).toContain(`The host its disk is on (${first}) can't take it now`);
+	});
+
+	it("sends disk.fetch only to a host that fetches from its peers", async () => {
+		const { service, root, backend } = setup();
+		const fetch = {
+			kind: "sticky",
+			objectId: "sdk_1",
+			version: "sdv_1",
+			mapDigest: "sha256:aa",
+			holders: [{ hostId: "host_a", address: "fd00::1" }],
+			grant: "p.s",
+		};
+		const hostWith = async (name: string, features: readonly string[]) => {
+			const hostFacts = { ...facts, features };
+			const { hostId } = await service.register({
+				token: (await root.createHostJoinToken({ name })).token,
+				facts: hostFacts,
+			});
+			const host = new FakeHost(service, hostId);
+			host.facts = hostFacts;
+			host.connect();
+			while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+			return { host, hostId };
+		};
+		const old = await hostWith("old", ["sticky-disks", "mesh"]);
+		await expect(backend.fetchDisk?.(old.hostId, fetch)).rejects.toMatchObject({ code: "not_supported" });
+		expect(old.host.calls).not.toContain("disk.fetch");
+		const synced = await hostWith("new", ["sticky-disks", "mesh", "disk-sync"]);
+		await backend.fetchDisk?.(synced.hostId, fetch);
+		expect(synced.host.params.filter((call) => call.method === "disk.fetch").map((call) => call.params)).toEqual([
+			fetch,
+		]);
 	});
 
 	it("attaches sticky disks only on a host that runs them, and commits and deletes them there", async () => {

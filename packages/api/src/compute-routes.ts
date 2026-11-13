@@ -64,6 +64,7 @@ import {
 	ExposePortBody,
 	ExtractArchiveQuery,
 	ExtractedArchive,
+	FetchHostStickyDiskBody,
 	FileContent,
 	FileEntry,
 	FileList,
@@ -2286,6 +2287,28 @@ export const updateHostAgent = defineRoute({
 	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
 });
 
+export const fetchHostStickyDisk = defineRoute({
+	operationId: "fetchHostStickyDisk",
+	method: "POST",
+	path: "/admin/hosts/{hostId}/sticky-disk-fetches",
+	tag: "hosts",
+	summary: "Fetch a sticky disk version onto a host",
+	description: describe(
+		"Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh",
+		"(its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it",
+		"holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started.",
+		"`not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's);",
+		"`conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't",
+		"fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's",
+		"away. Experimental.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	body: FetchHostStickyDiskBody,
+	answer: { status: 204, description: "The fetch has started." },
+	errors: lifecycleErrors,
+});
+
 export const checkHostUpdates = defineRoute({
 	operationId: "checkHostUpdates",
 	method: "POST",
@@ -2438,6 +2461,7 @@ export const hostRoutes = {
 	getHostUsage,
 	updateHost,
 	updateHostAgent,
+	fetchHostStickyDisk,
 	checkHostUpdates,
 	revokeHost,
 	getPublicUrl,

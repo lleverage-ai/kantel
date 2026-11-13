@@ -1065,6 +1065,13 @@ type ExtractedArchive struct {
 	Symlinks int64 `json:"symlinks"`
 }
 
+type FetchHostStickyDiskBody struct {
+	// The sticky disk's ID.
+	StickyDiskID string `json:"stickyDiskId"`
+	// The version to fetch: one a host in the same pool holds.
+	Version string `json:"version"`
+}
+
 // A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.
 type FileContent struct {
 	// The file, or with `offset` or `length`, the part read.
