@@ -243,61 +243,41 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect((await root.listPools()).items.find((pool) => pool.id === ci.id)?.hosts).toBe(1);
 	});
 
-	it("moves a host to another pool once it has drained", async () => {
+	it("moves a drained host with no sandboxes to another pool, and no other", async () => {
 		const store = await make();
 		const { backend, told } = hostsBackend();
-		const { api: served, root, tom } = setup(store, backend);
+		const { root, tom } = setup(store, backend);
 		const ci = await root.createPool({ name: "ci" });
 		const sandbox = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
 		told.splice(0);
 
-		// Holding a sandbox, it drains first: no new sandboxes, still in its pool.
-		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "ci", draining: false }))).code).toBe("invalid");
-		const moving = await root.updateHost(STUB_HOST_ID, { pool: "ci" });
-		expect(moving).toMatchObject({ state: "draining", poolId: firstPoolId(OPERATOR_POOLS), movingTo: ci.id });
-		expect(told).toEqual([{ hostId: STUB_HOST_ID, draining: true }]);
-		expect((await failure(tom.createSandbox({ type: "microvm" }))).code).toBe("unavailable");
-		expect((await root.getHost(STUB_HOST_ID)).movingTo).toBe(ci.id);
-		// A pool with a host moving to it isn't deleted.
-		expect((await failure(root.deletePool("ci"))).code).toBe("conflict");
+		// Not while it takes sandboxes, nor with another change, nor while it holds one.
+		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "ci" }))).code).toBe("conflict");
+		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "ci", draining: true }))).code).toBe("invalid");
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		const held = await failure(root.updateHost(STUB_HOST_ID, { pool: "ci" }));
+		expect(held.code).toBe("conflict");
+		expect(held.message).toContain("sandboxes");
+		expect((await root.getHost(STUB_HOST_ID)).poolId).toBe(firstPoolId(OPERATOR_POOLS));
 
-		// Its last sandbox gone, it joins the pool and takes sandboxes again, with nothing else reading hosts.
+		// Drained and empty, it moves, here and in the registry, and stays draining until undrained.
 		await tom.deleteSandbox(sandbox.id);
-		await served.service.idle();
-		expect(await store.hosts.get(STUB_HOST_ID)).toMatchObject({ state: "online", poolId: ci.id });
-		const moved = await root.getHost(STUB_HOST_ID);
-		expect(moved).toMatchObject({ state: "online", poolId: ci.id });
-		expect(moved).not.toHaveProperty("movingTo");
-		expect(told).toContainEqual({ hostId: STUB_HOST_ID, poolId: ci.id, draining: false });
+		const moved = await root.updateHost(STUB_HOST_ID, { pool: "ci" });
+		expect(moved).toMatchObject({ state: "draining", poolId: ci.id });
+		expect(told).toContainEqual({ hostId: STUB_HOST_ID, poolId: ci.id });
 		expect((await root.listPools()).items.map((pool) => [pool.name, pool.hosts])).toEqual([
 			["default", 0],
 			["ci", 1],
 		]);
-
-		// With nothing on it, a move is at once.
-		const back = await root.updateHost(STUB_HOST_ID, { pool: "default" });
-		expect(back).toMatchObject({ state: "online", poolId: firstPoolId(OPERATOR_POOLS) });
-		expect(back).not.toHaveProperty("movingTo");
-	});
-
-	it("cancels a move by naming the host's own pool, leaving it draining", async () => {
-		const store = await make();
-		const { backend } = hostsBackend();
-		const { root, tom } = setup(store, backend);
-		await root.createPool({ name: "ci" });
-		await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
-		await root.updateHost(STUB_HOST_ID, { pool: "ci" });
-		// It can't take sandboxes again while it is moving.
-		expect((await failure(root.updateHost(STUB_HOST_ID, { draining: false }))).code).toBe("conflict");
-		const cancelled = await root.updateHost(STUB_HOST_ID, { pool: "default" });
-		expect(cancelled).toMatchObject({ state: "draining", poolId: firstPoolId(OPERATOR_POOLS) });
-		expect(cancelled).not.toHaveProperty("movingTo");
-		// Another account's pool isn't the host's to move to.
+		expect((await failure(root.deletePool("ci"))).code).toBe("conflict");
+		expect((await root.updateHost(STUB_HOST_ID, { draining: false })).state).toBe("online");
+		// Its own pool is no move; another account's pool isn't one of its owner's.
+		expect((await root.updateHost(STUB_HOST_ID, { pool: "ci" })).poolId).toBe(ci.id);
 		await tom.createAccountPool({ name: "mine" });
 		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "mine" }))).code).toBe("not_found");
 	});
 
-	it("waits for a create still under way on the host, and the sweep finishes the move", async () => {
+	it("counts a create still under way on the host as holding it", async () => {
 		const store = await make();
 		const made = hostsBackend();
 		let placing: string | undefined;
@@ -305,35 +285,50 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 			...made.backend,
 			placedOn: async (sandboxId) => (sandboxId === placing ? STUB_HOST_ID : undefined),
 		};
-		const { api, root, tom } = setup(store, backend);
-		const ci = await root.createPool({ name: "ci" });
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
 		// A create the host is making, whose record doesn't name the host yet.
 		const sandbox = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
 		await store.sandboxes.update(sandbox.id, ({ hostId: _host, ...rest }) => ({ ...rest, state: "starting" }));
 		placing = sandbox.id;
-		expect(await root.updateHost(STUB_HOST_ID, { pool: "ci" })).toMatchObject({ state: "draining", movingTo: ci.id });
-
-		// It is gone (by a path that doesn't finish moves itself): the sweep does.
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "ci" }))).code).toBe("conflict");
 		placing = undefined;
 		await store.sandboxes.update(sandbox.id, (current) => ({ ...current, state: "deleted" }));
-		await api.service.sweep();
-		await api.service.idle();
-		expect(await store.hosts.get(STUB_HOST_ID)).toMatchObject({ state: "online", poolId: ci.id });
+		expect((await root.updateHost(STUB_HOST_ID, { pool: "ci" })).state).toBe("draining");
 	});
 
-	it("tells the registry again where a finished move's call to it failed", async () => {
+	it("puts a host whose pool has gone into its owner's default", async () => {
+		const store = await make();
+		let joined: BackendHost | undefined;
+		const { backend } = hostsBackend(() => (joined === undefined ? [] : [joined]));
+		const { root } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		// A token for ci, spent once ci has gone (a join that raced its delete).
+		await root.createHostJoinToken({ name: "late", pool: "ci" });
+		await root.deletePool("ci");
+		const [token] = await store.joinTokens.list({ name: "late" });
+		await joinTokenSpender(store).spendJoinToken(token?.tokenHash ?? "", "host_late", Date.now());
+		joined = await hostLike("host_late");
+		const late = (await root.listHosts()).items.find((host) => host.id === "host_late");
+		expect(late?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// A host moved into a pool as it was deleted.
+		await store.hosts.update(STUB_HOST_ID, (current) => ({ ...current, poolId: ci.id }));
+		await root.listHosts();
+		expect((await store.hosts.get(STUB_HOST_ID))?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+	});
+
+	it("tells the registry again where a move's call to it failed", async () => {
 		const store = await make();
 		const made = hostsBackend();
-		let refuse = true;
-		const told: Told[] = [];
+		let refuse = false;
 		const backend: SandboxBackend = {
 			...made.backend,
 			updateHost: async (hostId, change) => {
-				if (change.draining === false && refuse) {
+				if (change.poolId !== undefined && change.draining === undefined && refuse) {
 					refuse = false;
 					throw new Error("the registry is away");
 				}
-				told.push({ hostId, ...change });
 				await made.backend.updateHost?.(hostId, change);
 			},
 		};
@@ -341,13 +336,14 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		const ci = await root.createPool({ name: "ci" });
 		await root.listHosts();
 		await api.service.idle();
-		told.splice(0);
-		// Nothing on it: it moves at once here, though the registry didn't hear.
-		expect(await root.updateHost(STUB_HOST_ID, { pool: "ci" })).toMatchObject({ state: "online", poolId: ci.id });
-		expect(made.registry.get(STUB_HOST_ID)).not.toBe(ci.id);
+		expect(made.registry.get(STUB_HOST_ID)).toBe(firstPoolId(OPERATOR_POOLS));
+		refuse = true;
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		expect((await root.updateHost(STUB_HOST_ID, { pool: "ci" })).poolId).toBe(ci.id);
+		expect(made.registry.get(STUB_HOST_ID)).toBe(firstPoolId(OPERATOR_POOLS));
+		// The next read, here or on any gateway, finds the registry's pool differs and tells it.
 		await root.listHosts();
 		await api.service.idle();
-		expect(told).toContainEqual({ hostId: STUB_HOST_ID, poolId: ci.id, draining: false });
 		expect(made.registry.get(STUB_HOST_ID)).toBe(ci.id);
 	});
 

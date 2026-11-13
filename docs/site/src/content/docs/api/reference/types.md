@@ -1130,7 +1130,6 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `labels` | Record&lt;string, string&gt; | yes |  |
 | `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `poolId` | string | no | The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in. |
-| `movingTo` | string | no | The pool it is moving to (`UpdateHostBody.pool`): it is draining, and joins that pool once no sandboxes are left on it. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
@@ -2478,7 +2477,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `draining` | boolean | no | Stop placing new sandboxes on it. |
-| `pool` | string | no | Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host). It drains first and joins the pool once no sandboxes are left on it (`Host.movingTo`), then takes new sandboxes again. Its own pool cancels a move under way, leaving it draining. |
+| `pool` | string | no | Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it. |
 | `savedSnapshotBytesLimit` | integer or null | no | The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. |
 
 ### UpdateMemberBody

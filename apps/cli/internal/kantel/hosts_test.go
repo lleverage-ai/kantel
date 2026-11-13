@@ -88,10 +88,10 @@ func TestPoolsAndHostsMove(t *testing.T) {
 		"PATCH /v1/pools/pool_ci":  func(c call) any { return pool("pool_ci", "builds", c.Body["default"] == true) },
 		"DELETE /v1/pools/pool_ci": func(call) any { return nil },
 		"PATCH /v1/hosts/host_own1": func(c call) any {
-			return ownHost(map[string]any{"state": "draining", "poolId": "pool_acc_org", "movingTo": "pool_ci"})
+			return ownHost(map[string]any{"state": "draining", "poolId": "pool_ci"})
 		},
 		"GET /v1/hosts/host_own1": func(call) any {
-			return ownHost(map[string]any{"poolId": "pool_acc_org", "movingTo": "pool_ci"})
+			return ownHost(map[string]any{"poolId": "pool_ci"})
 		},
 		"POST /v1/hosts/join-tokens": func(c call) any {
 			return map[string]any{"id": "enr_1", "accountId": "acc_org", "token": "kth_secret", "command": "install",
@@ -117,9 +117,9 @@ func TestPoolsAndHostsMove(t *testing.T) {
 
 	moved := run(t, []string{"hosts", "move", "host_own1", "pool_ci"}, opts{routes: r})
 	jsonEq(t, "move", moved.Calls[0].Body, `{"pool":"pool_ci"}`)
-	eq(t, "move out", moved.Stdout, "host_own1 (tom-box) is draining: it moves to pool_ci once it has no sandboxes.\n")
+	eq(t, "move out", moved.Stdout, "host_own1 (tom-box) is in pool_ci; it is draining.\n")
 	shown := run(t, []string{"hosts", "info", "host_own1"}, opts{routes: r})
-	matches(t, "pool", shown.Stdout, `pool\s+pool_acc_org \(moving to pool_ci once drained\)`)
+	matches(t, "pool", shown.Stdout, `pool\s+pool_ci`)
 	added := run(t, []string{"hosts", "add", "--pool", "ci", "--account", "acc_org"}, opts{routes: r})
 	jsonEq(t, "add host", added.Calls[1].Body, `{"account":"acc_org","pool":"pool_ci"}`)
 }

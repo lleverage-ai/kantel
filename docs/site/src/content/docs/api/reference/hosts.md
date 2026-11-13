@@ -75,7 +75,7 @@ A deployment super-admin only (a key needs `hosts:admin`).
 
 `PATCH /v1/admin/hosts/{hostId}` (SDK method `updateHost`)
 
-Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
+Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
@@ -205,7 +205,7 @@ The pools the deployment's shared hosts are in, the default first made if there 
 
 `POST /v1/admin/pools` (SDK method `createPool`)
 
-An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A deployment super-admin only (a key needs `hosts:admin`).
+An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Header parameters**
 
@@ -245,7 +245,7 @@ Renames it, or makes it the deployment's default pool. A deployment super-admin 
 
 `DELETE /v1/admin/pools/{poolId}` (SDK method `deletePool`)
 
-Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A deployment super-admin only (a key needs `hosts:admin`).
+Only an empty pool that isn't the default: `conflict` while a host is in it. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 

@@ -114,20 +114,11 @@ func describeHost(c *cli.Context, h api.Host) string {
 		{"runs", tiers(h, ", ")},
 		{"kvm", kvm},
 		{"sandboxes", strconv.FormatInt(h.Allocated.Sandboxes, 10)},
-		{"pool", hostPool(h)},
+		{"pool", deref(h.PoolID)},
 		{"labels", strings.Join(labels, ", ")},
 		{"joined", cli.Timestamp(h.JoinedAt)},
 		{"seen", seen},
 	})
-}
-
-// hostPool is the pool a host is in, and the one it's moving to while it drains.
-func hostPool(h api.Host) string {
-	pool := deref(h.PoolID)
-	if h.MovingTo != nil {
-		return pool + " (moving to " + *h.MovingTo + " once drained)"
-	}
-	return pool
 }
 
 // linuxOnly fails on a machine kantel-host doesn't run on.
@@ -258,20 +249,15 @@ func hosts(sys System) cli.Section {
 		},
 		{
 			Name:    "host move",
-			Summary: "Move a host to another pool: it drains, and moves once it has no sandboxes",
+			Summary: "Move a drained host with no sandboxes to another pool",
 			Args:    []cli.Arg{{Name: "hostId"}, {Name: "pool"}},
-			Details: "It takes no new sandboxes from now on, and joins the pool (an ID or name) once its last sandbox is deleted;\n" +
-				"then it takes new sandboxes again. Moving it to the pool it is in cancels a move, leaving it draining.",
+			Details: "Drain it first (host drain <hostId>) and let its sandboxes go; it stays draining in its new pool (an ID or\n" +
+				"name) until host drain <hostId> --off.",
 			Run: func(c *cli.Context) error {
 				pool := c.Arg(1)
 				return hostCall(c, func(client *api.Client, raw *json.RawMessage) (*api.Host, error) {
 					return client.UpdateHost(c.Ctx, c.Arg(0), api.UpdateHostBody{Pool: &pool}, api.Raw(raw))
-				}, func(h api.Host) string {
-					if h.MovingTo != nil {
-						return h.ID + " draining, moving to " + *h.MovingTo
-					}
-					return h.ID + " in " + deref(h.PoolID) + " " + c.Style.State(string(h.State))
-				})
+				}, func(h api.Host) string { return h.ID + " in " + deref(h.PoolID) + " " + c.Style.State(string(h.State)) })
 			},
 		},
 		{

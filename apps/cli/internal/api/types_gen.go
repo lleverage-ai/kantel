@@ -1404,13 +1404,11 @@ type Host struct {
 	// Epoch milliseconds, UTC.
 	LastSeenAt *int64 `json:"lastSeenAt,omitempty"`
 	// The version hosts should run: the deployment's `KANTEL_HOST_VERSION` when it sets one, otherwise Kantel's latest release. Absent when neither is known.
-	LatestVersion *string     `json:"latestVersion,omitempty"`
-	Memory        *HostMemory `json:"memory,omitempty"`
-	// The pool it is moving to (`UpdateHostBody.pool`): it is draining, and joins that pool once no sandboxes are left on it.
-	MovingTo             *string `json:"movingTo,omitempty"`
-	Name                 string  `json:"name"`
-	NestedVirtualisation bool    `json:"nestedVirtualisation"`
-	OS                   *string `json:"os,omitempty"`
+	LatestVersion        *string     `json:"latestVersion,omitempty"`
+	Memory               *HostMemory `json:"memory,omitempty"`
+	Name                 string      `json:"name"`
+	NestedVirtualisation bool        `json:"nestedVirtualisation"`
+	OS                   *string     `json:"os,omitempty"`
 	// The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in.
 	PoolID *string `json:"poolId,omitempty"`
 	// The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit.
@@ -3022,7 +3020,7 @@ type UpdateHostBody struct {
 	Draining *bool             `json:"draining,omitempty"`
 	Labels   map[string]string `json:"labels,omitzero"`
 	Name     *string           `json:"name,omitempty"`
-	// Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host). It drains first and joins the pool once no sandboxes are left on it (`Host.movingTo`), then takes new sandboxes again. Its own pool cancels a move under way, leaving it draining.
+	// Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it.
 	Pool *string `json:"pool,omitempty"`
 	// The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit.
 	SavedSnapshotBytesLimit Nullable[int64] `json:"savedSnapshotBytesLimit,omitzero"`

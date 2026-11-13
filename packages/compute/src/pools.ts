@@ -163,31 +163,17 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		if (defaultPoolOf(await poolsOf(pool.owner))?.id === pool.id) {
 			throw new KantelError("conflict", `${pool.name} is the default pool: make another the default first`);
 		}
-		const held = (await options.hosts()).filter(
-			(host) => host.state !== "revoked" && (host.poolId === pool.id || host.movingTo === pool.id),
-		);
+		const held = (await options.hosts()).filter((host) => host.state !== "revoked" && host.poolId === pool.id);
 		if (held.length > 0) {
 			throw new KantelError(
 				"conflict",
-				`${pool.name} still has ${held.length === 1 ? "a host" : `${held.length} hosts`} in it or moving to it: move them to another pool first`,
+				`${pool.name} still has ${held.length === 1 ? "a host" : `${held.length} hosts`} in it: move them to another pool first`,
 			);
 		}
+		// A host another gateway joins or moves to it meanwhile is in its owner's default once it has gone, as the next
+		// read of the hosts puts it (`ensureHosts`); a pool made the default meanwhile hands the default back to the one
+		// that was. Either way every host is in a pool that exists, and its owner has a default.
 		await store.pools.delete(pool.id);
-		// A host another gateway put in it meanwhile (a join, or a move) goes to the default, and a move to it ends: no
-		// host is left in a pool that has gone.
-		const fallback = await defaultPool(pool.owner);
-		for (const host of await store.hosts.list()) {
-			if (host.poolId !== pool.id && host.movingTo !== pool.id) continue;
-			await store.hosts.update(host.id, (current) => {
-				if (current.poolId !== pool.id && current.movingTo !== pool.id) return undefined;
-				const { movingTo, ...rest } = current;
-				return {
-					...rest,
-					poolId: current.poolId === pool.id ? fallback.id : current.poolId,
-					...(movingTo === undefined || movingTo === pool.id ? {} : { movingTo }),
-				};
-			});
-		}
 		return undefined;
 	}
 

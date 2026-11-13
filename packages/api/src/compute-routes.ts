@@ -2239,8 +2239,8 @@ export const updateHost = defineRoute({
 	tag: "hosts",
 	summary: "Change a host",
 	description: describe(
-		"Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on",
-		"each account's saved snapshots.",
+		"Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets",
+		"its limit on each account's saved snapshots.",
 		SUPER_ADMIN,
 	),
 	params: HostPath,
@@ -2372,7 +2372,8 @@ export const setPublicUrl = defineRoute({
 
 // Pools: sets of hosts, each host in exactly one, where sandboxes are placed (docs/design/disk-store.md, "Pools").
 
-const POOL_MOVE = "Its hosts are moved between pools with `pool` on a host's change, which drains the host first.";
+const POOL_MOVE =
+	"A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes.";
 
 export const listPools = defineRoute({
 	operationId: "listPools",
@@ -2424,10 +2425,7 @@ export const deletePool = defineRoute({
 	path: "/admin/pools/{poolId}",
 	tag: "hosts",
 	summary: "Delete a pool of shared hosts",
-	description: describe(
-		"Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it.",
-		SUPER_ADMIN,
-	),
+	description: describe("Only an empty pool that isn't the default: `conflict` while a host is in it.", SUPER_ADMIN),
 	params: PoolPath,
 	answer: { status: 204, description: "Deleted." },
 	errors: changeErrors,
@@ -2551,8 +2549,8 @@ export const updateAccountHost = defineRoute({
 	tag: "account-hosts",
 	summary: "Change one of an account's hosts",
 	description: describe(
-		"Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on",
-		"each account's saved snapshots.",
+		"Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets",
+		"its limit on each account's saved snapshots.",
 		scope("account:admin"),
 		ACCOUNT_HOSTS,
 	),
@@ -2660,7 +2658,7 @@ export const deleteAccountPool = defineRoute({
 	tag: "account-hosts",
 	summary: "Delete one of an account's pools",
 	description: describe(
-		"Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it.",
+		"Only an empty pool that isn't the default: `conflict` while a host is in it.",
 		scope("account:admin"),
 		ACCOUNT_HOSTS,
 	),

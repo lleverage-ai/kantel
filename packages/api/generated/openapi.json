@@ -10894,7 +10894,7 @@
 			"patch": {
 				"operationId": "updateHost",
 				"summary": "Change a host",
-				"description": "Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -11441,7 +11441,7 @@
 			"post": {
 				"operationId": "createPool",
 				"summary": "Make a pool of shared hosts",
-				"description": "An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -11623,7 +11623,7 @@
 			"delete": {
 				"operationId": "deletePool",
 				"summary": "Delete a pool of shared hosts",
-				"description": "Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Only an empty pool that isn't the default: `conflict` while a host is in it. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -11950,7 +11950,7 @@
 			"patch": {
 				"operationId": "updateAccountHost",
 				"summary": "Change one of an account's hosts",
-				"description": "Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"description": "Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
 				"parameters": [
 					{
@@ -12390,7 +12390,7 @@
 			"post": {
 				"operationId": "createAccountPool",
 				"summary": "Make a pool of an account's hosts",
-				"description": "An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"description": "An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
 				"parameters": [
 					{
@@ -12592,7 +12592,7 @@
 			"delete": {
 				"operationId": "deleteAccountPool",
 				"summary": "Delete one of an account's pools",
-				"description": "Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"description": "Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
 				"parameters": [
 					{
@@ -16914,10 +16914,6 @@
 						"type": "string",
 						"description": "The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in."
 					},
-					"movingTo": {
-						"type": "string",
-						"description": "The pool it is moving to (`UpdateHostBody.pool`): it is draining, and joins that pool once no sandboxes are left on it."
-					},
 					"joinedAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
@@ -20831,7 +20827,7 @@
 					"pool": {
 						"type": "string",
 						"minLength": 1,
-						"description": "Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host). It drains first and joins the pool once no sandboxes are left on it (`Host.movingTo`), then takes new sandboxes again. Its own pool cancels a move under way, leaving it draining."
+						"description": "Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it."
 					},
 					"savedSnapshotBytesLimit": {
 						"anyOf": [

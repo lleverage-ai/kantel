@@ -355,10 +355,10 @@ func TestPoolsAndHostMove(t *testing.T) {
 		},
 		"PATCH /v1/admin/hosts/host_6t5r4e": func(c call) any {
 			calls = append(calls, "PATCH host "+jsonOf(t, c.Body))
-			return host(map[string]any{"state": "draining", "poolId": "pool_operator", "movingTo": "pool_ci"})
+			return host(map[string]any{"state": "draining", "poolId": "pool_ci"})
 		},
 		"GET /v1/admin/hosts/host_6t5r4e": func(call) any {
-			return host(map[string]any{"poolId": "pool_operator", "movingTo": "pool_ci"})
+			return host(map[string]any{"poolId": "pool_ci"})
 		},
 	}
 	out := func(argv ...string) string { return strings.TrimSpace(tt.run(argv, opts{routes: r}).Out) }
@@ -370,10 +370,10 @@ func TestPoolsAndHostMove(t *testing.T) {
 	eq(t, "rename", out("pool", "rename", "ci", "builds"), "pool_ci builds")
 	eq(t, "default", out("pool", "default", "ci"), "pool_ci builds is the default")
 	eq(t, "rm", out("pool", "rm", "ci"), "deleted ci")
-	eq(t, "move", out("host", "move", "host_6t5r4e", "ci"), "host_6t5r4e draining, moving to pool_ci")
+	eq(t, "move", out("host", "move", "host_6t5r4e", "ci"), "host_6t5r4e in pool_ci draining")
 	eq(t, "calls", strings.Join(calls, ", "),
 		`POST {"name":"ci"}, PATCH {"name":"builds"}, PATCH {"default":true}, DELETE, PATCH host {"pool":"ci"}`)
-	contains(t, "info", out("host", "info", "host_6t5r4e"), "pool       pool_operator (moving to pool_ci once drained)")
+	contains(t, "info", out("host", "info", "host_6t5r4e"), "pool       pool_ci")
 
 	token := map[string]any{"id": "hjt_1", "token": "kth_secret", "expiresAt": 0, "command": "install kth_secret"}
 	added := tt.run([]string{"host", "add", "--pool", "ci"},

@@ -101,7 +101,7 @@ func describeHost(c *cli.Context, h api.Host) string {
 		{"name", h.Name},
 		{"state", c.Style.State(string(h.State))},
 		{"account", Deref(h.AccountID)},
-		{"pool", hostPool(h)},
+		{"pool", Deref(h.PoolID)},
 		{"version", Deref(h.Version)},
 		{"machine", strings.Join(machine, "/")},
 		{"tiers", strings.Join(tiers, ", ")},
@@ -116,15 +116,6 @@ func describeHost(c *cli.Context, h api.Host) string {
 		cli.Field{"last seen", lastSeen},
 	)
 	return cli.Fields(c.Style, rows)
-}
-
-// hostPool is the pool a host is in, and the one it's moving to while it drains.
-func hostPool(h api.Host) string {
-	pool := Deref(h.PoolID)
-	if h.MovingTo != nil {
-		return pool + " (moving to " + *h.MovingTo + " once drained)"
-	}
-	return pool
 }
 
 // poolID is a pool's ID from its ID or name: a name is looked up in the account acted in, which the API does itself
@@ -314,10 +305,10 @@ func ownHosts() cli.Section {
 			},
 		},
 		{
-			Name: "hosts move", Summary: "Move one of your hosts to another of your pools: it drains, and moves once it has no sandboxes",
+			Name: "hosts move", Summary: "Move one of your hosts to another of your pools: a drained host with no sandboxes",
 			Args: []cli.Arg{{Name: "id"}, {Name: "pool"}},
-			Details: "It takes no new sandboxes from now on, and joins the pool once its last sandbox is deleted; then it\n" +
-				"takes new sandboxes again. Moving it to the pool it is in cancels a move, leaving it draining.",
+			Details: "Drain it first (kantel hosts drain <id>) and let its sandboxes go; it stays draining in its new\n" +
+				"pool until you take it out of the drain with kantel hosts drain <id> --off.",
 			Run: func(c *cli.Context) error {
 				client, err := Client(c)
 				if err != nil {
@@ -333,9 +324,6 @@ func ownHosts() cli.Section {
 					return err
 				}
 				c.Emit(raw, host, func() string {
-					if host.MovingTo != nil {
-						return fmt.Sprintf("%s (%s) is draining: it moves to %s once it has no sandboxes.", host.ID, host.Name, *host.MovingTo)
-					}
 					return fmt.Sprintf("%s (%s) is in %s; it is %s.", host.ID, host.Name, Deref(host.PoolID), host.State)
 				})
 				return nil

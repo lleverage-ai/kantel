@@ -73,7 +73,7 @@ A key needs `account:read`. Experimental: `not_supported` unless the deployment 
 
 `PATCH /v1/hosts/{hostId}` (SDK method `updateAccountHost`)
 
-Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 
 **Path parameters**
 
@@ -171,7 +171,7 @@ The pools the account's own hosts are in, the default first made if there is non
 
 `POST /v1/pools` (SDK method `createAccountPool`)
 
-An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 
 **Header parameters**
 
@@ -211,7 +211,7 @@ Renames it, or makes it the account's default pool. A name is looked for in the 
 
 `DELETE /v1/pools/{poolId}` (SDK method `deleteAccountPool`)
 
-Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 
 **Path parameters**
 

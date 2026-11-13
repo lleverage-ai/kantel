@@ -1407,13 +1407,13 @@ kantel hosts drain <id> [flags]
 
 ### kantel hosts move
 
-Move one of your hosts to another of your pools: it drains, and moves once it has no sandboxes.
+Move one of your hosts to another of your pools: a drained host with no sandboxes.
 
 ```sh
 kantel hosts move <id> <pool> [flags]
 ```
 
-It takes no new sandboxes from now on, and joins the pool once its last sandbox is deleted; then it takes new sandboxes again. Moving it to the pool it is in cancels a move, leaving it draining.
+Drain it first (kantel hosts drain &lt;id&gt;) and let its sandboxes go; it stays draining in its new pool until you take it out of the drain with kantel hosts drain &lt;id&gt; --off.
 
 ### kantel hosts rm
 

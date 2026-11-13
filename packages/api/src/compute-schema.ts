@@ -3663,12 +3663,6 @@ export const Host = Type.Object(
 					"only from a host this control plane hasn't seen since pools came in.",
 			),
 		),
-		movingTo: Type.Optional(
-			id(
-				"The pool it is moving to (`UpdateHostBody.pool`): it is draining, and joins that pool once no sandboxes are " +
-					"left on it.",
-			),
-		),
 		joinedAt: Timestamp,
 		lastSeenAt: Type.Optional(Timestamp),
 		usage: Type.Optional(UsageSparklines),
@@ -3745,8 +3739,8 @@ export const UpdateHostBody = Type.Object(
 				minLength: 1,
 				description:
 					"Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a " +
-					"shared host). It drains first and joins the pool once no sandboxes are left on it (`Host.movingTo`), then " +
-					"takes new sandboxes again. Its own pool cancels a move under way, leaving it draining.",
+					"shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` " +
+					"otherwise): drain it, let its sandboxes go, move it, then undrain it.",
 			}),
 		),
 		savedSnapshotBytesLimit: Type.Optional(

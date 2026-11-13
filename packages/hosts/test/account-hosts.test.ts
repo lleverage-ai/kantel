@@ -279,19 +279,22 @@ describe("Account hosts", () => {
 		expect((await tom.getAccountHost(inCi.hostId)).poolId).toBe(ci.id);
 		expect((await tom.getAccountHost(inDefault.hostId)).poolId).toBe(first?.id);
 
-		// A move drains it, in the registry too, and once it holds no sandbox it joins the pool there and here.
+		// Drained and empty, it moves, here and in the registry.
 		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
 		const holder = inDefault.sandboxes.has(sandbox.id) ? inDefault : inCi;
-		const moving = await tom.updateAccountHost(holder.hostId, { pool: holder === inCi ? "default" : "ci" });
-		expect(moving.state).toBe("draining");
+		const to = holder === inCi ? "default" : "ci";
+		await tom.updateAccountHost(holder.hostId, { draining: true });
 		expect((await service.get(holder.hostId)).state).toBe("draining");
+		expect((await failure(tom.updateAccountHost(holder.hostId, { pool: to }))).code).toBe("conflict");
 		await tom.deleteSandbox(sandbox.id);
-		await tom.listAccountHosts();
 		await vi.waitFor(async () => {
-			expect((await tom.getAccountHost(holder.hostId)).movingTo).toBeUndefined();
+			expect(holder.sandboxes.has(sandbox.id)).toBe(false);
 		});
-		const moved = await service.get(holder.hostId);
-		expect(moved.state).toBe("online");
-		expect(moved.poolId).toBe(holder === inCi ? first?.id : ci.id);
+		const moved = await tom.updateAccountHost(holder.hostId, { pool: to });
+		const target = holder === inCi ? first?.id : ci.id;
+		expect(moved.poolId).toBe(target);
+		expect((await service.get(holder.hostId)).poolId).toBe(target);
+		await tom.updateAccountHost(holder.hostId, { draining: false });
+		expect((await service.get(holder.hostId)).state).toBe("online");
 	});
 });

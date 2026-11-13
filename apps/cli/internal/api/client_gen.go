@@ -798,7 +798,7 @@ func (c *Client) GetHost(ctx context.Context, hostID string, opts ...CallOption)
 	return &out, nil
 }
 
-// UpdateHost PATCH /admin/hosts/{hostId}: Change a host. Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
+// UpdateHost PATCH /admin/hosts/{hostId}: Change a host. Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
 func (c *Client) UpdateHost(ctx context.Context, hostID string, body UpdateHostBody, opts ...CallOption) (*Host, error) {
 	var out Host
 	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/admin/hosts/%s", url.PathEscape(hostID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
@@ -834,7 +834,7 @@ func (c *Client) ListPools(ctx context.Context, opts ...CallOption) (*PoolList, 
 	return &out, nil
 }
 
-// CreatePool POST /admin/pools: Make a pool of shared hosts. An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A deployment super-admin only (a key needs `hosts:admin`).
+// CreatePool POST /admin/pools: Make a pool of shared hosts. An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`).
 func (c *Client) CreatePool(ctx context.Context, body CreatePoolBody, opts ...CallOption) (*Pool, error) {
 	var out Pool
 	if err := c.Do(ctx, Call{Method: "POST", Path: "/admin/pools", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
@@ -843,7 +843,7 @@ func (c *Client) CreatePool(ctx context.Context, body CreatePoolBody, opts ...Ca
 	return &out, nil
 }
 
-// DeletePool DELETE /admin/pools/{poolId}: Delete a pool of shared hosts. Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A deployment super-admin only (a key needs `hosts:admin`).
+// DeletePool DELETE /admin/pools/{poolId}: Delete a pool of shared hosts. Only an empty pool that isn't the default: `conflict` while a host is in it. A deployment super-admin only (a key needs `hosts:admin`).
 func (c *Client) DeletePool(ctx context.Context, poolID string, opts ...CallOption) error {
 	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/admin/pools/%s", url.PathEscape(poolID)), Query: nil}, opts...)
 }
@@ -1219,7 +1219,7 @@ func (c *Client) GetAccountHost(ctx context.Context, hostID string, opts ...Call
 	return &out, nil
 }
 
-// UpdateAccountHost PATCH /hosts/{hostId}: Change one of an account's hosts. Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+// UpdateAccountHost PATCH /hosts/{hostId}: Change one of an account's hosts. Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 func (c *Client) UpdateAccountHost(ctx context.Context, hostID string, body UpdateHostBody, opts ...CallOption) (*Host, error) {
 	var out Host
 	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/hosts/%s", url.PathEscape(hostID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
@@ -1282,7 +1282,7 @@ func (c *Client) ListAccountPools(ctx context.Context, query *ListAccountPoolsQu
 	return &out, nil
 }
 
-// CreateAccountPool POST /pools: Make a pool of an account's hosts. An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+// CreateAccountPool POST /pools: Make a pool of an account's hosts. An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 func (c *Client) CreateAccountPool(ctx context.Context, body CreateAccountPoolBody, opts ...CallOption) (*Pool, error) {
 	var out Pool
 	if err := c.Do(ctx, Call{Method: "POST", Path: "/pools", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
@@ -1291,7 +1291,7 @@ func (c *Client) CreateAccountPool(ctx context.Context, body CreateAccountPoolBo
 	return &out, nil
 }
 
-// DeleteAccountPool DELETE /pools/{poolId}: Delete one of an account's pools. Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+// DeleteAccountPool DELETE /pools/{poolId}: Delete one of an account's pools. Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 func (c *Client) DeleteAccountPool(ctx context.Context, poolID string, opts ...CallOption) error {
 	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/pools/%s", url.PathEscape(poolID)), Query: nil}, opts...)
 }

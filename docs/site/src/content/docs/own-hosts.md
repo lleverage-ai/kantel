@@ -64,12 +64,14 @@ An account's hosts are in pools, each host in exactly one. Every account starts 
 ```sh
 kantel pools add ci                    # an empty pool
 kantel hosts add builder-1 --pool ci   # a token whose host joins ci
-kantel hosts move host_… ci            # drains the host; it moves once it has no sandboxes
+kantel hosts drain host_…              # stop new sandboxes going there
+kantel hosts move host_… ci            # once it has no sandboxes: it stays draining
+kantel hosts drain host_… --off        # take sandboxes again, in ci
 kantel pools default ci                # where hosts join, naming no pool
 kantel pools rm ci                     # only an empty pool that isn't the default
 ```
 
-A move is explicit, and drains the host first: it takes no new sandboxes, and joins the new pool once its last sandbox is deleted, then takes sandboxes again. Moving it to the pool it's in cancels the move and leaves it draining. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
+A move is explicit, and only a drained host with no sandboxes moves: drain it, let its sandboxes go, move it, then undrain it. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
 
 ## Turn it on
 
@@ -79,4 +81,4 @@ A move is explicit, and drains the host first: it takes no new sandboxes, and jo
 
 ## API
 
-The routes are in the API reference under [Your hosts](/api/reference/account-hosts/): `POST /v1/hosts/join-tokens`, `GET /v1/hosts`, and `GET`, `PATCH` and `DELETE /v1/hosts/{hostId}`. A host's `accountId` says which account it belongs to. A host the super-admin joined has no `accountId`. Its `poolId` says which pool it is in, and `movingTo` the pool it is moving to; the pools are `GET` and `POST /v1/pools` and `PATCH` and `DELETE /v1/pools/{poolId}`.
+The routes are in the API reference under [Your hosts](/api/reference/account-hosts/): `POST /v1/hosts/join-tokens`, `GET /v1/hosts`, and `GET`, `PATCH` and `DELETE /v1/hosts/{hostId}`. A host's `accountId` says which account it belongs to. A host the super-admin joined has no `accountId`. Its `poolId` says which pool it is in; the pools are `GET` and `POST /v1/pools` and `PATCH` and `DELETE /v1/pools/{poolId}`.
