@@ -111,35 +111,39 @@ function behaves(open: () => Promise<HostStore>) {
 		await store.insertHost({ ...host("host_a", 1), labels: { note: '"draining":true' } });
 		await store.insertHost({ ...host("host_d", 2), draining: true });
 		await store.insertHost({ ...host("host_r", 3), revoked: true });
-		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1))).toBe(true);
-		expect(await store.placeOnTakingHost(placement("s2", "host_d", 2))).toBe(false);
-		expect(await store.placeOnTakingHost(placement("s3", "host_r", 3))).toBe(false);
-		expect(await store.placeOnTakingHost(placement("s4", "host_none", 4))).toBe(false);
+		// Admitted, it answers the host's pool: none yet.
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1))).toEqual({});
+		expect(await store.placeOnTakingHost(placement("s2", "host_d", 2))).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s3", "host_r", 3))).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s4", "host_none", 4))).toBeUndefined();
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
 		expect(await store.placementsOn("host_d")).toEqual([]);
 		// Drained since it was read: refused.
 		await store.updateHost("host_a", (current) => ({ ...current, draining: true }));
-		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBe(false);
+		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBeUndefined();
 	});
 
 	it("places a new sandbox kept to a pool only on a host in that pool, where the host's pool is known", async () => {
 		const store = await open();
 		await store.insertHost({ ...host("host_a", 1), poolId: "pool_a" });
 		await store.insertHost({ ...host("host_n", 2) });
-		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1), "pool_a")).toBe(true);
+		// Admitted, it answers the pool its host is in, which the sandbox then is.
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1), "pool_a")).toEqual({ poolId: "pool_a" });
 		// Another pool, or one whose ID starts it or differs only where LIKE has a wildcard: refused.
-		expect(await store.placeOnTakingHost(placement("s2", "host_a", 2), "pool_b")).toBe(false);
-		expect(await store.placeOnTakingHost(placement("s3", "host_a", 3), "pool_")).toBe(false);
-		expect(await store.placeOnTakingHost(placement("s4", "host_a", 4), "poolXa")).toBe(false);
+		expect(await store.placeOnTakingHost(placement("s2", "host_a", 2), "pool_b")).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s3", "host_a", 3), "pool_")).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s4", "host_a", 4), "poolXa")).toBeUndefined();
+		// Kept to no pool (one from before pools), it lands wherever its host is, and says where.
+		expect(await store.placeOnTakingHost(placement("s9", "host_a", 9))).toEqual({ poolId: "pool_a" });
 		// Its own pool, not a label that says one.
 		await store.insertHost({ ...host("host_l", 3), poolId: "pool_b", labels: { poolId: "pool_a" } });
-		expect(await store.placeOnTakingHost(placement("s6", "host_l", 6), "pool_a")).toBe(false);
-		expect(await store.placeOnTakingHost(placement("s7", "host_l", 7), "pool_b")).toBe(true);
+		expect(await store.placeOnTakingHost(placement("s6", "host_l", 6), "pool_a")).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s7", "host_l", 7), "pool_b")).toEqual({ poolId: "pool_b" });
 		await store.insertHost({ ...host("host_m", 4), labels: { poolId: "pool_b" } });
-		expect(await store.placeOnTakingHost(placement("s8", "host_m", 8), "pool_a")).toBe(true);
-		// A host whose pool the registry hasn't been told yet takes it.
-		expect(await store.placeOnTakingHost(placement("s5", "host_n", 5), "pool_a")).toBe(true);
-		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		expect(await store.placeOnTakingHost(placement("s8", "host_m", 8), "pool_a")).toEqual({});
+		// A host whose pool the registry hasn't been told yet takes it, and says none.
+		expect(await store.placeOnTakingHost(placement("s5", "host_n", 5), "pool_a")).toEqual({});
+		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1", "s9"]);
 	});
 
 	it("finds everything on a host in one read: its placements, an upgrade's microVM, an isolate to delete", async () => {
@@ -255,7 +259,7 @@ describe.skipIf(postgresUrl === undefined || postgresUrl === "")("Postgres, two 
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(settled).toBe(false);
 		await other.query("COMMIT");
-		expect(await placing).toBe(false);
+		expect(await placing).toBeUndefined();
 		expect(await store.placementsOn("host_a")).toEqual([]);
 
 		// The other way round: a placement holding the host's row, a drain waits for it, and then sees it.
@@ -277,5 +281,25 @@ describe.skipIf(postgresUrl === undefined || postgresUrl === "")("Postgres, two 
 		await other.query("COMMIT");
 		await draining;
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
+
+		// A move to another pool under way (its row written, not yet committed): a placement kept to the old pool waits
+		// for it, then is refused; one kept to no pool waits, then lands and answers the new pool.
+		await store.putHost({ ...host("host_b", 2), poolId: "pool_a" });
+		await other.query("BEGIN");
+		await other.query("UPDATE compute_hosts SET data = $1 WHERE id = $2", [
+			JSON.stringify({ ...host("host_b", 2), poolId: "pool_b" }),
+			"host_b",
+		]);
+		let keptSettled = false;
+		const kept = store.placeOnTakingHost(placement("s3", "host_b", 3), "pool_a").finally(() => {
+			keptSettled = true;
+		});
+		const loose = store.placeOnTakingHost(placement("s4", "host_b", 4));
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(keptSettled).toBe(false);
+		await other.query("COMMIT");
+		expect(await kept).toBeUndefined();
+		expect(await loose).toEqual({ poolId: "pool_b" });
+		expect((await store.placementsOn("host_b")).map((p) => p.sandboxId)).toEqual(["s4"]);
 	});
 });
