@@ -420,7 +420,7 @@ an error notice with Try again, and Add host says the host joins the default poo
 pools last read, so a pool chosen in Add host stays chosen. A source with no `pools` (an older gateway) lists the hosts
 ungrouped with no pool actions.
 
-**Don't use it for** where a sandbox goes when it's created (New sandbox's own choice) or a host's labels.
+**Don't use it for** where a sandbox goes when it's created (New sandbox's pool picker, below) or a host's labels.
 
 **States:** many pools with an empty one, one pool, one pool with no hosts, long names, pools that can't be read, no
 pools, accounts' own hosts on a super-admin's page, New pool, Rename, Delete, Move to pool (not drained, with sandboxes,
@@ -428,6 +428,26 @@ ready), Add host in a pool and with one pool, and a phone; all in the Hosts page
 
 **Cost:** one read of the pools with each read of the hosts (when the page opens, then every minute), and one after
 each change made on it.
+
+### New sandbox's pool picker
+
+New sandbox (`NewSandboxDialog` in `src/compute/sandboxes-page.tsx`) picks the pool a sandbox goes in with the Hosts
+page's `PoolPicker`, where the `SandboxesSource` has `pools` and the account has more than one, starting on the default
+(or on the page's `pool`). With one pool, while the pools are being read, or with none (account hosts off) there is no
+picker and nothing else changes: the sandbox goes in the default pool. The default sends no `pool`, so a create goes
+where one naming none goes, the deployment's shared hosts included; another pool goes as `pool`, and the sandbox runs on
+that pool's hosts and stays in it. Picking a pool reads the sizes again for its hosts (`shapes` with the pool), and the
+host picker then offers only that pool's hosts, letting go of a host picked in another. A pool with no hosts says so
+under the picker, and Create waits for another. Where the pools can't be read, a warning notice says the sandbox goes in
+the default pool, with Try again. When Kantel refuses the create (none of the pool's hosts can take it now), its reason,
+which names the pool, shows in the error notice over the list.
+
+**Don't use it for** a host's pool (the Hosts page's Move to pool and Add host).
+
+**States:** several pools, one pool (no picker), a pool picked, an empty pool, a refusal naming the pool, the pools
+being read, the pools not read, long names and a phone; the Sandboxes page's `Create…` stories.
+
+**Cost:** one read of the pools the first time New sandbox opens, and a read of the sizes each time the pool changes.
 
 ### HostPeers
 

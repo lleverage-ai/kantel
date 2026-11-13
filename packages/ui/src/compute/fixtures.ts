@@ -2008,6 +2008,13 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			throw Object.assign(new Error(`The account has a pool named ${name}`), { code: "conflict" });
 		}
 	};
+	/** A pool's hosts that are up and run `kind`. */
+	const poolHosts = (poolId: string, kind: SandboxKind): Host[] =>
+		[...hosts.values()].filter(
+			(host) => host.poolId === poolId && host.state === "online" && (kind === "isolate" || host.kvm),
+		);
+	/** "a microvm", "an isolate". */
+	const article = (kind: SandboxKind): string => `${kind === "isolate" ? "an" : "a"} ${kind}`;
 	/** When each host updating comes back on its new version (wall-clock, so a story sees it finish). */
 	const updateDone = new Map<string, number>();
 	const deploymentUrl =
@@ -2334,10 +2341,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 		},
 		sandboxes: {
-			shapes: () =>
+			// A pool's shapes are the sample's, with no microVMs where none of its hosts that are up runs them.
+			shapes: (_accountId: string, _hostId?: string, poolId?: string) =>
 				gate(() => ({
 					isolate: DEFAULT_SANDBOX_SHAPES.isolate,
-					microvm: DEFAULT_SANDBOX_SHAPES.microvm,
+					microvm:
+						poolId === undefined || poolHosts(poolId, "microvm").length > 0
+							? DEFAULT_SANDBOX_SHAPES.microvm
+							: { ...DEFAULT_SANDBOX_SHAPES.microvm, available: false },
 					...(hosting === "hosted" && DEFAULT_SANDBOX_SHAPES.rates !== undefined
 						? { rates: DEFAULT_SANDBOX_SHAPES.rates }
 						: {}),
@@ -2345,14 +2356,24 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			// The sample's hosts as a super-admin sees them: each one shared, so any account may be put on one.
 			hosts: () =>
 				gate(() =>
-					HOSTS.map((host) => ({
-						id: host.id,
-						name: host.name,
-						state: host.state,
-						kinds: host.kvm ? (["microvm", "isolate"] as const) : (["isolate"] as const),
-						shared: true,
-					})),
+					HOSTS.map((sample) => {
+						const host = hosts.get(sample.id) ?? sample;
+						return {
+							id: host.id,
+							name: host.name,
+							state: host.state,
+							kinds: host.kvm ? (["microvm", "isolate"] as const) : (["isolate"] as const),
+							shared: true,
+							...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+						};
+					}),
 				),
+			// The pools the Hosts page has, which the `pools` option chooses: `fail` can't be read.
+			pools: () =>
+				gate(() => {
+					if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
+					return [...pools.values()].map(poolView);
+				}),
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
@@ -2361,6 +2382,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				),
 			create: (input: CreateSandboxInput) =>
 				gate(async () => {
+					// In a pool, on one of its hosts that is up and runs the type; refused as Kantel refuses it, naming the pool.
+					const pooled = input.poolId === undefined ? undefined : poolHosts(input.poolId, input.kind);
+					if (input.poolId !== undefined && pooled?.length === 0) {
+						const name = pools.get(input.poolId)?.name ?? input.poolId;
+						throw Object.assign(new Error(`No host in pool ${name} can run ${article(input.kind)} sandbox now`), {
+							code: "unavailable",
+						});
+					}
+					const hostId = input.hostId ?? pooled?.[0]?.id;
 					const made = input.templateId === undefined ? undefined : await templates?.get(input.templateId);
 					// A template's own vCPUs and memory when the sliders weren't moved off them.
 					const shape =
@@ -2401,13 +2431,13 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						usage: flat(),
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
 						// The host asked for, else where the sample's placement puts each type.
-						...((input.hostId ?? (input.kind === "isolate" ? "hst_home" : "hst_hetzner_1")) === "hst_home"
+						...((hostId ?? (input.kind === "isolate" ? "hst_home" : "hst_hetzner_1")) === "hst_home"
 							? { hostId: "hst_home", hostName: "home-server" }
-							: input.hostId === undefined || input.hostId === "hst_hetzner_1"
+							: hostId === undefined || hostId === "hst_hetzner_1"
 								? { hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01" }
 								: {
-										hostId: input.hostId,
-										hostName: HOSTS.find((host) => host.id === input.hostId)?.name ?? input.hostId,
+										hostId,
+										hostName: HOSTS.find((host) => host.id === hostId)?.name ?? hostId,
 									}),
 						shared: input.accountId !== PERSONAL.id,
 						...(input.environmentIds === undefined || input.environmentIds.length === 0

@@ -105,7 +105,8 @@ OpenTelemetry, the organisation, billing, hosts, base images and the device page
 saved snapshot on an outdated base image shows `BaseOutdatedBadge` (`src/compute/base-outdated.tsx`) wherever it's
 listed. An opened host shows its memory with `HostMemoryUsage` (`src/compute/host-memory.tsx`), what takes its disk with
 `HostDiskUsage` (`src/compute/host-disk.tsx`) and its mesh peers with `HostPeers` (`src/compute/host-peers.tsx`). The
-Hosts page groups hosts by pool and manages pools with `src/compute/host-pools.tsx`. It calls a `ComputeSource`
+Hosts page groups hosts by pool and manages pools with `src/compute/host-pools.tsx`, whose `PoolPicker` New sandbox uses
+too. It calls a `ComputeSource`
 the host binds; `@kantel/ui/compute/fixtures` serves stories and the console's recorded mode.
 `SignInScreen` and `SignedInAs` are in `src/identity/`; they take the identity client's calls.
 The two themes (the colour tokens, the dark and light palettes, the switch, and how to change a palette) are in
