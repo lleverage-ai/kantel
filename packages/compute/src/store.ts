@@ -960,6 +960,11 @@ export interface StoredStickyDisk {
 	 */
 	readonly poolId?: string;
 	/**
+	 * The hosts a sandbox with it started on lately, each with when one last did (to within `STICKY_RAN_EVERY_MS`): those
+	 * within `STICKY_PREFETCH_MS` are sent each new head (docs/design/disk-store.md, 2d). Older entries go as one is written.
+	 */
+	readonly ranOn?: { readonly [hostId: string]: number };
+	/**
 	 * When it was deleted: from then it is gone to every caller and its name is free, and the record is kept so passes
 	 * delete its versions from hosts that were away (`STICKY_TOMBSTONE_MS`).
 	 */

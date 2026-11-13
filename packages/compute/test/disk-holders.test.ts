@@ -28,9 +28,9 @@ async function sqlStore(kind: TestDatabaseKind): Promise<ComputeStore> {
 }
 
 /**
- * A deployment over the stub backend whose shared hosts are, once `pool()` is called: the stub (`host_stub`) and `b` in
- * pool A, `c` in pool B, `d` in pool A but offline, and `e` in pool A (revoked by the test). Each but `e` has a mesh
- * address.
+ * A deployment over the stub backend whose shared hosts are, once `pool()` is called: the stub (`host_stub`), `b` and `g`
+ * in pool A, `c` in pool B, `d` in pool A but offline, `e` in pool A (revoked by the test), and `f` in pool A but another
+ * account's. Each has a mesh address.
  */
 function setUp(
 	options: {
@@ -41,6 +41,8 @@ function setUp(
 		holdings?: () => BackendStickyHoldings[];
 		/** The backend's `disk.fetch` (`SandboxBackend.fetchDisk`); absent, it has none. */
 		fetchDisk?: SandboxBackend["fetchDisk"];
+		/** The block map digest each commit answers; absent, none (a host from before maps, or a map that took longer). */
+		mapDigest?: () => string | undefined;
 	} = {},
 ) {
 	const clock = { now: Date.UTC(2026, 10, 13) };
@@ -50,6 +52,12 @@ function setUp(
 		...backend,
 		...(holdings === undefined ? {} : { stickyHoldings: async () => holdings() }),
 		...(options.fetchDisk === undefined ? {} : { fetchDisk: options.fetchDisk }),
+		async commitStickyDisk(sandboxId, diskId, version) {
+			if (backend.commitStickyDisk === undefined) throw new Error("The stub commits sticky disks");
+			const committed = await backend.commitStickyDisk(sandboxId, diskId, version);
+			const mapDigest = options.mapDigest?.();
+			return mapDigest === undefined ? committed : { ...committed, mapDigest };
+		},
 		async capabilities() {
 			const capabilities = await backend.capabilities();
 			const [stub] = capabilities.hosts;
@@ -70,6 +78,7 @@ function setUp(
 					host("host_d", "pool_a", { meshAddress: "fd00:a::3", connected: false }),
 					host("host_e", "pool_a", { meshAddress: "fd00:a::4" }),
 					host("host_f", "pool_a", { meshAddress: "fd00:a::5", accountId: "acc_other" }),
+					host("host_g", "pool_a", { meshAddress: "fd00:a::6" }),
 				],
 			};
 		},
@@ -328,6 +337,93 @@ describe("disk holders", () => {
 		await expect(
 			plain.fetchHostStickyDisk("host_b", { stickyDiskId: other.disk.id, version: other.version.id }),
 		).rejects.toMatchObject({ code: "not_supported" });
+	});
+
+	it("sends a new head to the hosts in its pool that started a sandbox with it in the last 7 days", async () => {
+		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];
+		let digest: string | undefined = `sha256:${"a".repeat(64)}`;
+		let reports: BackendStickyHoldings[] = [];
+		const tom = setUp({
+			fetchDisk: async (hostId, fetch) => {
+				fetches.push({ hostId, fetch });
+			},
+			mapDigest: () => digest,
+			holdings: () => reports,
+		});
+		const { disk, sandbox } = await tom.committed();
+		await tom.api.service.idle();
+		// Its sandbox's start on the stub's host was written down; another start within the hour writes nothing.
+		const started = tom.clock.now;
+		expect((await tom.api.store.stickyDisks.get(disk.id))?.ranOn).toEqual({ [STUB_HOST_ID]: started });
+		tom.clock.now += 30 * 60_000;
+		await tom.createSandbox({ type: "microvm", stickyDisks: [{ disk: "cache", path: "/cache" }], wait: true });
+		await tom.api.service.idle();
+		expect((await tom.api.store.stickyDisks.get(disk.id))?.ranOn).toEqual({ [STUB_HOST_ID]: started });
+		await tom.pool();
+		// Its sandbox moved with its host, so its commits are made in pool A.
+		await tom.api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, poolId: "pool_a" }));
+		const day = 24 * 3_600_000;
+		const ranOn = (hosts: { readonly [hostId: string]: number }) =>
+			tom.api.store.stickyDisks.update(disk.id, (current) => ({ ...current, ranOn: hosts }));
+		// b lately; g 8 days ago; c in another pool; d away; e revoked; f another account's, which may not hold it.
+		const at = tom.clock.now;
+		await ranOn({
+			[STUB_HOST_ID]: at,
+			host_b: at - day,
+			host_g: at - 8 * day,
+			host_c: at,
+			host_d: at,
+			host_e: at,
+			host_f: at,
+		});
+		const head = await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.api.service.idle();
+		expect(fetches.map((sent) => sent.hostId)).toEqual(["host_b"]);
+		expect(fetches[0]?.fetch).toMatchObject({
+			kind: "sticky",
+			objectId: disk.id,
+			version: head.id,
+			mapDigest: digest,
+			holders: [{ hostId: STUB_HOST_ID, address: "fd00:a::1" }],
+		});
+		const publicKey = await tom.api.service.grantPublicKey();
+		const grant = fetches[0]?.fetch.grant;
+		if (publicKey === undefined || grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(publicKey, grant, tom.clock.now)).toMatchObject({ to: "host_b", version: head.id });
+
+		// With its pool's sync off, nothing is sent.
+		fetches.length = 0;
+		await tom.api.store.pools.update("pool_a", ({ sync: _sync, ...pool }) => pool);
+		await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.api.service.idle();
+		expect(fetches).toEqual([]);
+
+		// A head committed before its map was made is sent once the sweep has its digest from its host.
+		await tom.api.store.pools.update("pool_a", (pool) => ({ ...pool, sync: true }));
+		digest = undefined;
+		await ranOn({ host_b: tom.clock.now, host_g: tom.clock.now });
+		const unmapped = await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.api.service.idle();
+		expect(fetches).toEqual([]);
+		// g has it already (fetched when a sandbox there asked for it), so isn't sent it.
+		await tom.api.service.recordStickyHoldings("host_g", tom.clock.now, [
+			{ diskId: disk.id, versions: [{ version: unmapped.id }] },
+		]);
+		tom.clock.now += 11 * 60_000;
+		reports = [
+			{
+				hostId: STUB_HOST_ID,
+				reportedAt: tom.clock.now,
+				disks: [
+					{ diskId: disk.id, versions: [unmapped.id], mapDigests: { [unmapped.id]: `sha256:${"b".repeat(64)}` } },
+				],
+			},
+		];
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches.map((sent) => [sent.hostId, sent.fetch.version, sent.fetch.mapDigest])).toEqual([
+			["host_b", unmapped.id, `sha256:${"b".repeat(64)}`],
+		]);
 	});
 
 	it("never forgets a version another host still holds", async () => {
