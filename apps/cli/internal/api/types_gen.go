@@ -3075,10 +3075,11 @@ type UpdateEnvironmentBody struct {
 }
 
 type UpdateGithubRunnersBody struct {
-	AppID         *int64             `json:"appId,omitempty"`
-	Enabled       *bool              `json:"enabled,omitempty"`
-	Name          *string            `json:"name,omitempty"`
-	Owner         *string            `json:"owner,omitempty"`
+	AppID   *int64  `json:"appId,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
+	Name    *string `json:"name,omitempty"`
+	Owner   *string `json:"owner,omitempty"`
+	// Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none.
 	Pools         []GithubRunnerPool `json:"pools,omitzero"`
 	PrivateKey    *string            `json:"privateKey,omitempty"`
 	Repositories  Nullable[[]string] `json:"repositories,omitzero"`

@@ -1573,5 +1573,7 @@ describe.each([
 		await tom.deleteAccountPool("spare");
 		await tom.updateAccountPool("ci", { runners: [] });
 		expect((await tom.getGithubRunners(githubRunners.id)).pools).toEqual([]);
+		// The empty list the integration now answers is one its pools take back.
+		expect((await tom.updateGithubRunners(githubRunners.id, { pools: [], enabled: false })).pools).toEqual([]);
 	});
 });

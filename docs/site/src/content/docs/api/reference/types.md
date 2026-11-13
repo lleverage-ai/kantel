@@ -2526,7 +2526,7 @@ A template version's definition, never changed once made. Answered with every de
 | `scope` | `"organization"` or `"repository"` | no | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
 | `runnerGroupId` | integer or null | no |  |
 | `repositories` | string[] or null | no |  |
-| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | no |  (at most 20 items) |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | no | Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none. (at most 20 items) |
 | `enabled` | boolean | no |  |
 
 ### UpdateHostBody

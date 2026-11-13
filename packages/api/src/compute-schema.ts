@@ -4734,7 +4734,13 @@ export const UpdateGithubRunnersBody = Type.Object(
 		repositories: Type.Optional(
 			Type.Union([Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), { maxItems: 500 }), Type.Null()]),
 		),
-		pools: Type.Optional(Type.Array(GithubRunnerPool, { minItems: 1, maxItems: 20 })),
+		pools: Type.Optional(
+			Type.Array(GithubRunnerPool, {
+				maxItems: 20,
+				description:
+					"Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none.",
+			}),
+		),
 		enabled: Type.Optional(Type.Boolean()),
 	},
 	{ title: "UpdateGithubRunnersBody" },

@@ -21109,8 +21109,8 @@
 						"items": {
 							"$ref": "#/components/schemas/GithubRunnerPool"
 						},
-						"minItems": 1,
-						"maxItems": 20
+						"maxItems": 20,
+						"description": "Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none."
 					},
 					"enabled": {
 						"type": "boolean"

@@ -2879,6 +2879,7 @@ export interface UpdateGithubRunnersBody {
 	readonly scope?: "organization" | "repository";
 	readonly runnerGroupId?: number | null;
 	readonly repositories?: readonly string[] | null;
+	/** Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none. */
 	readonly pools?: readonly GithubRunnerPool[];
 	readonly enabled?: boolean;
 }
