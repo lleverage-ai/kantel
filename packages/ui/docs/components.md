@@ -393,6 +393,42 @@ memory shows nothing.
 
 **Cost:** none: the host sends it with every heartbeat.
 
+### Pools on the Hosts page
+
+The hosts grouped by the pool they are in (`src/compute/host-pools.tsx`), where the `HostsSource` has `pools`. Each
+pool has a heading over its hosts (`PoolHeading`): its name, which wraps rather than being cut short, Default on the
+default pool, a line of what its hosts hold (hosts, online, vCPU in use of the total, sandboxes), and its menu: Add host
+here, Rename, Make default (not on the default) and Delete, greyed out with why ("Default", "Has hosts") unless the pool
+is empty and not the default. A pool with no hosts says so under its heading, with Add host here (`EmptyPool`). The
+default pool comes first, then the rest by name, and a host in no pool the page has read is in the default, as Kantel
+puts it. Every pool shows, even with no hosts at all, so a new account's one pool can be renamed. On a super-admin's
+page, accounts' own hosts are in their accounts' pools, not the deployment's: they're listed after the deployment's
+pools under their own heading (`AccountHostsHeading`), with no pool menu and no Move to pool. New pool and Rename take a name the API takes (lower-case letters, digits and dashes), checked as it's typed
+(`PoolNameDialog`); Delete asks first, and says that a join command made for the pool and not yet used still works,
+its host joining the default (`DeletePoolDialog`). Make default runs one change at a time, greyed out on every pool
+while one is under way (`oneAtATime`), as Kantel makes the change it handles last the default.
+
+A host's menu has Move to pool where the source has `move` and there's another pool. Kantel moves only a drained host
+with no sandboxes, so `MoveHostDialog` says so first, then what stands in the way as the page last read it (not
+drained, with a Drain button; or drained with sandboxes left), then the pool to move it to. Kantel checks again as it
+moves it, and its reason shows in the dialog as an error notice when it refuses. A moved host stays drained.
+
+Add host has a pool picker (`PoolPicker`) where there is more than one pool, starting on the default, or on the pool
+whose menu opened it; the pool goes with the join token, so changing it makes the command again. With one pool there
+is no picker and the host joins the default. Where the pools can't be read, the page lists the hosts ungrouped under
+an error notice with Try again, and Add host says the host joins the default pool; a later read that fails keeps the
+pools last read, so a pool chosen in Add host stays chosen. A source with no `pools` (an older gateway) lists the hosts
+ungrouped with no pool actions.
+
+**Don't use it for** where a sandbox goes when it's created (New sandbox's own choice) or a host's labels.
+
+**States:** many pools with an empty one, one pool, one pool with no hosts, long names, pools that can't be read, no
+pools, accounts' own hosts on a super-admin's page, New pool, Rename, Delete, Move to pool (not drained, with sandboxes,
+ready), Add host in a pool and with one pool, and a phone; all in the Hosts page's stories.
+
+**Cost:** one read of the pools with each read of the hosts (when the page opens, then every minute), and one after
+each change made on it.
+
 ### SandboxStateLabel
 
 A sandbox's state in words with its status dot (`src/compute/parts.tsx`), as the Sandboxes list and a sandbox's page

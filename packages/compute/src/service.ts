@@ -91,6 +91,12 @@ import {
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import {
+	createDiskHolders,
+	type DiskLocateRequest,
+	type DiskLocation,
+	type StickyHoldingsReport,
+} from "./disk-holders.ts";
+import {
 	composeEnv,
 	type EnvironmentResolution,
 	environmentFields,
@@ -156,6 +162,7 @@ import type {
 	StoredCommand,
 	StoredDeletion,
 	StoredDeviceLogin,
+	StoredDiskHolder,
 	StoredEgressEntry,
 	StoredEnvironment,
 	StoredEnvironmentFile,
@@ -717,6 +724,23 @@ export interface ComputeService {
 	 * has one.
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
+	/**
+	 * A host's capacity report's sticky disk holdings (`HostCapacity.stickyDisks`), received at `at`: its copies in the
+	 * catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordStickyHoldings`). Nothing with sticky
+	 * disks off.
+	 */
+	recordStickyHoldings(hostId: string, at: number, disks: StickyHoldingsReport): Promise<void>;
+	/**
+	 * A host's `disk.locate`: the version's block map digest, the online hosts in the asker's pool holding it with their
+	 * mesh addresses, and a grant to fetch it from them (docs/design/disk-store.md, 2c). `not_found` for a version the
+	 * catalogue doesn't have or the host may not have; `not_supported` with sticky disks off or no grant key.
+	 */
+	locateDisk(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
+	/**
+	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with
+	 * sticky disks off, or with no secrets key over a persistent store.
+	 */
+	grantPublicKey(): Promise<string | undefined>;
 	/**
 	 * A host connected to this gateway, or its connection here ended: each of its sandboxes that isn't deleted is
 	 * published to the live feed as it is (its state unchanged), so an open console reads it again and shows whether it can
@@ -2464,6 +2488,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const version of await store.stickyDiskVersions.list({ diskId })) {
 			await store.stickyDiskVersions.delete(version.id);
 		}
+		await diskHolders.forget("sticky", diskId);
 		await backend.deleteStickyDisk?.(diskId).catch(() => undefined);
 	}
 	/**
@@ -2495,17 +2520,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
 					await store.stickyDiskVersions.delete(version.id);
 				}
+				await diskHolders.forget("sticky", disk.id);
 				await backend.deleteStickyDisk(disk.id).catch(() => undefined);
 				if (t - disk.deletedAt > STICKY_TOMBSTONE_MS) await store.stickyDisks.delete(disk.id);
 			}
 		}
+		await diskHolders.sweep(t);
 		await forgetDroppedStickyVersions(disks);
 	}
 	/**
 	 * Forgets each version of a live disk that its host, connected and reporting what it holds, no longer holds (it
 	 * keeps only its newest few), so a disk lists the versions there are. Never the disk's head, which a later commit
-	 * replaces; never on the word of a host that doesn't say what it holds (absent isn't none); and never a version
-	 * committed within `STICKY_REPORT_GRACE_MS` of the report, which may have been measured before it.
+	 * replaces; never on the word of a host that doesn't say what it holds (absent isn't none); never a version
+	 * committed within `STICKY_REPORT_GRACE_MS` of the report, which may have been measured before it; and never a version
+	 * another host still holds (its holders, `StoredDiskHolder`), which the version's own host's report can't speak for.
+	 * Its holders go with it.
 	 *
 	 * A version without its block map's digest (its map took longer than its commit, or it was committed before maps)
 	 * gets the one its host reports.
@@ -2531,7 +2560,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			reports.set(report.hostId, { reportedAt: report.reportedAt, held, digests });
 		}
 		if (reports.size === 0) return;
+		const hosts = new Map((await ensureHosts()).map((host) => [host.id, host]));
 		for (const disk of live) {
+			const holders = await diskHolders.holdersOf("sticky", disk.id);
 			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
 				const report = reports.get(version.hostId);
 				const digest = report?.digests.get(`${disk.id}/${version.id}`);
@@ -2543,7 +2574,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
 				if (report.held.has(`${disk.id}/${version.id}`)) continue;
-				await store.stickyDiskWrites.forget(version.id);
+				const elsewhere = (holder: StoredDiskHolder) =>
+					holder.hostId !== version.hostId &&
+					holder.state !== "deleting" &&
+					hosts.get(holder.hostId)?.state !== "revoked";
+				if ((holders.get(version.id) ?? []).some(elsewhere)) continue;
+				// Checked again as it is forgotten: a host that records holding it meanwhile keeps it.
+				if (!(await store.stickyDiskWrites.forget(version.id, (latest) => latest.some(elsewhere)))) continue;
+				await diskHolders.forget("sticky", disk.id, version.id);
 			}
 		}
 	}
@@ -2583,6 +2621,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		once: (principal, operation, input, work) => once(principal, operation, input, work),
 	});
 
+	// Which hosts hold which disk versions, and grants to fetch them from each other (`disk-holders.ts`).
+	const diskHolders = createDiskHolders({
+		store,
+		now,
+		enabled: options.stickyDisks === true,
+		sealer,
+		hosts: () => ensureHosts(),
+		meshAddress: (hostId) => hostMeshAddress.get(hostId),
+		reportGraceMs: STICKY_REPORT_GRACE_MS,
+	});
+
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
 	function track<T>(ids: readonly string[], work: () => Promise<T>): Promise<T> {
 		const previous = Promise.all(ids.map((id) => pending.get(id) ?? Promise.resolve()));
@@ -2611,6 +2660,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// Each host's memory as the backend last said, answered with it (`hostView`) but never stored: it moves on every
 	// heartbeat.
 	const hostMemory = new Map<string, computeSchema.HostMemory>();
+	// Each host's mesh address as the backend last said, for `disk.locate`'s answers; not stored either.
+	const hostMeshAddress = new Map<string, string>();
 	const ensureHosts = (read?: Promise<BackendCapabilities>): Promise<StoredHost[]> => {
 		hostsReady ??= (async () => {
 			const [capabilities, records, allPools] = await Promise.all([
@@ -2621,6 +2672,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const byId = new Map(records.map((record) => [record.id, record]));
 			const writes: Promise<void>[] = [];
 			hostMemory.clear();
+			hostMeshAddress.clear();
+			// Mesh addresses are up only in pools with sync on: a host in another is no holder to fetch from.
+			const syncing = new Set(allPools.filter((pool) => pool.sync === true).map((pool) => pool.id));
 			// Each owner's pools, read in the one statement above; an owner with none gets its default made.
 			const ownerPools = new Map<string, Promise<StoredPool[]>>();
 			const grouped = new Map<string, StoredPool[]>();
@@ -2655,6 +2709,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
+				if (host.meshAddress !== undefined && host.poolId !== undefined && syncing.has(host.poolId)) {
+					hostMeshAddress.set(host.id, host.meshAddress);
+				}
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
@@ -10284,6 +10341,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
 				throw new KantelError("not_found", "The sticky disk was deleted");
 			}
+			// Its host holds it from now; its reports keep that so (`recordStickyHoldings`).
+			await diskHolders.recordCommit("sticky", disk.id, recorded.id, recorded.hostId);
 			return stickyVersionView(recorded);
 		},
 
@@ -11644,6 +11703,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async poolSync(poolId) {
 			return (await store.pools.get(poolId))?.sync === true;
 		},
+
+		recordStickyHoldings: (hostId, at, disks) => diskHolders.recordStickyHoldings(hostId, at, disks),
+		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),
+		grantPublicKey: () => diskHolders.publicKey(),
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

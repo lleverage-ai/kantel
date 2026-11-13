@@ -621,6 +621,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
 		// Which pools' hosts peer in their pool's mesh.
 		poolSync: (poolId) => api.service.poolSync(poolId),
+		// Which hosts hold which disk versions, from their reports, and where a host fetches one from, with a grant.
+		recordStickyHoldings: (hostId, at, holdings) => api.service.recordStickyHoldings(hostId, at, holdings),
+		locateDisk: (hostId, params) => api.service.locateDisk(hostId, params),
+		grantKey: () => api.service.grantPublicKey(),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);

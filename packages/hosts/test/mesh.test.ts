@@ -47,6 +47,8 @@ function setup() {
 			PEOPLE[request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? ""],
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
+		stickyDisks: true,
+		secretsKey: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))),
 	});
 	service.useJoinTokens(joinTokenSpender(api.store));
 	/**
@@ -328,6 +330,55 @@ describe("Pool meshes", () => {
 		heartbeat(a);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(a.sent.length).toBe(sent);
+	});
+
+	it("offers a host in a pool with sync on as a disk holder at its mesh address", async () => {
+		const { root, join, api } = setup();
+		await root.createPool({ name: "ci", sync: true });
+		const a = await join("ci", meshOf(1));
+		const b = await join("ci", meshOf(2));
+		const old = await join("ci");
+		const at = Date.now();
+		const { accountId } = await root.getCaller();
+		await api.store.stickyDisks.put({
+			id: "sdk_1",
+			accountId,
+			name: "cache",
+			sizeGb: 10,
+			head: "sdv_1",
+			createdAt: at,
+			updatedAt: at,
+		});
+		await api.store.stickyDiskVersions.put({
+			id: "sdv_1",
+			diskId: "sdk_1",
+			accountId,
+			hostId: b.hostId,
+			sandboxId: "sbx_1",
+			sizeBytes: 1,
+			allocatedBytes: 1,
+			seq: 1,
+			createdAt: at,
+		});
+		for (const hostId of [b.hostId, old.hostId]) {
+			await api.store.diskHolders.put({
+				id: `sticky:sdk_1:sdv_1:${hostId}`,
+				kind: "sticky",
+				objectId: "sdk_1",
+				version: "sdv_1",
+				hostId,
+				state: "held",
+				since: at,
+			});
+		}
+		const request = { kind: "sticky", objectId: "sdk_1", version: "sdv_1" };
+		// B, at the address its welcome gave it; not the host without the mesh, which has no address.
+		const found = await api.service.locateDisk(a.hostId, request);
+		expect(found.holders).toEqual([{ hostId: b.hostId, address: lastWelcome(b)?.mesh?.address }]);
+		expect(found.grant).toBeDefined();
+		// With sync off the mesh is down: no holder.
+		await root.updatePool("ci", { sync: false });
+		expect((await api.service.locateDisk(a.hostId, request)).holders).toEqual([]);
 	});
 
 	it("takes a revoked host out of its peers' lists at once", async () => {

@@ -923,6 +923,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+					...(host.meshAddress === undefined ? {} : { meshAddress: host.meshAddress }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };

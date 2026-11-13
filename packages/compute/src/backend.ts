@@ -157,6 +157,12 @@ export interface BackendHost {
 	readonly accountId?: string;
 	/** The pool it is in, as its registry has it (from its join token, or a move); absent where it keeps none. */
 	readonly poolId?: string;
+	/**
+	 * Its address on its pool's mesh (docs/design/disk-store.md, 2a), where its peers fetch disk versions from it: the
+	 * registry's, for a host that runs the mesh, given in `poolId`. Absent until it has one, and taken only while the pool
+	 * has sync on: a host without one there isn't offered to others as a holder (`disk.locate`).
+	 */
+	readonly meshAddress?: string;
 	readonly lastSeenAt?: number;
 }
 
