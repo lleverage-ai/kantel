@@ -4411,7 +4411,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
 			...hostMemoryOf(host.id),
-			...hostMeshOf(host.id),
+			// A revoked or dropped host's last report says nothing about now (a revoke answers before the next read).
+			...(host.state === "revoked" || host.state === "unreachable" ? {} : hostMeshOf(host.id)),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),

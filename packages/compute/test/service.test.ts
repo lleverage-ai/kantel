@@ -3990,6 +3990,12 @@ describe("hosts", () => {
 		// A host whose mesh went down (its pool's sync off) has none.
 		mesh = undefined;
 		expect((await root.listHosts()).items[0]?.mesh).toBeUndefined();
+		// Nor has a revoked one, though its last report is still read.
+		mesh = report;
+		expect((await root.listHosts()).items[0]?.mesh).toEqual(report);
+		const revoked = await root.revokeHost(STUB_HOST_ID);
+		expect(revoked.state).toBe("revoked");
+		expect(revoked.mesh).toBeUndefined();
 	});
 
 	it("shows what takes a host's disk as the host last measured it, its snapshots split by their records", async () => {
