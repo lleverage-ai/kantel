@@ -446,6 +446,39 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect((await failure(tom.createSandbox({ type: "microvm", pool: "nowhere" }))).code).toBe("not_found");
 	});
 
+	it("keeps a sandbox from a snapshot to the snapshot's pool, and one whose pool has gone to none", async () => {
+		const store = await make();
+		const other = await hostLike("host_ci");
+		const { backend } = hostsBackend(() => [other]);
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		// Another shared host, in ci.
+		await root.listHosts();
+		await root.updateHost("host_ci", { draining: true });
+		await root.updateHost("host_ci", { pool: "ci" });
+		await root.updateHost("host_ci", { draining: false });
+		const source = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: source.id });
+		// Made from it, in its host's pool; naming another pool is refused, not left to run elsewhere later.
+		const restored = await tom.createSandbox({ from: saved.id, autoStopMinutes: null, wait: true });
+		expect(restored.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const elsewhere = await failure(tom.createSandbox({ from: saved.id, pool: "ci" }));
+		expect(elsewhere.code).toBe("unavailable");
+		expect(elsewhere.message).toContain("another pool");
+
+		// Never placed, its pool gone: started again, it isn't placed in another.
+		const lost = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		await tom.stopSandbox(lost.id);
+		await store.sandboxes.update(lost.id, ({ hostId: _host, latestSnapshotId: _snap, ...rest }) => ({
+			...rest,
+			state: "error",
+			poolId: "pool_gone",
+		}));
+		const refused = await failure(tom.startSandbox(lost.id));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.message).toContain("pool_gone");
+	});
+
 	it("deletes an account's pools with the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();

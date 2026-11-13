@@ -3029,11 +3029,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return { ...(own === undefined ? {} : { own: own.id }), ...(common === undefined ? {} : { shared: common.id }) };
 	}
 
-	/** The pools a sandbox placed before may be placed in again: its own (`poolId`) only; any, for one from before pools. */
+	/**
+	 * The pools a sandbox placed before may be placed in again: its own (`poolId`) only; any, for one from before pools;
+	 * none, where its pool has gone (it isn't placed elsewhere).
+	 */
 	async function poolOfSandbox(sandbox: StoredSandbox): Promise<PoolChoice | undefined> {
 		if (sandbox.poolId === undefined) return undefined;
 		const pool = await store.pools.get(sandbox.poolId);
-		if (pool === undefined) return undefined;
+		if (pool === undefined) return { name: sandbox.poolId };
 		return pool.owner === OPERATOR_POOLS ? { shared: pool.id, name: pool.name } : { own: pool.id, name: pool.name };
 	}
 
@@ -8240,12 +8243,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					hostPin,
 					pool,
 				);
-				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the snapshot's host's.
-				const placedPool = (
-					from?.ref === undefined
-						? (await known).find((host) => host.id === hosts[0])
-						: snapshotHolder(from.ref, await known)
-				)?.poolId;
+				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the pool of the host
+				// that holds it (its ref's, else its sandbox's), which must be the pool it named.
+				const holderId = from === undefined ? undefined : await hostOfSnapshot(from);
+				const named = pool?.name === undefined ? undefined : (pool.own ?? pool.shared);
+				const holderPool =
+					holderId === undefined ? undefined : (await known).find((host) => host.id === holderId)?.poolId;
+				const placedPool =
+					from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : (holderPool ?? named);
+				if (from !== undefined && named !== undefined && holderPool !== undefined && holderPool !== named) {
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						`The snapshot is in another pool than ${body.pool}: a sandbox made from it runs only where it is`,
+					);
+				}
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
 				// its template's resources (unless it names a size), which a template snapshot was built as.
 				const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
