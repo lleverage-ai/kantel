@@ -3632,6 +3632,24 @@ export const Host = Type.Object(
 		tiers: Type.Array(SandboxType, { description: "The sandbox types it runs." }),
 		kvm: Type.Boolean(),
 		nestedVirtualisation: Type.Boolean(),
+		cpuFingerprint: Type.Optional(
+			Type.String({
+				description:
+					"Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, " +
+					"such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores " +
+					"only onto a host with the same. Absent for a host without microVMs, or one from before it said.",
+			}),
+		),
+		runtimeFingerprints: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest " +
+					"kernel, image, sticky drives and balloon, such as " +
+					"`firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's " +
+					"memory restores only onto a host with its runtime among these and the same CPU. Absent for a host " +
+					"without microVMs, or one from before it said.",
+			}),
+		),
 		capacity: Type.Object(
 			{
 				vcpus: Type.Integer(),

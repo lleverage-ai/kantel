@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
@@ -98,6 +99,9 @@ type Host struct {
 	patching imagePatching
 	// updating is one binary update at a time (gatewayUpdate): they all stage the same kantel-host.new.
 	updating sync.Mutex
+	// templateBuilds counts the template.build calls being answered, from their arrival until their answer is sent:
+	// a reconnect to report new runtimes waits for them (reconnectOnRuntimes).
+	templateBuilds atomic.Int64
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -352,8 +356,8 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 }
 
-// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates, and
-// what its isolate runtime said it can do once it has (Isolate).
+// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates, what
+// its isolate runtime said it can do once it has (Isolate), and its microVM runtimes for the images it has now.
 func (h *Host) Facts() proto.Facts {
 	f := h.facts
 	if held := h.patching.facts.Load(); held != nil {
@@ -363,6 +367,7 @@ func (h *Host) Facts() proto.Facts {
 	if iso, ok := h.tiers[isolate.Tier].(*isolate.Manager); ok {
 		f.Isolate = iso.RuntimeInfo()
 	}
+	f.Runtimes = h.runtimes()
 	if h.canBuildTemplates(context.Background()) == nil {
 		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
 		// Custom images only beside template builds: the control plane sends them to a host with both.
@@ -1058,17 +1063,26 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		// With the lifecycle calls: a stop waits for the commit's freeze, clone and thaw.
-		defer h.lifecycle.lock(p.SandboxID)()
-		t, err := h.tierOf(p.SandboxID)
+		var sticky StickyDisks
+		res, err := func() (proto.StickyCommitResult, error) {
+			// With the lifecycle calls: a stop waits for the commit's freeze, clone and thaw.
+			defer h.lifecycle.lock(p.SandboxID)()
+			t, err := h.tierOf(p.SandboxID)
+			if err != nil {
+				return proto.StickyCommitResult{}, err
+			}
+			var ok bool
+			if sticky, ok = t.(StickyDisks); !ok {
+				return proto.StickyCommitResult{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s has no sticky disk %s", p.SandboxID, p.DiskID)}
+			}
+			return sticky.CommitSticky(ctx, p)
+		}()
 		if err != nil {
 			return nil, err
 		}
-		sticky, ok := t.(StickyDisks)
-		if !ok {
-			return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s has no sticky disk %s", p.SandboxID, p.DiskID)}
-		}
-		return sticky.CommitSticky(ctx, p)
+		// Its map, after the lock: the sandbox's other calls don't wait for it.
+		res.MapDigest = sticky.StickyMapDigest(ctx, p.DiskID, p.Version)
+		return res, nil
 	case proto.MethodStickyDelete:
 		p, err := decode[proto.StickyDeleteParams](params)
 		if err != nil {
@@ -1110,6 +1124,8 @@ var _ = exec.Command
 // StickyDisks is a tier with sticky disks (FeatureStickyDisks): the microVM tier.
 type StickyDisks interface {
 	CommitSticky(ctx context.Context, p proto.StickyCommitParams) (proto.StickyCommitResult, error)
+	// StickyMapDigest waits a while for the block map of a version just committed, and answers its digest ("" if not).
+	StickyMapDigest(ctx context.Context, diskID, version string) string
 	DeleteSticky(p proto.StickyDeleteParams) error
 	StickyHoldings() []proto.StickyDiskHolding
 }

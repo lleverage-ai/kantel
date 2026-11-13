@@ -83,6 +83,7 @@ import {
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
 	SNAPSHOT_KEEP_FEATURE,
+	type SnapshotMadeOn,
 	type TakenSnapshot,
 	type UpgradedPlacement,
 	type UpgradeOutcome,
@@ -1406,6 +1407,22 @@ function bytesText(bytes: number): string {
 	return gib >= 1 ? `${gib.toFixed(1)} GiB` : `${Math.round(bytes / 2 ** 20)} MiB`;
 }
 
+/** What a snapshot was made on (`SnapshotMadeOn`), copied for another record: none where it says none. */
+function madeOnOf(made: SnapshotMadeOn): SnapshotMadeOn {
+	return {
+		...(made.cpu === undefined ? {} : { cpu: { ...made.cpu } }),
+		...(made.runtime === undefined ? {} : { runtime: made.runtime }),
+	};
+}
+
+/** A host's CPU and runtime fingerprints as its backend says them now, for its record: none where it says none. */
+function fingerprintsOf(host: BackendHost): Pick<StoredHost, "cpuFingerprint" | "runtimeFingerprints"> {
+	return {
+		...(host.cpuFingerprint === undefined ? {} : { cpuFingerprint: host.cpuFingerprint }),
+		...(host.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: [...host.runtimeFingerprints] }),
+	};
+}
+
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
 	const { lastSeenAt: knownSeen, ...knownRest } = known;
 	const { lastSeenAt: nextSeen, ...nextRest } = next;
@@ -2484,21 +2501,40 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * keeps only its newest few), so a disk lists the versions there are. Never the disk's head, which a later commit
 	 * replaces; never on the word of a host that doesn't say what it holds (absent isn't none); and never a version
 	 * committed within `STICKY_REPORT_GRACE_MS` of the report, which may have been measured before it.
+	 *
+	 * A version without its block map's digest (its map took longer than its commit, or it was committed before maps)
+	 * gets the one its host reports.
 	 */
 	async function forgetDroppedStickyVersions(disks: readonly StoredStickyDisk[]): Promise<void> {
 		if (backend.stickyHoldings === undefined) return;
 		const live = disks.filter((disk) => disk.deletedAt === undefined);
 		if (live.length === 0) return;
-		const reports = new Map<string, { readonly reportedAt: number; readonly held: ReadonlySet<string> }>();
+		const reports = new Map<
+			string,
+			{ readonly reportedAt: number; readonly held: ReadonlySet<string>; readonly digests: ReadonlyMap<string, string> }
+		>();
 		for (const report of await backend.stickyHoldings()) {
 			if (report.disks === undefined) continue;
 			const held = new Set(report.disks.flatMap((disk) => disk.versions.map((version) => `${disk.diskId}/${version}`)));
-			reports.set(report.hostId, { reportedAt: report.reportedAt, held });
+			const digests = new Map(
+				report.disks.flatMap((disk) =>
+					Object.entries(disk.mapDigests ?? {}).map(
+						([version, digest]) => [`${disk.diskId}/${version}`, digest] as const,
+					),
+				),
+			);
+			reports.set(report.hostId, { reportedAt: report.reportedAt, held, digests });
 		}
 		if (reports.size === 0) return;
 		for (const disk of live) {
 			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
 				const report = reports.get(version.hostId);
+				const digest = report?.digests.get(`${disk.id}/${version.id}`);
+				if (version.mapDigest === undefined && digest !== undefined) {
+					await store.stickyDiskVersions.update(version.id, (current) =>
+						current.mapDigest === undefined ? { ...current, mapDigest: digest } : undefined,
+					);
+				}
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
 				if (report.held.has(`${disk.id}/${version.id}`)) continue;
@@ -2638,6 +2674,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						updateAvailable: _available,
 						updating,
 						diskUsage: keptDisk,
+						cpuFingerprint: _cpu,
+						runtimeFingerprints: _runtimes,
 						...rest
 					} = current;
 					const pending =
@@ -2658,6 +2696,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						tiers: [...host.tiers],
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
+						...fingerprintsOf(host),
 						capacity: { ...host.capacity },
 						// What its disk holds: the latest measure it sent, else the one kept.
 						...(host.diskUsage === undefined
@@ -2688,6 +2727,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					tiers: [...host.tiers],
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
+					...fingerprintsOf(host),
 					capacity: { ...host.capacity },
 					...(host.diskUsage === undefined ? {} : { diskUsage: { ...host.diskUsage } }),
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
@@ -5756,6 +5796,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
 					...(taken.base === undefined ? {} : { base: taken.base }),
+					...madeOnOf(taken),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
@@ -9241,6 +9282,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
 					...(taken.base === undefined ? {} : { base: taken.base }),
+					...madeOnOf(taken),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
@@ -9305,6 +9347,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let base: string | undefined;
 				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
 				let memory = false;
+				// What its memory was made on, where its host said.
+				let made: SnapshotMadeOn = {};
 				// When the bytes were taken: a copied snapshot's own time (its source's, for one saved before this was kept), else now.
 				let takenAt: number | undefined;
 				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one, else the
@@ -9321,6 +9365,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// Sharing its source's ref: the source's full size, where recorded (else read from the host when counted).
 					fullSizeBytes = kept === undefined ? source.fullSizeBytes : kept.sizeBytes;
 					base = kept?.base ?? source.base;
+					made = madeOnOf(kept?.runtime === undefined ? source : kept);
 					memory = kept?.memory ?? (await holdsMemory(source));
 					takenAt = source.takenAt ?? (source.kind === "automatic" ? source.createdAt : undefined);
 					if (recordsMachine(source)) machine = recordedMachine(source);
@@ -9336,6 +9381,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
 					fullSizeBytes = taken.sizeBytes;
 					base = taken.base;
+					made = madeOnOf(taken);
 					memory = taken.memory === true;
 				} else {
 					throw new KantelError("conflict", "The sandbox has no state to save yet");
@@ -9364,6 +9410,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdBy: actorOf(principal),
 					ref,
 					...(base === undefined ? {} : { base }),
+					...made,
 				};
 				await admitSave(snapshot, existing);
 				await holdSnapshot(snapshot);
@@ -10198,6 +10245,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				sandboxId: sandbox.id,
 				sizeBytes: committed.sizeBytes,
 				allocatedBytes: committed.allocatedBytes,
+				...(committed.mapDigest === undefined ? {} : { mapDigest: committed.mapDigest }),
 				seq: 0,
 				createdAt: now(),
 			};

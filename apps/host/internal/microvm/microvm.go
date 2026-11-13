@@ -228,6 +228,9 @@ type Config struct {
 	// FreePageReporting boots every microVM's balloon with free page reporting: the guest hands the pages it frees
 	// back to the host, so a VM's resident memory falls after a peak. In the templates' fingerprint.
 	FreePageReporting bool
+	// CPU is the host's CPU fingerprint, which snapshots record (fingerprint.go); nil reads it (hostinfo.CPU) once,
+	// when first asked.
+	CPU *proto.CPUFingerprint
 	// ExitCause, when set, says why a VM exited that the host didn't end itself ("": not known), such as the kernel's
 	// out-of-memory killer at the host's memory limit: the error its exit is reported with. Called with the sandbox's
 	// lock held, so it mustn't call the tier.
@@ -292,6 +295,9 @@ type meta struct {
 	// StickyDisks the sticky disks attached to it (sticky.go).
 	StickyDrives int          `json:"stickyDrives,omitempty"`
 	StickyDisks  []stickyDisk `json:"stickyDisks,omitempty"`
+	// Runtime is the portable runtime fingerprint of the machine it runs (fingerprint.go), as it was when it booted,
+	// or restored: its snapshots record it. Empty when it can't be told, such as a machine started before it was kept.
+	Runtime string `json:"runtime,omitempty"`
 }
 
 type sandbox struct {
@@ -301,6 +307,9 @@ type sandbox struct {
 	machine *fc.Machine
 	guest   *guest.Client
 	link    *network.Link
+	// starting is the runtime of the machine a create or start is starting (fingerprint.go), taken as it launches:
+	// meta.Runtime once it runs, and never if its start fails, so a stopped sandbox's memory keeps its own.
+	starting string
 	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
 	// start, writes it before it answers.
 	unsaved bool
@@ -412,6 +421,18 @@ type Manager struct {
 	// stickyCommits are the versions being committed now, by "<disk>/<version>" (reserveStickyVersion). Guarded by
 	// stickyMu.
 	stickyCommits map[string]bool
+	// stickyMaps are the sticky disk versions' block maps being made now, by "<disk>/<version>" (startStickyMap), and
+	// stickyDigests each map's digest as last read (stickyMapDigest). Guarded by stickyMapMu.
+	stickyMapMu   sync.Mutex
+	stickyMaps    map[string]*stickyMapJob
+	stickyDigests map[string]stickyDigest
+	// stickyAnswering are the versions published whose commit isn't answered yet, by "<disk>/<version>", each until
+	// when it is kept from a prune at most (pinStickyAnswer). Guarded by stickyMu.
+	stickyAnswering map[string]time.Time
+	// holdMaps (tests), when set, holds every block map started meanwhile once its files are open.
+	holdMaps *mapHold
+	// fingerprints is the CPU and the runtime's files, as fingerprint.go reads them.
+	fingerprints fingerprints
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -671,6 +692,8 @@ func New(cfg Config) (*Manager, error) {
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	m.spool.adopt(spoolLinks(cfg.Root))
+	// Block maps of the sticky disk versions committed before them.
+	m.mapOldSticky(m.bg)
 	return m, nil
 }
 
@@ -1531,7 +1554,11 @@ func (m *Manager) buildTemplate(ctx context.Context, sh shape, dir string) (timi
 	_ = os.RemoveAll(dir)
 	t, caps, _, err := m.bootSnapshot(ctx, snapshotBoot{
 		dir: dir, name: size.Name, rootfs: m.cfg.Rootfs, size: size, hotplugMiB: sh.HotplugMiB, egress: network.EgressNone,
-		record: func(building, rootfs string) error {
+		record: func(building, rootfs, runtime string) error {
+			// And its runtime as it boots (fingerprint.go), which the sandboxes restored from it run.
+			if err := os.WriteFile(filepath.Join(building, templateRuntimeFile), []byte(runtime), 0o600); err != nil {
+				return err
+			}
 			return os.WriteFile(filepath.Join(building, "rootfs"), []byte(rootfs), 0o600)
 		},
 	})
@@ -1566,8 +1593,9 @@ type snapshotBoot struct {
 	// egress is the boot's network mode.
 	egress string
 	// record writes, in the building directory, the snapshot's own reference to the root filesystem it boots, which
-	// moves with it to dir: a prune finds the base there once the VM directory has gone.
-	record func(building, rootfs string) error
+	// moves with it to dir: a prune finds the base there once the VM directory has gone. runtime is the portable
+	// runtime it boots with (fingerprint.go).
+	record func(building, rootfs, runtime string) error
 	// prepare, when set, runs once the guest's services are up and before the snapshot (a template build's setup).
 	prepare func(ctx context.Context, client *guest.Client, link network.Link) error
 }
@@ -1593,15 +1621,16 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 	// prune finds it in the building directory, then in the snapshot, from here on.
 	unhold := m.holdBases()
 	rootfs := m.pinRootfs(b.rootfs)
+	// The kernel it boots, and the runtime that makes it (fingerprint.go), which the snapshot keeps.
+	kernel := m.bootKernel(rootfs)
 	err := m.linkRootfs(vm, rootfs)
 	if err == nil && b.record != nil {
-		err = b.record(building, rootfs)
+		err = b.record(building, rootfs, m.runtimeOf(rootfs, kernel, StickyDrives))
 	}
 	unhold()
 	if err != nil {
 		return nil, nil, "", err
 	}
-	kernel := m.kernelFor(rootfs)
 	if err := newDisk(filepath.Join(vm, fc.DiskFile), b.size.DiskGiB); err != nil {
 		return nil, nil, "", err
 	}
@@ -2221,6 +2250,9 @@ type sandboxOrigin struct {
 	// takeDisk moves the snapshot's disk into the new sandbox rather than copying it: a live fork's own snapshot, which
 	// nothing else uses and which is deleted once the fork has started (Fork).
 	takeDisk bool
+	// runtime is the portable runtime the memory it restores was made on (fingerprint.go): the snapshot's or template
+	// snapshot's own record, "" when that has none.
+	runtime string
 }
 
 // startOf is a new sandbox's origin as a machine of size: p.From, a snapshot; p.Template, a template's snapshot or its
@@ -2249,6 +2281,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 			// Its memory holds the guest's mounts of the bundles on its drives then: the same images, on the same drives.
 			origin.snapshotDir, origin.bundleDrives = sdir, snap.BundleDrives
 			origin.bundleSlots = append([]string(nil), snap.BundleSlots...)
+			origin.runtime = snap.Runtime
 		}
 		return origin, nil
 	}
@@ -2265,7 +2298,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 			return sandboxOrigin{}, err
 		}
 		unhold := m.holdBases()
-		return sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold, reshape: &sh}, nil
+		return sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold, reshape: &sh, runtime: sizeTemplateRuntime(tpl)}, nil
 	}
 	if isCustom(size.Name) || fits || m.sharedOn() {
 		// No template: a fresh disk, then a cold boot (and, when it fits, its shared template is being made), on the
@@ -2281,7 +2314,7 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 		return sandboxOrigin{}, err
 	}
 	unhold := m.holdBases()
-	origin := sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold}
+	origin := sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold, runtime: sizeTemplateRuntime(tpl)}
 	if tt != nil {
 		origin.source = "boot"
 	}
@@ -2439,6 +2472,7 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = s.link.Slot
 	s.meta.Pid = s.machine.Pid()
+	s.meta.Runtime = s.starting
 	if err := m.writeMeta(s); err != nil {
 		return fail(err)
 	}
@@ -2623,6 +2657,11 @@ func (m *Manager) startSandbox(ctx context.Context, p proto.CreateParams, size p
 // failure it leaves no machine, link or vm directory behind; the record goes with s's directory (Create's fail).
 func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOrigin, size proto.Size, e *proto.Egress, t timings, ph *proto.StartPhases) (err error) {
 	vm := s.vmDir()
+	// A restore runs the memory's kernel and image under the Firecracker it launches; a boot sets its own (boot).
+	s.starting = ""
+	if origin.state != "" {
+		s.starting = m.restoredRuntime(origin.runtime)
+	}
 	defer func() {
 		if err == nil {
 			return
@@ -2718,7 +2757,10 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size, ph *proto.StartPhases) error {
 	start := time.Now()
 	vm := s.vmDir()
-	kernel := m.kernelFor(vmRootfs(vm))
+	// The kernel it boots, and its runtime as it launches with that kernel and the sticky drives it has (none for a
+	// sandbox from before them).
+	kernel := m.bootKernel(vmRootfs(vm))
+	s.starting = m.runtimeOf(vmRootfs(vm), kernel, s.meta.StickyDrives)
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
 	if err != nil {
 		return err
@@ -2973,6 +3015,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	source := "snapshot"
 	_, statErr := os.Stat(filepath.Join(vm, "mem"))
 	if s.meta.Memory && statErr == nil && !coldBoot {
+		s.starting = m.restoredRuntime(s.meta.Runtime)
 		machine, client, err := m.restore(ctx, vm, filepath.Join(vm, "state"), filepath.Join(vm, "mem"), link, ph)
 		if err != nil {
 			m.cfg.Network.Remove(link)
@@ -3027,6 +3070,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = link.Slot
 	s.meta.Pid = s.machine.Pid()
+	s.meta.Runtime = s.starting
 	s.meta.Error = ""
 	if err := m.writeMeta(s); err != nil {
 		m.releaseBundles(s, nil)
@@ -3510,6 +3554,7 @@ func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, tran
 	defer m.holdBases()()
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
+	snap.CPU, snap.Runtime = m.CPU(), s.meta.Runtime
 	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest, Transient: transient}
 	if snap.Memory {
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
@@ -3961,7 +4006,7 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	}
 	kept := src
 	// Its own save time, and its source's state's time (TakenAt).
-	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), Memory: src.Memory, Base: src.Base, Tier: Tier}
+	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), Memory: src.Memory, Base: src.Base, Tier: Tier, CPU: src.CPU, Runtime: src.Runtime}
 	if kept.Memory {
 		ok := os.Link(filepath.Join(from, "state"), filepath.Join(sdir, "state")) == nil &&
 			m.spool.link(filepath.Join(from, "mem"), filepath.Join(sdir, "mem")) == nil

@@ -13,7 +13,7 @@
 
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
+import type { BackendDiskUsage, SandboxTemplateBoot, SnapshotMadeOn } from "./backend.ts";
 import type { StoredGithubRunnerJob, StoredGithubRunnerMachine, StoredGithubRunners } from "./github-runners.ts";
 import type { SealedValue } from "./secrets.ts";
 
@@ -379,8 +379,9 @@ export type StoredCommand = computeSchema.Command & {
 };
 
 /**
- * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
- * file system is (`TakenSnapshot.base`), answered as the API's `base`.
+ * A snapshot and the backend's reference to its bytes (absent until it is ready), the base image version its root
+ * file system is (`TakenSnapshot.base`), answered as the API's `base`, and what a microVM's was made on where its host
+ * said (`SnapshotMadeOn`), which the API doesn't answer.
  */
 export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 	readonly ref?: string;
@@ -401,7 +402,7 @@ export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 		readonly at: number;
 		readonly settling?: boolean;
 	};
-};
+} & SnapshotMadeOn;
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
@@ -550,8 +551,9 @@ export interface StoredTemplateVersion {
 }
 
 /**
- * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, and the backend's reference
- * to its bytes once it is built.
+ * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, the backend's reference
+ * to its bytes once it is built, and what it was made on where its host said (`SnapshotMadeOn`), which the API doesn't
+ * answer.
  */
 export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state"> & {
 	/**
@@ -581,7 +583,7 @@ export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state
 	readonly claimHash?: string;
 	/** A custom image's root filesystem on its host, which a fresh boot there boots (`SandboxTemplateBoot.rootfsKey`). */
 	readonly rootfsKey?: string;
-};
+} & SnapshotMadeOn;
 
 /** A template as `TemplateWrites.update` changes it, and the version the change makes when it makes one. */
 export interface TemplateChange {
@@ -944,7 +946,10 @@ export interface StoredStickyDiskName {
 
 export const stickyDiskNameId = (accountId: string, name: string): string => `${accountId}:${name}`;
 
-/** One committed version of a sticky disk: where it was made, from what. Never changed. */
+/**
+ * One committed version of a sticky disk: where it was made, from what. Never changed, but for its `mapDigest` given
+ * after its commit.
+ */
 export interface StoredStickyDiskVersion {
 	readonly id: string;
 	readonly diskId: string;
@@ -954,6 +959,11 @@ export interface StoredStickyDiskVersion {
 	readonly sandboxId: string;
 	readonly sizeBytes: number;
 	readonly allocatedBytes: number;
+	/**
+	 * Its block map's digest (`sha256:` and hex; docs/design/disk-store.md, 2b): from the commit's answer, or, when the
+	 * map took longer, from its host's next report of what it holds. Absent until then, and for a host from before maps.
+	 */
+	readonly mapDigest?: string;
 	/** Its place among its disk's commits, from 1: what orders them, as two may share a millisecond. */
 	readonly seq: number;
 	readonly createdAt: number;

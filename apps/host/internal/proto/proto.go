@@ -120,6 +120,37 @@ type Facts struct {
 	// Isolate is what the isolate tier's runtime says it can do, as the host last read it from the runtime; absent on
 	// a host without the tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
 	Isolate *IsolateRuntime `json:"isolate,omitempty"`
+	// CPU is the host's CPU as a microVM sees it: a snapshot's memory restores only onto a host whose CPU fingerprint is
+	// the same, since Kantel sets no Firecracker CPU template. Absent on a host without the microVM tier, or from before
+	// it said.
+	CPU *CPUFingerprint `json:"cpu,omitempty"`
+	// Runtimes are the microVM runtime fingerprints the host restores snapshots with, one for each host image version
+	// it has (one for its image, without versioned images): a snapshot's memory restores only onto a host with its
+	// Runtime among them and the same CPU. Absent on a host without the microVM tier, or from before it said.
+	Runtimes []HostRuntime `json:"runtimes,omitempty"`
+}
+
+// CPUFingerprint is what a CPU is to a guest: its vendor (`AuthenticAMD`), family and model as /proc/cpuinfo has them,
+// and FeaturesHash, a hash of the CPUID feature bits KVM offers a guest (`sha256:` and 16 hex digits; on a CPU without
+// CPUID, of the kernel's feature flags). Two fingerprints match when all four are equal (Same).
+type CPUFingerprint struct {
+	Vendor       string `json:"vendor"`
+	Family       int    `json:"family"`
+	Model        int    `json:"model"`
+	FeaturesHash string `json:"featuresHash"`
+}
+
+// Same says two CPUs restore each other's snapshots: both known, and every field equal.
+func (c *CPUFingerprint) Same(o *CPUFingerprint) bool {
+	return c != nil && o != nil && c.FeaturesHash != "" && *c == *o
+}
+
+// HostRuntime is the runtime fingerprint (SnapshotInfo.Runtime) of a sandbox booted on one host image: Image is its
+// version, `sha256:` and a digest prefix for a host image that isn't versioned, or empty for templates' own root
+// filesystems (images/templates), which aren't host images.
+type HostRuntime struct {
+	Image   string `json:"image"`
+	Runtime string `json:"runtime"`
 }
 
 // IsolateRuntime is what the isolate tier's runtime (kantel-isolate) says it is in its /healthz: which runtime and
@@ -734,6 +765,12 @@ type SnapshotInfo struct {
 	UniqueBytes int64 `json:"uniqueBytes,omitempty"`
 	// Shared, on snapshot.keep's answer only: the groups of files the new snapshot shares with others.
 	Shared []SharedBytes `json:"shared,omitempty"`
+	// CPU and Runtime are what a microVM snapshot was made on: its host's CPU (Facts.CPU) and the runtime fingerprint
+	// of the machine it was taken of, as that booted or was restored (HostRuntime.Runtime; empty when it can't be told,
+	// such as a machine started before it was kept, which matches nothing). Its memory restores only onto a host with
+	// both. Absent from an isolate's, and from a host from before they were kept.
+	CPU     *CPUFingerprint `json:"cpu,omitempty"`
+	Runtime string          `json:"runtime,omitempty"`
 }
 
 // TakenAtOrCreated is when the state a snapshot holds was taken: TakenAt, or CreatedAt where it has none.
@@ -947,6 +984,9 @@ type StickyCommitResult struct {
 	Version        string `json:"version"`
 	SizeBytes      int64  `json:"sizeBytes"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
+	// MapDigest is the digest ("sha256:" and hex) of the version's block map (docs/design/disk-store.md, 2b): absent
+	// from a host from before maps, or when the map took too long to wait for (a capacity report gives it later).
+	MapDigest string `json:"mapDigest,omitempty"`
 	// ThawError, when set, is why the guest couldn't be told to thaw the disk after its copy was made (while frozen,
 	// so the version is whole): the guest thaws it by itself once its freeze's lease lapses.
 	ThawError string `json:"thawError,omitempty"`
@@ -965,12 +1005,13 @@ type StickyDiskHolding struct {
 	Versions []StickyVersionHolding `json:"versions"`
 }
 
-// StickyVersionHolding is one version a host holds: the bytes it takes on the host's disk, and when it was made there
-// (Unix milliseconds).
+// StickyVersionHolding is one version a host holds: the bytes it takes on the host's disk, when it was made there
+// (Unix milliseconds), and its block map's digest (absent while it has none, or from a host from before maps).
 type StickyVersionHolding struct {
 	Version        string `json:"version"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
 	At             int64  `json:"at"`
+	MapDigest      string `json:"mapDigest,omitempty"`
 }
 
 // TemplateBoot is how a sandbox made from a template boots.
@@ -1039,6 +1080,10 @@ type TemplateBuildResult struct {
 	ImageRef         string             `json:"imageRef,omitempty"`
 	SizeBytes        int64              `json:"sizeBytes"`
 	Timings          map[string]float64 `json:"timings,omitempty"`
+	// CPU and Runtime are what the template snapshot was made on, as SnapshotInfo's are; absent from a host from before
+	// they were kept.
+	CPU     *CPUFingerprint `json:"cpu,omitempty"`
+	Runtime string          `json:"runtime,omitempty"`
 }
 
 // TemplateDeleteParams is template.delete: the template snapshot's directory goes; nothing else does.

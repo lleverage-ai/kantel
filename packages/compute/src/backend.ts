@@ -129,6 +129,10 @@ export interface BackendHost {
 	 * so neither, and not enforced.
 	 */
 	readonly isolate?: BackendIsolateRuntime;
+	/** Its CPU fingerprint as text (`Host.cpuFingerprint`); absent: it hasn't said (an older host, the stub). */
+	readonly cpuFingerprint?: string;
+	/** Its microVM runtime fingerprints (`Host.runtimeFingerprints`); absent: it hasn't said. */
+	readonly runtimeFingerprints?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported, which placement admits a create against (`capacity.diskGb` is what it
@@ -227,6 +231,8 @@ export interface CommittedStickyDisk {
 	readonly hostId: string;
 	readonly sizeBytes: number;
 	readonly allocatedBytes: number;
+	/** Its block map's digest, when its host made the map in time (a later holdings report may give it). */
+	readonly mapDigest?: string;
 }
 
 /** What a connected host last reported holding of sticky disks (`SandboxBackend.stickyHoldings`). */
@@ -238,7 +244,12 @@ export interface BackendStickyHoldings {
 	 * The versions it holds of each disk; a disk it holds none of isn't listed. Absent: it doesn't say (a host without
 	 * sticky disks, or from before them), which isn't holding none.
 	 */
-	readonly disks?: readonly { readonly diskId: string; readonly versions: readonly string[] }[];
+	readonly disks?: readonly {
+		readonly diskId: string;
+		readonly versions: readonly string[];
+		/** The block map digests of the versions it has made maps of, by version. */
+		readonly mapDigests?: Readonly<Record<string, string>>;
+	}[];
 }
 
 /**
@@ -370,8 +381,26 @@ export interface TemplateSnapshotBytes {
 	readonly ref?: string;
 }
 
-/** A template snapshot built: its opaque reference, the host holding it, and its size. */
-export interface BuiltTemplate {
+/** What a CPU is to a guest: its vendor, family, model and a hash of its CPUID features (`HostCpuFingerprint`). */
+export interface CpuFingerprint {
+	readonly vendor: string;
+	readonly family: number;
+	readonly model: number;
+	readonly featuresHash: string;
+}
+
+/**
+ * What a microVM snapshot was made on, as its host said: its host's CPU and its runtime fingerprint (one of a host's
+ * `runtimeFingerprints`). Its memory restores only onto a host with the same CPU and its runtime among the host's.
+ * Absent from a backend or host that doesn't say.
+ */
+export interface SnapshotMadeOn {
+	readonly cpu?: CpuFingerprint;
+	readonly runtime?: string;
+}
+
+/** A template snapshot built: its opaque reference, the host holding it, its size, and what it was made on. */
+export interface BuiltTemplate extends SnapshotMadeOn {
 	readonly ref: string;
 	readonly hostId: string;
 	/** The image booted: a pulled base's ID, or a custom image's digest (a reference's resolved one, a build's image ID). */
@@ -504,7 +533,7 @@ export interface TakeSnapshotOptions {
 	readonly memory?: boolean;
 }
 
-export interface TakenSnapshot {
+export interface TakenSnapshot extends SnapshotMadeOn {
 	readonly ref: string;
 	readonly sizeBytes: number;
 	/** The base image version its root file system is, as `Placement.base`; absent where the backend doesn't know. */

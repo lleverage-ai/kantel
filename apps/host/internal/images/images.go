@@ -193,10 +193,13 @@ type imageFile struct {
 	required    bool
 }
 
+// sandboxImageFile is a version's microVM root filesystem, by its name in the version's directory.
+const sandboxImageFile = "sandbox.ext4"
+
 func versionFiles(arch string) []imageFile {
 	return []imageFile{
 		{name: "vmlinux-" + arch, local: "vmlinux", required: true},
-		{name: "sandbox-" + arch + ".ext4", local: "sandbox.ext4", required: true},
+		{name: "sandbox-" + arch + ".ext4", local: sandboxImageFile, required: true},
 		{name: "isolate-" + arch + ".ext4", local: "isolate.ext4"},
 	}
 }
@@ -220,6 +223,22 @@ func (s Store) Current() (version string, ok bool) {
 		return "", false
 	}
 	return v, true
+}
+
+// SandboxImages are the microVMs' root filesystems of the versions installed (v/<version>/sandbox.ext4), resolved,
+// oldest version name first.
+func (s Store) SandboxImages() []string {
+	entries, _ := os.ReadDir(filepath.Join(s.Dir, "v"))
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || !ValidVersion(e.Name()) || !s.installed(e.Name()) {
+			continue
+		}
+		if p, err := filepath.EvalSymlinks(filepath.Join(s.versionDir(e.Name()), sandboxImageFile)); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Version is the version a resolved image path is under in this store, or "".
