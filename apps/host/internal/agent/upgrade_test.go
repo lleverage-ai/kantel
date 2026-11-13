@@ -21,12 +21,15 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
-// upgradeIsolateTier is an isolate tier with one sandbox's files, exported as the isolate tier exports them.
+// upgradeIsolateTier is an isolate tier with one sandbox's files, directories and links, exported as the isolate tier
+// exports them (sorted, so a directory comes before what is in it).
 type upgradeIsolateTier struct {
 	Tier
 	mu       sync.Mutex
 	present  map[string]bool
 	files    map[string]string
+	dirs     []string
+	links    map[string]string
 	disposed []string
 	failTar  error
 	frozen   string
@@ -72,16 +75,30 @@ func (f *upgradeIsolateTier) ExportTar(_ string, w io.Writer) (int, int64, error
 	if f.failTar != nil {
 		return 0, 0, f.failTar
 	}
+	var headers []*tar.Header
+	for _, name := range f.dirs {
+		headers = append(headers, &tar.Header{Name: name + "/", Mode: 0o755, Typeflag: tar.TypeDir})
+	}
+	for name, content := range f.files {
+		headers = append(headers, &tar.Header{Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg})
+	}
+	for name, target := range f.links {
+		headers = append(headers, &tar.Header{Name: name, Mode: 0o777, Linkname: target, Typeflag: tar.TypeSymlink})
+	}
+	slices.SortFunc(headers, func(a, b *tar.Header) int { return strings.Compare(a.Name, b.Name) })
 	tw := tar.NewWriter(w)
 	var size int64
-	for name, content := range f.files {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+	for _, h := range headers {
+		if err := tw.WriteHeader(h); err != nil {
 			return 0, 0, err
 		}
-		_, _ = tw.Write([]byte(content))
-		size += int64(len(content))
+		if h.Typeflag == tar.TypeReg {
+			content := f.files[h.Name]
+			_, _ = tw.Write([]byte(content))
+			size += int64(len(content))
+		}
 	}
-	return len(f.files), size, tw.Close()
+	return len(headers), size, tw.Close()
 }
 
 func (f *upgradeIsolateTier) Dispose(id string) error {
@@ -391,6 +408,97 @@ func TestUpgradeIntoASnapshotLaysTheIsolatesFilesOverIt(t *testing.T) {
 	}
 	if len(iso.disposed) != 1 {
 		t.Fatalf("disposed %v", iso.disposed)
+	}
+}
+
+// Where the isolate and the snapshot have different kinds of entry at one path, the guest's extractor decides: the
+// isolate's directory replaces the snapshot's file or link, and its link replaces the snapshot's file, as a file
+// replaces a file.
+func TestUpgradeIntoASnapshotReplacesItsFilesAndLinks(t *testing.T) {
+	h, iso, mv, _ := newUpgradeHost(t)
+	mv.snapshots = map[string]map[string]string{"snap_project": {
+		"home/user/workspace/build":   "the snapshot's file\n",
+		"home/user/workspace/current": "the snapshot's file\n",
+	}}
+	iso.dirs = []string{"build", "src"}
+	iso.files["build/out.js"] = "built\n"
+	iso.links = map[string]string{"current": "src/a.txt"}
+	if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up", From: "snap_project"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(mv.root, "home", "user", "workspace")
+	if got, err := os.ReadFile(filepath.Join(workspace, "build", "out.js")); err != nil || string(got) != "built\n" {
+		t.Fatalf("build/out.js: %q %v", got, err)
+	}
+	if target, err := os.Readlink(filepath.Join(workspace, "current")); err != nil || target != "src/a.txt" {
+		t.Fatalf("current: %q %v", target, err)
+	}
+}
+
+// A file or link of the isolate's where the snapshot has a directory is refused by the guest's extractor, which never
+// deletes a directory (the microVM tier answers its refusal invalid): the upgrade fails, the microVM goes, the isolate
+// stays as it was, and the snapshot's directory kept its files until then.
+func TestUpgradeIntoASnapshotRefusesAFileOrLinkOverItsDirectory(t *testing.T) {
+	for name, lay := range map[string]func(*upgradeIsolateTier){
+		"link": func(iso *upgradeIsolateTier) { iso.links = map[string]string{"lib": "src/a.txt"} },
+		"file": func(iso *upgradeIsolateTier) { iso.files["lib"] = "a file\n" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, iso, mv, events := newUpgradeHost(t)
+			mv.snapshots = map[string]map[string]string{"snap_project": {"home/user/workspace/lib/kept.js": "kept\n"}}
+			lay(iso)
+			_, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up", From: "snap_project"})
+			if err == nil || !strings.Contains(err.Error(), "where a directory is") {
+				t.Fatalf("got %v, want the extractor's refusal", err)
+			}
+			if got, err := os.ReadFile(filepath.Join(mv.root, "home", "user", "workspace", "lib", "kept.js")); err != nil || string(got) != "kept\n" {
+				t.Fatalf("the snapshot's lib/kept.js: %q %v", got, err)
+			}
+			if len(mv.deleted) != 1 || len(iso.disposed) != 0 || iso.frozen != "" || len(*events) != 0 || mv.execCount() != 0 {
+				t.Fatalf("deleted %v, disposed %v, frozen %q, events %v, %d execs", mv.deleted, iso.disposed, iso.frozen, *events, mv.execCount())
+			}
+			if _, name, err := h.tierOfNamed("sbx_up"); err != nil || name != isolate.Tier {
+				t.Fatalf("sbx_up is %s (%v)", name, err)
+			}
+		})
+	}
+}
+
+// An upgrade into a snapshot sent again answers its kept outcome even once the snapshot is deleted; a new operation
+// naming the deleted snapshot is refused before anything is frozen, and one settled failed doesn't start.
+func TestAnUpgradeIntoASnapshotSentAgainAnswersItsOutcome(t *testing.T) {
+	h, iso, mv, _ := newUpgradeHost(t)
+	mv.snapshots = map[string]map[string]string{"snap_project": {"home/user/workspace/package.json": "{}\n"}}
+	params := proto.CreateParams{SandboxID: "sbx_up", From: "snap_project"}
+	first, err := upgradeCall(t, h, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(mv.snapshots, "snap_project")
+	again, err := upgradeCall(t, h, params)
+	if err != nil || again.Tier != microvm.Tier || again.Moved == nil || *again.Moved != *first.Moved {
+		t.Fatalf("the same upgrade again: %+v %v", again, err)
+	}
+	if len(mv.created) != 1 || len(mv.deleted) != 0 {
+		t.Fatalf("created %v, deleted %v", mv.created, mv.deleted)
+	}
+
+	h, iso, mv, _ = newUpgradeHost(t)
+	if _, err := upgradeCall(t, h, params, "upg_new"); codeOf(err) != proto.ErrNotFound {
+		t.Fatalf("a new upgrade into a deleted snapshot: %v", err)
+	}
+	if iso.frozen != "" || len(mv.created) != 0 {
+		t.Fatalf("it acted: frozen %q, created %v", iso.frozen, mv.created)
+	}
+	mv.snapshots = map[string]map[string]string{"snap_project": {}}
+	if out := settleCall(t, h, "sbx_up", "upg_lost"); out.State != "failed" {
+		t.Fatalf("settled %+v", out)
+	}
+	if _, err := upgradeCall(t, h, params, "upg_lost"); err == nil || codeOf(err) == proto.ErrNotFound {
+		t.Fatalf("an upgrade settled failed: %v", err)
+	}
+	if iso.frozen != "" || len(mv.created) != 0 || len(iso.disposed) != 0 {
+		t.Fatalf("it ran: frozen %q, created %v, disposed %v", iso.frozen, mv.created, iso.disposed)
 	}
 }
 

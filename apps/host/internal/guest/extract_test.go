@@ -176,6 +176,63 @@ func TestExtractTarNeverFollowsALinkThere(t *testing.T) {
 	}
 }
 
+// Over what the target has already (an upgrade's, laid over a snapshot's files): a directory replaces a file or a link
+// there and merges with a directory, but a file or a link where a directory is, empty or not, is refused and the
+// directory kept with what is in it.
+func TestExtractTarOverWhatIsThere(t *testing.T) {
+	target := t.TempDir()
+	for _, dir := range []string{"full", "empty", "merged", "elsewhere"} {
+		if err := os.Mkdir(filepath.Join(target, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"full/kept", "merged/old", "file"} {
+		if err := os.WriteFile(filepath.Join(target, name), []byte("there"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("elsewhere", filepath.Join(target, "link")); err != nil {
+		t.Fatal(err)
+	}
+	archive := writeTar(t,
+		entry{name: "file/", kind: tar.TypeDir},
+		entry{name: "file/a", kind: tar.TypeReg, body: "a"},
+		entry{name: "link/", kind: tar.TypeDir},
+		entry{name: "link/b", kind: tar.TypeReg, body: "b"},
+		entry{name: "merged/", kind: tar.TypeDir},
+		entry{name: "merged/new", kind: tar.TypeReg, body: "new"},
+	)
+	if err := ExtractTar(archive, target, -1, -1); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"file/a", "link/b", "merged/old", "merged/new"} {
+		if _, err := os.Lstat(filepath.Join(target, name)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if names, _ := os.ReadDir(filepath.Join(target, "elsewhere")); len(names) != 0 {
+		t.Fatalf("%d written through the link", len(names))
+	}
+	for _, e := range []entry{
+		{name: "full", kind: tar.TypeSymlink, link: "file"},
+		{name: "full", kind: tar.TypeReg, body: "x"},
+		{name: "empty", kind: tar.TypeSymlink, link: "file"},
+		{name: "empty", kind: tar.TypeReg, body: "x"},
+	} {
+		err := ExtractTar(writeTar(t, e), target, -1, -1)
+		var refused *errArchive
+		if !errors.As(err, &refused) || !strings.Contains(err.Error(), "where a directory is") {
+			t.Fatalf("entry of kind %q at %s: %v", e.kind, e.name, err)
+		}
+		if info, err := os.Lstat(filepath.Join(target, e.name)); err != nil || !info.IsDir() {
+			t.Fatalf("%s isn't the directory it was: %v", e.name, err)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "full", "kept")); err != nil || string(got) != "there" {
+		t.Fatalf("full/kept: %q %v", got, err)
+	}
+}
+
 // The agent's route extracts a staged tar into its target and deletes the tar; a refused one is a 400 that says why,
 // and its tar goes too.
 func TestExtractArchiveRoute(t *testing.T) {

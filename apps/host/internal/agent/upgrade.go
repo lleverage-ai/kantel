@@ -161,14 +161,14 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	defer h.lifecycle.lock(p.SandboxID)()
+	// Sent again: the first's outcome, even if its snapshot has gone since.
+	if rec := h.readUpgrade(p.SandboxID); rec != nil && rec.OperationID == p.OperationID {
+		return h.recorded(p.SandboxID, rec, source, mv)
+	}
 	// Only a microVM's snapshot: an isolate's (its own, perhaps) is no machine to start.
 	if p.From != "" && !mv.HasSnapshot(p.From) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no microVM snapshot %s on this host", p.From)}
-	}
-	defer h.lifecycle.lock(p.SandboxID)()
-	// Sent again: the first's outcome.
-	if rec := h.readUpgrade(p.SandboxID); rec != nil && rec.OperationID == p.OperationID {
-		return h.recorded(p.SandboxID, rec, source, mv)
 	}
 	_, name, err := h.tierOfNamed(p.SandboxID)
 	if err != nil {
