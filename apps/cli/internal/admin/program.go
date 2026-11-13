@@ -52,6 +52,7 @@ func Program(sys System) *cli.Program {
 			{Name: "config", Summary: "The stack's settings"},
 			{Name: "compute", Summary: "Run sandboxes on your own hosts"},
 			{Name: "host", Summary: "The machines that run sandboxes"},
+			{Name: "pool", Summary: "Sets of the shared hosts, each host in one"},
 		},
 		ExitCodes: map[int]string{
 			cli.ExitOK:     "it worked (install, upgrade, host join, host run and host add --ssh exit with the code of what they ran)",
@@ -67,6 +68,7 @@ func Program(sys System) *cli.Program {
 		controlPlane(sys),
 		settings(sys),
 		hosts(sys),
+		pools(),
 		{Title: "Help", Commands: []*cli.Command{
 			cli.HelpCommand(p),
 			version,

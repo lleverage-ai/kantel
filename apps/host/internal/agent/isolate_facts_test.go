@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,5 +73,58 @@ func TestIsolateRuntimeFacts(t *testing.T) {
 	case <-same:
 		t.Fatal("reconnected with the facts unchanged")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A connection whose hello's microVM runtimes no longer hold (an image version added or pruned) reconnects to report
+// them; one whose still hold doesn't.
+func TestReconnectOnRuntimes(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sent := []proto.HostRuntime{{Image: "host-images-1", Runtime: "firecracker=v1.17.0;kernel=k1;image=host-images-1@sha256:01;sticky=4"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for name, now := range map[string][]proto.HostRuntime{
+		"added":  append(append([]proto.HostRuntime{}, sent...), proto.HostRuntime{Image: "host-images-2", Runtime: "firecracker=v1.17.0;kernel=k2;image=host-images-2@sha256:02;sticky=4"}),
+		"pruned": nil,
+	} {
+		reconnected := make(chan struct{})
+		go reconnectOnRuntimes(ctx, log, sent, 5*time.Millisecond, func() []proto.HostRuntime { return now }, func() bool { return false }, func() { close(reconnected) })
+		select {
+		case <-reconnected:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no reconnect", name)
+		}
+	}
+	same := make(chan struct{}, 1)
+	go reconnectOnRuntimes(ctx, log, sent, 5*time.Millisecond, func() []proto.HostRuntime { return append([]proto.HostRuntime{}, sent...) }, func() bool { return false }, func() { same <- struct{}{} })
+	select {
+	case <-same:
+		t.Fatal("reconnected with the runtimes unchanged")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// While a template build runs (its call would fail with the connection), the reconnect waits for it to end, and at
+	// most busyWait.
+	var building atomic.Bool
+	building.Store(true)
+	waited := make(chan struct{})
+	go reconnectOnRuntimesWithin(ctx, log, sent, 5*time.Millisecond, time.Hour, func() []proto.HostRuntime { return nil }, building.Load, func() { close(waited) })
+	select {
+	case <-waited:
+		t.Fatal("reconnected during a template build")
+	case <-time.After(100 * time.Millisecond):
+	}
+	building.Store(false)
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reconnect once the build ended")
+	}
+	capped := make(chan struct{})
+	go reconnectOnRuntimesWithin(ctx, log, sent, 5*time.Millisecond, 50*time.Millisecond, func() []proto.HostRuntime { return nil }, func() bool { return true }, func() { close(capped) })
+	select {
+	case <-capped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a build that never ends held the reconnect off for good")
 	}
 }

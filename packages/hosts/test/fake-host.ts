@@ -51,6 +51,8 @@ export class FakeHost {
 	closedWith: { code: number; reason: string } | undefined;
 	connection!: AcceptedHost;
 	freeMemoryMiB = 20_000;
+	/** What its template builds' answers say they were made on (`cpu`, `runtime`); absent, a host from before it said. */
+	madeOn?: { readonly [key: string]: unknown };
 	/** Every call's method and params, as sent. */
 	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
 	/** For a test: a call of a method it answers a promise for is answered once that settles (a slow host). */
@@ -322,7 +324,7 @@ export class FakeHost {
 				});
 			case "template.build": {
 				const build = message.params as { snapshotId: string };
-				return answer({ ref: build.snapshotId, imageDigest: "sha256:feed", sizeBytes: 42 });
+				return answer({ ref: build.snapshotId, imageDigest: "sha256:feed", sizeBytes: 42, ...this.madeOn });
 			}
 			case "template.delete":
 				return answer({ ok: true });

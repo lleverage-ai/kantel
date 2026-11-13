@@ -20,7 +20,7 @@ Every command of `kantel` as `kantel help <command>` shows it. [Command line](/t
 - **API keys and personal tokens:** [`key list`](#kantel-key-list), [`key create`](#kantel-key-create), [`key rotate`](#kantel-key-rotate), [`key revoke`](#kantel-key-revoke), [`token list`](#kantel-token-list), [`token create`](#kantel-token-create), [`token revoke`](#kantel-token-revoke)
 - **Accounts and organisations:** [`org list`](#kantel-org-list), [`org use`](#kantel-org-use), [`org show`](#kantel-org-show), [`org create`](#kantel-org-create), [`org join`](#kantel-org-join), [`org set`](#kantel-org-set), [`org usage`](#kantel-org-usage), [`org leave`](#kantel-org-leave), [`org delete`](#kantel-org-delete), [`member list`](#kantel-member-list), [`member role`](#kantel-member-role), [`member rm`](#kantel-member-rm), [`invite list`](#kantel-invite-list), [`invite create`](#kantel-invite-create), [`invite revoke`](#kantel-invite-revoke)
 - **Webhooks, events and telemetry:** [`webhook list`](#kantel-webhook-list), [`webhook create`](#kantel-webhook-create), [`webhook rm`](#kantel-webhook-rm), [`webhook test`](#kantel-webhook-test), [`events`](#kantel-events), [`telemetry get`](#kantel-telemetry-get), [`telemetry set`](#kantel-telemetry-set), [`telemetry rm`](#kantel-telemetry-rm)
-- **Your own hosts (experimental):** [`hosts add`](#kantel-hosts-add), [`hosts list`](#kantel-hosts-list), [`hosts info`](#kantel-hosts-info), [`hosts drain`](#kantel-hosts-drain), [`hosts rm`](#kantel-hosts-rm)
+- **Your own hosts (experimental):** [`hosts add`](#kantel-hosts-add), [`hosts list`](#kantel-hosts-list), [`hosts info`](#kantel-hosts-info), [`hosts drain`](#kantel-hosts-drain), [`hosts move`](#kantel-hosts-move), [`hosts rm`](#kantel-hosts-rm), [`pools list`](#kantel-pools-list), [`pools add`](#kantel-pools-add), [`pools rename`](#kantel-pools-rename), [`pools default`](#kantel-pools-default), [`pools rm`](#kantel-pools-rm)
 - **Coding agents:** [`init`](#kantel-init), [`mcp`](#kantel-mcp), [`agents`](#kantel-agents), [`agent setup`](#kantel-agent-setup)
 - **Help:** [`help`](#kantel-help), [`version`](#kantel-version), [`completion`](#kantel-completion), [`update`](#kantel-update)
 
@@ -1381,6 +1381,7 @@ It prints a one-line command to run on the machine, as root. kantel-host install
 | Flag | What it does |
 | --- | --- |
 | `--label <K=V>` | A label for the host; repeat it |
+| `--pool <pool>` | The pool it joins, an ID or name; default the account's default pool |
 | `--expires <minutes>` | How long the token lasts, 5 to 10080; default 60 |
 
 ### kantel hosts list
@@ -1411,6 +1412,16 @@ kantel hosts drain <id> [flags]
 | --- | --- |
 | `--off` | Take new sandboxes again |
 
+### kantel hosts move
+
+Move one of your hosts to another of your pools: a drained host with no sandboxes.
+
+```sh
+kantel hosts move <id> <pool> [flags]
+```
+
+Drain it first (kantel hosts drain &lt;id&gt;) and let its sandboxes go; it stays draining in its new pool until you take it out of the drain with kantel hosts drain &lt;id&gt; --off.
+
 ### kantel hosts rm
 
 Remove one of your hosts: revoke its credential and close its connection (needs --yes).
@@ -1424,6 +1435,50 @@ Its sandboxes keep their disks on the machine but can't be reached. To take kant
 | Flag | What it does |
 | --- | --- |
 | `-y, --yes` | Yes, remove it: it can't join again |
+
+### kantel pools list
+
+Your account's pools: sets of its hosts, each host in one.
+
+```sh
+kantel pools list [flags]
+```
+
+A sandbox goes on a host of a pool, and a host joins the default pool unless its token names another.
+
+### kantel pools add
+
+Make an empty pool in your account.
+
+```sh
+kantel pools add <name> [flags]
+```
+
+Put hosts in it with kantel hosts add --pool &lt;name&gt;, or kantel hosts move &lt;id&gt; &lt;name&gt;.
+
+### kantel pools rename
+
+Rename one of your pools.
+
+```sh
+kantel pools rename <pool> <name> [flags]
+```
+
+### kantel pools default
+
+Make one of your pools the default: where hosts join and sandboxes go, naming none.
+
+```sh
+kantel pools default <pool> [flags]
+```
+
+### kantel pools rm
+
+Delete one of your pools: an empty one that isn't the default.
+
+```sh
+kantel pools rm <pool> [flags]
+```
 
 ## Coding agents
 

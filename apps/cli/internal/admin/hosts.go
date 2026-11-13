@@ -114,6 +114,7 @@ func describeHost(c *cli.Context, h api.Host) string {
 		{"runs", tiers(h, ", ")},
 		{"kvm", kvm},
 		{"sandboxes", strconv.FormatInt(h.Allocated.Sandboxes, 10)},
+		{"pool", deref(h.PoolID)},
 		{"labels", strings.Join(labels, ", ")},
 		{"joined", cli.Timestamp(h.JoinedAt)},
 		{"seen", seen},
@@ -183,6 +184,7 @@ func hosts(sys System) cli.Section {
 			Flags: []cli.Flag{
 				{Name: "name", Type: cli.String, Value: "<name>", Description: "The host's name"},
 				{Name: "label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "A label; repeat for more"},
+				{Name: "pool", Type: cli.String, Value: "<pool>", Description: "The pool it joins, an ID or name; default the default pool"},
 				{Name: "expires-minutes", Type: cli.String, Value: "<n>", Description: "How long the token works (default 60)"},
 				{Name: "ssh", Type: cli.String, Value: "<user@machine>", Description: "Run the join command on that machine now, over ssh"},
 			},
@@ -243,6 +245,19 @@ func hosts(sys System) cli.Section {
 				return hostCall(c, func(client *api.Client, raw *json.RawMessage) (*api.Host, error) {
 					return client.UpdateHost(c.Ctx, c.Arg(0), api.UpdateHostBody{Draining: api.Ptr(!off)}, api.Raw(raw))
 				}, hostState(c))
+			},
+		},
+		{
+			Name:    "host move",
+			Summary: "Move a drained host with no sandboxes to another pool",
+			Args:    []cli.Arg{{Name: "hostId"}, {Name: "pool"}},
+			Details: "Drain it first (host drain <hostId>) and let its sandboxes go; it stays draining in its new pool (an ID or\n" +
+				"name) until host drain <hostId> --off.",
+			Run: func(c *cli.Context) error {
+				pool := c.Arg(1)
+				return hostCall(c, func(client *api.Client, raw *json.RawMessage) (*api.Host, error) {
+					return client.UpdateHost(c.Ctx, c.Arg(0), api.UpdateHostBody{Pool: &pool}, api.Raw(raw))
+				}, func(h api.Host) string { return h.ID + " in " + deref(h.PoolID) + " " + c.Style.State(string(h.State)) })
 			},
 		},
 		{
@@ -326,6 +341,9 @@ func hostAdd(c *cli.Context, sys System) error {
 	body := api.CreateHostJoinTokenBody{}
 	if name, ok := c.Str("name"); ok {
 		body.Name = &name
+	}
+	if pool, ok := c.Str("pool"); ok {
+		body.Pool = &pool
 	}
 	if len(labels) > 0 {
 		body.Labels = labels

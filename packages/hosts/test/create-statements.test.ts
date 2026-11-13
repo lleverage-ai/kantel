@@ -82,7 +82,7 @@ describe("a create on a gateway with shared state", () => {
 	// checked behind its write (`fenceClosedAccounts`), two rounds counted here that the create doesn't wait for. One
 	// statement and one round are placement's read of every candidate host's placements, for the vCPUs booked there: one
 	// read for all of them however many hosts, after the hosts' own read, which names them.
-	it("answers a wait: true create in 21 statements and 15 rounds", async () => {
+	it("answers a wait: true create in 22 statements and 15 rounds", async () => {
 		const database = await nodeSqliteDatabase.open();
 		closers.push(async () => {
 			// The host's disconnect is recorded after the service closes: let it land first.
@@ -134,7 +134,8 @@ describe("a create on a gateway with shared state", () => {
 		const rounds = sql.rounds;
 		// The trace, when the budget is broken.
 		const trace = statements.map((statement, index) => `${index + 1}. ${statement.slice(0, 140)}`).join("\n");
-		expect(statements.length, trace).toBeLessThanOrEqual(21);
+		// The hosts' pools are read beside their records (`ensureHosts`), in the same round.
+		expect(statements.length, trace).toBeLessThanOrEqual(22);
 		expect(rounds, trace).toBeLessThanOrEqual(15);
 		// The record, then its event: the event's write starts only once the record's has finished.
 		const kinds = sql.kinds;

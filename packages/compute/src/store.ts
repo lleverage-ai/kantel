@@ -13,7 +13,7 @@
 
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
+import type { BackendDiskUsage, SandboxTemplateBoot, SnapshotMadeOn } from "./backend.ts";
 import type { StoredGithubRunnerJob, StoredGithubRunnerMachine, StoredGithubRunners } from "./github-runners.ts";
 import type { SealedValue } from "./secrets.ts";
 
@@ -381,8 +381,9 @@ export type StoredCommand = computeSchema.Command & {
 };
 
 /**
- * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
- * file system is (`TakenSnapshot.base`), answered as the API's `base`.
+ * A snapshot and the backend's reference to its bytes (absent until it is ready), the base image version its root
+ * file system is (`TakenSnapshot.base`), answered as the API's `base`, and what a microVM's was made on where its host
+ * said (`SnapshotMadeOn`), which the API doesn't answer.
  */
 export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 	readonly ref?: string;
@@ -403,7 +404,7 @@ export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 		readonly at: number;
 		readonly settling?: boolean;
 	};
-};
+} & SnapshotMadeOn;
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
@@ -552,8 +553,9 @@ export interface StoredTemplateVersion {
 }
 
 /**
- * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, and the backend's reference
- * to its bytes once it is built.
+ * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, the backend's reference
+ * to its bytes once it is built, and what it was made on where its host said (`SnapshotMadeOn`), which the API doesn't
+ * answer.
  */
 export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state"> & {
 	/**
@@ -583,7 +585,7 @@ export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state
 	readonly claimHash?: string;
 	/** A custom image's root filesystem on its host, which a fresh boot there boots (`SandboxTemplateBoot.rootfsKey`). */
 	readonly rootfsKey?: string;
-};
+} & SnapshotMadeOn;
 
 /** A template as `TemplateWrites.update` changes it, and the version the change makes when it makes one. */
 export interface TemplateChange {
@@ -621,7 +623,16 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 };
 
 /** A host, its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`). */
-export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & { readonly diskUsage?: BackendDiskUsage };
+export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
+	readonly diskUsage?: BackendDiskUsage;
+	/**
+	 * Counts its drains and undrains, each taking the next here before its registry is told, with it: the registry takes
+	 * a drain or undrain only over an older one's, so one held up can't undo a later one there. A move to another pool
+	 * lands only under the count its check of the host's sandboxes was made under, still draining, so admission stayed
+	 * shut from the check to the move.
+	 */
+	readonly drainEpoch?: number;
+};
 
 export interface StoredJoinToken {
 	readonly id: string;
@@ -641,7 +652,33 @@ export interface StoredJoinToken {
 	readonly createdBy?: string;
 	/** The host that spent it. */
 	readonly hostId?: string;
+	/** The pool the host joins (`StoredPool`); absent, its owner's default pool. */
+	readonly poolId?: string;
 }
+
+/** Whose pools the deployment's own are: its shared hosts'. No account's ID is this. */
+export const OPERATOR_POOLS = "operator";
+
+/**
+ * A pool: a set of an account's hosts, or of the deployment's shared hosts, each host in exactly one
+ * (`StoredHost.poolId`). docs/design/disk-store.md, "Pools".
+ */
+export interface StoredPool {
+	readonly id: string;
+	/** The account whose pool it is, or `OPERATOR_POOLS` for the deployment's. */
+	readonly owner: string;
+	/** Unique among its owner's pools (`poolNameKey`). */
+	readonly name: string;
+	readonly createdAt: number;
+	/**
+	 * When it was made its owner's default pool: of an owner's pools, the one made so latest is the default. Absent from
+	 * a pool that never was.
+	 */
+	readonly defaultAt?: number;
+}
+
+/** The key no two pools may share: an owner's and a name, so the store refuses a second pool of a name in an owner. */
+export const poolNameKey = (pool: { readonly owner: string; readonly name: string }) => `${pool.owner}\n${pool.name}`;
 
 export type StoredEvent = computeSchema.Event;
 
@@ -834,6 +871,8 @@ export interface ComputeStore {
 	readonly proxies: Collection<StoredProxy>;
 	readonly hosts: Collection<StoredHost>;
 	readonly joinTokens: Collection<StoredJoinToken>;
+	/** No two with one owner and name (`poolNameKey`): a write that would make two throws. */
+	readonly pools: Collection<StoredPool>;
 	readonly events: Collection<StoredEvent>;
 	readonly idempotency: Collection<StoredIdempotency>;
 	readonly deviceLogins: Collection<StoredDeviceLogin>;
@@ -918,7 +957,10 @@ export interface StoredStickyDiskName {
 
 export const stickyDiskNameId = (accountId: string, name: string): string => `${accountId}:${name}`;
 
-/** One committed version of a sticky disk: where it was made, from what. Never changed. */
+/**
+ * One committed version of a sticky disk: where it was made, from what. Never changed, but for its `mapDigest` given
+ * after its commit.
+ */
 export interface StoredStickyDiskVersion {
 	readonly id: string;
 	readonly diskId: string;
@@ -928,6 +970,11 @@ export interface StoredStickyDiskVersion {
 	readonly sandboxId: string;
 	readonly sizeBytes: number;
 	readonly allocatedBytes: number;
+	/**
+	 * Its block map's digest (`sha256:` and hex; docs/design/disk-store.md, 2b): from the commit's answer, or, when the
+	 * map took longer, from its host's next report of what it holds. Absent until then, and for a host from before maps.
+	 */
+	readonly mapDigest?: string;
 	/** Its place among its disk's commits, from 1: what orders them, as two may share a millisecond. */
 	readonly seq: number;
 	readonly createdAt: number;
@@ -1148,6 +1195,7 @@ export function createMemoryStore(): ComputeStore {
 		proxies: memoryCollection(),
 		hosts: memoryCollection(),
 		joinTokens: memoryCollection(),
+		pools: memoryCollection<StoredPool>(poolNameKey),
 		events: memoryCollection(),
 		idempotency: memoryCollection(),
 		deviceLogins: memoryCollection(),
@@ -1176,7 +1224,7 @@ export function createMemoryStore(): ComputeStore {
 
 /**
  * Spends a host join token the compute API minted, once: for the host registry (`@kantel/hosts`), which registers the
- * host. Answers its name and labels, or undefined when it is unknown, used or expired.
+ * host. Answers its name, labels, account and pool, or undefined when it is unknown, used or expired.
  */
 export function joinTokenSpender(store: ComputeStore) {
 	return {
@@ -1201,6 +1249,7 @@ export function joinTokenSpender(store: ComputeStore) {
 				labels: { ...spent.labels },
 				...(spent.name === undefined ? {} : { name: spent.name }),
 				...(spent.accountId === undefined ? {} : { accountId: spent.accountId }),
+				...(spent.poolId === undefined ? {} : { poolId: spent.poolId }),
 			};
 		},
 	};
@@ -1214,7 +1263,7 @@ export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
 
 /**
  * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
- * deliveries, telemetry, proxy settings, join tokens, events, GitHub runner integrations and their jobs, new sticky disks) fenced against its deletion: a write is checked once it
+ * deliveries, telemetry, proxy settings, join tokens, pools, events, GitHub runner integrations and their jobs, new sticky disks) fenced against its deletion: a write is checked once it
  * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
  * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
  * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
@@ -1283,6 +1332,7 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		webhooks: fenced(store.webhooks, byAccount),
 		deliveries: fenced(store.deliveries, byAccount),
 		joinTokens: fenced(store.joinTokens, byAccount),
+		pools: fenced(store.pools, (pool) => (pool.owner === OPERATOR_POOLS ? undefined : pool.owner)),
 		// Written on every sandbox's change, so checked behind the write: one read more, no round trip more for the caller.
 		events: fenced(store.events, byAccount, true),
 		// Keyed by their account.

@@ -354,6 +354,14 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async updateHost(hostId, change) {
 			await primary.updateHost?.(hostId, change);
 		},
+		...(primary.hostHolds === undefined && fallback.hostHolds === undefined
+			? {}
+			: {
+					async hostHolds(hostId: string) {
+						const [first, second] = await Promise.all([primary.hostHolds?.(hostId), fallback.hostHolds?.(hostId)]);
+						return first === true || second === true;
+					},
+				}),
 		// Hosts are the primary's (as for a revoke): the routed backend updates them only where the primary does.
 		...(primary.updateHostAgent === undefined ? {} : { updateHostAgent: primary.updateHostAgent.bind(primary) }),
 		...(primary.checkHostUpdates === undefined ? {} : { checkHostUpdates: primary.checkHostUpdates.bind(primary) }),

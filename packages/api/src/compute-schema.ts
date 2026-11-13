@@ -3671,6 +3671,24 @@ export const Host = Type.Object(
 		tiers: Type.Array(SandboxType, { description: "The sandbox types it runs." }),
 		kvm: Type.Boolean(),
 		nestedVirtualisation: Type.Boolean(),
+		cpuFingerprint: Type.Optional(
+			Type.String({
+				description:
+					"Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, " +
+					"such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores " +
+					"only onto a host with the same. Absent for a host without microVMs, or one from before it said.",
+			}),
+		),
+		runtimeFingerprints: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest " +
+					"kernel, image, sticky drives and balloon, such as " +
+					"`firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's " +
+					"memory restores only onto a host with its runtime among these and the same CPU. Absent for a host " +
+					"without microVMs, or one from before it said.",
+			}),
+		),
 		capacity: Type.Object(
 			{
 				vcpus: Type.Integer(),
@@ -3694,6 +3712,12 @@ export const Host = Type.Object(
 				"The account the host belongs to, when it was added to one by its people: only that account's " +
 					"sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes " +
 					"may use.",
+			),
+		),
+		poolId: Type.Optional(
+			id(
+				"The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent " +
+					"only from a host this control plane hasn't seen since pools came in.",
 			),
 		),
 		joinedAt: Timestamp,
@@ -3767,6 +3791,15 @@ export const UpdateHostBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		draining: Type.Optional(Type.Boolean({ description: "Stop placing new sandboxes on it." })),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a " +
+					"shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` " +
+					"otherwise): drain it, let its sandboxes go, move it, then undrain it.",
+			}),
+		),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Union([Type.Integer({ minimum: 0 }), Type.Null()], {
 				description:
@@ -3782,6 +3815,12 @@ export const CreateHostJoinTokenBody = Type.Object(
 	{
 		name: Type.Optional(Type.String({ maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "The pool the host joins, an ID or name among the deployment's pools. Default: its default pool.",
+			}),
+		),
 		expiresInMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 10080, description: "Default 60." })),
 	},
 	{ title: "CreateHostJoinTokenBody" },
@@ -3795,6 +3834,58 @@ export const HostJoinToken = Type.Object(
 		expiresAt: Timestamp,
 	},
 	{ title: "HostJoinToken" },
+);
+
+/** A pool's name: lower-case letters, digits and dashes, as an environment's. */
+export const POOL_NAME_PATTERN = ENVIRONMENT_NAME_PATTERN;
+
+export const Pool = Type.Object(
+	{
+		id: id("The pool's ID, such as `pool_6t5r4e`."),
+		name: Type.String({ pattern: POOL_NAME_PATTERN, description: "Its name, unique among its owner's pools." }),
+		accountId: Type.Optional(
+			id("The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts."),
+		),
+		default: Type.Boolean({
+			description: "Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool.",
+		}),
+		hosts: Type.Integer({ minimum: 0, description: "How many hosts are in it, revoked ones not counted." }),
+		createdAt: Timestamp,
+	},
+	{
+		title: "Pool",
+		description:
+			"A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the " +
+			"deployment start with a pool named `default`, which their hosts are in until moved.",
+	},
+);
+
+export const PoolList = Type.Object({ items: Type.Array(Pool) }, { title: "PoolList" });
+
+export const PoolPath = Type.Object({ poolId: id("The pool's ID or name.") }, { title: "PoolPath" });
+
+export const CreatePoolBody = Type.Object(
+	{ name: Type.String({ pattern: POOL_NAME_PATTERN }) },
+	{ title: "CreatePoolBody" },
+);
+
+export const CreateAccountPoolBody = Type.Object(
+	{ account: accountQuery, name: Type.String({ pattern: POOL_NAME_PATTERN }) },
+	{ title: "CreateAccountPoolBody" },
+);
+
+export const UpdatePoolBody = Type.Object(
+	{
+		name: Type.Optional(Type.String({ pattern: POOL_NAME_PATTERN })),
+		default: Type.Optional(
+			Type.Literal(true, {
+				description:
+					"Makes it its owner's default pool, in place of the one that was. Another pool is made the default to " +
+					"change it again.",
+			}),
+		),
+	},
+	{ title: "UpdatePoolBody" },
 );
 
 // Bundles and bucket sources: what mounts are made from (experimental, behind the deployment's KANTEL_MOUNTS switch).
@@ -4099,6 +4190,12 @@ export const CreateAccountJoinTokenBody = Type.Object(
 			Type.String({ maxLength: 100, description: "The host's name. Default: the machine's hostname." }),
 		),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "The pool the host joins, an ID or name. Default: the account's default pool.",
+			}),
+		),
 		expiresInMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 10080, description: "Default 60." })),
 	},
 	{ title: "CreateAccountJoinTokenBody" },
@@ -4224,6 +4321,11 @@ export type GuestMemory = Static<typeof GuestMemory>;
 export type UsageSparklines = Static<typeof UsageSparklines>;
 export type HostState = Static<typeof HostState>;
 export type HostJoinToken = Static<typeof HostJoinToken>;
+export type Pool = Static<typeof Pool>;
+export type PoolList = Static<typeof PoolList>;
+export type CreatePoolBody = Static<typeof CreatePoolBody>;
+export type CreateAccountPoolBody = Static<typeof CreateAccountPoolBody>;
+export type UpdatePoolBody = Static<typeof UpdatePoolBody>;
 export type PublicUrl = Static<typeof PublicUrl>;
 export type AccountJoinToken = Static<typeof AccountJoinToken>;
 export type DeviceLogin = Static<typeof DeviceLogin>;

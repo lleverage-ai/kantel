@@ -199,6 +199,19 @@ describe("host backend templates", () => {
 		expect(other.calls.at(-1)).toEqual({ method: "template.delete", params: { snapshotId: "tsn_2" } });
 	});
 
+	it("answers what a template snapshot was made on where its host says, as kantel-host sends it", async () => {
+		const { store, service, backend } = await setup();
+		const host = await addHost(store, service, "host_a");
+		const cpu = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+		const runtime = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4";
+		host.madeOn = { cpu, runtime };
+		expect(await backend.buildTemplate?.(buildSpec("host_a"))).toMatchObject({ cpu, runtime });
+		host.madeOn = { cpu: { ...cpu, model: "97" }, runtime: "" };
+		const odd = await backend.buildTemplate?.(buildSpec("host_a"));
+		expect(odd).not.toHaveProperty("cpu");
+		expect(odd).not.toHaveProperty("runtime");
+	});
+
 	it("builds on an account's own host only for that account, and gives it no attribution key", async () => {
 		const { store, service, backend } = await setup();
 		const own = await addHost(store, service, "host_own", { accountId: "acc_a" });

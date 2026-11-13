@@ -331,6 +331,56 @@ func TestHostDrainUpdateRevoke(t *testing.T) {
 	}
 }
 
+func TestPoolsAndHostMove(t *testing.T) {
+	tt := newTester(t)
+	pool := func(id, name string, def bool, hosts int) map[string]any {
+		return map[string]any{"id": id, "name": name, "default": def, "hosts": hosts, "createdAt": 1}
+	}
+	var calls []string
+	r := routes{
+		"GET /v1/admin/pools": func(call) any {
+			return map[string]any{"items": []any{pool("pool_operator", "default", true, 2), pool("pool_ci", "ci", false, 0)}}
+		},
+		"POST /v1/admin/pools": func(c call) any {
+			calls = append(calls, "POST "+jsonOf(t, c.Body))
+			return pool("pool_ci", "ci", false, 0)
+		},
+		"PATCH /v1/admin/pools/ci": func(c call) any {
+			calls = append(calls, "PATCH "+jsonOf(t, c.Body))
+			return pool("pool_ci", "builds", true, 0)
+		},
+		"DELETE /v1/admin/pools/ci": func(c call) any {
+			calls = append(calls, "DELETE")
+			return reply{Status: 204}
+		},
+		"PATCH /v1/admin/hosts/host_6t5r4e": func(c call) any {
+			calls = append(calls, "PATCH host "+jsonOf(t, c.Body))
+			return host(map[string]any{"state": "draining", "poolId": "pool_ci"})
+		},
+		"GET /v1/admin/hosts/host_6t5r4e": func(call) any {
+			return host(map[string]any{"poolId": "pool_ci"})
+		},
+	}
+	out := func(argv ...string) string { return strings.TrimSpace(tt.run(argv, opts{routes: r}).Out) }
+	listed := out("pool", "list")
+	if !regexp.MustCompile(`pool_operator\s+default\s+yes\s+2`).MatchString(listed) {
+		t.Errorf("list: %q", listed)
+	}
+	eq(t, "add", out("pool", "add", "ci"), "pool_ci ci")
+	eq(t, "rename", out("pool", "rename", "ci", "builds"), "pool_ci builds")
+	eq(t, "default", out("pool", "default", "ci"), "pool_ci builds is the default")
+	eq(t, "rm", out("pool", "rm", "ci"), "deleted ci")
+	eq(t, "move", out("host", "move", "host_6t5r4e", "ci"), "host_6t5r4e in pool_ci draining")
+	eq(t, "calls", strings.Join(calls, ", "),
+		`POST {"name":"ci"}, PATCH {"name":"builds"}, PATCH {"default":true}, DELETE, PATCH host {"pool":"ci"}`)
+	contains(t, "info", out("host", "info", "host_6t5r4e"), "pool       pool_ci")
+
+	token := map[string]any{"id": "hjt_1", "token": "kth_secret", "expiresAt": 0, "command": "install kth_secret"}
+	added := tt.run([]string{"host", "add", "--pool", "ci"},
+		opts{routes: routes{"POST /v1/admin/hosts/join-tokens": func(call) any { return token }}})
+	eq(t, "add body", jsonOf(t, added.Calls[0].Body), `{"pool":"ci"}`)
+}
+
 func TestErrors(t *testing.T) {
 	tt := newTester(t)
 	// 4, as kantel: it needs a credential.

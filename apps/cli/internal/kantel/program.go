@@ -41,6 +41,7 @@ func Program() *cli.Program {
 			{Name: "webhook", Summary: "Send the account's events to a URL"},
 			{Name: "telemetry", Summary: "Send the account's metrics and events to OpenTelemetry"},
 			{Name: "hosts", Summary: "Run your sandboxes on machines of your own (experimental)"},
+			{Name: "pools", Summary: "Sets of your own hosts, each host in one (experimental)"},
 			{Name: "agent", Summary: "Set up coding agents to use Kantel"},
 		},
 		SandboxGroup: "sandbox",

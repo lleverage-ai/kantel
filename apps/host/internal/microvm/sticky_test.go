@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -310,12 +311,20 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 		disk.Close()
 	}
 
-	// Published in this order: newest is the last published, whatever the names (or a clock tie) say.
+	// Published in this order: newest is the last published, whatever the names (or a clock tie) say. Each has its
+	// block map beside it, what a full rehash makes, and answers its digest; a version pruned goes with its map.
+	digests := map[string]string{}
 	for _, v := range []string{"v3", "v2", "v1"} {
 		res, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: v})
 		if err != nil || res.Version != v || res.SizeBytes != 1<<30 || res.AllocatedBytes <= 0 {
 			t.Fatalf("commit %s: %+v %v", v, res, err)
 		}
+		digest := m.StickyMapDigest(ctx, "ci", v)
+		checkStickyMap(t, m, "ci", v, digest)
+		digests[v] = digest
+	}
+	if fileExists(m.stickyMapFile("ci", "v3")) {
+		t.Fatal("a pruned version's map is left")
 	}
 	if a.took("/sticky/freeze") != 3 || a.took("/sticky/thaw") != 3 {
 		t.Fatalf("calls %v", a.calls)
@@ -325,7 +334,8 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 		_ = os.Chtimes(m.stickyVersionFile("ci", v), same, same)
 	}
 	held := m.StickyHoldings()
-	if len(held) != 1 || held[0].DiskID != "ci" || len(held[0].Versions) != 2 || held[0].Versions[0].Version != "v1" || held[0].Versions[1].Version != "v2" || held[0].Versions[0].At <= 0 {
+	if len(held) != 1 || held[0].DiskID != "ci" || len(held[0].Versions) != 2 || held[0].Versions[0].Version != "v1" || held[0].Versions[1].Version != "v2" || held[0].Versions[0].At <= 0 ||
+		held[0].Versions[0].MapDigest != digests["v1"] || held[0].Versions[1].MapDigest != digests["v2"] {
 		t.Fatalf("holdings %+v", held)
 	}
 	code := func(err error) string {
@@ -384,6 +394,9 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 
 	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci", Version: "v1"}); err != nil {
 		t.Fatal(err)
+	}
+	if fileExists(m.stickyMapFile("ci", "v1")) {
+		t.Fatal("a deleted version's map is left")
 	}
 	if held := m.StickyHoldings(); len(held) != 1 || len(held[0].Versions) != 1 {
 		t.Fatalf("holdings %+v", held)
@@ -546,5 +559,172 @@ func TestStickyHoldingsOnlyFromACompleteInventory(t *testing.T) {
 	}
 	if held := m.StickyHoldings(); len(held) != 1 || len(held[0].Versions) != 2 {
 		t.Fatalf("holdings %+v once readable again", held)
+	}
+}
+
+// checkStickyMap checks that a version's map is beside it, is what a full rehash of its file makes, and has digest.
+func checkStickyMap(t *testing.T, m *Manager, diskID, version, digest string) {
+	t.Helper()
+	got, onDisk, err := blockmap.ReadFile(m.stickyMapFile(diskID, version))
+	if err != nil {
+		t.Fatalf("%s's map: %v", version, err)
+	}
+	if digest != onDisk || !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("%s's digest %q, its map's %q", version, digest, onDisk)
+	}
+	f, err := os.Open(m.stickyVersionFile(diskID, version))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, _ := f.Stat()
+	buf := make([]byte, blockmap.BlockSize)
+	for i := range got.Blocks() {
+		start, end := got.Range(i)
+		if _, err := f.ReadAt(buf[:end-start], start); err != nil && err != io.EOF {
+			t.Fatal(err)
+		}
+		if got.Hash(i) != blockmap.HashBlock(buf[:end-start]) {
+			t.Fatalf("%s's map differs from its file at block %d", version, i)
+		}
+	}
+	if got.Size != info.Size() {
+		t.Fatalf("%s's map is of %d bytes, its file %d", version, got.Size, info.Size())
+	}
+}
+
+// A commit whose map takes longer than it waits answers without a digest; the map is finished in the background and
+// reports give its digest. A version committed before maps, or whose map a restart cut short, gets one when the host
+// starts; a map left by an older version of the name is never taken for a new one's.
+func TestStickyMapsLateAndOld(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("no mkfs.ext4")
+	}
+	m := &Manager{cfg: Config{Root: t.TempDir()}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx := context.Background()
+	a := newStickyFixture(t, "sbx_a", m)
+	m.attachSticky(ctx, a.s, []proto.StickyDisk{{DiskID: "ci", Path: "/var/lib/ci", SizeGiB: 1}})
+	m.mountSticky(ctx, a.s)
+
+	wait := stickyMapWait
+	stickyMapWait = 50 * time.Millisecond
+	t.Cleanup(func() { stickyMapWait = wait })
+	m.holdMaps = newMapHold()
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if digest := m.StickyMapDigest(ctx, "ci", "v1"); digest != "" {
+		t.Fatalf("digest %q before its map is made", digest)
+	}
+	close(m.holdMaps.release)
+	m.holdMaps = nil
+	digest := ""
+	for deadline := time.Now().Add(10 * time.Second); digest == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if held := m.StickyHoldings(); len(held) == 1 && len(held[0].Versions) == 1 {
+			digest = held[0].Versions[0].MapDigest
+		}
+	}
+	checkStickyMap(t, m, "ci", "v1", digest)
+	stickyMapWait = wait
+
+	// v1 from before maps: none until the host starts and makes it.
+	if err := os.Remove(m.stickyMapFile("ci", "v1")); err != nil {
+		t.Fatal(err)
+	}
+	if held := m.StickyHoldings(); held[0].Versions[0].MapDigest != "" {
+		t.Fatalf("holdings %+v: a version without a map has no digest", held)
+	}
+	<-m.mapOldSticky(ctx)
+	checkStickyMap(t, m, "ci", "v1", m.stickyMapDigest("ci", "v1"))
+
+	// A map of another v2, left behind: replaced by the new v2's own.
+	if err := os.WriteFile(m.stickyMapFile("ci", "v2"), []byte("an old map"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	checkStickyMap(t, m, "ci", "v2", m.StickyMapDigest(ctx, "ci", "v2"))
+
+	// A version deleted while its map is made, and committed again: the new file gets a map of its own, which the old
+	// one's, finding its file gone, neither writes over nor stands in for.
+	m.holdMaps = newMapHold()
+	held := m.holdMaps
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v3"}); err != nil {
+		t.Fatal(err)
+	}
+	<-held.opened // the old file is open
+	m.stickyMapMu.Lock()
+	old := m.stickyMaps["ci/v3"]
+	m.stickyMapMu.Unlock()
+	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci", Version: "v3"}); err != nil {
+		t.Fatal(err)
+	}
+	m.holdMaps = nil
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v3"}); err != nil {
+		t.Fatal(err)
+	}
+	digest = m.StickyMapDigest(ctx, "ci", "v3")
+	checkStickyMap(t, m, "ci", "v3", digest)
+	close(held.release)
+	<-old.done
+	if !errors.Is(old.err, context.Canceled) {
+		t.Fatalf("the deleted file's map wasn't stopped: %v", old.err)
+	}
+	checkStickyMap(t, m, "ci", "v3", digest)
+	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci"}); err != nil {
+		t.Fatal(err)
+	}
+	if digest := m.stickyMapDigest("ci", "v2"); digest != "" {
+		t.Fatalf("a deleted disk's map digest %q", digest)
+	}
+}
+
+// A version whose commit isn't answered yet (its map is still awaited) isn't pruned by later commits, so the control
+// plane never records as its head a version the host no longer has; once answered, or past the longest an answer
+// waits, it is pruned as any other.
+func TestStickyKeepsAVersionUntilItsCommitIsAnswered(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("no mkfs.ext4")
+	}
+	m := &Manager{cfg: Config{Root: t.TempDir()}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx := context.Background()
+	a := newStickyFixture(t, "sbx_a", m)
+	m.attachSticky(ctx, a.s, []proto.StickyDisk{{DiskID: "ci", Path: "/var/lib/ci", SizeGiB: 1}})
+	m.mountSticky(ctx, a.s)
+	commit := func(v string, answer bool) {
+		t.Helper()
+		if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: v}); err != nil {
+			t.Fatal(err)
+		}
+		if answer {
+			m.StickyMapDigest(ctx, "ci", v)
+		}
+	}
+	commit("v1", false) // its answer still waits for its map
+	commit("v2", true)
+	commit("v3", true)
+	if !fileExists(m.stickyVersionFile("ci", "v1")) {
+		t.Fatal("a version whose commit isn't answered was pruned")
+	}
+	if !fileExists(m.stickyVersionFile("ci", "v2")) {
+		t.Fatal("one of the two newest was pruned")
+	}
+	if digest := m.StickyMapDigest(ctx, "ci", "v1"); digest == "" {
+		t.Fatal("v1's answer has no digest")
+	}
+	commit("v4", true)
+	if fileExists(m.stickyVersionFile("ci", "v1")) || fileExists(m.stickyVersionFile("ci", "v2")) {
+		t.Fatal("answered versions beyond the newest two are kept")
+	}
+	// An answer that never comes keeps it only so long.
+	commit("v5", false)
+	commit("v6", true)
+	m.stickyMu.Lock()
+	m.stickyAnswering["ci/v5"] = time.Now().Add(-time.Second)
+	m.stickyMu.Unlock()
+	commit("v7", true)
+	if fileExists(m.stickyVersionFile("ci", "v5")) {
+		t.Fatal("a pin past its time kept its version")
 	}
 }

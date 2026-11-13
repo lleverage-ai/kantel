@@ -457,8 +457,16 @@ export interface CreateAccountJoinTokenBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+	/** The pool the host joins, an ID or name. Default: the account's default pool. */
+	readonly pool?: string;
 	/** Default 60. */
 	readonly expiresInMinutes?: number;
+}
+
+export interface CreateAccountPoolBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	readonly name: string;
 }
 
 /** Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks. */
@@ -526,6 +534,8 @@ export interface CreateHostJoinTokenBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+	/** The pool the host joins, an ID or name among the deployment's pools. Default: its default pool. */
+	readonly pool?: string;
 	/** Default 60. */
 	readonly expiresInMinutes?: number;
 }
@@ -555,6 +565,10 @@ export interface CreatePersonalTokenBody {
 	readonly accounts?: readonly string[];
 	/** Default 90, at most 366. */
 	readonly expiresInDays?: number;
+}
+
+export interface CreatePoolBody {
+	readonly name: string;
 }
 
 /** Any other field is refused as `invalid`. */
@@ -1247,6 +1261,10 @@ export interface Host {
 	readonly tiers: readonly SandboxType[];
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
+	/** Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said. */
+	readonly cpuFingerprint?: string;
+	/** The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said. */
+	readonly runtimeFingerprints?: readonly string[];
 	readonly capacity: HostCapacity;
 	readonly allocated: HostAllocated;
 	readonly labels: {
@@ -1254,6 +1272,8 @@ export interface Host {
 	};
 	/** The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. */
 	readonly accountId?: string;
+	/** The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in. */
+	readonly poolId?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly joinedAt: number;
 	/** Epoch milliseconds, UTC. */
@@ -1618,6 +1638,26 @@ export type PlacementReason =
 
 export interface PollDeviceLoginBody {
 	readonly deviceCode: string;
+}
+
+/** A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the deployment start with a pool named `default`, which their hosts are in until moved. */
+export interface Pool {
+	/** The pool's ID, such as `pool_6t5r4e`. */
+	readonly id: string;
+	/** Its name, unique among its owner's pools. */
+	readonly name: string;
+	/** The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts. */
+	readonly accountId?: string;
+	/** Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. */
+	readonly default: boolean;
+	/** How many hosts are in it, revoked ones not counted. */
+	readonly hosts: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+}
+
+export interface PoolList {
+	readonly items: readonly Pool[];
 }
 
 export interface Project {
@@ -2774,6 +2814,8 @@ export interface UpdateHostBody {
 	};
 	/** Stop placing new sandboxes on it. */
 	readonly draining?: boolean;
+	/** Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it. */
+	readonly pool?: string;
 	/** The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. */
 	readonly savedSnapshotBytesLimit?: number | null;
 }
@@ -2781,6 +2823,12 @@ export interface UpdateHostBody {
 export interface UpdateMemberBody {
 	/** `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`. */
 	readonly role: MemberRole;
+}
+
+export interface UpdatePoolBody {
+	readonly name?: string;
+	/** Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. */
+	readonly default?: true;
 }
 
 export interface UpdateSandboxBody {
@@ -3603,7 +3651,7 @@ export interface KantelClient {
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get a host's usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}/usage` */
 	getHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change a host. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
+	/** Change a host. Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
@@ -3615,6 +3663,14 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
+	/** List the deployment's pools. The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/pools` */
+	listPools(options?: CallOptions): Promise<PoolList>;
+	/** Make a pool of shared hosts. An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`). Idempotent with `options.idempotencyKey`. `POST /admin/pools` */
+	createPool(body: CreatePoolBody, options?: CallOptions): Promise<Pool>;
+	/** Change a pool of shared hosts. Renames it, or makes it the deployment's default pool. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/pools/{poolId}` */
+	updatePool(poolId: string, body?: UpdatePoolBody, options?: CallOptions): Promise<Pool>;
+	/** Delete a pool of shared hosts. Only an empty pool that isn't the default: `conflict` while a host is in it. A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/pools/{poolId}` */
+	deletePool(poolId: string, options?: CallOptions): Promise<void>;
 	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). Idempotent with `options.idempotencyKey`. `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
@@ -3623,12 +3679,20 @@ export interface KantelClient {
 	getAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get one of an account's hosts' usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}/usage` */
 	getAccountHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change one of an account's hosts. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
+	/** Change one of an account's hosts. Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
 	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** List an account's pools. The pools the account's own hosts are in, the default first made if there is none yet. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /pools` */
+	listAccountPools(query?: AccountScopedQuery, options?: CallOptions): Promise<PoolList>;
+	/** Make a pool of an account's hosts. An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). Idempotent with `options.idempotencyKey`. `POST /pools` */
+	createAccountPool(body: CreateAccountPoolBody, options?: CallOptions): Promise<Pool>;
+	/** Change one of an account's pools. Renames it, or makes it the account's default pool. A name is looked for in the caller's own account (its personal account, or an API key's). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /pools/{poolId}` */
+	updateAccountPool(poolId: string, body?: UpdatePoolBody, options?: CallOptions): Promise<Pool>;
+	/** Delete one of an account's pools. Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /pools/{poolId}` */
+	deleteAccountPool(poolId: string, options?: CallOptions): Promise<void>;
 	/** Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/mounts/refresh` */
 	refreshSandboxMounts(sandboxId: string, body?: RefreshMountsBody, options?: CallOptions): Promise<RefreshedMountList>;
 	/** Upload a bundle. Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bundles` */
@@ -4091,6 +4155,13 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
+		listPools: (callOptions) => send(options, { method: "GET", path: "/admin/pools" }, callOptions),
+		createPool: (body, callOptions) =>
+			send(options, { method: "POST", path: "/admin/pools", body, idempotent: true }, callOptions),
+		updatePool: (poolId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/admin/pools/${encodeURIComponent(poolId)}`, body }, callOptions),
+		deletePool: (poolId, callOptions) =>
+			send(options, { method: "DELETE", path: `/admin/pools/${encodeURIComponent(poolId)}` }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/hosts/join-tokens", body, idempotent: true }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),
@@ -4104,6 +4175,13 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: `/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
 		removeAccountHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		listAccountPools: (query, callOptions) => send(options, { method: "GET", path: "/pools", query }, callOptions),
+		createAccountPool: (body, callOptions) =>
+			send(options, { method: "POST", path: "/pools", body, idempotent: true }, callOptions),
+		updateAccountPool: (poolId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/pools/${encodeURIComponent(poolId)}`, body }, callOptions),
+		deleteAccountPool: (poolId, callOptions) =>
+			send(options, { method: "DELETE", path: `/pools/${encodeURIComponent(poolId)}` }, callOptions),
 		refreshSandboxMounts: (sandboxId, body = {}, callOptions) =>
 			send(
 				options,

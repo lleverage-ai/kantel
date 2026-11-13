@@ -4661,10 +4661,11 @@ describe("hosts", () => {
 		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
 		const { client, root } = setup({
 			...stub,
-			// Between the drain reading the host and writing it, another call revokes it.
+			// Between the drain reading the host and writing it, another call revokes it. (The registry is also told the
+			// host's pool, which is no drain.)
 			async updateHost(hostId, change) {
-				const revoke = revokeMeanwhile;
-				revokeMeanwhile = undefined;
+				const revoke = change.draining === undefined ? undefined : revokeMeanwhile;
+				if (revoke !== undefined) revokeMeanwhile = undefined;
 				await revoke?.();
 				return stub.updateHost?.(hostId, change);
 			},

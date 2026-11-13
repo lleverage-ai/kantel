@@ -38,13 +38,21 @@ import {
 	type SandboxBackend,
 	type SandboxSpec,
 	type SandboxTemplateBoot,
+	type SnapshotMadeOn,
 	type TakenSnapshot,
 	type TemplateRuntime,
 	type UpgradedPlacement,
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
-import { isolateRuntime, parseMountsAt, parseStartPhases, withoutAdmission } from "./facts.ts";
+import {
+	cpuFingerprint,
+	isMapDigest,
+	isolateRuntime,
+	parseMountsAt,
+	parseStartPhases,
+	withoutAdmission,
+} from "./facts.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -274,6 +282,9 @@ interface HostSnapshot {
 	/** What of `sizeBytes` is its own, and the files it shares, by holder (`HOST_FEATURES.snapshotSizes`, a keep). */
 	readonly uniqueBytes?: number;
 	readonly shared?: readonly { readonly snapshots: readonly string[]; readonly bytes: number }[] | null;
+	/** What it was made on (`HostSnapshot.cpu` and `runtime` in protocol.ts), checked before it is kept (`madeOn`). */
+	readonly cpu?: unknown;
+	readonly runtime?: unknown;
 }
 
 /** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
@@ -293,10 +304,24 @@ function diskByRef(hostId: string, usage: HostDiskUsage): BackendDiskUsage {
 	};
 }
 
+/** The longest runtime fingerprint kept from a host's answer. */
+const MAX_RUNTIME_FINGERPRINT = 512;
+
+/** What a host says a snapshot or template snapshot was made on, where it says it as kantel-host does. */
+const madeOn = (made: { readonly cpu?: unknown; readonly runtime?: unknown }): SnapshotMadeOn => {
+	const cpu = cpuFingerprint(made.cpu);
+	const runtime = made.runtime;
+	return {
+		...(cpu === undefined ? {} : { cpu }),
+		...(typeof runtime === "string" && runtime !== "" && runtime.length <= MAX_RUNTIME_FINGERPRINT ? { runtime } : {}),
+	};
+};
+
 const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
 	ref: `${hostId}/${snap.id}`,
 	sizeBytes: snap.sizeBytes,
 	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
+	...madeOn(snap),
 	...(snap.memory === true ? { memory: true } : {}),
 	...(typeof snap.uniqueBytes === "number"
 		? {
@@ -884,6 +909,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 									memoryEnforced: host.isolate.memoryEnforced,
 								},
 							}),
+					...(host.cpuFingerprint === undefined ? {} : { cpuFingerprint: host.cpuFingerprint }),
+					...(host.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: [...host.runtimeFingerprints] }),
 					capacity: { ...host.capacity },
 					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
 					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
@@ -895,6 +922,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
@@ -1473,6 +1501,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(built.imageDigest === undefined ? {} : { imageDigest: built.imageDigest }),
 				sizeBytes: built.sizeBytes,
 				...(built.rootfsKey === undefined || spec.image === undefined ? {} : { rootfsKey: built.rootfsKey }),
+				...madeOn(built),
 			};
 		},
 		async deleteTemplateSnapshot(bytes) {
@@ -1580,6 +1609,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				hostId,
 				sizeBytes: Number.isSafeInteger(result.sizeBytes) ? result.sizeBytes : 0,
 				allocatedBytes: Number.isSafeInteger(result.allocatedBytes) ? result.allocatedBytes : 0,
+				...(isMapDigest(result.mapDigest) ? { mapDigest: result.mapDigest } : {}),
 			};
 		},
 		async deleteStickyDisk(diskId) {
@@ -1604,10 +1634,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(report.stickyDisks === undefined
 					? {}
 					: {
-							disks: report.stickyDisks.map((holding) => ({
-								diskId: holding.diskId,
-								versions: holding.versions.map((held) => held.version),
-							})),
+							disks: report.stickyDisks.map((holding) => {
+								const mapDigests = Object.fromEntries(
+									holding.versions.flatMap((held) =>
+										held.mapDigest === undefined ? [] : [[held.version, held.mapDigest] as const],
+									),
+								);
+								return {
+									diskId: holding.diskId,
+									versions: holding.versions.map((held) => held.version),
+									...(Object.keys(mapDigests).length === 0 ? {} : { mapDigests }),
+								};
+							}),
 						}),
 			}));
 		},
@@ -1621,6 +1659,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async checkHostUpdates() {
 			return hosts.checkForUpdates();
+		},
+		async hostHolds(hostId) {
+			return hosts.holds(hostId);
 		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {

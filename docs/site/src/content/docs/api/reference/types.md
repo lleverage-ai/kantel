@@ -427,7 +427,15 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `name` | string | no | The host's name. Default: the machine's hostname. (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
+| `pool` | string | no | The pool the host joins, an ID or name. Default: the account's default pool. |
 | `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
+
+### CreateAccountPoolBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes |  |
 
 ### CreateApiKeyBody
 
@@ -490,6 +498,7 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | --- | --- | --- | --- |
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
+| `pool` | string | no | The pool the host joins, an ID or name among the deployment's pools. Default: its default pool. |
 | `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
 
 ### CreateInviteBody
@@ -518,6 +527,12 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
 | `accounts` | string[] | no | Absent: every account of yours. |
 | `expiresInDays` | integer | no | Default 90, at most 366. (minimum 1, maximum 366) |
+
+### CreatePoolBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
 
 ### CreateSandboxBody
 
@@ -1111,10 +1126,13 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `tiers` | [SandboxType](/api/reference/types/#sandboxtype)[] | yes | The sandbox types it runs. |
 | `kvm` | boolean | yes |  |
 | `nestedVirtualisation` | boolean | yes |  |
+| `cpuFingerprint` | string | no | Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said. |
+| `runtimeFingerprints` | string[] | no | The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said. |
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |
 | `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
+| `poolId` | string | no | The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
@@ -1405,6 +1423,25 @@ One of: `"no_host"` or `"no_host_for_type"` or `"no_host_with_labels"` or `"no_h
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `deviceCode` | string | yes |  |
+
+### Pool
+
+A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the deployment start with a pool named `default`, which their hosts are in until moved.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The pool's ID, such as `pool_6t5r4e`. |
+| `name` | string | yes | Its name, unique among its owner's pools. |
+| `accountId` | string | no | The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts. |
+| `default` | boolean | yes | Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. |
+| `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### PoolList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Pool](/api/reference/types/#pool)[] | yes |  |
 
 ### ProxySettings
 
@@ -2445,6 +2482,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `draining` | boolean | no | Stop placing new sandboxes on it. |
+| `pool` | string | no | Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it. |
 | `savedSnapshotBytesLimit` | integer or null | no | The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. |
 
 ### UpdateMemberBody
@@ -2452,6 +2490,13 @@ A template version's definition, never changed once made. Answered with every de
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
+
+### UpdatePoolBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  |
+| `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
 
 ### UpdateSandboxBody
 

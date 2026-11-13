@@ -15,6 +15,7 @@ import {
 import { type Clock, isKantelError, KantelError, placementError, systemClock } from "@kantel/contracts";
 import type { HostCluster } from "./cluster.ts";
 import {
+	cpuFingerprintText,
 	parseHostCapacity,
 	parseHostFacts,
 	parseHostUsage,
@@ -85,7 +86,7 @@ import {
 	shapeOn,
 	sizeOn,
 } from "./scheduler.ts";
-import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
+import { type HostRecord, type HostStore, isLeftover, type PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
 export const enforcesPolicy = (host: HostRecord): boolean =>
@@ -183,6 +184,10 @@ export interface HostView {
 	readonly features: readonly string[];
 	/** What its isolate runtime can do, as it last said (its hello's facts); absent until it has said. */
 	readonly isolate?: HostIsolateRuntime;
+	/** Its CPU fingerprint as text (`cpuFingerprintText`), from its facts; absent until it has said. */
+	readonly cpuFingerprint?: string;
+	/** Its microVM runtime fingerprints (`HostRuntime.runtime`), from its facts; absent until it has said. */
+	readonly runtimeFingerprints?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported (its hello or a heartbeat), what placement admits a create against;
@@ -202,6 +207,8 @@ export interface HostView {
 	readonly labels: { readonly [key: string]: string };
 	/** The account whose own host it is, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
+	/** The pool it is in (`HostRecord.poolId`); absent until the compute plane has said. */
+	readonly poolId?: string;
 	readonly joinedAt: number;
 	readonly lastSeenAt?: number;
 }
@@ -460,8 +467,8 @@ export interface ExternalJoinTokens {
 	 */
 	accountOpen?(accountId: string): Promise<boolean>;
 	/**
-	 * Spends the token with this SHA-256 hex once: its name and labels, and the account an account's join token joins
-	 * the host to; or undefined if unknown, used or expired.
+	 * Spends the token with this SHA-256 hex once: its name and labels, the account an account's join token joins the
+	 * host to, and the pool; or undefined if unknown, used or expired.
 	 */
 	spendJoinToken(
 		hash: string,
@@ -473,6 +480,7 @@ export interface ExternalJoinTokens {
 				readonly name?: string;
 				readonly labels: { readonly [key: string]: string };
 				readonly accountId?: string;
+				readonly poolId?: string;
 		  }
 		| undefined
 	>;
@@ -684,9 +692,18 @@ export interface HostsService {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** The drain's or undrain's place in the compute plane's order: taken only over an older one. */
+			readonly drainEpoch?: number;
+			/** The pool the compute plane put it in: a move, once it has drained. */
+			readonly poolId?: string;
 		},
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
+	/**
+	 * Whether a sandbox is placed on the host, one being made there included (a lost one not), an upgrade under way
+	 * makes its microVM there, or an upgraded isolate there is still to be deleted.
+	 */
+	holds(hostId: string): Promise<boolean>;
 	/**
 	 * Asks a connected host to update its kantel-host to `latestVersion`: it fetches the binary, checks it against the
 	 * release's SHA256SUMS and restarts into it, its sandboxes running on. Answers once the binary is in place, with the
@@ -1120,7 +1137,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// it was away is caught up.
 		const watchesHealth = facts.value.features?.includes(HOST_FEATURES.guestHealth) === true;
 		const exits: { sandboxId: string; error: string; healthAt?: number }[] = [];
+		// What is left here of sandboxes deleted since their upgrade, isolates still to delete (`forgetPlacement`): owed
+		// this host, not reconciled as its sandboxes are, on any gateway, after any restart.
+		const leftovers = new Set<string>();
 		for (const placement of await store.placementsOn(hostId)) {
+			if (isLeftover(placement)) {
+				leftovers.add(placement.sandboxId);
+				held.delete(placement.sandboxId);
+				continue;
+			}
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
 			if (latest !== placement) {
@@ -1178,7 +1203,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		else measuresSnapshots.delete(hostId);
 		// Isolates upgrades left here, their microVMs placed elsewhere: deleted once it is welcomed. Those already owed it
 		// stay owed (one deleted whose removal wasn't recorded, which it no longer names): each is checked when it is done.
-		const owed = new Set<string>(cleanupsDue.get(hostId) ?? []);
+		const owed = new Set<string>([...(cleanupsDue.get(hostId) ?? []), ...leftovers]);
 		for (const sandboxId of held.keys()) {
 			if ((await store.getPlacement(sandboxId))?.cleanup?.hostId === hostId) owed.add(sandboxId);
 		}
@@ -1279,7 +1304,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// as it is now, still this host's and of the sandbox's tier: an upgrade's handover since stands.
 				const tier = (sandbox as { tier?: unknown }).tier ?? placement.tier;
 				if (sandbox.state === "deleted") {
-					await store.removePlacementIf(sandbox.id, (latest) => latest.hostId === hostId && latest.tier === tier);
+					// What was left here of a sandbox deleted since its upgrade: its isolate is gone, as this host says.
+					if (await store.removePlacementIf(sandbox.id, (latest) => isLeftover(latest) && latest.hostId === hostId)) {
+						return;
+					}
+					await forgetPlacement(sandbox.id, (latest) => latest.hostId === hostId && latest.tier === tier);
 					return;
 				}
 				await applyReport(sandbox.id, hostId, tier, sandbox, await store.getHost(hostId));
@@ -1446,6 +1475,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			nestedVirtualisation: facts?.nested ?? false,
 			features: [...(facts?.features ?? [])],
 			...(facts?.isolate === undefined ? {} : { isolate: { ...facts.isolate } }),
+			...(facts?.cpu === undefined ? {} : { cpuFingerprint: cpuFingerprintText(facts.cpu) }),
+			...(facts?.runtimes === undefined ? {} : { runtimeFingerprints: facts.runtimes.map((each) => each.runtime) }),
 			// Disk is free space, which changes as the host runs: the latest heartbeat's, else the hello's.
 			capacity: {
 				vcpus: facts?.cpus ?? 0,
@@ -1463,6 +1494,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			},
 			labels: { ...facts?.labels, ...host.labels },
 			...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+			...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 			joinedAt: host.joinedAt,
 			...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 		};
@@ -2005,12 +2037,44 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return undefined;
 			}
 		}
+		// The isolate is gone: what was left of a sandbox deleted since (`forgetPlacement`) goes with it, and a live
+		// sandbox's placement no longer owes it. A delete that leaves the placement here meanwhile is caught by the second
+		// removal.
+		const leftoverHere = (latest: PlacementRecord) => isLeftover(latest) && latest.hostId === hostId;
+		if (await store.removePlacementIf(sandboxId, leftoverHere)) return undefined;
 		const cleaned = await store.updatePlacement(sandboxId, (latest) => {
-			if (latest.cleanup?.hostId !== hostId) return undefined;
+			if (latest.cleanup?.hostId !== hostId || leftoverHere(latest)) return undefined;
 			const { cleanup: _done, ...placed } = latest;
 			return { ...placed, updatedAt: clock.now() };
 		});
+		if (cleaned === undefined && (await store.removePlacementIf(sandboxId, leftoverHere))) return undefined;
 		return cleaned ?? (await store.getPlacement(sandboxId));
+	};
+
+	/**
+	 * Removes a sandbox's placement (only while `should` says so), but not an isolate an upgrade left on another host
+	 * still to be deleted (`cleanup`): that stays, as the isolate's own record on its host (its `hostId` the cleanup's),
+	 * so the host is held (`holds`) and the isolate deleted when it is back, on any gateway, until `cleanUpSource` has
+	 * done it. Whether it changed anything.
+	 */
+	const forgetPlacement = async (
+		sandboxId: string,
+		should: (placement: PlacementRecord) => boolean,
+	): Promise<boolean> => {
+		const left = await store.updatePlacement(sandboxId, (latest) => {
+			const owed = latest.cleanup;
+			if (!should(latest) || owed === undefined || owed.hostId === latest.hostId) return undefined;
+			const { upgrade: _upgrade, ...rest } = latest;
+			return { ...rest, hostId: owed.hostId, tier: "isolate", state: "deleting", updatedAt: clock.now() };
+		});
+		if (left !== undefined) {
+			const owedHost = left.hostId;
+			cleanupsDue.set(owedHost, new Set([...(cleanupsDue.get(owedHost) ?? []), sandboxId]));
+			if (hub.connected(owedHost)) runCleanups(owedHost);
+			return true;
+		}
+		// Never what is left: only `cleanUpSource`, once the isolate is gone, removes that.
+		return store.removePlacementIf(sandboxId, (latest) => !isLeftover(latest) && should(latest));
 	};
 
 	/** The isolates upgrades left on each host, deleted on its next heartbeat (once it is welcomed). */
@@ -2157,6 +2221,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				revoked: false,
 				draining: false,
 				...(token.accountId === undefined ? {} : { accountId: token.accountId }),
+				...(token.poolId === undefined ? {} : { poolId: token.poolId }),
 				joinedAt: now,
 				...(facts === undefined ? {} : { facts }),
 			});
@@ -2197,17 +2262,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			) {
 				throw new KantelError("invalid", "A host's name is 1 to 100 characters");
 			}
+			if (change.poolId !== undefined && (typeof change.poolId !== "string" || change.poolId.length === 0)) {
+				throw new KantelError("invalid", "A pool's ID is a non-empty string");
+			}
 			const labels = change.labels === undefined ? undefined : labelsOf(change.labels);
 			// On the host as stored now, so a report that lands meanwhile neither undoes this nor is undone by it.
-			const next = await store.updateHost(hostId, (latest) => ({
-				...latest,
-				...(change.name === undefined ? {} : { name: change.name }),
-				...(labels === undefined ? {} : { labels }),
-				...(change.draining === undefined ? {} : { draining: change.draining === true }),
-			}));
+			const next = await store.updateHost(hostId, (latest) => {
+				// A drain or undrain ordered before the latest one taken is passed over (its other changes stand).
+				const ordered =
+					change.draining !== undefined &&
+					(change.drainEpoch === undefined || change.drainEpoch > (latest.drainEpoch ?? 0));
+				return {
+					...latest,
+					...(change.name === undefined ? {} : { name: change.name }),
+					...(labels === undefined ? {} : { labels }),
+					...(ordered ? { draining: change.draining === true } : {}),
+					...(ordered && change.drainEpoch !== undefined ? { drainEpoch: change.drainEpoch } : {}),
+					...(change.poolId === undefined ? {} : { poolId: change.poolId }),
+				};
+			});
 			if (next === undefined) throw new KantelError("not_found", "No such host");
 			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
-			const redrained = change.draining !== undefined && change.draining !== host.draining;
+			const redrained = next.draining !== host.draining;
 			if (redrained) hub.rewelcome(hostId, await welcomeFor(next));
 			return view(next);
 		},
@@ -2260,6 +2336,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			} catch (error) {
 				throw new KantelError("unavailable", error instanceof Error ? error.message : String(error));
 			}
+		},
+		async holds(hostId) {
+			// In one read (`occupying`): an upgrade's handover moves its placement from one host to the other and records
+			// the isolate to delete in one write, which one read sees before or after, on either host.
+			return (await store.occupying(hostId)).length > 0;
 		},
 		async revoke(hostId) {
 			const host = await hostOf(hostId);
@@ -2379,7 +2460,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					createdAt: now,
 					updatedAt: now,
 				};
-				await store.putPlacement(placement);
+				// Only while its host still takes sandboxes: a drain since the hosts were read refuses it.
+				if (!(await store.placeOnTakingHost(placement))) {
+					throw placementError("unavailable", "host_unavailable", `The host ${chosen.host.name} is draining`);
+				}
 				reserve(chosen.host.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				const mounts = mountHandoff(chosen.host.facts?.features, input.mounts);
 				try {
@@ -2652,6 +2736,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const target = chosen.host;
 				// Before the create is sent: a microVM may be there from then on, whatever becomes of its answer.
 				await intend(target, chosen.size, "copy");
+				// Kept before the host is read again, as a create's placement is kept only on a host taking sandboxes: a drain
+				// written before this read refuses it (and its intent goes, nothing sent yet), and one written after finds the
+				// intent, so a move of the drained host waits for it (`holds`).
+				// (A retry of the same upgrade keeps the intent it may have acted on: its target is counted already.)
+				const taking = source.upgrade === undefined ? await store.getHost(target.id) : target;
+				if (taking === undefined || taking.draining || taking.revoked) {
+					await store.updatePlacement(sandboxId, (latest) => {
+						if (latest.upgrade?.operationId !== operationId || latest.upgrade.target !== target.id) return undefined;
+						const { upgrade: _intent, ...rest } = latest;
+						return rest;
+					});
+					throw placementError("unavailable", "host_unavailable", `The host ${target.name} is draining`);
+				}
 				reserve(target.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				/** Rolls the copy back: only before the placement is the microVM's, while the isolate is still there. */
 				const rollBack = async (error: unknown): Promise<never> => {
@@ -2778,7 +2875,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					// Its host was revoked (or removed) by an operator: it never connects again to say, so deleting the sandbox
 					// writes off its placement. That is the operator's decision; nothing here claims the machine is gone.
 					log(`[hosts] sandbox ${sandboxId} written off: its host ${placement.hostId} is revoked`);
-					await store.removePlacement(sandboxId);
+					await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
 					return;
 				}
 				try {
@@ -2787,7 +2884,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					// Gone on the host already is gone.
 					if (!(error instanceof KantelError && error.code === "not_found")) throw error;
 				}
-				await store.removePlacement(sandboxId);
+				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
+				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
 			},
 			placement(sandboxId) {
 				return store.getPlacement(sandboxId);
