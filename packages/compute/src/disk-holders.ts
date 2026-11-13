@@ -15,7 +15,8 @@
  * a secrets key the deployment no longer has): a new key in one conditional write, the old one kept as retired for
  * `GRANT_KEY_OVERLAP_MS`, so grants signed with it just before stay good for their lifetime. Hosts are given every key
  * still accepted (`keys`). Nothing is cached across calls but the opened private key: every gateway reads the setting
- * for each grant and welcome, so a rotation on one is signed with on all from the next grant.
+ * for each grant and welcome, so a rotation on one is signed with on all from the next grant. Only signing replaces a
+ * key that can't be opened, never a welcome.
  */
 import { KantelError } from "@kantel/contracts";
 import {
@@ -87,8 +88,8 @@ export interface DiskHolders {
 	/** Answers `disk.locate` from `hostId`. */
 	locate(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
-	 * The grant keys, made on first use (and a key that can't be opened replaced); undefined while there can be none
-	 * (sticky disks off, no secrets key).
+	 * The grant keys, made on first use; undefined while there can be none (sticky disks off, no secrets key). A key that
+	 * can't be opened here is answered as it is, and replaced by the next grant signed.
 	 */
 	keys(): Promise<GrantKeyring | undefined>;
 	/**
@@ -228,14 +229,14 @@ export function createDiskHolders(options: {
 	const grantKey = (): Promise<{ readonly kept: StoredSetting; readonly key: GrantKey }> | undefined =>
 		!options.enabled || sealer === undefined ? undefined : current(sealer);
 
-	/** The keyring a kept setting holds, at `at`: retired keys past their time left out. */
-	async function keyringOf(kept: StoredSetting, key: GrantKey, at: number): Promise<GrantKeyring> {
+	/** The keyring a kept setting holds, at `at`: retired keys past their time left out. Only public keys. */
+	async function keyringOf(kept: StoredSetting, at: number): Promise<GrantKeyring> {
 		const retired: (GrantKeyView & { readonly until: number })[] = [];
 		for (const old of kept.retired ?? []) {
-			if (old.until <= at || old.publicKey === key.publicKey) continue;
+			if (old.until <= at || old.publicKey === kept.value) continue;
 			retired.push({ id: await grantKeyId(old.publicKey), publicKey: old.publicKey, until: old.until });
 		}
-		return { current: { id: key.id, publicKey: key.publicKey }, since: kept.updatedAt, retired };
+		return { current: { id: await grantKeyId(kept.value), publicKey: kept.value }, since: kept.updatedAt, retired };
 	}
 
 	const versionKey = (objectId: string, version: string) => `${objectId}/${version}`;
@@ -361,10 +362,12 @@ export function createDiskHolders(options: {
 		},
 
 		async keys() {
-			const reading = grantKey();
-			if (reading === undefined) return undefined;
-			const { kept, key } = await reading;
-			return keyringOf(kept, key, now());
+			if (!options.enabled || sealer === undefined) return undefined;
+			// Public keys only, so nothing is opened: a key that can't be opened here is replaced when a grant is signed,
+			// not on a welcome, so gateways with different secrets keys (one being changed) don't replace it for each other's
+			// welcomes in turn.
+			const kept = (await store.settings.get(GRANT_KEY)) ?? (await current(sealer)).kept;
+			return keyringOf(kept, now());
 		},
 
 		async rotate(by) {
@@ -374,7 +377,7 @@ export function createDiskHolders(options: {
 			await current(sealer);
 			const rotated = await replace(sealer, by, () => true);
 			if (rotated === undefined) throw new KantelError("unavailable", "The grant key couldn't be rotated; try again");
-			return keyringOf(rotated.kept, rotated.key, now());
+			return keyringOf(rotated.kept, now());
 		},
 
 		async holdersOf(kind, objectId) {

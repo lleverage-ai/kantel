@@ -616,16 +616,27 @@ describe.skipIf(postgresUrl === undefined || postgresUrl === "")("disk holders, 
 		expect(after?.retired.map((key) => key.id).sort()).toEqual(
 			[first?.current.id, ...rotated.filter((id) => id !== after?.current.id)].sort(),
 		);
-		// A key sealed with a secrets key these gateways don't have: of three replacing it at once, one write wins.
+		// A key sealed with a secrets key these gateways don't have: of three replacing it at once as they sign, one write wins.
+		const tom = gateways[0];
+		if (tom === undefined) throw new Error("no gateway");
+		const { disk, version } = await tom.committed();
+		for (const each of gateways) await each.pool();
+		await tom.api.service.recordStickyHoldings("host_b", tom.clock.now, [
+			{ diskId: disk.id, versions: [{ version: version.id }] },
+		]);
 		await database.driver.query("DELETE FROM compute_api_records WHERE kind = ? AND id = ?", ["settings", "grantKey"]);
 		const other = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
-		const sealedElsewhere = await setUp({
-			store: createSqlComputeStore(database.driver),
-			secretsKey: other,
-		}).getGrantKeys();
-		const replaced = await Promise.all(gateways.map((each) => each.getGrantKeys()));
-		expect(new Set(replaced.map((keys) => keys.current.id)).size).toBe(1);
-		expect(replaced[0]?.retired.map((key) => key.id)).toEqual([sealedElsewhere.current.id]);
+		const elsewhere = await setUp({ store: createSqlComputeStore(database.driver), secretsKey: other }).getGrantKeys();
+		const request = { kind: "sticky", objectId: disk.id, version: version.id };
+		const grants = await Promise.all(gateways.map((each) => each.api.service.locateDisk(STUB_HOST_ID, request)));
+		const replaced = await tom.getGrantKeys();
+		expect(replaced.retired.map((key) => key.id)).toEqual([elsewhere.current.id]);
+		for (const { grant } of grants) {
+			if (grant === undefined) throw new Error("no grant");
+			expect(await verifyGrant(replaced.current.publicKey, grant, tom.clock.now)).toMatchObject({
+				kid: replaced.current.id,
+			});
+		}
 	});
 
 	it("makes a newer report's claim wait for an older reconcile under way, then read what it wrote", async () => {
