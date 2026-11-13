@@ -55,6 +55,8 @@ type installOptions struct {
 	controlPlane, token, name, images, root, configPath, tiers, isolateRuntime string
 	labels                                                                     map[string]string
 	proxyDataPath, injectGuestAgent, noStart, dryRun                           bool
+	meshPort                                                                   int
+	meshEndpoints                                                              []string
 }
 
 // installer is the machine install works on: this one, or a test's.
@@ -195,6 +197,15 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 	}
 	if o.injectGuestAgent {
 		cfg.InjectGuestAgent = true
+	}
+	if o.meshPort != 0 {
+		if o.meshPort < -1 || o.meshPort > 65535 {
+			return nil, usageErrorf("install", "--mesh-port %d: want a port, 1 to 65535, or -1 for no mesh", o.meshPort)
+		}
+		cfg.MeshPort = o.meshPort
+	}
+	if len(o.meshEndpoints) > 0 {
+		cfg.MeshEndpoints = o.meshEndpoints
 	}
 	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.IsolateBinary, cfg.IsolateAssets, cfg.GuestAgent = "", image, "", "", "", "", agentBin
 	cfg.Defaults()
