@@ -2023,10 +2023,14 @@ export function NewSandboxDialog({
 	useEffect(() => {
 		if (!open || sentPool === shapesPool.current) return;
 		shapesPool.current = sentPool;
+		// A host picked in another pool isn't this one's (picked by hand, or before the pools landed with one picked at
+		// first): Kantel picks among this pool's again.
+		const kept = host === "" || hostsInPool(hostList, sentPool).some((each) => each.id === host) ? host : "";
+		if (kept !== host) setHost(kept);
 		// What that pool's hosts offer, or the default pools' again: the sliders start over from its defaults.
 		setShapeChosen(false);
-		readShapesNow(host, sentPool);
-	}, [open, sentPool, host, readShapesNow]);
+		readShapesNow(kept, sentPool);
+	}, [open, sentPool, host, hostList, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
 	const type = newSandboxType(chosenKind, !noMicrovms);
@@ -2235,8 +2239,6 @@ export function NewSandboxDialog({
 						onChange={(picked) => {
 							const next = choices.find((each) => each.id === picked)?.default === true ? "" : picked;
 							setPool(next);
-							// A host picked in another pool isn't this one's: Kantel picks among this pool's again.
-							if (host !== "" && !hostsInPool(hostList, next).some((each) => each.id === host)) setHost("");
 						}}
 						hint="It runs on this pool's hosts, and stays in the pool."
 						{...(poolError === undefined ? {} : { error: poolError })}
