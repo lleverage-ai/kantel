@@ -617,8 +617,8 @@ export interface HostCapacity {
 	 */
 	readonly stickyDisks?: readonly HostStickyHolding[];
 	/**
-	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up. Not kept by the registry yet:
-	 * `parseHostCapacity` leaves it out until the host page shows it.
+	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up: the host's page shows it
+	 * (`Host.mesh`). Absent from a host without the feature, or whose mesh is down (its pool's sync off).
 	 */
 	readonly mesh?: HostMeshHealth;
 }

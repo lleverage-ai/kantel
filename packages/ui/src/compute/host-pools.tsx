@@ -441,15 +441,23 @@ export function MoveHostDialog({
 	);
 }
 
-/** Add host's choice of pool, for an account with more than one: the default is chosen at first. */
+/**
+ * A choice of pool, for an account with more than one: Add host's, and New sandbox's. The default is chosen at first.
+ * `hint`: what the choice does; absent, Add host's.
+ */
 export function PoolPicker({
 	pools,
 	value,
 	onChange,
+	hint = "The pool the new host joins. Changing it makes the command again.",
+	error,
 }: {
 	pools: readonly Pool[];
 	value: string;
 	onChange: (poolId: string) => void;
+	hint?: string;
+	/** Why the pool picked can't be used, shown under the picker. */
+	error?: string;
 }) {
 	const ordered = [...pools].sort((a, b) =>
 		a.default === b.default ? a.name.localeCompare(b.name) : a.default ? -1 : 1,
@@ -457,10 +465,11 @@ export function PoolPicker({
 	return (
 		<SelectField
 			label="Pool"
-			hint="The pool the new host joins. Changing it makes the command again."
+			hint={hint}
 			value={value}
 			onChange={(event) => onChange(event.currentTarget.value)}
 			options={ordered.map((pool) => ({ value: pool.id, label: poolLabel(pool) }))}
+			{...(error === undefined ? {} : { error })}
 		/>
 	);
 }

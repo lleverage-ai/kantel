@@ -42,6 +42,7 @@ import {
 import { HostDiskUsage } from "./host-disk.tsx";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostMemoryUsage } from "./host-memory.tsx";
+import { HostPeers } from "./host-peers.tsx";
 import {
 	AccountHostsHeading,
 	DeletePoolDialog,
@@ -171,6 +172,8 @@ export function HostsPage({
 		}
 		return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 	}, [listed, local]);
+	// Each host's name by its ID, which names an opened host's mesh peers.
+	const names = useMemo(() => new Map((hosts ?? []).map((host) => [host.id, host.name])), [hosts]);
 
 	// Read again a while after each read settles: every few seconds while a host is updating, so it shows its new version
 	// once it's back, and otherwise every minute, so a host that falls out of date (or a release the control plane read
@@ -336,6 +339,7 @@ export function HostsPage({
 		host,
 		source,
 		now,
+		names,
 		onDrain: (on: boolean) => void drain(host, on),
 		onRemove: () => setRemoving(host),
 		...(source.update === undefined ? {} : { onUpdate: () => setUpdatingId(host.id) }),
@@ -831,6 +835,8 @@ type RowProps = {
 	host: Host;
 	source: HostsSource;
 	now: number;
+	/** Each host's name by its ID, to name its mesh peers. */
+	names: ReadonlyMap<string, string>;
 	onDrain: (on: boolean) => void;
 	onRemove: () => void;
 	/** Absent: hosts aren't updated from here. */
@@ -853,7 +859,7 @@ const Chevron = ({ open }: { open: boolean }) => (
 	</span>
 );
 
-function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
+function HostRow({ host, source, now, names, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
 	const labels = Object.entries(host.labels);
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
@@ -919,6 +925,7 @@ function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, onMo
 							<HostGraphs host={host} live={live} />
 							<HostMemoryUsage host={host} />
 							<HostDiskUsage host={host} now={now} />
+							<HostPeers host={host} names={names} now={now} />
 						</div>
 					</td>
 				</tr>
@@ -931,7 +938,7 @@ function HostRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, onMo
  * A phone's row: the name with its CPU line and state beside it, then the machine, its vCPU and sandboxes, and ⋯.
  * Tapping it opens its graphs under it.
  */
-function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
+function HostPhoneRow({ host, source, now, names, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
 	const graphsId = `host-graphs-${host.id}`;
@@ -978,6 +985,7 @@ function HostPhoneRow({ host, source, now, onDrain, onRemove, onUpdate, onLimit,
 					<HostGraphs host={host} live={live} narrow />
 					<HostMemoryUsage host={host} narrow />
 					<HostDiskUsage host={host} now={now} narrow />
+					<HostPeers host={host} names={names} now={now} narrow />
 				</div>
 			) : null}
 		</li>

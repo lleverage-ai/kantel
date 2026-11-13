@@ -420,7 +420,7 @@ an error notice with Try again, and Add host says the host joins the default poo
 pools last read, so a pool chosen in Add host stays chosen. A source with no `pools` (an older gateway) lists the hosts
 ungrouped with no pool actions.
 
-**Don't use it for** where a sandbox goes when it's created (New sandbox's own choice) or a host's labels.
+**Don't use it for** where a sandbox goes when it's created (New sandbox's pool picker, below) or a host's labels.
 
 **States:** many pools with an empty one, one pool, one pool with no hosts, long names, pools that can't be read, no
 pools, accounts' own hosts on a super-admin's page, New pool, Rename, Delete, Move to pool (not drained, with sandboxes,
@@ -428,6 +428,45 @@ ready), Add host in a pool and with one pool, and a phone; all in the Hosts page
 
 **Cost:** one read of the pools with each read of the hosts (when the page opens, then every minute), and one after
 each change made on it.
+
+### New sandbox's pool picker
+
+New sandbox (`NewSandboxDialog` in `src/compute/sandboxes-page.tsx`) picks the pool a sandbox goes in with the Hosts
+page's `PoolPicker`, where the `SandboxesSource` has `pools` and the account has more than one, starting on the default
+(or on the page's `pool`). With one pool, while the pools are being read, or with none (account hosts off) there is no
+picker and nothing else changes: the sandbox goes in the default pool. The default sends no `pool`, so a create goes
+where one naming none goes, the deployment's shared hosts included; another pool goes as `pool`, and the sandbox runs on
+that pool's hosts and stays in it. Picking a pool reads the sizes again for its hosts (`shapes` with the pool), and the
+host picker then offers only that pool's hosts, letting go of a host picked in another. A pool with no hosts says so
+under the picker, and Create waits for another. Where the pools can't be read, a warning notice says the sandbox goes in
+the default pool, with Try again. When Kantel refuses the create (none of the pool's hosts can take it now), its reason,
+which names the pool, shows in the error notice over the list.
+
+**Don't use it for** a host's pool (the Hosts page's Move to pool and Add host).
+
+**States:** several pools, one pool (no picker), a pool picked, an empty pool, a refusal naming the pool, the pools
+being read, the pools not read, long names and a phone; the Sandboxes page's `Create…` stories.
+
+**Cost:** one read of the pools the first time New sandbox opens, and a read of the sizes each time the pool changes.
+
+### HostPeers
+
+A host's mesh peers (`src/compute/host-peers.tsx`), under its disk when its row on the Hosts page is opened: each other
+host of its pool by name (its ID where the page has no name for it), whether the host reaches it, the path (direct, or
+none), the endpoint it uses, its last handshake as a relative time and the round trip of its last probe, as the host
+last reported them. A peer is unreachable when its path is none or its last handshake is more than 5 minutes old
+(`meshPeerReachable`: the host's own 3 minutes and a heartbeat or two); unreachable peers come first, in the error
+colour, and the heading counts them. `narrow` gives a short row per peer instead of the table. A host without a mesh
+(its pool's sync off, or an older host agent) says so plainly, as does one that isn't connected, and one alone on its
+pool's mesh says it has no peers yet.
+
+**Don't use it for** a pool's mesh as a whole (each host shows its own view of it) or a sandbox's network.
+
+**States:** reachable, unreachable (no path, a stale handshake, never shaken hands), many peers, long names, no peers,
+no mesh, not connected, and a phone; all in its stories. Loading and a failed read are the Hosts page's, whose list
+brings the peers.
+
+**Cost:** none: the host sends it with every heartbeat.
 
 ### SandboxStateLabel
 
