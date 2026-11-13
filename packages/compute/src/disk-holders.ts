@@ -14,7 +14,13 @@
 import { KantelError } from "@kantel/contracts";
 import { createGrantKey, DISK_KINDS, type DiskKind, GRANT_TTL_MS, type GrantKey, grantKeyFrom } from "./grants.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
-import { type ComputeStore, diskHolderId, type StoredDiskHolder, type StoredHost } from "./store.ts";
+import {
+	type ComputeStore,
+	diskHolderId,
+	type StoredDiskHolder,
+	type StoredHost,
+	type StoredStickyDiskVersion,
+} from "./store.ts";
 
 /** A host's request for a version of an object (`disk.locate`). */
 export interface DiskLocateRequest {
@@ -56,6 +62,12 @@ export interface DiskHolders {
 	holdersOf(kind: DiskKind, objectId: string): Promise<Map<string, StoredDiskHolder[]>>;
 	/** Forgets every holder of an object, or of one of its versions. */
 	forget(kind: DiskKind, objectId: string, version?: string): Promise<void>;
+	/**
+	 * After a sticky version's record was forgotten because no other host held it: whether a holder `eligible` approves
+	 * has been recorded since, in which case the record is put back. A report that records a holder reads the version
+	 * again after it writes, so of the two, one sees the other.
+	 */
+	keepIfHeld(version: StoredStickyDiskVersion, eligible: (holder: StoredDiskHolder) => boolean): Promise<boolean>;
 	/**
 	 * Forgets holders of sticky versions the catalogue no longer has (a forgotten version, a deleted disk's) and holders on
 	 * revoked hosts, each older than `reportGraceMs` at `at`.
@@ -141,15 +153,12 @@ export function createDiskHolders(options: {
 					// Only a version the catalogue has: one it never recorded, or forgot, isn't a copy of anything.
 					const recorded = await store.stickyDiskVersions.get(version);
 					if (recorded === undefined || recorded.diskId !== diskId) continue;
-					await store.diskHolders.insert({
-						id: diskHolderId("sticky", diskId, version, hostId),
-						kind: "sticky",
-						objectId: diskId,
-						version,
-						hostId,
-						state: "held",
-						since: at,
-					});
+					const id = diskHolderId("sticky", diskId, version, hostId);
+					const holding = { id, kind: "sticky", objectId: diskId, version, hostId, state: "held", since: at } as const;
+					if (!(await store.diskHolders.insert(holding))) continue;
+					// Read again once written: a sweep that forgot the version meanwhile either sees this holder and keeps the
+					// version (`keepIfHeld`), or is seen here, and the holder of a version that has gone goes too.
+					if ((await store.stickyDiskVersions.get(version)) === undefined) await store.diskHolders.delete(id);
 				} else if (holder.state === "fetching") {
 					await store.diskHolders.update(holder.id, (latest) =>
 						latest.state === "fetching" ? { ...latest, state: "held", since: at } : undefined,
@@ -186,8 +195,7 @@ export function createDiskHolders(options: {
 				throw new KantelError("not_supported", `Kantel keeps no copies of ${request.kind} objects yet`);
 			}
 			if (!options.enabled) throw new KantelError("not_supported", "Sticky disks are off here");
-			const signing = grantKey();
-			if (signing === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+			if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 			const missing = () => new KantelError("not_found", "No such version of that sticky disk");
 			const version = await store.stickyDiskVersions.get(request.version);
 			if (version === undefined || version.diskId !== request.objectId) throw missing();
@@ -218,7 +226,9 @@ export function createDiskHolders(options: {
 			}
 			const mapDigest = version.mapDigest === undefined ? {} : { mapDigest: version.mapDigest };
 			if (holders.length === 0) return { ...mapDigest, holders };
-			const grant = await (await signing).sign({
+			const signing = await grantKey();
+			if (signing === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+			const grant = await signing.sign({
 				kind: "sticky",
 				objectId: version.diskId,
 				version: version.id,
@@ -249,6 +259,15 @@ export function createDiskHolders(options: {
 				if (holder.kind !== kind || (version !== undefined && holder.version !== version)) continue;
 				await store.diskHolders.delete(holder.id);
 			}
+		},
+
+		async keepIfHeld(version, eligible) {
+			const holders = (await store.diskHolders.list({ objectId: version.diskId })).filter(
+				(holder) => holder.kind === "sticky" && holder.version === version.id && eligible(holder),
+			);
+			if (holders.length === 0) return false;
+			await store.stickyDiskVersions.insert(version);
+			return true;
 		},
 
 		async sweep(at) {

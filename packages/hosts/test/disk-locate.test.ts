@@ -15,8 +15,11 @@ afterEach(() => {
 const capacity = { freeMemoryMiB: 4096, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0.1 };
 
 async function setup(link: Partial<HostComputeLink>) {
+	const clock = { at: Date.UTC(2026, 10, 13) };
+	const store = createMemoryHostStore();
 	const service = createHostsService({
-		store: createMemoryHostStore(),
+		store,
+		clock: { now: () => clock.at },
 		publicUrl: "https://kantel.test",
 		log: () => undefined,
 	});
@@ -36,7 +39,7 @@ async function setup(link: Partial<HostComputeLink>) {
 		});
 		return found;
 	};
-	return { service, host, hostId, result };
+	return { service, store, clock, host, hostId, result };
 }
 
 describe("the disk store on the host link", () => {
@@ -61,6 +64,29 @@ describe("the disk store on the host link", () => {
 		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: [] } } });
 		await vi.waitFor(() => expect(recordStickyHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), []));
 		expect(recordStickyHoldings).toHaveBeenCalledTimes(2);
+	});
+
+	it("passes on no report older than the newest the host's record has, as one taken on another gateway", async () => {
+		let release: () => void = () => undefined;
+		const recordStickyHoldings = vi.fn(
+			(_hostId: string, _at: number) =>
+				new Promise<undefined>((resolve) => {
+					release = () => resolve(undefined);
+				}),
+		);
+		const { host, hostId, store, clock } = await setup({ recordStickyHoldings });
+		const holdings = [{ diskId: "sdk_1", versions: [{ version: "sdv_1", allocatedBytes: 10, at: 1 }] }];
+		clock.at += 1_000;
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: holdings } } });
+		await vi.waitFor(() => expect(recordStickyHoldings).toHaveBeenCalledTimes(1));
+		// The next report waits for the first; meanwhile the host reconnected to another gateway, which took a newer one.
+		clock.at += 1_000;
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: [] } } });
+		await vi.waitFor(async () => expect((await store.getHost(hostId))?.capacityAt).toBe(clock.at));
+		await store.updateHost(hostId, (record) => ({ ...record, capacityAt: clock.at + 5_000 }));
+		release();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(recordStickyHoldings).toHaveBeenCalledTimes(1);
 	});
 
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {

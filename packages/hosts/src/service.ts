@@ -1129,16 +1129,23 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * Keeps a report's sticky disk holdings in the catalogue, in its own time, one at a time per host so an older report
-	 * never lands after a newer. Nothing from a report that doesn't say what it holds: absent isn't none.
+	 * Keeps a report's sticky disk holdings in the catalogue, in its own time, once the report received at `at` is
+	 * written to the host's record (`written`): one at a time per host, and only while it is the newest the record has,
+	 * so an older report, here or on a gateway the host has since left, never undoes a newer one. Nothing from a report
+	 * that doesn't say what it holds: absent isn't none.
 	 */
 	const holdingsRecorded = new Map<string, Promise<void>>();
-	const recordHoldings = (hostId: string, at: number, capacity: HostCapacity) => {
+	const recordHoldings = (hostId: string, at: number, capacity: HostCapacity, written?: Promise<unknown>) => {
 		const link = compute;
 		const holdings = capacity.stickyDisks;
 		if (link?.recordStickyHoldings === undefined || holdings === undefined) return;
 		const previous = holdingsRecorded.get(hostId) ?? Promise.resolve();
-		const next = previous.then(() => link.recordStickyHoldings?.(hostId, at, holdings));
+		const next = previous.then(async () => {
+			await written?.catch(() => undefined);
+			const latest = await store.getHost(hostId);
+			if (latest === undefined || latest.revoked || (latest.capacityAt ?? Number.NEGATIVE_INFINITY) > at) return;
+			await link.recordStickyHoldings?.(hostId, at, holdings);
+		});
 		const settled = next.catch(() => undefined);
 		holdingsRecorded.set(hostId, settled);
 		void settled.then(() => {
@@ -1317,17 +1324,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			refreshImages(hostId);
 			readSnapshots(hostId);
 			runCleanups(hostId);
-			report(
-				(async () => {
-					await store.updateHost(hostId, (host) => ({
-						...host,
-						capacity,
-						capacityAt: receivedAt,
-						lastSeenAt: clock.now(),
-					}));
-				})(),
-			);
-			recordHoldings(hostId, receivedAt, capacity);
+			const written = (async () => {
+				await store.updateHost(hostId, (host) => ({
+					...host,
+					capacity,
+					capacityAt: receivedAt,
+					lastSeenAt: clock.now(),
+				}));
+			})();
+			report(written);
+			recordHoldings(hostId, receivedAt, capacity, written);
 		},
 		onEvent(hostId, event) {
 			const sandbox = event.sandbox;

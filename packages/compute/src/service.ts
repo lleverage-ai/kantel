@@ -162,6 +162,7 @@ import type {
 	StoredCommand,
 	StoredDeletion,
 	StoredDeviceLogin,
+	StoredDiskHolder,
 	StoredEgressEntry,
 	StoredEnvironment,
 	StoredEnvironmentFile,
@@ -2568,14 +2569,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
 				if (report.held.has(`${disk.id}/${version.id}`)) continue;
-				const elsewhere = (holders.get(version.id) ?? []).some(
-					(holder) =>
-						holder.hostId !== version.hostId &&
-						holder.state !== "deleting" &&
-						hosts.get(holder.hostId)?.state !== "revoked",
-				);
-				if (elsewhere) continue;
-				if (await store.stickyDiskWrites.forget(version.id)) await diskHolders.forget("sticky", disk.id, version.id);
+				const elsewhere = (holder: StoredDiskHolder) =>
+					holder.hostId !== version.hostId &&
+					holder.state !== "deleting" &&
+					hosts.get(holder.hostId)?.state !== "revoked";
+				if ((holders.get(version.id) ?? []).some(elsewhere)) continue;
+				if (!(await store.stickyDiskWrites.forget(version.id))) continue;
+				// A host that recorded holding it as it was forgotten keeps it; else its holders go with it.
+				if (await diskHolders.keepIfHeld(version, elsewhere)) continue;
+				await diskHolders.forget("sticky", disk.id, version.id);
 			}
 		}
 	}

@@ -4,10 +4,11 @@ import { createKantelClient } from "@kantel/api/sdk";
 import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
+import { createDiskHolders } from "../src/disk-holders.ts";
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, OPERATOR_POOLS } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore, OPERATOR_POOLS } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const opened: ComputeApi[] = [];
@@ -242,6 +243,98 @@ describe("disk holders", () => {
 		await sweep();
 		expect((await tom.getStickyDisk(disk.id)).versions?.map((each) => each.id)).toEqual([head.id]);
 		expect(await tom.holders(old.id)).toEqual([]);
+	});
+
+	it("keeps a version a host recorded holding as the sweep forgot it, and drops a holder whose version went", async () => {
+		const store = createMemoryStore();
+		const holders = createDiskHolders({
+			store,
+			now: () => 1_000_000,
+			enabled: true,
+			sealer: undefined,
+			hosts: async () => [],
+			meshAddress: () => undefined,
+			reportGraceMs: 0,
+		});
+		const version = {
+			id: "sdv_1",
+			diskId: "sdk_1",
+			accountId: "acc_1",
+			hostId: "host_a",
+			sandboxId: "sbx_1",
+			sizeBytes: 1,
+			allocatedBytes: 1,
+			seq: 1,
+			createdAt: 1,
+		};
+		// The sweep forgot it, and then read the holder host_b's report wrote meanwhile: it is put back.
+		await store.diskHolders.put({
+			id: "sticky:sdk_1:sdv_1:host_b",
+			kind: "sticky",
+			objectId: "sdk_1",
+			version: "sdv_1",
+			hostId: "host_b",
+			state: "held",
+			since: 1,
+		});
+		const other = (holder: { readonly hostId: string }) => holder.hostId !== version.hostId;
+		expect(await holders.keepIfHeld(version, other)).toBe(true);
+		expect(await store.stickyDiskVersions.get("sdv_1")).toEqual(version);
+		await store.diskHolders.delete("sticky:sdk_1:sdv_1:host_b");
+		expect(await holders.keepIfHeld({ ...version, id: "sdv_2" }, other)).toBe(false);
+		expect(await store.stickyDiskVersions.get("sdv_2")).toBeUndefined();
+		// A report that read the version, then wrote its holder after the sweep forgot it, takes the holder out again.
+		const reads = store.stickyDiskVersions.get.bind(store.stickyDiskVersions);
+		let first = true;
+		const racing: ComputeStore = {
+			...store,
+			stickyDiskVersions: {
+				...store.stickyDiskVersions,
+				async get(id) {
+					const read = await reads(id);
+					if (first) {
+						first = false;
+						await store.stickyDiskVersions.delete(id);
+					}
+					return read;
+				},
+			},
+		};
+		const reporting = createDiskHolders({
+			store: racing,
+			now: () => 1_000_000,
+			enabled: true,
+			sealer: undefined,
+			hosts: async () => [],
+			meshAddress: () => undefined,
+			reportGraceMs: 0,
+		});
+		await reporting.recordStickyHoldings("host_c", 1_000_000, [{ diskId: "sdk_1", versions: [{ version: "sdv_1" }] }]);
+		expect(await store.diskHolders.list()).toEqual([]);
+	});
+
+	it("answers a locate whose grant key can't be read with the key's failure, and a missing version with not_found", async () => {
+		const store = await sqlStore(nodeSqliteDatabase);
+		const tom = setUp({ store, secretsKey: SECRETS_KEY });
+		const { disk, version } = await tom.committed();
+		await tom.pool();
+		await tom.api.service.recordStickyHoldings("host_b", tom.clock.now, [
+			{ diskId: disk.id, versions: [{ version: version.id }] },
+		]);
+		// A key sealed with another secrets key: it can't be opened here.
+		const other = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
+		expect(await setUp({ store, secretsKey: other }).api.service.grantPublicKey()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		const request = { kind: "sticky", objectId: disk.id, version: version.id };
+		await expect(
+			tom.api.service.locateDisk(STUB_HOST_ID, { ...request, version: "sdv_missing" }),
+		).rejects.toMatchObject({
+			code: "not_found",
+		});
+		expect(await tom.api.service.locateDisk("host_c", request)).toEqual({ holders: [] });
+		await expect(tom.api.service.locateDisk(STUB_HOST_ID, request)).rejects.toMatchObject({ code: "unavailable" });
+		// Read again after a failure: once it opens (the key is the one this gateway made), grants are signed.
+		await store.settings.delete("grantKey");
+		expect((await tom.api.service.locateDisk(STUB_HOST_ID, request)).grant).toEqual(expect.any(String));
 	});
 
 	it("signs with one key every gateway over a database shares, and with no secrets key has none", async () => {
