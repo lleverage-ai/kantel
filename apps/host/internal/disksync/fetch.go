@@ -81,6 +81,9 @@ type Store interface {
 	Partials() []Ref
 	// Discard removes a fetch's partial file and its bitmap.
 	Discard(r Ref)
+	// Reserve holds room for bytes a fetch is to write, beside the host's other copies under way, until release; an
+	// error (proto.ErrCapacity) when that would leave the host too little.
+	Reserve(r Ref, bytes int64) (release func(), err error)
 }
 
 // Request is a fetch of a version, with what disk.locate said of it; with no holders, grant or digest it is asked.
@@ -150,7 +153,11 @@ func (f *Fetcher) init() {
 		if f.Client == nil {
 			var protocols http.Protocols
 			protocols.SetUnencryptedHTTP2(true)
-			f.Client = &http.Client{Transport: &http.Transport{Protocols: &protocols, ResponseHeaderTimeout: time.Minute}}
+			f.Client = &http.Client{
+				Transport: &http.Transport{Protocols: &protocols, ResponseHeaderTimeout: time.Minute},
+				// A holder's redirect is its answer, a failed one: a fetch goes only to the addresses disk.locate gave.
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			}
 		}
 		if f.Context == nil {
 			f.Context = context.Background()
@@ -222,6 +229,8 @@ var (
 
 func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 	if f.Store.Held(req.Ref) {
+		// A partial left of it (published, then the host stopped before removing it) is no fetch to go on with.
+		f.Store.Discard(req.Ref)
 		return Stats{}, nil
 	}
 	src := &holders{f: f, ref: req.Ref, digest: req.MapDigest}
@@ -251,6 +260,17 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 		st.Fetched += r.last - r.first + 1
 	}
 	st.Reused = st.Blocks - st.Fetched
+	var writes int64
+	for _, r := range runs {
+		start, _ := m.Range(r.first)
+		_, end := m.Range(r.last)
+		writes += end - start
+	}
+	release, err := f.Store.Reserve(req.Ref, writes)
+	if err != nil {
+		return st, err
+	}
+	defer release()
 	fetched, err := f.fetchRuns(ctx, src, p, runs)
 	st.FetchedBytes = fetched
 	if err != nil {
@@ -539,6 +559,11 @@ func (f *Fetcher) fresh(r Ref, path string, p *partial) error {
 	m := p.m
 	p.done = make([]byte, (m.Blocks()+7)/8)
 	base, err := f.Store.CloneNearest(r, path)
+	if pe := (*proto.Error)(nil); errors.As(err, &pe) && pe.Code == proto.ErrCapacity {
+		// No room for a full copy of the nearest version: none for the version from nothing either.
+		_ = os.Remove(path)
+		return err
+	}
 	if err != nil {
 		f.Log.Warn("a fetch starts from an empty file: the nearest version couldn't be cloned", "version", r.String(), "error", err)
 		_ = os.Remove(path)

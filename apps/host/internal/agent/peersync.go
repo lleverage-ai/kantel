@@ -174,6 +174,7 @@ type StickyFetcher interface {
 	CloneNearestSticky(diskID, version, dst string) (*blockmap.Map, error)
 	PublishFetchedSticky(diskID, version string, partial *os.File, mapFile []byte) error
 	StickyPartials() [][2]string
+	ReserveStickyFetch(bytes int64) (release func(), err error)
 	DiscardStickyPartial(diskID, version string)
 }
 
@@ -234,6 +235,14 @@ func (s peerStore) Partials() []disksync.Ref {
 		out = append(out, disksync.Ref{Kind: kindSticky, ObjectID: p[0], Version: p[1]})
 	}
 	return out
+}
+
+func (s peerStore) Reserve(r disksync.Ref, bytes int64) (func(), error) {
+	t, ok := s.sticky(r.Kind)
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+	return t.ReserveStickyFetch(bytes)
 }
 
 func (s peerStore) Discard(r disksync.Ref) {

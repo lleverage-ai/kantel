@@ -79,6 +79,7 @@ func (f *fetchTier) CloneNearestSticky(string, string, string) (*blockmap.Map, e
 	return nil, nil
 }
 func (f *fetchTier) PublishFetchedSticky(string, string, *os.File, []byte) error { return nil }
+func (f *fetchTier) ReserveStickyFetch(int64) (func(), error)                    { return func() {}, nil }
 func (f *fetchTier) StickyPartials() [][2]string                                 { return nil }
 func (f *fetchTier) DiscardStickyPartial(diskID, version string) {
 	f.mu.Lock()
@@ -150,7 +151,8 @@ func TestDiskFetch(t *testing.T) {
 		tier.mu.Lock()
 		got := slices.Clone(tier.discarded)
 		tier.mu.Unlock()
-		if len(got) == 1 && got[0] == "ci/v2" {
+		// v1's partial too: a version held keeps none.
+		if slices.Contains(got, "ci/v1") && slices.Contains(got, "ci/v2") {
 			break
 		}
 		if time.Now().After(deadline) {
