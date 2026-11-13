@@ -94,6 +94,10 @@ class Host {
 	upgradeAnswer?: "drop" | number;
 	/** `sandbox.create` makes the sandbox but its answer is dropped. */
 	dropCreateAnswer = false;
+	/** What a microVM made from a snapshot (`from`) starts with, by absolute path. */
+	snapshotFiles?: Held["files"];
+	/** `sandbox.files.extract` as a guest agent from before `realTarget`: it goes through a link at or above its target. */
+	olderAgent = false;
 	/** The next `sandbox.upgrade.thaw` is done, but answered only once this settles. */
 	holdThaw?: Promise<void>;
 	/** How long a file read takes to answer, in milliseconds, and the most answered at once so far. */
@@ -189,7 +193,7 @@ class Host {
 					tier: p.tier === "isolate" ? "isolate" : "microvm",
 					state: "running",
 					size: p.tier === "isolate" ? "isolate" : String(p.size || "default"),
-					files: new Map(),
+					files: new Map(p.from === undefined ? [] : (this.snapshotFiles ?? [])),
 				};
 				this.sandboxes.set(id, made);
 				if (this.dropCreateAnswer) return;
@@ -329,6 +333,20 @@ class Host {
 				return;
 			}
 			case "sandbox.files.list": {
+				if (sandbox?.tier === "microvm") {
+					// A directory's own entries, each as it is (a link a link).
+					const dir = key === "/" ? "" : key;
+					const entries = [...sandbox.files.entries()]
+						.filter(([name]) => name.startsWith(`${dir}/`) && !name.slice(dir.length + 1).includes("/"))
+						.map(([name, entry]) => ({
+							name: name.slice(dir.length + 1),
+							path: name,
+							type: entry.kind,
+							size: entry.data?.length ?? 0,
+							...(entry.target === undefined ? {} : { target: entry.target }),
+						}));
+					return answer({ entries });
+				}
 				const prefix = key === "" ? "" : `${key}/`;
 				const entries = [...(sandbox?.files.entries() ?? [])]
 					.filter(([name]) => name.startsWith(prefix) && !name.slice(prefix.length).includes("/"))
@@ -347,8 +365,25 @@ class Host {
 				const archive = sandbox?.files.get(String(p.archive))?.data;
 				if (sandbox === undefined || archive === undefined) return fail({ code: "not_found", message: "no archive" });
 				sandbox.files.delete(String(p.archive));
+				// A link at or above the target: refused when asked for a real one, else gone through, as the guest's
+				// extractor does.
+				let target = "";
+				for (const part of String(p.target)
+					.split("/")
+					.filter((each) => each !== "")) {
+					const at = `${target}/${part}`;
+					const there = sandbox.files.get(at);
+					if (there?.kind !== "symlink") {
+						target = at;
+						continue;
+					}
+					if (p.realTarget === true && !this.olderAgent) {
+						return fail({ code: "invalid", message: `${at} is a symbolic link; nothing is extracted through one` });
+					}
+					target = there.target ?? "";
+				}
 				for (const entry of readTar(archive)) {
-					const at = `${String(p.target)}/${entry.name.replace(/\/$/, "")}`;
+					const at = `${target}/${entry.name.replace(/\/$/, "")}`;
 					sandbox.files.set(
 						at,
 						entry.type === "5"
@@ -1300,6 +1335,98 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 		expect(vms.methods()).not.toContain("sandbox.create");
 		expect(text(holder.sandboxes.get(sandbox.id)?.files.get("/home/user/workspace/notes.md")?.data)).toBe("# notes\n");
 		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: holder.hostId });
+	});
+
+	/** An isolate with `notes.md`, and a host holding `snap_project` whose microVM starts with `files`. */
+	async function movingInto(files: Held["files"], olderAgent = false) {
+		const vmFacts = factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]);
+		const made = await setup([
+			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+			{ name: "holder", facts: vmFacts },
+		]);
+		const [isolates, holder] = made.hosts;
+		if (isolates === undefined || holder === undefined) throw new Error("no hosts");
+		holder.snapshotFiles = files;
+		holder.olderAgent = olderAgent;
+		const sandbox = await made.root.createSandbox({ type: "isolate", wait: true });
+		isolates.sandboxes.get(sandbox.id)?.files.set("notes.md", { kind: "file", data: enc("# notes\n") });
+		await savedOn(made.api, sandbox.accountId, holder.hostId);
+		return { ...made, isolates, holder, sandbox };
+	}
+	type HeldFile = Held["files"] extends Map<string, infer V> ? V : never;
+	const dir = { kind: "dir" } as const;
+	const theirs = { kind: "file", data: enc("theirs\n") } as const;
+
+	for (const [where, linked, files, outside] of [
+		[
+			"at /home/user/workspace",
+			"/home/user/workspace",
+			[
+				["/home", dir],
+				["/home/user", dir],
+				["/home/user/workspace", { kind: "symlink", target: "/opt/project" }],
+				["/opt", dir],
+				["/opt/project", dir],
+				["/opt/project/notes.md", theirs],
+			],
+			"/opt/project/notes.md",
+		],
+		[
+			"above it",
+			"/home/user",
+			[
+				["/home", dir],
+				["/home/user", { kind: "symlink", target: "/srv/user" }],
+				["/srv", dir],
+				["/srv/user", dir],
+				["/srv/user/workspace", dir],
+				["/srv/user/workspace/notes.md", theirs],
+			],
+			"/srv/user/workspace/notes.md",
+		],
+	] as const) {
+		for (const olderAgent of [false, true]) {
+			it(`refuses a snapshot with a link ${where} before any file goes in, the isolate kept${olderAgent ? ", its guest agent older" : ""}`, async () => {
+				const { root, service, isolates, holder, sandbox } = await movingInto(
+					new Map<string, HeldFile>(files),
+					olderAgent,
+				);
+				const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
+				expect(refused.status).toBe(400);
+				expect(refused.message).toContain(`${linked} in the microVM is a symbolic link`);
+				expect(holder.methods()).toContain("sandbox.create");
+				expect(holder.methods()).not.toContain("sandbox.files.write");
+				expect(holder.methods()).not.toContain("sandbox.files.extract");
+				expect(holder.sandboxes.has(sandbox.id)).toBe(false);
+				expect(text(holder.snapshotFiles?.get(outside)?.data)).toBe("theirs\n");
+				expect(isolates.frozen.size).toBe(0);
+				expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({
+					tier: "isolate",
+					hostId: isolates.hostId,
+				});
+				expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+				expect(text(isolates.sandboxes.get(sandbox.id)?.files.get("notes.md")?.data)).toBe("# notes\n");
+			});
+		}
+	}
+
+	it("lays the files over a real /home/user/workspace the snapshot has, asking its host for a real target", async () => {
+		const { root, holder, sandbox } = await movingInto(
+			new Map<string, HeldFile>([
+				["/home", dir],
+				["/home/user", dir],
+				["/home/user/workspace", dir],
+				["/home/user/workspace/package.json", { kind: "file", data: enc("{}\n") }],
+			]),
+		);
+		expect(await root.upgradeSandbox(sandbox.id, { from: "project" })).toMatchObject({ type: "microvm" });
+		const files = holder.sandboxes.get(sandbox.id)?.files;
+		expect(text(files?.get("/home/user/workspace/notes.md")?.data)).toBe("# notes\n");
+		expect(text(files?.get("/home/user/workspace/package.json")?.data)).toBe("{}\n");
+		expect(holder.calls.find((call) => call.method === "sandbox.files.extract")?.params).toMatchObject({
+			target: "/home/user/workspace",
+			realTarget: true,
+		});
 	});
 
 	it("is refused before anything is sent when the snapshot's host is not one the sandbox may use", async () => {

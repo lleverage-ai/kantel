@@ -1138,8 +1138,10 @@ export const HostMethods = {
 	 */
 	upgradeSettle: "sandbox.upgrade.settle",
 	/**
-	 * `{ sandboxId, archive, target }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into the directory
-	 * `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted. Answered `{}`.
+	 * `{ sandboxId, archive, target, realTarget? }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into
+	 * the directory `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted.
+	 * Answered `{}`. With `realTarget`, a link at `target` or above it is refused rather than followed, by guest agents
+	 * that know it: an older one, or an older host, ignores it, so whoever needs it checks too.
 	 */
 	fileExtract: "sandbox.files.extract",
 	/**

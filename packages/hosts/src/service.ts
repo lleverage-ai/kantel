@@ -1795,10 +1795,39 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		await onHost(
 			toHost,
 			HostMethods.fileExtract,
-			{ sandboxId, archive: UPGRADE_STAGING, target: UPGRADE_WORKSPACE },
+			// Only into a real directory, by a guest agent that knows to refuse a link there; `realWorkspace` holds for one
+			// that doesn't.
+			{ sandboxId, archive: UPGRADE_STAGING, target: UPGRADE_WORKSPACE, realTarget: true },
 			{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 		);
 		return { files: entries.length, bytes };
+	};
+
+	/**
+	 * Refuses a microVM with a link, or something that isn't a directory, at `UPGRADE_WORKSPACE` or any directory above
+	 * it, as a snapshot may have: the isolate's files would be extracted through it to somewhere else and the upgrade
+	 * would still succeed. Read from its host's listing, which every guest agent answers without following a link, so it
+	 * holds for a snapshot whose agent (run from its own image or memory) is older than the extraction's own check
+	 * (`realTarget`). The first directory missing ends it: the extraction makes the rest.
+	 */
+	const realWorkspace = async (sandboxId: string, hostId: string): Promise<void> => {
+		let at = "";
+		for (const name of UPGRADE_WORKSPACE.split("/").filter((part) => part !== "")) {
+			const { entries } = await onHost<{ entries: ListedFile[] | null }>(hostId, HostMethods.fileList, {
+				sandboxId,
+				path: at === "" ? "/" : at,
+			});
+			const next = `${at}/${name}`;
+			const entry = (entries ?? []).find((each) => each.path === next);
+			if (entry === undefined) return;
+			if (entry.type !== "dir" && entry.type !== "directory") {
+				throw new KantelError(
+					"invalid",
+					`${next} in the microVM ${entry.type === "symlink" ? "is a symbolic link" : "isn't a directory"}: the isolate's files go only into a real directory at ${UPGRADE_WORKSPACE}`,
+				);
+			}
+			at = next;
+		}
 	};
 
 	const reserve = (hostId: string, memoryMiB: number, diskGiB: number) => {
@@ -2667,6 +2696,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						input.from === undefined ? undefined : { timeoutMs: DISK_COPY_TIMEOUT_MS },
 						target,
 					);
+					await realWorkspace(sandboxId, target.id);
 					moved = await moveFiles(sandboxId, listing, source.hostId, target.id);
 					const linked = await onHost<HostExecResult>(target.id, HostMethods.exec, {
 						sandboxId,

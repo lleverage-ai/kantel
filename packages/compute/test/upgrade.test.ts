@@ -1534,6 +1534,32 @@ describe("upgrading an isolate into a snapshot", () => {
 		});
 	}
 
+	// Only at the workspace: the stub's machines always have a real /home/user (`restore`), so a link above it is the
+	// hosts' tests'.
+	it("fails, the isolate and what the link points at as they were, when the snapshot has a link at /home/user/workspace", async () => {
+		const outside = "/opt/project";
+		const { tom, api } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		const made = await tom.runCommand(vm.id, {
+			command: `mkdir -p ${outside} && (rmdir /home/user/workspace 2>/dev/null; ln -s ${outside} /home/user/workspace) && echo theirs > ${outside}/kept.txt`,
+		});
+		expect(made.exitCode).toBe(0);
+		const saved = await tom.saveSnapshot({ name: "linked", sandboxId: vm.id });
+		const sandbox = await isolateWithFiles(tom);
+		const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
+		expect(refused.status).toBe(400);
+		expect(refused.message).toContain("/home/user/workspace in the microVM is a symbolic link");
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running" });
+		expect(stored?.upgrading).toBeUndefined();
+		const isolate = await tom.runCommand(sandbox.id, { command: "cat src/a.txt; ./run.sh" });
+		expect(isolate.stdout).toBe("hello\nrun\n");
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(0);
+		const fromIt = await tom.createSandbox({ from: saved.id, wait: true });
+		const kept = await tom.runCommand(fromIt.id, { command: `ls -A ${outside}; cat ${outside}/kept.txt` });
+		expect(kept.stdout).toBe("kept.txt\ntheirs\n");
+	});
+
 	it("takes the snapshot by its ID, and gives a saved name's newest", async () => {
 		const { tom } = setup();
 		const first = await projectSnapshot(tom);

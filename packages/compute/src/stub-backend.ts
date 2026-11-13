@@ -521,6 +521,20 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			let files = 0;
 			let bytes = 0;
 			try {
+				// A link at UPGRADE_WORKSPACE or above it (a snapshot's) is refused before anything goes in, as a host does:
+				// the files would land wherever it points.
+				let at = "";
+				for (const part of UPGRADE_WORKSPACE.split("/").filter((each) => each !== "")) {
+					at = `${at}/${part}`;
+					const there = await fs.lstat(at).catch(() => undefined);
+					if (there === undefined) break;
+					if (there.isSymbolicLink || !there.isDirectory) {
+						throw new KantelError(
+							"invalid",
+							`${at} in the microVM ${there.isSymbolicLink ? "is a symbolic link" : "isn't a directory"}: the isolate's files go only into a real directory at ${UPGRADE_WORKSPACE}`,
+						);
+					}
+				}
 				await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
 				for (const dir of [...(tree?.dirs.keys() ?? [])].sort()) {
 					const to = moved(dir);
