@@ -475,6 +475,9 @@ type Welcome struct {
 	// UsageAcks says Kantel acknowledges usage ticks on this connection (usage.ack, FeatureUsageAcks). The connection's
 	// first welcome decides it; a later one doesn't change it.
 	UsageAcks bool `json:"usageAcks,omitempty"`
+	// GrantKey is the control plane's Ed25519 public key for fetch grants, its 32 raw bytes in base64url: a host serves
+	// a peer's fetch only with a grant it signed (DiskLocateResult.Grant). Empty while the control plane has none.
+	GrantKey string `json:"grantKey,omitempty"`
 	// Mesh is the host's place in its pool's mesh (FeatureMesh), sent only to a host in a pool with sync on. A welcome
 	// without it takes the host's mesh device down.
 	Mesh *WelcomeMesh `json:"mesh,omitempty"`
@@ -1103,6 +1106,31 @@ type StickyVersionHolding struct {
 	MapDigest      string `json:"mapDigest,omitempty"`
 }
 
+// DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants. Kind is
+// "sticky" for now.
+type DiskLocateParams struct {
+	Kind     string `json:"kind"`
+	ObjectID string `json:"objectId"`
+	Version  string `json:"version"`
+}
+
+// DiskLocateResult is where the version is: its block map digest, once Kantel has it; the online hosts in the asker's
+// pool that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them. The grant
+// is "<payload>.<signature>": the payload is the base64url JSON of {kind, objectId, version, accountId, from, to, exp}
+// (from the holders' host IDs, to the asker's, exp milliseconds since the epoch), and the signature Ed25519 over the
+// payload's ASCII text by Welcome.GrantKey, in base64url.
+type DiskLocateResult struct {
+	MapDigest string       `json:"mapDigest,omitempty"`
+	Holders   []DiskHolder `json:"holders"`
+	Grant     string       `json:"grant,omitempty"`
+}
+
+// DiskHolder is a host holding a version, and its mesh address.
+type DiskHolder struct {
+	HostID  string `json:"hostId"`
+	Address string `json:"address"`
+}
+
 // TemplateBoot is how a sandbox made from a template boots.
 type TemplateBoot struct {
 	// RootfsKey names the image's root filesystem (images/templates/<key>.ext4); empty, it is worked out from the base
@@ -1612,6 +1640,8 @@ const (
 	MethodMountsRefresh = "sandbox.mounts.refresh"
 	// MethodBucketResolve (host → Kantel, BucketResolveParams) answers a BucketSource (HostMethods.bucketFetch).
 	MethodBucketResolve = "bucket.fetch"
+	// MethodDiskLocate (host → Kantel, DiskLocateParams) answers a DiskLocateResult.
+	MethodDiskLocate = "disk.locate"
 	// MethodStickyCommit (Kantel → host, StickyCommitParams; FeatureStickyDisks) answers a StickyCommitResult.
 	MethodStickyCommit = "sticky.commit"
 	// MethodStickyDelete (Kantel → host, StickyDeleteParams; FeatureStickyDisks) answers {}.

@@ -15,6 +15,7 @@ import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
 import type { BackendDiskUsage, SandboxTemplateBoot, SnapshotMadeOn } from "./backend.ts";
 import type { StoredGithubRunnerJob, StoredGithubRunnerMachine, StoredGithubRunners } from "./github-runners.ts";
+import type { DiskKind } from "./grants.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /**
@@ -675,6 +676,11 @@ export interface StoredPool {
 	 * a pool that never was.
 	 */
 	readonly defaultAt?: number;
+	/**
+	 * Whether its hosts sync with each other: those that run the mesh peer over WireGuard (docs/design/disk-store.md,
+	 * "2a. The mesh"). Off (absent) by default.
+	 */
+	readonly sync?: boolean;
 }
 
 /** The key no two pools may share: an owner's and a name, so the store refuses a second pool of a name in an owner. */
@@ -751,8 +757,15 @@ export interface StoredFileUrl {
  * bundle store, which any gateway's must hold for it to keep, serve or remove bundles' bytes (`BundleBlobStore.mark`).
  */
 export interface StoredSetting {
-	readonly id: "publicUrl" | "bundleStore";
+	/**
+	 * `grantKey`: the control plane's Ed25519 key for fetch grants (`grants.ts`), made by the first gateway that needs it
+	 * and claimed (`insert`), so every gateway over one database signs with the same key. `value` is its public key, and
+	 * `sealed` its private key, sealed with the deployment's secrets key.
+	 */
+	readonly id: "publicUrl" | "bundleStore" | "grantKey";
 	readonly value: string;
+	/** A value kept sealed beside `value`: the grant key's private key. */
+	readonly sealed?: SealedValue;
 	readonly updatedAt: number;
 	readonly updatedBy: string;
 }
@@ -913,6 +926,11 @@ export interface ComputeStore {
 	readonly stickyDiskNames: Collection<StoredStickyDiskName>;
 	/** A sticky disk with its name's claim or its version, written together. */
 	readonly stickyDiskWrites: StickyDiskWrites;
+	/** Which hosts hold which versions of the disk store's objects (`StoredDiskHolder`). */
+	readonly diskHolders: Collection<StoredDiskHolder>;
+	/** Each host's newest holdings report, and holders reconciled from reports, written together. */
+	readonly diskReports: Collection<StoredDiskReport>;
+	readonly diskHolderWrites: DiskHolderWrites;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -983,6 +1001,55 @@ export interface StoredStickyDiskVersion {
 }
 
 /**
+ * A host's copy of one version of a disk store object (docs/design/disk-store.md, 2c): what the host reports it holds,
+ * reconciled from each of its capacity reports, so these are the copies there are rather than the ones asked for. A
+ * version's own `hostId` stays the host it was made on; this is every host that has it. Its ID is `diskHolderId`.
+ */
+export interface StoredDiskHolder {
+	readonly id: string;
+	readonly kind: DiskKind;
+	/** The object: a sticky disk's ID. */
+	readonly objectId: string;
+	readonly version: string;
+	readonly hostId: string;
+	/**
+	 * `held`: the host has it in full. `fetching`: it is fetching it from others, and reports it held once it has it.
+	 * `deleting`: it has been told to let it go.
+	 */
+	readonly state: "fetching" | "held" | "deleting";
+	/** When it reached `state`. */
+	readonly since: number;
+}
+
+export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>
+	`${kind}:${objectId}:${version}:${hostId}`;
+
+/** The newest holdings report a host's holders were reconciled from (`DiskHolderWrites`); its ID is the host's. */
+export interface StoredDiskReport {
+	readonly id: string;
+	readonly at: number;
+}
+
+/**
+ * Reconciling a host's holders from its reports, fenced so the newest report wins on every gateway:
+ *
+ * - `claim` makes a report the host's newest (`StoredDiskReport`), unless one as new or newer has been claimed.
+ * - `reconcile` deletes the holders `release` names, each only as it was read, and inserts those `hold` names, each only
+ *   while its sticky version's record is there; all of it only while `at` is still the host's newest report. So a report
+ *   held up behind a newer one, here or on another gateway, changes nothing. Recording a holder changes its version's
+ *   record (in SQL, its row's version), so a `StickyDiskWrites.forget` that read the holders before it reads them again.
+ */
+export interface DiskHolderWrites {
+	/** Whether the report received at `at` is now the host's newest. */
+	claim(hostId: string, at: number): Promise<boolean>;
+	reconcile(
+		hostId: string,
+		at: number,
+		changes: { readonly hold: readonly StoredDiskHolder[]; readonly release: readonly StoredDiskHolder[] },
+	): Promise<void>;
+}
+
+/**
  * Writes of a sticky disk that must land with another record or not at all, so no interruption leaves a name claimed
  * without its live disk, or a disk's head without its version:
  *
@@ -991,7 +1058,9 @@ export interface StoredStickyDiskVersion {
  *   delayed delete never frees a newer disk's name.
  * - `commit` records a version and makes it the disk's head, numbered after its other commits, together, and only while
  *   the disk is there and not tombstoned: once a tombstone lands, no version of the disk is recorded again.
- * - `forget` deletes a version's record only while it isn't its disk's head, so the head always has its version.
+ * - `forget` deletes a version's record only while it isn't its disk's head, so the head always has its version, and,
+ *   given `keep`, only while `keep` passes over its holders as they are when it lands: a holder recorded meanwhile
+ *   (`DiskHolderWrites.reconcile` changes the version's record as it records one) means it reads them again.
  */
 export interface StickyDiskWrites {
 	/** Inserts `disk` and claims its name in its account; false, writing neither, when the name or the ID is taken. */
@@ -1007,10 +1076,10 @@ export interface StickyDiskWrites {
 	 */
 	commit(version: StoredStickyDiskVersion, at: number): Promise<StoredStickyDiskVersion | undefined>;
 	/**
-	 * Deletes the version `id`'s record (its host no longer holds it) unless it is its disk's head. Answers whether it is
-	 * gone, false leaving it as it was.
+	 * Deletes the version `id`'s record (its host no longer holds it) unless it is its disk's head, or `keep` says to keep
+	 * it given its holders (`StoredDiskHolder`). Answers whether it is gone, false leaving it as it was.
 	 */
-	forget(id: string): Promise<boolean>;
+	forget(id: string, keep?: (holders: readonly StoredDiskHolder[]) => boolean): Promise<boolean>;
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -1113,6 +1182,7 @@ function memoryStickyDiskWrites(
 	disks: MemoryTable<StoredStickyDisk>,
 	names: MemoryTable<StoredStickyDiskName>,
 	versions: MemoryTable<StoredStickyDiskVersion>,
+	holders: MemoryTable<StoredDiskHolder>,
 ): StickyDiskWrites {
 	return {
 		async create(disk) {
@@ -1142,12 +1212,46 @@ function memoryStickyDiskWrites(
 			versions.records.set(version.id, structuredClone(recorded));
 			return structuredClone(recorded);
 		},
-		async forget(id) {
+		async forget(id, keep) {
 			const version = versions.records.get(id);
 			if (version === undefined) return true;
 			if (disks.records.get(version.diskId)?.head === id) return false;
+			if (keep?.(memoryHoldersOf(holders, version)) === true) return false;
 			versions.records.delete(id);
 			return true;
+		},
+	};
+}
+
+/** A sticky version's holders in a memory table. */
+const memoryHoldersOf = (holders: MemoryTable<StoredDiskHolder>, version: StoredStickyDiskVersion) =>
+	[...holders.records.values()]
+		.filter((holder) => holder.kind === "sticky" && holder.objectId === version.diskId && holder.version === version.id)
+		.map((holder) => structuredClone(holder));
+
+/** `DiskHolderWrites` over memory tables: each write is made in one turn, so nothing reads half of it. */
+function memoryDiskHolderWrites(
+	reports: MemoryTable<StoredDiskReport>,
+	holders: MemoryTable<StoredDiskHolder>,
+	versions: MemoryTable<StoredStickyDiskVersion>,
+): DiskHolderWrites {
+	return {
+		async claim(hostId, at) {
+			const newest = reports.records.get(hostId);
+			if (newest !== undefined && newest.at >= at) return false;
+			reports.records.set(hostId, { id: hostId, at });
+			return true;
+		},
+		async reconcile(hostId, at, { hold, release }) {
+			if (reports.records.get(hostId)?.at !== at) return;
+			for (const holder of release) {
+				if (JSON.stringify(holders.records.get(holder.id)) === JSON.stringify(holder))
+					holders.records.delete(holder.id);
+			}
+			for (const holder of hold) {
+				if (holders.records.has(holder.id) || !versions.records.has(holder.version)) continue;
+				holders.records.set(holder.id, structuredClone(holder));
+			}
 		},
 	};
 }
@@ -1162,6 +1266,8 @@ export function createMemoryStore(): ComputeStore {
 	const stickyDisks = memoryTable<StoredStickyDisk>();
 	const stickyDiskNames = memoryTable<StoredStickyDiskName>();
 	const stickyDiskVersions = memoryTable<StoredStickyDiskVersion>();
+	const diskHolders = memoryTable<StoredDiskHolder>();
+	const diskReports = memoryTable<StoredDiskReport>();
 	// Read and written with no await between, so nothing else runs in the middle.
 	const active = (userId: string) => {
 		const user = users.records.get(userId);
@@ -1218,7 +1324,10 @@ export function createMemoryStore(): ComputeStore {
 		stickyDisks: stickyDisks.collection,
 		stickyDiskVersions: stickyDiskVersions.collection,
 		stickyDiskNames: stickyDiskNames.collection,
-		stickyDiskWrites: memoryStickyDiskWrites(stickyDisks, stickyDiskNames, stickyDiskVersions),
+		stickyDiskWrites: memoryStickyDiskWrites(stickyDisks, stickyDiskNames, stickyDiskVersions, diskHolders),
+		diskHolders: diskHolders.collection,
+		diskReports: diskReports.collection,
+		diskHolderWrites: memoryDiskHolderWrites(diskReports, diskHolders, stickyDiskVersions),
 	};
 }
 

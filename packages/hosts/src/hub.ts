@@ -7,9 +7,9 @@
  * One connection per host: a newer one takes over, and the older is closed with 4008. Only the current connection's
  * close marks the host gone, so a takeover never reads as a disconnect.
  *
- * A welcomed host may call Kantel for two things, `secrets.fetch` and `bucket.fetch`: the hub answers them through
- * `secrets` and `bucketSource`, naming the host the connection was checked against, never one the host names, so a
- * host is given only its own sandboxes' values and bucket sources. Its egress proxy's `egress` events go to
+ * A welcomed host may call Kantel for `secrets.fetch`, `env.fetch`, `bucket.fetch` and `disk.locate`: the hub answers
+ * them through `secrets`, `env`, `bucketSource` and `diskLocate`, naming the host the connection was checked against,
+ * never one the host names, so a host is given only its own sandboxes' values and bucket sources, and grants naming it. Its egress proxy's `egress` events go to
  * `onEgress`, and its `sandbox.mounts` events, checked, to `onMounts`.
  *
  * A file stream (`openFile`) is a port stream carrying a file of a sandbox's: the host sends a read's bytes and ends it
@@ -19,6 +19,7 @@
  *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
+import { isKantelError } from "@kantel/contracts";
 import { parseMountStatuses, parseMountsAt } from "./facts.ts";
 import {
 	decodeStreamFrame,
@@ -30,12 +31,15 @@ import {
 	HOST_PROTOCOL_VERSION,
 	type HostBucketSource,
 	type HostCapacity,
+	type HostDiskLocateParams,
+	type HostDiskLocateResult,
 	type HostEgressRecord,
 	type HostEnvAnswer,
 	type HostError,
 	type HostEvent,
 	type HostFileOpen,
 	type HostHello,
+	type HostMeshPeer,
 	type HostMessage,
 	HostMethods,
 	type HostMountStatus,
@@ -191,6 +195,12 @@ export interface HostHubOptions {
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
 	/**
+	 * A host's `disk.locate`: where the version is, and a grant to fetch it naming `hostId`. A `KantelError` it throws
+	 * (`not_found`, `not_supported`, `invalid`) is answered with its code and message, anything else `unavailable`.
+	 * Absent, every call is answered `unsupported`.
+	 */
+	diskLocate?(hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult>;
+	/**
 	 * A sandbox's mounts changed status (a `sandbox.mounts` event), checked and clipped, with when the host set them
 	 * (`HostSandbox.mountsAt`; absent from a host too old to say).
 	 */
@@ -206,6 +216,12 @@ export interface HostHubOptions {
 	 * while a hello is being answered are read again once it is welcomed.
 	 */
 	welcomeNow?(hostId: string): Promise<HostWelcome>;
+	/**
+	 * The host's mesh peers as its pool has them now (`HOST_FEATURES.mesh`): what `remesh` sends as `mesh.peers`, read
+	 * afresh in turn with the welcomes, so an older list never lands after a newer one. Undefined sends nothing (a host
+	 * without the mesh); an empty list is no peers (its pool's sync is off).
+	 */
+	meshPeersNow?(hostId: string): Promise<readonly HostMeshPeer[] | undefined>;
 	/** Default 120 s: a cold boot and a template build are slow. */
 	readonly callTimeoutMs?: number;
 	/** How long a host may take to say hello. Default 30 s. */
@@ -227,6 +243,11 @@ export interface HostHub {
 	openFile(hostId: string, params: FileOpenParams, sink: PortSink): Promise<OpenedFile>;
 	/** Sends a welcome again, such as with a drain or a desired version. */
 	rewelcome(hostId: string, welcome: HostWelcome): void;
+	/**
+	 * Sends the host its mesh peers as they are now (`mesh.peers`, read with `meshPeersNow`). Mid-hello it waits for the
+	 * welcome, which is read again once sent (with `welcomeNow`) and carries the peers.
+	 */
+	remesh(hostId: string): void;
 	disconnect(hostId: string, code: number, reason: string): void;
 	closeAll(code: number, reason: string): void;
 }
@@ -265,6 +286,11 @@ const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
 
 /** A payload a host sent that is an object, which is all its type claims until it's checked further. */
 const isObject = <T>(value: T): value is NonNullable<T> & object => typeof value === "object" && value !== null;
+
+/** The errors of `diskLocate` a host is answered with as they are; any other is `unavailable`. */
+const LOCATE_ERRORS: ReadonlySet<string> = new Set(["not_found", "not_supported", "invalid"]);
+/** The longest kind, object ID or version a `disk.locate` may name. */
+const LOCATE_NAME_LIMIT = 200;
 
 /** A WebSocket close reason is at most 123 bytes of UTF-8 (RFC 6455); a longer one makes `close` throw. */
 const CLOSE_REASON_BYTES = 123;
@@ -337,6 +363,24 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			try {
 				const welcome = await read(connection.hostId);
 				send(connection, { type: "welcome", welcome });
+			} catch {
+				// A host revoked meanwhile is disconnected by its revoke.
+			}
+		});
+	};
+
+	/**
+	 * Sends the host its mesh peers as they are now (`meshPeersNow`), in turn with its welcomes: the list sent last was
+	 * read after the last change that asked for one.
+	 */
+	const sendPeers = (connection: Connection) => {
+		const read = options.meshPeersNow;
+		if (read === undefined) return;
+		connection.rewelcoming = (connection.rewelcoming ?? Promise.resolve()).then(async () => {
+			if (connection.closed) return;
+			try {
+				const peers = await read(connection.hostId);
+				if (peers !== undefined) send(connection, { type: "mesh.peers", peers });
 			} catch {
 				// A host revoked meanwhile is disconnected by its revoke.
 			}
@@ -471,7 +515,46 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 	};
 
-	/** Answers a host's call (`secrets.fetch`, `env.fetch` or `bucket.fetch`) for the host its connection was checked against. */
+	/** Answers a host's `disk.locate`, for the host the connection was checked against. */
+	const answerDiskLocate = async (
+		connection: Connection,
+		params: unknown,
+		reply: (body: { readonly result: unknown } | { readonly error: HostError }) => void,
+	) => {
+		const named: { readonly kind?: unknown; readonly objectId?: unknown; readonly version?: unknown } = isObject(params)
+			? params
+			: {};
+		const name = (value: unknown) =>
+			typeof value === "string" && value !== "" && value.length <= LOCATE_NAME_LIMIT ? value : undefined;
+		const kind = name(named.kind);
+		const objectId = name(named.objectId);
+		const version = name(named.version);
+		if (kind === undefined || objectId === undefined || version === undefined) {
+			reply({ error: { code: "invalid", message: "disk.locate names a kind, an object and a version" } });
+			return;
+		}
+		if (options.diskLocate === undefined) {
+			reply({ error: { code: "unsupported", message: "Kantel answers no disk.locate call" } });
+			return;
+		}
+		if (!connection.welcomed) {
+			reply({ error: { code: "unavailable", message: "Kantel can't locate disks now" } });
+			return;
+		}
+		try {
+			reply({
+				result: await options.diskLocate(connection.hostId, { kind, objectId, version }),
+			});
+		} catch (error) {
+			if (isKantelError(error) && LOCATE_ERRORS.has(error.code)) {
+				reply({ error: { code: error.code, message: error.message } });
+			} else {
+				reply({ error: { code: "unavailable", message: "Kantel can't locate disks now" } });
+			}
+		}
+	};
+
+	/** Answers a host's call (`secrets.fetch`, `env.fetch`, `bucket.fetch` or `disk.locate`) for the host its connection was checked against. */
 	const answer = async (connection: Connection, message: HostMessage) => {
 		const id = message.id;
 		if (typeof id !== "string" || id === "") return;
@@ -483,6 +566,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 		if (message.method === HostMethods.envFetch) {
 			await answerEnv(connection, message.params, reply);
+			return;
+		}
+		if (message.method === HostMethods.diskLocate) {
+			await answerDiskLocate(connection, message.params, reply);
 			return;
 		}
 		if (message.method !== HostMethods.secretsFetch) {
@@ -889,6 +976,16 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			if (!connection.welcomed) connection.later = read ? true : welcome;
 			else if (read) refresh(connection);
 			else send(connection, { type: "welcome", welcome });
+		},
+		remesh(hostId) {
+			const connection = held.get(hostId);
+			if (connection === undefined || connection.closed) return;
+			// Mid-hello, the welcome read again once it is sent carries the peers as they are then.
+			if (!connection.welcomed) {
+				if (options.welcomeNow !== undefined) connection.later = true;
+				return;
+			}
+			sendPeers(connection);
 		},
 		disconnect(hostId, code, reason) {
 			const connection = held.get(hostId);

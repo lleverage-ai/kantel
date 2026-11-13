@@ -37,6 +37,13 @@ export interface HostRecord {
 	 */
 	readonly poolId?: string;
 	/**
+	 * Its address in its pool's mesh (`HOST_FEATURES.mesh`), and the pool it was given in: one /128 in the pool's /48
+	 * (`mesh.ts`), kept so it stays the same across reconnects, and given again once the host is in another pool. Its
+	 * public key and endpoints are its facts' (`HostFacts.mesh`), as its last hello said. Absent until a host with the
+	 * feature is in a pool.
+	 */
+	readonly mesh?: { readonly poolId: string; readonly address: string };
+	/**
 	 * The latest drain or undrain the compute plane ordered (`StoredHost.drainEpoch`): one older than it isn't taken, so
 	 * one held up can't undo a later one. Absent until one is ordered.
 	 */
@@ -118,7 +125,7 @@ export interface HostStore {
 	 * create that read its host before a drain is refused here, so a host drained, found empty and moved to another pool
 	 * never takes one after (the compute plane's move).
 	 */
-	placeOnTakingHost(placement: PlacementRecord): Promise<boolean>;
+	placeOnTakingHost(placement: PlacementRecord, poolId?: string): Promise<boolean>;
 	/**
 	 * Everything that has something on `hostId`, in one read: its own placements (a lost one not), and placements on
 	 * other hosts with an upgrade under way whose microVM is (or may be) there, or an upgraded isolate there still to be
@@ -159,6 +166,11 @@ export function isLeftover(placement: PlacementRecord): boolean {
 function occupies(placement: PlacementRecord, hostId: string): boolean {
 	if (placement.hostId === hostId) return placement.state !== "lost";
 	return placement.upgrade?.target === hostId || placement.cleanup?.hostId === hostId;
+}
+
+/** `value` as a whole JSON string, escaped for a `LIKE ... ESCAPE '\'` pattern. */
+function likeValue(value: string): string {
+	return JSON.stringify(value).replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
 /** Placements grouped by their host, in the order given. */
@@ -224,9 +236,10 @@ export function createMemoryHostStore(): HostStore {
 		async occupying(hostId) {
 			return [...placements.values()].filter((placement) => occupies(placement, hostId)).map(copy);
 		},
-		async placeOnTakingHost(placement) {
+		async placeOnTakingHost(placement, poolId) {
 			const host = hosts.get(placement.hostId);
 			if (host === undefined || host.draining || host.revoked) return false;
+			if (poolId !== undefined && host.poolId !== undefined && host.poolId !== poolId) return false;
 			placements.set(placement.sandboxId, copy(placement));
 			return true;
 		},
@@ -408,14 +421,17 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
 			);
 		},
-		async placeOnTakingHost(placement) {
+		async placeOnTakingHost(placement, poolId) {
 			// The host's row is read locked on Postgres (`FOR UPDATE`), so a drain writing it waits for this placement, and
 			// one already writing it is waited for and read as it then is (draining, and refused): a move's check, made after
 			// its drain, sees every placement that got in. SQLite (D1 too) has one writer at a time, so needs no lock.
 			const lock = driver.dialect === "postgres" ? " FOR UPDATE" : "";
+			// In the pool it was chosen in, where the host's row says one: its own top-level `poolId` (not a label's).
+			const field = driver.dialect === "postgres" ? "(data::jsonb ->> 'poolId')" : "json_extract(data, '$.poolId')";
+			const pooled = poolId === undefined ? "" : ` AND (${field} IS NULL OR ${field} = ?)`;
 			const rows = await driver.query(
 				`WITH taking AS (
-					SELECT id FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${lock}
+					SELECT id FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${pooled}${lock}
 				)
 				INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
 				SELECT ?, ?, ?, ? FROM taking WHERE true
@@ -426,6 +442,7 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 					placement.hostId,
 					DRAINING_PATTERN,
 					REVOKED_PATTERN,
+					...(poolId === undefined ? [] : [poolId]),
 					placement.sandboxId,
 					placement.hostId,
 					placement.createdAt,
@@ -437,7 +454,7 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 		async occupying(hostId) {
 			// One statement, so one snapshot. Narrowed by the host's column, and by its ID as a whole JSON string value (a
 			// `target`, or a cleanup's `hostId`: quoted, so an ID that starts another's doesn't match), then checked exactly.
-			const quoted = JSON.stringify(hostId).replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+			const quoted = likeValue(hostId);
 			const rows = await driver.query(
 				"SELECT data FROM compute_placements WHERE host_id = ? OR data LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\'",
 				[hostId, `%"target":${quoted}%`, `%"hostId":${quoted}%`],

@@ -347,7 +347,10 @@ func TestPoolsAndHostMove(t *testing.T) {
 		},
 		"PATCH /v1/admin/pools/ci": func(c call) any {
 			calls = append(calls, "PATCH "+jsonOf(t, c.Body))
-			return pool("pool_ci", "builds", true, 0)
+			p := pool("pool_ci", "builds", true, 0)
+			body, _ := c.Body.(map[string]any)
+			p["sync"] = body["sync"] == true
+			return p
 		},
 		"DELETE /v1/admin/pools/ci": func(c call) any {
 			calls = append(calls, "DELETE")
@@ -369,10 +372,12 @@ func TestPoolsAndHostMove(t *testing.T) {
 	eq(t, "add", out("pool", "add", "ci"), "pool_ci ci")
 	eq(t, "rename", out("pool", "rename", "ci", "builds"), "pool_ci builds")
 	eq(t, "default", out("pool", "default", "ci"), "pool_ci builds is the default")
+	eq(t, "sync", out("pool", "sync", "ci", "on"), "pool_ci builds syncs: its hosts join its mesh")
+	eq(t, "unsync", out("pool", "sync", "ci", "off"), "pool_ci builds doesn't sync")
 	eq(t, "rm", out("pool", "rm", "ci"), "deleted ci")
 	eq(t, "move", out("host", "move", "host_6t5r4e", "ci"), "host_6t5r4e in pool_ci draining")
 	eq(t, "calls", strings.Join(calls, ", "),
-		`POST {"name":"ci"}, PATCH {"name":"builds"}, PATCH {"default":true}, DELETE, PATCH host {"pool":"ci"}`)
+		`POST {"name":"ci"}, PATCH {"name":"builds"}, PATCH {"default":true}, PATCH {"sync":true}, PATCH {"sync":false}, DELETE, PATCH host {"pool":"ci"}`)
 	contains(t, "info", out("host", "info", "host_6t5r4e"), "pool       pool_ci")
 
 	token := map[string]any{"id": "hjt_1", "token": "kth_secret", "expiresAt": 0, "command": "install kth_secret"}

@@ -354,6 +354,10 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async updateHost(hostId, change) {
 			await primary.updateHost?.(hostId, change);
 		},
+		// Pools' hosts are the primary's, as hosts are.
+		async updatePool(poolId, change) {
+			await primary.updatePool?.(poolId, change);
+		},
 		...(primary.hostHolds === undefined && fallback.hostHolds === undefined
 			? {}
 			: {

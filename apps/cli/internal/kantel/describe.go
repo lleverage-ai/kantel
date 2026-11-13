@@ -200,6 +200,7 @@ func DescribeSandbox(c *cli.Context, s api.Sandbox, names map[string]string) str
 		{"state", c.Style.State(StateOf(s))},
 		{"health", health},
 		{"host", host},
+		{"pool", Deref(s.PoolID)},
 		{"visibility", string(s.Visibility)},
 		{"labels", strings.Join(labels, ", ")},
 		{"environments", environmentsText(environmentIDsOf(s), names)},

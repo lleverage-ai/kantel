@@ -187,6 +187,8 @@ type GetSandboxShapesQuery struct {
 	Account *string
 	// The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use.
 	Host *string
+	// The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. Default: from the hosts a create naming no pool may use, in the default pools.
+	Pool *string
 }
 
 func (q *GetSandboxShapesQuery) values() url.Values {
@@ -196,6 +198,7 @@ func (q *GetSandboxShapesQuery) values() url.Values {
 	}
 	setQuery(v, "account", q.Account)
 	setQuery(v, "host", q.Host)
+	setQuery(v, "pool", q.Pool)
 	return v
 }
 

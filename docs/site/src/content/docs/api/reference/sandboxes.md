@@ -66,6 +66,7 @@ What a new sandbox in the account may be, from the hosts it may use: an isolate'
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `host` | string | no | The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use. |
+| `pool` | string | no | The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. Default: from the hosts a create naming no pool may use, in the default pools. |
 
 **Answers**
 

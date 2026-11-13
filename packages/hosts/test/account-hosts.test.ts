@@ -322,4 +322,45 @@ describe("Account hosts", () => {
 		expect(moved.state).toBe("draining");
 		expect((await service.get(host.hostId)).state).toBe("draining");
 	});
+
+	it("places a create naming a pool only on that pool's hosts, and says which pool when none can take it", async () => {
+		const { tom, root, join } = setup();
+		const shared = await join((await root.createHostJoinToken({ name: "shared" })).token);
+		await tom.createAccountPool({ name: "ci" });
+		const inDefault = await join((await tom.createAccountJoinToken({ name: "laptop" })).token);
+		const inCi = await join(
+			(await tom.createAccountJoinToken({ name: "builder", pool: "ci", labels: { size: "big" } })).token,
+		);
+		const ci = (await tom.listAccountPools()).items.find((pool) => pool.name === "ci");
+		for (let i = 0; i < 4; i++) {
+			const named = await tom.createSandbox({ type: "microvm", pool: "ci", wait: true });
+			expect(inCi.sandboxes.has(named.id)).toBe(true);
+			expect(named.poolId).toBe(ci?.id);
+			// Naming none: the account's default pool, as before pools.
+			const plain = await tom.createSandbox({ type: "microvm", wait: true });
+			expect(inDefault.sandboxes.has(plain.id)).toBe(true);
+			expect(inCi.sandboxes.has(plain.id)).toBe(false);
+			expect(shared.sandboxes.has(plain.id)).toBe(false);
+		}
+		// Labels choose among the pool's hosts only: none in ci has these.
+		const refused = await failure(tom.createSandbox({ type: "microvm", pool: "ci", hostLabels: { size: "small" } }));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.details).toMatchObject({ reason: "no_host_with_labels" });
+		expect(refused.message).toContain("pool ci");
+		// One the default pool's host lacks isn't found in ci either, and no shared host takes it.
+		const elsewhere = await failure(tom.createSandbox({ type: "microvm", hostLabels: { size: "big" } }));
+		expect(elsewhere.code).toBe("unavailable");
+		expect((await failure(tom.createSandbox({ type: "microvm", pool: "nowhere" }))).code).toBe("not_found");
+		// A host it names decides, in whichever of the account's pools it is, as before pools.
+		const pinned = await tom.createSandbox({ type: "microvm", host: inCi.hostId, wait: true });
+		expect(inCi.sandboxes.has(pinned.id)).toBe(true);
+		expect(pinned.poolId).toBe(ci?.id);
+		expect((await failure(tom.createSandbox({ type: "microvm", host: inCi.hostId, pool: "default" }))).code).toBe(
+			"unavailable",
+		);
+		// A fork stays in its pool.
+		const source = await tom.createSandbox({ type: "microvm", pool: "ci", wait: true });
+		const [fork] = (await tom.forkSandbox(source.id, {})).items ?? [];
+		expect(fork?.poolId).toBe(ci?.id);
+	});
 });

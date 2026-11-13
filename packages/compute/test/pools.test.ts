@@ -197,6 +197,58 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect((await root.listPools()).items.map((pool) => pool.name)).toEqual(["default"]);
 	});
 
+	it("keeps a pool's sync, off by default, and tells the backend when it is turned on or off", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const pools: { readonly poolId: string; readonly sync: boolean }[] = [];
+		let refuse = false;
+		const { api, root, tom } = setup(store, {
+			...backend,
+			updatePool: async (poolId, change) => {
+				if (refuse) throw new Error("the registry is away");
+				pools.push({ poolId, ...change });
+			},
+		});
+		const ci = await root.createPool({ name: "ci" });
+		expect(ci.sync).toBe(false);
+		expect(await api.service.poolSync(ci.id)).toBe(false);
+		const synced = await root.createPool({ name: "builds", sync: true });
+		expect(synced.sync).toBe(true);
+		expect(await api.service.poolSync(synced.id)).toBe(true);
+		// A new pool has no hosts to tell.
+		expect(pools).toEqual([]);
+
+		expect(await root.updatePool("ci", { sync: true })).toMatchObject({ sync: true });
+		expect(await api.service.poolSync(ci.id)).toBe(true);
+		// A rename keeps it, and tells nothing.
+		expect(await root.updatePool("ci", { name: "web" })).toMatchObject({ name: "web", sync: true });
+		expect(await root.updatePool("web", { sync: false })).toMatchObject({ sync: false });
+		expect(await api.service.poolSync(ci.id)).toBe(false);
+		expect(pools).toEqual([
+			{ poolId: ci.id, sync: true },
+			{ poolId: ci.id, sync: false },
+		]);
+		// A telling that fails is answered so, the sync kept; the same call again tells them again.
+		refuse = true;
+		expect((await failure(root.updatePool("web", { sync: true }))).code).toBe("unavailable");
+		expect(await api.service.poolSync(ci.id)).toBe(true);
+		refuse = false;
+		expect(await root.updatePool("web", { sync: true })).toMatchObject({ sync: true });
+		expect(pools.at(-1)).toEqual({ poolId: ci.id, sync: true });
+		expect((await root.listPools()).items.map((pool) => [pool.name, pool.sync])).toEqual([
+			["default", false],
+			["web", true],
+			["builds", true],
+		]);
+		expect(await api.service.poolSync("pool_gone")).toBe(false);
+
+		// An account's pools too.
+		const own = await tom.createAccountPool({ name: "ci", sync: true });
+		expect(own.sync).toBe(true);
+		expect(await tom.updateAccountPool(own.id, { sync: false })).toMatchObject({ sync: false });
+		expect(pools.at(-1)).toEqual({ poolId: own.id, sync: false });
+	});
+
 	it("keeps an account's pools to the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();
@@ -425,6 +477,88 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		await root.listHosts();
 		await api.service.idle();
 		expect(made.registry.get(STUB_HOST_ID)).toBe(ci.id);
+	});
+
+	it("places a sandbox in the deployment's pool it names, keeps its pool, and says which pool when none can take it", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		// Naming none: the deployment's default, as before pools, kept on the sandbox and its fork.
+		const plain = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		expect(plain.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect((await store.sandboxes.get(plain.id))?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const named = await tom.createSandbox({ type: "microvm", pool: "default", wait: true });
+		expect(named.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// The empty pool can't take it: refused, saying which.
+		const refused = await failure(tom.createSandbox({ type: "microvm", pool: "ci" }));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.details).toMatchObject({ reason: "no_host" });
+		expect(refused.message).toContain("pool ci");
+		expect((await failure(tom.createSandbox({ type: "microvm", pool: "nowhere" }))).code).toBe("not_found");
+	});
+
+	it("keeps a sandbox from a snapshot to the snapshot's pool, and one whose pool has gone to none", async () => {
+		const store = await make();
+		const other = await hostLike("host_ci");
+		const made = hostsBackend(() => [other]);
+		const specs: { readonly sandboxId: string; readonly poolId?: string }[] = [];
+		const backend: SandboxBackend = {
+			...made.backend,
+			create: async (spec) => {
+				specs.push({ sandboxId: spec.sandboxId, ...(spec.poolId === undefined ? {} : { poolId: spec.poolId }) });
+				return made.backend.create(spec);
+			},
+		};
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		// Another shared host, in ci.
+		await root.listHosts();
+		await root.updateHost("host_ci", { draining: true });
+		await root.updateHost("host_ci", { pool: "ci" });
+		await root.updateHost("host_ci", { draining: false });
+		const source = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: source.id });
+		// Made from it, in its host's pool; naming another pool is refused, not left to run elsewhere later.
+		const restored = await tom.createSandbox({ from: saved.id, autoStopMinutes: null, wait: true });
+		expect(restored.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// Its admission is kept to that pool too, as a fresh create's is.
+		expect(specs.find((spec) => spec.sandboxId === restored.id)?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect(specs.find((spec) => spec.sandboxId === source.id)?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const elsewhere = await failure(tom.createSandbox({ from: saved.id, pool: "ci" }));
+		expect(elsewhere.code).toBe("unavailable");
+		expect(elsewhere.message).toContain("another pool");
+
+		// Never placed, its pool gone: started again, it isn't placed in another.
+		const lost = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		await tom.stopSandbox(lost.id);
+		await store.sandboxes.update(lost.id, ({ hostId: _host, latestSnapshotId: _snap, ...rest }) => ({
+			...rest,
+			state: "error",
+			poolId: "pool_gone",
+		}));
+		const refused = await failure(tom.startSandbox(lost.id));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.message).toContain("pool_gone");
+	});
+
+	it("offers the shapes of the pool a create would go in", async () => {
+		const store = await make();
+		const big = {
+			...(await hostLike("host_ci")),
+			sizes: [{ name: "xlarge" as const, vcpus: 32, memoryMb: 65_536, diskGb: 100 }],
+		};
+		const { backend } = hostsBackend(() => [big]);
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost("host_ci", { draining: true });
+		await root.updateHost("host_ci", { pool: "ci" });
+		await root.updateHost("host_ci", { draining: false });
+		const names = (shapes: Awaited<ReturnType<typeof tom.getSandboxShapes>>) =>
+			(shapes.microvm?.presets ?? []).map((preset) => preset.name);
+		expect((await tom.getSandboxShapes()).microvm?.presets).not.toContainEqual(expect.objectContaining({ vcpus: 32 }));
+		expect(names(await tom.getSandboxShapes({ pool: "ci" }))).toEqual(["xlarge"]);
 	});
 
 	it("deletes an account's pools with the account", async () => {

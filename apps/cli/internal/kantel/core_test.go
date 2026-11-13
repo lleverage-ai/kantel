@@ -71,6 +71,11 @@ func TestNewSendsWhatWasAsked(t *testing.T) {
 
 	r = run(t, []string{"new", "--disk", "60"}, opts{})
 	eq(t, "disk without microvm", r.Code, 2)
+
+	r = run(t, []string{"new", "--type", "microvm", "--pool", "ci"},
+		opts{routes: routes{"POST /v1/sandboxes": func(c call) any { return sandbox(map[string]any{"type": "microvm", "poolId": "pool_ci"}) }}})
+	eq(t, "pool exit", r.Code, 0)
+	eq(t, "pool", r.Calls[0].Body["pool"], "ci")
 }
 
 func TestDeleteNeedsYes(t *testing.T) {

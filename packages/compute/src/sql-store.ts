@@ -20,9 +20,12 @@ import { type SqlDriver, type SqlValue, sqlNumber } from "@kantel/sql";
 import {
 	type Collection,
 	type ComputeStore,
+	type DiskHolderWrites,
 	matches,
 	type PersonWrites,
 	type StickyDiskWrites,
+	type StoredDiskHolder,
+	type StoredDiskReport,
 	type StoredStickyDisk,
 	type StoredStickyDiskVersion,
 	type StoredTemplate,
@@ -110,6 +113,11 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_pool_name ON compute_api_records (((data::jsonb ->> 'owner')), ((data::jsonb ->> 'name'))) WHERE kind = 'pools'"
 			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_pool_name ON compute_api_records (json_extract(data, '$.owner'), json_extract(data, '$.name')) WHERE kind = 'pools'",
+		// A host's copies of disk versions, as each of its capacity reports reads them (`list({ hostId })`), without every
+		// host's. Postgres's only over holders' rows, as egress's.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders ON compute_api_records (((data::jsonb ->> 'hostId')), seq) WHERE kind = 'diskHolders'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_host ON compute_api_records (kind, json_extract(data, '$.hostId'), seq)",
 	];
 }
 
@@ -343,8 +351,10 @@ const STICKY_DISK_VERSIONS = "stickyDiskVersions";
  * - `commit`: the disk's write over the live version it read, and the version's insert, only when the disk's row then
  *   holds exactly what was written, so a tombstone (or another commit) that came first means no version is recorded.
  *   Whether it landed is read back from the version, by its `writeId`, as `sqlTemplateWrites` does.
- * - `forget`: the version's delete, only while its disk's row holds exactly what was read, which named another head;
- *   a commit (or tombstone) that came first means it reads again.
+ * - `forget`: the version's delete, only while its disk's row holds exactly what was read, which named another head,
+ *   and while the version's row is still at the version it was read at, before its holders were: a commit (or
+ *   tombstone) that came first, or a holder recorded meanwhile (`sqlDiskHolderWrites` changes the row's version as it
+ *   records one), means it reads again.
  */
 function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 	const postgres = driver.dialect === "postgres";
@@ -369,8 +379,9 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 		WHERE EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)
 		ON CONFLICT (kind, id) DO NOTHING`;
 	const deleteVersion = `DELETE FROM compute_api_records
-		WHERE kind = ? AND id = ?
+		WHERE kind = ? AND id = ? AND version = ?
 		AND EXISTS (SELECT 1 FROM compute_api_records d WHERE d.kind = ? AND d.id = ? AND d.data = ?)`;
+	const holders = sqlCollection<StoredDiskHolder>(driver, DISK_HOLDERS);
 	const read = async <T>(kind: string, id: string): Promise<T | undefined> => {
 		const [row] = await driver.query(SELECT_DATA, [kind, id]);
 		return row === undefined ? undefined : parse<T>(row);
@@ -471,18 +482,29 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 				`The sticky disk ${version.diskId} kept changing while a version was committed; gave up after ${UPDATE_ATTEMPTS} tries`,
 			);
 		},
-		async forget(id) {
+		async forget(id, keep) {
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
-				const version = await read<StoredStickyDiskVersion>(STICKY_DISK_VERSIONS, id);
-				if (version === undefined) return true;
+				const [versionRow] = await driver.query(SELECT_VERSIONED, [STICKY_DISK_VERSIONS, id]);
+				if (versionRow === undefined) return true;
+				const version = parse<StoredStickyDiskVersion>(versionRow);
 				const [row] = await driver.query(SELECT_DATA, [STICKY_DISKS, version.diskId]);
 				if (row !== undefined && parse<StoredStickyDisk>(row).head === id) return false;
+				if (keep !== undefined) {
+					const held = (await holders.list({ objectId: version.diskId })).filter(
+						(holder) => holder.kind === "sticky" && holder.version === id,
+					);
+					if (keep(held)) return false;
+				}
+				const at = sqlNumber(versionRow.version);
 				await driver.batch([
 					row === undefined
-						? { sql: "DELETE FROM compute_api_records WHERE kind = ? AND id = ?", params: [STICKY_DISK_VERSIONS, id] }
+						? {
+								sql: "DELETE FROM compute_api_records WHERE kind = ? AND id = ? AND version = ?",
+								params: [STICKY_DISK_VERSIONS, id, at],
+							}
 						: {
 								sql: deleteVersion,
-								params: [STICKY_DISK_VERSIONS, id, STICKY_DISKS, version.diskId, String(row.data)],
+								params: [STICKY_DISK_VERSIONS, id, at, STICKY_DISKS, version.diskId, String(row.data)],
 							},
 				]);
 				if ((await read<StoredStickyDiskVersion>(STICKY_DISK_VERSIONS, id)) === undefined) return true;
@@ -490,6 +512,69 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 			throw new Error(
 				`The sticky disk version ${id} kept changing while it was forgotten; gave up after ${UPDATE_ATTEMPTS} tries`,
 			);
+		},
+	};
+}
+
+/** The kinds `sqlDiskHolderWrites` writes. */
+const DISK_HOLDERS = "diskHolders";
+const DISK_REPORTS = "diskReports";
+
+/**
+ * `DiskHolderWrites` in SQL. `claim` is one conditional write of the host's report row. `reconcile` is one batch (one
+ * transaction), each statement only while the report row holds exactly the report's `at`. It starts by moving that row's
+ * version on, which takes the row: on Postgres a newer report's `claim` waits for the batch to commit (and then finds the
+ * row changed, and reads it again), so the newer report reads the holders only once the older batch has landed, and an
+ * older batch that starts after a newer claim finds the row changed and writes nothing. Then the releases, each only as
+ * it was read; then for each holder, its sticky version's row's version moved on (which takes the row, so a `forget`
+ * deleting it at the version it read waits and then finds it changed) and the holder's insert, only while that version's
+ * row is there.
+ */
+function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
+	const postgres = driver.dialect === "postgres";
+	const seq = postgres
+		? "nextval('compute_api_records_seq')"
+		: "(SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?)";
+	const reports = sqlCollection<StoredDiskReport>(driver, DISK_REPORTS);
+	const newest = "EXISTS (SELECT 1 FROM compute_api_records r WHERE r.kind = ? AND r.id = ? AND r.data = ?)";
+	const release = `DELETE FROM compute_api_records WHERE kind = ? AND id = ? AND data = ? AND ${newest}`;
+	const touch = `UPDATE compute_api_records SET version = version + 1 WHERE kind = ? AND id = ? AND ${newest}`;
+	const lockReport = "UPDATE compute_api_records SET version = version + 1 WHERE kind = ? AND id = ? AND data = ?";
+	const hold = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		SELECT ?, ?, ${seq}, 1, ?
+		WHERE EXISTS (SELECT 1 FROM compute_api_records v WHERE v.kind = ? AND v.id = ?) AND ${newest}
+		ON CONFLICT (kind, id) DO NOTHING`;
+	return {
+		async claim(hostId, at) {
+			const report: StoredDiskReport = { id: hostId, at };
+			if (await reports.insert(report)) return true;
+			return (await reports.update(hostId, (current) => (current.at < at ? report : undefined))) !== undefined;
+		},
+		async reconcile(hostId, at, changes) {
+			const report = [DISK_REPORTS, hostId, JSON.stringify({ id: hostId, at } satisfies StoredDiskReport)];
+			const statements = [
+				{ sql: lockReport, params: report },
+				...changes.release.map((holder) => ({
+					sql: release,
+					params: [DISK_HOLDERS, holder.id, JSON.stringify(holder), ...report],
+				})),
+				...changes.hold.flatMap((holder) => [
+					{ sql: touch, params: [STICKY_DISK_VERSIONS, holder.version, ...report] },
+					{
+						sql: hold,
+						params: [
+							DISK_HOLDERS,
+							holder.id,
+							...(postgres ? [] : [DISK_HOLDERS]),
+							JSON.stringify(holder),
+							STICKY_DISK_VERSIONS,
+							holder.version,
+							...report,
+						],
+					},
+				]),
+			];
+			if (statements.length > 1) await driver.batch(statements);
 		},
 	};
 }
@@ -538,6 +623,9 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		stickyDiskVersions: sqlCollection(driver, STICKY_DISK_VERSIONS),
 		stickyDiskNames: sqlCollection(driver, STICKY_DISK_NAMES),
 		stickyDiskWrites: sqlStickyDiskWrites(driver),
+		diskHolders: sqlCollection(driver, DISK_HOLDERS),
+		diskReports: sqlCollection(driver, DISK_REPORTS),
+		diskHolderWrites: sqlDiskHolderWrites(driver),
 	};
 }
 

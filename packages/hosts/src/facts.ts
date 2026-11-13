@@ -20,6 +20,7 @@ import type {
 	HostMemoryReport,
 	HostMemorySource,
 	HostMemoryState,
+	HostMeshFacts,
 	HostMountStatus,
 	HostRuntime,
 	HostSandboxUsage,
@@ -177,6 +178,30 @@ function hostRuntimes(value: unknown): HostRuntime[] | undefined {
 	return out.length === 0 ? undefined : out;
 }
 
+/** A WireGuard key as WireGuard writes it: 32 bytes in base64, 44 characters with the padding. */
+const WIREGUARD_KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
+
+/**
+ * A host's side of its pool's mesh (`HostMeshFacts`), or undefined where it sends none or none shaped as kantel-host
+ * sends it (a WireGuard public key and a UDP port): a host without it is left out of the mesh, as is one whose report is
+ * malformed, rather than refused. Its endpoints are kept as they came, those that aren't text of a sane length left out:
+ * peers try them all, so one Kantel can't read is the host's to fix.
+ */
+export function meshFacts(value: unknown): HostMeshFacts | undefined {
+	if (!isObject(value)) return undefined;
+	const { publicKey, listenPort, endpoints } = value;
+	if (typeof publicKey !== "string" || !WIREGUARD_KEY.test(publicKey)) return undefined;
+	if (typeof listenPort !== "number" || !Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
+		return undefined;
+	}
+	const kept = (Array.isArray(endpoints) ? endpoints : [])
+		.filter(
+			(endpoint): endpoint is string => typeof endpoint === "string" && endpoint !== "" && endpoint.length <= MAX_TEXT,
+		)
+		.slice(0, MAX_ITEMS);
+	return { publicKey, listenPort, endpoints: kept };
+}
+
 /** Two CPU fingerprints restore each other's snapshots: both known, and vendor, family, model and features all equal. */
 export function sameCpu(a: HostCpuFingerprint | undefined, b: HostCpuFingerprint | undefined): boolean {
 	return (
@@ -225,6 +250,7 @@ function facts(value: unknown): HostFacts {
 	const isolate = isolateRuntime(value.isolate);
 	const cpu = cpuFingerprint(value.cpu);
 	const runtimes = hostRuntimes(value.runtimes);
+	const mesh = meshFacts(value.mesh);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -250,6 +276,7 @@ function facts(value: unknown): HostFacts {
 		...(isolate === undefined ? {} : { isolate }),
 		...(cpu === undefined ? {} : { cpu }),
 		...(runtimes === undefined ? {} : { runtimes }),
+		...(mesh === undefined ? {} : { mesh }),
 	};
 }
 

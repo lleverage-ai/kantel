@@ -157,6 +157,12 @@ export interface BackendHost {
 	readonly accountId?: string;
 	/** The pool it is in, as its registry has it (from its join token, or a move); absent where it keeps none. */
 	readonly poolId?: string;
+	/**
+	 * Its address on its pool's mesh (docs/design/disk-store.md, 2a), where its peers fetch disk versions from it: the
+	 * registry's, for a host that runs the mesh, given in `poolId`. Absent until it has one, and taken only while the pool
+	 * has sync on: a host without one there isn't offered to others as a holder (`disk.locate`).
+	 */
+	readonly meshAddress?: string;
 	readonly lastSeenAt?: number;
 }
 
@@ -193,6 +199,11 @@ export interface SandboxSpec {
 	readonly env: { readonly [name: string]: string };
 	/** The hosts it may be placed on: online, not draining, with the asked-for labels and type. */
 	readonly eligibleHosts: readonly string[];
+	/**
+	 * The pool `eligibleHosts` were chosen in, where one was: a host moved to another since refuses it as it is placed.
+	 * Absent: no pool is kept to (a machine whose disk is somewhere, one from before pools).
+	 */
+	readonly poolId?: string;
 	/** Start from this snapshot's disk (a `ref` the backend answered); absent, from an empty disk. */
 	readonly fromSnapshot?: string;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
@@ -1021,6 +1032,12 @@ export interface SandboxBackend {
 	 * once every 30 seconds (`checked` false within it). Absent: no release is read here (the stub).
 	 */
 	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
+	/**
+	 * A pool's sync was set, on or off (changed, or set again by a call that retries one whose telling failed). The
+	 * backend's hosts in it that run the pool's mesh are brought into it or taken out (`ComputeService.poolSync` says
+	 * which pools have sync on). Absent, nothing to do.
+	 */
+	updatePool?(poolId: string, change: { readonly sync: boolean }): Promise<void>;
 	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,

@@ -436,6 +436,7 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### CreateApiKeyBody
 
@@ -533,6 +534,7 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### CreateSandboxBody
 
@@ -557,6 +559,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
 | `stickyDisks` | [SandboxStickyDiskInput](/api/reference/types/#sandboxstickydiskinput)[] | no | Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them. (at most 2 items) |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
+| `pool` | string | no | Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. `unavailable` saying which pool when none of its hosts can take it now. Default: the account's default pool when the account has hosts of its own, else the deployment's default pool, as before pools. |
 | `host` | string | no | Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `autoUpgrade` | boolean | no | For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. |
@@ -1435,6 +1438,7 @@ A set of an account's hosts (or of the deployment's shared hosts), each host in 
 | `accountId` | string | no | The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts. |
 | `default` | boolean | yes | Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. |
 | `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
+| `sync` | boolean | yes | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### PoolList
@@ -1619,6 +1623,7 @@ A bucket mount as the sandbox shows it after a refresh.
 | `usage` | [UsageSummary](/api/reference/types/#usagesummary) | yes |  |
 | `hostId` | string | no | The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. |
 | `hostName` | string | no | That host's name, with `hostId`. |
+| `poolId` | string | no | The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools. |
 | `hostReachable` | boolean | no | Whether the host it is placed on is connected to Kantel now. `false`: it isn't, so Kantel can't reach the sandbox or confirm what its machine is doing, and `state` is its last known state. Calls that need it running (commands, files, ports, SSH, the desktop and browser) answer `unavailable` until the host reconnects; a stop waits a while for it. Answered whether or not `hostId` is shown. Absent until it is placed. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 | `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
@@ -2497,6 +2502,7 @@ A template version's definition, never changed once made. Answered with every de
 | --- | --- | --- | --- |
 | `name` | string | no |  |
 | `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### UpdateSandboxBody
 

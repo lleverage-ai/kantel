@@ -58,6 +58,8 @@ export type {
 	ImageSeverity,
 	PersonalToken,
 	PersonalTokensSource,
+	Pool,
+	PoolsSource,
 	ProxySource,
 	PublicUrlSource,
 	SandboxBase,

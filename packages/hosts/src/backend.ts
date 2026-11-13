@@ -838,6 +838,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				owner: spec.accountId,
 				env: spec.env,
 				hostIds,
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...(from === undefined ? {} : { from: from.snapshotId }),
 				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
 				...egressOf(spec.egress),
@@ -923,6 +924,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+					...(host.meshAddress === undefined ? {} : { meshAddress: host.meshAddress }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
@@ -1059,6 +1061,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				env: spec.env,
 				hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
 				...(from === undefined ? {} : { from: from.snapshotId }),
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...egressOf(spec.egress),
 				operationId,
 			});
@@ -1662,6 +1665,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async hostHolds(hostId) {
 			return hosts.holds(hostId);
+		},
+		async updatePool(poolId) {
+			await hosts.poolChanged(poolId);
 		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {

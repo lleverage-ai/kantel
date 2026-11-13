@@ -1171,6 +1171,12 @@ export const Sandbox = Type.Object(
 			}),
 		),
 		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools.",
+			}),
+		),
 		hostReachable: Type.Optional(
 			Type.Boolean({
 				description:
@@ -1294,6 +1300,16 @@ export const CreateSandboxBody = Type.Object(
 		hostLabels: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description: 'Place it only on a host with each label, such as `{ site: "home" }`.',
+			}),
+		),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared " +
+					"hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. " +
+					"`unavailable` saying which pool when none of its hosts can take it now. Default: the account's default " +
+					"pool when the account has hosts of its own, else the deployment's default pool, as before pools.",
 			}),
 		),
 		host: Type.Optional(
@@ -2580,6 +2596,13 @@ export const SandboxShapesQuery = Type.Object(
 					"alone. Default: from every host the account's sandboxes may use.",
 			}),
 		),
+		pool: Type.Optional(
+			Type.String({
+				description:
+					"The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. " +
+					"Default: from the hosts a create naming no pool may use, in the default pools.",
+			}),
+		),
 	},
 	{ title: "SandboxShapesQuery" },
 );
@@ -3850,6 +3873,11 @@ export const Pool = Type.Object(
 			description: "Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool.",
 		}),
 		hosts: Type.Integer({ minimum: 0, description: "How many hosts are in it, revoked ones not counted." }),
+		sync: Type.Boolean({
+			description:
+				"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
+				"pool's hosts alone. Off by default.",
+		}),
 		createdAt: Timestamp,
 	},
 	{
@@ -3864,13 +3892,19 @@ export const PoolList = Type.Object({ items: Type.Array(Pool) }, { title: "PoolL
 
 export const PoolPath = Type.Object({ poolId: id("The pool's ID or name.") }, { title: "PoolPath" });
 
+const poolSync = Type.Boolean({
+	description:
+		"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
+		"pool's hosts alone. Turned off, they leave it.",
+});
+
 export const CreatePoolBody = Type.Object(
-	{ name: Type.String({ pattern: POOL_NAME_PATTERN }) },
+	{ name: Type.String({ pattern: POOL_NAME_PATTERN }), sync: Type.Optional(poolSync) },
 	{ title: "CreatePoolBody" },
 );
 
 export const CreateAccountPoolBody = Type.Object(
-	{ account: accountQuery, name: Type.String({ pattern: POOL_NAME_PATTERN }) },
+	{ account: accountQuery, name: Type.String({ pattern: POOL_NAME_PATTERN }), sync: Type.Optional(poolSync) },
 	{ title: "CreateAccountPoolBody" },
 );
 
@@ -3884,6 +3918,7 @@ export const UpdatePoolBody = Type.Object(
 					"change it again.",
 			}),
 		),
+		sync: Type.Optional(poolSync),
 	},
 	{ title: "UpdatePoolBody" },
 );

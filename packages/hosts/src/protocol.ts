@@ -118,6 +118,41 @@ export interface HostFacts {
 	 * tier, or from before it said.
 	 */
 	readonly runtimes?: readonly HostRuntime[];
+	/** Its side of its pool's WireGuard mesh (`HOST_FEATURES.mesh`). Absent from a host without the feature. */
+	readonly mesh?: HostMeshFacts;
+}
+
+/**
+ * A host's WireGuard key and where its mesh peers can reach it (`MeshFacts` in proto.go): `publicKey` is its Curve25519
+ * public key, base64 as WireGuard writes keys (the private key never leaves the host), `listenPort` the UDP port it
+ * listens on, and `endpoints` the addresses peers try, `ip:port` (IPv6 in brackets) or `name:port`, passed to its peers
+ * as it sent them.
+ */
+export interface HostMeshFacts {
+	readonly publicKey: string;
+	readonly listenPort: number;
+	readonly endpoints: readonly string[];
+}
+
+/**
+ * Another host of the pool as a mesh peer (`MeshPeer` in proto.go): its WireGuard public key, its mesh address and the
+ * endpoints it reported.
+ */
+export interface HostMeshPeer {
+	readonly hostId: string;
+	readonly publicKey: string;
+	readonly address: string;
+	readonly endpoints: readonly string[];
+}
+
+/**
+ * A host's place in its pool's mesh (`WelcomeMesh` in proto.go): its own mesh address (an IPv6 ULA, one /128 per host,
+ * stable across reconnects), the pool's prefix (its /48) and the pool's other hosts.
+ */
+export interface HostWelcomeMesh {
+	readonly address: string;
+	readonly prefix: string;
+	readonly peers: readonly HostMeshPeer[];
 }
 
 /**
@@ -334,6 +369,13 @@ export const HOST_FEATURES = {
 	 * files to a microVM on another host, and let go if that upgrade rolls back.
 	 */
 	isolateFreeze: "isolate-freeze",
+	/**
+	 * The pool's WireGuard mesh (docs/design/disk-store.md, "2a. The mesh"): the host reports its public key, listen port
+	 * and endpoints in `HostFacts.mesh`, brings its mesh device up with the address `HostWelcome.mesh` gives it (and down
+	 * on a welcome without one), and makes its peers match each `mesh.peers`. Kantel sends neither to a host without it,
+	 * nor to a host whose pool has sync off.
+	 */
+	mesh: "mesh",
 } as const;
 
 /**
@@ -589,6 +631,30 @@ export interface HostCapacity {
 	 * from a report whose inventory the host couldn't read in full: no evidence, so nothing is forgotten on it.
 	 */
 	readonly stickyDisks?: readonly HostStickyHolding[];
+	/**
+	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up. Not kept by the registry yet:
+	 * `parseHostCapacity` leaves it out until the host page shows it.
+	 */
+	readonly mesh?: HostMeshHealth;
+}
+
+/** How a host reaches its mesh peers (`MeshHealth` in proto.go): its own mesh address, and each peer. */
+export interface HostMeshHealth {
+	readonly address: string;
+	readonly peers: readonly HostMeshPeerHealth[];
+}
+
+/**
+ * One mesh peer as a host reaches it (`MeshPeerHealth` in proto.go): the path (`direct`, or `none` with no handshake in
+ * the last 3 minutes), the endpoint it uses now, its last handshake (Unix ms, absent before the first) and the round
+ * trip of the host's last probe of its mesh address (absent when that got no answer).
+ */
+export interface HostMeshPeerHealth {
+	readonly hostId: string;
+	readonly path: "direct" | "none" | string;
+	readonly endpoint?: string;
+	readonly lastHandshake?: number;
+	readonly rttMs?: number;
 }
 
 /** A sticky disk to attach at a create: a copy of `version`, else of the host's newest, else a new disk of `sizeGiB`. */
@@ -631,6 +697,28 @@ export interface HostStickyCommitResult {
 export interface HostStickyHolding {
 	readonly diskId: string;
 	readonly versions: readonly HostStickyVersionHolding[];
+}
+
+/** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
+export interface HostDiskLocateParams {
+	/** `sticky` for now; `rootfs`, `template`, `snapshot` and `sandbox` later. */
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+}
+
+/**
+ * The answer to `disk.locate`: the version's block map digest, once Kantel has it; the online hosts in the asker's pool
+ * that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them.
+ *
+ * The grant is `<payload>.<signature>`: the payload is the JSON of `{ kind, objectId, version, accountId, from, to, exp }`
+ * (`from` the holders' host IDs, `to` the asker's, `exp` milliseconds since the epoch, 15 minutes on) in base64url, and
+ * the signature Ed25519 over the payload's ASCII text by the key `HostWelcome.grantKey` names, in base64url.
+ */
+export interface HostDiskLocateResult {
+	readonly mapDigest?: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
 }
 
 /** A version a host holds: the bytes it takes, when it was made there, and its block map's digest once it has one. */
@@ -1061,6 +1149,17 @@ export interface HostWelcome {
 	 * earlier one. A connection's first welcome decides it for the connection.
 	 */
 	readonly usageAcks?: boolean;
+	/**
+	 * The host's place in its pool's mesh (`HOST_FEATURES.mesh`), sent only to a host with the feature in a pool with sync
+	 * on, in every welcome: a welcome without it takes the host's mesh device down.
+	 */
+	readonly mesh?: HostWelcomeMesh;
+	/**
+	 * The control plane's Ed25519 public key for fetch grants (docs/design/disk-store.md, 2c), its 32 raw bytes in
+	 * base64url: a host serves a peer's fetch only with a grant this key signed (`HostDiskLocateResult.grant`). Absent
+	 * while the control plane has no grant key (sticky disks off, or no secrets key to keep one).
+	 */
+	readonly grantKey?: string;
 }
 
 /**
@@ -1103,6 +1202,7 @@ export interface HostMessage {
 		| "event"
 		| "stream.close"
 		| "stream.ack"
+		| "mesh.peers"
 		| string;
 	readonly hello?: HostHello;
 	readonly welcome?: HostWelcome;
@@ -1125,6 +1225,12 @@ export interface HostMessage {
 	 * usage tick taken, which covers every earlier one of the run.
 	 */
 	readonly acked?: number;
+	/**
+	 * For `mesh.peers` (Kantel to host, `HOST_FEATURES.mesh`): the whole list of the host's mesh peers, sent whenever a
+	 * member of its pool joins, leaves, is revoked or reports a new key or endpoints. The host makes its peers match it;
+	 * an empty list is no peers.
+	 */
+	readonly peers?: readonly HostMeshPeer[];
 }
 
 export const HostMethods = {
@@ -1220,6 +1326,11 @@ export const HostMethods = {
 	 * sandbox is on that host and mounts that bucket source.
 	 */
 	bucketFetch: "bucket.fetch",
+	/**
+	 * Host to Kantel: `HostDiskLocateParams`, answered with `HostDiskLocateResult`; `not_found` for a version Kantel
+	 * doesn't have or the host may not have, `not_supported` when Kantel can't sign grants.
+	 */
+	diskLocate: "disk.locate",
 	/** Kantel to host: `HostMountsRefresh`, answered with the sandbox's `HostMountStatus[]`. */
 	mountsRefresh: "sandbox.mounts.refresh",
 	/** Builds a template snapshot: `HostTemplateBuild`, answered with `HostTemplateBuilt`. */

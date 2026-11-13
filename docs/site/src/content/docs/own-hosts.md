@@ -68,10 +68,15 @@ kantel hosts drain host_…              # stop new sandboxes going there
 kantel hosts move host_… ci            # once it has no sandboxes: it stays draining
 kantel hosts drain host_… --off        # take sandboxes again, in ci
 kantel pools default ci                # where hosts join, naming no pool
+kantel pools sync ci on                # its hosts join the pool's mesh (off by default)
 kantel pools rm ci                     # only an empty pool that isn't the default
 ```
 
+A sandbox goes in a pool too: `kantel new --pool ci` (`pool` on create) places it only on that pool's hosts, and its labels choose among them. Naming none, it goes in the account's default pool, as before pools. A sandbox keeps its pool (`poolId`), and a fork stays in it.
+
 A move is explicit, and only a drained host with no sandboxes moves: drain it, let its sandboxes go, move it, then undrain it. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
+
+A pool's sync is off by default. With it on (`kantel pools sync ci on`, or `sync` on the pool in the API), each of the pool's hosts whose kantel-host runs the mesh joins the pool's mesh: a WireGuard network between that pool's hosts alone, each with an IPv6 address of its own in the pool's range. Kantel hands each host the others' keys, addresses and the endpoints they reported, and tells them at once when a host joins, leaves, is moved or removed. Hosts of different pools never peer. Turning sync off takes the pool's hosts out of the mesh.
 
 ## Turn it on
 
