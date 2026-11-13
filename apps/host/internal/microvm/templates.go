@@ -19,7 +19,8 @@ import (
 
 // A template (the control plane's, packages/compute/src/templates.ts) is an image sandboxes are made from. A build
 // (template.build) takes the image's root filesystem (rootfs.go: the host's own image, or a base pulled by digest and
-// made into one), boots it once with the vCPUs and memory asked, runs the template's setup as root, and snapshots it
+// made into one; a pulled base's or a custom image's fetched from a host in the pool that holds it first, rootfssync.go),
+// boots it once with the vCPUs and memory asked, runs the template's setup as root, and snapshots it
 // as template-snapshots/<id>: state, mem, disk.ext4, rootfs (a link to the root filesystem: with versioned host images,
 // the version of the host's image its build booted, which a prune keeps and a restore links, base.go) and meta.json. A
 // sandbox
@@ -275,8 +276,11 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	builtFrom := templateBuiltFrom{Image: templateImageKind, BaseImage: p.BaseImage, BaseDigest: p.BaseDigest}
 	var rootfs, imageDigest string
 	if p.Image != nil {
-		// Built or pulled in a build microVM, under the template's egress with the operator's registries: never on the
-		// host's Docker.
+		// Fetched from a host in the pool that holds it (its record with it, which names its digest), else built or pulled
+		// in a build microVM, under the template's egress with the operator's registries: never on the host's Docker.
+		if m.fetchRootfsFirst(ctx, customImageKey(p.Owner, p.Image, img)) {
+			t.step("fetch", &start)
+		}
 		var key string
 		rootfs, imageDigest, key, err = m.customRootfs(ctx, p.SnapshotID, p.Owner, p.Image, img, size, p.Egress, p.Env)
 		if err != nil {
@@ -290,6 +294,10 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		}
 		t.step("image", &start)
 	} else {
+		// A pulled base's, fetched from a host in the pool that holds it, else pulled and made here.
+		if img.BaseDigest != "" && m.fetchRootfsFirst(ctx, img.key()) {
+			t.step("fetch", &start)
+		}
 		rootfs, imageDigest, err = m.templateRootfs(ctx, img)
 		if err != nil {
 			return proto.TemplateBuildResult{}, err

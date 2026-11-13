@@ -149,6 +149,34 @@ func (h *Host) fetchStickyLater(diskID, version string) {
 	h.fetcher.Start(disksync.Request{Ref: disksync.Ref{Kind: proto.DiskKindSticky, ObjectID: diskID, Version: version}})
 }
 
+// fetchRootfs fetches a template's root filesystem from a host in the pool that holds it, for a build
+// (microvm.Config.FetchRootfs), and waits for it: microvm.ErrNoPeerRootfs when the host doesn't fetch them, or none
+// holds it. A build that stops waiting leaves the fetch to go on, for the next.
+func (h *Host) fetchRootfs(ctx context.Context, key string) error {
+	if !h.fetches(proto.DiskKindRootfs) || !h.connected() {
+		return microvm.ErrNoPeerRootfs
+	}
+	if _, up := h.mesh.Address(); !up {
+		return microvm.ErrNoPeerRootfs
+	}
+	ref := disksync.Ref{Kind: proto.DiskKindRootfs, ObjectID: key, Version: microvm.RootfsVersion}
+	at, err := h.locateDisk(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("disk.locate: %w", err)
+	}
+	if len(at.Holders) == 0 || at.Grant == "" || at.MapDigest == "" {
+		return microvm.ErrNoPeerRootfs
+	}
+	job := h.fetcher.Start(disksync.Request{Ref: ref, MapDigest: at.MapDigest, Holders: at.Holders, Grant: at.Grant})
+	select {
+	case <-job.Done():
+		_, err := job.Result()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // resumeFetches starts the fetches left unfinished, while the host is connected and in a mesh.
 func (h *Host) resumeFetches() {
 	if h.fetcher == nil || len(h.syncKinds()) == 0 || !h.connected() {

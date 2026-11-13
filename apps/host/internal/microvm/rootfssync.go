@@ -36,6 +36,32 @@ const (
 	rootfsDoneSuffix    = ".done"
 )
 
+// ErrNoPeerRootfs is Config.FetchRootfs's answer when no host the fetch may reach holds the root filesystem.
+var ErrNoPeerRootfs = errors.New("no host in the pool holds the root filesystem")
+
+// fetchRootfsFirst has a build's root filesystem fetched from a peer that holds it (Config.FetchRootfs) when the host
+// hasn't it, so the build boots that rather than pulling or building the image again; one no peer holds, or whose fetch
+// fails, the build makes itself. It answers whether the root filesystem came from a peer.
+func (m *Manager) fetchRootfsFirst(ctx context.Context, key string) bool {
+	if m.cfg.FetchRootfs == nil || !validKey(key) || fileExists(m.tpl.rootfs.path(key)) {
+		return false
+	}
+	start := time.Now()
+	err := m.cfg.FetchRootfs(ctx, key)
+	switch {
+	case err == nil && fileExists(m.tpl.rootfs.path(key)):
+		m.log.Info("template root filesystem fetched from a peer", "key", key, "took", time.Since(start).Round(time.Millisecond))
+		return true
+	case err == nil:
+		m.log.Warn("a template root filesystem's fetch ended without it; building it here", "key", key)
+	case errors.Is(err, ErrNoPeerRootfs):
+		m.log.Info("no peer holds the template's root filesystem; building it here", "key", key)
+	default:
+		m.log.Warn("the template's root filesystem couldn't be fetched from a peer; building it here", "key", key, "error", err)
+	}
+	return false
+}
+
 // rootfsMaps is the root filesystems' maps being made, or waiting their turn (one is made at a time, as each reads a
 // whole file), and the digests of those made, as read when their file had that size and time.
 type rootfsMaps struct {
