@@ -688,7 +688,10 @@ export interface HostsService {
 		},
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
-	/** Whether a sandbox is placed on the host, one being made there included (a lost one not). */
+	/**
+	 * Whether a sandbox is placed on the host, one being made there included (a lost one not), or an upgrade under way
+	 * makes its microVM there.
+	 */
 	holds(hostId: string): Promise<boolean>;
 	/**
 	 * Asks a connected host to update its kantel-host to `latestVersion`: it fetches the binary, checks it against the
@@ -2268,7 +2271,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 		},
 		async holds(hostId) {
-			return (await store.placementsOn(hostId)).some((placement) => placement.state !== "lost");
+			const [placed, upgrading] = await Promise.all([store.placementsOn(hostId), store.upgradesTo(hostId)]);
+			return upgrading.length > 0 || placed.some((placement) => placement.state !== "lost");
 		},
 		async revoke(hostId) {
 			const host = await hostOf(hostId);
@@ -2624,6 +2628,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const target = chosen.host;
 				// Before the create is sent: a microVM may be there from then on, whatever becomes of its answer.
 				await intend(target, chosen.size, "copy");
+				// Kept before the host is read again, as a create's placement is kept only on a host taking sandboxes: a drain
+				// written before this read refuses it (and its intent goes, nothing sent yet), and one written after finds the
+				// intent, so a move of the drained host waits for it (`holds`).
+				// (A retry of the same upgrade keeps the intent it may have acted on: its target is counted already.)
+				const taking = source.upgrade === undefined ? await store.getHost(target.id) : target;
+				if (taking === undefined || taking.draining || taking.revoked) {
+					await store.updatePlacement(sandboxId, (latest) => {
+						if (latest.upgrade?.operationId !== operationId || latest.upgrade.target !== target.id) return undefined;
+						const { upgrade: _intent, ...rest } = latest;
+						return rest;
+					});
+					throw placementError("unavailable", "host_unavailable", `The host ${target.name} is draining`);
+				}
 				reserve(target.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				/** Rolls the copy back: only before the placement is the microVM's, while the isolate is still there. */
 				const rollBack = async (error: unknown): Promise<never> => {

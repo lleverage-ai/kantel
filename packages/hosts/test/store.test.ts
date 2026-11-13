@@ -1,5 +1,6 @@
 // The registry's records behave the same in memory and on every SQL driver a target uses: a join token spent once,
 // hosts found by credential hash, and placements listed per host.
+import { createRequire } from "node:module";
 import { testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -121,6 +122,22 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBe(false);
 	});
 
+	it("finds the upgrades under way whose microVM goes on a host", async () => {
+		const store = await open();
+		const upgrade = { operationId: "op1", target: "host_b", phase: "copy" as const };
+		await store.putPlacement({ ...placement("s1", "host_a", 1), tier: "isolate", upgrade });
+		await store.putPlacement({
+			...placement("s2", "host_a", 2),
+			upgrade: { ...upgrade, target: "host_a", phase: "host" },
+		});
+		await store.putPlacement({ ...placement("s3", "host_bb", 3), upgrade: { ...upgrade, target: "host_bb" } });
+		expect((await store.upgradesTo("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		// Its own host's upgrade is a placement there already.
+		expect(await store.upgradesTo("host_a")).toEqual([]);
+		await store.updatePlacement("s1", ({ upgrade: _done, ...rest }) => rest);
+		expect(await store.upgradesTo("host_b")).toEqual([]);
+	});
+
 	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {
 		const store = await open();
 		await store.putPlacement(placement("s1", "host_a", 1));
@@ -161,3 +178,66 @@ for (const kind of testDatabaseKinds()) {
 		});
 	});
 }
+
+// Two connections to a real Postgres (KANTEL_TEST_POSTGRES_URL): a create's placement and a drain of its host, at once.
+const postgresUrl = process.env.KANTEL_TEST_POSTGRES_URL;
+describe.skipIf(postgresUrl === undefined || postgresUrl === "")("Postgres, two connections", () => {
+	it("waits for a drain under way, then refuses the placement, and a drain waits for a placement under way", async () => {
+		const kind = testDatabaseKinds().find((candidate) => candidate.name === "Postgres");
+		if (kind === undefined) throw new Error("No Postgres kind");
+		const database = await kind.open();
+		cleanups.push(() => database.close());
+		await migrateHosts(database.driver);
+		const store = createSqlHostStore(database.driver);
+		await store.insertHost(host("host_a", 1));
+		// A second connection, in the same schema, holding a drain open.
+		// `pg` is @kantel/sql's, not this package's: its client, as much of it as this needs.
+		const pg = createRequire(import.meta.resolve("@kantel/sql/testing"))("pg") as {
+			Client: new (config: {
+				connectionString: string;
+				options: string;
+			}) => {
+				connect(): Promise<void>;
+				query(text: string, values?: unknown[]): Promise<unknown>;
+				end(): Promise<void>;
+			};
+		};
+		const [{ search_path: schema }] = (await database.driver.query("SHOW search_path")) as [{ search_path: string }];
+		const other = new pg.Client({ connectionString: postgresUrl ?? "", options: `-c search_path=${schema}` });
+		await other.connect();
+		cleanups.push(() => other.end());
+		const drained = JSON.stringify({ ...host("host_a", 1), draining: true });
+
+		await other.query("BEGIN");
+		await other.query("UPDATE compute_hosts SET data = $1 WHERE id = $2", [drained, "host_a"]);
+		let settled = false;
+		const placing = store.placeOnTakingHost(placement("s1", "host_a", 1)).finally(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(settled).toBe(false);
+		await other.query("COMMIT");
+		expect(await placing).toBe(false);
+		expect(await store.placementsOn("host_a")).toEqual([]);
+
+		// The other way round: a placement holding the host's row, a drain waits for it, and then sees it.
+		await store.updateHost("host_a", (current) => ({ ...current, draining: false }));
+		await other.query("BEGIN");
+		await other.query("SELECT id FROM compute_hosts WHERE id = $1 FOR UPDATE", ["host_a"]);
+		await other.query(
+			"INSERT INTO compute_placements (sandbox_id, host_id, created_at, data) VALUES ($1, $2, $3, $4)",
+			["s2", "host_a", 2, JSON.stringify(placement("s2", "host_a", 2))],
+		);
+		let drainDone = false;
+		const draining = store
+			.updateHost("host_a", (current) => ({ ...current, draining: true }))
+			.finally(() => {
+				drainDone = true;
+			});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(drainDone).toBe(false);
+		await other.query("COMMIT");
+		await draining;
+		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
+	});
+});

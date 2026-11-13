@@ -114,6 +114,8 @@ export interface HostStore {
 	 * never takes one after (the compute plane's move).
 	 */
 	placeOnTakingHost(placement: PlacementRecord): Promise<boolean>;
+	/** The placements on other hosts with an upgrade under way whose microVM is (or may be) on `hostId`. */
+	upgradesTo(hostId: string): Promise<PlacementRecord[]>;
 	/**
 	 * Changes a placement as it is now, atomically, as `updateHost` does a host: `change` is given the stored record and
 	 * answers the next (undefined leaves it), and a write that raced another is redone on the newer record. A host's
@@ -192,6 +194,11 @@ export function createMemoryHostStore(): HostStore {
 		},
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
+		},
+		async upgradesTo(hostId) {
+			return [...placements.values()]
+				.filter((placement) => placement.upgrade?.target === hostId && placement.hostId !== hostId)
+				.map(copy);
 		},
 		async placeOnTakingHost(placement) {
 			const host = hosts.get(placement.hostId);
@@ -378,25 +385,38 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			);
 		},
 		async placeOnTakingHost(placement) {
+			// The host's row is read locked on Postgres (`FOR UPDATE`), so a drain writing it waits for this placement, and
+			// one already writing it is waited for and read as it then is (draining, and refused): a move's check, made after
+			// its drain, sees every placement that got in. SQLite (D1 too) has one writer at a time, so needs no lock.
+			const lock = driver.dialect === "postgres" ? " FOR UPDATE" : "";
 			const rows = await driver.query(
-				`INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
-				SELECT ?, ?, ?, ? WHERE EXISTS (
-					SELECT 1 FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?
+				`WITH taking AS (
+					SELECT id FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${lock}
 				)
+				INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
+				SELECT ?, ?, ?, ? FROM taking WHERE true
 				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
 					data = excluded.data
 				RETURNING sandbox_id`,
 				[
+					placement.hostId,
+					DRAINING_PATTERN,
+					REVOKED_PATTERN,
 					placement.sandboxId,
 					placement.hostId,
 					placement.createdAt,
 					JSON.stringify(placement),
-					placement.hostId,
-					DRAINING_PATTERN,
-					REVOKED_PATTERN,
 				],
 			);
 			return rows.length > 0;
+		},
+		async upgradesTo(hostId) {
+			const rows = await driver.query("SELECT data FROM compute_placements WHERE data LIKE ?", [
+				`%"target":${JSON.stringify(hostId)}%`,
+			]);
+			return rows
+				.map((row) => parse<PlacementRecord>(row))
+				.filter((placement) => placement.upgrade?.target === hostId && placement.hostId !== hostId);
 		},
 		async updatePlacement(sandboxId, change) {
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
