@@ -1615,6 +1615,15 @@
 						"schema": {
 							"type": "string"
 						}
+					},
+					{
+						"name": "pool",
+						"in": "query",
+						"required": false,
+						"description": "The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. Default: from the hosts a create naming no pool may use, in the default pools.",
+						"schema": {
+							"type": "string"
+						}
 					}
 				],
 				"responses": {

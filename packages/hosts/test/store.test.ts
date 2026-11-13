@@ -122,6 +122,20 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBe(false);
 	});
 
+	it("places a new sandbox kept to a pool only on a host in that pool, where the host's pool is known", async () => {
+		const store = await open();
+		await store.insertHost({ ...host("host_a", 1), poolId: "pool_a" });
+		await store.insertHost({ ...host("host_n", 2) });
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1), "pool_a")).toBe(true);
+		// Another pool, or one whose ID starts it or differs only where LIKE has a wildcard: refused.
+		expect(await store.placeOnTakingHost(placement("s2", "host_a", 2), "pool_b")).toBe(false);
+		expect(await store.placeOnTakingHost(placement("s3", "host_a", 3), "pool_")).toBe(false);
+		expect(await store.placeOnTakingHost(placement("s4", "host_a", 4), "poolXa")).toBe(false);
+		// A host whose pool the registry hasn't been told yet takes it.
+		expect(await store.placeOnTakingHost(placement("s5", "host_n", 5), "pool_a")).toBe(true);
+		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
+	});
+
 	it("finds everything on a host in one read: its placements, an upgrade's microVM, an isolate to delete", async () => {
 		const store = await open();
 		const upgrade = { operationId: "op1", target: "host_b", phase: "copy" as const };

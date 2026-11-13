@@ -2162,6 +2162,8 @@ export interface SandboxShapesQuery {
 	readonly account?: string;
 	/** The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use. */
 	readonly host?: string;
+	/** The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. Default: from the hosts a create naming no pool may use, in the default pools. */
+	readonly pool?: string;
 }
 
 /** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */

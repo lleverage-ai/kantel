@@ -479,6 +479,25 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(refused.message).toContain("pool_gone");
 	});
 
+	it("offers the shapes of the pool a create would go in", async () => {
+		const store = await make();
+		const big = {
+			...(await hostLike("host_ci")),
+			sizes: [{ name: "xlarge" as const, vcpus: 32, memoryMb: 65_536, diskGb: 100 }],
+		};
+		const { backend } = hostsBackend(() => [big]);
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost("host_ci", { draining: true });
+		await root.updateHost("host_ci", { pool: "ci" });
+		await root.updateHost("host_ci", { draining: false });
+		const names = (shapes: Awaited<ReturnType<typeof tom.getSandboxShapes>>) =>
+			(shapes.microvm?.presets ?? []).map((preset) => preset.name);
+		expect((await tom.getSandboxShapes()).microvm?.presets).not.toContainEqual(expect.objectContaining({ vcpus: 32 }));
+		expect(names(await tom.getSandboxShapes({ pool: "ci" }))).toEqual(["xlarge"]);
+	});
+
 	it("deletes an account's pools with the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();

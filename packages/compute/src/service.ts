@@ -4868,6 +4868,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const placement = await backend.create({
 			...boot,
 			eligibleHosts,
+			// Placed afresh, from no disk of its own: in its pool, kept to it as the host admits it.
+			...(sandbox.source === undefined ? pooled(sandbox.poolId) : {}),
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
 			type: sandbox.type,
@@ -8059,10 +8061,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// requireHosts's rule, unlabelled: the account's own hosts that run the type, else the shared ones; or the one host
 			// a sandbox is to be pinned to.
 			const pinned = query.host === undefined ? undefined : pinnableHost(principal, account.id, records, query.host).id;
+			// The pool a create would go in (`placementPool`): a pinned one, naming none, wherever its host is.
+			const pool =
+				pinned !== undefined && query.pool === undefined
+					? undefined
+					: await placementPool(account.id, query.pool, records, shared);
 			const usableFor = (type: SandboxType) => {
 				const running = records.filter(
 					(record) =>
-						record.state === "online" && record.tiers.includes(type) && (pinned === undefined || record.id === pinned),
+						record.state === "online" &&
+						record.tiers.includes(type) &&
+						(pinned === undefined || record.id === pinned) &&
+						(pool === undefined ||
+							(record.accountId === undefined ? record.poolId === pool.shared : record.poolId === pool.own)),
 				);
 				const own = running.filter((record) => record.accountId === account.id);
 				const usable =
@@ -8249,13 +8260,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const named = pool?.name === undefined ? undefined : (pool.own ?? pool.shared);
 				const holderPool =
 					holderId === undefined ? undefined : (await known).find((host) => host.id === holderId)?.poolId;
-				const placedPool =
-					from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : (holderPool ?? named);
-				if (from !== undefined && named !== undefined && holderPool !== undefined && holderPool !== named) {
+				const placedPool = from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : holderPool;
+				// Naming a pool, the snapshot must be found in it: one whose host can't be told (a backend's opaque ref, its
+				// sandbox gone) can't be, and isn't guessed.
+				if (from !== undefined && named !== undefined && holderPool !== named) {
 					throw placementError(
 						"unavailable",
 						"host_unavailable",
-						`The snapshot is in another pool than ${body.pool}: a sandbox made from it runs only where it is`,
+						holderPool === undefined
+							? `The snapshot's pool can't be told, so it can't be made in ${body.pool}: name no pool`
+							: `The snapshot is in another pool than ${body.pool}: a sandbox made from it runs only where it is`,
 					);
 				}
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
@@ -8425,6 +8439,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								image: sandbox.image,
 								env: sandbox.env,
 								eligibleHosts: start?.eligibleHosts ?? hosts,
+								// Placed afresh in its pool: kept to it as the host admits it.
+								...(from === undefined ? pooled(sandbox.poolId) : {}),
 								fromSnapshot: from?.ref,
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
@@ -11065,6 +11081,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							image,
 							env: starting.env,
 							eligibleHosts: hosts,
+							// Its microVM in its pool: kept to it as its host admits it.
+							...pooled(current.poolId),
 							...(fromSnapshot === undefined ? {} : { fromSnapshot }),
 							...egress,
 						},

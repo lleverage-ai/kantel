@@ -2557,6 +2557,13 @@ export const SandboxShapesQuery = Type.Object(
 					"alone. Default: from every host the account's sandboxes may use.",
 			}),
 		),
+		pool: Type.Optional(
+			Type.String({
+				description:
+					"The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. " +
+					"Default: from the hosts a create naming no pool may use, in the default pools.",
+			}),
+		),
 	},
 	{ title: "SandboxShapesQuery" },
 );
