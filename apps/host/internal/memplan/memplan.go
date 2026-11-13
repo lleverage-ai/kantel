@@ -95,8 +95,8 @@ const (
 	LevelTight
 	// LevelRefusing: less than the reserve available, real pressure, or the host swapping: creates are refused too.
 	LevelRefusing
-	// LevelCritical: less than half the reserve available, or tasks stalled on memory much of the time: the guard
-	// ends the biggest VM's largest process.
+	// LevelCritical: less than half the reserve available, tasks stalled on memory much of the time, or the VMs' group
+	// at or near its limit with little page cache left to drop: the guard ends the biggest VM's largest process.
 	LevelCritical
 )
 
@@ -260,8 +260,11 @@ func (p *Plan) observeHostLocked(at time.Time, host hostinfo.Memory) {
 		drop++
 	}
 	p.swap = slices.Delete(p.swap, 0, drop)
-	// At its limit since the last reading: the VMs' group reached its memory.max.
-	p.atLimit = !p.limitSeen.IsZero() && host.GroupLimitHits > p.limitHits
+	// At its limit since the last reading: the VMs' group reached its memory.max with less than half the reserve of
+	// page cache left to drop. The kernel counts every charge that meets the limit, before it reclaims, so a group full
+	// of cache counts one for each write through it while dropping that cache holds it; only with little left is a VM
+	// what it ends next.
+	p.atLimit = !p.limitSeen.IsZero() && host.GroupLimitHits > p.limitHits && host.GroupCacheMiB < p.reserveMiB/2
 	p.limitHits, p.limitSeen = host.GroupLimitHits, at
 	p.level = p.levelLocked()
 	if p.level == LevelCritical {
@@ -278,6 +281,41 @@ func (p *Plan) Forget(id string) {
 	p.mu.Unlock()
 }
 
+// The readings that make the host critical, named as the guard's log names its figures.
+const (
+	WhyAvailable     = "available"
+	WhyPressure      = "pressureFull"
+	WhyAtLimit       = "atLimit"
+	WhyGroupHeadroom = "groupHeadroom"
+)
+
+// criticalLocked is why the host is critical at the last observation: none when it isn't.
+//
+// The VMs' group is critical within a quarter of the reserve of its limit, its page cache the kernel can drop counted
+// as room. At the limit the kernel drops that cache to hold a spike, so counting it doesn't hide one: what a spike
+// takes is the VMs' own memory, which can't be dropped, and the headroom with the cache shrinks by every MiB of it,
+// whichever the kernel gives up to make room. It is what the kernel has left before it ends a VM, so the guard still
+// acts a quarter of the reserve before that. Cache the VMs need back as soon as it is dropped (their disks' working
+// set) makes the kernel stall them while it reclaims and reads it again, which is memory pressure, critical on its
+// own. Cache counted as used instead keeps a group critical whenever it has read or written as much as its limit.
+func (p *Plan) criticalLocked() []string {
+	h, r := p.host, p.reserveMiB
+	var why []string
+	if h.AvailableMiB < r/2 {
+		why = append(why, WhyAvailable)
+	}
+	if h.PressureFull >= criticalPressureFull {
+		why = append(why, WhyPressure)
+	}
+	if p.atLimit {
+		why = append(why, WhyAtLimit)
+	}
+	if h.GroupMaxMiB > 0 && h.GroupHeadroomMiB+h.GroupCacheMiB < r/4 {
+		why = append(why, WhyGroupHeadroom)
+	}
+	return why
+}
+
 func (p *Plan) levelLocked() Level {
 	if p.hostAt.IsZero() {
 		return LevelOK
@@ -285,8 +323,7 @@ func (p *Plan) levelLocked() Level {
 	h, r := p.host, p.reserveMiB
 	swapping := len(p.swap) > 1 && p.swap[len(p.swap)-1].mib-p.swap[0].mib >= swappingMiB
 	switch {
-	case h.AvailableMiB < r/2 || h.PressureFull >= criticalPressureFull || p.atLimit ||
-		(h.GroupMaxMiB > 0 && h.GroupHeadroomMiB < r/4):
+	case len(p.criticalLocked()) > 0:
 		return LevelCritical
 	case h.AvailableMiB < r || h.PressureSome >= refusingPressureSome || swapping:
 		return LevelRefusing
@@ -304,8 +341,35 @@ func (p *Plan) Level() (Level, int) {
 	return p.level, p.critical
 }
 
-// AtLimit says whether the VMs' control group reached its memory.max since the observation before the last: the
-// kernel is reclaiming from it, and ends a VM next.
+// Shortage is the reading behind the host's level at the last observation, for the guard's log: why it is critical
+// (the Why names; none when it isn't) and the figures that decide it.
+type Shortage struct {
+	Why              []string
+	AvailableMiB     int64
+	ReserveMiB       int64
+	PressureFull     float64
+	GroupMaxMiB      int64
+	GroupHeadroomMiB int64
+	GroupCacheMiB    int64
+	GroupLimitHits   int64
+}
+
+// Shortage is why the host is critical at the last observation, with its figures.
+func (p *Plan) Shortage() Shortage {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h := p.host
+	s := Shortage{AvailableMiB: h.AvailableMiB, ReserveMiB: p.reserveMiB, PressureFull: h.PressureFull,
+		GroupMaxMiB: h.GroupMaxMiB, GroupHeadroomMiB: h.GroupHeadroomMiB, GroupCacheMiB: h.GroupCacheMiB,
+		GroupLimitHits: h.GroupLimitHits}
+	if !p.hostAt.IsZero() {
+		s.Why = p.criticalLocked()
+	}
+	return s
+}
+
+// AtLimit says whether the VMs' control group reached its memory.max since the observation before the last with little
+// page cache left to drop: the kernel is reclaiming from it, and ends a VM next.
 func (p *Plan) AtLimit() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
