@@ -118,8 +118,9 @@ export interface TemplateCacheKeyHash {
 /**
  * A template snapshot's cache key and its hash: the SHA-256 hex of the JSON of its parts in a fixed order
  * (`templateVersion`, `baseDigest`, a custom image's `source` and `imageDigest` when it has them, `kernel`,
- * `firecracker`, `vcpus`, `memoryMb`), so each part changes the hash and the same parts always hash the same. A
- * `kantel-base` template's key has no `source` or `imageDigest`, so it hashes as it always has.
+ * `firecracker`, `vcpus`, `memoryMb`, and its `poolId` when it has one), so each part changes the hash and the same
+ * parts always hash the same. A `kantel-base` template's key has no `source` or `imageDigest`, so it hashes as it
+ * always has.
  */
 export async function templateCacheKey(parts: CacheKey): Promise<TemplateCacheKeyHash> {
 	const key: CacheKey = {
@@ -131,6 +132,7 @@ export async function templateCacheKey(parts: CacheKey): Promise<TemplateCacheKe
 		firecracker: parts.firecracker,
 		vcpus: parts.vcpus,
 		memoryMb: parts.memoryMb,
+		...(parts.poolId === undefined ? {} : { poolId: parts.poolId }),
 	};
 	return { key, keyHash: await sha256Hex(JSON.stringify(key)) };
 }
@@ -199,6 +201,11 @@ const backendImage = (
 
 /** The hash a reconcile wants an entry by: the one it was claimed under. */
 const claimHashOf = (entry: StoredTemplateSnapshot): string => entry.claimHash ?? entry.keyHash;
+
+/** A host's runtime, and the pool the host is in: a template is built once for each runtime in each pool. */
+interface PooledRuntime extends TemplateRuntime {
+	readonly poolId?: string;
+}
 
 /** What the cache is built for: each host's runtime, the hosts themselves, and the sizes the backend offers. */
 interface Fleet {
@@ -301,9 +308,12 @@ export interface TemplateServiceOptions {
 	readonly keepGoing: (work: Promise<unknown>) => void;
 	/**
 	 * The hosts an account's template may be built on: connected, not draining, running microVMs, which it may use (its
-	 * own when it has any, else the shared ones `userId` may use). Empty when there are none.
+	 * own when it has any, else the shared ones `userId` may use), each with its pool. Empty when there are none.
 	 */
-	readonly buildHosts: (accountId: string, userId: string) => Promise<readonly string[]>;
+	readonly buildHosts: (
+		accountId: string,
+		userId: string,
+	) => Promise<readonly { readonly id: string; readonly poolId?: string }[]>;
 	/** A build's egress: the account's proxy settings and the template's grants. */
 	readonly buildEgress: (
 		accountId: string,
@@ -391,35 +401,41 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	};
 
 	/**
-	 * The runtimes a template is built for, as `shape`: one per distinct kernel and Firecracker among the hosts it may
-	 * use, each on a host that can make that shape (`makesShape`, as a create of it is placed), which alone can build it.
-	 * A custom image's are only hosts that build custom images (`customImages`).
+	 * The runtimes a template is built for, as `shape`: one per distinct kernel and Firecracker in each pool among the
+	 * hosts it may use (a pool's hosts share its build; pools share nothing), each on a host that can make that shape
+	 * (`makesShape`, as a create of it is placed), which alone can build it. A custom image's are only hosts that build
+	 * custom images (`customImages`).
 	 */
-	async function runtimesFor(template: StoredTemplate, given: Fleet, shape: BackendShape): Promise<TemplateRuntime[]> {
-		const distinct = new Map<string, TemplateRuntime>();
-		for (const runtime of await eligibleRuntimes(template, given, shape)) {
-			const key = JSON.stringify([runtime.kernel, runtime.firecracker]);
+	function runtimesFor(eligible: readonly PooledRuntime[]): PooledRuntime[] {
+		const distinct = new Map<string, PooledRuntime>();
+		for (const runtime of eligible) {
+			const key = JSON.stringify([runtime.poolId ?? null, runtime.kernel, runtime.firecracker]);
 			if (!distinct.has(key)) distinct.set(key, runtime);
 		}
 		return [...distinct.values()];
 	}
 
 	/**
-	 * Every host a template's builds may use now, with its runtime: connected with a runtime, one the template's account
-	 * may build on, making its shape, and building custom images when its image is one. `runtimesFor` is one a runtime.
+	 * Every host a template's builds may use now, with its runtime and pool: connected with a runtime, one the
+	 * template's account may build on, making its shape, and building custom images when its image is one.
+	 * `runtimesFor` is one a runtime in each pool.
 	 */
 	async function eligibleRuntimes(
 		template: StoredTemplate,
 		given: Fleet,
 		shape: BackendShape,
-	): Promise<TemplateRuntime[]> {
-		const hosts = new Set(await options.buildHosts(template.accountId, template.ownerUserId));
+	): Promise<PooledRuntime[]> {
+		const hosts = new Map(
+			(await options.buildHosts(template.accountId, template.ownerUserId)).map((host) => [host.id, host]),
+		);
 		const custom = (template.spec.image ?? DEFAULT_TEMPLATE_IMAGE).kind !== "kantel-base";
-		return given.runtimes.filter((runtime) => {
-			if (!hosts.has(runtime.hostId)) return false;
-			if (custom && runtime.customImages !== true) return false;
+		return given.runtimes.flatMap((runtime) => {
+			const build = hosts.get(runtime.hostId);
+			if (build === undefined) return [];
+			if (custom && runtime.customImages !== true) return [];
 			const host = given.hosts.find((each) => each.id === runtime.hostId);
-			return host !== undefined && makesShape(host, given.sizes, shape);
+			if (host === undefined || !makesShape(host, given.sizes, shape)) return [];
+			return [build.poolId === undefined ? runtime : { ...runtime, poolId: build.poolId }];
 		});
 	}
 
@@ -819,12 +835,12 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		const resources = template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES;
 		const shape: BackendShape = { vcpus: resources.vcpus, memoryMb: resources.memoryMb };
 		const hosts = given ?? (await fleet());
-		const [base, hostRuntimes, eligible, custom] = await Promise.all([
+		const [base, eligible, custom] = await Promise.all([
 			resolveBase(template.spec),
-			runtimesFor(template, hosts, shape),
 			eligibleRuntimes(template, hosts, shape),
 			customSource(template.spec.image),
 		]);
+		const hostRuntimes = runtimesFor(eligible);
 		// Whether an entry's host may serve creates from it now, on the runtime it was built for.
 		const servedBy = (entry: StoredTemplateSnapshot) =>
 			eligible.some(
@@ -833,9 +849,9 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					runtime.kernel === entry.key.kernel &&
 					runtime.firecracker === entry.key.firecracker,
 			);
-		// By each wanted key's hash (a custom image's as it is claimed, before its build names its digest); none while no
-		// host can make its shape.
-		const wanted = new Map<string, { runtime: TemplateRuntime; key: TemplateCacheKeyHash }>();
+		// By each wanted key's hash (a custom image's as it is claimed, before its build names its digest), one for each
+		// runtime in each pool; none while no host can make its shape.
+		const wanted = new Map<string, { runtime: PooledRuntime; key: TemplateCacheKeyHash }>();
 		for (const runtime of hostRuntimes) {
 			const key = await templateCacheKey({
 				templateVersion: templateVersionId(template.id, template.version),
@@ -847,6 +863,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				firecracker: runtime.firecracker,
 				vcpus: shape.vcpus,
 				memoryMb: shape.memoryMb,
+				...(runtime.poolId === undefined ? {} : { poolId: runtime.poolId }),
 			});
 			wanted.set(key.keyHash, { runtime, key });
 		}
@@ -873,15 +890,21 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		}
 		for (const each of wanted.values()) await claim(template, base, each.runtime, each.key, shape, custom, servedBy);
 		// A stale entry goes once a ready one wanted now (of this rebuild, so never itself) has replaced it: on its
-		// runtime, or its host.
+		// runtime in its pool (its key's, else, built before pools, its host's now; any, where neither is known), or on its
+		// host.
 		const entries = await store.templateSnapshots.list({ templateId });
 		const replacements = entries.filter((entry) => entry.state === "ready" && wantedNow(entry));
+		const poolOfHost = new Map(eligible.map((runtime) => [runtime.hostId, runtime.poolId]));
+		const poolOf = (entry: StoredTemplateSnapshot) =>
+			entry.key.poolId ?? (entry.hostId === undefined ? undefined : poolOfHost.get(entry.hostId));
 		for (const entry of entries) {
 			if (entry.state !== "stale") continue;
 			const replaced = replacements.some(
 				(ready) =>
 					ready.hostId === entry.hostId ||
-					(ready.key.kernel === entry.key.kernel && ready.key.firecracker === entry.key.firecracker),
+					(ready.key.kernel === entry.key.kernel &&
+						ready.key.firecracker === entry.key.firecracker &&
+						(poolOf(entry) === undefined || poolOf(ready) === poolOf(entry))),
 			);
 			if (replaced) await discard(entry);
 		}

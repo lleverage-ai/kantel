@@ -339,7 +339,7 @@ describe("templateCacheKey", () => {
 		]);
 	});
 
-	it("changes with each of its six parts", async () => {
+	it("changes with each of its six parts, and its pool", async () => {
 		const { keyHash } = await templateCacheKey(parts);
 		const changed: computeSchema.TemplateCacheKey[] = [
 			{ ...parts, templateVersion: "tpl_one@2" },
@@ -348,6 +348,7 @@ describe("templateCacheKey", () => {
 			{ ...parts, firecracker: "1.11.0" },
 			{ ...parts, vcpus: 4 },
 			{ ...parts, memoryMb: 8192 },
+			{ ...parts, poolId: "pool_ci" },
 		];
 		const hashes = await Promise.all(changed.map(async (each) => (await templateCacheKey(each)).keyHash));
 		for (const hash of hashes) expect(hash).not.toBe(keyHash);
@@ -1618,6 +1619,38 @@ describe("a template snapshot's host with no room", () => {
 });
 
 describe("a template's build host", () => {
+	it("is built once in each pool it is used in, on hosts of one runtime, and each pool's sandboxes start from its own", async () => {
+		const { api, tom, root, build, builds, releaseAll, created } = setup({ moreHosts: ["host_ci", "host_ci_2"] });
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		for (const hostId of ["host_ci", "host_ci_2"]) {
+			await root.updateHost(hostId, { draining: true });
+			await root.updateHost(hostId, { pool: ci.id });
+			await root.updateHost(hostId, { draining: false });
+		}
+		const web = await tom.createTemplate({ name: "web", spec: SPEC });
+		await Promise.all([build(0), build(1)]);
+		await releaseAll(() => api.service.idle());
+		// One build in each pool, the default's on the stub's host and ci's on one of its two: never one for both, nor
+		// one for each host.
+		expect(builds).toHaveLength(2);
+		const hosts = builds.map((held) => held.spec.hostId);
+		expect(hosts).toContain(STUB_HOST_ID);
+		expect(hosts.filter((hostId) => hostId !== STUB_HOST_ID)).toHaveLength(1);
+		const entries = await api.store.templateSnapshots.list({ templateId: web.id });
+		expect(entries.map((entry) => entry.state)).toEqual(["ready", "ready"]);
+		expect(new Set(entries.map((entry) => entry.key.poolId))).toEqual(new Set(["pool_operator", ci.id]));
+		// Reconciled again on the sweep: nothing more is wanted.
+		await api.service.sweep();
+		await releaseAll(() => api.service.idle());
+		expect(builds).toHaveLength(2);
+		// A sandbox in ci starts from ci's build, on its host.
+		const inCi = entries.find((entry) => entry.key.poolId === ci.id);
+		const sandbox = await tom.createSandbox({ template: web.id, pool: "ci", wait: true });
+		expect(sandbox.template).toMatchObject({ snapshotId: inCi?.id, start: "snapshot" });
+		expect(specOf(created, sandbox.id).template?.snapshot).toBe(inCi?.ref);
+	});
+
 	it("is one that can make its shape, of each runtime, not merely the first host with that runtime", async () => {
 		const { api, tom, build, hostSizes, runtimeHosts } = setup({ sizes: HOST_SIZES, moreHosts: ["host_small"] });
 		// The small host comes first, and makes only `small`, not the template's 2 vCPUs and 4096 MB.

@@ -73,6 +73,8 @@ kantel pools rm ci                     # only an empty pool that isn't the defau
 
 A sandbox goes in a pool too: `kantel new --pool ci` (`pool` on create) places it only on that pool's hosts, and its labels choose among them. Naming none, it goes in the account's default pool, as before pools. A sandbox keeps its pool (`poolId`), and a fork stays in it.
 
+Data belongs to one pool too. A snapshot is in the pool of the host it was taken on, and a sandbox made or forked from it goes only in that pool. A sticky disk is in the pool its create names (`pool`), else the pool of the first sandbox it's attached to, and it's attached only to sandboxes in that pool: naming no pool, a sandbox with it goes there, and naming another is refused. Each answers its `poolId`. A template stays one definition for the account, and is built once in each pool whose hosts can build it, which that pool's hosts share. Names stay unique across the account, whatever the pool, and nothing is copied between pools.
+
 A move is explicit, and only a drained host with no sandboxes moves: drain it, let its sandboxes go, move it, then undrain it. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
 
 ## Turn it on

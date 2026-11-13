@@ -950,6 +950,11 @@ export interface StoredStickyDisk {
 	/** How many versions have been committed: the next one's `seq` is one more. */
 	readonly commits?: number;
 	/**
+	 * The pool it belongs to (`StoredPool`): the one its create named, else the first sandbox's it was attached to, set
+	 * once and never changed. It is attached only to sandboxes in that pool. Absent until then.
+	 */
+	readonly poolId?: string;
+	/**
 	 * When it was deleted: from then it is gone to every caller and its name is free, and the record is kept so passes
 	 * delete its versions from hosts that were away (`STICKY_TOMBSTONE_MS`).
 	 */

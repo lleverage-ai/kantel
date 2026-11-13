@@ -71,10 +71,11 @@ function hostsBackend(extra: () => readonly BackendHost[] = () => []) {
 	return { backend, told, registry, stub };
 }
 
-function setup(store: ComputeStore, backend: SandboxBackend, accountHosts = true) {
+function setup(store: ComputeStore, backend: SandboxBackend, accountHosts = true, stickyDisks = false) {
 	const api = createComputeApi({
 		store,
 		accountHosts,
+		stickyDisks,
 		backend,
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -475,7 +476,8 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(specs.find((spec) => spec.sandboxId === source.id)?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
 		const elsewhere = await failure(tom.createSandbox({ from: saved.id, pool: "ci" }));
 		expect(elsewhere.code).toBe("unavailable");
-		expect(elsewhere.message).toContain("another pool");
+		expect(elsewhere.message).toContain("The snapshot is in pool default, not ci");
+		expect(saved.poolId).toBe(firstPoolId(OPERATOR_POOLS));
 
 		// Never placed, its pool gone: started again, it isn't placed in another.
 		const lost = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
@@ -488,6 +490,120 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		const refused = await failure(tom.startSandbox(lost.id));
 		expect(refused.code).toBe("unavailable");
 		expect(refused.message).toContain("pool_gone");
+	});
+
+	it("keeps a snapshot to the pool it was taken in, and makes nothing from it once its host is in another", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { root, tom } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		const source = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		const taken = await tom.takeSnapshot(source.id, {});
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: source.id });
+		// Each records its host's pool, and answers it.
+		expect(taken.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect(saved.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect((await tom.getSnapshot(saved.id)).poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// Its sandbox deleted, its host (drained, empty) moves to ci, the snapshot still on it. A host backend's ref names
+		// its host, as the stub's doesn't: given one here, so the snapshot's host is known once its sandbox has gone.
+		await tom.deleteSandbox(source.id);
+		await store.snapshots.update(saved.id, (current) => ({ ...current, ref: `${STUB_HOST_ID}/${current.ref}` }));
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		await root.updateHost(STUB_HOST_ID, { pool: ci.id });
+		await root.updateHost(STUB_HOST_ID, { draining: false });
+		// Made from it, in neither pool: refused, saying both, and nothing is stored.
+		const before = (await store.sandboxes.list()).length;
+		const moved = await failure(tom.createSandbox({ from: saved.id }));
+		expect(moved.code).toBe("unavailable");
+		expect(moved.details).toMatchObject({ reason: "host_unavailable" });
+		expect(moved.message).toContain("The snapshot is in pool default, and the host holding it is in pool ci now");
+		// Naming the pool its host is in now changes nothing.
+		const named = await failure(tom.createSandbox({ from: saved.id, pool: "ci" }));
+		expect(named.message).toContain("The snapshot is in pool default, and the host holding it is in pool ci now");
+		expect(await store.sandboxes.list()).toHaveLength(before);
+	});
+
+	it("keeps a sticky disk to its pool: its sandboxes go there, and one in another pool is refused, naming both", async () => {
+		const store = await make();
+		// A shared host in the default pool, which the stub can't make sandboxes on: a create that goes there fails.
+		const other = await hostLike("host_other");
+		const { backend } = hostsBackend(() => [other]);
+		const { root, tom } = setup(store, backend, true, true);
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		await root.updateHost(STUB_HOST_ID, { pool: ci.id });
+		await root.updateHost(STUB_HOST_ID, { draining: false });
+		const named = await tom.createStickyDisk({ name: "cache", sizeGb: 10, pool: "ci" });
+		expect(named.poolId).toBe(ci.id);
+		// Naming no pool, a sandbox with it goes in its pool, not the default.
+		const runner = await tom.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "cache", path: "/cache" }],
+			autoStopMinutes: null,
+			wait: true,
+		});
+		expect(runner.poolId).toBe(ci.id);
+		expect((await store.sandboxes.get(runner.id))?.hostId).toBe(STUB_HOST_ID);
+		// Naming another: refused before anything is stored, naming both.
+		const before = (await store.sandboxes.list()).length;
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", pool: "default", stickyDisks: [{ disk: "cache", path: "/cache" }] }),
+		);
+		expect(refused.code).toBe("unavailable");
+		expect(refused.message).toContain("The sticky disk cache is in pool ci, and this sandbox would be in pool default");
+		expect(await store.sandboxes.list()).toHaveLength(before);
+		// A disk with no pool gets its first sandbox's, then holds the next to it.
+		const loose = await tom.createStickyDisk({ name: "loose", sizeGb: 10 });
+		expect(loose.poolId).toBeUndefined();
+		await tom.createSandbox({
+			type: "microvm",
+			pool: "ci",
+			stickyDisks: [{ disk: "loose", path: "/loose" }],
+			autoStopMinutes: null,
+			wait: true,
+		});
+		expect((await tom.getStickyDisk("loose")).poolId).toBe(ci.id);
+		expect((await tom.listStickyDisks()).items.map((disk) => disk.poolId)).toEqual([ci.id, ci.id]);
+		// Two disks of different pools can't be attached together.
+		await tom.createStickyDisk({ name: "elsewhere", sizeGb: 10, pool: "default" });
+		const split = await failure(
+			tom.createSandbox({
+				type: "microvm",
+				stickyDisks: [
+					{ disk: "cache", path: "/cache" },
+					{ disk: "elsewhere", path: "/elsewhere" },
+				],
+			}),
+		);
+		expect(split.code).toBe("invalid");
+		expect(split.message).toContain("in different pools (ci and default)");
+	});
+
+	it("gives a sticky disk with no pool the pool of one of two sandboxes attaching it at once, refusing the other", async () => {
+		const store = await make();
+		const other = await hostLike("host_other");
+		const { backend } = hostsBackend(() => [other]);
+		const { root, tom } = setup(store, backend, true, true);
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		await root.updateHost(STUB_HOST_ID, { pool: ci.id });
+		await root.updateHost(STUB_HOST_ID, { draining: false });
+		await tom.createStickyDisk({ name: "cache", sizeGb: 10 });
+		const attach = (pool: string) =>
+			tom.createSandbox({ type: "microvm", pool, stickyDisks: [{ disk: "cache", path: "/cache" }] });
+		const [one, two] = await Promise.allSettled([attach("ci"), attach("default")]);
+		const made = [one, two].filter((result) => result.status === "fulfilled");
+		const refused = [one, two].filter((result) => result.status === "rejected");
+		expect(made).toHaveLength(1);
+		expect(refused).toHaveLength(1);
+		const [winner] = made;
+		const disk = (await tom.getStickyDisk("cache")).poolId;
+		expect(winner?.status === "fulfilled" ? winner.value.poolId : undefined).toBe(disk);
+		expect(String(refused[0]?.status === "rejected" ? refused[0].reason : "")).toContain(
+			"The sticky disk cache is in pool",
+		);
 	});
 
 	it("offers the shapes of the pool a create would go in", async () => {
