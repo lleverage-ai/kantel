@@ -2574,9 +2574,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					holder.state !== "deleting" &&
 					hosts.get(holder.hostId)?.state !== "revoked";
 				if ((holders.get(version.id) ?? []).some(elsewhere)) continue;
-				if (!(await store.stickyDiskWrites.forget(version.id))) continue;
-				// A host that recorded holding it as it was forgotten keeps it; else its holders go with it.
-				if (await diskHolders.keepIfHeld(version, elsewhere)) continue;
+				// Checked again as it is forgotten: a host that records holding it meanwhile keeps it.
+				if (!(await store.stickyDiskWrites.forget(version.id, (latest) => latest.some(elsewhere)))) continue;
 				await diskHolders.forget("sticky", disk.id, version.id);
 			}
 		}

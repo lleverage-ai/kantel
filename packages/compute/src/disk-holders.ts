@@ -14,13 +14,7 @@
 import { KantelError } from "@kantel/contracts";
 import { createGrantKey, DISK_KINDS, type DiskKind, GRANT_TTL_MS, type GrantKey, grantKeyFrom } from "./grants.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
-import {
-	type ComputeStore,
-	diskHolderId,
-	type StoredDiskHolder,
-	type StoredHost,
-	type StoredStickyDiskVersion,
-} from "./store.ts";
+import { type ComputeStore, diskHolderId, type StoredDiskHolder, type StoredHost } from "./store.ts";
 
 /** A host's request for a version of an object (`disk.locate`). */
 export interface DiskLocateRequest {
@@ -62,12 +56,6 @@ export interface DiskHolders {
 	holdersOf(kind: DiskKind, objectId: string): Promise<Map<string, StoredDiskHolder[]>>;
 	/** Forgets every holder of an object, or of one of its versions. */
 	forget(kind: DiskKind, objectId: string, version?: string): Promise<void>;
-	/**
-	 * After a sticky version's record was forgotten because no other host held it: whether a holder `eligible` approves
-	 * has been recorded since, in which case the record is put back. A report that records a holder reads the version
-	 * again after it writes, so of the two, one sees the other.
-	 */
-	keepIfHeld(version: StoredStickyDiskVersion, eligible: (holder: StoredDiskHolder) => boolean): Promise<boolean>;
 	/**
 	 * Forgets holders of sticky versions the catalogue no longer has (a forgotten version, a deleted disk's) and holders on
 	 * revoked hosts, each older than `reportGraceMs` at `at`.
@@ -139,6 +127,8 @@ export function createDiskHolders(options: {
 	return {
 		async recordStickyHoldings(hostId, at, disks) {
 			if (!options.enabled) return;
+			// The newest report wins: one older than a report already taken, here or on another gateway, changes nothing.
+			if (!(await store.diskHolderWrites.claim(hostId, at))) return;
 			const reported = new Map<string, { readonly diskId: string; readonly version: string }>();
 			for (const disk of disks) {
 				for (const held of disk.versions) {
@@ -147,33 +137,45 @@ export function createDiskHolders(options: {
 			}
 			const current = (await store.diskHolders.list({ hostId })).filter((holder) => holder.kind === "sticky");
 			const known = new Map(current.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
+			const hold: StoredDiskHolder[] = [];
+			const release: StoredDiskHolder[] = [];
+			// Whether the host may hold an account's data: a shared host any account's, an account's own host only its own.
+			let reporter: Promise<StoredHost | undefined> | undefined;
+			const mayHold = async (accountId: string) => {
+				reporter ??= options.hosts().then((hosts) => hosts.find((host) => host.id === hostId));
+				const host = await reporter;
+				return (
+					host !== undefined &&
+					host.state !== "revoked" &&
+					(host.accountId === undefined || host.accountId === accountId)
+				);
+			};
 			for (const [key, { diskId, version }] of reported) {
 				const holder = known.get(key);
-				if (holder === undefined) {
-					// Only a version the catalogue has: one it never recorded, or forgot, isn't a copy of anything.
-					const recorded = await store.stickyDiskVersions.get(version);
-					if (recorded === undefined || recorded.diskId !== diskId) continue;
-					const id = diskHolderId("sticky", diskId, version, hostId);
-					const holding = { id, kind: "sticky", objectId: diskId, version, hostId, state: "held", since: at } as const;
-					if (!(await store.diskHolders.insert(holding))) continue;
-					// Read again once written: a sweep that forgot the version meanwhile either sees this holder and keeps the
-					// version (`keepIfHeld`), or is seen here, and the holder of a version that has gone goes too.
-					if ((await store.stickyDiskVersions.get(version)) === undefined) await store.diskHolders.delete(id);
-				} else if (holder.state === "fetching") {
-					await store.diskHolders.update(holder.id, (latest) =>
-						latest.state === "fetching" ? { ...latest, state: "held", since: at } : undefined,
-					);
-				}
+				if (holder !== undefined && holder.state !== "fetching") continue;
+				// Only a version the catalogue has (one it never recorded, or forgot, isn't a copy of anything), of an
+				// account whose data the host may have.
+				const recorded = await store.stickyDiskVersions.get(version);
+				if (recorded === undefined || recorded.diskId !== diskId || !(await mayHold(recorded.accountId))) continue;
+				if (holder !== undefined) release.push(holder);
+				hold.push({
+					id: diskHolderId("sticky", diskId, version, hostId),
+					kind: "sticky",
+					objectId: diskId,
+					version,
+					hostId,
+					state: "held",
+					since: at,
+				});
 			}
 			// Let go: what it no longer reports, unless it is still fetching it, or its holder may be newer than the report.
-			const settled = (holder: StoredDiskHolder) =>
-				holder.state !== "fetching" && holder.since <= at - options.reportGraceMs;
 			for (const holder of current) {
-				if (reported.has(versionKey(holder.objectId, holder.version)) || !settled(holder)) continue;
-				await store.diskHolders.deleteIf(holder.id, settled);
+				if (reported.has(versionKey(holder.objectId, holder.version))) continue;
+				if (holder.state === "fetching" || holder.since > at - options.reportGraceMs) continue;
+				release.push(holder);
 			}
+			if (hold.length > 0 || release.length > 0) await store.diskHolderWrites.reconcile(hostId, at, { hold, release });
 		},
-
 		async recordCommit(kind, objectId, version, hostId) {
 			const holder: StoredDiskHolder = {
 				id: diskHolderId(kind, objectId, version, hostId),
@@ -259,15 +261,6 @@ export function createDiskHolders(options: {
 				if (holder.kind !== kind || (version !== undefined && holder.version !== version)) continue;
 				await store.diskHolders.delete(holder.id);
 			}
-		},
-
-		async keepIfHeld(version, eligible) {
-			const holders = (await store.diskHolders.list({ objectId: version.diskId })).filter(
-				(holder) => holder.kind === "sticky" && holder.version === version.id && eligible(holder),
-			);
-			if (holders.length === 0) return false;
-			await store.stickyDiskVersions.insert(version);
-			return true;
 		},
 
 		async sweep(at) {

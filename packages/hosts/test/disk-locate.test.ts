@@ -66,29 +66,6 @@ describe("the disk store on the host link", () => {
 		expect(recordStickyHoldings).toHaveBeenCalledTimes(2);
 	});
 
-	it("passes on no report older than the newest the host's record has, as one taken on another gateway", async () => {
-		let release: () => void = () => undefined;
-		const recordStickyHoldings = vi.fn(
-			(_hostId: string, _at: number) =>
-				new Promise<undefined>((resolve) => {
-					release = () => resolve(undefined);
-				}),
-		);
-		const { host, hostId, store, clock } = await setup({ recordStickyHoldings });
-		const holdings = [{ diskId: "sdk_1", versions: [{ version: "sdv_1", allocatedBytes: 10, at: 1 }] }];
-		clock.at += 1_000;
-		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: holdings } } });
-		await vi.waitFor(() => expect(recordStickyHoldings).toHaveBeenCalledTimes(1));
-		// The next report waits for the first; meanwhile the host reconnected to another gateway, which took a newer one.
-		clock.at += 1_000;
-		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: [] } } });
-		await vi.waitFor(async () => expect((await store.getHost(hostId))?.capacityAt).toBe(clock.at));
-		await store.updateHost(hostId, (record) => ({ ...record, capacityAt: clock.at + 5_000 }));
-		release();
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(recordStickyHoldings).toHaveBeenCalledTimes(1);
-	});
-
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {
 		const answer = { mapDigest: "sha256:aa", holders: [{ hostId: "host_b", address: "fd00::2" }], grant: "p.s" };
 		const locateDisk = vi.fn(async (_hostId: string, params: { readonly version: string }) => {

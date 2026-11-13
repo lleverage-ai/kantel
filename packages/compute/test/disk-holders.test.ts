@@ -4,7 +4,6 @@ import { createKantelClient } from "@kantel/api/sdk";
 import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
-import { createDiskHolders } from "../src/disk-holders.ts";
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
@@ -66,6 +65,7 @@ function setUp(
 					host("host_c", "pool_b", { meshAddress: "fd00:b::1" }),
 					host("host_d", "pool_a", { meshAddress: "fd00:a::3", connected: false }),
 					host("host_e", "pool_a", { meshAddress: "fd00:a::4" }),
+					host("host_f", "pool_a", { meshAddress: "fd00:a::5", accountId: "acc_other" }),
 				],
 			};
 		},
@@ -122,21 +122,58 @@ function setUp(
 	return Object.assign(client, { api, clock, pool, committed, holders });
 }
 
+const DISK = {
+	id: "sdk_1",
+	accountId: "acc_1",
+	name: "cache",
+	sizeGb: 10,
+	head: "sdv_head",
+	createdAt: 1,
+	updatedAt: 1,
+};
+const VERSION = {
+	id: "sdv_1",
+	diskId: "sdk_1",
+	accountId: "acc_1",
+	hostId: "host_a",
+	sandboxId: "sbx_1",
+	sizeBytes: 1,
+	allocatedBytes: 1,
+	seq: 1,
+	createdAt: 1,
+};
+const holder = (hostId: string, since: number) =>
+	({
+		id: `sticky:sdk_1:sdv_1:${hostId}`,
+		kind: "sticky",
+		objectId: "sdk_1",
+		version: "sdv_1",
+		hostId,
+		state: "held",
+		since,
+	}) as const;
+
 describe("disk holders", () => {
 	for (const [name, kind] of [
 		["memory", undefined],
 		["SQLite", nodeSqliteDatabase],
 		["Postgres", pgliteDatabase],
 	] as const) {
-		it(`adds and removes a host's holders as its reports say, in ${name}`, async () => {
+		it(`adds and removes a host's holders as its reports say, in ${name}`, {
+			timeout: kind?.testTimeoutMs,
+		}, async () => {
 			const tom = setUp({ ...(kind === undefined ? {} : { store: await sqlStore(kind) }), secretsKey: SECRETS_KEY });
 			const { disk, version } = await tom.committed();
+			await tom.pool();
 			// The host it was made on holds it from the commit.
 			expect(await tom.holders(version.id)).toEqual([[STUB_HOST_ID, "held"]]);
-			const report = (hostId: string, versions: readonly string[]) =>
-				tom.api.service.recordStickyHoldings(hostId, tom.clock.now, [
+			// Each report a moment after the last: a host's older report than one taken changes nothing.
+			const report = (hostId: string, versions: readonly string[]) => {
+				tom.clock.now += 1;
+				return tom.api.service.recordStickyHoldings(hostId, tom.clock.now, [
 					{ diskId: disk.id, versions: versions.map((each) => ({ version: each })) },
 				]);
+			};
 			// Another host reports it, and a version the catalogue doesn't have, which is no copy of anything.
 			await report("host_b", [version.id, "sdv_unknown"]);
 			expect(await tom.holders(version.id)).toEqual([
@@ -144,6 +181,10 @@ describe("disk holders", () => {
 				[STUB_HOST_ID, "held"],
 			]);
 			expect(await tom.holders("sdv_unknown")).toEqual([]);
+			// Another account's own host can't hold this account's data, and a revoked host holds nothing.
+			await report("host_f", [version.id]);
+			await report("host_e", [version.id]);
+			expect(await tom.holders(version.id)).toHaveLength(2);
 			// A report that may have been measured before its holder was recorded doesn't let it go.
 			await report(STUB_HOST_ID, []);
 			expect(await tom.holders(version.id)).toHaveLength(2);
@@ -245,73 +286,72 @@ describe("disk holders", () => {
 		expect(await tom.holders(old.id)).toEqual([]);
 	});
 
-	it("keeps a version a host recorded holding as the sweep forgot it, and drops a holder whose version went", async () => {
-		const store = createMemoryStore();
-		const holders = createDiskHolders({
-			store,
-			now: () => 1_000_000,
-			enabled: true,
-			sealer: undefined,
-			hosts: async () => [],
-			meshAddress: () => undefined,
-			reportGraceMs: 0,
+	for (const [name, kind] of [
+		["memory", undefined],
+		["SQLite", nodeSqliteDatabase],
+		["Postgres", pgliteDatabase],
+	] as const) {
+		it(`takes only a host's newest report, wherever it was taken, in ${name}`, {
+			timeout: kind?.testTimeoutMs,
+		}, async () => {
+			const store = kind === undefined ? createMemoryStore() : await sqlStore(kind);
+			await store.stickyDiskVersions.put(VERSION);
+			const held = holder("host_b", 1);
+			// A newer report claimed (another gateway's, say) fences an older one, even one already under way.
+			expect(await store.diskHolderWrites.claim("host_b", 10)).toBe(true);
+			expect(await store.diskHolderWrites.claim("host_b", 20)).toBe(true);
+			expect(await store.diskHolderWrites.claim("host_b", 15)).toBe(false);
+			await store.diskHolderWrites.reconcile("host_b", 10, { hold: [held], release: [] });
+			expect(await store.diskHolders.list()).toEqual([]);
+			await store.diskHolderWrites.reconcile("host_b", 20, { hold: [held], release: [] });
+			expect(await store.diskHolders.list()).toEqual([held]);
+			await store.diskHolderWrites.reconcile("host_b", 10, { hold: [], release: [held] });
+			expect(await store.diskHolders.list()).toEqual([held]);
+			// A holder of a version the catalogue doesn't have isn't recorded.
+			await store.diskHolderWrites.reconcile("host_b", 20, {
+				hold: [{ ...holder("host_b", 1), id: "sticky:sdk_1:sdv_gone:host_b", version: "sdv_gone" }],
+				release: [held],
+			});
+			expect(await store.diskHolders.list()).toEqual([]);
 		});
-		const version = {
-			id: "sdv_1",
-			diskId: "sdk_1",
-			accountId: "acc_1",
-			hostId: "host_a",
-			sandboxId: "sbx_1",
-			sizeBytes: 1,
-			allocatedBytes: 1,
-			seq: 1,
-			createdAt: 1,
-		};
-		// The sweep forgot it, and then read the holder host_b's report wrote meanwhile: it is put back.
-		await store.diskHolders.put({
-			id: "sticky:sdk_1:sdv_1:host_b",
-			kind: "sticky",
-			objectId: "sdk_1",
-			version: "sdv_1",
-			hostId: "host_b",
-			state: "held",
-			since: 1,
-		});
-		const other = (holder: { readonly hostId: string }) => holder.hostId !== version.hostId;
-		expect(await holders.keepIfHeld(version, other)).toBe(true);
-		expect(await store.stickyDiskVersions.get("sdv_1")).toEqual(version);
-		await store.diskHolders.delete("sticky:sdk_1:sdv_1:host_b");
-		expect(await holders.keepIfHeld({ ...version, id: "sdv_2" }, other)).toBe(false);
-		expect(await store.stickyDiskVersions.get("sdv_2")).toBeUndefined();
-		// A report that read the version, then wrote its holder after the sweep forgot it, takes the holder out again.
-		const reads = store.stickyDiskVersions.get.bind(store.stickyDiskVersions);
-		let first = true;
-		const racing: ComputeStore = {
-			...store,
-			stickyDiskVersions: {
-				...store.stickyDiskVersions,
-				async get(id) {
-					const read = await reads(id);
-					if (first) {
-						first = false;
-						await store.stickyDiskVersions.delete(id);
-					}
-					return read;
+	}
+
+	for (const kind of [nodeSqliteDatabase, pgliteDatabase]) {
+		it(`never forgets a version a host recorded holding after the sweep read its holders, in ${kind.name}`, {
+			timeout: kind.testTimeoutMs,
+		}, async () => {
+			const database = await kind.open();
+			cleanups.push(() => database.close());
+			await migrateComputeStore(database.driver);
+			const direct = createSqlComputeStore(database.driver);
+			// The holder lands between the sweep's read of the holders and its delete of the version.
+			let between: (() => Promise<void>) | undefined;
+			const store = createSqlComputeStore({
+				dialect: database.driver.dialect,
+				query: (text, params) => database.driver.query(text, params),
+				async batch(statements) {
+					const hook = between;
+					between = undefined;
+					await hook?.();
+					return database.driver.batch(statements);
 				},
-			},
-		};
-		const reporting = createDiskHolders({
-			store: racing,
-			now: () => 1_000_000,
-			enabled: true,
-			sealer: undefined,
-			hosts: async () => [],
-			meshAddress: () => undefined,
-			reportGraceMs: 0,
+			});
+			await direct.stickyDiskVersions.put(VERSION);
+			await direct.stickyDisks.put(DISK);
+			between = async () => {
+				await direct.diskHolderWrites.claim("host_b", 5);
+				await direct.diskHolderWrites.reconcile("host_b", 5, { hold: [holder("host_b", 5)], release: [] });
+			};
+			const elsewhere = (holders: readonly { readonly hostId: string }[]) =>
+				holders.some((each) => each.hostId !== VERSION.hostId);
+			expect(await store.stickyDiskWrites.forget(VERSION.id, elsewhere)).toBe(false);
+			expect(await direct.stickyDiskVersions.get(VERSION.id)).toMatchObject({ id: VERSION.id });
+			// Held nowhere else, it is forgotten.
+			await direct.diskHolders.delete(holder("host_b", 5).id);
+			expect(await store.stickyDiskWrites.forget(VERSION.id, elsewhere)).toBe(true);
+			expect(await direct.stickyDiskVersions.get(VERSION.id)).toBeUndefined();
 		});
-		await reporting.recordStickyHoldings("host_c", 1_000_000, [{ diskId: "sdk_1", versions: [{ version: "sdv_1" }] }]);
-		expect(await store.diskHolders.list()).toEqual([]);
-	});
+	}
 
 	it("answers a locate whose grant key can't be read with the key's failure, and a missing version with not_found", async () => {
 		const store = await sqlStore(nodeSqliteDatabase);
