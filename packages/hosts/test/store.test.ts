@@ -122,7 +122,7 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBe(false);
 	});
 
-	it("finds the upgrades under way whose microVM goes on a host", async () => {
+	it("finds what other hosts' placements still have on a host: an upgrade's microVM, or an isolate to delete", async () => {
 		const store = await open();
 		const upgrade = { operationId: "op1", target: "host_b", phase: "copy" as const };
 		await store.putPlacement({ ...placement("s1", "host_a", 1), tier: "isolate", upgrade });
@@ -131,11 +131,22 @@ function behaves(open: () => Promise<HostStore>) {
 			upgrade: { ...upgrade, target: "host_a", phase: "host" },
 		});
 		await store.putPlacement({ ...placement("s3", "host_bb", 3), upgrade: { ...upgrade, target: "host_bb" } });
-		expect((await store.upgradesTo("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
-		// Its own host's upgrade is a placement there already.
-		expect(await store.upgradesTo("host_a")).toEqual([]);
-		await store.updatePlacement("s1", ({ upgrade: _done, ...rest }) => rest);
-		expect(await store.upgradesTo("host_b")).toEqual([]);
+		await store.putPlacement({ ...placement("s4", "host_c", 4), cleanup: { hostId: "host_d", operationId: "op2" } });
+		expect((await store.heldElsewhere("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		expect((await store.heldElsewhere("host_d")).map((p) => p.sandboxId)).toEqual(["s4"]);
+		// A host's own placements, and its own upgrade, aren't another's.
+		expect(await store.heldElsewhere("host_a")).toEqual([]);
+		expect(await store.heldElsewhere("host_c")).toEqual([]);
+		// The handover: the placement moves to the target and its intent ends, in one write.
+		await store.updatePlacement("s1", ({ upgrade: _done, ...rest }) => ({
+			...rest,
+			hostId: "host_b",
+			tier: "microvm",
+			cleanup: { hostId: "host_a", operationId: "op1" },
+		}));
+		expect(await store.heldElsewhere("host_b")).toEqual([]);
+		expect((await store.placementsOn("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		expect((await store.heldElsewhere("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
 	});
 
 	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {

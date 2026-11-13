@@ -114,8 +114,11 @@ export interface HostStore {
 	 * never takes one after (the compute plane's move).
 	 */
 	placeOnTakingHost(placement: PlacementRecord): Promise<boolean>;
-	/** The placements on other hosts with an upgrade under way whose microVM is (or may be) on `hostId`. */
-	upgradesTo(hostId: string): Promise<PlacementRecord[]>;
+	/**
+	 * The placements on other hosts that still have something on `hostId`: an upgrade under way whose microVM is (or may
+	 * be) there, or an upgraded isolate there still to be deleted (`cleanup`).
+	 */
+	heldElsewhere(hostId: string): Promise<PlacementRecord[]>;
 	/**
 	 * Changes a placement as it is now, atomically, as `updateHost` does a host: `change` is given the stored record and
 	 * answers the next (undefined leaves it), and a write that raced another is redone on the newer record. A host's
@@ -133,6 +136,12 @@ export interface HostStore {
 	removePlacement(sandboxId: string): Promise<void>;
 	/** Removes a placement only if, as it is now, `should` says so: whether it did. */
 	removePlacementIf(sandboxId: string, should: (placement: PlacementRecord) => boolean): Promise<boolean>;
+}
+
+/** Whether a placement on another host still has something on `hostId`: its upgrade's microVM, or an isolate to delete. */
+function holdsElsewhere(placement: PlacementRecord, hostId: string): boolean {
+	if (placement.hostId === hostId) return false;
+	return placement.upgrade?.target === hostId || placement.cleanup?.hostId === hostId;
 }
 
 /** Placements grouped by their host, in the order given. */
@@ -195,10 +204,8 @@ export function createMemoryHostStore(): HostStore {
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
 		},
-		async upgradesTo(hostId) {
-			return [...placements.values()]
-				.filter((placement) => placement.upgrade?.target === hostId && placement.hostId !== hostId)
-				.map(copy);
+		async heldElsewhere(hostId) {
+			return [...placements.values()].filter((placement) => holdsElsewhere(placement, hostId)).map(copy);
 		},
 		async placeOnTakingHost(placement) {
 			const host = hosts.get(placement.hostId);
@@ -410,13 +417,14 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			);
 			return rows.length > 0;
 		},
-		async upgradesTo(hostId) {
-			const rows = await driver.query("SELECT data FROM compute_placements WHERE data LIKE ?", [
+		async heldElsewhere(hostId) {
+			// Narrowed in SQL by the host's ID as a JSON string (as a `target`, or a cleanup's `hostId`, which matches the
+			// host's own placements too), then checked exactly.
+			const rows = await driver.query("SELECT data FROM compute_placements WHERE data LIKE ? OR data LIKE ?", [
 				`%"target":${JSON.stringify(hostId)}%`,
+				`%"hostId":${JSON.stringify(hostId)}%`,
 			]);
-			return rows
-				.map((row) => parse<PlacementRecord>(row))
-				.filter((placement) => placement.upgrade?.target === hostId && placement.hostId !== hostId);
+			return rows.map((row) => parse<PlacementRecord>(row)).filter((placement) => holdsElsewhere(placement, hostId));
 		},
 		async updatePlacement(sandboxId, change) {
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {

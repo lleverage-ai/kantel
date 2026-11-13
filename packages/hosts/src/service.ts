@@ -689,8 +689,8 @@ export interface HostsService {
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
 	/**
-	 * Whether a sandbox is placed on the host, one being made there included (a lost one not), or an upgrade under way
-	 * makes its microVM there.
+	 * Whether a sandbox is placed on the host, one being made there included (a lost one not), an upgrade under way
+	 * makes its microVM there, or an upgraded isolate there is still to be deleted.
 	 */
 	holds(hostId: string): Promise<boolean>;
 	/**
@@ -2271,8 +2271,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 		},
 		async holds(hostId) {
-			const [placed, upgrading] = await Promise.all([store.placementsOn(hostId), store.upgradesTo(hostId)]);
-			return upgrading.length > 0 || placed.some((placement) => placement.state !== "lost");
+			// What other hosts' placements have here first, then the placements here, one after the other: an upgrade's
+			// handover moves its placement here and ends its intent in one write, so one read before it finds the intent
+			// and one after finds the placement. Read at once, both could miss it.
+			if ((await store.heldElsewhere(hostId)).length > 0) return true;
+			return (await store.placementsOn(hostId)).some((placement) => placement.state !== "lost");
 		},
 		async revoke(hostId) {
 			const host = await hostOf(hostId);

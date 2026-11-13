@@ -828,6 +828,12 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 		expect(upgraded).toMatchObject({ type: "microvm", hostId: vms.hostId });
 		expect(isolates.sandboxes.has(sandbox.id)).toBe(true);
 		expect((await service.sandboxes.placement(sandbox.id))?.cleanup).toMatchObject({ hostId: isolates.hostId });
+		// Its host holds the isolate still: drained, it isn't moved to another pool.
+		expect(await service.holds(isolates.hostId)).toBe(true);
+		await root.createPool({ name: "elsewhere" });
+		await root.updateHost(isolates.hostId, { draining: true });
+		expect((await failure(root.updateHost(isolates.hostId, { pool: "elsewhere" }))).code).toBe("conflict");
+		await root.updateHost(isolates.hostId, { draining: false });
 		// It comes back, still holding the isolate: welcomed, then on its heartbeat the isolate goes.
 		isolates.refuseMethod = undefined;
 		await isolates.connect();
@@ -1203,5 +1209,56 @@ describe("a host's report racing an upgrade's handover", () => {
 		await hello;
 		const placement = await service.sandboxes.placement(sandbox.id);
 		expect(placement).toEqual(handedOver);
+	});
+});
+
+describe("whether a host holds a sandbox, as an upgrade hands over to it", () => {
+	it("finds the upgrade's microVM whenever its handover lands between the reads", async () => {
+		const upgrading: PlacementRecord = {
+			sandboxId: "sbx_up",
+			hostId: "host_isolates",
+			tier: "isolate",
+			size: "default",
+			vcpus: 0,
+			memoryMiB: 512,
+			diskGiB: 1,
+			state: "running",
+			createdAt: 1,
+			updatedAt: 1,
+			upgrade: { operationId: "op1", target: "host_vms", phase: "copy" },
+		};
+		const handOver = (store: HostStore) =>
+			store.updatePlacement("sbx_up", ({ upgrade: _done, ...rest }) => ({
+				...rest,
+				hostId: "host_vms",
+				tier: "microvm",
+				cleanup: { hostId: "host_isolates", operationId: "op1" },
+			}));
+		for (const when of ["before the other hosts' read", "after the other hosts' read", "after the placements' read"]) {
+			const store = createMemoryHostStore();
+			await store.putPlacement(upgrading);
+			const elsewhere = store.heldElsewhere.bind(store);
+			const placed = store.placementsOn.bind(store);
+			const watched: HostStore = {
+				...store,
+				heldElsewhere: async (hostId) => {
+					if (when === "before the other hosts' read") await handOver(store);
+					const read = await elsewhere(hostId);
+					if (when === "after the other hosts' read") await handOver(store);
+					return read;
+				},
+				placementsOn: async (hostId) => {
+					const read = await placed(hostId);
+					// Where reading the placements first then the intents would miss it.
+					if (when === "after the placements' read") await handOver(store);
+					return read;
+				},
+			};
+			const service = createHostsService({ store: watched, publicUrl: "https://kantel.test" });
+			closers.push(() => service.close());
+			expect(await service.holds("host_vms"), when).toBe(true);
+			// The isolate's host holds its isolate, to delete, once handed over.
+			expect(await service.holds("host_isolates"), when).toBe(true);
+		}
 	});
 });
