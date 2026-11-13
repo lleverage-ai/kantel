@@ -341,6 +341,33 @@ func (p *Plan) Level() (Level, int) {
 	return p.level, p.critical
 }
 
+// Shortage is the reading behind the host's level at the last observation, for the guard's log: why it is critical
+// (the Why names; none when it isn't) and the figures that decide it.
+type Shortage struct {
+	Why              []string
+	AvailableMiB     int64
+	ReserveMiB       int64
+	PressureFull     float64
+	GroupMaxMiB      int64
+	GroupHeadroomMiB int64
+	GroupCacheMiB    int64
+	GroupLimitHits   int64
+}
+
+// Shortage is why the host is critical at the last observation, with its figures.
+func (p *Plan) Shortage() Shortage {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h := p.host
+	s := Shortage{AvailableMiB: h.AvailableMiB, ReserveMiB: p.reserveMiB, PressureFull: h.PressureFull,
+		GroupMaxMiB: h.GroupMaxMiB, GroupHeadroomMiB: h.GroupHeadroomMiB, GroupCacheMiB: h.GroupCacheMiB,
+		GroupLimitHits: h.GroupLimitHits}
+	if !p.hostAt.IsZero() {
+		s.Why = p.criticalLocked()
+	}
+	return s
+}
+
 // AtLimit says whether the VMs' control group reached its memory.max since the observation before the last with little
 // page cache left to drop: the kernel is reclaiming from it, and ends a VM next.
 func (p *Plan) AtLimit() bool {
