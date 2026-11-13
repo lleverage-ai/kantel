@@ -284,11 +284,15 @@ export const HOST_FEATURES = {
 	 * `sandbox.upgrade` takes a create's `from` (one of the host's microVM snapshots) or `template` too: the microVM
 	 * starts from it as `sandbox.create` would make it, the snapshot's memory restored, and the isolate's files are laid
 	 * over what it has at `/home/user/workspace`, only by a guest agent that reports `GUEST_FEATURES.extractRealTarget`.
-	 * `sandbox.create` takes `guestFeatures` too, refusing (`not_supported`, the microVM deleted) one whose guest agent
-	 * doesn't report each before anything is written into it. Without it, an upgrade from a snapshot on the host is
-	 * refused, whether the isolate is there or on another host.
+	 * Without it, an upgrade from a snapshot on the isolate's own host is refused.
 	 */
 	isolateUpgradeFrom: "isolate-upgrade-from",
+	/**
+	 * `sandbox.create` takes `guestFeatures`, refusing (`not_supported`, the microVM deleted) one whose guest agent
+	 * doesn't report each before anything is written into it. Reported by a host with the microVM tier; an upgrade from
+	 * a snapshot on another host moves its files only to a host that says it.
+	 */
+	guestFeatures: "guest-features",
 	/**
 	 * `sandbox.upgrade.freeze` and `sandbox.upgrade.thaw` (`{ sandboxId, operationId, waitMs? }`): one of the host's
 	 * isolates held still (what was under way ended, every later command and file write refused) while Kantel copies its
@@ -1153,7 +1157,7 @@ export const HostMethods = {
 	 * the directory `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted.
 	 * Answered `{}`. With `realTarget`, a link at `target` or above it is refused rather than followed, by guest agents
 	 * that report `GUEST_FEATURES.extractRealTarget`: an older one, or an older host, ignores it, so whoever needs it
-	 * requires that feature first (a create's `guestFeatures`, on a host with `HOST_FEATURES.isolateUpgradeFrom`).
+	 * requires that feature first (a create's `guestFeatures`, on a host with `HOST_FEATURES.guestFeatures`).
 	 */
 	fileExtract: "sandbox.files.extract",
 	/**

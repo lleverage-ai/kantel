@@ -296,9 +296,14 @@ const FeatureIsolateUpgrade = "isolate-upgrade"
 // FeatureIsolateUpgradeFrom (HOST_FEATURES.isolateUpgradeFrom): sandbox.upgrade also takes From, one of the host's
 // microVM snapshots, or Template, and starts the microVM from it as sandbox.create would (a snapshot's memory
 // restored), the isolate's files laid over what it has at UpgradeWorkspace, only by a guest agent that reports
-// GuestFeatureRealTarget. sandbox.create takes CreateParams.GuestFeatures, so another host's upgrade can ask the same
-// of the microVM it makes here. Reported with FeatureIsolateUpgrade.
+// GuestFeatureRealTarget. Reported with FeatureIsolateUpgrade.
 const FeatureIsolateUpgradeFrom = "isolate-upgrade-from"
+
+// FeatureGuestFeatures (HOST_FEATURES.guestFeatures): sandbox.create takes CreateParams.GuestFeatures, refusing
+// (ErrUnsupported, the sandbox deleted) one whose guest agent doesn't report each before anything is written into it,
+// so another host's upgrade can ask of the microVM it makes here what this host's own upgrade asks. Reported by a host
+// with the microVM tier.
+const FeatureGuestFeatures = "guest-features"
 
 // GuestFeatureRealTarget, in a guest agent's health (guest.Health.Features), says it extracts an archive with
 // FileExtractParams.RealTarget into a real directory only, refusing a link at the target or above it. An agent from

@@ -693,6 +693,12 @@ func TestUpgradeWithoutASnapshotTakesAnOlderGuestAgent(t *testing.T) {
 // as unsupported and deletes it unless its guest agent reports each; a current agent's is made.
 func TestACreateRequiringGuestFeaturesRefusesAnOlderAgent(t *testing.T) {
 	h, _, mv, _ := newUpgradeHost(t)
+	// Said by a host with the microVM tier alone too: another host's upgrade makes its microVM there.
+	h.tiers = map[string]Tier{microvm.Tier: mv}
+	h.order = []string{microvm.Tier}
+	if features := h.makeFacts().Features; !slices.Contains(features, proto.FeatureGuestFeatures) {
+		t.Fatalf("its features %v don't say %s", features, proto.FeatureGuestFeatures)
+	}
 	mv.snapshots = map[string]map[string]string{"snap_project": {}}
 	params := proto.CreateParams{SandboxID: "sbx_new", Tier: microvm.Tier, From: "snap_project", GuestFeatures: []string{proto.GuestFeatureRealTarget}}
 	mv.olderAgent = true

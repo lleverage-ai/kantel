@@ -1338,7 +1338,7 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 	it("moves the files to the snapshot's host, and only that one, when another host holds it", async () => {
 		const vmFacts = factsOf(
 			["microvm"],
-			[HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.isolateUpgradeFrom],
+			[HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.guestFeatures],
 		);
 		const { root, api, service, hosts } = await setup([
 			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
@@ -1367,7 +1367,7 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 	async function movingInto(files: Held["files"], olderAgent = false) {
 		const vmFacts = factsOf(
 			["microvm"],
-			[HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.isolateUpgradeFrom],
+			[HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.guestFeatures],
 		);
 		const made = await setup([
 			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
@@ -1488,7 +1488,7 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 		});
 	}
 
-	it("is refused before the isolate is held when the snapshot's host predates guest agent requirements", async () => {
+	it("is refused before the isolate is held when the snapshot's host can't check its guest agent", async () => {
 		const { root, api, service, hosts } = await setup([
 			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
 			{ name: "holder", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
@@ -1499,7 +1499,9 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 		await savedOn(api, sandbox.accountId, holder.hostId);
 		const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
 		expect(refused.status).toBe(501);
-		expect(refused.message).toContain("The snapshot's host can't make a microVM from a snapshot in an upgrade");
+		expect(refused.message).toContain(
+			"The snapshot's host can't check its guest agent before an upgrade's files go in",
+		);
 		expect(isolates.methods()).not.toContain("sandbox.upgrade.freeze");
 		expect(holder.methods()).not.toContain("sandbox.create");
 		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
@@ -1512,7 +1514,7 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 				name: "vms",
 				facts: factsOf(
 					["microvm"],
-					[HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.isolateUpgradeFrom],
+					[HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.guestFeatures],
 				),
 			},
 		]);

@@ -2611,18 +2611,18 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const others = listed.filter(
 					(host) => host.id !== source.hostId && host.facts?.features?.includes(HOST_FEATURES.filesExtract) === true,
 				);
-				// From a snapshot, only a host that asks the snapshot's guest agent what it can do before the files go in (and
-				// knows `realTarget`): one from before it would ignore both.
+				// From a snapshot, only a host that asks the snapshot's guest agent what it can do before the files go in
+				// (`guestFeatures`): one from before it would ignore that and `realTarget` both.
 				const able =
 					input.from === undefined
 						? others
-						: others.filter((host) => host.facts?.features?.includes(HOST_FEATURES.isolateUpgradeFrom) === true);
+						: others.filter((host) => host.facts?.features?.includes(HOST_FEATURES.guestFeatures) === true);
 				const chosen = place(request, able.map(candidateOf));
 				if (isRefusal(chosen) && able.length < others.length && !isRefusal(place(request, others.map(candidateOf)))) {
 					throw placementError(
 						"not_supported",
 						"host_unavailable",
-						"The snapshot's host can't make a microVM from a snapshot in an upgrade; upgrade its kantel-host",
+						"The snapshot's host can't check its guest agent before an upgrade's files go in; upgrade its kantel-host",
 					);
 				}
 				if (isRefusal(chosen) && pinnedHere) {
