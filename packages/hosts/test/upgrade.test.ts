@@ -1316,7 +1316,7 @@ describe("a fork from an upgraded sandbox's snapshot, its host since moved to an
 		{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
 		{
 			name: "vms",
-			facts: factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.fileStreams]),
+			facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.fileStreams]),
 		},
 	];
 
