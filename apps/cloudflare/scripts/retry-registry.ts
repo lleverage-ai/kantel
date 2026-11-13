@@ -52,21 +52,27 @@ export interface Attempt {
 export function attempt(command: string, args: readonly string[]): Promise<Attempt> {
 	return new Promise((done) => {
 		const child = spawn(command, args, { stdio: ["inherit", "pipe", "pipe"] });
-		let tail = "";
 		let registryFailure = false;
-		const watch = (chunk: Buffer, to: NodeJS.WriteStream) => {
-			to.write(chunk);
-			tail = (tail + chunk.toString("utf8")).slice(-KEPT);
-			if (!registryFailure && isRegistryNetworkFailure(tail)) registryFailure = true;
+		// Each stream is read on its own, so a line from one never runs into a line from the other.
+		const watch = (from: NodeJS.ReadableStream, to: NodeJS.WriteStream) => {
+			let tail = "";
+			from.setEncoding("utf8");
+			from.on("data", (chunk: string) => {
+				to.write(chunk);
+				tail = (tail + chunk).slice(-KEPT);
+				if (!registryFailure && isRegistryNetworkFailure(tail)) registryFailure = true;
+			});
 		};
-		child.stdout.on("data", (chunk: Buffer) => watch(chunk, process.stdout));
-		child.stderr.on("data", (chunk: Buffer) => watch(chunk, process.stderr));
+		watch(child.stdout, process.stdout);
+		watch(child.stderr, process.stderr);
 		child.on("error", (error) => {
 			console.error(`${command} didn't start: ${error.message}`);
 			done({ code: 127, registryFailure: false });
 		});
-		// A command ended by a signal failed, but not for the registry: exit 1 and no retry.
-		child.on("close", (code) => done({ code: code ?? 1, registryFailure: code !== 0 && registryFailure }));
+		// A command ended by a signal was stopped, not failed by the registry: exit 1 and no retry.
+		child.on("close", (code) =>
+			done({ code: code ?? 1, registryFailure: code !== null && code !== 0 && registryFailure }),
+		);
 	});
 }
 

@@ -99,18 +99,31 @@ afterEach(() => {
 
 /**
  * The script run as the deploy runs it, around a stand-in command that fails `failures` times with `message` on stderr
- * and exit code 1 (counting its runs in a file), then succeeds.
+ * (counting its runs in a file), then succeeds. Each failure ends `how`: with exit code 1; with the message on stderr
+ * in two halves, a line on stdout between them, then exit code 1; or killed by a signal.
  */
-function deploy(failures: number, message: string) {
+function deploy(failures: number, message: string, how: "exit" | "split" | "signal" = "exit") {
 	const dir = mkdtempSync(join(tmpdir(), "kantel-retry-registry-"));
 	dirs.push(dir);
 	const stand = [
 		"const fs = require('node:fs');",
-		"const [count, failures, message] = process.argv.slice(1);",
+		"const [count, failures, message, how] = process.argv.slice(1);",
 		"const n = (fs.existsSync(count) ? Number(fs.readFileSync(count, 'utf8')) : 0) + 1;",
 		"fs.writeFileSync(count, String(n));",
-		"if (n <= Number(failures)) { console.error(message); process.exit(1); }",
-		"console.log('deployed');",
+		"const later = (ms) => new Promise((done) => setTimeout(done, ms));",
+		"(async () => {",
+		"  if (n > Number(failures)) return console.log('deployed');",
+		"  if (how === 'split') {",
+		"    const half = Math.floor(message.length / 2);",
+		"    process.stderr.write(message.slice(0, half));",
+		"    await later(50);",
+		"    process.stdout.write('Untagged: harbour-harboursandbox\\n');",
+		"    await later(50);",
+		"    process.stderr.write(message.slice(half) + '\\n');",
+		"  } else console.error(message);",
+		"  if (how === 'signal') process.kill(process.pid, 'SIGTERM');",
+		"  else process.exit(1);",
+		"})();",
 	].join("\n");
 	const script = join(import.meta.dirname, "../scripts/retry-registry.ts");
 	const run = spawnSync(
@@ -128,6 +141,7 @@ function deploy(failures: number, message: string) {
 			join(dir, "count"),
 			String(failures),
 			message,
+			how,
 		],
 		{ encoding: "utf8" },
 	);
@@ -152,6 +166,14 @@ describe("the script around a command", () => {
 		const run = deploy(1, "✘ [ERROR] Build failed with 1 error");
 		expect(run).toMatchObject({ status: 1, runs: 1 });
 		expect(run.stderr).not.toContain("attempt 1 of 3");
+	});
+
+	it("reads stdout and stderr each on its own, so a line on one doesn't cut the other's in two", () => {
+		expect(deploy(1, TIMED_OUT, "split")).toMatchObject({ status: 0, runs: 2 });
+	});
+
+	it("doesn't run again when the command was stopped by a signal", () => {
+		expect(deploy(1, TIMED_OUT, "signal")).toMatchObject({ status: 1, runs: 1 });
 	});
 
 	it("fails once every attempt has timed out", () => {
