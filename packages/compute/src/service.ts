@@ -94,6 +94,9 @@ import {
 	createDiskHolders,
 	type DiskLocateRequest,
 	type DiskLocation,
+	GRANT_KEY_UNAVAILABLE,
+	type GrantKeyring,
+	type GrantKeyView,
 	type StickyHoldingsReport,
 } from "./disk-holders.ts";
 import {
@@ -741,6 +744,11 @@ export interface ComputeService {
 	 * sticky disks off, or with no secrets key over a persistent store.
 	 */
 	grantPublicKey(): Promise<string | undefined>;
+	/**
+	 * Every grant key hosts accept grants from now, for their welcomes (`HostWelcome.grantKeys`): the one that signs first,
+	 * then those rotated out, each until it stops being accepted. Undefined as for `grantPublicKey`.
+	 */
+	grantKeys(): Promise<readonly GrantKeyView[] | undefined>;
 	/**
 	 * A host connected to this gateway, or its connection here ended: each of its sandboxes that isn't deleted is
 	 * published to the live feed as it is (its state unchanged), so an open console reads it again and shows whether it can
@@ -2646,6 +2654,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		hosts: () => ensureHosts(),
 		meshAddress: (hostId) => hostMeshAddress.get(hostId),
 		reportGraceMs: STICKY_REPORT_GRACE_MS,
+		// Connected hosts are told at once; the hosts service's check on their heartbeats makes good a telling missed.
+		keysChanged: () => {
+			if (backend.grantKeysChanged !== undefined) keepGoing(backend.grantKeysChanged());
+		},
 	});
 
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
@@ -6221,6 +6233,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Where hosts reach this control plane: the URL a super-admin set in the console, else the deployment's own
 	 * (`publicUrl`, or the address the call came in at).
 	 */
+	/** The grant keys as the API answers them. */
+	function grantKeysView(keys: GrantKeyring): computeSchema.GrantKeys {
+		return {
+			current: { id: keys.current.id, publicKey: keys.current.publicKey, since: keys.since },
+			retired: keys.retired.map((key) => ({ id: key.id, publicKey: key.publicKey, until: key.until })),
+		};
+	}
+
 	async function publicUrlView(request: Request): Promise<computeSchema.PublicUrl> {
 		const deploymentUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
 		const set = await store.settings.get("publicUrl");
@@ -10885,6 +10905,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return publicUrlView(request);
 		},
 
+		getGrantKeys: async (principal) => {
+			requireScope(principal, "hosts:admin");
+			const keys = await diskHolders.keys();
+			if (keys === undefined) {
+				throw new KantelError(
+					"not_supported",
+					options.stickyDisks === true ? GRANT_KEY_UNAVAILABLE : "Sticky disks are off here",
+				);
+			}
+			return grantKeysView(keys);
+		},
+
+		rotateGrantKey: async (principal) => {
+			requireScope(principal, "hosts:admin");
+			return grantKeysView(await diskHolders.rotate(principal.userId));
+		},
+
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
 		getHostUsage: async (principal, { params, query }) =>
@@ -12025,7 +12062,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		recordStickyHoldings: (hostId, at, disks) => diskHolders.recordStickyHoldings(hostId, at, disks),
 		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),
-		grantPublicKey: () => diskHolders.publicKey(),
+		grantPublicKey: async () => (await diskHolders.keys())?.current.publicKey,
+		grantKeys: async () => {
+			const keys = await diskHolders.keys();
+			return keys === undefined ? undefined : [keys.current, ...keys.retired];
+		},
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

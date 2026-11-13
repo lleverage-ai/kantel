@@ -386,6 +386,34 @@ func TestPoolsAndHostMove(t *testing.T) {
 	eq(t, "add body", jsonOf(t, added.Calls[0].Body), `{"pool":"ci"}`)
 }
 
+func TestGrantKey(t *testing.T) {
+	tt := newTester(t)
+	until := time.Now().Add(16 * time.Minute).UnixMilli()
+	keys := func(retired ...any) map[string]any {
+		return map[string]any{
+			"current": map[string]any{"id": "k2", "publicKey": "NEW", "since": 1794528000000},
+			"retired": retired,
+		}
+	}
+	var calls []string
+	r := routes{
+		"GET /v1/admin/grant-key": func(call) any {
+			calls = append(calls, "GET")
+			return keys()
+		},
+		"POST /v1/admin/grant-key/rotate": func(call) any {
+			calls = append(calls, "POST")
+			return keys(map[string]any{"id": "k1", "publicKey": "OLD", "until": until})
+		},
+	}
+	out := func(argv ...string) string { return strings.TrimSpace(tt.run(argv, opts{routes: r}).Out) }
+	eq(t, "show", out("grant-key", "show"), "Signing with k2 (NEW), since 2026-11-13 00:00 UTC")
+	rotated := out("grant-key", "rotate")
+	contains(t, "rotate", rotated, "Signing with k2 (NEW)")
+	contains(t, "rotate", rotated, "Still accepting k1 (OLD) until "+cli.Timestamp(until)+", in 16m")
+	eq(t, "calls", strings.Join(calls, ", "), "GET, POST")
+}
+
 func TestErrors(t *testing.T) {
 	tt := newTester(t)
 	// 4, as kantel: it needs a credential.

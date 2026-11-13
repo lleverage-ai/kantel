@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"slices"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
@@ -33,11 +34,11 @@ func (h *Host) startPeerSync() {
 	h.peers = &disksync.Server{
 		Source: peerStore{h},
 		Self:   h.selfID,
-		Key: func() string {
-			if k := h.grantKey.Load(); k != nil {
+		Keys: func() []proto.GrantKey {
+			if k := h.grantKeys.Load(); k != nil {
 				return *k
 			}
-			return ""
+			return nil
 		},
 		PeerAt: h.mesh.PeerAt,
 		Limit:  serve,
@@ -71,12 +72,16 @@ func (h *Host) selfID() string {
 	return h.cfg.HostID
 }
 
-// followPeerSync takes a welcome's grant key and host ID, and has the peer sync server listen on the mesh address while
-// the mesh is up, and stop while it is down. A welcome without a key keeps the last one: the control plane's key
-// doesn't change, and a welcome goes without it when the key couldn't be read just then.
+// followPeerSync takes a welcome's grant keys and host ID, and has the peer sync server listen on the mesh address while
+// the mesh is up, and stop while it is down. A welcome with GrantKeys replaces the keys (a rotation adds a key and,
+// once its time is up, drops the old one); one from a control plane from before rotation has GrantKey alone. A welcome
+// without either keeps the last keys: a welcome goes without them when they couldn't be read just then.
 func (h *Host) followPeerSync(w *proto.Welcome) {
-	if key := w.GrantKey; key != "" {
-		h.grantKey.Store(&key)
+	if keys := slices.Clone(w.GrantKeys); len(keys) > 0 {
+		h.grantKeys.Store(&keys)
+	} else if w.GrantKey != "" {
+		keys := []proto.GrantKey{{PublicKey: w.GrantKey}}
+		h.grantKeys.Store(&keys)
 	}
 	if id := w.HostID; id != "" {
 		h.welcomeID.Store(&id)

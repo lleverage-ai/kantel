@@ -758,12 +758,18 @@ export interface StoredSetting {
 	/**
 	 * `grantKey`: the control plane's Ed25519 key for fetch grants (`grants.ts`), made by the first gateway that needs it
 	 * and claimed (`insert`), so every gateway over one database signs with the same key. `value` is its public key, and
-	 * `sealed` its private key, sealed with the deployment's secrets key.
+	 * `sealed` its private key, sealed with the deployment's secrets key. A rotation replaces both in one conditional
+	 * write (`update`), moving the key it replaces to `retired`.
 	 */
 	readonly id: "publicUrl" | "bundleStore" | "grantKey";
 	readonly value: string;
 	/** A value kept sealed beside `value`: the grant key's private key. */
 	readonly sealed?: SealedValue;
+	/**
+	 * The grant keys rotated out, by their public keys, each still accepted until `until` (milliseconds since the epoch)
+	 * so grants signed with it just before stay good for their lifetime. Only `grantKey` has them.
+	 */
+	readonly retired?: readonly { readonly publicKey: string; readonly until: number }[];
 	readonly updatedAt: number;
 	readonly updatedBy: string;
 }

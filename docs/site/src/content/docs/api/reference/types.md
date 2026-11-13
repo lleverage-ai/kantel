@@ -1055,6 +1055,13 @@ When a runner's copy becomes the disk's next version: after a job that succeeded
 | `githubRunners` | [GithubRunners](/api/reference/types/#githubrunners) | yes |  |
 | `webhookSecret` | string | yes | The secret to give the GitHub App's webhook. Shown once. |
 
+### GrantKeys
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | object | yes | The key that signs grants now. |
+| `retired` | object[] | yes | Keys rotated out that hosts still accept, oldest first. |
+
 ### GuestAgent
 
 | Field | Type | Required | Description |

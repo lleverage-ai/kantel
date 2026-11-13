@@ -10,11 +10,31 @@
  * deployment's secrets key (`StoredSetting` `grantKey`), so every gateway over one database signs with it. Without a
  * secrets key over a persistent store, nothing can be sealed, so there is no grant key: hosts' welcomes carry none and
  * `disk.locate` is refused, as protected values are.
+ *
+ * The grant key is rotated by an operator (`rotate`), or replaced by the first gateway that can't open it (sealed with
+ * a secrets key the deployment no longer has): a new key in one conditional write, the old one kept as retired for
+ * `GRANT_KEY_OVERLAP_MS`, so grants signed with it just before stay good for their lifetime. Hosts are given every key
+ * still accepted (`keys`). Nothing is cached across calls but the opened private key: every gateway reads the setting
+ * for each grant and welcome, so a rotation on one is signed with on all from the next grant.
  */
 import { KantelError } from "@kantel/contracts";
-import { createGrantKey, DISK_KINDS, type DiskKind, GRANT_TTL_MS, type GrantKey, grantKeyFrom } from "./grants.ts";
+import {
+	createGrantKey,
+	DISK_KINDS,
+	type DiskKind,
+	GRANT_TTL_MS,
+	type GrantKey,
+	grantKeyFrom,
+	grantKeyId,
+} from "./grants.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
-import { type ComputeStore, diskHolderId, type StoredDiskHolder, type StoredHost } from "./store.ts";
+import {
+	type ComputeStore,
+	diskHolderId,
+	type StoredDiskHolder,
+	type StoredHost,
+	type StoredSetting,
+} from "./store.ts";
 
 /** A host's request for a version of an object (`disk.locate`). */
 export interface DiskLocateRequest {
@@ -31,6 +51,22 @@ export interface DiskLocation {
 	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
 	/** A signed grant (`grants.ts`) to fetch it from `holders`; absent when there are none. */
 	readonly grant?: string;
+}
+
+/** A grant key a host accepts grants from: its ID and public key, and for one rotated out, until when. */
+export interface GrantKeyView {
+	readonly id: string;
+	readonly publicKey: string;
+	/** When a retired key stops being accepted, in milliseconds since the epoch; absent for the key that signs. */
+	readonly until?: number;
+}
+
+/** The control plane's grant keys: the one it signs with, since when, and the retired ones still accepted. */
+export interface GrantKeyring {
+	readonly current: GrantKeyView;
+	/** When the current key was made, by a first use or a rotation. */
+	readonly since: number;
+	readonly retired: readonly (GrantKeyView & { readonly until: number })[];
 }
 
 /** A host's report of the sticky disk versions it holds (`HostCapacity.stickyDisks`). */
@@ -50,8 +86,16 @@ export interface DiskHolders {
 	recordCommit(kind: DiskKind, objectId: string, version: string, hostId: string): Promise<void>;
 	/** Answers `disk.locate` from `hostId`. */
 	locate(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
-	/** The grant key's public key, for hosts' welcomes; undefined while there is none (sticky disks off, no secrets key). */
-	publicKey(): Promise<string | undefined>;
+	/**
+	 * The grant keys, made on first use (and a key that can't be opened replaced); undefined while there can be none
+	 * (sticky disks off, no secrets key).
+	 */
+	keys(): Promise<GrantKeyring | undefined>;
+	/**
+	 * Rotates the grant key: a new one signs from now, and the one it replaces is accepted for `GRANT_KEY_OVERLAP_MS`
+	 * more. `by` is who asked. `not_supported` while there can be none.
+	 */
+	rotate(by: string): Promise<GrantKeyring>;
 	/** The holders of an object's versions, by version. */
 	holdersOf(kind: DiskKind, objectId: string): Promise<Map<string, StoredDiskHolder[]>>;
 	/** Forgets every holder of an object, or of one of its versions. */
@@ -66,6 +110,12 @@ export interface DiskHolders {
 /** The setting the grant key is kept in, and where its private key is sealed. */
 const GRANT_KEY = "grantKey";
 const GRANT_KEY_AAD = sealedAt("settings", GRANT_KEY, "privateKey");
+
+/**
+ * How long a retired grant key is still accepted after it is rotated out: a grant's lifetime, and a minute for a grant
+ * a gateway signed with it as another rotated it, and for clocks that differ.
+ */
+export const GRANT_KEY_OVERLAP_MS = GRANT_TTL_MS + 60_000;
 
 /** What `disk.locate` is told while there is no grant key. */
 export const GRANT_KEY_UNAVAILABLE =
@@ -84,42 +134,108 @@ export function createDiskHolders(options: {
 	readonly meshAddress: (hostId: string) => string | undefined;
 	/** How long before a report a holder must have been recorded for the report to say the host doesn't hold it. */
 	readonly reportGraceMs: number;
+	/** The grant keys changed here (a rotation, or a key that couldn't be opened replaced): hosts are told them. */
+	readonly keysChanged?: () => void;
 }): DiskHolders {
 	const { store, now, sealer } = options;
 
-	let loading: Promise<GrantKey> | undefined;
-	/** The grant key: read from its setting, else made and claimed; of two gateways making one, the first claim wins. */
-	async function loadGrantKey(seal: Sealer): Promise<GrantKey> {
-		let kept = await store.settings.get(GRANT_KEY);
-		if (kept === undefined) {
-			const made = await createGrantKey();
-			const sealed = await seal.seal(made.privateKey, GRANT_KEY_AAD);
-			const at = now();
-			if (
-				await store.settings.insert({
+	/** The setting the private key was last opened from, and the key: opened again only when the setting changes. */
+	let opened: { readonly kept: StoredSetting; readonly key: Promise<GrantKey> } | undefined;
+	const sameKey = (a: StoredSetting, b: StoredSetting) =>
+		a.value === b.value && a.sealed?.iv === b.sealed?.iv && a.sealed?.ct === b.sealed?.ct;
+	function open(seal: Sealer, kept: StoredSetting): Promise<GrantKey> {
+		if (opened !== undefined && sameKey(opened.kept, kept)) return opened.key;
+		const key =
+			kept.sealed === undefined
+				? Promise.reject(new KantelError("unavailable", "The grant key isn't kept in a form this reads"))
+				: seal.open(kept.sealed, GRANT_KEY_AAD).then((privateKey) => grantKeyFrom(kept.value, privateKey));
+		opened = { kept, key };
+		key.catch(() => {
+			if (opened?.key === key) opened = undefined;
+		});
+		return key;
+	}
+
+	/**
+	 * Writes a new grant key over the kept one when `replaces` approves the setting as it is then, the key it held
+	 * retired (and retired keys past their time dropped), and answers the setting written; undefined when `replaces` no
+	 * longer approves it.
+	 */
+	async function replace(
+		seal: Sealer,
+		by: string,
+		replaces: (current: StoredSetting) => boolean,
+	): Promise<{ readonly kept: StoredSetting; readonly key: GrantKey } | undefined> {
+		const made = await createGrantKey();
+		const sealed = await seal.seal(made.privateKey, GRANT_KEY_AAD);
+		const at = now();
+		const written = await store.settings.update(GRANT_KEY, (current) =>
+			replaces(current)
+				? {
+						id: GRANT_KEY,
+						value: made.key.publicKey,
+						sealed,
+						updatedAt: at,
+						updatedBy: by,
+						retired: [
+							...(current.retired ?? []).filter((key) => key.until > at && key.publicKey !== current.value),
+							{ publicKey: current.value, until: at + GRANT_KEY_OVERLAP_MS },
+						],
+					}
+				: undefined,
+		);
+		if (written === undefined || written.value !== made.key.publicKey) return undefined;
+		opened = { kept: written, key: Promise.resolve(made.key) };
+		options.keysChanged?.();
+		return { kept: written, key: made.key };
+	}
+
+	/**
+	 * The grant key as kept now, and its private key opened: made and claimed when there is none (of two gateways making
+	 * one, the first claim wins), and replaced when it can't be opened here, sealed with a secrets key the deployment no
+	 * longer has (of two gateways replacing it, the first write wins and the other opens that).
+	 */
+	async function current(seal: Sealer): Promise<{ readonly kept: StoredSetting; readonly key: GrantKey }> {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const kept = await store.settings.get(GRANT_KEY);
+			if (kept === undefined) {
+				const made = await createGrantKey();
+				const record: StoredSetting = {
 					id: GRANT_KEY,
 					value: made.key.publicKey,
-					sealed,
-					updatedAt: at,
+					sealed: await seal.seal(made.privateKey, GRANT_KEY_AAD),
+					updatedAt: now(),
 					updatedBy: "gateway",
-				})
-			) {
-				return made.key;
+				};
+				if (await store.settings.insert(record)) {
+					opened = { kept: record, key: Promise.resolve(made.key) };
+					return { kept: record, key: made.key };
+				}
+				continue;
 			}
-			kept = await store.settings.get(GRANT_KEY);
+			try {
+				return { kept, key: await open(seal, kept) };
+			} catch (error) {
+				if (!(error instanceof KantelError && error.code === "unavailable")) throw error;
+			}
+			const replaced = await replace(seal, "gateway", (latest) => sameKey(latest, kept));
+			if (replaced !== undefined) return replaced;
 		}
-		if (kept?.sealed === undefined)
-			throw new KantelError("unavailable", "The grant key isn't kept in a form this reads");
-		return grantKeyFrom(kept.value, await seal.open(kept.sealed, GRANT_KEY_AAD));
+		throw new KantelError("unavailable", "The grant key kept changing as it was read; try again");
 	}
-	/** The grant key, read once per process (again after a failure); undefined while there can be none. */
-	function grantKey(): Promise<GrantKey> | undefined {
-		if (!options.enabled || sealer === undefined) return undefined;
-		loading ??= loadGrantKey(sealer).catch((error: unknown) => {
-			loading = undefined;
-			throw error;
-		});
-		return loading;
+
+	/** The grant key as kept now; undefined while there can be none. */
+	const grantKey = (): Promise<{ readonly kept: StoredSetting; readonly key: GrantKey }> | undefined =>
+		!options.enabled || sealer === undefined ? undefined : current(sealer);
+
+	/** The keyring a kept setting holds, at `at`: retired keys past their time left out. */
+	async function keyringOf(kept: StoredSetting, key: GrantKey, at: number): Promise<GrantKeyring> {
+		const retired: (GrantKeyView & { readonly until: number })[] = [];
+		for (const old of kept.retired ?? []) {
+			if (old.until <= at || old.publicKey === key.publicKey) continue;
+			retired.push({ id: await grantKeyId(old.publicKey), publicKey: old.publicKey, until: old.until });
+		}
+		return { current: { id: key.id, publicKey: key.publicKey }, since: kept.updatedAt, retired };
 	}
 
 	const versionKey = (objectId: string, version: string) => `${objectId}/${version}`;
@@ -230,7 +346,7 @@ export function createDiskHolders(options: {
 			}
 			const mapDigest = version.mapDigest === undefined ? {} : { mapDigest: version.mapDigest };
 			if (holders.length === 0) return { ...mapDigest, holders };
-			const signing = await grantKey();
+			const signing = (await grantKey())?.key;
 			if (signing === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 			const grant = await signing.sign({
 				kind: "sticky",
@@ -244,9 +360,21 @@ export function createDiskHolders(options: {
 			return { ...mapDigest, holders, grant };
 		},
 
-		async publicKey() {
-			const signing = grantKey();
-			return signing === undefined ? undefined : (await signing).publicKey;
+		async keys() {
+			const reading = grantKey();
+			if (reading === undefined) return undefined;
+			const { kept, key } = await reading;
+			return keyringOf(kept, key, now());
+		},
+
+		async rotate(by) {
+			if (!options.enabled) throw new KantelError("not_supported", "Sticky disks are off here");
+			if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+			// Made first if there is none, so there is one to rotate; a rotation then always writes.
+			await current(sealer);
+			const rotated = await replace(sealer, by, () => true);
+			if (rotated === undefined) throw new KantelError("unavailable", "The grant key couldn't be rotated; try again");
+			return keyringOf(rotated.kept, rotated.key, now());
 		},
 
 		async holdersOf(kind, objectId) {

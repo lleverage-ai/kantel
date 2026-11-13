@@ -343,6 +343,10 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async updatePool(poolId, change) {
 			await primary.updatePool?.(poolId, change);
 		},
+		// The grant keys are for the primary's hosts, which sync with each other.
+		async grantKeysChanged() {
+			await primary.grantKeysChanged?.();
+		},
 		...(primary.hostHolds === undefined && fallback.hostHolds === undefined
 			? {}
 			: {

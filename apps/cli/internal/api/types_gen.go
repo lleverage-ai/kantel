@@ -1319,6 +1319,32 @@ type GithubRunnersWithSecret struct {
 	WebhookSecret string `json:"webhookSecret"`
 }
 
+type GrantKeys struct {
+	// The key that signs grants now.
+	Current GrantKeysCurrent `json:"current"`
+	// Keys rotated out that hosts still accept, oldest first.
+	Retired []GrantKeysRetiredItem `json:"retired"`
+}
+
+// The key that signs grants now.
+type GrantKeysCurrent struct {
+	// The key's ID, which each grant it signs names as `kid`.
+	ID string `json:"id"`
+	// The Ed25519 public key, its 32 raw bytes in base64url.
+	PublicKey string `json:"publicKey"`
+	// When it was made, on first use or by a rotation: epoch milliseconds, UTC.
+	Since int64 `json:"since"`
+}
+
+type GrantKeysRetiredItem struct {
+	// The key's ID, which each grant it signs names as `kid`.
+	ID string `json:"id"`
+	// The Ed25519 public key, its 32 raw bytes in base64url.
+	PublicKey string `json:"publicKey"`
+	// When hosts stop accepting grants it signed, a grant's lifetime and a minute after its rotation: epoch milliseconds, UTC.
+	Until int64 `json:"until"`
+}
+
 type GuestAgent struct {
 	// Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it.
 	Injected bool   `json:"injected"`
