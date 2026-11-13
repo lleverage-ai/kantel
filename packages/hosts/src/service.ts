@@ -2290,6 +2290,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					path: placement.cleanup === undefined ? "host" : "control-plane",
 					files: sandbox.moved?.files ?? 0,
 					bytes: sandbox.moved?.bytes ?? 0,
+					// The pool of the host it is placed on, which holds it, so can't have moved since it was admitted.
+					...(host?.poolId === undefined ? {} : { poolId: host.poolId }),
 				},
 			};
 		}

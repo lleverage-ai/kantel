@@ -1367,12 +1367,19 @@ describe("a fork from an upgraded sandbox's snapshot, its host since moved to an
 		expect(isolates.sandboxes.size).toBe(0);
 		expect(await service.sandboxes.placement(fork?.id ?? "")).toBeUndefined();
 
-		// A live fork, on its source's host, is admitted only in the pool it is kept to.
+		// A live fork, on its source's host, is admitted only in the pool it is kept to, and not while that host drains:
+		// nothing is asked of the host, and nothing is placed.
 		const before = vms.methods().length;
-		await expect(service.sandboxes.fork(source.id, { poolId: other.id })).rejects.toMatchObject({
+		await expect(service.sandboxes.fork(source.id, { newId: "sbx_otherpool", poolId: other.id })).rejects.toMatchObject(
+			{ code: "unavailable", details: { reason: "host_unavailable" } },
+		);
+		await root.updateHost(vms.hostId, { draining: true });
+		await expect(service.sandboxes.fork(source.id, { newId: "sbx_drained", poolId: pool })).rejects.toMatchObject({
 			code: "unavailable",
 			details: { reason: "host_unavailable" },
 		});
 		expect(vms.methods().length).toBe(before);
+		expect(await service.sandboxes.placement("sbx_otherpool")).toBeUndefined();
+		expect(await service.sandboxes.placement("sbx_drained")).toBeUndefined();
 	});
 });
