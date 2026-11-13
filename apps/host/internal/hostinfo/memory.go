@@ -16,8 +16,8 @@ type Memory struct {
 	// TotalMiB is the machine's memory, or the group's limit when that is less.
 	TotalMiB int64
 	// AvailableMiB is what can still be had without swapping: MemAvailable, or within a limited group its limit less
-	// what it uses, its inactive page cache counted as free (the kernel drops that first); never more than the
-	// machine's MemAvailable.
+	// what it uses, the page cache it can drop counted as free (droppableCacheMiB), as MemAvailable counts the
+	// machine's; never more than the machine's MemAvailable.
 	AvailableMiB int64
 	// SwapUsedMiB is the swap in use (the machine's, or the group's).
 	SwapUsedMiB int64
@@ -30,11 +30,14 @@ type Memory struct {
 	PressureFull float64
 	// Limited: the figures are a control group's, with its memory limit.
 	Limited bool
-	// GroupMaxMiB is the memory.max of kantel-host's own control group, which its microVMs run in (0: none), and
-	// GroupHeadroomMiB what the group can still take before it (no page cache counted free: at the limit, the kernel
-	// reclaiming it is the spike being held).
+	// GroupMaxMiB is the memory.max of kantel-host's own control group, which its microVMs run in (0: none),
+	// GroupHeadroomMiB what the group can still take before it (memory.max less memory.current), and GroupCacheMiB the
+	// page cache in the group the kernel can drop at the limit without loss (droppableCacheMiB). With no memory.high,
+	// a group's page cache grows until the group sits at its limit, so its headroom alone is near nothing on a host that
+	// has written a few disk images; what it can still take before the kernel ends a VM is both together.
 	GroupMaxMiB      int64
 	GroupHeadroomMiB int64
+	GroupCacheMiB    int64
 	// GroupLimitHits counts the times the group reached its memory.max (memory.events "max"), where the kernel
 	// reclaims from it and, failing, ends its largest process: its growth is the group at its limit now.
 	GroupLimitHits int64
@@ -72,6 +75,7 @@ func (p memoryPaths) read() Memory {
 			if limit, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); err == nil && limit > 0 {
 				m.GroupMaxMiB = limit >> 20
 				m.GroupHeadroomMiB = max(0, limit-readNumber(filepath.Join(dir, "memory.current"))) >> 20
+				m.GroupCacheMiB = droppableCacheMiB(readKeyed(filepath.Join(dir, "memory.stat")))
 			}
 		}
 		m.GroupLimitHits = readKeyed(filepath.Join(dir, "memory.events"))["max"]
@@ -84,8 +88,8 @@ func (p memoryPaths) read() Memory {
 	available := m.AvailableMiB
 	for _, g := range groups {
 		current := readNumber(filepath.Join(g.dir, "memory.current")) >> 20
-		stat := readKeyed(filepath.Join(g.dir, "memory.stat"))
-		available = min(available, max(0, g.limitMiB-current+stat["inactive_file"]>>20), g.limitMiB)
+		cache := droppableCacheMiB(readKeyed(filepath.Join(g.dir, "memory.stat")))
+		available = min(available, max(0, g.limitMiB-current+cache), g.limitMiB)
 	}
 	// The smallest is its total, and has its swap and pressure.
 	dir, limit := groups[0].dir, groups[0].limitMiB
@@ -105,6 +109,16 @@ func (p memoryPaths) read() Memory {
 		m.AvailableMiB = available
 	}
 	return m
+}
+
+// droppableCacheMiB is the page cache a group's memory.stat shows the kernel can drop at its limit without loss: the
+// file pages on its reclaim lists (active_file and inactive_file, both: the kernel moves active pages to the inactive
+// list as it reclaims, and with the multi-generational LRU the split is only the youngest generations), less those
+// dirty or under writeback, which must reach the disk first. tmpfs and shared memory count in memory.stat's "file"
+// but sit on the anonymous lists, as they can't be dropped, so they are not in it. Clean pages a process maps, such
+// as a VM's memory restored from its snapshot file and not yet written, are: the kernel reads them back when touched.
+func droppableCacheMiB(stat map[string]int64) int64 {
+	return max(0, stat["active_file"]+stat["inactive_file"]-stat["file_dirty"]-stat["file_writeback"]) >> 20
 }
 
 // Confinement is what ConfineMemory found or set on kantel-host's own control group.

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -165,15 +166,37 @@ func incidentFiles() map[string]string {
 	}
 }
 
+// The incident's group has 38 GiB it can still take before the kernel ends a VM: its page cache, clean, can be
+// dropped at the limit. Which share of it the kernel keeps inactive doesn't change that.
 func TestReadMemoryIncident(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, incidentFiles())
-	m := memoryPaths{proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup")}.read()
-	// Today: 33 MiB to the limit, and only the inactive cache counted free.
-	want := Memory{TotalMiB: 49152, AvailableMiB: 33 + 1952, PressureSome: 3.1, PressureFull: 0.4, Limited: true,
-		GroupMaxMiB: 49152, GroupHeadroomMiB: 33, GroupLimitHits: 1200}
-	if m != want {
+	paths := memoryPaths{proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup")}
+	// 36400 active and 1952 inactive, 48 of it dirty.
+	const cache = 36400 + 1952 - 48
+	want := Memory{TotalMiB: 49152, AvailableMiB: 33 + cache, PressureSome: 3.1, PressureFull: 0.4, Limited: true,
+		GroupMaxMiB: 49152, GroupHeadroomMiB: 33, GroupCacheMiB: cache, GroupLimitHits: 1200}
+	if m := paths.read(); m != want {
 		t.Fatalf("got %+v\nwant %+v", m, want)
+	}
+	half := strings.NewReplacer("active_file 38168166400", "active_file 20115881984", "inactive_file 2046820352",
+		"inactive_file 20099104768").Replace(incidentStat)
+	writeFiles(t, root, map[string]string{incidentGroup + "memory.stat": half})
+	if m := paths.read(); m != want {
+		t.Fatalf("half inactive: got %+v\nwant %+v", m, want)
+	}
+}
+
+// Page cache that must reach the disk first (dirty, under writeback) isn't droppable, nor is tmpfs or shared memory,
+// which memory.stat counts as file but keeps on the anonymous lists.
+func TestDroppableCache(t *testing.T) {
+	stat := parseKeyed(strings.NewReader("file 12884901888\nshmem 4294967296\nactive_file 6442450944\n" +
+		"inactive_file 2147483648\nfile_dirty 1073741824\nfile_writeback 536870912\n"))
+	if got := droppableCacheMiB(stat); got != 6144+2048-1024-512 {
+		t.Fatalf("droppable %d", got)
+	}
+	if got := droppableCacheMiB(map[string]int64{"inactive_file": 1 << 20, "file_dirty": 2 << 20}); got != 0 {
+		t.Fatalf("more dirty than on the lists: %d", got)
 	}
 }
 
