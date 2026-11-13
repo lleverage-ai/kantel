@@ -305,6 +305,68 @@ describe("hosts service", () => {
 		expect((await service.get(a.hostId)).memory).toEqual({ ...unmeasured, pressureSome: 100 });
 	});
 
+	it("shows how a host reaches its mesh peers as its latest heartbeat says, only while it is connected", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		expect((await service.get(a.hostId)).mesh).toBeUndefined();
+		const capacity = { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0 };
+		const mesh = {
+			address: "fd4b:91c2:7e10:0:5a1e:3f20:9c4d:1b07",
+			peers: [
+				{
+					hostId: "host_b",
+					path: "direct",
+					endpoint: "203.0.113.24:51820",
+					lastHandshake: 1_700_000_000_000,
+					rttMs: 0.4,
+				},
+				{ hostId: "host_c", path: "none" },
+			],
+		};
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, mesh } } });
+		await tick();
+		expect((await service.get(a.hostId)).mesh).toEqual(mesh);
+		// A peer that isn't one is left out, as is a figure that isn't one; the rest still stands.
+		host.send({
+			type: "heartbeat",
+			heartbeat: {
+				capacity: {
+					...capacity,
+					mesh: {
+						address: mesh.address,
+						peers: [
+							{ hostId: "host_b", path: "direct", lastHandshake: -5, rttMs: "fast", endpoint: 7 },
+							{ path: "direct" },
+							"host_d",
+							{ hostId: "host_c", path: "" },
+						],
+					},
+				},
+			},
+		});
+		await tick();
+		expect((await service.get(a.hostId)).mesh).toEqual({
+			address: mesh.address,
+			peers: [{ hostId: "host_b", path: "direct" }],
+		});
+		// A mesh without an address isn't one, and leaves the heartbeat standing.
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, freeDiskGiB: 300, mesh: { peers: [] } } } });
+		await tick();
+		const view = await service.get(a.hostId);
+		expect(view.mesh).toBeUndefined();
+		expect(view.freeDiskGb).toBe(300);
+		// Once the host drops, its last report says nothing about now.
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, mesh } } });
+		await tick();
+		expect((await service.get(a.hostId)).mesh).toEqual(mesh);
+		service.hub.disconnect(a.hostId, 1001, "gone");
+		await tick();
+		expect((await service.get(a.hostId)).mesh).toBeUndefined();
+	});
+
 	it("shows a host's free disk as its latest heartbeat reports it, not as it was when it connected", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");
