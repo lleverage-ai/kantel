@@ -261,7 +261,7 @@ func tcpSend(args []string) {
 	}
 	wg.Wait()
 	el := time.Since(start).Seconds()
-	report(map[string]any{"bytes": total.Load(), "seconds": el, "gbps": float64(total.Load()) * 8 / el / 1e9})
+	report(map[string]any{"bytes": total.Load(), "seconds": el, "gbps": float64(total.Load()) * 8 / el / 1e9, "cpu": selfCPU()})
 }
 
 // httpServe serves one file over HTTP/2 without TLS (WireGuard does the encryption). Before each request
@@ -346,7 +346,7 @@ func httpGet(args []string) {
 	}
 	wg.Wait()
 	el := time.Since(start).Seconds()
-	report(map[string]any{"bytes": total.Load(), "seconds": el, "gbps": float64(total.Load()) * 8 / el / 1e9, "proto": proto})
+	report(map[string]any{"bytes": total.Load(), "seconds": el, "gbps": float64(total.Load()) * 8 / el / 1e9, "proto": proto, "cpu": selfCPU()})
 }
 
 // mkfile writes a file of random data, size in GiB.
@@ -396,15 +396,53 @@ func stat() {
 			busy += v
 		}
 	}
+	var irq int64
+	for _, i := range []int{5, 6} { // irq, softirq
+		v, _ := strconv.ParseInt(fields[i], 10, 64)
+		irq += v
+	}
 	load, _ := os.ReadFile("/proc/loadavg")
 	jobs := 0
+	// procs is the CPU ticks of the processes the tunnel's work can be charged to: this tool's processes
+	// (wireguard-go's crypto, the test traffic) and the kernel's worker and softirq threads (kernel
+	// WireGuard's crypto).
+	procs := map[string]int64{}
 	entries, _ := os.ReadDir("/proc")
 	for _, e := range entries {
-		if c, err := os.ReadFile("/proc/" + e.Name() + "/comm"); err == nil && strings.TrimSpace(string(c)) == "Runner.Worker" {
+		c, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		comm := strings.TrimSpace(string(c))
+		if comm == "Runner.Worker" {
 			jobs++
 		}
+		cmdline, _ := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if !strings.HasPrefix(comm, "kworker") && !strings.HasPrefix(comm, "ksoftirqd") &&
+			!strings.HasPrefix(string(cmdline), "/root/wg-spike/wgspike\x00") {
+			continue
+		}
+		if strings.Contains(string(cmdline), "\x00stat") {
+			continue
+		}
+		s, err := os.ReadFile("/proc/" + e.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+		f := strings.Fields(string(s[strings.LastIndexByte(string(s), ')')+2:]))
+		ut, _ := strconv.ParseInt(f[11], 10, 64)
+		st, _ := strconv.ParseInt(f[12], 10, 64)
+		procs[e.Name()] = ut + st
 	}
-	report(map[string]any{"busy": busy, "all": all, "ncpu": numCPU(), "load": strings.Fields(string(load))[0], "jobs": jobs})
+	report(map[string]any{"busy": busy, "all": all, "irq": irq, "procs": procs, "ncpu": numCPU(),
+		"load": strings.Fields(string(load))[0], "jobs": jobs})
+}
+
+// selfCPU is the CPU seconds this process has used, user and system.
+func selfCPU() float64 {
+	var ru unix.Rusage
+	_ = unix.Getrusage(unix.RUSAGE_SELF, &ru)
+	return float64(ru.Utime.Nano()+ru.Stime.Nano()) / 1e9
 }
 
 func numCPU() int {
