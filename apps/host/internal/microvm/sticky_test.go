@@ -609,14 +609,14 @@ func TestStickyMapsLateAndOld(t *testing.T) {
 	wait := stickyMapWait
 	stickyMapWait = 50 * time.Millisecond
 	t.Cleanup(func() { stickyMapWait = wait })
-	m.holdMaps = make(chan struct{})
+	m.holdMaps = newMapHold()
 	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v1"}); err != nil {
 		t.Fatal(err)
 	}
 	if digest := m.StickyMapDigest(ctx, "ci", "v1"); digest != "" {
 		t.Fatalf("digest %q before its map is made", digest)
 	}
-	close(m.holdMaps)
+	close(m.holdMaps.release)
 	m.holdMaps = nil
 	digest := ""
 	for deadline := time.Now().Add(10 * time.Second); digest == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
@@ -648,11 +648,12 @@ func TestStickyMapsLateAndOld(t *testing.T) {
 
 	// A version deleted while its map is made, and committed again: the new file gets a map of its own, which the old
 	// one's, finding its file gone, neither writes over nor stands in for.
-	m.holdMaps = make(chan struct{})
+	m.holdMaps = newMapHold()
 	held := m.holdMaps
 	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v3"}); err != nil {
 		t.Fatal(err)
 	}
+	<-held.opened // the old file is open
 	m.stickyMapMu.Lock()
 	old := m.stickyMaps["ci/v3"]
 	m.stickyMapMu.Unlock()
@@ -665,7 +666,7 @@ func TestStickyMapsLateAndOld(t *testing.T) {
 	}
 	digest = m.StickyMapDigest(ctx, "ci", "v3")
 	checkStickyMap(t, m, "ci", "v3", digest)
-	close(held)
+	close(held.release)
 	<-old.done
 	if old.err == nil {
 		t.Fatal("the deleted file's map was written")

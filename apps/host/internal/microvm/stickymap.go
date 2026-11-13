@@ -111,11 +111,22 @@ func (m *Manager) startStickyMap(diskID, version, parent string) *stickyMapJob {
 	return job
 }
 
+// mapHold (tests) holds block maps: each says its version on opened once its files are open, then waits for release
+// to close.
+type mapHold struct {
+	opened  chan string
+	release chan struct{}
+}
+
+func newMapHold() *mapHold {
+	return &mapHold{opened: make(chan string, 8), release: make(chan struct{})}
+}
+
 // mapSticky makes a version's map and writes it beside the version, answering its digest. Its base is the map of
 // parent (the version its sandbox's copy came from), else of the newest other version the host holds that has one:
 // only blocks whose extents the version doesn't share with the base's file are read. A version deleted meanwhile gets
-// no map. hold (tests), when set, holds it once its files are open until it is closed.
-func (m *Manager) mapSticky(ctx context.Context, diskID, version, parent string, hold <-chan struct{}) (string, error) {
+// no map. hold (tests), when set, holds it once its files are open.
+func (m *Manager) mapSticky(ctx context.Context, diskID, version, parent string, hold *mapHold) (string, error) {
 	f, base, err := m.openStickyForMap(diskID, version, parent)
 	if err != nil {
 		return "", err
@@ -125,7 +136,8 @@ func (m *Manager) mapSticky(ctx context.Context, diskID, version, parent string,
 		defer base.File.Close()
 	}
 	if hold != nil {
-		<-hold
+		hold.opened <- version
+		<-hold.release
 	}
 	start := time.Now()
 	bm, st, err := blockmap.Make(ctx, f, base)
