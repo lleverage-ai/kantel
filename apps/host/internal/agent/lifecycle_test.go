@@ -895,3 +895,62 @@ func TestAFloorThatIsNotSavedFailsTheCallUntilARetrySavesIt(t *testing.T) {
 		t.Fatalf("after a restart, a stale update replaced a newer clear: %+v", e)
 	}
 }
+
+// stickyTier is a lifecycleTier with sticky disks, whose block maps are made when the test says.
+type stickyTier struct {
+	*lifecycleTier
+	waiting chan struct{}
+	mapped  chan string
+}
+
+func (f *stickyTier) CommitSticky(_ context.Context, p proto.StickyCommitParams) (proto.StickyCommitResult, error) {
+	return proto.StickyCommitResult{Version: p.Version}, nil
+}
+
+func (f *stickyTier) StickyMapDigest(_ context.Context, _, _ string) string {
+	close(f.waiting)
+	return <-f.mapped
+}
+
+func (f *stickyTier) DeleteSticky(proto.StickyDeleteParams) error { return nil }
+
+func (f *stickyTier) StickyHoldings() []proto.StickyDiskHolding { return nil }
+
+// A commit waits for its version's block map outside the sandbox's lifecycle lock: the sandbox's other calls (another
+// commit, a stop) don't wait for a slow map. The answer has the map's digest.
+func TestStickyCommitWaitsForItsMapOutsideTheLock(t *testing.T) {
+	tier := &stickyTier{lifecycleTier: newLifecycleTier(), waiting: make(chan struct{}), mapped: make(chan string)}
+	h := newLifecycleHost(t, tier.lifecycleTier)
+	h.tiers[microvm.Tier] = tier
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan proto.StickyCommitResult, 1)
+	go func() {
+		raw, _ := json.Marshal(proto.StickyCommitParams{SandboxID: "sbx_1", DiskID: "ci", Version: "v1"})
+		res, err := h.Call(context.Background(), proto.MethodStickyCommit, raw, nil)
+		if err != nil {
+			t.Error(err)
+		}
+		r, _ := res.(proto.StickyCommitResult)
+		answered <- r
+	}()
+	// While the commit waits for its map, the sandbox's lifecycle calls go on.
+	<-tier.waiting
+	done := make(chan error, 1)
+	go func() {
+		done <- call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: protectedEgress(1, "b.example.com")})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a lifecycle call waited for a commit's map")
+	}
+	tier.mapped <- "sha256:abc"
+	if res := <-answered; res.MapDigest != "sha256:abc" || res.Version != "v1" {
+		t.Fatalf("answer %+v", res)
+	}
+}

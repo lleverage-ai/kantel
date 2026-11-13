@@ -412,6 +412,16 @@ type Manager struct {
 	// stickyCommits are the versions being committed now, by "<disk>/<version>" (reserveStickyVersion). Guarded by
 	// stickyMu.
 	stickyCommits map[string]bool
+	// stickyMaps are the sticky disk versions' block maps being made now, by "<disk>/<version>" (startStickyMap), and
+	// stickyDigests each map's digest as last read (stickyMapDigest). Guarded by stickyMapMu.
+	stickyMapMu   sync.Mutex
+	stickyMaps    map[string]*stickyMapJob
+	stickyDigests map[string]stickyDigest
+	// stickyAnswering are the versions published whose commit isn't answered yet, by "<disk>/<version>", each until
+	// when it is kept from a prune at most (pinStickyAnswer). Guarded by stickyMu.
+	stickyAnswering map[string]time.Time
+	// holdMaps (tests), when set, holds every block map started meanwhile once its files are open.
+	holdMaps *mapHold
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -671,6 +681,8 @@ func New(cfg Config) (*Manager, error) {
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	m.spool.adopt(spoolLinks(cfg.Root))
+	// Block maps of the sticky disk versions committed before them.
+	m.mapOldSticky(m.bg)
 	return m, nil
 }
 

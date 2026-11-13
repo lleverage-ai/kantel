@@ -155,6 +155,69 @@ describe("sticky disks", () => {
 		expect((await tom.getStickyDisk(disk.id)).head).toBe(head.id);
 	});
 
+	it("keeps a version's block map digest from its commit, or from its own host's report once the map is made", async () => {
+		let reports: BackendStickyHoldings[] = [];
+		let digest: string | undefined = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		const tom = setUp(true, (backend) => ({
+			...backend,
+			stickyHoldings: async () => reports,
+			async commitStickyDisk(sandboxId, diskId, version) {
+				const committed = await (backend.commitStickyDisk?.(sandboxId, diskId, version) ?? Promise.reject(new Error()));
+				return digest === undefined ? committed : { ...committed, mapDigest: digest };
+			},
+		}));
+		const disk = await tom.createStickyDisk({ name: "cache", sizeGb: 10 });
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "cache", path: "/cache" }],
+			wait: true,
+		});
+		const mapped = await tom.commitStickyDisk(sandbox.id, disk.id);
+		digest = undefined;
+		const late = await tom.commitStickyDisk(sandbox.id, disk.id);
+		const stored = async (id: string) => (await tom.api.store.stickyDiskVersions.get(id))?.mapDigest;
+		expect(await stored(mapped.id)).toBe("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+		expect(await stored(late.id)).toBeUndefined();
+		// Another host's word on a version isn't taken, nor a digest for one that has its own already.
+		const versions = [mapped.id, late.id];
+		reports = [
+			{
+				hostId: "host_other",
+				reportedAt: tom.clock.now,
+				disks: [
+					{
+						diskId: disk.id,
+						versions,
+						mapDigests: { [late.id]: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+					},
+				],
+			},
+		];
+		tom.clock.now += 11 * 60_000;
+		await tom.api.service.sweep();
+		expect(await stored(late.id)).toBeUndefined();
+		reports = [
+			{
+				hostId: late.hostId,
+				reportedAt: tom.clock.now,
+				disks: [
+					{
+						diskId: disk.id,
+						versions,
+						mapDigests: {
+							[mapped.id]: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+							[late.id]: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						},
+					},
+				],
+			},
+		];
+		tom.clock.now += 11 * 60_000;
+		await tom.api.service.sweep();
+		expect(await stored(late.id)).toBe("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+		expect(await stored(mapped.id)).toBe("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+	});
+
 	it("refuses a disk at a system path, twice, inside another, or on an isolate", async () => {
 		const tom = setUp();
 		await tom.createStickyDisk({ name: "one", sizeGb: 10 });
@@ -325,6 +388,31 @@ for (const each of STORES) {
 			expect(await store.stickyDiskWrites.forget(last?.id ?? "")).toBe(false);
 			expect(await store.stickyDiskWrites.forget(first?.id ?? "")).toBe(true);
 			expect((await store.stickyDiskVersions.list({ diskId: "sdk_a" })).map((each) => each.id)).toEqual([last?.id]);
+		});
+
+		it("keep a version's block map digest, given with its commit or after", async () => {
+			const store = await open();
+			await store.stickyDiskWrites.create(disk("sdk_a"));
+			await store.stickyDiskWrites.commit(
+				{
+					...version("sdv_1", "sdk_a"),
+					mapDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				},
+				3,
+			);
+			await store.stickyDiskWrites.commit(version("sdv_2", "sdk_a"), 4);
+			expect((await store.stickyDiskVersions.get("sdv_1"))?.mapDigest).toBe(
+				"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			);
+			expect((await store.stickyDiskVersions.get("sdv_2"))?.mapDigest).toBeUndefined();
+			await store.stickyDiskVersions.update("sdv_2", (current) => ({
+				...current,
+				mapDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			}));
+			expect(await store.stickyDiskVersions.get("sdv_2")).toMatchObject({
+				seq: 2,
+				mapDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			});
 		});
 
 		if (each.kind !== undefined) {

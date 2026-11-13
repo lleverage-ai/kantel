@@ -44,7 +44,7 @@ import {
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
-import { isolateRuntime, parseMountsAt, parseStartPhases, withoutAdmission } from "./facts.ts";
+import { isMapDigest, isolateRuntime, parseMountsAt, parseStartPhases, withoutAdmission } from "./facts.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -1576,6 +1576,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				hostId,
 				sizeBytes: Number.isSafeInteger(result.sizeBytes) ? result.sizeBytes : 0,
 				allocatedBytes: Number.isSafeInteger(result.allocatedBytes) ? result.allocatedBytes : 0,
+				...(isMapDigest(result.mapDigest) ? { mapDigest: result.mapDigest } : {}),
 			};
 		},
 		async deleteStickyDisk(diskId) {
@@ -1600,10 +1601,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(report.stickyDisks === undefined
 					? {}
 					: {
-							disks: report.stickyDisks.map((holding) => ({
-								diskId: holding.diskId,
-								versions: holding.versions.map((held) => held.version),
-							})),
+							disks: report.stickyDisks.map((holding) => {
+								const mapDigests = Object.fromEntries(
+									holding.versions.flatMap((held) =>
+										held.mapDigest === undefined ? [] : [[held.version, held.mapDigest] as const],
+									),
+								);
+								return {
+									diskId: holding.diskId,
+									versions: holding.versions.map((held) => held.version),
+									...(Object.keys(mapDigests).length === 0 ? {} : { mapDigests }),
+								};
+							}),
 						}),
 			}));
 		},

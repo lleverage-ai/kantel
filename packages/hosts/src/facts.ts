@@ -200,7 +200,15 @@ function capacity(value: unknown): HostCapacity {
 	};
 }
 
-/** A capacity's sticky disk holdings: left out, not refused, when they aren't shaped as holdings. */
+/** Whether `value` is a block map's digest: `sha256:` and 64 lowercase hex digits. */
+export function isMapDigest(value: unknown): value is string {
+	return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+/**
+ * A capacity's sticky disk holdings: left out, not refused, when they aren't shaped as holdings. A version's map digest
+ * that isn't one is left out.
+ */
 function stickyHoldings(value: unknown): { stickyDisks?: HostStickyHolding[] } {
 	if (!Array.isArray(value)) return {};
 	const holdings: HostStickyHolding[] = [];
@@ -216,7 +224,12 @@ function stickyHoldings(value: unknown): { stickyDisks?: HostStickyHolding[] } {
 			) {
 				return {};
 			}
-			versions.push({ version: version.version, allocatedBytes: version.allocatedBytes, at: version.at });
+			versions.push({
+				version: version.version,
+				allocatedBytes: version.allocatedBytes,
+				at: version.at,
+				...(isMapDigest(version.mapDigest) ? { mapDigest: version.mapDigest } : {}),
+			});
 		}
 		holdings.push({ diskId: entry.diskId, versions });
 	}

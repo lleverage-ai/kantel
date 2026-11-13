@@ -947,6 +947,9 @@ type StickyCommitResult struct {
 	Version        string `json:"version"`
 	SizeBytes      int64  `json:"sizeBytes"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
+	// MapDigest is the digest ("sha256:" and hex) of the version's block map (docs/design/disk-store.md, 2b): absent
+	// from a host from before maps, or when the map took too long to wait for (a capacity report gives it later).
+	MapDigest string `json:"mapDigest,omitempty"`
 	// ThawError, when set, is why the guest couldn't be told to thaw the disk after its copy was made (while frozen,
 	// so the version is whole): the guest thaws it by itself once its freeze's lease lapses.
 	ThawError string `json:"thawError,omitempty"`
@@ -965,12 +968,13 @@ type StickyDiskHolding struct {
 	Versions []StickyVersionHolding `json:"versions"`
 }
 
-// StickyVersionHolding is one version a host holds: the bytes it takes on the host's disk, and when it was made there
-// (Unix milliseconds).
+// StickyVersionHolding is one version a host holds: the bytes it takes on the host's disk, when it was made there
+// (Unix milliseconds), and its block map's digest (absent while it has none, or from a host from before maps).
 type StickyVersionHolding struct {
 	Version        string `json:"version"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
 	At             int64  `json:"at"`
+	MapDigest      string `json:"mapDigest,omitempty"`
 }
 
 // TemplateBoot is how a sandbox made from a template boots.

@@ -2479,21 +2479,40 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * keeps only its newest few), so a disk lists the versions there are. Never the disk's head, which a later commit
 	 * replaces; never on the word of a host that doesn't say what it holds (absent isn't none); and never a version
 	 * committed within `STICKY_REPORT_GRACE_MS` of the report, which may have been measured before it.
+	 *
+	 * A version without its block map's digest (its map took longer than its commit, or it was committed before maps)
+	 * gets the one its host reports.
 	 */
 	async function forgetDroppedStickyVersions(disks: readonly StoredStickyDisk[]): Promise<void> {
 		if (backend.stickyHoldings === undefined) return;
 		const live = disks.filter((disk) => disk.deletedAt === undefined);
 		if (live.length === 0) return;
-		const reports = new Map<string, { readonly reportedAt: number; readonly held: ReadonlySet<string> }>();
+		const reports = new Map<
+			string,
+			{ readonly reportedAt: number; readonly held: ReadonlySet<string>; readonly digests: ReadonlyMap<string, string> }
+		>();
 		for (const report of await backend.stickyHoldings()) {
 			if (report.disks === undefined) continue;
 			const held = new Set(report.disks.flatMap((disk) => disk.versions.map((version) => `${disk.diskId}/${version}`)));
-			reports.set(report.hostId, { reportedAt: report.reportedAt, held });
+			const digests = new Map(
+				report.disks.flatMap((disk) =>
+					Object.entries(disk.mapDigests ?? {}).map(
+						([version, digest]) => [`${disk.diskId}/${version}`, digest] as const,
+					),
+				),
+			);
+			reports.set(report.hostId, { reportedAt: report.reportedAt, held, digests });
 		}
 		if (reports.size === 0) return;
 		for (const disk of live) {
 			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
 				const report = reports.get(version.hostId);
+				const digest = report?.digests.get(`${disk.id}/${version.id}`);
+				if (version.mapDigest === undefined && digest !== undefined) {
+					await store.stickyDiskVersions.update(version.id, (current) =>
+						current.mapDigest === undefined ? { ...current, mapDigest: digest } : undefined,
+					);
+				}
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
 				if (report.held.has(`${disk.id}/${version.id}`)) continue;
@@ -10011,6 +10030,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				sandboxId: sandbox.id,
 				sizeBytes: committed.sizeBytes,
 				allocatedBytes: committed.allocatedBytes,
+				...(committed.mapDigest === undefined ? {} : { mapDigest: committed.mapDigest }),
 				seq: 0,
 				createdAt: now(),
 			};
