@@ -101,6 +101,25 @@ The body takes `size` or `resources`, and `image`, as a [create](/sandboxes/life
 
 Where the files go: the isolate's own host makes the microVM when it runs microVMs too and has room, and moves the files from its own store into the microVM, never through Kantel. Otherwise the microVM goes on another host the sandbox may use, and Kantel moves the files there, up to 20,000 files and 256 MiB. Past that the upgrade is refused (`not_supported`), as soon as the files are listed and before a microVM is made, and the isolate stays as it is. If deleting the isolate from its old host fails once the microVM runs, Kantel deletes it when that host next connects.
 
+### Upgrade into a snapshot
+
+An isolate can become a microVM made from a [snapshot](/snapshots/saved/) of a microVM, such as a saved one with a repository cloned and its dependencies installed, instead of a new one. A conversation can then start as an isolate, which starts in milliseconds, and move up to the prepared machine only when it first needs `git` or a package manager. `from` takes the snapshot's ID or a saved snapshot's name, as a create's `from` does:
+
+```sh
+kantel upgrade sbx_4kq9x2mt --from monorepo-ci
+```
+
+```json
+{ "from": "monorepo-ci" }
+```
+
+The microVM is what a [create from the snapshot](/sandboxes/lifecycle/#create-a-sandbox) would make: its disk, and its memory where the snapshot holds it, restored before the isolate's files arrive. The sandbox keeps everything an upgrade keeps, and records the snapshot in `upgradedFrom.snapshotId`; it counts among the snapshot's `uses`.
+
+- **Files.** The isolate's `/workspace` files go where they always do, `/home/user/workspace`, with `/workspace` a link to them. The snapshot's own files elsewhere are untouched. Where the snapshot already has files in `/home/user/workspace`, the isolate's are laid over them: where both have a file the isolate's wins, a directory in both keeps the snapshot's files the isolate doesn't have, and nothing of the snapshot's is deleted. A snapshot whose `/workspace` is a directory with files in it fails the upgrade, the isolate left as it was, since `/workspace` has to become the link.
+- **Its machine** is the snapshot's when the snapshot holds memory, and another `size` or `resources` is refused, as for a create. It keeps the snapshot's disk, so `resources.diskGb` is refused. A saved snapshot's `minMemoryMb` holds.
+- **Refused as a create from it is,** before anything changes: a snapshot the account may not use or that doesn't exist (`not_found`), one that isn't ready (`conflict`), and one of an isolate (`invalid`). The microVM goes only on the host that holds the snapshot, so one on a host the sandbox may not use, or that is offline, is `unavailable` (`host_unavailable`). A snapshot deleted while the upgrade begins is `conflict`, the isolate as it was.
+- **Which host.** When the isolate's own host holds the snapshot, it makes the microVM and moves the files itself; a host whose `kantel-host` is too old to upgrade into a snapshot refuses it (`not_supported`), and the upgrade doesn't go elsewhere. When another host holds it, the microVM is made there and Kantel moves the files to it, with the limits above.
+
 ### Upgrade by itself
 
 Create an isolate with `autoUpgrade` and it upgrades itself the first time a command needs a microVM, then runs that command again there, once:
@@ -114,6 +133,18 @@ kantel new --auto-upgrade
 ```
 
 A command that needs a microVM says so in its `needsMicrovm` (`{"command": "tar", "reason": "..."}`), with exit code 127. Without `autoUpgrade`, that is its answer and the isolate stays one. With it, the answer is the command run again in the microVM: its `rerunOf` names the first, whose `rerunAs` names it. `PATCH /v1/sandboxes/{id}` with `{"autoUpgrade": true}` turns it on later. `kantel exec` follows the command run again by itself, and says so.
+
+`autoUpgradeFrom` names a snapshot for it to [upgrade into](#upgrade-into-a-snapshot), such as the project's prepared one:
+
+```sh
+kantel new --auto-upgrade-from monorepo-ci
+```
+
+```json
+{ "autoUpgrade": true, "autoUpgradeFrom": "monorepo-ci" }
+```
+
+It is checked when it is set, and read again at the upgrade, so a saved snapshot saved again under the name (`replace`) gives its newest. One deleted by then fails the upgrade, and the command's answer stands, saying why. `PATCH` sets it later, and `{"autoUpgradeFrom": null}` goes back to a new microVM. `kantel new --auto-upgrade-from` turns `autoUpgrade` on as well.
 
 To see it happen, make an isolate that upgrades itself and open [`kantel ssh`](/sandboxes/ssh/#ssh-to-an-isolate) to it, a pseudo-shell at first. Type a command an isolate can't run: the sandbox becomes a microVM, the command runs again there, and the session becomes SSH on the microVM, in the same directory:
 

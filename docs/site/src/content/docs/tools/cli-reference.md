@@ -112,7 +112,7 @@ kantel new [flags]
 
 Also: `kantel create`, `kantel sandbox create`, `kantel sandbox new`.
 
---auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that command again there, once. Without it the command says it needs a microVM, and the isolate stays one.
+--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that command again there, once. Without it the command says it needs a microVM, and the isolate stays one. --auto-upgrade-from names a microVM's snapshot to upgrade into (kantel upgrade --from does the same by hand), such as one with a project cloned and installed: a saved name is read again at the upgrade, so saving the snapshot again under it gives the newest.
 
 --env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.
 
@@ -146,6 +146,7 @@ Give --env &lt;env&gt; more than once for several environments, in order (up to 
 | `--on <host>` | Run it on this host, its name or ID (kantel hosts list shows them) |
 | `--host-label <k=v>` | Run it only on a host with this label; repeat for more |
 | `--auto-upgrade` | An isolate that becomes a microVM by itself when a command needs one, and runs it again |
+| `--auto-upgrade-from <snapshot>` | With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name |
 | `--no-wait` | Answer at once rather than once it runs |
 
 ```sh
@@ -285,6 +286,8 @@ kantel upgrade <id> [flags]
 
 Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the isolate is left as it was. Commands sent meanwhile wait for it.
 
+--from starts the microVM from a snapshot of a microVM, as kantel new --from does, such as one with a repository cloned and its dependencies installed. The isolate's files are laid over what the snapshot has in /home/user/workspace: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with --disk.
+
 | Flag | What it does |
 | --- | --- |
 | `--size <size>` | A microVM's named size, such as small, default or large (kantel sizes lists the hosts') |
@@ -292,6 +295,7 @@ Upgrade when a command says it needs a microVM, or before work an isolate can't 
 | `--memory <GB>` | The microVM's memory in GB, in place of --size; with --vcpus |
 | `--disk <GB>` | The microVM's disk in GB (default: its size's) |
 | `--image <image>` | The microVM's base image |
+| `--from <snapshot>` | Start the microVM from a microVM's snapshot, its ID or a saved one's name |
 | `--wait` | Answer once the microVM runs (the default) |
 | `--no-wait` | Answer at once rather than once it runs |
 
@@ -301,6 +305,9 @@ kantel upgrade sbx_4kq9x2mt
 
 # A bigger one
 kantel upgrade sbx_4kq9x2mt --vcpus 8 --memory 16
+
+# One from a saved snapshot with the project in it
+kantel upgrade sbx_4kq9x2mt --from monorepo-ci
 ```
 
 ### kantel fork

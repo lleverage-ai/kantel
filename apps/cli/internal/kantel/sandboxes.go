@@ -348,11 +348,15 @@ func newCommand() *cli.Command {
 			{Name: "on", Type: cli.String, Value: "<host>", Description: "Run it on this host, its name or ID (kantel hosts list shows them)"},
 			{Name: "host-label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "Run it only on a host with this label; repeat for more"},
 			{Name: "auto-upgrade", Type: cli.Bool, Description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again"},
+			{Name: "auto-upgrade-from", Type: cli.String, Value: "<snapshot>", Description: "With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name"},
 			noWaitFlag,
 		},
 		Details: "--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command\n" +
 			"needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that\n" +
-			"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n\n" +
+			"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n" +
+			"--auto-upgrade-from names a microVM's snapshot to upgrade into (kantel upgrade --from does the same by\n" +
+			"hand), such as one with a project cloned and installed: a saved name is read again at the upgrade, so\n" +
+			"saving the snapshot again under it gives the newest.\n\n" +
 			"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 			"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
 			"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
@@ -448,11 +452,13 @@ func runNew(c *cli.Context) error {
 	if len(hosts) > 0 && c.Bool("no-wait") {
 		return cli.Usage("--host needs the sandbox running")
 	}
-	if c.Bool("auto-upgrade") {
+	into := StrPtr(c, "auto-upgrade-from")
+	if c.Bool("auto-upgrade") || into != nil {
 		if typ == "microvm" {
 			return cli.Usage("--auto-upgrade is an isolate's: a microVM is one already")
 		}
 		body.AutoUpgrade = api.Ptr(true)
+		body.AutoUpgradeFrom = into
 	}
 	// A variable has an =; an environment's name or ID never does.
 	var vars, environments []string
@@ -712,6 +718,7 @@ func upgradeCommand() *cli.Command {
 			{Name: "memory", Type: cli.String, Value: "<GB>", Description: "The microVM's memory in GB, in place of --size; with --vcpus"},
 			{Name: "disk", Type: cli.String, Value: "<GB>", Description: "The microVM's disk in GB (default: its size's)"},
 			{Name: "image", Type: cli.String, Value: "<image>", Description: "The microVM's base image"},
+			{Name: "from", Type: cli.String, Value: "<snapshot>", Description: "Start the microVM from a microVM's snapshot, its ID or a saved one's name"},
 			{Name: "wait", Type: cli.Bool, Description: "Answer once the microVM runs (the default)"},
 			noWaitFlag,
 		},
@@ -719,10 +726,15 @@ func upgradeCommand() *cli.Command {
 			"packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
 			"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
 			"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
-			"isolate is left as it was. Commands sent meanwhile wait for it.",
+			"isolate is left as it was. Commands sent meanwhile wait for it.\n\n" +
+			"--from starts the microVM from a snapshot of a microVM, as kantel new --from does, such as one with a\n" +
+			"repository cloned and its dependencies installed. The isolate's files are laid over what the snapshot has\n" +
+			"in /home/user/workspace: where both have a file the isolate's wins, and nothing of the snapshot's is\n" +
+			"deleted. It keeps the snapshot's disk, so not with --disk.",
 		Examples: []cli.Example{
 			{What: "Make an isolate a microVM of the default size", Line: "kantel upgrade sbx_4kq9x2mt"},
 			{What: "A bigger one", Line: "kantel upgrade sbx_4kq9x2mt --vcpus 8 --memory 16"},
+			{What: "One from a saved snapshot with the project in it", Line: "kantel upgrade sbx_4kq9x2mt --from monorepo-ci"},
 		},
 		Run: func(c *cli.Context) error {
 			vcpus, err := Whole(c, "vcpus", 1)
@@ -751,7 +763,10 @@ func upgradeCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			body := api.UpgradeSandboxBody{Image: StrPtr(c, "image"), Wait: api.Ptr(!c.Bool("no-wait"))}
+			body := api.UpgradeSandboxBody{Image: StrPtr(c, "image"), From: StrPtr(c, "from"), Wait: api.Ptr(!c.Bool("no-wait"))}
+			if disk != nil && body.From != nil {
+				return cli.Usage("a microVM made from a snapshot keeps the snapshot's disk: leave out --disk")
+			}
 			if body.Size, err = sizeOf(c); err != nil {
 				return err
 			}

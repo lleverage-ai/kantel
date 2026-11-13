@@ -6,7 +6,7 @@ import (
 )
 
 // Upgrading an isolate to a microVM (the upgrade part of packages/cli/test/cli.test.ts): kantel upgrade, kantel new
-// --auto-upgrade, and what kantel exec says of a command that needed a microVM.
+// --auto-upgrade and --auto-upgrade-from, and what kantel exec says of a command that needed a microVM.
 
 func TestUpgradeSendsWhatWasAsked(t *testing.T) {
 	microvm := func(call) any {
@@ -28,7 +28,14 @@ func TestUpgradeSendsWhatWasAsked(t *testing.T) {
 	got, _ = json.Marshal(r.Calls[0].Body)
 	eq(t, "shaped body", string(got), `{"resources":{"diskGb":60,"memoryMb":16384,"vcpus":8},"wait":false}`)
 
+	r = run(t, []string{"upgrade", "sbx_test1", "--from", "monorepo-ci"},
+		opts{routes: routes{"POST /v1/sandboxes/sbx_test1/upgrade": microvm}})
+	eq(t, "exit", r.Code, 0)
+	got, _ = json.Marshal(r.Calls[0].Body)
+	eq(t, "from body", string(got), `{"from":"monorepo-ci","wait":true}`)
+
 	for _, argv := range [][]string{
+		{"upgrade", "sbx_test1", "--from", "monorepo-ci", "--disk", "60"},
 		{"upgrade", "sbx_test1", "--vcpus", "2"},
 		{"upgrade", "sbx_test1", "--size", "large", "--vcpus", "2", "--memory", "4"},
 		{"upgrade", "sbx_test1", "--wait", "--no-wait"},
@@ -47,6 +54,15 @@ func TestNewAutoUpgrade(t *testing.T) {
 	eq(t, "body", string(got), `{"autoUpgrade":true,"wait":true}`)
 	r = run(t, []string{"new", "--type", "microvm", "--auto-upgrade"}, opts{routes: made})
 	eq(t, "microvm", r.Code, 2)
+	eq(t, "calls", len(r.Calls), 0)
+
+	// Naming what it upgrades into turns it on.
+	r = run(t, []string{"new", "--auto-upgrade-from", "monorepo-ci"}, opts{routes: made})
+	eq(t, "exit", r.Code, 0)
+	got, _ = json.Marshal(r.Calls[0].Body)
+	eq(t, "into body", string(got), `{"autoUpgrade":true,"autoUpgradeFrom":"monorepo-ci","wait":true}`)
+	r = run(t, []string{"new", "--type", "microvm", "--auto-upgrade-from", "monorepo-ci"}, opts{routes: made})
+	eq(t, "microvm into", r.Code, 2)
 	eq(t, "calls", len(r.Calls), 0)
 }
 

@@ -853,6 +853,28 @@ describe("upgrading an isolate from MCP", () => {
 		expect(upgrade?.description).toContain("needs a microVM");
 	});
 
+	it("upgrades into a snapshot, by hand and by itself", async () => {
+		const { mcp, calls } = server();
+		resultOf(
+			await mcp.handle(
+				request(1, "tools/call", {
+					name: "sandbox_upgrade",
+					arguments: { sandboxId: "sbx_mcp1", from: "monorepo-ci" },
+				}),
+			),
+		);
+		resultOf(
+			await mcp.handle(
+				request(2, "tools/call", {
+					name: "sandbox_create",
+					arguments: { type: "isolate", autoUpgrade: true, autoUpgradeFrom: "monorepo-ci" },
+				}),
+			),
+		);
+		expect(calls[0]?.body).toEqual({ from: "monorepo-ci", wait: true });
+		expect(calls[1]?.body).toMatchObject({ autoUpgrade: true, autoUpgradeFrom: "monorepo-ci" });
+	});
+
 	it("tells the agent a command needs a microVM, and what Kantel did when it upgraded the sandbox itself", () => {
 		const needs = commandResult({
 			...COMMAND,

@@ -430,6 +430,12 @@ const TOOLS: readonly Tool[] = [
 					"For an isolate: when a command needs a microVM, Kantel upgrades it (as sandbox_upgrade does) and runs the " +
 					"command again there, once, answering that run. Use it when a task may turn out to need more than a shell.",
 			},
+			autoUpgradeFrom: {
+				type: "string",
+				description:
+					"With autoUpgrade: the microVM's snapshot it upgrades into (its ID, or a saved snapshot's name), such as one " +
+					"with the project cloned and installed.",
+			},
 		}),
 		annotations: { title: "Create a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
 		async call(args, { client, account, signal }) {
@@ -456,6 +462,7 @@ const TOOLS: readonly Tool[] = [
 					env: optionalStrings(args, "env"),
 					host: optionalText(args, "host"),
 					...(optionalBoolean(args, "autoUpgrade") === true ? { autoUpgrade: true } : {}),
+					autoUpgradeFrom: optionalText(args, "autoUpgradeFrom"),
 					wait: true,
 				},
 				{ signal },
@@ -539,6 +546,12 @@ const TOOLS: readonly Tool[] = [
 				sandboxId,
 				size: { type: "string", enum: SIZES, description: "The microVM's size; default the deployment's." },
 				image: { type: "string", description: "The microVM's base image; default the deployment's." },
+				from: {
+					type: "string",
+					description:
+						"Start the microVM from this snapshot of a microVM (its ID, or a saved snapshot's name), such as one with " +
+						"the project cloned and installed; the isolate's files are laid over its /home/user/workspace.",
+				},
 			},
 			["sandboxId"],
 		),
@@ -551,7 +564,12 @@ const TOOLS: readonly Tool[] = [
 		async call(args, { client, signal }) {
 			const sandbox = await client.upgradeSandbox(
 				text(args, "sandboxId"),
-				{ size: optionalChoice(args, "size", SIZES), image: optionalText(args, "image"), wait: true },
+				{
+					size: optionalChoice(args, "size", SIZES),
+					image: optionalText(args, "image"),
+					from: optionalText(args, "from"),
+					wait: true,
+				},
 				{ signal, idempotencyKey: crypto.randomUUID() },
 			);
 			return json(

@@ -2022,12 +2022,21 @@ const SECTIONS: readonly Section[] = [
 						type: "boolean",
 						description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again",
 					},
+					"auto-upgrade-from": {
+						type: "string",
+						value: "<snapshot>",
+						description:
+							"With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name",
+					},
 					"no-wait": noWait,
 				},
 				details:
 					"--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command\n" +
 					"needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that\n" +
-					"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n\n" +
+					"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n" +
+					"--auto-upgrade-from names a microVM's snapshot to upgrade into (kantel upgrade --from does the same by\n" +
+					"hand), such as one with a project cloned and installed: a saved name is read again at the upgrade, so\n" +
+					"saving the snapshot again under it gives the newest.\n\n" +
 					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
 					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
 					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
@@ -2076,7 +2085,9 @@ const SECTIONS: readonly Section[] = [
 						// one that holds its sandbox's memory, which has that sandbox's machine, before it makes anything.
 					}
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
-					if (ctx.boolean("auto-upgrade") && type === "microvm") {
+					const into = ctx.string("auto-upgrade-from");
+					const autoUpgrade = ctx.boolean("auto-upgrade") || into !== undefined;
+					if (autoUpgrade && type === "microvm") {
 						throw new UsageError("--auto-upgrade is an isolate's: a microVM is one already");
 					}
 					// A variable has an =; an environment's name or ID never does.
@@ -2110,7 +2121,8 @@ const SECTIONS: readonly Section[] = [
 						),
 						host: ctx.string("on"),
 						hostLabels: pairs(ctx.list("host-label"), "--host-label"),
-						...(ctx.boolean("auto-upgrade") ? { autoUpgrade: true } : {}),
+						...(autoUpgrade ? { autoUpgrade: true } : {}),
+						...(into === undefined ? {} : { autoUpgradeFrom: into }),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
@@ -2255,6 +2267,11 @@ const SECTIONS: readonly Section[] = [
 					},
 					disk: { type: "string", value: "<GB>", description: "The microVM's disk in GB (default: its size's)" },
 					image: { type: "string", value: "<image>", description: "The microVM's base image" },
+					from: {
+						type: "string",
+						value: "<snapshot>",
+						description: "Start the microVM from a microVM's snapshot, its ID or a saved one's name",
+					},
 					wait: { type: "boolean", description: "Answer once the microVM runs (the default)" },
 					"no-wait": noWait,
 				},
@@ -2263,7 +2280,11 @@ const SECTIONS: readonly Section[] = [
 					"packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
 					"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
 					"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
-					"isolate is left as it was. Commands sent meanwhile wait for it.",
+					"isolate is left as it was. Commands sent meanwhile wait for it.\n\n" +
+					"--from starts the microVM from a snapshot of a microVM, as kantel new --from does, such as one with a\n" +
+					"repository cloned and its dependencies installed. The isolate's files are laid over what the snapshot has\n" +
+					"in /home/user/workspace: where both have a file the isolate's wins, and nothing of the snapshot's is\n" +
+					"deleted. It keeps the snapshot's disk, so not with --disk.",
 				async run(ctx) {
 					const vcpus = whole(ctx.string("vcpus"), "--vcpus");
 					const memory = ctx.string("memory");
@@ -2278,6 +2299,10 @@ const SECTIONS: readonly Section[] = [
 					}
 					if (ctx.boolean("wait") && ctx.boolean("no-wait")) throw new UsageError("give --wait or --no-wait, not both");
 					const diskGb = whole(ctx.string("disk"), "--disk");
+					const from = ctx.string("from");
+					if (from !== undefined && diskGb !== undefined) {
+						throw new UsageError("a microVM made from a snapshot keeps the snapshot's disk: leave out --disk");
+					}
 					const sandbox = await (await ctx.client()).upgradeSandbox(ctx.arg(0), {
 						size: sizeOf(ctx.string("size")),
 						...(vcpus === undefined && diskGb === undefined
@@ -2289,6 +2314,7 @@ const SECTIONS: readonly Section[] = [
 									},
 								}),
 						image: ctx.string("image"),
+						...(from === undefined ? {} : { from }),
 						wait: !ctx.boolean("no-wait"),
 					});
 					ctx.emit(sandbox, () =>
