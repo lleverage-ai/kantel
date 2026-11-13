@@ -1064,6 +1064,8 @@ export interface DiskHolderWrites {
  * - `forget` deletes a version's record only while it isn't its disk's head, so the head always has its version, and,
  *   given `keep`, only while `keep` passes over its holders as they are when it lands: a holder recorded meanwhile
  *   (`DiskHolderWrites.reconcile` changes the version's record as it records one) means it reads them again.
+ * - `pool` gives a sandbox's disks its pool, all of them or none: those with none get it only while every one of them
+ *   still has none or that pool, so a set refused for one disk in another pool leaves no other with its pool.
  */
 export interface StickyDiskWrites {
 	/** Inserts `disk` and claims its name in its account; false, writing neither, when the name or the ID is taken. */
@@ -1083,6 +1085,15 @@ export interface StickyDiskWrites {
 	 * it given its holders (`StoredDiskHolder`). Answers whether it is gone, false leaving it as it was.
 	 */
 	forget(id: string, keep?: (holders: readonly StoredDiskHolder[]) => boolean): Promise<boolean>;
+	/**
+	 * Gives each of the disks `ids` with no pool yet `poolId`, in one write, only while none is in another pool (a
+	 * missing or tombstoned one is passed over). Answers a disk in another pool and that pool, writing nothing, or
+	 * undefined once every one is in `poolId`.
+	 */
+	pool(
+		ids: readonly string[],
+		poolId: string,
+	): Promise<{ readonly diskId: string; readonly poolId: string } | undefined>;
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -1222,6 +1233,18 @@ function memoryStickyDiskWrites(
 			if (keep?.(memoryHoldersOf(holders, version)) === true) return false;
 			versions.records.delete(id);
 			return true;
+		},
+		async pool(ids, poolId) {
+			const live = ids.flatMap((id) => {
+				const disk = disks.records.get(id);
+				return disk === undefined || disk.deletedAt !== undefined ? [] : [disk];
+			});
+			const other = live.find((disk) => disk.poolId !== undefined && disk.poolId !== poolId);
+			if (other?.poolId !== undefined) return { diskId: other.id, poolId: other.poolId };
+			for (const disk of live) {
+				if (disk.poolId === undefined) disks.records.set(disk.id, { ...structuredClone(disk), poolId });
+			}
+			return undefined;
 		},
 	};
 }
