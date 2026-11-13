@@ -21,7 +21,7 @@ jobs:
 
 ## How a job gets a runner
 
-1. GitHub sends the App's webhook a `workflow_job` event, `queued`. Kantel checks its signature and records the job if a pool takes it: its labels include the pool's label, and every one of its labels is one the runner has (the pool's label, `self-hosted`, `linux` and `x64`).
+1. GitHub sends the App's webhook a `workflow_job` event, `queued`. Kantel checks its signature and records the job if a pool takes it: its labels include the pool's label, and every one of its labels is one the runner has (the pool's label, `self-hosted`, `linux` and `x64`). A job of a repository the integration or that pool [doesn't serve](#keep-a-pool-to-some-repositories) is recorded as `ignored` and gets no runner.
 2. Kantel makes a microVM from the pool's template, with the pool's vCPUs, memory and disk, on a host it may use.
 3. When the microVM runs, Kantel asks GitHub for a [just-in-time runner](https://docs.github.com/en/rest/actions/self-hosted-runners#create-configuration-for-a-just-in-time-runner-for-an-organization) named after the sandbox, and starts it with that configuration in `KANTEL_RUNNER_JITCONFIG`. The runner takes one job and exits.
 4. GitHub gives the runner a job with those labels. It isn't always the job that called it up: any runner may take any job its labels match. Kantel counts runners against each pool's queue, so the numbers work out.
@@ -98,6 +98,23 @@ It needs an organisation admin (a key with `account:admin`). It makes an API key
 Deleting the integration (`DELETE /v1/github-runners/{id}`) revokes its key, deletes its runners' sandboxes and takes their runners off GitHub. It is hidden at once and kept until every runner has gone, so a host or GitHub that is away doesn't leave one behind.
 
 `scope` is `organization` by default, which needs `runnerGroupId`. With `repository`, runners are registered on each job's repository instead, and the App needs the repository **Administration** permission (read and write).
+
+### Keep a pool to some repositories
+
+A pool is picked by its label alone, so any repository the integration serves can ask for any pool's runners, and the sticky disks and environments that come with them. Give a pool `repositories` to keep it to those repositories' jobs:
+
+```json
+"pools": [
+  { "label": "kantel-8vcpu", "template": "github-runner", "resources": { "vcpus": 8, "memoryMb": 24576 },
+    "stickyDisks": [{ "disk": "ci-cache", "path": "/var/lib/ci" }], "repositories": ["<github org>/app"] },
+  { "label": "public-8vcpu", "template": "github-runner-public", "resources": { "vcpus": 8, "memoryMb": 24576 },
+    "repositories": ["<github org>/oss"] }
+]
+```
+
+A new job of any other repository that asks for the pool's label is listed as `ignored`, with the reason, and gets no runner. The integration's own `repositories`, when set, still applies to every pool. A job already queued when you add the list can still get a runner, so change it when nothing is queued.
+
+This keeps one repository's jobs off another's runners only with `scope: repository`, where each runner is registered on the repository of the job it was made for. With `scope: organization`, a runner joins the runner group, and GitHub may give it any queued job with its labels from any repository in the group, so keep the runner group to the repositories that may share the pools too.
 
 ### 4. Use it
 

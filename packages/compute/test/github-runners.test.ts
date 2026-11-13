@@ -162,6 +162,9 @@ async function setUp(
 		repositories?: string[];
 		scope?: "organization" | "repository";
 		pool?: Partial<RunnerPool>;
+		/** Every pool, in place of `POOL` with `pool`'s changes. */
+		pools?: RunnerPool[];
+		owner?: string;
 	} = {},
 ) {
 	const store = createMemoryStore();
@@ -203,11 +206,11 @@ async function setUp(
 		accountId: "acc_org",
 		name: "ci",
 		appId: 1,
-		owner: "octo-org",
+		owner: options.owner ?? "octo-org",
 		scope: options.scope ?? "organization",
 		...(options.scope === "repository" ? {} : { runnerGroupId: 7 }),
 		...(options.repositories === undefined ? {} : { repositories: options.repositories }),
-		pools: [{ ...POOL, ...options.pool }],
+		pools: options.pools ?? [{ ...POOL, ...options.pool }],
 		enabled: true,
 		keyId: PRINCIPAL.keyId,
 		privateKey: sealed.privateKey,
@@ -939,6 +942,67 @@ describe("GitHub runners", () => {
 		]);
 	});
 
+	it("gives a pool that names its repositories only their jobs, and registers each runner on its job's repository", async () => {
+		const { deliver, sandboxes, runners, github, status } = await setUp({
+			owner: "lleverage-ai",
+			scope: "repository",
+			pools: [
+				{ ...POOL, repositories: ["lleverage-ai/lleverage"] },
+				{ ...POOL, label: "kantel-public-8vcpu", template: "public", repositories: ["Lleverage-AI/Kantel"] },
+			],
+		});
+		const queued = (id: number, repository: string, label: string) =>
+			deliver("workflow_job", {
+				action: "queued",
+				installation: { id: 42 },
+				repository: { full_name: repository },
+				workflow_job: { id, run_id: 900, name: `job ${id}`, labels: [label] },
+			});
+		// kantel asks for lleverage's pool: recorded, ignored, and no runner.
+		expect((await queued(1, "lleverage-ai/kantel", "kantel-8vcpu")).status).toBe(200);
+		expect(sandboxes.sandboxes.size).toBe(0);
+		expect(await status()).toMatchObject({ label: "kantel-8vcpu", queued: 0, starting: 0 });
+		expect(await runners.jobs("ghr_one")).toEqual([
+			expect.objectContaining({
+				id: "1",
+				repository: "lleverage-ai/kantel",
+				pool: "kantel-8vcpu",
+				state: "ignored",
+				reason: "lleverage-ai/kantel isn't one of pool kantel-8vcpu's repositories",
+			}),
+		]);
+		// Its later events don't move it on.
+		await deliver("workflow_job", {
+			action: "in_progress",
+			installation: { id: 42 },
+			repository: { full_name: "lleverage-ai/kantel" },
+			workflow_job: { id: 1, run_id: 900, name: "job 1", labels: ["kantel-8vcpu"], runner_name: "someone-else" },
+		});
+		expect(await runners.jobs("ghr_one")).toEqual([expect.objectContaining({ id: "1", state: "ignored" })]);
+		// lleverage's job gets a runner from its pool, registered on lleverage; kantel's from its own, on kantel.
+		await queued(2, "lleverage-ai/lleverage", "kantel-8vcpu");
+		await queued(3, "lleverage-ai/kantel", "kantel-public-8vcpu");
+		expect(sandboxes.sandboxes.size).toBe(2);
+		sandboxes.boot();
+		await runners.tick();
+		expect(github.registered).toEqual([
+			expect.objectContaining({
+				labels: ["self-hosted", "linux", "x64", "kantel-8vcpu"],
+				scope: { kind: "repository", repository: "lleverage-ai/lleverage" },
+			}),
+			expect.objectContaining({
+				labels: ["self-hosted", "linux", "x64", "kantel-public-8vcpu"],
+				scope: { kind: "repository", repository: "lleverage-ai/kantel" },
+			}),
+		]);
+		expect(await runners.jobs("ghr_one")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: "2", pool: "kantel-8vcpu", state: "queued" }),
+				expect.objectContaining({ id: "3", pool: "kantel-public-8vcpu", state: "queued" }),
+			]),
+		);
+	});
+
 	it("reads an App's PKCS #1 key as GitHub gives it", async () => {
 		const pair = await crypto.subtle.generateKey(
 			{ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
@@ -1063,9 +1127,15 @@ describe("GitHub runners through the API", () => {
 				privateKey: await pem(),
 				owner: "octo-org",
 				runnerGroupId: 7,
-				pools: [{ ...POOL, label: "kantel-tiny", resources: { vcpus: 2, memoryMb: 768 } }],
+				pools: [
+					{ ...POOL, label: "kantel-tiny", resources: { vcpus: 2, memoryMb: 768 }, repositories: ["octo-org/app"] },
+				],
 			});
 			expect(preset.githubRunners.pools[0]?.resources).toEqual({ vcpus: 2, memoryMb: 768 });
+			expect(preset.githubRunners.pools[0]?.repositories).toEqual(["octo-org/app"]);
+			await expect(
+				tom.updateGithubRunners(preset.githubRunners.id, { pools: [{ ...POOL, repositories: ["not a repository"] }] }),
+			).rejects.toMatchObject({ code: "invalid" });
 			await expect(
 				tom.createGithubRunners({
 					name: "bad",

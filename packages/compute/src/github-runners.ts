@@ -115,6 +115,8 @@ export interface RunnerPool {
 	readonly timeoutMinutes?: number;
 	readonly runnerCommand?: string;
 	readonly stickyDisks?: readonly RunnerStickyDisk[];
+	/** Only jobs of these repositories (`owner/name`) get its runners. Absent: any the integration serves. */
+	readonly repositories?: readonly string[];
 }
 
 /** A pool's sticky disk, and when a runner's copy of it is committed. */
@@ -148,6 +150,7 @@ export const poolView = (pool: RunnerPool): computeSchema.GithubRunnerPool => ({
 	...(pool.maxRunners === undefined ? {} : { maxRunners: pool.maxRunners }),
 	...(pool.timeoutMinutes === undefined ? {} : { timeoutMinutes: pool.timeoutMinutes }),
 	...(pool.runnerCommand === undefined ? {} : { runnerCommand: pool.runnerCommand }),
+	...(pool.repositories === undefined ? {} : { repositories: [...pool.repositories] }),
 	...(pool.stickyDisks === undefined
 		? {}
 		: {
@@ -366,6 +369,13 @@ export function poolFor(pools: readonly RunnerPool[], labels: readonly string[])
 		return asked.includes(pool.label) && asked.every((label) => has.has(label));
 	});
 }
+
+/**
+ * Whether `pool` takes jobs of `repository` (`owner/name`): any, unless it names its repositories, compared without case
+ * as GitHub compares them. A pool that is gone takes what it took before.
+ */
+export const poolServes = (pool: Pick<RunnerPool, "repositories"> | undefined, repository: string): boolean =>
+	pool?.repositories === undefined || pool.repositories.some((name) => name.toLowerCase() === repository.toLowerCase());
 
 /** The labels a pool's runner is registered with. */
 export const runnerLabels = (pool: RunnerPool): string[] => [...DEFAULT_RUNNER_LABELS, pool.label];
@@ -1262,7 +1272,14 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			(admission === "new" ? poolFor(record.pools, event.job.labels)?.label : undefined) ?? known ?? machine?.pool;
 		if (label === undefined) return;
 		const pool = { label };
-		const allowed = record.repositories === undefined || record.repositories.includes(event.repository);
+		const ofIntegration = record.repositories === undefined || record.repositories.includes(event.repository);
+		// A pool that names its repositories makes runners for their jobs only. Its label alone picks it, so without this
+		// any repository the App is installed on (a public one's fork included) could ask for its runners and its disks.
+		const ofPool = poolServes(
+			record.pools.find((candidate) => candidate.label === label),
+			event.repository,
+		);
+		const allowed = ofIntegration && ofPool;
 		const state: computeSchema.GithubRunnerJobState = !allowed
 			? "ignored"
 			: event.action === "queued"
@@ -1280,11 +1297,13 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			...(state === "in_progress" ? { startedAt: t } : {}),
 			...(state === "completed" ? { completedAt: t } : {}),
 		};
-		const reason = !allowed
+		const reason = !ofIntegration
 			? `${event.repository} isn't one of the integration's repositories`
-			: event.action === "waiting"
-				? "Waiting for an approval or a concurrency group"
-				: undefined;
+			: !ofPool
+				? `${event.repository} isn't one of pool ${label}'s repositories`
+				: event.action === "waiting"
+					? "Waiting for an approval or a concurrency group"
+					: undefined;
 		// Once, and only forward: a delivery sent again, or one arriving after a later one, changes nothing. Only the
 		// installation that recorded a job moves it on; only a delivery admitted as `new` records one.
 		// A runner it registered through this installation may record the job it took (never a queued one), so a missed

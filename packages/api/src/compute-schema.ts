@@ -4362,6 +4362,15 @@ export const GithubRunnerPool = Type.Object(
 					'/home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.',
 			}),
 		),
+		repositories: Type.Optional(
+			Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), {
+				maxItems: 500,
+				description:
+					"Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its " +
+					"label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners " +
+					"only with `scope: repository`: a runner registered on the organization may take any job with its labels.",
+			}),
+		),
 	},
 	{ title: "GithubRunnerPool", description: "Runners of one shape, picked by a `runs-on` label." },
 );
@@ -4490,7 +4499,7 @@ export const GithubRunnerJobState = Type.Union(
 	{
 		description:
 			"`queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label " +
-			"matches it, or its repository isn't one this runs jobs for.",
+			"matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for.",
 	},
 );
 

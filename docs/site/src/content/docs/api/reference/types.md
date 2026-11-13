@@ -913,7 +913,7 @@ A short-lived URL for one file of one sandbox, streamed to or from the sandbox's
 | `name` | string | yes |  |
 | `labels` | string[] | yes |  |
 | `pool` | string | no | The pool whose label it matched. |
-| `state` | `"queued"` or `"in_progress"` or `"completed"` or `"ignored"` | yes | `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one this runs jobs for. |
+| `state` | `"queued"` or `"in_progress"` or `"completed"` or `"ignored"` | yes | `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for. |
 | `conclusion` | string | no |  |
 | `sandboxId` | string | no | The runner's sandbox that took it. |
 | `queuedAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -942,6 +942,7 @@ Runners of one shape, picked by a `runs-on` label.
 | `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
 | `stickyDisks` | [GithubRunnerStickyDisk](/api/reference/types/#githubrunnerstickydisk)[] | no | Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). (at most 2 items) |
 | `runnerCommand` | string | no | The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
+| `repositories` | string[] | no | Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. (at most 500 items) |
 
 ### GithubRunnerPoolStatus
 
