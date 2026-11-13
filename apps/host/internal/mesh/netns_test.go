@@ -43,13 +43,20 @@ func TestMeshBetweenTwoHosts(t *testing.T) {
 	case "outer":
 		outerRole(t)
 		return
+	case "intruder":
+		// Another kantel-host process in a's namespace, with a root of its own (bench, or a second run).
+		_, err := New(Config{Dir: t.TempDir(), Log: slog.New(slog.DiscardHandler)})
+		if !errors.Is(err, ErrOwned) {
+			t.Fatalf("a second process in the namespace: %v, want ErrOwned", err)
+		}
+		return
 	}
 	if err := Available(); err != nil {
 		t.Skip(err)
 	}
 	// What the test does in its namespace, tried first: a machine (or CI runner) that can't is skipped, not failed.
 	const probe = "ip tuntap add dev kprobe0 mode tun && ip link add kprobe1 type veth peer name kprobe2 && " +
-		"ip6tables -w -N KPROBE && iptables -w -L -n >/dev/null && unshare -n true"
+		"ip6tables -w -N KPROBE && iptables -w -L -n >/dev/null && unshare -n true && command -v nsenter >/dev/null"
 	// As root, a network namespace alone: a user namespace's root can't read files only the real one may.
 	tries := [][]string{{"-rn"}, {"-n"}}
 	if os.Geteuid() == 0 {
@@ -209,6 +216,15 @@ func outerRole(t *testing.T) {
 	if h == nil || len(h.Peers) != 1 || h.Peers[0].HostID != "host_b" || h.Peers[0].Path != proto.MeshPathDirect ||
 		h.Peers[0].Endpoint != "[2001:db8:1::2]:51820" || h.Peers[0].LastHandshake == 0 {
 		t.Fatalf("a's health: %+v", h)
+	}
+	// A second process in a's namespace, with another root, can't take the mesh, and leaves a's device alone.
+	intruder := exec.Command("nsenter", "-t", fmt.Sprint(a.cmd.Process.Pid), "-n", os.Args[0], "-test.run", "^TestMeshBetweenTwoHosts$")
+	intruder.Env = append(os.Environ(), roleEnv+"=intruder")
+	if out, err := intruder.CombinedOutput(); err != nil {
+		t.Fatalf("intruder: %v: %s", err, out)
+	}
+	if r := a.do(t, request{Op: "dial", Address: addrB, Port: SyncPort, Wait: 30}); r.Error != "" || r.Said != "host b" {
+		t.Fatalf("a to b after another process started: %+v", r)
 	}
 	// The round trip, from a's probes of b's sync port, within a probe or two.
 	for deadline := time.Now().Add(2 * probeEvery); ; time.Sleep(time.Second) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,11 +89,21 @@ type harness struct {
 	commands []string
 }
 
+// owners makes each test's mesh ownership its own, apart from a kantel-host on the machine.
+var owners atomic.Int64
+
+func testOwner() string { return fmt.Sprintf("kantel-mesh-test-%d-%d", os.Getpid(), owners.Add(1)) }
+
 func newHarness(t *testing.T, dir string) *harness {
+	t.Helper()
+	return newOwnedHarness(t, dir, testOwner())
+}
+
+func newOwnedHarness(t *testing.T, dir, owner string) *harness {
 	t.Helper()
 	h := &harness{firewall: &fakeFirewall{}}
 	m, err := New(Config{
-		Dir: dir, Log: slog.New(slog.DiscardHandler), Firewall: h.firewall,
+		Dir: dir, Log: slog.New(slog.DiscardHandler), Firewall: h.firewall, Owner: owner,
 		Endpoints: []string{"mesh.example.com:6000", "203.0.113.9"},
 		Addresses: func() []netip.Addr {
 			return []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("fd00::5"), netip.MustParseAddr("2001:db8::5")}
@@ -129,7 +141,8 @@ func testKey(t *testing.T) Key {
 // the public key is ever reported.
 func TestKeyKeptAcrossStarts(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "mesh")
-	first := newHarness(t, dir).m
+	name := testOwner()
+	first := newOwnedHarness(t, dir, name).m
 	st, err := os.Stat(filepath.Join(dir, keyFile))
 	if err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("key file: %v %v", st, err)
@@ -140,7 +153,7 @@ func TestKeyKeptAcrossStarts(t *testing.T) {
 		t.Fatal("the facts carry the private key")
 	}
 	first.Close()
-	second := newHarness(t, dir).m
+	second := newOwnedHarness(t, dir, name).m
 	if first.PublicKey() != second.PublicKey() || first.Facts().PublicKey != second.Facts().PublicKey {
 		t.Fatal("a restart made a new key")
 	}
@@ -166,22 +179,23 @@ func TestKeyErrorsDontCarryTheKey(t *testing.T) {
 	}
 }
 
-// One process owns the mesh at a time: another (a second run, the installer's or bench's host while the daemon runs)
-// gets ErrOwned and touches nothing of it, and takes it over once the owner has closed.
+// One process owns the mesh in a network namespace at a time: another (a second run, the installer's or bench's host
+// while the daemon runs), whatever its root, gets ErrOwned and touches nothing of it, and takes it over once the owner
+// has closed.
 func TestOneOwner(t *testing.T) {
-	dir := t.TempDir()
-	owner := newHarness(t, dir)
+	name := testOwner()
+	owner := newOwnedHarness(t, t.TempDir(), name)
 	if err := owner.m.Apply(welcome()); err != nil {
 		t.Fatal(err)
 	}
 	var cleaned []string
-	_, err := New(Config{Dir: dir, Log: slog.New(slog.DiscardHandler), Firewall: owner.firewall,
+	_, err := New(Config{Dir: t.TempDir(), Log: slog.New(slog.DiscardHandler), Firewall: owner.firewall, Owner: name,
 		Run: func(args ...string) error { cleaned = append(cleaned, strings.Join(args, " ")); return nil }})
 	if !errors.Is(err, ErrOwned) || len(cleaned) != 0 || owner.firewall.downs != 1 || owner.device().closed {
 		t.Fatalf("second: %v; cleaned %v, firewall downs %d", err, cleaned, owner.firewall.downs)
 	}
 	owner.m.Close()
-	next := newHarness(t, dir)
+	next := newOwnedHarness(t, t.TempDir(), name)
 	if !slices.Contains(next.commands, "ip link del kmesh0") || next.firewall.downs != 1 {
 		t.Fatalf("the next owner didn't clean up: %v", next.commands)
 	}

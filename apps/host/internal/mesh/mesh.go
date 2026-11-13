@@ -19,7 +19,6 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -78,6 +77,8 @@ type Config struct {
 	Run func(args ...string) error
 	// Addresses are the host's interface addresses to report as endpoints (default: its interfaces').
 	Addresses func() []netip.Addr
+	// Owner names the mesh's ownership in the network namespace (default kantel-host-mesh-<Device>).
+	Owner string
 }
 
 // Mesh is the host's place in its pool's mesh.
@@ -86,8 +87,8 @@ type Mesh struct {
 	key Key
 	log *slog.Logger
 
-	// lock is the open lock file whose lock says this process owns the mesh device and its rules.
-	lock *os.File
+	// owner is the socket whose name says this process owns the mesh device and its rules (New).
+	owner net.Conn
 
 	mu sync.Mutex
 	// dev is the device while it is up; addr and prefix are its address and the pool's prefix.
@@ -125,15 +126,16 @@ func Available() error {
 	return nil
 }
 
-// lockFile, beside the key, is locked by the process that owns the mesh for as long as it does.
-const lockFile = "lock"
-
 // ErrOwned is New's error while another process (a running daemon) owns the mesh.
 var ErrOwned = errors.New("another kantel-host process owns the mesh")
 
 // New loads (or on first start makes) the host's key, takes ownership of the mesh (ErrOwned while another process
 // has it: then nothing of that process's mesh is touched), and takes down any device and rules a previous owner left.
 // The device stays down until Apply is given a mesh; Close gives ownership up.
+//
+// Ownership is an abstract Unix socket bound to Owner's name. Such a name belongs to the network namespace, as the
+// device and the firewall's rules do, whatever the process's root or settings, and the kernel lets it go when the
+// process ends however it ends, so a crashed owner's leftovers are cleaned up by the next.
 func New(cfg Config) (*Mesh, error) {
 	if cfg.Port == 0 {
 		cfg.Port = DefaultPort
@@ -166,19 +168,18 @@ func New(cfg Config) (*Mesh, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mesh key: %w", err)
 	}
-	lock, err := os.OpenFile(filepath.Join(cfg.Dir, lockFile), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("mesh lock: %w", err)
+	if cfg.Owner == "" {
+		cfg.Owner = "kantel-host-mesh-" + cfg.Device
 	}
-	// Released when the file is closed, or the process ends however it ends.
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		lock.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+	// A datagram socket: nothing connects to it, and nothing is read from it.
+	owner, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: "@" + cfg.Owner, Net: "unixgram"})
+	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
 			return nil, ErrOwned
 		}
-		return nil, fmt.Errorf("mesh lock: %w", err)
+		return nil, fmt.Errorf("mesh ownership: %w", err)
 	}
-	m := &Mesh{cfg: cfg, key: key, log: cfg.Log, peers: map[Key]*peer{}, lock: lock}
+	m := &Mesh{cfg: cfg, key: key, log: cfg.Log, peers: map[Key]*peer{}, owner: owner}
 	_ = cfg.Run("ip", "link", "del", cfg.Device)
 	cfg.Firewall.Down(cfg.Device, cfg.Port)
 	return m, nil
@@ -426,9 +427,9 @@ func (m *Mesh) Close() {
 	m.down()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.lock != nil {
-		m.lock.Close()
-		m.lock = nil
+	if m.owner != nil {
+		m.owner.Close()
+		m.owner = nil
 	}
 }
 
