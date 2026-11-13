@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -390,6 +391,81 @@ func TestHeldAtRefusesATargetChangedAsItWasOpened(t *testing.T) {
 			var refused *errArchive
 			if err := heldAt(root, target, -1, -1); !errors.As(err, &refused) {
 				t.Fatalf("changed: %v", err)
+			}
+		})
+	}
+}
+
+// A target moved aside while an extraction into a real directory is under way (another directory, or a link above it,
+// put at its path between two entries) fails it once everything is written, rather than answering success for files
+// the path doesn't have. The archive is a FIFO, so the move comes after the first entry and before the second.
+func TestExtractTarIntoRealDirRefusesATargetMovedAsItGoes(t *testing.T) {
+	for name, move := range map[string]func(t *testing.T, target string){
+		"another directory": func(t *testing.T, target string) {
+			if err := os.Rename(target, target+".old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a link above it": func(t *testing.T, target string) {
+			parent := filepath.Dir(target)
+			if err := os.Rename(parent, parent+".real"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(parent+".real", parent); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "user", "workspace")
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			fifo := filepath.Join(t.TempDir(), "a.tar")
+			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- ExtractTarIntoRealDir(fifo, target, -1, -1) }()
+			w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer w.Close()
+			tw := tar.NewWriter(w)
+			put := func(name, body string) {
+				t.Helper()
+				if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(tw, body); err != nil {
+					t.Fatal(err)
+				}
+				if err := tw.Flush(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			put("a.txt", "first")
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+				if b, _ := os.ReadFile(filepath.Join(target, "a.txt")); string(b) == "first" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the first entry never landed")
+				}
+			}
+			move(t, target)
+			put("b.txt", "second")
+			if err := tw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			w.Close()
+			var refused *errArchive
+			if err := <-done; !errors.As(err, &refused) {
+				t.Fatalf("got %v, want the moved target refused", err)
 			}
 		})
 	}

@@ -74,7 +74,7 @@ func ExtractTar(archive, target string, uid, gid int) error {
 // ExtractTarIntoRealDir is ExtractTar into a target that is a directory all the way down from /: a link at target or
 // at any directory above it, or something there that isn't a directory, is refused before anything is written, so
 // nothing goes somewhere else a link there points at. The directory held is checked to be the one at that path once
-// it is open, so a link put there meanwhile is refused too. An upgrade's files go in this way, into a
+// it is open and again once everything is written, so a link or another directory put there meanwhile is refused too. An upgrade's files go in this way, into a
 // /home/user/workspace a snapshot laid out, which what runs in it may change.
 func ExtractTarIntoRealDir(archive, target string, uid, gid int) error {
 	return extractTar(archive, target, uid, gid, true)
@@ -210,12 +210,18 @@ func extractTar(archive, target string, uid, gid int, realTarget bool) error {
 			_ = root.Chtimes(dirTimes[i].rel, dirTimes[i].at, dirTimes[i].at)
 		}
 	}
+	// Still where it was asked for: a directory moved aside meanwhile (another, or a link, put at its path) has the
+	// files, but the path doesn't.
+	if realTarget {
+		return heldAt(root, target, uid, gid)
+	}
 	return nil
 }
 
 // heldAt checks that the directory root holds is still the one at target, a directory all the way down from /: what
 // runs in the sandbox may have put a link at target or above it since it was checked, and opening it would have gone
-// through that. From here every write goes into the directory held, whatever becomes of the path.
+// through that. Every write goes into the directory held, whatever becomes of the path, so it is checked again once
+// they are done, for a directory moved aside meanwhile.
 func heldAt(root *os.Root, target string, uid, gid int) error {
 	if err := realDirAll(target, uid, gid); err != nil {
 		return err
