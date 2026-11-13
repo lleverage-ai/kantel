@@ -352,12 +352,16 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
 	h.followImages(ctx, w.Images)
+	// The mesh and the peer sync server follow one welcome at a time: the server listens where the mesh is now.
+	h.welcomeMu.Lock()
 	if h.mesh != nil {
 		// Up with the welcome's mesh, or down without one (the host's pool has sync off).
 		if err := h.mesh.Apply(w.Mesh); err != nil {
 			h.log.Error("the mesh couldn't be brought up", "error", err)
 		}
 	}
+	h.followPeerSync(w)
+	h.welcomeMu.Unlock()
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {
