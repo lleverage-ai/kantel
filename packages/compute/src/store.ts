@@ -1099,6 +1099,32 @@ export interface StickyDiskWrites {
 		ids: readonly string[],
 		poolId: string,
 	): Promise<{ readonly diskId: string; readonly poolId: string } | undefined>;
+	/**
+	 * Notes that a sandbox with the live disk `id` started on `hostId` at `at` (`stickyRunNoted`), over the disk as it is
+	 * now, so a commit or tombstone meanwhile is kept. Never fenced by its account: a note neither adds a disk nor takes
+	 * one out, so it can't remove a disk or tombstone while the account closes.
+	 */
+	noteRun(id: string, hostId: string, at: number): Promise<void>;
+}
+
+/** How lately a host must have started a sandbox with a sticky disk to be sent each new head of it. */
+export const STICKY_PREFETCH_MS = 7 * 24 * 3_600_000;
+/**
+ * How often a host's start of a sandbox with a sticky disk is written down (`StoredStickyDisk.ranOn`): at most once an
+ * hour for each host and disk, so a burst of jobs costs a read each, not a write.
+ */
+export const STICKY_RAN_EVERY_MS = 3_600_000;
+
+/**
+ * `disk` with `hostId`'s start at `at` in its `ranOn`, entries past `STICKY_PREFETCH_MS` dropped; undefined, to write
+ * nothing, for a tombstoned disk or a host noted within `STICKY_RAN_EVERY_MS`.
+ */
+export function stickyRunNoted(disk: StoredStickyDisk, hostId: string, at: number): StoredStickyDisk | undefined {
+	if (disk.deletedAt !== undefined || (disk.ranOn?.[hostId] ?? Number.NEGATIVE_INFINITY) > at - STICKY_RAN_EVERY_MS) {
+		return undefined;
+	}
+	const recent = Object.entries(disk.ranOn ?? {}).filter(([, when]) => when > at - STICKY_PREFETCH_MS);
+	return { ...disk, ranOn: { ...Object.fromEntries(recent), [hostId]: at } };
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -1250,6 +1276,9 @@ function memoryStickyDiskWrites(
 				if (disk.poolId === undefined) disks.records.set(disk.id, { ...structuredClone(disk), poolId });
 			}
 			return undefined;
+		},
+		async noteRun(id, hostId, at) {
+			await disks.collection.update(id, (disk) => stickyRunNoted(disk, hostId, at));
 		},
 	};
 }

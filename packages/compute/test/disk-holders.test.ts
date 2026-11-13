@@ -8,7 +8,13 @@ import type { BackendDiskFetch, BackendHost, BackendStickyHoldings, SandboxBacke
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore, OPERATOR_POOLS } from "../src/store.ts";
+import {
+	type ComputeStore,
+	createMemoryStore,
+	fenceClosedAccounts,
+	OPERATOR_POOLS,
+	STICKY_PREFETCH_MS,
+} from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const opened: ComputeApi[] = [];
@@ -338,6 +344,46 @@ describe("disk holders", () => {
 			plain.fetchHostStickyDisk("host_b", { stickyDiskId: other.disk.id, version: other.version.id }),
 		).rejects.toMatchObject({ code: "not_supported" });
 	});
+
+	for (const [name, kind] of [
+		["memory", undefined],
+		["SQLite", nodeSqliteDatabase],
+		["Postgres", pgliteDatabase],
+	] as const) {
+		it(`notes a sandbox's start on a disk without the account fence taking the disk or its tombstone out, in ${name}`, {
+			timeout: kind?.testTimeoutMs,
+		}, async () => {
+			const store = kind === undefined ? createMemoryStore() : await sqlStore(kind);
+			const fenced = fenceClosedAccounts(store);
+			await store.accounts.put({
+				id: "acc_1",
+				kind: "personal",
+				name: "Tom",
+				defaultVisibility: "private",
+				createdAt: 0,
+			});
+			const day = 24 * 3_600_000;
+			await fenced.stickyDiskWrites.create({ ...DISK, ranOn: { host_old: 10 * day - STICKY_PREFETCH_MS } });
+			// Noted once an hour per host; an entry past 7 days goes as one is written; a commit meanwhile is kept.
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_a", 10 * day);
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_a", 10 * day + 30 * 60_000);
+			await fenced.stickyDiskWrites.commit({ ...VERSION, id: "sdv_2", diskId: DISK.id }, 10 * day);
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_b", 10 * day + 1);
+			expect(await store.stickyDisks.get(DISK.id)).toMatchObject({
+				head: "sdv_2",
+				ranOn: { host_a: 10 * day, host_b: 10 * day + 1 },
+			});
+			expect(Object.keys((await store.stickyDisks.get(DISK.id))?.ranOn ?? {}).sort()).toEqual(["host_a", "host_b"]);
+			// The account closes: a note landing then leaves the live disk there for the teardown to tombstone, and leaves its
+			// tombstone alone after, unchanged.
+			await store.accounts.update("acc_1", (account) => ({ ...account, closedAt: 11 * day }));
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_c", 11 * day);
+			expect((await store.stickyDisks.get(DISK.id))?.ranOn?.host_c).toBe(11 * day);
+			const tombstone = await fenced.stickyDiskWrites.tombstone(DISK.id, 11 * day);
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_d", 12 * day);
+			expect(await store.stickyDisks.get(DISK.id)).toEqual(tombstone);
+		});
+	}
 
 	it("sends a new head to the hosts in its pool that started a sandbox with it in the last 7 days", async () => {
 		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];

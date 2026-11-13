@@ -31,6 +31,7 @@ import {
 	type StoredTemplate,
 	type StoredTemplateVersion,
 	stickyDiskNameId,
+	stickyRunNoted,
 	type TemplateWrites,
 	UniqueViolation,
 } from "./store.ts";
@@ -359,8 +360,10 @@ const STICKY_DISK_VERSIONS = "stickyDiskVersions";
  *   still holds what was read of it or what this write gives it, so a disk another writer changed since it was read
  *   means none lands, and it reads again. On Postgres their rows are locked first (`FOR UPDATE`), so none changes
  *   between the batch's statements; SQLite (D1 too) has one writer at a time.
+ * - `noteRun`: the disk's `update` over the version it read, unfenced.
  */
 function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
+	const disks = sqlCollection<StoredStickyDisk>(driver, STICKY_DISKS);
 	const postgres = driver.dialect === "postgres";
 	const seq = postgres
 		? "nextval('compute_api_records_seq')"
@@ -579,6 +582,9 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 			throw new Error(
 				`The sticky disks ${unique.join(", ")} kept changing while they were given a pool; gave up after ${UPDATE_ATTEMPTS} tries`,
 			);
+		},
+		async noteRun(id, hostId, at) {
+			await disks.update(id, (disk) => stickyRunNoted(disk, hostId, at));
 		},
 	};
 }

@@ -185,7 +185,7 @@ import type {
 	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
-import { OPERATOR_POOLS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
+import { OPERATOR_POOLS, STICKY_PREFETCH_MS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
@@ -1101,13 +1101,6 @@ const STICKY_SWEEP_EVERY_MS = 10 * 60_000;
 const STICKY_REPORT_GRACE_MS = 2 * 60_000;
 /** How many of a disk's versions a get answers. */
 const STICKY_VERSIONS_LISTED = 20;
-/** How lately a host must have started a sandbox with a sticky disk to be sent each new head of it. */
-const STICKY_PREFETCH_MS = 7 * 24 * 3_600_000;
-/**
- * How often a host's start of a sandbox with a sticky disk is written down (`StoredStickyDisk.ranOn`): at most once an
- * hour for each host and disk, so a burst of jobs costs a read each, not a write.
- */
-const STICKY_RAN_EVERY_MS = 3_600_000;
 /** How long the sweep leaves between the broker's passes when it has no word of when the next is due. */
 const IDLE_RUNNER_PASS_MS = 60_000;
 /** What GitHub runners' routes answer while they are off. */
@@ -2595,8 +2588,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const given = await store.stickyDiskVersions.update(version.id, (current) =>
 						current.mapDigest === undefined ? { ...current, mapDigest: digest } : undefined,
 					);
-					// A head committed before its map was made is sent to its disk's hosts now it can be fetched.
-					if (given !== undefined && version.id === disk.head) keepGoing(prefetchStickyHead(disk.id, version.id));
+					// A head committed before its map was made is sent to its disk's hosts now it can be fetched. Whether it is the
+					// head is read again there: one committed since this pass read the disk is too.
+					if (given !== undefined) keepGoing(prefetchStickyHead(disk.id, version.id));
 				}
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
@@ -2616,24 +2610,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Writes down that a sandbox with sticky disks started on its host (`StoredStickyDisk.ranOn`), so each new head is sent
 	 * there (`prefetchStickyHead`): only where the host's entry is older than `STICKY_RAN_EVERY_MS`, so most starts only
-	 * read, and entries past `STICKY_PREFETCH_MS` go as it writes.
+	 * read, and entries past `STICKY_PREFETCH_MS` go as it writes (`stickyRunNoted`). Through `StickyDiskWrites`, which
+	 * the account fence leaves alone, so a note landing as the account closes never removes the disk or its tombstone.
 	 */
 	async function noteStickyRuns(sandbox: StoredSandbox): Promise<void> {
 		const hostId = sandbox.hostId;
 		if (options.stickyDisks !== true || hostId === undefined) return;
-		for (const attached of sandbox.stickyDisks ?? []) {
-			const t = now();
-			await store.stickyDisks.update(attached.diskId, (disk) => {
-				if (
-					disk.deletedAt !== undefined ||
-					(disk.ranOn?.[hostId] ?? Number.NEGATIVE_INFINITY) > t - STICKY_RAN_EVERY_MS
-				) {
-					return undefined;
-				}
-				const recent = Object.entries(disk.ranOn ?? {}).filter(([, at]) => at > t - STICKY_PREFETCH_MS);
-				return { ...disk, ranOn: { ...Object.fromEntries(recent), [hostId]: t } };
-			});
-		}
+		for (const attached of sandbox.stickyDisks ?? [])
+			await store.stickyDiskWrites.noteRun(attached.diskId, hostId, now());
 	}
 
 	/**
