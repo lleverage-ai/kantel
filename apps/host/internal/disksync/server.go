@@ -3,8 +3,13 @@ package disksync
 // The peer server: plain HTTP/2 (WireGuard encrypts it) on the host's mesh address only, on port 7480, which the
 // firewall opens to the pool's prefix alone.
 //
-//	GET /v1/objects/{kind}/{id}/{version}/map    the version's block map
-//	GET /v1/objects/{kind}/{id}/{version}/data   the version's bytes, a run of blocks with Range
+//	GET /v1/objects/{kind}/{id}/{version}/map            the version's block map
+//	GET /v1/objects/{kind}/{id}/{version}/data           the version's bytes, a run of blocks with Range
+//	GET /v1/objects/{kind}/{id}/{version}/files/{name}   one of the version's small files, whole
+//
+// A version is one block-mapped file (map and data), and, for some kinds, small files beside it that go whole (a
+// template's root filesystem has its record, which names the image it was made from). A kind whose versions have
+// several block-mapped files (a snapshot's disk and memory) is to name them the same way, under files/{name}.
 //
 // Each request carries a grant (Authorization: Bearer <grant>) the control plane signed, naming this host in from and
 // the asking peer as to. Which peer asks is the request's source address: WireGuard takes a packet from a peer only
@@ -34,6 +39,9 @@ type Source interface {
 	// Open opens a version: its file, and with withMap its block map's file. fs.ErrNotExist when the host doesn't hold
 	// it, or has no map of it yet. The file stays readable while open, whatever is deleted meanwhile.
 	Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error)
+	// ReadFile reads one of a held version's small files (Store.Files names them): fs.ErrNotExist when the host doesn't
+	// hold the version, or it has no such file.
+	ReadFile(kind, objectID, version, name string) ([]byte, error)
 }
 
 // Server serves the versions the host holds to its mesh peers.
@@ -150,6 +158,24 @@ func (s *Server) Handler() http.Handler {
 		// A version's file never changes once it is published: no validators, so a Range is always served.
 		http.ServeContent(limitedWriter{ResponseWriter: w, ctx: r.Context(), l: s.Limit}, r, "", time.Time{}, f)
 	})
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/files/{name}", func(w http.ResponseWriter, r *http.Request) {
+		kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
+		if !s.granted(w, r) {
+			return
+		}
+		raw, err := s.Source.ReadFile(kind, id, version, r.PathValue("name"))
+		if errors.Is(err, fs.ErrNotExist) {
+			http.Error(w, "this host doesn't hold that version, or it has no such file", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.Log.Warn("a version's file couldn't be read for a peer", "kind", kind, "object", id, "version", version, "file", r.PathValue("name"), "error", err)
+			http.Error(w, "the file couldn't be read", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
+	})
 	return mux
 }
 
@@ -157,34 +183,7 @@ func (s *Server) Handler() http.Handler {
 // with one that isn't for this version, this host or the asking peer, 404 for a version the host doesn't hold.
 func (s *Server) open(w http.ResponseWriter, r *http.Request, withMap bool) (*os.File, []byte, bool) {
 	kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
-	key := s.Key()
-	if key == "" {
-		http.Error(w, "this host has no grant key from the control plane yet", http.StatusServiceUnavailable)
-		return nil, nil, false
-	}
-	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
-		http.Error(w, "a fetch needs a grant", http.StatusUnauthorized)
-		return nil, nil, false
-	}
-	now := time.Now
-	if s.Now != nil {
-		now = s.Now
-	}
-	g, err := VerifyGrant(key, strings.TrimSpace(token), now())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return nil, nil, false
-	}
-	asker := ""
-	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
-		if id, ok := s.PeerAt(ap.Addr().Unmap()); ok {
-			asker = id
-		}
-	}
-	if err := g.Allows(kind, id, version, s.Self(), asker); err != nil {
-		s.Log.Warn("a peer's fetch refused", "peer", r.RemoteAddr, "host", asker, "kind", kind, "object", id, "version", version, "error", err)
-		http.Error(w, err.Error(), http.StatusForbidden)
+	if !s.granted(w, r) {
 		return nil, nil, false
 	}
 	f, raw, err := s.Source.Open(kind, id, version, withMap)
@@ -198,4 +197,41 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request, withMap bool) (*os
 		return nil, nil, false
 	}
 	return f, raw, true
+}
+
+// granted checks the request's grant against the version it names, or answers why not: 503 while the host has no
+// grant key, 401 without a valid grant, 403 with one that isn't for this version, this host or the asking peer.
+func (s *Server) granted(w http.ResponseWriter, r *http.Request) bool {
+	kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
+	key := s.Key()
+	if key == "" {
+		http.Error(w, "this host has no grant key from the control plane yet", http.StatusServiceUnavailable)
+		return false
+	}
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		http.Error(w, "a fetch needs a grant", http.StatusUnauthorized)
+		return false
+	}
+	now := time.Now
+	if s.Now != nil {
+		now = s.Now
+	}
+	g, err := VerifyGrant(key, strings.TrimSpace(token), now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return false
+	}
+	asker := ""
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		if id, ok := s.PeerAt(ap.Addr().Unmap()); ok {
+			asker = id
+		}
+	}
+	if err := g.Allows(kind, id, version, s.Self(), asker); err != nil {
+		s.Log.Warn("a peer's fetch refused", "peer", r.RemoteAddr, "host", asker, "kind", kind, "object", id, "version", version, "error", err)
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return false
+	}
+	return true
 }

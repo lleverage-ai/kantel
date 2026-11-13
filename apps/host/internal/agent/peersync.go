@@ -1,9 +1,10 @@
 package agent
 
 // Peer sync (docs/design/disk-store.md, "2c. Peer sync"): while the host is in its pool's mesh, it serves the disk
-// versions it holds to the pool's other hosts, on its mesh address, to those with a grant from the control plane; and
-// it fetches versions from them (disk.fetch, or a create attaching a sticky disk version it doesn't hold), moving only
-// the blocks that differ from its nearest version. Both directions are held to --sync-rate.
+// store objects it holds (sticky disks' versions, templates' root filesystems) to the pool's other hosts, on its mesh
+// address, to those with a grant from the control plane; and it fetches versions from them (disk.fetch, or a create
+// attaching a sticky disk version it doesn't hold), moving only the blocks that differ from its nearest version. Both
+// directions are held to --sync-rate.
 
 import (
 	"context"
@@ -19,9 +20,6 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
-
-// kindSticky is the one kind of disk store object hosts sync so far.
-const kindSticky = "sticky"
 
 // startPeerSync readies the peer sync server and the fetcher, with the mesh: the server listens once a welcome brings
 // the mesh up.
@@ -99,8 +97,12 @@ func (h *Host) followPeerSync(w *proto.Welcome) {
 
 // fetchesSticky says whether the host fetches sticky disk versions from its peers (FeatureDiskSync): it runs the mesh
 // and has sticky disks.
-func (h *Host) fetchesSticky() bool {
-	_, ok := h.tiers[microvm.Tier].(StickyFetcher)
+func (h *Host) fetchesSticky() bool { return h.fetches(proto.DiskKindSticky) }
+
+// fetches says whether the host fetches objects of a kind from its peers: it runs the mesh, and a tier has the kind
+// (FeatureDiskSync for sticky disks, FeatureRootfsSync for templates' root filesystems).
+func (h *Host) fetches(kind string) bool {
+	_, ok := h.syncKinds()[kind]
 	return ok && h.fetcher != nil
 }
 
@@ -110,7 +112,7 @@ func (h *Host) diskFetch(params json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.Kind != kindSticky || !h.fetchesSticky() {
+	if !h.fetches(p.Kind) {
 		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("this host doesn't fetch %q disk versions", p.Kind)}
 	}
 	if p.ObjectID == "" || p.Version == "" {
@@ -129,12 +131,12 @@ func (h *Host) fetchStickyLater(diskID, version string) {
 	if !h.fetchesSticky() {
 		return
 	}
-	h.fetcher.Start(disksync.Request{Ref: disksync.Ref{Kind: kindSticky, ObjectID: diskID, Version: version}})
+	h.fetcher.Start(disksync.Request{Ref: disksync.Ref{Kind: proto.DiskKindSticky, ObjectID: diskID, Version: version}})
 }
 
 // resumeFetches starts the fetches left unfinished, while the host is connected and in a mesh.
 func (h *Host) resumeFetches() {
-	if !h.fetchesSticky() || !h.connected() {
+	if h.fetcher == nil || len(h.syncKinds()) == 0 || !h.connected() {
 		return
 	}
 	if _, up := h.mesh.Address(); up {
@@ -180,73 +182,145 @@ type StickyFetcher interface {
 
 var _ StickyFetcher = (*microvm.Manager)(nil)
 
-// peerStore is the versions the host holds and fetches, for peer sync: sticky disks' on the microVM tier.
+// RootfsFetcher is a tier whose templates' root filesystems the host serves to its peers and fetches from them
+// (FeatureRootfsSync): the microVM tier.
+type RootfsFetcher interface {
+	HoldsRootfs(key, version string) bool
+	OpenRootfs(key, version string, withMap bool) (*os.File, []byte, error)
+	ReadRootfsFile(key, version, name string) ([]byte, error)
+	RootfsPartial(key, version string) (string, error)
+	PublishFetchedRootfs(key, version string, partial *os.File, mapFile []byte, files map[string][]byte) error
+	RootfsPartials() []string
+	ReserveRootfsFetch(bytes int64) (release func(), err error)
+	DiscardRootfsPartial(key string)
+	// RootfsHoldings are the root filesystems it holds with a map (Capacity.Holdings): nil when they can't be read.
+	RootfsHoldings() []proto.ObjectHolding
+}
+
+var _ RootfsFetcher = (*microvm.Manager)(nil)
+
+// syncKinds are the kinds of object the host serves to its peers and fetches from them, each the microVM tier's: its
+// sticky disks' versions, and its templates' root filesystems. Looked up on each call: the tiers are made after peer
+// sync is.
+func (h *Host) syncKinds() disksync.Kinds {
+	k := disksync.Kinds{}
+	if t, ok := h.tiers[microvm.Tier].(StickyFetcher); ok {
+		k[proto.DiskKindSticky] = stickyObjects{t}
+	}
+	if t, ok := h.tiers[microvm.Tier].(RootfsFetcher); ok {
+		k[proto.DiskKindRootfs] = rootfsObjects{t}
+	}
+	return k
+}
+
+// peerStore is the objects the host holds and fetches, for peer sync: its syncKinds', as they are at each call.
 type peerStore struct{ h *Host }
 
-func (s peerStore) sticky(kind string) (StickyFetcher, bool) {
-	t, ok := s.h.tiers[microvm.Tier].(StickyFetcher)
-	return t, ok && kind == kindSticky
-}
-
 func (s peerStore) Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error) {
-	t, ok := s.sticky(kind)
-	if !ok {
-		return nil, nil, fs.ErrNotExist
-	}
-	return t.OpenStickyVersion(objectID, version, withMap)
+	return s.h.syncKinds().Open(kind, objectID, version, withMap)
 }
 
-func (s peerStore) Held(r disksync.Ref) bool {
-	t, ok := s.sticky(r.Kind)
-	return ok && t.HoldsSticky(r.ObjectID, r.Version)
+func (s peerStore) ReadFile(kind, objectID, version, name string) ([]byte, error) {
+	return s.h.syncKinds().ReadFile(kind, objectID, version, name)
 }
 
-func (s peerStore) Partial(r disksync.Ref) (string, error) {
-	t, ok := s.sticky(r.Kind)
-	if !ok {
-		return "", fs.ErrNotExist
-	}
-	return t.StickyPartial(r.ObjectID, r.Version)
-}
+func (s peerStore) Held(r disksync.Ref) bool { return s.h.syncKinds().Held(r) }
+
+func (s peerStore) Partial(r disksync.Ref) (string, error) { return s.h.syncKinds().Partial(r) }
 
 func (s peerStore) CloneNearest(r disksync.Ref, dst string) (*blockmap.Map, error) {
-	t, ok := s.sticky(r.Kind)
-	if !ok {
-		return nil, nil
-	}
-	return t.CloneNearestSticky(r.ObjectID, r.Version, dst)
+	return s.h.syncKinds().CloneNearest(r, dst)
 }
 
-func (s peerStore) Publish(r disksync.Ref, partial *os.File, mapFile []byte) error {
-	t, ok := s.sticky(r.Kind)
-	if !ok {
-		return fs.ErrNotExist
-	}
-	return t.PublishFetchedSticky(r.ObjectID, r.Version, partial, mapFile)
+func (s peerStore) Files(r disksync.Ref) []string { return s.h.syncKinds().Files(r) }
+
+func (s peerStore) Publish(r disksync.Ref, partial *os.File, mapFile []byte, files map[string][]byte) error {
+	return s.h.syncKinds().Publish(r, partial, mapFile, files)
 }
 
-func (s peerStore) Partials() []disksync.Ref {
-	t, ok := s.sticky(kindSticky)
-	if !ok {
-		return nil
-	}
+func (s peerStore) Partials() []disksync.Ref { return s.h.syncKinds().Partials() }
+
+func (s peerStore) Reserve(r disksync.Ref, bytes int64) (func(), error) {
+	return s.h.syncKinds().Reserve(r, bytes)
+}
+
+func (s peerStore) Discard(r disksync.Ref) { s.h.syncKinds().Discard(r) }
+
+// stickyObjects are a tier's sticky disks' versions: one file each, with no small files.
+type stickyObjects struct{ t StickyFetcher }
+
+func (s stickyObjects) Open(_, objectID, version string, withMap bool) (*os.File, []byte, error) {
+	return s.t.OpenStickyVersion(objectID, version, withMap)
+}
+
+func (s stickyObjects) ReadFile(string, string, string, string) ([]byte, error) { return nil, fs.ErrNotExist }
+
+func (s stickyObjects) Held(r disksync.Ref) bool { return s.t.HoldsSticky(r.ObjectID, r.Version) }
+
+func (s stickyObjects) Partial(r disksync.Ref) (string, error) {
+	return s.t.StickyPartial(r.ObjectID, r.Version)
+}
+
+func (s stickyObjects) CloneNearest(r disksync.Ref, dst string) (*blockmap.Map, error) {
+	return s.t.CloneNearestSticky(r.ObjectID, r.Version, dst)
+}
+
+func (s stickyObjects) Files(disksync.Ref) []string { return nil }
+
+func (s stickyObjects) Publish(r disksync.Ref, partial *os.File, mapFile []byte, _ map[string][]byte) error {
+	return s.t.PublishFetchedSticky(r.ObjectID, r.Version, partial, mapFile)
+}
+
+func (s stickyObjects) Partials() []disksync.Ref {
 	var out []disksync.Ref
-	for _, p := range t.StickyPartials() {
-		out = append(out, disksync.Ref{Kind: kindSticky, ObjectID: p[0], Version: p[1]})
+	for _, p := range s.t.StickyPartials() {
+		out = append(out, disksync.Ref{Kind: proto.DiskKindSticky, ObjectID: p[0], Version: p[1]})
 	}
 	return out
 }
 
-func (s peerStore) Reserve(r disksync.Ref, bytes int64) (func(), error) {
-	t, ok := s.sticky(r.Kind)
-	if !ok {
-		return nil, fs.ErrNotExist
-	}
-	return t.ReserveStickyFetch(bytes)
+func (s stickyObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
+	return s.t.ReserveStickyFetch(bytes)
 }
 
-func (s peerStore) Discard(r disksync.Ref) {
-	if t, ok := s.sticky(r.Kind); ok {
-		t.DiscardStickyPartial(r.ObjectID, r.Version)
-	}
+func (s stickyObjects) Discard(r disksync.Ref) { s.t.DiscardStickyPartial(r.ObjectID, r.Version) }
+
+// rootfsObjects are a tier's templates' root filesystems: one version each, with its record beside it, and no nearest
+// version to start a fetch from.
+type rootfsObjects struct{ t RootfsFetcher }
+
+func (s rootfsObjects) Open(_, objectID, version string, withMap bool) (*os.File, []byte, error) {
+	return s.t.OpenRootfs(objectID, version, withMap)
 }
+
+func (s rootfsObjects) ReadFile(_, objectID, version, name string) ([]byte, error) {
+	return s.t.ReadRootfsFile(objectID, version, name)
+}
+
+func (s rootfsObjects) Held(r disksync.Ref) bool { return s.t.HoldsRootfs(r.ObjectID, r.Version) }
+
+func (s rootfsObjects) Partial(r disksync.Ref) (string, error) {
+	return s.t.RootfsPartial(r.ObjectID, r.Version)
+}
+
+func (s rootfsObjects) CloneNearest(disksync.Ref, string) (*blockmap.Map, error) { return nil, nil }
+
+func (s rootfsObjects) Files(disksync.Ref) []string { return []string{microvm.RootfsRecordFile} }
+
+func (s rootfsObjects) Publish(r disksync.Ref, partial *os.File, mapFile []byte, files map[string][]byte) error {
+	return s.t.PublishFetchedRootfs(r.ObjectID, r.Version, partial, mapFile, files)
+}
+
+func (s rootfsObjects) Partials() []disksync.Ref {
+	var out []disksync.Ref
+	for _, key := range s.t.RootfsPartials() {
+		out = append(out, disksync.Ref{Kind: proto.DiskKindRootfs, ObjectID: key, Version: microvm.RootfsVersion})
+	}
+	return out
+}
+
+func (s rootfsObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
+	return s.t.ReserveRootfsFetch(bytes)
+}
+
+func (s rootfsObjects) Discard(r disksync.Ref) { s.t.DiscardRootfsPartial(r.ObjectID) }

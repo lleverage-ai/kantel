@@ -372,6 +372,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.fetchesSticky() {
 		features = append(features, proto.FeatureDiskSync)
 	}
+	if h.fetches(proto.DiskKindRootfs) {
+		features = append(features, proto.FeatureRootfsSync)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -434,6 +437,13 @@ func (h *Host) Capacity() proto.Capacity {
 	c.Disk = h.diskUsage()
 	if t, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
 		c.StickyDisks = t.StickyHoldings()
+	}
+	// Templates' root filesystems, with FeatureRootfsSync: what the host holds of other kinds is reported only while it
+	// serves them.
+	if t, ok := h.tiers[microvm.Tier].(RootfsFetcher); ok && h.fetches(proto.DiskKindRootfs) {
+		if held := t.RootfsHoldings(); held != nil {
+			c.Holdings = map[string][]proto.ObjectHolding{proto.DiskKindRootfs: held}
+		}
 	}
 	if h.mesh != nil {
 		c.Mesh = h.mesh.Health()

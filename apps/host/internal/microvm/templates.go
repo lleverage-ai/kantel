@@ -77,7 +77,12 @@ func (m *Manager) templateRootfs(ctx context.Context, img templateImage) (string
 	if img.BaseDigest == "" {
 		return m.cfg.Rootfs, "", nil
 	}
-	return m.tpl.rootfs.rootfs(ctx, img)
+	path, digest, err := m.tpl.rootfs.rootfs(ctx, img)
+	if err == nil {
+		// For peers to fetch it (rootfssync.go): made in the background unless it has one.
+		m.mapRootfsLater(img.key())
+	}
+	return path, digest, err
 }
 
 // templateImageKind is what a template snapshot's builtFrom.image says it was made of: a Kantel base. A custom image's

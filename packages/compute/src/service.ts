@@ -90,12 +90,7 @@ import {
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
-import {
-	createDiskHolders,
-	type DiskLocateRequest,
-	type DiskLocation,
-	type StickyHoldingsReport,
-} from "./disk-holders.ts";
+import { createDiskHolders, type DiskLocateRequest, type DiskLocation, type HoldingsReport } from "./disk-holders.ts";
 import {
 	composeEnv,
 	type EnvironmentResolution,
@@ -725,20 +720,21 @@ export interface ComputeService {
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
-	 * A host's capacity report's sticky disk holdings (`HostCapacity.stickyDisks`), received at `at`: its copies in the
-	 * catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordStickyHoldings`). Nothing with sticky
-	 * disks off.
+	 * A host's capacity report's holdings (`HostCapacity.stickyDisks` and `HostCapacity.holdings`), received at `at`: its
+	 * copies in the catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordHoldings`). Nothing of
+	 * sticky disks with them off, nor of templates' root filesystems with templates off.
 	 */
-	recordStickyHoldings(hostId: string, at: number, disks: StickyHoldingsReport): Promise<void>;
+	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/**
 	 * A host's `disk.locate`: the version's block map digest, the online hosts in the asker's pool holding it with their
 	 * mesh addresses, and a grant to fetch it from them (docs/design/disk-store.md, 2c). `not_found` for a version the
-	 * catalogue doesn't have or the host may not have; `not_supported` with sticky disks off or no grant key.
+	 * catalogue doesn't have or the host may not have; `not_supported` with its kind off (sticky disks, templates) or no
+	 * grant key.
 	 */
 	locateDisk(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
 	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with
-	 * sticky disks off, or with no secrets key over a persistent store.
+	 * sticky disks and templates off, or with no secrets key over a persistent store.
 	 */
 	grantPublicKey(): Promise<string | undefined>;
 	/**
@@ -2641,7 +2637,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const diskHolders = createDiskHolders({
 		store,
 		now,
-		enabled: options.stickyDisks === true,
+		stickyDisks: options.stickyDisks === true,
+		templates: options.templates === true,
 		sealer,
 		hosts: () => ensureHosts(),
 		meshAddress: (hostId) => hostMeshAddress.get(hostId),
@@ -10639,7 +10636,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
 				throw new KantelError("not_found", "The sticky disk was deleted");
 			}
-			// Its host holds it from now; its reports keep that so (`recordStickyHoldings`).
+			// Its host holds it from now; its reports keep that so (`recordHoldings`).
 			await diskHolders.recordCommit("sticky", disk.id, recorded.id, recorded.hostId);
 			return stickyVersionView(recorded);
 		},
@@ -12023,7 +12020,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return (await store.pools.get(poolId))?.sync === true;
 		},
 
-		recordStickyHoldings: (hostId, at, disks) => diskHolders.recordStickyHoldings(hostId, at, disks),
+		recordHoldings: (hostId, at, report) => diskHolders.recordHoldings(hostId, at, report),
 		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),
 		grantPublicKey: () => diskHolders.publicKey(),
 

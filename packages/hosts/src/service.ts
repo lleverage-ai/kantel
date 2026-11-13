@@ -544,11 +544,11 @@ export interface HostComputeLink {
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
 	/**
-	 * A host's sticky disk holdings, from each hello and heartbeat that says what it holds, received at `at`: the
-	 * catalogue's copies on that host are made what it reports (`ComputeService.recordStickyHoldings`). Called by the
-	 * gateway holding the connection alone.
+	 * A host's holdings, from each hello and heartbeat that says what it holds, received at `at`: the catalogue's copies
+	 * on that host are made what it reports (`ComputeService.recordHoldings`). Called by the gateway holding the
+	 * connection alone.
 	 */
-	recordStickyHoldings?(hostId: string, at: number, holdings: readonly HostStickyHolding[]): Promise<void>;
+	recordHoldings?(hostId: string, at: number, holdings: HostHoldingsReport): Promise<void>;
 	/** A host's `disk.locate` (`ComputeService.locateDisk`). */
 	locateDisk?(hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult>;
 	/**
@@ -674,6 +674,15 @@ export interface SandboxPlacement {
 	 * to one, or for one that wasn't, where it landed. Absent where the registry doesn't know the host's pool yet.
 	 */
 	readonly poolId?: string;
+}
+
+/**
+ * What a capacity report says a host holds: its sticky disks' versions (`HostCapacity.stickyDisks`) and its objects of
+ * other kinds (`HostCapacity.holdings`). Each absent says nothing.
+ */
+export interface HostHoldingsReport {
+	readonly stickyDisks?: readonly HostStickyHolding[];
+	readonly objects?: HostCapacity["holdings"];
 }
 
 /** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
@@ -1333,17 +1342,22 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * Keeps a report's sticky disk holdings in the catalogue, received at `at`, in its own time and one at a time per
-	 * host. The catalogue takes only a host's newest report, on any gateway (`DiskHolderWrites`), so one held up here
-	 * never undoes a newer. Nothing from a report that doesn't say what it holds: absent isn't none.
+	 * Keeps a report's holdings (sticky disks' versions, and objects of other kinds) in the catalogue, received at `at`,
+	 * in its own time and one at a time per host. The catalogue takes only a host's newest report, on any gateway
+	 * (`DiskHolderWrites`), so one held up here never undoes a newer. Nothing from a report that doesn't say what it
+	 * holds: absent isn't none.
 	 */
 	const holdingsRecorded = new Map<string, Promise<void>>();
 	const recordHoldings = (hostId: string, at: number, capacity: HostCapacity) => {
 		const link = compute;
-		const holdings = capacity.stickyDisks;
-		if (link?.recordStickyHoldings === undefined || holdings === undefined) return;
+		const { stickyDisks, holdings: objects } = capacity;
+		if (link?.recordHoldings === undefined || (stickyDisks === undefined && objects === undefined)) return;
+		const held: HostHoldingsReport = {
+			...(stickyDisks === undefined ? {} : { stickyDisks }),
+			...(objects === undefined ? {} : { objects }),
+		};
 		const previous = holdingsRecorded.get(hostId) ?? Promise.resolve();
-		const next = previous.then(() => link.recordStickyHoldings?.(hostId, at, holdings));
+		const next = previous.then(() => link.recordHoldings?.(hostId, at, held));
 		const settled = next.catch(() => undefined);
 		holdingsRecorded.set(hostId, settled);
 		void settled.then(() => {

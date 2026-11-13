@@ -24,6 +24,9 @@ import type {
 	HostMeshHealth,
 	HostMeshPeerHealth,
 	HostMountStatus,
+	HostObjectHolding,
+	HostObjectKind,
+	HostObjectVersionHolding,
 	HostRuntime,
 	HostSandboxUsage,
 	HostSize,
@@ -32,6 +35,7 @@ import type {
 	HostUsageTotals,
 	SandboxTier,
 } from "./protocol.ts";
+import { HOST_OBJECT_KINDS } from "./protocol.ts";
 
 const TIERS: ReadonlySet<string> = new Set<SandboxTier>(["microvm", "isolate"]);
 const MAX_TEXT = 256;
@@ -296,6 +300,7 @@ function capacity(value: unknown): HostCapacity {
 		...diskUsage(value.disk),
 		...memoryReport(value.memory),
 		...stickyHoldings(value.stickyDisks),
+		...objectHoldings(value.holdings),
 		...meshHealth(value.mesh),
 	};
 }
@@ -362,6 +367,47 @@ function stickyHoldings(value: unknown): { stickyDisks?: HostStickyHolding[] } {
 		holdings.push({ diskId: entry.diskId, versions });
 	}
 	return { stickyDisks: holdings };
+}
+
+/** The most objects of one kind a report may list: one with more is left out, saying nothing of that kind. */
+export const MAX_HELD_OBJECTS = 10_000;
+
+/**
+ * A capacity's holdings of other kinds (`HostCapacity.holdings`): a kind Kantel doesn't know is left out, and so is a
+ * kind whose list isn't shaped as holdings (whose versions all have a map digest), or has more than `MAX_HELD_OBJECTS`:
+ * a kind left out says nothing of it, so it forgets nothing.
+ */
+function objectHoldings(value: unknown): { holdings?: NonNullable<HostCapacity["holdings"]> } {
+	if (!isObject(value)) return {};
+	const holdings: { [kind in HostObjectKind]?: HostObjectHolding[] } = {};
+	for (const kind of HOST_OBJECT_KINDS) {
+		const listed = (value as { readonly [kind: string]: unknown })[kind];
+		const parsed = heldObjects(listed);
+		if (parsed !== undefined) holdings[kind] = parsed;
+	}
+	return Object.keys(holdings).length === 0 ? {} : { holdings };
+}
+
+function heldObjects(value: unknown): HostObjectHolding[] | undefined {
+	if (!Array.isArray(value) || value.length > MAX_HELD_OBJECTS) return undefined;
+	const out: HostObjectHolding[] = [];
+	for (const entry of value) {
+		if (!isObject(entry) || typeof entry.objectId !== "string" || !Array.isArray(entry.versions)) return undefined;
+		const versions: HostObjectVersionHolding[] = [];
+		for (const version of entry.versions) {
+			if (
+				!isObject(version) ||
+				typeof version.version !== "string" ||
+				!isMapDigest(version.mapDigest) ||
+				typeof version.allocatedBytes !== "number"
+			) {
+				return undefined;
+			}
+			versions.push({ version: version.version, mapDigest: version.mapDigest, allocatedBytes: version.allocatedBytes });
+		}
+		out.push({ objectId: entry.objectId, versions });
+	}
+	return out;
 }
 
 const MEMORY_MODES: ReadonlySet<string> = new Set<HostMemoryMode>(["reserved", "used"]);

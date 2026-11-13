@@ -165,6 +165,8 @@ type rootfsBuilder struct {
 	registry string
 	locks    keyedLocks
 	docker   dockerCheck
+	// maps are the root filesystems' block maps (rootfssync.go).
+	maps rootfsMaps
 }
 
 func newRootfsBuilder(dir string, run runner, registry string) *rootfsBuilder {

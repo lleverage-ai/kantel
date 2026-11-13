@@ -694,8 +694,9 @@ func New(cfg Config) (*Manager, error) {
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	m.spool.adopt(spoolLinks(cfg.Root))
-	// Block maps of the sticky disk versions committed before them.
+	// Block maps of the sticky disk versions committed before them, and of templates' root filesystems made before them.
 	m.mapOldSticky(m.bg)
+	m.mapOldRootfs()
 	return m, nil
 }
 

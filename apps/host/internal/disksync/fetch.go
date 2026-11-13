@@ -10,7 +10,8 @@ package disksync
 //     A block whose hash the nearest version's map has too is there already; a block of zeros is cleared.
 //  4. Every other block from the holders, a run of neighbouring blocks to a request, at most RunsInFlight at once, each
 //     block checked against its hash before it is written in place.
-//  5. fsync, then the partial becomes the version, with its map beside it.
+//  5. fsync; then the version's small files (Store.Files: a root filesystem's record), whole, from any holder; then the
+//     partial becomes the version, with its map and those files beside it.
 //
 // A bitmap beside the partial, <version>.partial.done, records the blocks that are in place and synced, so a fetch
 // cut short (a restart, a peer gone) goes on where it stopped when it is asked again.
@@ -25,6 +26,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -44,8 +46,10 @@ const (
 	DefaultFetches = 2
 	// checkpointEvery is how often a fetch syncs what it wrote and records it in its bitmap.
 	checkpointEvery = 5 * time.Second
-	// mapTimeout bounds a request for a map.
+	// mapTimeout bounds a request for a map, or for one of a version's small files.
 	mapTimeout = 2 * time.Minute
+	// maxFileBytes is the most one of a version's small files may have.
+	maxFileBytes = 1 << 20
 	// grantMargin is how long before its grant expires a fetch asks for a new one.
 	grantMargin = time.Minute
 )
@@ -74,9 +78,13 @@ type Store interface {
 	// CloneNearest makes dst a clone of the host's nearest version of the object with a map, and answers that map:
 	// nil, without making dst, when it holds none.
 	CloneNearest(r Ref, dst string) (*blockmap.Map, error)
-	// Publish makes the fetched partial file, written through partial, the version, with its map's file beside it. The
-	// partial is synced. A partial whose name no longer names partial's file (removed meanwhile) isn't published.
-	Publish(r Ref, partial *os.File, mapFile []byte) error
+	// Files are the small files a version of r's kind has beside its block-mapped one, which a fetch takes whole: none
+	// for most kinds.
+	Files(r Ref) []string
+	// Publish makes the fetched partial file, written through partial, the version, with its map's file and its small
+	// files (those of Files its holder had) beside it. The partial is synced. A partial whose name no longer names
+	// partial's file (removed meanwhile) isn't published.
+	Publish(r Ref, partial *os.File, mapFile []byte, files map[string][]byte) error
 	// Partials are the fetches left unfinished, by a previous run of the host or one that failed.
 	Partials() []Ref
 	// Discard removes a fetch's partial file and its bitmap.
@@ -278,7 +286,11 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 	if err := p.file.Sync(); err != nil {
 		return st, err
 	}
-	if err := f.Store.Publish(req.Ref, p.file, raw); err != nil {
+	files, err := src.fetchFiles(ctx, f.Store.Files(req.Ref))
+	if err != nil {
+		return st, err
+	}
+	if err := f.Store.Publish(req.Ref, p.file, raw, files); err != nil {
 		return st, err
 	}
 	_ = os.Remove(p.bitmapPath)
@@ -415,6 +427,9 @@ func (h *holders) get(ctx context.Context, addr netip.Addr, grant, what string, 
 	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
 		return nil, fmt.Errorf("%w: %s: %s", errGrant, addr, bytes.TrimSpace(msg))
 	}
+	if res.StatusCode == http.StatusNotFound && strings.HasPrefix(what, "files/") {
+		return nil, fmt.Errorf("%w: %s", errNoFile, addr)
+	}
 	return nil, fmt.Errorf("%s answered %d: %s", addr, res.StatusCode, bytes.TrimSpace(msg))
 }
 
@@ -443,6 +458,80 @@ func (h *holders) fetchMap(ctx context.Context) ([]byte, *blockmap.Map, error) {
 		}
 	}
 	return nil, nil, fmt.Errorf("no holder gave the version's map: %w", errors.Join(errs...))
+}
+
+// fetchFiles fetches each of the version's small files whole, from the first holder that has it: one no holder has is
+// left out (the version has none), and one a holder fails to give fails the fetch, to be tried again.
+func (h *holders) fetchFiles(ctx context.Context, names []string) (map[string][]byte, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	out := map[string][]byte{}
+	for _, name := range names {
+		raw, err := h.fetchFile(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if raw != nil {
+			out[name] = raw
+		}
+	}
+	return out, nil
+}
+
+// fetchFile fetches one small file: nil when every holder answers that it has none.
+func (h *holders) fetchFile(ctx context.Context, name string) ([]byte, error) {
+	var errs []error
+	for attempt := 0; attempt < 2; attempt++ {
+		list, grant, gen, err := h.current(ctx)
+		if err != nil {
+			return nil, err
+		}
+		refused, missing := false, 0
+		for _, addr := range list {
+			raw, err := h.fileFrom(ctx, addr, grant, name)
+			if err == nil {
+				return raw, nil
+			}
+			if errors.Is(err, errNoFile) {
+				missing++
+				continue
+			}
+			refused = refused || errors.Is(err, errGrant)
+			errs = append(errs, err)
+		}
+		if missing == len(list) {
+			return nil, nil
+		}
+		if !refused {
+			break
+		}
+		if err := h.refresh(ctx, gen); err != nil {
+			return nil, errors.Join(append(errs, err)...)
+		}
+	}
+	return nil, fmt.Errorf("no holder gave the version's %s: %w", name, errors.Join(errs...))
+}
+
+// errNoFile is a holder answering that the version has no such file.
+var errNoFile = errors.New("the version has no such file")
+
+func (h *holders) fileFrom(ctx context.Context, addr netip.Addr, grant, name string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, mapTimeout)
+	defer cancel()
+	res, err := h.get(ctx, addr, grant, "files/"+url.PathEscape(name), 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxFileBytes {
+		return nil, fmt.Errorf("%s gave a %s of more than %d bytes", addr, name, maxFileBytes)
+	}
+	return raw, nil
 }
 
 func (h *holders) mapFrom(ctx context.Context, addr netip.Addr, grant string) ([]byte, *blockmap.Map, error) {
