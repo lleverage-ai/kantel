@@ -141,7 +141,8 @@ function labelCells(frame: HTMLElement): void {
  * on top with its menu on the right, a checkbox before it where the table has them, and every other cell under them as
  * its heading and value, with the empty ones left out. `bar` sits over the table inside the same container, for what
  * acts on the rows (a selection's actions, Select all for the cards). Too narrow for its columns, the table scrolls
- * sideways in a SideScroll: its cut-off edges are shaded and its scrollbar stays at the bottom of the window.
+ * sideways in a SideScroll: its cut-off edges fade, and its scrollbar is inside its frame, with a pinned
+ * one at the window's bottom while that is out of view.
  *
  * `fill`, for a page that is a list (Sandboxes, Snapshots, Environments, the egress log): the table takes the room the
  * page leaves under its header, filters and notices, and scrolls down in it with its header row stuck, so New and the
