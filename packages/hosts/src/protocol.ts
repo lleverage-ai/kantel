@@ -563,12 +563,25 @@ export interface HostStickyCommitResult {
 	readonly version: string;
 	readonly sizeBytes: number;
 	readonly allocatedBytes: number;
+	/**
+	 * The digest (`sha256:` and hex) of the version's block map (docs/design/disk-store.md, 2b): absent from a host from
+	 * before maps, or when the map took too long to wait for (a capacity report gives it later).
+	 */
+	readonly mapDigest?: string;
 }
 
 /** The versions of one sticky disk a host holds. */
 export interface HostStickyHolding {
 	readonly diskId: string;
-	readonly versions: readonly { readonly version: string; readonly allocatedBytes: number; readonly at: number }[];
+	readonly versions: readonly HostStickyVersionHolding[];
+}
+
+/** A version a host holds: the bytes it takes, when it was made there, and its block map's digest once it has one. */
+export interface HostStickyVersionHolding {
+	readonly version: string;
+	readonly allocatedBytes: number;
+	readonly at: number;
+	readonly mapDigest?: string;
 }
 
 /**

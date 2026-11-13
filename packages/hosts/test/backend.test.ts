@@ -52,6 +52,8 @@ class FakeHost {
 	facts: HostFacts = facts;
 	/** Each sticky disk's newest version it holds. */
 	readonly stickyHeads = new Map<string, string>();
+	/** What its sticky.commit answers beside the version and its sizes (a block map's digest, say). */
+	stickyCommitExtra: Record<string, unknown> = {};
 	/** The phases a create, fork or resume answers with; absent, a host from before it said. */
 	phases?: unknown;
 	/**
@@ -151,7 +153,7 @@ class FakeHost {
 			case "sticky.commit": {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
 				this.stickyHeads.set(String(p.diskId), String(p.version));
-				return answer({ version: p.version, sizeBytes: 100, allocatedBytes: 7 });
+				return answer({ version: p.version, sizeBytes: 100, allocatedBytes: 7, ...this.stickyCommitExtra });
 			}
 			case "sticky.delete":
 				this.stickyHeads.delete(String(p.diskId));
@@ -774,7 +776,7 @@ describe("the compute API on kantel-host hosts", () => {
 	});
 
 	it("attaches sticky disks only on a host that runs them, and commits and deletes them there", async () => {
-		const { service, root, backend } = setup();
+		const { service, api, root, backend } = setup();
 		const disk = await root.createStickyDisk({ name: "ci-cache", sizeGb: 50 });
 		const plain = await service.register({ token: (await root.createHostJoinToken({ name: "old" })).token, facts });
 		new FakeHost(service, plain.hostId).connect();
@@ -804,9 +806,59 @@ describe("the compute API on kantel-host hosts", () => {
 		const sent = (method: string) => host.params.filter((call) => call.method === method).map((call) => call.params);
 		expect(sent("sandbox.create")[0]?.stickyDisks).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50 }]);
 		expect(sandbox.stickyDisks).toEqual([{ diskId: disk.id, name: "ci-cache", path: "/var/lib/ci", state: "mounted" }]);
+		// A host from before block maps answers no digest; one with them, its version's map's, kept with the version. One
+		// that isn't a digest is left out.
 		const version = await root.commitStickyDisk(sandbox.id, "ci-cache");
 		expect(version).toMatchObject({ hostId, sandboxId: sandbox.id, sizeBytes: 100, allocatedBytes: 7 });
 		expect(sent("sticky.commit")).toEqual([{ sandboxId: sandbox.id, diskId: disk.id, version: version.id }]);
+		expect((await api.store.stickyDiskVersions.get(version.id))?.mapDigest).toBeUndefined();
+		host.stickyCommitExtra = { mapDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+		const mapped = await root.commitStickyDisk(sandbox.id, "ci-cache");
+		expect((await api.store.stickyDiskVersions.get(mapped.id))?.mapDigest).toBe(
+			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		);
+		host.stickyCommitExtra = { mapDigest: "sha256:nope" };
+		const odd = await root.commitStickyDisk(sandbox.id, "ci-cache");
+		expect((await api.store.stickyDiskVersions.get(odd.id))?.mapDigest).toBeUndefined();
+		// What a host holds, with each map digest it has: a version whose map was made after its commit gets it there.
+		host.receive(
+			JSON.stringify({
+				type: "heartbeat",
+				heartbeat: {
+					capacity: {
+						freeMemoryMiB: 30_000,
+						freeDiskGiB: 400,
+						running: 1,
+						stopped: 0,
+						load1: 0,
+						warm: {},
+						stickyDisks: [
+							{
+								diskId: disk.id,
+								versions: [
+									{
+										version: odd.id,
+										allocatedBytes: 7,
+										at: 1,
+										mapDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+									},
+									{ version: version.id, allocatedBytes: 7, at: 1, mapDigest: "not a digest" },
+								],
+							},
+						],
+					},
+				},
+			}),
+		);
+		const reported = async () => (await backend.stickyHoldings?.())?.find((report) => report.hostId === hostId);
+		while ((await reported())?.disks === undefined) await new Promise((resolve) => setTimeout(resolve, 1));
+		expect((await reported())?.disks).toEqual([
+			{
+				diskId: disk.id,
+				versions: [odd.id, version.id],
+				mapDigests: { [odd.id]: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+			},
+		]);
 		// A runner pool's beforeCommit runs as root, by the guest's own choice of user; any other command as the default.
 		await backend.exec(sandbox.id, { command: "echo prune", asRoot: true });
 		await backend.exec(sandbox.id, { command: "echo plain" });
