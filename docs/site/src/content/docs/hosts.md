@@ -244,7 +244,7 @@ Put any of these after the token in the join command. `sudo kantel-admin host jo
 
 ### The pool mesh
 
-Hosts in a pool with sync on join a WireGuard mesh with each other, for moving disks between them. Each host makes its key the first time it starts (kept in `/var/lib/kantel-host/mesh`, never sent anywhere) and brings up a device named `kmesh0` with an IPv6 address the control plane gives it. Peers connect directly to each other's addresses on UDP port 51820, IPv6 ones first, so that port must be reachable between the pool's hosts over IPv6 or IPv4. `kantel-host` accepts it itself in iptables. Over the mesh a host accepts only the peer sync port (TCP 7480) from its pool's addresses, forwards nothing, and its sandboxes can't reach it. A host in a pool without sync keeps the device down. The mesh needs `ip6tables` and `/dev/net/tun`.
+Hosts in a pool with sync on join a WireGuard mesh with each other, for moving disks between them. Sync is off by default: turn it on with `kantel-admin pool sync <pool> on` (or `kantel pools sync <pool> on` for an account's own hosts). Each host makes its key the first time it starts (kept in `/var/lib/kantel-host/mesh`, never sent anywhere) and brings up a device named `kmesh0` with an IPv6 address the control plane gives it. Peers connect directly to each other's addresses on UDP port 51820, IPv6 ones first, so that port must be reachable between the pool's hosts over IPv6 or IPv4. `kantel-host` accepts it itself in iptables. Over the mesh a host accepts only the peer sync port (TCP 7480) from its pool's addresses, forwards nothing, and its sandboxes can't reach it. A host in a pool without sync keeps the device down. The mesh needs `ip6tables` and `/dev/net/tun`.
 
 ### Without KVM
 

@@ -16,13 +16,35 @@ var poolArg = []cli.Arg{{Name: "pool"}}
 func poolTable(c *cli.Context, pools []api.Pool) string {
 	var rows [][]string
 	for _, p := range pools {
-		def := ""
+		def, sync := "", ""
 		if p.Default {
 			def = "yes"
 		}
-		rows = append(rows, []string{p.ID, p.Name, def, strconv.FormatInt(p.Hosts, 10)})
+		if p.Sync {
+			sync = "on"
+		}
+		rows = append(rows, []string{p.ID, p.Name, def, sync, strconv.FormatInt(p.Hosts, 10)})
 	}
-	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "HOSTS"}, rows)
+	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "SYNC", "HOSTS"}, rows)
+}
+
+// syncArg is sync's on or off.
+func syncArg(value string) (bool, error) {
+	switch value {
+	case "on":
+		return true, nil
+	case "off":
+		return false, nil
+	}
+	return false, cli.Fail("sync is on or off, not " + value)
+}
+
+// syncWords is how a pool's sync reads.
+func syncWords(p api.Pool) string {
+	if p.Sync {
+		return fmt.Sprintf("%s %s syncs: its hosts join its mesh", p.ID, p.Name)
+	}
+	return fmt.Sprintf("%s %s doesn't sync", p.ID, p.Name)
 }
 
 // poolCall runs a call that answers a pool, and prints it as told.
@@ -91,6 +113,21 @@ func pools() cli.Section {
 				return poolCall(c, func(client *api.Client, raw *json.RawMessage) (*api.Pool, error) {
 					return client.UpdatePool(c.Ctx, c.Arg(0), api.UpdatePoolBody{Default: api.Ptr(true)}, api.Raw(raw))
 				}, func(p api.Pool) string { return fmt.Sprintf("%s %s is the default", p.ID, p.Name) })
+			},
+		},
+		{
+			Name:    "pool sync",
+			Summary: "Turn a pool's sync on or off: its hosts that can join the pool's mesh, a WireGuard network between them",
+			Args:    []cli.Arg{{Name: "pool"}, {Name: "on|off"}},
+			Details: "Off by default. Pools never share a mesh; turned off, its hosts leave it.",
+			Run: func(c *cli.Context) error {
+				sync, err := syncArg(c.Arg(1))
+				if err != nil {
+					return err
+				}
+				return poolCall(c, func(client *api.Client, raw *json.RawMessage) (*api.Pool, error) {
+					return client.UpdatePool(c.Ctx, c.Arg(0), api.UpdatePoolBody{Sync: &sync}, api.Raw(raw))
+				}, syncWords)
 			},
 		},
 		{

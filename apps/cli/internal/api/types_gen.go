@@ -527,6 +527,8 @@ type CreateAccountPoolBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account *string `json:"account,omitempty"`
 	Name    string  `json:"name"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
+	Sync *bool `json:"sync,omitempty"`
 }
 
 type CreateBucketSourceBody struct {
@@ -610,6 +612,8 @@ type CreatePersonalTokenBody struct {
 
 type CreatePoolBody struct {
 	Name string `json:"name"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
+	Sync *bool `json:"sync,omitempty"`
 }
 
 // Any other field is refused as `invalid`.
@@ -1790,6 +1794,8 @@ type Pool struct {
 	ID string `json:"id"`
 	// Its name, unique among its owner's pools.
 	Name string `json:"name"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default.
+	Sync bool `json:"sync"`
 }
 
 type PoolList struct {
@@ -3042,6 +3048,8 @@ type UpdatePoolBody struct {
 	// Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again.
 	Default *bool   `json:"default,omitempty"`
 	Name    *string `json:"name,omitempty"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
+	Sync *bool `json:"sync,omitempty"`
 }
 
 type UpdateSandboxBody struct {

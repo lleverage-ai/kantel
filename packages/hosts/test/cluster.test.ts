@@ -18,7 +18,7 @@ import {
 	type PeerTransport,
 	signPeerRequest,
 } from "../src/cluster.ts";
-import { HOST_CLOSE_REVOKED, type HostSandbox } from "../src/protocol.ts";
+import { HOST_CLOSE_REVOKED, HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
 import { migrateRelay } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore, type HostStore } from "../src/store.ts";
@@ -58,6 +58,10 @@ function cluster(options: { now?: () => number; store?: ClusterStore } = {}) {
 			return peer(to.id).openPort(hostId, sandboxId, port, sink);
 		},
 		rewelcome: async (to, hostId, welcome) => peer(to.id).rewelcome(hostId, welcome),
+		remesh: async (to, hostId) => {
+			forwarded.push(`${to.id} remesh`);
+			peer(to.id).remesh(hostId);
+		},
 		disconnect: async (to, hostId, code, reason) => peer(to.id).disconnect(hostId, code, reason),
 	};
 	const replica = async (id: string) => {
@@ -172,6 +176,36 @@ describe("gateway replicas", () => {
 			await tick();
 		}
 		expect((await b.service.sandboxes.create({ tier: "microvm" })).hostId).toBe(hostId);
+	});
+
+	it("send a host its mesh peers through the replica holding it when its pool changes on another", async () => {
+		const { replica, join, forwarded } = cluster();
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		for (const { service } of [a, b]) {
+			service.useCompute({
+				secrets: async () => undefined,
+				recordEgress: async () => undefined,
+				poolSync: async () => true,
+			});
+		}
+		const key = (byte: number) => btoa(String.fromCharCode(...new Uint8Array(32).fill(byte)));
+		const meshHost = async (service: HostsService, byte: number) => {
+			const hostId = await join(service);
+			await service.update(hostId, { poolId: "pool_ci" });
+			const host = new FakeHost(service, hostId, [HOST_FEATURES.mesh]);
+			host.moreFacts = { mesh: { publicKey: key(byte), listenPort: 51820, endpoints: [`[2001:db8::${byte}]:51820`] } };
+			host.connect();
+			await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+			return host;
+		};
+		const onA = await meshHost(a.service, 1);
+		// A host joining on B, before B's refresh has seen the host on A: that one is sent its peers by A, as B asks.
+		const onB = await meshHost(b.service, 2);
+		await vi.waitFor(() =>
+			expect(onA.sent.filter((message) => message.type === "mesh.peers").at(-1)?.peers?.[0]?.hostId).toBe(onB.hostId),
+		);
+		expect(forwarded).toContain("rep_a remesh");
 	});
 
 	it("drain and revoke a host from any replica", async () => {

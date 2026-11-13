@@ -48,6 +48,11 @@ export interface PoolServiceOptions {
 	readonly now: () => number;
 	/** Every host as it is now (the service's `ensureHosts`), for how many each pool holds and what may be deleted. */
 	readonly hosts: () => Promise<readonly StoredHost[]>;
+	/**
+	 * A call set a pool's sync, on or off, changed or not: its hosts are brought into its mesh or taken out
+	 * (`SandboxBackend.updatePool`). A rejection is answered `unavailable`, the sync kept. Absent, nothing is told.
+	 */
+	readonly syncChanged?: (poolId: string, sync: boolean) => Promise<void>;
 	/** Refuses with `not_supported` while account hosts are off (`KANTEL_ACCOUNT_HOSTS`). */
 	readonly requireAccountHosts: () => void;
 	/** Does `work` once for the call's `Idempotency-Key` and request, answering a retry the first answer (the service's). */
@@ -125,6 +130,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			...(pool.owner === OPERATOR_POOLS ? {} : { accountId: pool.owner }),
 			default: pool.id === chosen?.id,
 			hosts: hosts.filter((host) => host.poolId === pool.id && host.state !== "revoked").length,
+			sync: pool.sync === true,
 			createdAt: pool.createdAt,
 		}));
 	}
@@ -136,10 +142,17 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		return view;
 	}
 
-	async function create(owner: string, name: string): Promise<computeSchema.Pool> {
+	async function create(owner: string, name: string, sync: boolean | undefined): Promise<computeSchema.Pool> {
 		// The default first, so an owner's first pool made by hand is never its default by accident.
 		await poolsOf(owner);
-		const pool: StoredPool = { id: randomId("pool"), owner, name, createdAt: now() };
+		// A new pool has no hosts, so no mesh to tell of its sync.
+		const pool: StoredPool = {
+			id: randomId("pool"),
+			owner,
+			name,
+			createdAt: now(),
+			...(sync === true ? { sync } : {}),
+		};
 		await naming(owner, name, () => store.pools.insert(pool));
 		return viewOf(pool);
 	}
@@ -148,13 +161,30 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		// Past every default the owner has had, so it is the default whatever the clocks of the gateways that made those.
 		const latest = Math.max(now(), ...(await poolsOf(pool.owner)).map((other) => (other.defaultAt ?? 0) + 1));
 		const changed = await naming(pool.owner, body.name ?? pool.name, () =>
-			store.pools.update(pool.id, (current) => ({
-				...current,
-				...(body.name === undefined ? {} : { name: body.name }),
-				...(body.default === true ? { defaultAt: latest } : {}),
-			})),
+			store.pools.update(pool.id, (current) => {
+				const { sync: _was, ...rest } = current;
+				const sync = body.sync ?? current.sync === true;
+				return {
+					...rest,
+					...(body.name === undefined ? {} : { name: body.name }),
+					...(body.default === true ? { defaultAt: latest } : {}),
+					...(sync ? { sync: true } : {}),
+				};
+			}),
 		);
 		if (changed === undefined) throw new KantelError("not_found", "No such pool");
+		// Its hosts are told once it is written, each reading the pool's sync as it is then, whenever a call sets it, changed
+		// or not: a call whose telling failed is answered so, and the same call again tells them again.
+		if (body.sync !== undefined && options.syncChanged !== undefined) {
+			try {
+				await options.syncChanged(pool.id, changed.sync === true);
+			} catch (error) {
+				throw new KantelError(
+					"unavailable",
+					`The pool's sync is saved, but its hosts couldn't all be told (${error instanceof Error ? error.message : String(error)}): try again`,
+				);
+			}
+		}
 		return viewOf(changed);
 	}
 
@@ -207,7 +237,9 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		},
 		createPool: async (principal, { body, idempotencyKey }) => {
 			requireScope(principal, "hosts:admin");
-			return options.once(principal, "createPool", { body, idempotencyKey }, () => create(OPERATOR_POOLS, body.name));
+			return options.once(principal, "createPool", { body, idempotencyKey }, () =>
+				create(OPERATOR_POOLS, body.name, body.sync),
+			);
 		},
 		updatePool: async (principal, { params, body }) => {
 			requireScope(principal, "hosts:admin");
@@ -228,7 +260,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
 			return options.once(principal, "createAccountPool", { body, idempotencyKey }, () =>
-				create(account.id, body.name),
+				create(account.id, body.name, body.sync),
 			);
 		},
 		updateAccountPool: async (principal, { params, body }) =>

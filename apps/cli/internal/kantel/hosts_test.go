@@ -84,8 +84,12 @@ func TestPoolsAndHostsMove(t *testing.T) {
 		"GET /v1/pools": func(call) any {
 			return map[string]any{"items": []any{pool("pool_acc_org", "default", true), pool("pool_ci", "ci", false)}}
 		},
-		"POST /v1/pools":           func(c call) any { return pool("pool_ci", c.Body["name"].(string), false) },
-		"PATCH /v1/pools/pool_ci":  func(c call) any { return pool("pool_ci", "builds", c.Body["default"] == true) },
+		"POST /v1/pools": func(c call) any { return pool("pool_ci", c.Body["name"].(string), false) },
+		"PATCH /v1/pools/pool_ci": func(c call) any {
+			p := pool("pool_ci", "builds", c.Body["default"] == true)
+			p["sync"] = c.Body["sync"] == true
+			return p
+		},
 		"DELETE /v1/pools/pool_ci": func(call) any { return nil },
 		"PATCH /v1/hosts/host_own1": func(c call) any {
 			return ownHost(map[string]any{"state": "draining", "poolId": "pool_ci"})
@@ -109,6 +113,15 @@ func TestPoolsAndHostsMove(t *testing.T) {
 	eq(t, "rename out", renamed.Stdout, "pool_ci is now builds.\n")
 	defaulted := run(t, []string{"pools", "default", "pool_ci"}, opts{routes: r})
 	jsonEq(t, "default", defaulted.Calls[0].Body, `{"default":true}`)
+	synced := run(t, []string{"pools", "sync", "pool_ci", "on"}, opts{routes: r})
+	jsonEq(t, "sync", synced.Calls[0].Body, `{"sync":true}`)
+	eq(t, "sync out", synced.Stdout, "builds (pool_ci) syncs: its hosts join its mesh.\n")
+	unsynced := run(t, []string{"pools", "sync", "pool_ci", "off"}, opts{routes: r})
+	jsonEq(t, "unsync", unsynced.Calls[0].Body, `{"sync":false}`)
+	eq(t, "unsync out", unsynced.Stdout, "builds (pool_ci) doesn't sync.\n")
+	wrong := run(t, []string{"pools", "sync", "pool_ci", "yes"}, opts{routes: r})
+	eq(t, "wrong exit", wrong.Code, 1)
+	eq(t, "wrong calls", len(wrong.Calls), 0)
 	removed := run(t, []string{"pools", "rm", "pool_ci"}, opts{routes: r})
 	eq(t, "rm calls", strings.Join(lines(removed.Calls), ", "), "DELETE /v1/pools/pool_ci")
 	missing := run(t, []string{"pools", "rm", "nowhere", "--account", "acc_org"}, opts{routes: r})

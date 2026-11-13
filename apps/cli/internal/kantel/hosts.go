@@ -141,13 +141,16 @@ func poolID(c *cli.Context, client *api.Client, ref string) (string, error) {
 func poolTable(c *cli.Context, pools []api.Pool) string {
 	var rows [][]string
 	for _, p := range pools {
-		def := ""
+		def, sync := "", ""
 		if p.Default {
 			def = "yes"
 		}
-		rows = append(rows, []string{p.ID, p.Name, def, fmt.Sprint(p.Hosts)})
+		if p.Sync {
+			sync = "on"
+		}
+		rows = append(rows, []string{p.ID, p.Name, def, sync, fmt.Sprint(p.Hosts)})
 	}
-	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "HOSTS"}, rows)
+	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "SYNC", "HOSTS"}, rows)
 }
 
 // poolCommand runs a call that answers a pool on the pool its first argument names, and prints it.
@@ -411,6 +414,29 @@ func ownHosts() cli.Section {
 				return poolCommand(c, func(client *api.Client, id string, raw *json.RawMessage) (*api.Pool, error) {
 					return client.UpdateAccountPool(c.Ctx, id, api.UpdatePoolBody{Default: api.Ptr(true)}, api.Raw(raw))
 				}, func(p api.Pool) string { return fmt.Sprintf("%s (%s) is the default pool.", p.Name, p.ID) })
+			},
+		},
+		{
+			Name: "pools sync", Summary: "Turn one of your pools' sync on or off: its hosts that can join the pool's mesh",
+			Args:    []cli.Arg{{Name: "pool"}, {Name: "on|off"}},
+			Details: "The mesh is a WireGuard network between a pool's hosts alone. Off by default; turned off, its hosts leave it.",
+			Run: func(c *cli.Context) error {
+				var sync bool
+				switch c.Arg(1) {
+				case "on":
+					sync = true
+				case "off":
+				default:
+					return cli.Fail("sync is on or off, not " + c.Arg(1))
+				}
+				return poolCommand(c, func(client *api.Client, id string, raw *json.RawMessage) (*api.Pool, error) {
+					return client.UpdateAccountPool(c.Ctx, id, api.UpdatePoolBody{Sync: &sync}, api.Raw(raw))
+				}, func(p api.Pool) string {
+					if p.Sync {
+						return fmt.Sprintf("%s (%s) syncs: its hosts join its mesh.", p.Name, p.ID)
+					}
+					return fmt.Sprintf("%s (%s) doesn't sync.", p.Name, p.ID)
+				})
 			},
 		},
 		{

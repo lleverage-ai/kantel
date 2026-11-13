@@ -3834,6 +3834,11 @@ export const Pool = Type.Object(
 			description: "Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool.",
 		}),
 		hosts: Type.Integer({ minimum: 0, description: "How many hosts are in it, revoked ones not counted." }),
+		sync: Type.Boolean({
+			description:
+				"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
+				"pool's hosts alone. Off by default.",
+		}),
 		createdAt: Timestamp,
 	},
 	{
@@ -3848,13 +3853,19 @@ export const PoolList = Type.Object({ items: Type.Array(Pool) }, { title: "PoolL
 
 export const PoolPath = Type.Object({ poolId: id("The pool's ID or name.") }, { title: "PoolPath" });
 
+const poolSync = Type.Boolean({
+	description:
+		"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
+		"pool's hosts alone. Turned off, they leave it.",
+});
+
 export const CreatePoolBody = Type.Object(
-	{ name: Type.String({ pattern: POOL_NAME_PATTERN }) },
+	{ name: Type.String({ pattern: POOL_NAME_PATTERN }), sync: Type.Optional(poolSync) },
 	{ title: "CreatePoolBody" },
 );
 
 export const CreateAccountPoolBody = Type.Object(
-	{ account: accountQuery, name: Type.String({ pattern: POOL_NAME_PATTERN }) },
+	{ account: accountQuery, name: Type.String({ pattern: POOL_NAME_PATTERN }), sync: Type.Optional(poolSync) },
 	{ title: "CreateAccountPoolBody" },
 );
 
@@ -3868,6 +3879,7 @@ export const UpdatePoolBody = Type.Object(
 					"change it again.",
 			}),
 		),
+		sync: Type.Optional(poolSync),
 	},
 	{ title: "UpdatePoolBody" },
 );

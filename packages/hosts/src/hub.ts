@@ -39,6 +39,7 @@ import {
 	type HostEvent,
 	type HostFileOpen,
 	type HostHello,
+	type HostMeshPeer,
 	type HostMessage,
 	HostMethods,
 	type HostMountStatus,
@@ -215,6 +216,12 @@ export interface HostHubOptions {
 	 * while a hello is being answered are read again once it is welcomed.
 	 */
 	welcomeNow?(hostId: string): Promise<HostWelcome>;
+	/**
+	 * The host's mesh peers as its pool has them now (`HOST_FEATURES.mesh`): what `remesh` sends as `mesh.peers`, read
+	 * afresh in turn with the welcomes, so an older list never lands after a newer one. Undefined sends nothing (a host
+	 * without the mesh); an empty list is no peers (its pool's sync is off).
+	 */
+	meshPeersNow?(hostId: string): Promise<readonly HostMeshPeer[] | undefined>;
 	/** Default 120 s: a cold boot and a template build are slow. */
 	readonly callTimeoutMs?: number;
 	/** How long a host may take to say hello. Default 30 s. */
@@ -236,6 +243,11 @@ export interface HostHub {
 	openFile(hostId: string, params: FileOpenParams, sink: PortSink): Promise<OpenedFile>;
 	/** Sends a welcome again, such as with a drain or a desired version. */
 	rewelcome(hostId: string, welcome: HostWelcome): void;
+	/**
+	 * Sends the host its mesh peers as they are now (`mesh.peers`, read with `meshPeersNow`). Mid-hello it waits for the
+	 * welcome, which is read again once sent (with `welcomeNow`) and carries the peers.
+	 */
+	remesh(hostId: string): void;
 	disconnect(hostId: string, code: number, reason: string): void;
 	closeAll(code: number, reason: string): void;
 }
@@ -351,6 +363,24 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			try {
 				const welcome = await read(connection.hostId);
 				send(connection, { type: "welcome", welcome });
+			} catch {
+				// A host revoked meanwhile is disconnected by its revoke.
+			}
+		});
+	};
+
+	/**
+	 * Sends the host its mesh peers as they are now (`meshPeersNow`), in turn with its welcomes: the list sent last was
+	 * read after the last change that asked for one.
+	 */
+	const sendPeers = (connection: Connection) => {
+		const read = options.meshPeersNow;
+		if (read === undefined) return;
+		connection.rewelcoming = (connection.rewelcoming ?? Promise.resolve()).then(async () => {
+			if (connection.closed) return;
+			try {
+				const peers = await read(connection.hostId);
+				if (peers !== undefined) send(connection, { type: "mesh.peers", peers });
 			} catch {
 				// A host revoked meanwhile is disconnected by its revoke.
 			}
@@ -946,6 +976,16 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			if (!connection.welcomed) connection.later = read ? true : welcome;
 			else if (read) refresh(connection);
 			else send(connection, { type: "welcome", welcome });
+		},
+		remesh(hostId) {
+			const connection = held.get(hostId);
+			if (connection === undefined || connection.closed) return;
+			// Mid-hello, the welcome read again once it is sent carries the peers as they are then.
+			if (!connection.welcomed) {
+				if (options.welcomeNow !== undefined) connection.later = true;
+				return;
+			}
+			sendPeers(connection);
 		},
 		disconnect(hostId, code, reason) {
 			const connection = held.get(hostId);
