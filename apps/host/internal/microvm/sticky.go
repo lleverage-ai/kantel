@@ -521,14 +521,25 @@ type stickyVersion struct {
 }
 
 // stickyVersions are the versions of a disk the host holds, newest (last published) first. Files being written (named
-// with a leading dot) aren't versions.
+// with a leading dot) aren't versions. A version it can't read is left out: for a clone or a prune, which read again.
 func (m *Manager) stickyVersions(diskID string) []stickyVersion {
+	held, _ := m.listStickyVersions(diskID)
+	return held
+}
+
+// listStickyVersions is stickyVersions with whether it read every version: an error when the disk's directory or a
+// version's file couldn't be read (one gone meanwhile, deleted, isn't held), with what it could read.
+func (m *Manager) listStickyVersions(diskID string) ([]stickyVersion, error) {
 	entries, err := os.ReadDir(filepath.Join(m.stickyRoot(), diskID))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	order := m.readStickyOrder(diskID)
 	var out []stickyVersion
+	var failed error
 	for _, e := range entries {
 		name := e.Name()
 		version, ok := strings.CutSuffix(name, ".img")
@@ -536,7 +547,10 @@ func (m *Manager) stickyVersions(diskID string) []stickyVersion {
 			continue
 		}
 		var st syscall.Stat_t
-		if syscall.Stat(filepath.Join(m.stickyRoot(), diskID, name), &st) != nil {
+		if err := syscall.Stat(filepath.Join(m.stickyRoot(), diskID, name), &st); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) && failed == nil {
+				failed = fmt.Errorf("stat %s: %w", name, err)
+			}
 			continue
 		}
 		out = append(out, stickyVersion{version: version, seq: order.Seq[version], at: st.Mtim.Sec*1000 + st.Mtim.Nsec/1e6, allocated: st.Blocks * 512})
@@ -550,7 +564,7 @@ func (m *Manager) stickyVersions(diskID string) []stickyVersion {
 		}
 		return out[i].version > out[j].version
 	})
-	return out
+	return out, failed
 }
 
 // cloneStickyVersion clones a version of the disk the host holds to dst: want, else (no version asked, or one this
@@ -903,20 +917,29 @@ func (m *Manager) stickyCommitsOf(diskID string) []string {
 	return out
 }
 
-// StickyHoldings are the sticky disk versions the host holds, by disk ID, each disk's newest first: [] when none.
-// Unlocked, so a long clone never holds up a capacity report: a version committed or deleted meanwhile is in the
-// next.
+// StickyHoldings are the sticky disk versions the host holds, by disk ID, each disk's newest first: [] when none (no
+// sticky root yet included). Nil, which a report leaves out, when any of it couldn't be read: the control plane takes
+// a version missing from a report as deleted, so a report lists every version or says nothing. Unlocked, so a long
+// clone never holds up a capacity report: a version committed or deleted meanwhile is in the next.
 func (m *Manager) StickyHoldings() []proto.StickyDiskHolding {
 	out := []proto.StickyDiskHolding{}
 	entries, err := os.ReadDir(m.stickyRoot())
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return out
+	}
+	if err != nil {
+		m.log.Warn("sticky disk holdings left out of the report: their directory can't be read", "error", err)
+		return nil
 	}
 	for _, e := range entries {
 		if !e.IsDir() || !validID(e.Name()) {
 			continue
 		}
-		held := m.stickyVersions(e.Name())
+		held, err := m.listStickyVersions(e.Name())
+		if err != nil {
+			m.log.Warn("sticky disk holdings left out of the report: a disk's versions can't be read", "disk", e.Name(), "error", err)
+			return nil
+		}
 		if len(held) == 0 {
 			continue
 		}

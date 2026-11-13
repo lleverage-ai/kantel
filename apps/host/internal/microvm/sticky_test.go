@@ -499,3 +499,52 @@ func TestRecoveryThawWaitsForACommit(t *testing.T) {
 		f.s.meta.State = proto.StateRunning
 	}
 }
+
+// A capacity report lists sticky holdings only from an inventory read in full: a missing root is holding none ([] on
+// the wire), and a disk directory or version file that can't be read leaves the field out (absent, not []), as the
+// control plane forgets a version missing from a report.
+func TestStickyHoldingsOnlyFromACompleteInventory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads whatever the permissions say")
+	}
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	wire := func() string {
+		raw, _ := json.Marshal(proto.Capacity{StickyDisks: m.StickyHoldings()})
+		return string(raw)
+	}
+	if got := wire(); !strings.Contains(got, `"stickyDisks":[]`) {
+		t.Fatalf("no sticky root: %s, want an empty list", got)
+	}
+	dir := filepath.Join(m.stickyRoot(), "ci")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"v1", "v2"} {
+		if err := os.WriteFile(filepath.Join(dir, v+".img"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if held := m.StickyHoldings(); len(held) != 1 || len(held[0].Versions) != 2 {
+		t.Fatalf("holdings %+v, want ci's two versions", held)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	// Unreadable, then listable but each file's stat refused (no search permission).
+	for _, mode := range []os.FileMode{0, 0o600} {
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		if held := m.StickyHoldings(); held != nil {
+			t.Fatalf("mode %o: holdings %+v, want none reported", mode, held)
+		}
+		if got := wire(); strings.Contains(got, "stickyDisks") {
+			t.Fatalf("mode %o: %s, want the field left out", mode, got)
+		}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if held := m.StickyHoldings(); len(held) != 1 || len(held[0].Versions) != 2 {
+		t.Fatalf("holdings %+v once readable again", held)
+	}
+}

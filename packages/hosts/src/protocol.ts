@@ -527,7 +527,10 @@ export interface HostCapacity {
 	readonly disk?: HostDiskUsage;
 	/** Its memory: what sandboxes were given, use and may soon use, and what the machine has left. Absent from an older host. */
 	readonly memory?: HostMemoryReport;
-	/** The sticky disk versions it holds (`HOST_FEATURES.stickyDisks`). Absent from a host without them. */
+	/**
+	 * The sticky disk versions it holds (`HOST_FEATURES.stickyDisks`), [] for none. Absent from a host without them, and
+	 * from a report whose inventory the host couldn't read in full: no evidence, so nothing is forgotten on it.
+	 */
 	readonly stickyDisks?: readonly HostStickyHolding[];
 }
 
