@@ -261,11 +261,10 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		// A pool with a host moving to it isn't deleted.
 		expect((await failure(root.deletePool("ci"))).code).toBe("conflict");
 
-		// Its last sandbox gone, it joins the pool and takes sandboxes again.
+		// Its last sandbox gone, it joins the pool and takes sandboxes again, with nothing else reading hosts.
 		await tom.deleteSandbox(sandbox.id);
 		await served.service.idle();
-		await root.listHosts();
-		await served.service.idle();
+		expect(await store.hosts.get(STUB_HOST_ID)).toMatchObject({ state: "online", poolId: ci.id });
 		const moved = await root.getHost(STUB_HOST_ID);
 		expect(moved).toMatchObject({ state: "online", poolId: ci.id });
 		expect(moved).not.toHaveProperty("movingTo");
@@ -288,12 +287,68 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		await root.createPool({ name: "ci" });
 		await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
 		await root.updateHost(STUB_HOST_ID, { pool: "ci" });
+		// It can't take sandboxes again while it is moving.
+		expect((await failure(root.updateHost(STUB_HOST_ID, { draining: false }))).code).toBe("conflict");
 		const cancelled = await root.updateHost(STUB_HOST_ID, { pool: "default" });
 		expect(cancelled).toMatchObject({ state: "draining", poolId: firstPoolId(OPERATOR_POOLS) });
 		expect(cancelled).not.toHaveProperty("movingTo");
 		// Another account's pool isn't the host's to move to.
 		await tom.createAccountPool({ name: "mine" });
 		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "mine" }))).code).toBe("not_found");
+	});
+
+	it("waits for a create still under way on the host, and the sweep finishes the move", async () => {
+		const store = await make();
+		const made = hostsBackend();
+		let placing: string | undefined;
+		const backend: SandboxBackend = {
+			...made.backend,
+			placedOn: async (sandboxId) => (sandboxId === placing ? STUB_HOST_ID : undefined),
+		};
+		const { api, root, tom } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		// A create the host is making, whose record doesn't name the host yet.
+		const sandbox = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		await store.sandboxes.update(sandbox.id, ({ hostId: _host, ...rest }) => ({ ...rest, state: "starting" }));
+		placing = sandbox.id;
+		expect(await root.updateHost(STUB_HOST_ID, { pool: "ci" })).toMatchObject({ state: "draining", movingTo: ci.id });
+
+		// It is gone (by a path that doesn't finish moves itself): the sweep does.
+		placing = undefined;
+		await store.sandboxes.update(sandbox.id, (current) => ({ ...current, state: "deleted" }));
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await store.hosts.get(STUB_HOST_ID)).toMatchObject({ state: "online", poolId: ci.id });
+	});
+
+	it("tells the registry again where a finished move's call to it failed", async () => {
+		const store = await make();
+		const made = hostsBackend();
+		let refuse = true;
+		const told: Told[] = [];
+		const backend: SandboxBackend = {
+			...made.backend,
+			updateHost: async (hostId, change) => {
+				if (change.draining === false && refuse) {
+					refuse = false;
+					throw new Error("the registry is away");
+				}
+				told.push({ hostId, ...change });
+				await made.backend.updateHost?.(hostId, change);
+			},
+		};
+		const { api, root } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await api.service.idle();
+		told.splice(0);
+		// Nothing on it: it moves at once here, though the registry didn't hear.
+		expect(await root.updateHost(STUB_HOST_ID, { pool: "ci" })).toMatchObject({ state: "online", poolId: ci.id });
+		expect(made.registry.get(STUB_HOST_ID)).not.toBe(ci.id);
+		await root.listHosts();
+		await api.service.idle();
+		expect(told).toContainEqual({ hostId: STUB_HOST_ID, poolId: ci.id, draining: false });
+		expect(made.registry.get(STUB_HOST_ID)).toBe(ci.id);
 	});
 
 	it("deletes an account's pools with the account", async () => {

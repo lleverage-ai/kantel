@@ -173,6 +173,21 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			);
 		}
 		await store.pools.delete(pool.id);
+		// A host another gateway put in it meanwhile (a join, or a move) goes to the default, and a move to it ends: no
+		// host is left in a pool that has gone.
+		const fallback = await defaultPool(pool.owner);
+		for (const host of await store.hosts.list()) {
+			if (host.poolId !== pool.id && host.movingTo !== pool.id) continue;
+			await store.hosts.update(host.id, (current) => {
+				if (current.poolId !== pool.id && current.movingTo !== pool.id) return undefined;
+				const { movingTo, ...rest } = current;
+				return {
+					...rest,
+					poolId: current.poolId === pool.id ? fallback.id : current.poolId,
+					...(movingTo === undefined || movingTo === pool.id ? {} : { movingTo }),
+				};
+			});
+		}
 		return undefined;
 	}
 

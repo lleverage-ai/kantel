@@ -2708,8 +2708,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const host of capabilities.hosts) {
 				const record = byId.get(host.id);
 				if (record === undefined || record.state === "revoked") continue;
-				// The registry keeps each host's pool too, for what runs on the hosts (the mesh): told where it differs.
-				if (record.poolId !== undefined && host.poolId !== record.poolId) tellPool(record.id, record.poolId);
+				// The registry keeps each host's pool too, for what runs on the hosts (the mesh): told where it differs, or
+				// where a finished move's undrain didn't reach it.
+				const redrain = undrain.has(record.id) && record.state === "online";
+				if (record.poolId !== undefined && (host.poolId !== record.poolId || redrain)) {
+					tellPool(record.id, record.poolId);
+				}
 				// A move whose host has drained finishes.
 				if (record.movingTo !== undefined) finishMoveSoon(record.id);
 			}
@@ -2726,61 +2730,101 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return token;
 	}
 
-	// The pool each host's registry was told (`tellPool`), and the moves being finished (`finishMoveSoon`), by host.
+	// The pool each host's registry was told (`tellPool`); the hosts whose registry still has a finished move's drain
+	// (`finishMove`); and the moves being finished (`finishMoveSoon`).
 	const told = new Map<string, string>();
+	const undrain = new Set<string>();
 	const finishing = new Set<string>();
 
 	/**
 	 * Tells the backend's registry the pool a host is in, in the background: once per pool from this gateway, so a
-	 * backend that keeps no pool for it (a routed backend's other side) isn't asked again on every read. A failure is
-	 * tried again on a later read.
+	 * backend that keeps no pool for it (a routed backend's other side) isn't asked again on every read; and that it isn't
+	 * draining, where a finished move's own call to say so failed. A failure is tried again on a later read.
 	 */
 	function tellPool(hostId: string, poolId: string): void {
 		const updateHost = backend.updateHost?.bind(backend);
-		if (updateHost === undefined || told.get(hostId) === poolId) return;
+		const undraining = undrain.has(hostId);
+		if (updateHost === undefined || (told.get(hostId) === poolId && !undraining)) return;
 		told.set(hostId, poolId);
 		keepGoing(
-			updateHost(hostId, { poolId }).catch((error: unknown) => {
-				if (told.get(hostId) === poolId) told.delete(hostId);
-				throw error;
-			}),
+			updateHost(hostId, { poolId, ...(undraining ? { draining: false } : {}) }).then(
+				() => {
+					if (undraining) undrain.delete(hostId);
+				},
+				(error: unknown) => {
+					if (told.get(hostId) === poolId) told.delete(hostId);
+					throw error;
+				},
+			),
 		);
 	}
 
-	/** Finishes a host's move in the background (`finishMove`), once at a time. */
+	/** Finishes a host's move in the background (`finishMove`), once at a time from this gateway. */
 	function finishMoveSoon(hostId: string): void {
 		if (finishing.has(hostId)) return;
 		finishing.add(hostId);
 		keepGoing(
 			(async () => {
 				const host = await store.hosts.get(hostId);
-				if (host !== undefined) await finishMove(host);
+				if (host?.movingTo !== undefined) await finishMove(host);
 			})().finally(() => finishing.delete(hostId)),
 		);
 	}
 
 	/**
-	 * A host's move to another pool (`movingTo`), finished once no sandbox is left on it: it joins the pool, in the
-	 * registry and here, and takes new sandboxes again. One whose pool has gone since stays where it is, draining.
-	 * Answers the host as it is then.
+	 * Whether a host holds a sandbox: one whose record names it, in any state but `deleted`, or a create or fork under way
+	 * there that doesn't name it yet, found by where its backend placed it (as `strandOn` finds them).
+	 */
+	async function holdsSandboxes(hostId: string): Promise<boolean> {
+		const named = await store.sandboxes.list({ hostId });
+		if (named.some((sandbox) => NOT_DELETED.includes(sandbox.state))) return true;
+		if (backend.placedOn === undefined) return false;
+		const starting = (await store.sandboxes.list({ state: "starting" })).filter(
+			(sandbox) => sandbox.hostId === undefined,
+		);
+		for (const sandbox of starting) {
+			if ((await backend.placedOn(sandbox.id)) === hostId) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * A host's move to another pool (`movingTo`), finished once it holds no sandbox: it joins the pool and takes new
+	 * sandboxes again, here first (only from the move as read: a move cancelled or changed meanwhile is left), then in the
+	 * registry, which a later read tells again should that fail (`tellPool`). One whose pool has gone since stays where
+	 * it is, draining. Answers the host as it is then.
 	 */
 	async function finishMove(host: StoredHost): Promise<StoredHost> {
 		const target = host.movingTo;
 		if (target === undefined || host.state === "revoked") return host;
-		const held = (await store.sandboxes.list({ hostId: host.id })).filter((sandbox) =>
-			NOT_DELETED.includes(sandbox.state),
-		);
-		if (held.length > 0) return host;
+		if (await holdsSandboxes(host.id)) return host;
 		const pool = await store.pools.get(target);
 		const into = pool !== undefined && pool.owner === poolOwnerOf(host);
-		if (into) await backend.updateHost?.(host.id, { poolId: target, draining: false });
 		const moved = await store.hosts.update(host.id, (current) => {
 			if (current.movingTo !== target || current.state === "revoked") return undefined;
 			const { movingTo: _moved, ...rest } = current;
 			if (!into) return rest;
 			return { ...rest, poolId: target, state: current.state === "draining" ? "online" : current.state };
 		});
-		return moved ?? host;
+		if (moved === undefined) return (await store.hosts.get(host.id)) ?? host;
+		const updateHost = backend.updateHost?.bind(backend);
+		if (into && updateHost !== undefined) {
+			try {
+				await updateHost(host.id, { poolId: target, draining: false });
+				told.set(host.id, target);
+			} catch {
+				told.delete(host.id);
+				undrain.add(host.id);
+			}
+		}
+		return moved;
+	}
+
+	/** Finishes the moves whose hosts have drained: the sweep's, for a host whose last sandbox went with nothing reading. */
+	async function finishMoves(): Promise<void> {
+		for (const host of await store.hosts.list()) {
+			if (host.movingTo !== undefined && host.state !== "revoked") finishMoveSoon(host.id);
+		}
 	}
 
 	/**
@@ -6102,6 +6146,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (moving && body.draining === false) {
 			throw new KantelError("invalid", "A host moving to another pool drains first: leave out draining");
 		}
+		// Taking sandboxes again while a move waits for it to drain would never let it: the move is cancelled first.
+		if (!moving && body.draining === false && host.movingTo !== undefined && into === undefined) {
+			throw new KantelError(
+				"conflict",
+				"The host is moving to another pool: cancel the move (move it to its own pool) before it takes sandboxes again",
+			);
+		}
 		const draining = moving ? true : body.draining;
 		await backend.updateHost?.(host.id, {
 			...(body.name === undefined ? {} : { name: body.name }),
@@ -8750,6 +8801,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						);
 						if (!("moved" in result)) return;
 						const deleted = result.moved;
+						// Its host may be moving to another pool, waiting for its last sandbox to go.
+						if (deleted.hostId !== undefined) finishMoveSoon(deleted.hostId);
 						await emit("sandbox.deleted", deleted.accountId, {
 							sandbox: deleted,
 							data: { previousState: current.state, actor: actorOf(principal) },
@@ -11197,6 +11250,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async sweep() {
 			const at = now();
 			keepGoing(sweepStickyDisks().catch(() => undefined));
+			// Moves to another pool whose hosts have drained.
+			keepGoing(finishMoves());
 			// The GitHub runner broker's pass, when one is due: in the background, as it calls hosts and GitHub.
 			if (runnerSettings !== undefined && at >= runnersDueAt) {
 				runnersDueAt = at + IDLE_RUNNER_PASS_MS;
