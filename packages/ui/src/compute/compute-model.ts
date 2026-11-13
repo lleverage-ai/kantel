@@ -1871,6 +1871,39 @@ export interface Host {
 	readonly memory?: HostMemory;
 	/** The most bytes of saved snapshots each account may keep on it. Absent: no limit. */
 	readonly savedSnapshotLimitBytes?: number;
+	/** The pool it is in (`Pool`). Absent from a host the control plane hasn't put in one yet: its owner's default. */
+	readonly poolId?: string;
+}
+
+/**
+ * A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account starts
+ * with one named `default`. New hosts join the default pool unless their join names another.
+ */
+export interface Pool {
+	readonly id: string;
+	/** Lower-case letters, digits and dashes, unique among its owner's pools. */
+	readonly name: string;
+	/** Its owner's default pool: where a host joins, and a sandbox goes, naming no pool. */
+	readonly default: boolean;
+	/** How many hosts are in it. */
+	readonly hosts: number;
+	readonly createdAt: number;
+}
+
+/** A pool's name as the API takes it: lower-case letters, digits and dashes, starting and ending with a letter or digit. */
+export const POOL_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** Reads and changes the pools hosts are in. */
+export interface PoolsSource {
+	/** Every pool, the default among them. */
+	list(): Promise<readonly Pool[]>;
+	/** An empty pool; refused when the name is taken. */
+	create(name: string): Promise<Pool>;
+	rename(id: string, name: string): Promise<Pool>;
+	/** Makes it the default, in place of the one that was. */
+	makeDefault(id: string): Promise<Pool>;
+	/** Only an empty pool that isn't the default: refused otherwise, with the reason. */
+	remove(id: string): Promise<void>;
 }
 
 /**
@@ -1945,7 +1978,12 @@ export interface HostsSource {
 	/** Where hosts reach the control plane, when this person may change it: the deployment's hosts, a super-admin's. */
 	readonly publicUrl?: PublicUrlSource;
 	/** A join token for a new host, and the command with it in. */
-	join(input: { readonly name?: string; readonly labels?: Readonly<Record<string, string>> }): Promise<HostJoin>;
+	join(input: {
+		readonly name?: string;
+		readonly labels?: Readonly<Record<string, string>>;
+		/** The pool's ID. Absent: the default pool. */
+		readonly pool?: string;
+	}): Promise<HostJoin>;
 	/** Stops new sandboxes landing on it; running ones keep running. */
 	drain(id: string): Promise<Host>;
 	undrain(id: string): Promise<Host>;
@@ -1967,6 +2005,13 @@ export interface HostsSource {
 	 * refused. Absent: the limit isn't set from the console.
 	 */
 	setSnapshotLimit?(id: string, bytes: number | null): Promise<Host>;
+	/** The pools the hosts are in. Absent: the page lists the hosts without them. */
+	readonly pools?: PoolsSource;
+	/**
+	 * Moves a host to another pool. Only a draining host with no sandboxes moves; any other is refused with the reason.
+	 * It stays draining: undrain it once it should take sandboxes. Absent: hosts aren't moved from the console.
+	 */
+	move?(id: string, poolId: string): Promise<Host>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

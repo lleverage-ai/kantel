@@ -1352,6 +1352,79 @@ describe("hosts", () => {
 	});
 });
 
+describe("pools", () => {
+	it("lists, makes, renames, makes default and deletes a super-admin's pools", async () => {
+		const source = await open(setup().fetchApi);
+		const pools = source.hosts?.pools;
+		if (pools === undefined) throw new Error("No pools for a super-admin");
+		const [first] = await pools.list();
+		expect(first).toMatchObject({ name: "default", default: true });
+		if (first === undefined) throw new Error("No default pool");
+
+		const ci = await pools.create("ci");
+		expect(ci).toMatchObject({ name: "ci", default: false, hosts: 0 });
+		await expect(pools.create("ci")).rejects.toMatchObject({ code: "conflict" });
+		expect((await pools.rename(ci.id, "ci-runners")).name).toBe("ci-runners");
+		expect((await pools.makeDefault(ci.id)).default).toBe(true);
+		expect((await pools.list()).find((pool) => pool.id === first.id)?.default).toBe(false);
+		// The default isn't deleted, with Kantel's reason.
+		await expect(pools.remove(ci.id)).rejects.toMatchObject({
+			code: "conflict",
+			message: expect.stringContaining("default"),
+		});
+		await pools.makeDefault(first.id);
+		await pools.remove(ci.id);
+		expect((await pools.list()).map((pool) => pool.name)).toEqual(["default"]);
+	});
+
+	it("moves a host only once it's drained, showing Kantel's reason before", async () => {
+		const source = await open(setup().fetchApi);
+		const hosts = source.hosts;
+		if (hosts?.pools === undefined || hosts.move === undefined) throw new Error("No moves for a super-admin");
+		const [defaultPool] = await hosts.pools.list();
+		const ci = await hosts.pools.create("ci");
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.poolId).toBe(defaultPool?.id);
+
+		await expect(hosts.move(STUB_HOST_ID, ci.id)).rejects.toMatchObject({
+			code: "conflict",
+			message: expect.stringContaining("Drain the host"),
+		});
+		await hosts.drain(STUB_HOST_ID);
+		const moved = await hosts.move(STUB_HOST_ID, ci.id);
+		expect(moved.poolId).toBe(ci.id);
+		expect(moved.state).toBe("draining");
+		expect((await hosts.pools.list()).find((pool) => pool.id === ci.id)?.hosts).toBe(1);
+		// A pool with a host in it isn't deleted.
+		await expect(hosts.pools.remove(ci.id)).rejects.toMatchObject({ code: "conflict" });
+	});
+
+	it("names the chosen pool in a join token", async () => {
+		const source = await open(setup().fetchApi);
+		const hosts = source.hosts;
+		if (hosts?.pools === undefined) throw new Error("No pools for a super-admin");
+		const ci = await hosts.pools.create("ci");
+		expect((await hosts.join({ pool: ci.id })).token).toMatch(/^kth_/);
+		// The pool goes with the token: one Kantel doesn't have is refused.
+		await expect(hosts.join({ pool: "pool_missing" })).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("manages an account's own pools where the deployment has account hosts on", async () => {
+		const { fetchApi } = setup({ accountHosts: true });
+		const bob = await open(fetchApi, "person-bob");
+		if (bob.ownHosts === undefined) throw new Error("No own hosts with account hosts on");
+		const own = bob.ownHosts(await personalAccount(bob));
+		if (own.pools === undefined || own.move === undefined) throw new Error("No pools for an account's own hosts");
+		expect((await own.pools.list()).map((pool) => [pool.name, pool.default])).toEqual([["default", true]]);
+		const agents = await own.pools.create("agents");
+		expect((await own.join({ pool: agents.id })).token).toMatch(/^kth_/);
+		expect((await own.pools.makeDefault(agents.id)).default).toBe(true);
+		expect((await own.pools.rename(agents.id, "agent-sandboxes")).name).toBe("agent-sandboxes");
+		// Not another account's: Ada's personal account's pools aren't Bob's to read.
+		const ada = await open(fetchApi);
+		await expect(bob.ownHosts(await personalAccount(ada)).pools?.list()).rejects.toMatchObject({ code: "forbidden" });
+	});
+});
+
 describe("mounts", () => {
 	const DIGEST = `sha256:${"3f2a".repeat(15)}9c01`;
 	const json = (body: unknown): Response =>

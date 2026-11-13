@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import type { HostingMode, HostsSource } from "./compute-model.ts";
 import { type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW } from "./fixtures.ts";
-import { HostsPage } from "./hosts-page.tsx";
+import { HostsPage, type HostsPageProps } from "./hosts-page.tsx";
 
 export default { title: "Compute/Hosts page" } satisfies StoryDefault;
 
@@ -11,22 +11,28 @@ function Scenario({
 	hosting = "self-hosted",
 	options,
 	adding = false,
+	addingTo,
 	owner,
 	narrow = false,
 	opened,
 	confirmUpdate,
 	limiting,
+	moving,
+	poolDialog,
 	usage = "live",
 	updateFails = false,
 }: {
 	hosting?: HostingMode;
 	options?: ComputeFixtureOptions;
 	adding?: boolean;
+	addingTo?: string;
 	owner?: { readonly name: string; readonly kind: "personal" | "organisation" };
 	narrow?: boolean;
 	opened?: string;
 	confirmUpdate?: string;
 	limiting?: string;
+	moving?: string;
+	poolDialog?: HostsPageProps["poolDialog"];
 	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
 	usage?: "live" | "loading" | "none";
 	/** Update is refused by the host. */
@@ -51,10 +57,13 @@ function Scenario({
 			hosting={hosting}
 			now={FIXTURE_NOW}
 			adding={adding}
+			{...(addingTo === undefined ? {} : { addingTo })}
 			narrow={narrow}
 			{...(opened === undefined ? {} : { opened })}
 			{...(confirmUpdate === undefined ? {} : { confirmUpdate })}
 			{...(limiting === undefined ? {} : { limiting })}
+			{...(moving === undefined ? {} : { moving })}
+			{...(poolDialog === undefined ? {} : { poolDialog })}
 			{...(owner === undefined ? {} : { owner })}
 		/>
 	);
@@ -63,7 +72,10 @@ function Scenario({
 /** The first host in the sample data. */
 const FIRST = "hst_hetzner_1";
 
-/** A self-hosted Kantel's four hosts: online, draining with an update out, a home server and an offline laptop. */
+/**
+ * A self-hosted Kantel's four hosts in three pools: the default with a home server and an offline laptop, ci with two
+ * Hetzner machines (one draining with an update out), and workflows with none yet.
+ */
 export const Default: Story = () => <Scenario />;
 
 /** A host opened: its CPU, memory and disk over the last 10 minutes, read every 5 seconds. */
@@ -153,3 +165,53 @@ MobileSnapshotLimit.meta = { width: 390 };
 /** Add host on a phone. */
 export const MobileAdding: Story = () => <Scenario narrow adding />;
 MobileAdding.meta = { width: 390 };
+
+/** One pool, the default, with every host in it: its heading over them, and no Move to pool. */
+export const OnePool: Story = () => <Scenario options={{ pools: "one" }} />;
+
+/** Pools whose names are as long as a name may be: they wrap in their headings rather than being cut short. */
+export const LongContent: Story = () => <Scenario options={{ pools: "long-names" }} />;
+
+/** The pools can't be read: the hosts ungrouped, and a notice with Try again. */
+export const PoolsFailed: Story = () => <Scenario options={{ pools: "fail" }} />;
+
+/** A source with no pools, as an older gateway's: the hosts ungrouped, with no pool actions. */
+export const NoPools: Story = () => <Scenario options={{ pools: "none" }} />;
+
+/** New pool: its name, checked as typed against what the API takes. */
+export const NewPool: Story = () => <Scenario poolDialog={{ kind: "new" }} />;
+
+/** Rename pool, with its name to edit. */
+export const RenamePool: Story = () => <Scenario poolDialog={{ kind: "rename", pool: "pool_ci" }} />;
+
+/** Delete pool, for the empty workflows pool. A pool with hosts, or the default, has Delete greyed out. */
+export const DeletePool: Story = () => <Scenario poolDialog={{ kind: "delete", pool: "pool_workflows" }} />;
+
+/** Move to pool for an online host: the rule, and that it isn't drained, with Drain. Move shows Kantel's refusal. */
+export const MoveNotDrained: Story = () => <Scenario moving={FIRST} />;
+
+/** Move to pool for a drained host that still has sandboxes. */
+export const MoveWithSandboxes: Story = () => <Scenario moving="hst_hetzner_2" />;
+
+/** Move to pool for a drained host with no sandboxes: nothing in the way. */
+export const MoveReady: Story = () => (
+	<Scenario moving="hst_mac" options={{ hostOverrides: { hst_mac: { state: "draining" } } }} />
+);
+
+/** Add host from the ci pool's menu: the picker starts on ci, and the command names it. */
+export const AddingToPool: Story = () => (
+	<Scenario adding addingTo="pool_ci" options={{ publicUrl: "https://kantel.example.com" }} />
+);
+
+/** Add host with one pool: no picker, and the host joins the default. */
+export const AddingOnePool: Story = () => (
+	<Scenario adding options={{ pools: "one", publicUrl: "https://kantel.example.com" }} />
+);
+
+/** Pools with long names on a phone. */
+export const MobileLongContent: Story = () => <Scenario narrow options={{ pools: "long-names" }} />;
+MobileLongContent.meta = { width: 390 };
+
+/** Move to pool on a phone. */
+export const MobileMove: Story = () => <Scenario narrow moving={FIRST} />;
+MobileMove.meta = { width: 390 };
