@@ -119,12 +119,28 @@ func (m *Manager) portableRuntime(rootfs string) string {
 
 // runtimeWith is portableRuntime for a machine with sticky sticky drives: a sandbox made before them boots with none.
 func (m *Manager) runtimeWith(rootfs string, sticky int) string {
+	return m.runtimeOf(rootfs, m.kernelFor(rootfs), sticky)
+}
+
+// bootKernel is the kernel a machine over rootfs boots (kernelFor), resolved: the default path is a link an image
+// activation repoints, so a boot names the file it resolved to now, and its runtime (runtimeOf) is that file's.
+// Firecracker isn't resolved: it is replaced only before the tiers start (agent.PrepareImages).
+func (m *Manager) bootKernel(rootfs string) string {
+	kernel := m.kernelFor(rootfs)
+	if resolved, err := filepath.EvalSymlinks(kernel); err == nil {
+		return resolved
+	}
+	return kernel
+}
+
+// runtimeOf is the portable runtime of a machine over rootfs booting kernel, with sticky sticky drives.
+func (m *Manager) runtimeOf(rootfs, kernelPath string, sticky int) string {
 	image, ok := m.runtimeImage(rootfs)
 	if !ok {
 		return ""
 	}
 	firecracker := m.identify(m.cfg.Firecracker, hostinfo.FirecrackerVersion)
-	kernel := m.identify(m.kernelFor(rootfs), hostinfo.GuestKernel)
+	kernel := m.identify(kernelPath, hostinfo.GuestKernel)
 	if firecracker == "" || kernel == "" {
 		return ""
 	}

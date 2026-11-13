@@ -95,9 +95,12 @@ type cpuidEntry struct {
 }
 
 // cpuidFeatureWord is one register of one CPUID leaf that holds feature bits: the words Linux's KVM keeps its guest
-// capabilities in (arch/x86/kvm/reverse_cpuid.h), and the XSAVE state components (leaf 0xD), which a snapshot's saved
-// registers depend on. Everything else in CPUID (topology, cache sizes, the APIC ID of the CPU that asked, the brand
-// string) varies between machines of one model, or between runs on one, without changing what a guest may use.
+// capabilities in (arch/x86/kvm/reverse_cpuid.h), and the XSAVE state the guest may use (leaf 0xD: the user and
+// supervisor components supported, the largest area they take, and, in subleaves 2 on, each component's size, offset
+// and alignment, hashed beside these by cpuidFeaturesHash), which a snapshot's saved registers depend on. Everything
+// else in CPUID (topology, cache sizes, the APIC ID of the CPU that asked, the brand string, and leaf 0xD's EBX, the
+// size for the components enabled now) varies between machines of one model, or between runs on one, without changing
+// what a guest may use.
 type cpuidFeatureWord struct {
 	function, index uint32
 	register        byte // 'a', 'b', 'c' or 'd'
@@ -107,7 +110,7 @@ var cpuidFeatureWords = []cpuidFeatureWord{
 	{0x1, 0, 'c'}, {0x1, 0, 'd'},
 	{0x6, 0, 'a'},
 	{0x7, 0, 'b'}, {0x7, 0, 'c'}, {0x7, 0, 'd'}, {0x7, 1, 'a'}, {0x7, 1, 'd'}, {0x7, 2, 'd'},
-	{0xd, 0, 'a'}, {0xd, 0, 'd'}, {0xd, 1, 'a'},
+	{0xd, 0, 'a'}, {0xd, 0, 'c'}, {0xd, 0, 'd'}, {0xd, 1, 'a'}, {0xd, 1, 'c'}, {0xd, 1, 'd'},
 	{0x12, 0, 'a'},
 	{0x14, 0, 'c'},
 	{0x19, 0, 'b'},
@@ -121,9 +124,10 @@ var cpuidFeatureWords = []cpuidFeatureWord{
 	{0x80000022, 0, 'a'},
 }
 
-// cpuidFeaturesHash hashes the feature words (cpuidFeatureWords) of a CPUID answer: `sha256:` and the first 16 hex
-// digits of the SHA-256 of one `leaf.subleaf.register=value` line per word present, in that order. A leaf the CPU
-// lacks is left out, so two answers differing only in it differ.
+// cpuidFeaturesHash hashes the feature words (cpuidFeatureWords) of a CPUID answer, then each XSAVE component's
+// subleaf of leaf 0xD (2 on) by subleaf: `sha256:` and the first 16 hex digits of the SHA-256 of one
+// `leaf.subleaf.register=value` line per word present. A leaf the CPU lacks is left out, so two answers differing only
+// in it differ.
 func cpuidFeaturesHash(entries []cpuidEntry) string {
 	type key struct{ function, index uint32 }
 	byLeaf := make(map[key]cpuidEntry, len(entries))
@@ -149,6 +153,18 @@ func cpuidFeaturesHash(entries []cpuidEntry) string {
 			v = e.EDX
 		}
 		fmt.Fprintf(h, "%08x.%d.e%cx=%08x\n", w.function, w.index, w.register, v)
+	}
+	// Each XSAVE component's size (EAX), offset in the standard layout (EBX) and whether it is supervisor state or
+	// aligned (ECX).
+	var components []cpuidEntry
+	for _, e := range byLeaf {
+		if e.Function == 0xd && e.Index >= 2 {
+			components = append(components, e)
+		}
+	}
+	sort.Slice(components, func(i, j int) bool { return components[i].Index < components[j].Index })
+	for _, e := range components {
+		fmt.Fprintf(h, "0000000d.%d.eax=%08x ebx=%08x ecx=%08x\n", e.Index, e.EAX, e.EBX, e.ECX)
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
 }

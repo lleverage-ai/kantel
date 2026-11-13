@@ -1542,9 +1542,9 @@ func (m *Manager) buildTemplate(ctx context.Context, sh shape, dir string) (timi
 	_ = os.RemoveAll(dir)
 	t, caps, _, err := m.bootSnapshot(ctx, snapshotBoot{
 		dir: dir, name: size.Name, rootfs: m.cfg.Rootfs, size: size, hotplugMiB: sh.HotplugMiB, egress: network.EgressNone,
-		record: func(building, rootfs string) error {
+		record: func(building, rootfs, runtime string) error {
 			// And its runtime as it boots (fingerprint.go), which the sandboxes restored from it run.
-			if err := os.WriteFile(filepath.Join(building, templateRuntimeFile), []byte(m.portableRuntime(rootfs)), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(building, templateRuntimeFile), []byte(runtime), 0o600); err != nil {
 				return err
 			}
 			return os.WriteFile(filepath.Join(building, "rootfs"), []byte(rootfs), 0o600)
@@ -1581,8 +1581,9 @@ type snapshotBoot struct {
 	// egress is the boot's network mode.
 	egress string
 	// record writes, in the building directory, the snapshot's own reference to the root filesystem it boots, which
-	// moves with it to dir: a prune finds the base there once the VM directory has gone.
-	record func(building, rootfs string) error
+	// moves with it to dir: a prune finds the base there once the VM directory has gone. runtime is the portable
+	// runtime it boots with (fingerprint.go).
+	record func(building, rootfs, runtime string) error
 	// prepare, when set, runs once the guest's services are up and before the snapshot (a template build's setup).
 	prepare func(ctx context.Context, client *guest.Client, link network.Link) error
 }
@@ -1608,15 +1609,16 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 	// prune finds it in the building directory, then in the snapshot, from here on.
 	unhold := m.holdBases()
 	rootfs := m.pinRootfs(b.rootfs)
+	// The kernel it boots, and the runtime that makes it (fingerprint.go), which the snapshot keeps.
+	kernel := m.bootKernel(rootfs)
 	err := m.linkRootfs(vm, rootfs)
 	if err == nil && b.record != nil {
-		err = b.record(building, rootfs)
+		err = b.record(building, rootfs, m.runtimeOf(rootfs, kernel, StickyDrives))
 	}
 	unhold()
 	if err != nil {
 		return nil, nil, "", err
 	}
-	kernel := m.kernelFor(rootfs)
 	if err := newDisk(filepath.Join(vm, fc.DiskFile), b.size.DiskGiB); err != nil {
 		return nil, nil, "", err
 	}
@@ -2743,9 +2745,10 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size, ph *proto.StartPhases) error {
 	start := time.Now()
 	vm := s.vmDir()
-	kernel := m.kernelFor(vmRootfs(vm))
-	// Its runtime as it launches, with the sticky drives it has (none for a sandbox from before them).
-	s.starting = m.runtimeWith(vmRootfs(vm), s.meta.StickyDrives)
+	// The kernel it boots, and its runtime as it launches with that kernel and the sticky drives it has (none for a
+	// sandbox from before them).
+	kernel := m.bootKernel(vmRootfs(vm))
+	s.starting = m.runtimeOf(vmRootfs(vm), kernel, s.meta.StickyDrives)
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
 	if err != nil {
 		return err

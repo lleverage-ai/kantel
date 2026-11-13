@@ -158,24 +158,43 @@ func (h *Host) reconnectOnIsolateRuntime(ctx context.Context, sent *proto.Isolat
 // runtimesCheck is how often a connection checks whether its hello's microVM runtimes still hold.
 const runtimesCheck = time.Minute
 
+// runtimesBusyWait is the longest a reconnect to report new runtimes waits for the template builds under way: longer
+// than a build with a custom image may take (Kantel's TEMPLATE_IMAGE_BUILD_TIMEOUT_MS, 100 minutes).
+const runtimesBusyWait = 2 * time.Hour
+
 // reconnectOnRuntimes ends the connection (Run connects again, with a new hello) once the microVM runtimes the host
 // would report now (current: Facts.Runtimes) differ from what the hello said (sent): an image update adds one, a prune
 // takes one away, and a new Firecracker changes them all. Facts go only in a hello, so the control plane would
-// otherwise go on with the old ones until the next reconnect.
-func reconnectOnRuntimes(ctx context.Context, log *slog.Logger, sent []proto.HostRuntime, every time.Duration, current func() []proto.HostRuntime, reconnect func()) {
+// otherwise go on with the old ones until the next reconnect. A reconnect ends the calls under way, so it waits while
+// busy says template builds are (whose calls run for many minutes, and fail with the connection), up to busyWait.
+func reconnectOnRuntimes(ctx context.Context, log *slog.Logger, sent []proto.HostRuntime, every time.Duration, current func() []proto.HostRuntime, busy func() bool, reconnect func()) {
+	reconnectOnRuntimesWithin(ctx, log, sent, every, runtimesBusyWait, current, busy, reconnect)
+}
+
+func reconnectOnRuntimesWithin(ctx context.Context, log *slog.Logger, sent []proto.HostRuntime, every, busyWait time.Duration, current func() []proto.HostRuntime, busy func() bool, reconnect func()) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
+	var changedAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		if now := current(); !slices.Equal(now, sent) {
-			log.Info("the microVM runtimes changed: reconnecting to report them", "had", len(sent), "have", len(now))
-			reconnect()
-			return
+		now := current()
+		if slices.Equal(now, sent) {
+			changedAt = time.Time{}
+			continue
 		}
+		if changedAt.IsZero() {
+			changedAt = time.Now()
+		}
+		if busy() && time.Since(changedAt) < busyWait {
+			continue
+		}
+		log.Info("the microVM runtimes changed: reconnecting to report them", "had", len(sent), "have", len(now))
+		reconnect()
+		return
 	}
 }
 
@@ -227,7 +246,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	}
 	go h.reconnectOnIsolateRuntime(ctx, facts.Isolate, isolateRuntimeCheck, cancel)
 	if _, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
-		go reconnectOnRuntimes(ctx, h.log, facts.Runtimes, runtimesCheck, h.runtimes, cancel)
+		go reconnectOnRuntimes(ctx, h.log, facts.Runtimes, runtimesCheck, h.runtimes, h.buildingTemplates, cancel)
 	}
 	kind, raw, err := ws.Read(ctx)
 	if err != nil {

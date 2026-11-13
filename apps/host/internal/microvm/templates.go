@@ -304,8 +304,8 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	var madeOn string
 	booted, caps, booting, err := m.bootSnapshot(ctx, snapshotBoot{
 		dir: dir, name: p.SnapshotID, rootfs: rootfs, size: size, egress: egressMode(p.Egress),
-		record: func(building, rootfs string) error {
-			madeOn = m.portableRuntime(rootfs)
+		record: func(building, rootfs, runtime string) error {
+			madeOn = runtime
 			return linkTemplateRootfs(building, rootfs)
 		},
 		prepare: func(ctx context.Context, client *guest.Client, link network.Link) error {

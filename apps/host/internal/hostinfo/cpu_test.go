@@ -65,8 +65,10 @@ func ax102CPUID(apic uint32) []cpuidEntry {
 		{Function: 0x7, EBX: 0xf1bf97a9, ECX: 0x00405fce, EDX: 0x10000010},
 		{Function: 0x7, Index: 1, EAX: 0x00000030},
 		{Function: 0xb, EBX: 2, ECX: 0x100 | apic, EDX: apic},
-		{Function: 0xd, EAX: 0x000002e7, EBX: 0x988, ECX: 0x988},
-		{Function: 0xd, Index: 1, EAX: 0x0000000f},
+		{Function: 0xd, EAX: 0x000002e7, EBX: 0x340 + apic%2*0x648, ECX: 0x988},
+		{Function: 0xd, Index: 1, EAX: 0x0000000f, ECX: 0x00001800},
+		{Function: 0xd, Index: 2, EAX: 0x100, EBX: 0x240},
+		{Function: 0xd, Index: 5, EAX: 0x40, EBX: 0x340},
 		{Function: 0x80000001, EAX: 0x00a60f12, ECX: 0x75c237ff, EDX: 0x2fd3fbff},
 		{Function: 0x80000002, EAX: 0x20444d41, EBX: 0x657a7952, ECX: 0x2039206e, EDX: 0x30353937},
 		{Function: 0x80000008, EAX: 0x00003030, EBX: 0x791ef257, ECX: 0x0000501f},
@@ -97,7 +99,7 @@ func TestCPUIDFeaturesHash(t *testing.T) {
 	if got := cpuidFeaturesHash(noAVX512); got == one {
 		t.Fatal("a CPU without AVX-512F hashes the same")
 	}
-	noLeaf := ax102CPUID(0)[:11]
+	noLeaf := ax102CPUID(0)[:13]
 	if got := cpuidFeaturesHash(noLeaf); got == one {
 		t.Fatal("a CPU without leaf 0x80000021 hashes the same")
 	}
@@ -106,6 +108,21 @@ func TestCPUIDFeaturesHash(t *testing.T) {
 	lessXSAVE[5].EAX = 0x7
 	if got := cpuidFeaturesHash(lessXSAVE); got == one {
 		t.Fatal("a CPU with fewer XSAVE components hashes the same")
+	}
+	// Other supervisor state (leaf 0xD subleaf 1 ECX), or a component laid out elsewhere: another CPU too.
+	supervisor := ax102CPUID(0)
+	supervisor[6].ECX = 0x00000800
+	if got := cpuidFeaturesHash(supervisor); got == one {
+		t.Fatal("a CPU with other supervisor XSAVE state hashes the same")
+	}
+	moved := ax102CPUID(0)
+	moved[8].EBX = 0x380
+	if got := cpuidFeaturesHash(moved); got == one {
+		t.Fatal("an XSAVE component at another offset hashes the same")
+	}
+	fewer := append(ax102CPUID(0)[:8:8], ax102CPUID(0)[9:]...)
+	if got := cpuidFeaturesHash(fewer); got == one {
+		t.Fatal("a CPU without an XSAVE component's subleaf hashes the same")
 	}
 }
 
