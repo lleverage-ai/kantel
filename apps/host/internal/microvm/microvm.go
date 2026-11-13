@@ -417,6 +417,9 @@ type Manager struct {
 	stickyMapMu   sync.Mutex
 	stickyMaps    map[string]*stickyMapJob
 	stickyDigests map[string]stickyDigest
+	// stickyAnswering are the versions published whose commit isn't answered yet, by "<disk>/<version>", each until
+	// when it is kept from a prune at most (pinStickyAnswer). Guarded by stickyMu.
+	stickyAnswering map[string]time.Time
 	// holdMaps (tests), when set, holds every block map started meanwhile once its files are open.
 	holdMaps *mapHold
 }

@@ -29,9 +29,11 @@ func (m *Manager) stickyMapFile(diskID, version string) string {
 	return filepath.Join(m.stickyRoot(), diskID, version+".map")
 }
 
-// stickyMapJob is a map being made: done closes when it is, with its digest or why not.
+// stickyMapJob is a map being made: done closes when it is, with its digest or why not. cancel stops it (its version
+// is gone, or replaced).
 type stickyMapJob struct {
 	done   chan struct{}
+	cancel context.CancelFunc
 	digest string
 	err    error
 }
@@ -54,10 +56,14 @@ func (m *Manager) background() context.Context {
 // StickyMapDigest waits up to stickyMapWait (or until ctx ends) for the map of a version a commit has just made
 // (CommitSticky starts it), and answers its digest: "" when it isn't made by then, as it goes on in the background, or
 // couldn't be made.
+//
+// It also ends the version's pin (pinStickyAnswer): once its commit is answered, the control plane records it, and the
+// host may prune it as any other.
 func (m *Manager) StickyMapDigest(ctx context.Context, diskID, version string) string {
 	if !validID(diskID) || !validID(version) {
 		return ""
 	}
+	defer m.unpinStickyAnswer(diskID, version)
 	m.stickyMapMu.Lock()
 	job := m.stickyMaps[diskID+"/"+version]
 	m.stickyMapMu.Unlock()
@@ -95,11 +101,13 @@ func (m *Manager) startStickyMap(diskID, version, parent string) *stickyMapJob {
 	if m.stickyMaps == nil {
 		m.stickyMaps = map[string]*stickyMapJob{}
 	}
-	job := &stickyMapJob{done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(m.background())
+	job := &stickyMapJob{done: make(chan struct{}), cancel: cancel}
 	m.stickyMaps[key] = job
 	hold := m.holdMaps
 	go func() {
-		job.digest, job.err = m.mapSticky(m.background(), diskID, version, parent, hold)
+		defer cancel()
+		job.digest, job.err = m.mapSticky(ctx, diskID, version, parent, hold)
 		m.stickyMapMu.Lock()
 		// Unless a delete, or a new commit of the name, let it go already (forgetStickyMap).
 		if m.stickyMaps[key] == job {
@@ -251,11 +259,38 @@ func (m *Manager) forgetStickyMap(diskID, version string) {
 			delete(m.stickyDigests, key)
 		}
 	}
-	for key := range m.stickyMaps {
+	for key, job := range m.stickyMaps {
 		if mine(key) {
+			job.cancel()
 			delete(m.stickyMaps, key)
 		}
 	}
+}
+
+// pinStickyAnswer keeps a version just published from being pruned until its commit is answered (StickyMapDigest
+// unpins it), or, should that never come, past the longest the answer waits: a commit answered after a later commit
+// had pruned it would make the control plane's head a version no host has. Called with stickyMu held.
+func (m *Manager) pinStickyAnswer(diskID, version string) {
+	if m.stickyAnswering == nil {
+		m.stickyAnswering = map[string]time.Time{}
+	}
+	m.stickyAnswering[diskID+"/"+version] = time.Now().Add(stickyMapWait + time.Minute)
+}
+
+func (m *Manager) unpinStickyAnswer(diskID, version string) {
+	m.stickyMu.Lock()
+	defer m.stickyMu.Unlock()
+	delete(m.stickyAnswering, diskID+"/"+version)
+}
+
+// stickyPinned says whether a version's commit is still to be answered (pinStickyAnswer). Called with stickyMu held.
+func (m *Manager) stickyPinned(diskID, version string) bool {
+	until, ok := m.stickyAnswering[diskID+"/"+version]
+	if ok && time.Now().After(until) {
+		delete(m.stickyAnswering, diskID+"/"+version)
+		return false
+	}
+	return ok
 }
 
 // mapOldSticky makes the maps of the versions the host holds without one (committed before maps, or whose map was

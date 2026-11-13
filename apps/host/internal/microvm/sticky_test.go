@@ -668,8 +668,8 @@ func TestStickyMapsLateAndOld(t *testing.T) {
 	checkStickyMap(t, m, "ci", "v3", digest)
 	close(held.release)
 	<-old.done
-	if old.err == nil {
-		t.Fatal("the deleted file's map was written")
+	if !errors.Is(old.err, context.Canceled) {
+		t.Fatalf("the deleted file's map wasn't stopped: %v", old.err)
 	}
 	checkStickyMap(t, m, "ci", "v3", digest)
 	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci"}); err != nil {
@@ -677,5 +677,54 @@ func TestStickyMapsLateAndOld(t *testing.T) {
 	}
 	if digest := m.stickyMapDigest("ci", "v2"); digest != "" {
 		t.Fatalf("a deleted disk's map digest %q", digest)
+	}
+}
+
+// A version whose commit isn't answered yet (its map is still awaited) isn't pruned by later commits, so the control
+// plane never records as its head a version the host no longer has; once answered, or past the longest an answer
+// waits, it is pruned as any other.
+func TestStickyKeepsAVersionUntilItsCommitIsAnswered(t *testing.T) {
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("no mkfs.ext4")
+	}
+	m := &Manager{cfg: Config{Root: t.TempDir()}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx := context.Background()
+	a := newStickyFixture(t, "sbx_a", m)
+	m.attachSticky(ctx, a.s, []proto.StickyDisk{{DiskID: "ci", Path: "/var/lib/ci", SizeGiB: 1}})
+	m.mountSticky(ctx, a.s)
+	commit := func(v string, answer bool) {
+		t.Helper()
+		if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: v}); err != nil {
+			t.Fatal(err)
+		}
+		if answer {
+			m.StickyMapDigest(ctx, "ci", v)
+		}
+	}
+	commit("v1", false) // its answer still waits for its map
+	commit("v2", true)
+	commit("v3", true)
+	if !fileExists(m.stickyVersionFile("ci", "v1")) {
+		t.Fatal("a version whose commit isn't answered was pruned")
+	}
+	if !fileExists(m.stickyVersionFile("ci", "v2")) {
+		t.Fatal("one of the two newest was pruned")
+	}
+	if digest := m.StickyMapDigest(ctx, "ci", "v1"); digest == "" {
+		t.Fatal("v1's answer has no digest")
+	}
+	commit("v4", true)
+	if fileExists(m.stickyVersionFile("ci", "v1")) || fileExists(m.stickyVersionFile("ci", "v2")) {
+		t.Fatal("answered versions beyond the newest two are kept")
+	}
+	// An answer that never comes keeps it only so long.
+	commit("v5", false)
+	commit("v6", true)
+	m.stickyMu.Lock()
+	m.stickyAnswering["ci/v5"] = time.Now().Add(-time.Second)
+	m.stickyMu.Unlock()
+	commit("v7", true)
+	if fileExists(m.stickyVersionFile("ci", "v5")) {
+		t.Fatal("a pin past its time kept its version")
 	}
 }

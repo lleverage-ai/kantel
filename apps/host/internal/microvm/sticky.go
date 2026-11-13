@@ -764,6 +764,7 @@ func (m *Manager) publishSticky(diskID, version, tmp string) error {
 		_ = os.Remove(final)
 		return err
 	}
+	m.pinStickyAnswer(diskID, version)
 	m.pruneStickyLocked(diskID)
 	return nil
 }
@@ -878,7 +879,8 @@ func (m *Manager) thawStickyAfterRestart(s *sandbox) <-chan struct{} {
 	return done
 }
 
-// pruneStickyLocked deletes all but the disk's stickyKeep newest versions. Called with stickyMu held.
+// pruneStickyLocked deletes all but the disk's stickyKeep newest versions, and those whose commit is still to be
+// answered (pinStickyAnswer). Called with stickyMu held.
 func (m *Manager) pruneStickyLocked(diskID string) {
 	held := m.stickyVersions(diskID)
 	if len(held) <= stickyKeep {
@@ -886,6 +888,9 @@ func (m *Manager) pruneStickyLocked(diskID string) {
 	}
 	order := m.readStickyOrder(diskID)
 	for _, v := range held[stickyKeep:] {
+		if m.stickyPinned(diskID, v.version) {
+			continue
+		}
 		if err := os.Remove(m.stickyVersionFile(diskID, v.version)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			m.log.Warn("deleting an old sticky disk version", "disk", diskID, "version", v.version, "error", err)
 			continue
