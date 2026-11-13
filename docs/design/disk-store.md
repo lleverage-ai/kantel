@@ -1,6 +1,6 @@
 # The disk store: sticky disks, and keeping disks in sync across an organisation's hosts
 
-Status: proposed (11 Nov 2026). Phase 1 is being built; phases 2 to 4 are the plan.
+Status: phase 1 merged (#838, 11 Nov 2026). Phases 2 to 5 are proposed. Phase 2's plan and the design for moving a sandbox to another host (phase 4) were added on 13 Nov 2026, with their decisions made the same day.
 
 ## What it's for
 
@@ -92,10 +92,13 @@ An organisation may add an object store (R2, GCS, S3) as a member that holds blo
 
 ## Phases
 
-1. **Sticky disks on one host.** The catalogue in the control plane (disks, versions, holders), the API, attaching a version's clone as a drive, commit from a trusted caller, retention and the host's budget. GitHub runner pools get `stickyDisks` with a commit rule. Enough for CI on one host.
-2. **Block maps and host-to-host sync.** Block maps with extent-based change detection, the peer port and grants, fetches by changed block, prefetch of heads, placement preference.
-3. **Templates and saved snapshots on the disk store.** Template snapshots fetched from peers; saved snapshots kept on two hosts; their disks become versions like any other.
-4. **The optional object store, and peers for bucket mount caches.**
+1. **Sticky disks on one host.** The catalogue in the control plane (disks, versions, holders), the API, attaching a version's clone as a drive, commit from a trusted caller, retention and the host's budget. GitHub runner pools get `stickyDisks` with a commit rule. Enough for CI on one host. Merged (#838).
+2. **The mesh, block maps and host-to-host sync.** The WireGuard mesh between an organisation's hosts, block maps with extent-based change detection, grants, fetches by changed block, prefetch of heads, placement preference. Sticky disks are its first user. Planned below.
+3. **Templates and saved snapshots on the disk store.** Template snapshots fetched from peers; saved snapshots kept on two hosts; their disks become versions like any other; a create from a saved snapshot runs on any host that holds it or can fetch it.
+4. **Moving a sandbox to another host**, from the API, the CLI and the console, and draining a host by moving its sandboxes off. Designed below.
+5. **The optional object store, and peers for bucket mount caches.**
+
+Phases 2 to 4 are what lets an organisation treat its hosts as one pool, which is what Lleverage needs to run agent sandboxes and workflow runtimes on Kantel. The object store moved to last because nothing in 2 to 4 depends on it.
 
 ## Open questions
 
@@ -122,3 +125,116 @@ What the control plane keeps (phase 1):
 - **The catalogue's writes are atomic** (`StickyDiskWrites`, in memory and SQL): a disk and its name's claim are made together; a delete tombstones the disk and releases its claim together (only a claim naming that disk); a commit records its version and makes it the disk's head together, only while the disk is live. An interrupted write leaves all of it or none.
 - **Tombstones outlive their account.** Deleting a disk, or its account, keeps its tombstone for 30 days, and a sweep deletes its versions from hosts again every 10 minutes, so a host that was away has them deleted when it reconnects.
 - **GitHub runners commit only from scheduled runs.** A job's commit needs GitHub's word that it succeeded on the runner Kantel registered (`runner_id`, not the runner's name), whether a webhook or polling found it, and that its run's event is `schedule` (which GitHub runs only on the default branch) of one of `branches`. Push and manual runs can't commit yet: GitHub gives a tag's run the tag's name as `head_branch`, and neither the run nor its jobs has a full ref or ref type, so `refs/tags/main` would pass for `refs/heads/main`. Allowing them needs evidence of the ref tied to the run, such as the job's OIDC token (its `ref` and `ref_type` claims). `beforeCommit` runs as root (`ExecParams.User`), and the broker renews its lease while it runs and checks it before it commits.
+
+## Phase 2: the mesh and host-to-host sync (plan)
+
+Where things stand: a host dials one WebSocket out to the control plane (`/v1/hosts/connect`) and takes no inbound connections. Its record (`compute_hosts`) has no address, and the "direct" and "private-network" host links are only different URLs for that same outbound connection. Nothing in the host runs WireGuard or any userspace networking. A sticky disk version records the one host it was made on (`StoredStickyDiskVersion.hostId`). Phase 2 adds the rest in three layers, each usable before the next.
+
+### 2a. The mesh
+
+**Membership.** A mesh is a fleet: the hosts of one account (an organisation or a personal space), or the operator's shared hosts. Hosts in different fleets are never peers, so no host ever has a route to another account's hosts, and a revoked host leaves its fleet's peer lists at once. Decided (13 Nov 2026): shared hosts and an account's own hosts stay apart. Revisit only if a need appears, such as moving a sandbox from shared hosts to an account's own.
+
+**Keys and addresses.** A host makes its WireGuard key pair when it first starts with the `mesh` feature, keeps the private key under its root (mode 0600) and never sends it anywhere. It reports the public key in `Hello` (`Facts.Mesh: { publicKey, listenPort, endpoints }`). The control plane gives the host a mesh address in `Welcome`. Addresses are IPv6 ULAs: one `/48` per fleet, derived from the fleet's ID, and one `/128` per host, stored on its record. IPv6 can't clash with the sandboxes' `10.231.0.0/16` or with whatever IPv4 network the host is on. A reinstall makes a new key, and the record's key is replaced on the next `Hello`.
+
+**Peers.** `Welcome.mesh` carries `{ address, prefix, peers: [{ hostId, publicKey, address, endpoints }] }`. A `mesh.peers` message brings the whole list again whenever a fleet member joins, leaves, is revoked or reports new endpoints. The host applies it as the desired state: it adds, updates and removes WireGuard peers to match.
+
+**The device.** `kantel-host` runs WireGuard in-process (`golang.zx2c4.com/wireguard`) over a TUN device named `kmesh0`. It mustn't start with `kt`, because the firewall treats every `kt+` interface as a sandbox's TAP device. The in-process implementation is chosen over the kernel module for two reasons. Finding a NAT's mapping (STUN) needs to send from the same UDP socket WireGuard uses, which the kernel module doesn't allow but a custom `conn.Bind` does. And it needs no kernel module or `wg` tools on the host. Throughput is the risk, so the first PR measures it (below). The firewall accepts only the peer sync port on `kmesh0`, and only from the fleet's prefix. Forwarding stays off, and sandboxes can't reach mesh addresses.
+
+**Endpoints, in three steps.** Each step is useful without the next:
+
+1. *Direct.* A host reports its interface addresses and listen port (UDP 51820 by default, `--mesh-port`), plus any `--mesh-endpoint` an operator sets for a forwarded port. Peers try them all. This is enough for hosts with public addresses or on one LAN, which includes Lleverage's Hetzner machines.
+2. *NAT traversal.* The host asks a STUN server for its public mapping from the WireGuard socket and reports it as an endpoint. The default STUN server is `stun.cloudflare.com:3478`, settable per control plane, because the hosted control plane runs on Workers and can't take UDP itself. When two hosts behind NAT need each other, the control plane tells both at once over their control connections, and both send handshakes to each other's candidates, which opens both NATs.
+3. *Relay.* When neither works (symmetric NAT on both sides), WireGuard packets go over a WebSocket to the gateway, which passes them to the peer's gateway connection: a Durable Object on Cloudflare, the gateway process when self-hosted. The packets stay WireGuard-encrypted, so the relay can't read them. A relay is slow and costs gateway bandwidth, so over a relay hosts skip prefetching and fetch only what a sandbox placed on them needs, at a capped rate.
+
+**Health.** Each capacity report carries each peer's path (direct, punched or relayed), last handshake and round-trip time. The console's host page lists its peers, so "these two hosts can't reach each other" shows up before a sync fails.
+
+### 2b. Block maps
+
+As described under "On one host" above. A version's map is stored beside it as `<version>.map`: a header with its size and block size (4 MiB), then 32 bytes per block, with all-zero bytes standing for a block that is all zeros. The map's SHA-256 is the version's `mapDigest` in the catalogue. A commit makes the map from its parent's: on XFS or btrfs, `FIEMAP` shows which extents the version still shares with its parent, and only unshared extents are read and hashed. On a filesystem without reflinks every block is hashed. Versions committed before phase 2 get their maps in the background, oldest last.
+
+### 2c. Peer sync
+
+**The catalogue.** A `disk_holders` table: `(kind, objectId, version, hostId, state, since)`, where `kind` is `sticky` now and `template` and `snapshot` in phase 3, and `state` is `fetching`, `held` or `deleting`. A version's `hostId` stays as the host that made it. The holdings each host already reports in `HostCapacity.stickyDisks` are reconciled into the table on every report, so the table is what hosts actually have rather than what they were asked to fetch.
+
+**Grants.** The control plane gets an Ed25519 signing key, and `Welcome` carries its public key. A grant is `{ kind, objectId, version, accountId, from: [hostIds], to: hostId, exp }`, signed, valid for 15 minutes. A holder serves a request only with a grant naming it in `from` and naming the mesh peer that asks as `to`. WireGuard already proves which peer is asking, so a grant can't be replayed by another host.
+
+**The server.** It is HTTP/2 on the host's mesh address only, on port 7480:
+
+- `GET /v1/objects/{kind}/{id}/{version}/map`: the block map.
+- `GET /v1/objects/{kind}/{id}/{version}/data` with `Range`: a run of blocks, read from the version file. Runs of neighbouring changed blocks go in one request, and HTTP/2 carries many at once.
+
+**The fetch**, run by a host when a sandbox placed on it needs a version (`disk.locate` to the control plane, which answers with holders, their mesh addresses, the `mapDigest` and a grant) or when told to (`disk.fetch`, for prefetch and keeping a second copy):
+
+1. Fetch the map from any holder and check it against `mapDigest`.
+2. Reflink the host's nearest version of the same object (the newest one it holds that is an ancestor of the wanted one; else the newest it holds; else a sparse file of the right size) into `<version>.partial`.
+3. Fetch each block whose hash differs, spread over the holders, at most 8 runs in flight. Check each block's hash and write it with `pwrite`. A bitmap file beside the partial records done blocks, so a fetch resumes after a restart or a dropped peer.
+4. `fsync`, rename to `<version>.img`, write its map, and report it held.
+
+Each host has a sync bandwidth limit (`--sync-rate`, both directions, default 50% of the link it detects) and a cap on concurrent fetches, so a sync can't starve the sandboxes' own network and disk.
+
+**Retention with replicas.** A host's budget still frees old versions oldest first, but it never frees a copy the control plane counts as one of an object's required copies (phase 3's second copy of a saved snapshot). The control plane moves that duty to another host before telling the first that it may let go.
+
+### 2d. Placement and prefetch
+
+- The scheduler's ranking (`packages/hosts/src/scheduler.ts`) gets one more preference after the isolate one: a host that already holds the head of each sticky disk the sandbox attaches. It is a preference only; projected fullness still decides between hosts that hold the same.
+- After a commit, the control plane sends `disk.fetch` for the new head to every host in the fleet that ran a sandbox with that disk in the last 7 days.
+- A sandbox placed on a host with no version of its sticky disk starts with an empty disk, as now, and the host fetches the head in the background for the next one. A sticky disk is a cache, so a sandbox never waits for a sync.
+
+### Protocol
+
+- Feature `mesh`: the host runs the mesh device and the peer sync server, and takes `Welcome.mesh` and `mesh.peers`.
+- Feature `disk-sync`: the host makes block maps, takes `disk.fetch` and `disk.delete` for any kind, and answers `disk.locate`'s grants.
+- Host to control plane: `disk.locate { kind, objectId, version }` returns `{ mapDigest, holders: [{ hostId, address }], grant }`.
+- Control plane to host: `disk.fetch { kind, objectId, version, mapDigest, holders, grant }` is answered when the fetch has started; progress and the result come in capacity reports.
+
+### Order of work
+
+Each step is one PR with its own tests:
+
+1. **Spike: WireGuard throughput.** Two Hetzner hosts, in-process WireGuard over TUN against the kernel module, iperf3 and a 50 GB file over HTTP/2. Decided (13 Nov 2026): if in-process is under about 70% of the kernel's speed, hosts that reach each other directly hand the same keys and addresses to the kernel module, and the in-process code stays for NAT traversal and the relay.
+2. **The mesh with direct endpoints (2a step 1):** keys, addresses, `Welcome.mesh` and `mesh.peers`, the device and firewall, peer health on the host page. Test: `local-stack.sh` with two hosts in network namespaces.
+3. **Block maps (2b)** for sticky disk versions, made at commit.
+4. **The catalogue's holders, grants and peer sync (2c)** for sticky disks.
+5. **Placement and prefetch (2d).**
+6. **NAT traversal (2a step 2)**, then **the relay (2a step 3).** Decided (13 Nov 2026): these are a separate, later epic. Lleverage's hosts have public addresses and don't need them.
+
+Lleverage's hosts have public addresses, so steps 1 to 5 give it sticky disks across hosts. Phase 3 then gives it templates and saved snapshots across hosts, and phase 4 gives it moves.
+
+## Phase 3 notes: what a snapshot depends on
+
+Phase 3 puts template snapshots and saved snapshots on the same holders and fetches, but a snapshot is more than one disk file:
+
+- **Its disk is an overlay's upper layer**, not a whole filesystem: `kantel-init` mounts the sandbox's disk over the shared read-only root image. A snapshot is only usable on a host that has the same root image: the same host image version (`host-images-*`, which the host downloads from a release itself) or the same template root filesystem (`images/templates/<key>.ext4`). A template's root filesystem becomes an object on the disk store too, keyed by its `KeyHash`, so a host fetches it from a peer instead of building it.
+- **Its memory and machine state restore only on a matching runtime.** `restorableTemplateSnapshot` already refuses a snapshot whose Firecracker, kernel, host image or balloon setting differs (`runtimeFingerprint`). Across hosts the CPU matters too: Firecracker restores a snapshot only on a CPU with the same features, and Kantel sets no CPU template. Each host reports a CPU fingerprint (vendor, family, model and a hash of its CPUID features) beside its runtime fingerprint. Memory travels only to a host that matches both. Otherwise only the disk travels, and the sandbox cold-boots on its disk, which is what a disk-only saved snapshot does anyway; a template snapshot is built again on that host from the template's root filesystem. Decided (13 Nov 2026): match CPUs and cold-boot otherwise, with no Firecracker CPU template, because a template hides CPU features from every sandbox and changing it makes existing snapshots unusable. Revisit if Lleverage's fleet ends up with mixed CPUs.
+- **Its files**: `disk.ext4` and `mem` are synced as block-mapped versions (most of a memory file is zero blocks, which cost nothing), and `state` and `meta.json` go whole.
+- **Its reference stops naming a host.** A saved snapshot's backend ref is `{hostId}/{snapshotId}` today, and `mayUse` refuses a create anywhere else. New refs are the snapshot ID alone, with its hosts in `disk_holders`. Old refs keep parsing, and their host becomes their first holder. A create from a snapshot goes to a holder if one has room; otherwise it goes to another eligible host, which fetches the snapshot first and reports it as the create's `fetch` phase.
+- **Two copies.** After a save, the control plane picks a second host in the fleet (the least full that matches the snapshot's root image) and sends `disk.fetch`. When a holder is revoked, or has been offline for 24 hours, it does the same again from the remaining holder.
+
+## Moving a sandbox to another host (phase 4 design)
+
+`POST /v1/sandboxes/{id}/move { hostId?, keepMemory? }`, `kantel move <id> [--to <host>]`, and a "Move to host" action in the console, beside stop, fork and snapshot. It needs phase 3, because a move is a snapshot synced to another host and started there.
+
+**What moves:** the sandbox's disk, its sticky drive clones (its own copies; uncommitted writes go with it), its memory when kept, and its record's settings (env, egress, ports, mounts, labels). The target mounts bucket and bundle mounts again from its own caches. Its automatic snapshot history stays where it is, and those snapshots become fetchable like any other. The sandbox keeps its ID and its public URLs, because they go through the gateway, which follows its placement. Running commands, SSH sessions and port connections end, and their clients reconnect as they do across a host restart.
+
+**Two ways:**
+
+- **With a restart** (the only way between hosts whose CPU or runtime fingerprints differ, and an option otherwise):
+  1. While the sandbox runs, the source reflinks its disk and sticky drives (a crash-consistent copy, made at once) and the target fetches that copy.
+  2. The source stops the sandbox with a disk-only stop.
+  3. The source makes the final disk's block map from the first copy's, using `FIEMAP`: extents the guest wrote since step 1 are no longer shared. The target fetches only those blocks.
+  4. The target boots the sandbox on the disk, and the control plane switches its placement.
+
+  The time without the sandbox is the stop, the blocks written since step 1, and a cold boot: seconds for a sandbox that isn't writing much.
+- **Keeping memory** (the default when both hosts' runtime and CPU fingerprints match): the same, but step 2 is a stop that keeps memory, step 3 syncs the memory file as well, and step 4 restores it. The time without the sandbox grows with its memory: about 70 s for 8 GiB over 1 Gbit/s, less where much of it is zero. Pre-copying memory while the guest runs (live migration in the usual sense) isn't something Firecracker offers, so it's out of scope.
+
+A stopped sandbox skips step 1 and the stop.
+
+Decided (13 Nov 2026): a move keeps memory by default when the hosts match, because people expect nothing to be lost in a move. `keepMemory` defaults to true. Between hosts that don't match, the move restarts the sandbox and says so before it starts. The console's dialog shows the estimated pause for each way and offers a restart instead. Draining a host follows the same rule for each sandbox.
+
+**Bookkeeping**, reusing the isolate upgrade's pattern (`packages/hosts/src/service.ts`, the cross-host upgrade). The control plane persists the move's intent before it acts, reserves room on the target, and settles the move with the same settlement claims. A failure before the placement switches rolls back: it deletes the target's copy and starts the sandbox on the source again (resumes it, after a stop that kept memory). After the switch, the source's copy is deleted as owed cleanup, retried until the source confirms it, as an upgrade's source cleanup is. The sandbox's status is `moving`, and its `phase` is one of `copying`, `stopping`, `final-copy`, `starting`, so the console and `kantel ls` show progress.
+
+**Choosing the target.** The scheduler places the sandbox as for a create, without the source and with its shape, but with an extra filter (same root image, or one the target can fetch) and an extra preference (matching fingerprints when `keepMemory` is asked). The console's dialog lists eligible hosts and says for each whether memory can be kept or the sandbox will restart.
+
+**Draining a host.** A draining host already takes no new sandboxes. Phase 4 adds "Move sandboxes off" to a host's page: it moves each running and stopped sandbox in turn, at most two at a time, and with that a host can be updated, resized or retired without anyone losing a sandbox.
+
+A move never crosses fleets: the target is one of the sandbox's own account's hosts, or a shared host for a sandbox on shared hosts (see Membership above).
