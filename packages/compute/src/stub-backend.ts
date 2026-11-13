@@ -492,35 +492,61 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 						: snapshotTree(spec.fromSnapshot);
 			// From a microVM's snapshot, as a create from it, the isolate's files laid over what it has.
 			const fs = await restore(spec.intoSnapshot === undefined ? undefined : snapshotTree(spec.intoSnapshot));
-			await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
 			const moved = (path: string) =>
 				path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)
 					? `${UPGRADE_WORKSPACE}${path.slice(WORKSPACE.length)}`
 					: undefined;
+			// Each entry is laid over what is there as the guest's extractor lays it: a directory replaces a file or link
+			// and merges with a directory; a file or link replaces a file or link, never written through; a file or link
+			// where a directory is, or anything under a link, fails the upgrade, so no directory's files are lost.
+			const clear = async (path: string, to: string, kind: "directory" | "file" | "link") => {
+				let at = UPGRADE_WORKSPACE;
+				const parts = to.slice(UPGRADE_WORKSPACE.length + 1).split("/");
+				for (const part of parts.slice(0, -1)) {
+					at = `${at}/${part}`;
+					const parent = await fs.lstat(at).catch(() => undefined);
+					if (parent === undefined) await fs.mkdir(at);
+					else if (parent.isSymbolicLink || !parent.isDirectory)
+						throw new KantelError("invalid", `${path} can't be laid over ${at}, which isn't a directory`);
+				}
+				const there = await fs.lstat(to).catch(() => undefined);
+				if (there === undefined) return true;
+				if (there.isDirectory && !there.isSymbolicLink) {
+					if (kind === "directory") return false;
+					throw new KantelError("invalid", `${path} can't be laid over the directory ${to}`);
+				}
+				await fs.rm(to);
+				return true;
+			};
 			let files = 0;
 			let bytes = 0;
-			for (const dir of [...(tree?.dirs.keys() ?? [])].sort()) {
-				const to = moved(dir);
-				if (to === undefined || to === UPGRADE_WORKSPACE) continue;
-				await fs.mkdir(to, { recursive: true });
-				files += 1;
-			}
-			for (const [path, file] of tree?.files ?? []) {
-				const to = moved(path);
-				if (to === undefined) continue;
-				await fs.mkdir(to.slice(0, to.lastIndexOf("/")), { recursive: true });
-				await fs.writeFile(to, new Uint8Array(file.bytes));
-				await fs.chmod(to, file.mode).catch(() => undefined);
-				await fs.utimes(to, new Date(file.mtime), new Date(file.mtime)).catch(() => undefined);
-				files += 1;
-				bytes += file.bytes.byteLength;
-			}
-			for (const [path, target] of tree?.links ?? []) {
-				const to = moved(path);
-				if (to === undefined) continue;
-				await fs.rm(to, { force: true }).catch(() => undefined);
-				await fs.symlink(target, to).catch(() => undefined);
-				files += 1;
+			try {
+				await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
+				for (const dir of [...(tree?.dirs.keys() ?? [])].sort()) {
+					const to = moved(dir);
+					if (to === undefined || to === UPGRADE_WORKSPACE) continue;
+					if (await clear(dir, to, "directory")) await fs.mkdir(to);
+					files += 1;
+				}
+				for (const [path, file] of tree?.files ?? []) {
+					const to = moved(path);
+					if (to === undefined) continue;
+					await clear(path, to, "file");
+					await fs.writeFile(to, new Uint8Array(file.bytes));
+					await fs.chmod(to, file.mode).catch(() => undefined);
+					await fs.utimes(to, new Date(file.mtime), new Date(file.mtime)).catch(() => undefined);
+					files += 1;
+					bytes += file.bytes.byteLength;
+				}
+				for (const [path, target] of tree?.links ?? []) {
+					const to = moved(path);
+					if (to === undefined) continue;
+					await clear(path, to, "link");
+					await fs.symlink(target, to);
+					files += 1;
+				}
+			} catch (error) {
+				fsError(error, UPGRADE_WORKSPACE);
 			}
 			// A link or an empty directory there is replaced (a snapshot's own), anything else refused, as a host does.
 			const there = await fs.lstat(WORKSPACE).catch(() => undefined);

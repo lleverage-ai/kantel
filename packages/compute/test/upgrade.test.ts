@@ -1486,6 +1486,54 @@ describe("upgrading an isolate into a snapshot", () => {
 		expect((await tom.getSnapshot(saved.id)).uses).toBe(1);
 	});
 
+	it("lays the isolate's links and directories over the snapshot's files, and merges directories, as a host does", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		const made = await tom.runCommand(vm.id, {
+			command:
+				"mkdir -p /home/user/workspace/src && echo kept > /home/user/workspace/src/only-theirs && echo theirs > /home/user/workspace/link && echo theirs > /home/user/workspace/build",
+		});
+		expect(made.exitCode).toBe(0);
+		const saved = await tom.saveSnapshot({ name: "files", sandboxId: vm.id });
+		const sandbox = await isolateWithFiles(tom);
+		const built = await tom.runCommand(sandbox.id, { command: "mkdir build && echo built > build/out.js" });
+		expect(built.exitCode).toBe(0);
+		await tom.upgradeSandbox(sandbox.id, { from: saved.id });
+		const run = await tom.runCommand(sandbox.id, {
+			command:
+				"readlink /home/user/workspace/link; cat /workspace/src/a.txt /workspace/src/only-theirs /workspace/build/out.js",
+		});
+		expect(run.stdout).toBe("src/a.txt\nhello\nkept\nbuilt\n");
+	});
+
+	for (const [what, at] of [
+		["link", "link"],
+		["file", "run.sh"],
+	] as const) {
+		it(`fails, the isolate and the snapshot's directory as they were, when the isolate's ${what} meets a directory`, async () => {
+			const { tom, api } = setup();
+			const vm = await tom.createSandbox({ type: "microvm", wait: true });
+			const made = await tom.runCommand(vm.id, {
+				command: `mkdir -p /home/user/workspace/${at} && echo kept > /home/user/workspace/${at}/kept.txt`,
+			});
+			expect(made.exitCode).toBe(0);
+			const saved = await tom.saveSnapshot({ name: "a-directory", sandboxId: vm.id });
+			const sandbox = await isolateWithFiles(tom);
+			const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
+			expect(refused.status).toBe(400);
+			expect(refused.message).toContain(`can't be laid over the directory /home/user/workspace/${at}`);
+			const stored = await api.store.sandboxes.get(sandbox.id);
+			expect(stored).toMatchObject({ type: "isolate", state: "running" });
+			expect(stored?.upgrading).toBeUndefined();
+			const isolate = await tom.runCommand(sandbox.id, { command: "readlink link; cat src/a.txt; ./run.sh" });
+			expect(isolate.stdout).toBe("src/a.txt\nhello\nrun\n");
+			expect((await tom.getSnapshot(saved.id)).uses).toBe(0);
+			const fromIt = await tom.createSandbox({ from: saved.id, wait: true });
+			const kept = await tom.runCommand(fromIt.id, { command: `cat /home/user/workspace/${at}/kept.txt` });
+			expect(kept.stdout).toBe("kept\n");
+		});
+	}
+
 	it("takes the snapshot by its ID, and gives a saved name's newest", async () => {
 		const { tom } = setup();
 		const first = await projectSnapshot(tom);
