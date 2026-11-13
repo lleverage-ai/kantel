@@ -119,6 +119,14 @@ type Config struct {
 	// only (default DefaultControlSocket; "off" serves none).
 	ControlSocket string `json:"controlSocket,omitempty"`
 
+	// MeshPort is the UDP port of the host's WireGuard mesh with the other hosts of its pool (default 51820; -1 turns
+	// the mesh off, and the host doesn't offer it). The mesh comes up only once the control plane puts the host in one,
+	// when its pool has sync on.
+	MeshPort int `json:"meshPort,omitempty"`
+	// MeshEndpoints are where the host's peers reach it besides its interface addresses: "host:port", or a host with
+	// MeshPort, such as a forwarded port or a name. Peers try them first.
+	MeshEndpoints []string `json:"meshEndpoints,omitempty"`
+
 	// ImagePatching is the switch for versioned host images (experimental, default off): the host keeps each version
 	// of the kernel and images side by side under ImagesDir, takes new ones from the control plane's image channel,
 	// checks their signatures, and keeps every sandbox on the images it was made on until it is restarted on the

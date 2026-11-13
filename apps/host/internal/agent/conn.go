@@ -329,6 +329,11 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 		if m.Welcome != nil {
 			s.host.applyWelcome(ctx, m.Welcome, update)
 		}
+	case "mesh.peers":
+		// The pool's hosts now: the mesh's peers made to match.
+		if s.host.mesh != nil {
+			s.host.mesh.SetPeers(m.Peers)
+		}
 	case "usage.ack":
 		// Kantel has taken the usage ticks up to this one: the backlog lets them go.
 		s.host.usageAcked(uint64(max(m.Acked, 0)))
@@ -347,6 +352,12 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
 	h.followImages(ctx, w.Images)
+	if h.mesh != nil {
+		// Up with the welcome's mesh, or down without one (the host's pool has sync off).
+		if err := h.mesh.Apply(w.Mesh); err != nil {
+			h.log.Error("the mesh couldn't be brought up", "error", err)
+		}
+	}
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {

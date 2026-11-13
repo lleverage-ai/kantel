@@ -122,6 +122,8 @@ type Host struct {
 	plan *memplan.Plan
 	// guard acts when memory runs short, with memory over-commit on (memory.go).
 	guard memoryGuard
+	// mesh is the host's side of its pool's WireGuard mesh (mesh.go), nil when the host doesn't offer it.
+	mesh hostMesh
 }
 
 // New starts the tiers the host can run.
@@ -141,7 +143,10 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The pool mesh's prefix is no sandbox's to reach through the proxy, whatever the operator allows.
+	dest.Denied = h.meshDenied
 	h.proxy.Destinations = dest
+	h.startMesh()
 	want := map[string]bool{}
 	for _, t := range cfg.Tiers {
 		want[t] = true
@@ -348,6 +353,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if _, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
 		features = append(features, proto.FeatureStickyDisks)
 	}
+	if h.mesh != nil {
+		features = append(features, proto.FeatureMesh)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -368,6 +376,10 @@ func (h *Host) Facts() proto.Facts {
 		f.Isolate = iso.RuntimeInfo()
 	}
 	f.Runtimes = h.runtimes()
+	if h.mesh != nil {
+		// Its endpoints as its interfaces are now.
+		f.Mesh = h.mesh.Facts()
+	}
 	if h.canBuildTemplates(context.Background()) == nil {
 		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
 		// Custom images only beside template builds: the control plane sends them to a host with both.
@@ -406,6 +418,9 @@ func (h *Host) Capacity() proto.Capacity {
 	c.Disk = h.diskUsage()
 	if t, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
 		c.StickyDisks = t.StickyHoldings()
+	}
+	if h.mesh != nil {
+		c.Mesh = h.mesh.Health()
 	}
 	return c
 }
@@ -451,6 +466,9 @@ func (h *Host) WaitTemplate(ctx context.Context, tier string, p proto.CreatePara
 
 func (h *Host) Close() {
 	h.stopImagePatching()
+	if h.mesh != nil {
+		h.mesh.Close()
+	}
 	for _, t := range h.tiers {
 		t.Close()
 	}
