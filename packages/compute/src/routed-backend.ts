@@ -17,7 +17,14 @@
  * it names, and a template snapshot is answered by the backend its reference is of (`holdsSnapshot`).
  */
 import { KantelError, placementError } from "@kantel/contracts";
-import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
+import type {
+	BackendCapabilities,
+	BackendSize,
+	Placement,
+	SandboxBackend,
+	SandboxSpec,
+	UpgradeSpec,
+} from "./backend.ts";
 
 export interface RoutedBackendOptions {
 	readonly primary: SandboxBackend;
@@ -210,10 +217,18 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		...(primary.upgrade === undefined && fallback.upgrade === undefined
 			? {}
 			: {
-					async upgrade(id: string, spec: SandboxSpec, operationId: string) {
+					async upgrade(id: string, spec: UpgradeSpec, operationId: string) {
 						const backend = await on(id);
 						if (backend.upgrade === undefined) {
 							throw new KantelError("not_supported", "This sandbox's hosts don't upgrade isolates to microVMs");
+						}
+						// A snapshot on the other backend's hosts is out of its reach: no host the sandbox may use holds it.
+						if (spec.intoSnapshot !== undefined && forRef(spec.intoSnapshot) !== backend) {
+							throw placementError(
+								"unavailable",
+								"host_unavailable",
+								"The snapshot is on hosts this sandbox's upgrade can't use: an isolate upgrades into a snapshot on its own hosts",
+							);
 						}
 						return backend.upgrade(id, await affine(backend, spec), operationId);
 					},

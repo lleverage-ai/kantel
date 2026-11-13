@@ -1095,11 +1095,22 @@ export const Sandbox = Type.Object(
 					"upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false.",
 			}),
 		),
+		autoUpgradeFrom: Type.Optional(
+			Type.String({
+				description:
+					"The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved " +
+					"snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. " +
+					"Absent: the deployment's default microVM.",
+			}),
+		),
 		upgradedFrom: Type.Optional(
 			Type.Object(
 				{
 					type: SandboxType,
 					at: Timestamp,
+					snapshotId: Type.Optional(
+						Type.String({ description: "The snapshot its microVM was started from (`upgradeSandbox`'s `from`)." }),
+					),
 				},
 				{
 					title: "SandboxUpgrade",
@@ -1318,6 +1329,15 @@ export const CreateSandboxBody = Type.Object(
 					"isolate stays as it is.",
 			}),
 		),
+		autoUpgradeFrom: Type.Optional(
+			Type.String({
+				description:
+					"What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's " +
+					"name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so " +
+					"a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the " +
+					"command's answer stands. Default: the deployment's default microVM. An isolate's only.",
+			}),
+		),
 		wait: Type.Optional(
 			Type.Boolean({ description: "Answer once it is `running` (or `error`) rather than as soon as it is placed." }),
 		),
@@ -1350,6 +1370,13 @@ export const UpdateSandboxBody = Type.Object(
 					"in it may cause the upgrade.",
 			}),
 		),
+		autoUpgradeFrom: Type.Optional(
+			Type.Union([Type.String(), Type.Null()], {
+				description:
+					"Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes " +
+					"back to the deployment's default microVM.",
+			}),
+		),
 	},
 	{ title: "UpdateSandboxBody" },
 );
@@ -1359,6 +1386,16 @@ export const UpgradeSandboxBody = Type.Object(
 		size: Type.Optional(SandboxSizeName),
 		resources: Type.Optional(SandboxShapeInput),
 		image: Type.Optional(Type.String({ description: "The microVM's base image. Default: the deployment's." })),
+		from: Type.Optional(
+			Type.String({
+				description:
+					"Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the " +
+					"account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the " +
+					"host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: " +
+					"where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's " +
+					"disk, so not with `resources.diskGb`. Default: a new microVM of `image`.",
+			}),
+		),
 		wait: Type.Optional(
 			Type.Boolean({
 				description:
@@ -1370,8 +1407,8 @@ export const UpgradeSandboxBody = Type.Object(
 	{
 		title: "UpgradeSandboxBody",
 		description:
-			"The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` " +
-			"makes the deployment's default microVM.",
+			"The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is " +
+			"optional: `{}` makes the deployment's default microVM.",
 	},
 );
 
@@ -2106,7 +2143,7 @@ export const Snapshot = Type.Object(
 			Type.Integer({
 				minimum: 0,
 				description:
-					"How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it.",
+					"How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it.",
 			}),
 		),
 		createdAt: Timestamp,

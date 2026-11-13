@@ -95,6 +95,20 @@ describe("createRoutedBackend", () => {
 		]);
 	});
 
+	it("upgrades an isolate into a snapshot only on the backend that holds the isolate", async () => {
+		const { routed, primary, fallback } = setup();
+		const into = (intoSnapshot: string) => ({ ...spec("sbx_p1", ["host_own", "host_stub"]), intoSnapshot });
+		await routed.upgrade?.("sbx_p1", into("host_own/snap_1"), "upg_1");
+		expect(primary.seen).toEqual([{ method: "upgrade", eligible: ["host_own"] }]);
+		// A snapshot the other backend holds is out of its reach: refused, nothing sent to either.
+		await expect(routed.upgrade?.("sbx_p1", into("ref_stub_snapshot"), "upg_2")).rejects.toMatchObject({
+			code: "unavailable",
+			message: expect.stringContaining("an isolate upgrades into a snapshot on its own hosts"),
+		});
+		expect(primary.seen).toHaveLength(1);
+		expect(fallback.seen).toEqual([]);
+	});
+
 	it("gives what the primary holds the primary's hosts among those eligible", async () => {
 		const { routed, primary } = setup();
 		await routed.start("sbx_p1", { env: {}, eligibleHosts: ["host_own", "host_stub"] });

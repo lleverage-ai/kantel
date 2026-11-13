@@ -334,7 +334,7 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * An upgrade to a microVM under way (it is `starting`): its operation ID, which its backend does at most once and can
 	 * settle (`SandboxBackend.settleUpgrade`), when it began and when its gateway last said it was at it (`heartbeatAt`:
 	 * one gone quiet is settled by the sweep), what it was before (`from`, `before`: what a rollback puts back), the
-	 * microVM asked for, and the egress revision sent with it.
+	 * microVM asked for and the snapshot it starts from, and the egress revision sent with it.
 	 */
 	readonly upgrading?: {
 		readonly operationId: string;
@@ -353,6 +353,8 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 		readonly size?: computeSchema.SandboxSizeName;
 		readonly shape?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };
 		readonly image?: string;
+		/** The snapshot its microVM starts from (`upgradeSandbox`'s `from`), which it depends on while it is under way. */
+		readonly snapshotId?: string;
 		readonly egressRevision?: number;
 	};
 };

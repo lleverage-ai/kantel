@@ -203,6 +203,16 @@ export interface SandboxSpec {
 	readonly stickyDisks?: readonly BackendStickyDisk[];
 }
 
+/** What an upgrade makes (`SandboxBackend.upgrade`): a microVM create's spec, and what it starts from. */
+export interface UpgradeSpec extends SandboxSpec {
+	/**
+	 * Start the microVM from this snapshot (a `ref` the backend answered, of a microVM), as a create from it would, its
+	 * memory restored where it holds it, and lay the isolate's files over what it has at `UPGRADE_WORKSPACE`. Absent:
+	 * its image. Not `fromSnapshot`, which is where a stopped isolate's own files are.
+	 */
+	readonly intoSnapshot?: string;
+}
+
 /** A sticky disk to attach at a create: a copy of the newest version its host holds, or a new disk of `sizeGiB`. */
 export interface BackendStickyDisk {
 	readonly diskId: string;
@@ -769,9 +779,11 @@ export interface SandboxBackend {
 	 * and the files are moved to it, up to `UPGRADE_MOVE_LIMITS`, the isolate held still meanwhile
 	 * (`ISOLATE_FREEZE_FEATURE`). Rejects, with the isolate as it was, when the microVM can't be made or the files can't
 	 * be moved; `upgradeOutcomeUnknown` when that isn't known (`settleUpgrade` says). Sent again with the same
-	 * `operationId`, it answers the first's outcome. Absent: isolates aren't upgraded here (`not_supported`).
+	 * `operationId`, it answers the first's outcome. Absent: isolates aren't upgraded here (`not_supported`). From a
+	 * snapshot (`spec.intoSnapshot`) the microVM goes on the snapshot's host, as a create from it does: its own host
+	 * when that holds it, else that host with the files moved there.
 	 */
-	upgrade?(sandboxId: string, spec: SandboxSpec, operationId: string): Promise<UpgradedPlacement>;
+	upgrade?(sandboxId: string, spec: UpgradeSpec, operationId: string): Promise<UpgradedPlacement>;
 	/**
 	 * The outcome of upgrade `operationId` (`upgrade`'s third argument), for one whose answer was lost: once one under
 	 * way has ended, done with its microVM, or failed, rolled back (any microVM made for it deleted, the isolate as it

@@ -1205,3 +1205,118 @@ describe("a host's report racing an upgrade's handover", () => {
 		expect(placement).toEqual(handedOver);
 	});
 });
+
+describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
+	/** A saved microVM snapshot in the isolate's account, its bytes on `hostId` as `snap_project`. */
+	async function savedOn(api: ComputeApi, accountId: string, hostId: string) {
+		await api.store.snapshots.put({
+			id: "snap_project",
+			accountId,
+			kind: "saved",
+			name: "project",
+			sandboxType: "microvm",
+			state: "ready",
+			memory: false,
+			size: "default",
+			createdAt: 1,
+			ref: `${hostId}/snap_project`,
+		});
+	}
+	const both = (more: readonly string[] = []) =>
+		factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade, ...more]);
+
+	it("is done by the isolate's own host from the snapshot there, when it says it can", async () => {
+		const { root, api, service, hosts } = await setup([
+			{ name: "both", facts: both([HOST_FEATURES.isolateUpgradeFrom]) },
+		]);
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		await savedOn(api, sandbox.accountId, host.hostId);
+		const upgraded = await root.upgradeSandbox(sandbox.id, { from: "project" });
+		expect(upgraded).toMatchObject({
+			type: "microvm",
+			hostId: host.hostId,
+			upgradedFrom: { snapshotId: "snap_project" },
+		});
+		const sent = host.calls.find((call) => call.method === "sandbox.upgrade")?.params;
+		expect(sent).toMatchObject({ sandboxId: sandbox.id, tier: "microvm", from: "snap_project" });
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: host.hostId });
+	});
+
+	it("is refused, the isolate kept, when its own host holds the snapshot but can't upgrade into one", async () => {
+		const { root, api, service, hosts } = await setup([
+			{ name: "both", facts: both() },
+			{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+		]);
+		const [host, vms] = hosts;
+		if (host === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		await savedOn(api, sandbox.accountId, host.hostId);
+		const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
+		expect(refused.status).toBe(501);
+		expect(refused.message).toContain("can't make a microVM from a snapshot in an upgrade");
+		expect(host.methods()).not.toContain("sandbox.upgrade");
+		expect(vms.methods()).not.toContain("sandbox.create");
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "isolate", hostId: host.hostId });
+		expect((await root.getSandbox(sandbox.id)).type).toBe("isolate");
+	});
+
+	it("never moves to another host when the isolate's own host, holding the snapshot, has no room", async () => {
+		const { root, api, hosts } = await setup([
+			{ name: "both", facts: both([HOST_FEATURES.isolateUpgradeFrom]) },
+			{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+		]);
+		const [host, vms] = hosts;
+		if (host === undefined || vms === undefined) throw new Error("no hosts");
+		host.refuseUpgrade = { code: "capacity", message: "no room for the microVM" };
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		await savedOn(api, sandbox.accountId, host.hostId);
+		const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
+		expect(refused.status).toBe(429);
+		expect(vms.methods()).not.toContain("sandbox.create");
+		expect(host.sandboxes.get(sandbox.id)?.tier).toBe("isolate");
+	});
+
+	it("moves the files to the snapshot's host, and only that one, when another host holds it", async () => {
+		const vmFacts = factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]);
+		const { root, api, service, hosts } = await setup([
+			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+			{ name: "vms", facts: vmFacts },
+			{ name: "holder", facts: vmFacts },
+		]);
+		const [isolates, vms, holder] = hosts;
+		if (isolates === undefined || vms === undefined || holder === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		isolates.sandboxes.get(sandbox.id)?.files.set("notes.md", { kind: "file", data: enc("# notes\n") });
+		await savedOn(api, sandbox.accountId, holder.hostId);
+		const upgraded = await root.upgradeSandbox(sandbox.id, { from: "snap_project" });
+		expect(upgraded).toMatchObject({ type: "microvm", hostId: holder.hostId });
+		expect(holder.calls.find((call) => call.method === "sandbox.create")?.params).toMatchObject({
+			sandboxId: sandbox.id,
+			tier: "microvm",
+			from: "snap_project",
+		});
+		expect(vms.methods()).not.toContain("sandbox.create");
+		expect(text(holder.sandboxes.get(sandbox.id)?.files.get("/home/user/workspace/notes.md")?.data)).toBe("# notes\n");
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: holder.hostId });
+	});
+
+	it("is refused before anything is sent when the snapshot's host is not one the sandbox may use", async () => {
+		const vmFacts = factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]);
+		const { root, api, service, hosts } = await setup([
+			{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+			{ name: "holder", facts: vmFacts },
+		]);
+		const [isolates, holder] = hosts;
+		if (isolates === undefined || holder === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		await savedOn(api, sandbox.accountId, "hst_elsewhere");
+		const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
+		expect(refused.status).toBe(503);
+		expect(refused.message).toContain("on a host this sandbox can't use now");
+		expect(isolates.methods()).not.toContain("sandbox.upgrade.freeze");
+		expect(holder.methods()).not.toContain("sandbox.create");
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
+	});
+});

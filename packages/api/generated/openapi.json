@@ -14404,6 +14404,10 @@
 						"type": "boolean",
 						"description": "For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is."
 					},
+					"autoUpgradeFrom": {
+						"type": "string",
+						"description": "What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only."
+					},
 					"wait": {
 						"type": "boolean",
 						"description": "Answer once it is `running` (or `error`) rather than as soon as it is placed."
@@ -17631,6 +17635,10 @@
 						"type": "boolean",
 						"description": "An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false."
 					},
+					"autoUpgradeFrom": {
+						"type": "string",
+						"description": "The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM."
+					},
 					"upgradedFrom": {
 						"$ref": "#/components/schemas/SandboxUpgrade"
 					},
@@ -18555,6 +18563,10 @@
 					"at": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"snapshotId": {
+						"type": "string",
+						"description": "The snapshot its microVM was started from (`upgradeSandbox`'s `from`)."
 					}
 				},
 				"title": "SandboxUpgrade",
@@ -18999,7 +19011,7 @@
 					"uses": {
 						"type": "integer",
 						"minimum": 0,
-						"description": "How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it."
+						"description": "How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it."
 					},
 					"createdAt": {
 						"type": "integer",
@@ -20166,6 +20178,17 @@
 					"autoUpgrade": {
 						"type": "boolean",
 						"description": "Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade."
+					},
+					"autoUpgradeFrom": {
+						"anyOf": [
+							{
+								"type": "string"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM."
 					}
 				},
 				"title": "UpdateSandboxBody"
@@ -20226,13 +20249,17 @@
 						"type": "string",
 						"description": "The microVM's base image. Default: the deployment's."
 					},
+					"from": {
+						"type": "string",
+						"description": "Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with `resources.diskGb`. Default: a new microVM of `image`."
+					},
 					"wait": {
 						"type": "boolean",
 						"description": "Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was."
 					}
 				},
 				"title": "UpgradeSandboxBody",
-				"description": "The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM."
+				"description": "The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM."
 			},
 			"UsageSparklines": {
 				"type": "object",

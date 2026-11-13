@@ -247,8 +247,11 @@ export interface CreateSandboxInput {
 	readonly template?: HostTemplateBoot;
 }
 
-/** A microVM to make from an isolate (`sandboxes.upgrade`): a microVM create's input, without a template or snapshot. */
-export type UpgradeSandboxInput = Omit<CreateSandboxInput, "sandboxId" | "tier" | "from" | "mounts" | "template">;
+/**
+ * A microVM to make from an isolate (`sandboxes.upgrade`): a microVM create's input, without a template or mounts. One
+ * `from` a snapshot goes on the snapshot's host, the one `hostIds` names, as a create from it does.
+ */
+export type UpgradeSandboxInput = Omit<CreateSandboxInput, "sandboxId" | "tier" | "mounts" | "template">;
 
 /** An upgrade's microVM: its placement, and whether its own host (`host`) or Kantel (`control-plane`) moved its files. */
 export interface UpgradedSandbox extends SandboxPlacement {
@@ -2477,6 +2480,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				}
 				const shape = input.shape === undefined ? undefined : shapeIn(input.shape, "microvm");
 				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
+				if (input.from !== undefined && only?.size !== 1) {
+					throw new KantelError("invalid", "A microVM made from a snapshot goes on the snapshot's host");
+				}
 				const listed = (await store.listHosts())
 					.map(sane)
 					.filter((host) => only === undefined || only.has(host.id))
@@ -2508,6 +2514,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					...(chosen.custom
 						? { vcpus: chosen.size.vcpus, memoryMiB: chosen.size.memoryMiB, diskGiB: chosen.size.diskGiB }
 						: {}),
+					...(input.from === undefined ? {} : { from: input.from }),
 					...(input.owner === undefined ? {} : { owner: input.owner }),
 					...(input.env === undefined ? {} : { env: input.env }),
 					...(input.egress === undefined ? {} : { egress: input.egress }),
@@ -2532,6 +2539,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const own = listed.find(
 					(host) => host.id === source.hostId && host.facts?.features?.includes(HOST_FEATURES.isolateUpgrade) === true,
 				);
+				// From a snapshot on the isolate's own host, only that host can make the microVM: one from before it takes a
+				// snapshot in an upgrade can't.
+				const pinnedHere = input.from !== undefined && only?.has(source.hostId) === true;
+				if (pinnedHere && own?.facts?.features?.includes(HOST_FEATURES.isolateUpgradeFrom) !== true) {
+					throw placementError(
+						"not_supported",
+						"host_unavailable",
+						"The isolate's host, where the snapshot is, can't make a microVM from a snapshot in an upgrade; upgrade its kantel-host",
+					);
+				}
 				const here = own === undefined ? undefined : place(request, [candidateOf(own)]);
 				if (own !== undefined && here !== undefined && !isRefusal(here)) {
 					await intend(own, here.size, "host");
@@ -2563,8 +2580,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						// The host refused it, and rolled back what it did: the isolate is as it was, placed as it was (as it is now,
 						// and only while this upgrade is on it).
 						await clearUpgrade(sandboxId, operationId);
-						// No room there after all: another host, as when it had none to begin with. Any other failure stands.
+						// No room there after all: another host, as when it had none to begin with. Any other failure stands, as does
+						// any from a snapshot only this host holds.
 						if (!isKantelError(error) || (error.code !== "exhausted" && error.code !== "not_supported")) throw error;
+						if (pinnedHere) throw error;
 						log(`[hosts] host ${own.id} couldn't upgrade ${sandboxId} itself (${error.message}); moving it`);
 					}
 					if (made !== undefined) {
@@ -2586,11 +2605,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					(host) => host.id !== source.hostId && host.facts?.features?.includes(HOST_FEATURES.filesExtract) === true,
 				);
 				const chosen = place(request, others.map(candidateOf));
-				if (isRefusal(chosen)) {
+				if (isRefusal(chosen) && pinnedHere) {
 					throw placementError(
 						"exhausted",
-						chosen.code,
-						others.length === 0
+						"host_unavailable",
+						"The isolate's host, where the snapshot is, has no room for the microVM",
+					);
+				}
+				if (isRefusal(chosen)) {
+					// From a snapshot it goes only on the snapshot's host, as a create from it does: that host not being up is why.
+					throw placementError(
+						"exhausted",
+						input.from !== undefined && chosen.code === "no_host" ? "host_unavailable" : chosen.code,
+						others.length === 0 && input.from === undefined
 							? "No host can make a microVM from this isolate: its own host doesn't run microVMs, and no other that may take it does"
 							: chosen.reason,
 					);
@@ -2632,7 +2659,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					);
 					// Listed before the microVM is made: too much to move is refused without one.
 					const listing = await listWorkspace(sandboxId, source.hostId);
-					sandbox = await onHost<HostSandbox>(target.id, HostMethods.create, paramsFor(chosen), undefined, target);
+					// From a snapshot, as long as its disk takes to copy, as a create from it.
+					sandbox = await onHost<HostSandbox>(
+						target.id,
+						HostMethods.create,
+						paramsFor(chosen),
+						input.from === undefined ? undefined : { timeoutMs: DISK_COPY_TIMEOUT_MS },
+						target,
+					);
 					moved = await moveFiles(sandboxId, listing, source.hostId, target.id);
 					const linked = await onHost<HostExecResult>(target.id, HostMethods.exec, {
 						sandboxId,

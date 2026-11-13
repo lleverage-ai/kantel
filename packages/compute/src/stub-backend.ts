@@ -34,6 +34,7 @@ import {
 	type TemplateRuntime,
 	UPGRADE_WORKSPACE,
 	type UpgradedPlacement,
+	type UpgradeSpec,
 	type UsageSample,
 } from "./backend.ts";
 import { needsMicrovmOf } from "./needs-microvm.ts";
@@ -465,9 +466,10 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	/**
 	 * An isolate made a microVM, as kantel-host's `sandbox.upgrade` does: a new machine with the same ID whose disk has the
 	 * isolate's `/workspace` (its live files, or a stopped one's stop snapshot) under `UPGRADE_WORKSPACE`, and `/workspace`
-	 * a link to it. The isolate is replaced only once the microVM is made, so a failure leaves it as it was.
+	 * a link to it; one from a snapshot (`intoSnapshot`) starts with that snapshot's disk, the isolate's files laid over
+	 * it. The isolate is replaced only once the microVM is made, so a failure leaves it as it was.
 	 */
-	const upgrade = async (sandboxId: string, spec: SandboxSpec, operationId: string): Promise<UpgradedPlacement> => {
+	const upgrade = async (sandboxId: string, spec: UpgradeSpec, operationId: string): Promise<UpgradedPlacement> => {
 		// Sent again: the first's outcome, as a host keeps it.
 		const done = upgrades.get(sandboxId);
 		if (done?.operationId === operationId) {
@@ -488,7 +490,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 					: spec.fromSnapshot === undefined
 						? undefined
 						: snapshotTree(spec.fromSnapshot);
-			const fs = await restore(undefined);
+			// From a microVM's snapshot, as a create from it, the isolate's files laid over what it has.
+			const fs = await restore(spec.intoSnapshot === undefined ? undefined : snapshotTree(spec.intoSnapshot));
 			await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
 			const moved = (path: string) =>
 				path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)
@@ -515,8 +518,20 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			for (const [path, target] of tree?.links ?? []) {
 				const to = moved(path);
 				if (to === undefined) continue;
+				await fs.rm(to, { force: true }).catch(() => undefined);
 				await fs.symlink(target, to).catch(() => undefined);
 				files += 1;
+			}
+			// A link or an empty directory there is replaced (a snapshot's own), anything else refused, as a host does.
+			const there = await fs.lstat(WORKSPACE).catch(() => undefined);
+			if (there !== undefined) {
+				if (there.isDirectory && (await fs.readdir(WORKSPACE)).length > 0) {
+					throw new KantelError(
+						"unavailable",
+						`${WORKSPACE} is a directory of files; it can't be linked to ${UPGRADE_WORKSPACE}`,
+					);
+				}
+				await fs.rm(WORKSPACE, { recursive: true, force: true });
 			}
 			await fs.symlink(UPGRADE_WORKSPACE, WORKSPACE);
 			const microvm: Machine = {

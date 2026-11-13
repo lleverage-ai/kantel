@@ -281,6 +281,13 @@ export const HOST_FEATURES = {
 	 */
 	isolateUpgrade: "isolate-upgrade",
 	/**
+	 * `sandbox.upgrade` takes a create's `from` (one of the host's microVM snapshots) or `template` too: the microVM
+	 * starts from it as `sandbox.create` would make it, the snapshot's memory restored, and the isolate's files are laid
+	 * over what it has at `/home/user/workspace`. Without it, an upgrade from a snapshot on the isolate's own host is
+	 * refused.
+	 */
+	isolateUpgradeFrom: "isolate-upgrade-from",
+	/**
 	 * `sandbox.upgrade.freeze` and `sandbox.upgrade.thaw` (`{ sandboxId, operationId, waitMs? }`): one of the host's
 	 * isolates held still (what was under way ended, every later command and file write refused) while Kantel copies its
 	 * files to a microVM on another host, and let go if that upgrade rolls back.
@@ -1118,7 +1125,8 @@ export const HostMethods = {
 	fileOpen: "sandbox.files.open",
 	/**
 	 * `HOST_FEATURES.isolateUpgrade`: a create's params (`tier` `microvm`) for one of the host's isolates, which becomes
-	 * that microVM with its files. Answered with the microVM's `HostSandbox` and its `moved`.
+	 * that microVM with its files; with `HOST_FEATURES.isolateUpgradeFrom` its `from` too, one of the host's microVM
+	 * snapshots. Answered with the microVM's `HostSandbox` and its `moved`.
 	 */
 	upgrade: "sandbox.upgrade",
 	/** `HOST_FEATURES.isolateFreeze`: `{ sandboxId, operationId, waitMs? }`, answered `{ ok }`. */
