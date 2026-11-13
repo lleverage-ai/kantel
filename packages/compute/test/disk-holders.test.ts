@@ -303,10 +303,14 @@ describe("disk holders", () => {
 			from: [STUB_HOST_ID],
 			to: "host_b",
 		});
-		// Pool B's host has no holder in its pool; a revoked host fetches nothing; a disk or version that isn't there.
+		// The host it was made on has no other holder to fetch from; pool B's host may not hold pool A's disk; a revoked
+		// host fetches nothing; a disk or version that isn't there.
+		await expect(
+			tom.fetchHostStickyDisk(STUB_HOST_ID, { stickyDiskId: disk.id, version: version.id }),
+		).rejects.toMatchObject({ code: "conflict" });
 		await expect(
 			tom.fetchHostStickyDisk("host_c", { stickyDiskId: disk.id, version: version.id }),
-		).rejects.toMatchObject({ code: "conflict" });
+		).rejects.toMatchObject({ code: "not_found" });
 		await expect(
 			tom.fetchHostStickyDisk("host_e", { stickyDiskId: disk.id, version: version.id }),
 		).rejects.toMatchObject({ code: "conflict" });

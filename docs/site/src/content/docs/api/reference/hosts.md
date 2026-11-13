@@ -155,7 +155,7 @@ Asks the host to update its host agent to `latestVersion`, which it does when `u
 
 `POST /v1/admin/hosts/{hostId}/sticky-disk-fetches` (SDK method `fetchHostStickyDisk`)
 
-Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
+Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
