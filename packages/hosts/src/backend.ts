@@ -1663,6 +1663,22 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async updateHostAgent(hostId) {
 			return hosts.updateAgent(hostId);
 		},
+		async fetchDisk(hostId, fetch) {
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.diskSync)) {
+				throw new KantelError(
+					"not_supported",
+					"This host doesn't fetch disk versions from its peers; upgrade kantel-host, and turn on sync in its pool",
+				);
+			}
+			await hosts.diskFetch(hostId, {
+				kind: fetch.kind,
+				objectId: fetch.objectId,
+				version: fetch.version,
+				...(fetch.mapDigest === undefined ? {} : { mapDigest: fetch.mapDigest }),
+				holders: fetch.holders,
+				...(fetch.grant === undefined ? {} : { grant: fetch.grant }),
+			});
+		},
 		async checkHostUpdates() {
 			return hosts.checkForUpdates();
 		},

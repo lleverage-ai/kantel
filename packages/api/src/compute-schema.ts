@@ -3853,6 +3853,14 @@ export const UpdateHostBody = Type.Object(
 	{ title: "UpdateHostBody" },
 );
 
+export const FetchHostStickyDiskBody = Type.Object(
+	{
+		stickyDiskId: id("The sticky disk's ID."),
+		version: id("The version to fetch: one a host in the same pool holds."),
+	},
+	{ title: "FetchHostStickyDiskBody" },
+);
+
 export const CreateHostJoinTokenBody = Type.Object(
 	{
 		name: Type.Optional(Type.String({ maxLength: 100 })),

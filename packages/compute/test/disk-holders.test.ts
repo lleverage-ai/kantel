@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { createKantelClient } from "@kantel/api/sdk";
 import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import type { BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
+import type { BackendDiskFetch, BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
@@ -39,6 +39,8 @@ function setUp(
 		stickyDisks?: boolean;
 		/** What hosts last reported holding, for the sweep (`SandboxBackend.stickyHoldings`). */
 		holdings?: () => BackendStickyHoldings[];
+		/** The backend's `disk.fetch` (`SandboxBackend.fetchDisk`); absent, it has none. */
+		fetchDisk?: SandboxBackend["fetchDisk"];
 	} = {},
 ) {
 	const clock = { now: Date.UTC(2026, 10, 13) };
@@ -47,6 +49,7 @@ function setUp(
 	const wrap = (backend: SandboxBackend): SandboxBackend => ({
 		...backend,
 		...(holdings === undefined ? {} : { stickyHoldings: async () => holdings() }),
+		...(options.fetchDisk === undefined ? {} : { fetchDisk: options.fetchDisk }),
 		async capabilities() {
 			const capabilities = await backend.capabilities();
 			const [stub] = capabilities.hosts;
@@ -273,6 +276,58 @@ describe("disk holders", () => {
 		await expect(tom.api.service.locateDisk("host_b", { ...request, kind: "snapshot" })).rejects.toMatchObject({
 			code: "not_supported",
 		});
+	});
+
+	it("has a host fetch a version from its pool's holders, with a grant naming it", async () => {
+		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];
+		const tom = setUp({
+			fetchDisk: async (hostId, fetch) => {
+				fetches.push({ hostId, fetch });
+			},
+		});
+		const { disk, version } = await tom.committed();
+		await tom.pool();
+		await tom.fetchHostStickyDisk("host_b", { stickyDiskId: disk.id, version: version.id });
+		expect(fetches).toHaveLength(1);
+		const [sent] = fetches;
+		expect(sent?.hostId).toBe("host_b");
+		expect(sent?.fetch).toMatchObject({
+			kind: "sticky",
+			objectId: disk.id,
+			version: version.id,
+			holders: [{ hostId: STUB_HOST_ID, address: "fd00:a::1" }],
+		});
+		const publicKey = await tom.api.service.grantPublicKey();
+		if (publicKey === undefined || sent?.fetch.grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(publicKey, sent.fetch.grant, tom.clock.now)).toMatchObject({
+			from: [STUB_HOST_ID],
+			to: "host_b",
+		});
+		// The host it was made on has no other holder to fetch from; pool B's host may not hold pool A's disk; a revoked
+		// host fetches nothing; a disk or version that isn't there.
+		await expect(
+			tom.fetchHostStickyDisk(STUB_HOST_ID, { stickyDiskId: disk.id, version: version.id }),
+		).rejects.toMatchObject({ code: "conflict" });
+		await expect(
+			tom.fetchHostStickyDisk("host_c", { stickyDiskId: disk.id, version: version.id }),
+		).rejects.toMatchObject({ code: "not_found" });
+		await expect(
+			tom.fetchHostStickyDisk("host_e", { stickyDiskId: disk.id, version: version.id }),
+		).rejects.toMatchObject({ code: "conflict" });
+		await expect(
+			tom.fetchHostStickyDisk("host_b", { stickyDiskId: "sdk_missing", version: version.id }),
+		).rejects.toMatchObject({ code: "not_found" });
+		await expect(
+			tom.fetchHostStickyDisk("host_b", { stickyDiskId: disk.id, version: "sdv_missing" }),
+		).rejects.toMatchObject({ code: "not_found" });
+		expect(fetches).toHaveLength(1);
+		// A backend whose hosts don't sync.
+		const plain = setUp();
+		const other = await plain.committed();
+		await plain.pool();
+		await expect(
+			plain.fetchHostStickyDisk("host_b", { stickyDiskId: other.disk.id, version: other.version.id }),
+		).rejects.toMatchObject({ code: "not_supported" });
 	});
 
 	it("never forgets a version another host still holds", async () => {

@@ -11250,6 +11250,110 @@
 				}
 			}
 		},
+		"/admin/hosts/{hostId}/sticky-disk-fetches": {
+			"post": {
+				"operationId": "fetchHostStickyDisk",
+				"summary": "Fetch a sticky disk version onto a host",
+				"description": "Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/FetchHostStickyDiskBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "The fetch has started."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/hosts/check-for-updates": {
 			"post": {
 				"operationId": "checkHostUpdates",
@@ -16077,6 +16181,21 @@
 					}
 				},
 				"title": "ExtractedArchive"
+			},
+			"FetchHostStickyDiskBody": {
+				"type": "object",
+				"required": ["stickyDiskId", "version"],
+				"properties": {
+					"stickyDiskId": {
+						"type": "string",
+						"description": "The sticky disk's ID."
+					},
+					"version": {
+						"type": "string",
+						"description": "The version to fetch: one a host in the same pool holds."
+					}
+				},
+				"title": "FetchHostStickyDiskBody"
 			},
 			"FileContent": {
 				"type": "object",

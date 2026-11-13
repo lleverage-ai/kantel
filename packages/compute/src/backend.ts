@@ -240,6 +240,16 @@ export interface BackendStickyDiskStatus {
 	readonly reason?: string;
 }
 
+/** A fetch of a disk store object's version (`fetchDisk`): what `disk.locate` would answer the host. */
+export interface BackendDiskFetch {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly mapDigest?: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
+}
+
 /** A committed sticky disk version, where it is. */
 export interface CommittedStickyDisk {
 	readonly hostId: string;
@@ -1014,6 +1024,12 @@ export interface SandboxBackend {
 	commitStickyDisk?(sandboxId: string, diskId: string, version: string): Promise<CommittedStickyDisk>;
 	/** Deletes a sticky disk's versions from every host that runs sticky disks and is online now; idempotent. */
 	deleteStickyDisk?(diskId: string): Promise<void>;
+	/**
+	 * Has a host fetch a version of a disk store object from the hosts that hold it (`disk.fetch`), with where it is and a
+	 * grant naming the host; resolves once the fetch has started. `not_supported` for a host that doesn't fetch from its
+	 * peers. Absent: the backend's hosts don't sync.
+	 */
+	fetchDisk?(hostId: string, fetch: BackendDiskFetch): Promise<void>;
 	/**
 	 * What each connected host last reported holding of sticky disks. Absent: the backend doesn't say, and the catalogue
 	 * keeps every version.

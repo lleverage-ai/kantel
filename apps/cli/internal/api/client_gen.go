@@ -810,6 +810,11 @@ func (c *Client) UpdateHost(ctx context.Context, hostID string, body UpdateHostB
 	return &out, nil
 }
 
+// FetchHostStickyDisk POST /admin/hosts/{hostId}/sticky-disk-fetches: Fetch a sticky disk version onto a host. Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) FetchHostStickyDisk(ctx context.Context, hostID string, body FetchHostStickyDiskBody, opts ...CallOption) error {
+	return c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/admin/hosts/%s/sticky-disk-fetches", url.PathEscape(hostID)), Query: nil, Body: body}, opts...)
+}
+
 // UpdateHostAgent POST /admin/hosts/{hostId}/update: Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`).
 func (c *Client) UpdateHostAgent(ctx context.Context, hostID string, opts ...CallOption) (*Host, error) {
 	var out Host

@@ -10894,6 +10894,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		updateHostAgent: async (principal, { params }) => updateHostAgentOf(await hostFor(principal, params.hostId)),
 
+		fetchHostStickyDisk: async (principal, { params, body }) => {
+			const host = await hostFor(principal, params.hostId);
+			if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+			if (backend.fetchDisk === undefined) {
+				throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
+			}
+			const disk = await store.stickyDisks.get(body.stickyDiskId);
+			if (disk === undefined || disk.deletedAt !== undefined) throw notFound("sticky disk");
+			// Where it is, for this host: its pool's holders and a grant naming it, as its own disk.locate would get.
+			const request = { kind: "sticky", objectId: disk.id, version: body.version };
+			const location = await diskHolders.locate(host.id, request);
+			if (location.holders.length === 0) {
+				throw new KantelError("conflict", "No other host in the host's pool holds that version where it can fetch it");
+			}
+			await backend.fetchDisk(host.id, { ...request, ...location });
+			return undefined;
+		},
+
 		checkHostUpdates: async (principal) => {
 			requireScope(principal, "hosts:admin");
 			if (backend.checkHostUpdates === undefined) {
