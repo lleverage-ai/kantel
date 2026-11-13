@@ -697,6 +697,10 @@ export async function gatewayCompute(options: {
 		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
 		reportExit: (...report) => api.service.reportExit(...report),
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
+		// Which hosts hold which disk versions, from their reports, and where a host fetches one from, with a grant.
+		recordStickyHoldings: (hostId, at, holdings) => api.service.recordStickyHoldings(hostId, at, holdings),
+		locateDisk: (hostId, params) => api.service.locateDisk(hostId, params),
+		grantKey: () => api.service.grantPublicKey(),
 	});
 	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
 	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));

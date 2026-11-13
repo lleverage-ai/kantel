@@ -49,6 +49,7 @@ import {
 	type KantelClient,
 	type KantelClientOptions,
 	type Member,
+	type Pool,
 	type ProxySettings,
 	type PublicUrl,
 	type PutProxySettingsBody,
@@ -136,6 +137,7 @@ type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
 type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get"]>>;
+type UiPool = Awaited<ReturnType<NonNullable<HostsSource["pools"]>["list"]>>[number];
 type UiEnvironmentFile = UiEnvironment["files"][number];
 type UiRepo = UiEnvironment["repos"][number];
 type UiMethod = UiBinding["methods"][number];
@@ -1824,7 +1826,13 @@ function hostOf(host: Host): UiHost {
 					},
 				}),
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
+		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+		...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 	};
+}
+
+function poolOf(pool: Pool): UiPool {
+	return { id: pool.id, name: pool.name, default: pool.default, hosts: pool.hosts, createdAt: pool.createdAt };
 }
 
 function hostsSource({ api }: Context): HostsSource {
@@ -1835,6 +1843,7 @@ function hostsSource({ api }: Context): HostsSource {
 			const made = await api.createHostJoinToken({
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.labels === undefined ? {} : { labels: input.labels }),
+				...(input.pool === undefined ? {} : { pool: input.pool }),
 			});
 			return { token: made.token, expiresAt: made.expiresAt, command: made.command };
 		},
@@ -1846,6 +1855,15 @@ function hostsSource({ api }: Context): HostsSource {
 		update: async (id) => hostOf(await api.updateHostAgent(id)),
 		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateHost(id, { savedSnapshotBytesLimit: bytes })),
 		checkForUpdates: () => api.checkHostUpdates(),
+		// The deployment's pools, which its shared hosts are in.
+		pools: {
+			list: async () => (await api.listPools()).items.map(poolOf),
+			create: async (name) => poolOf(await api.createPool({ name })),
+			rename: async (id, name) => poolOf(await api.updatePool(id, { name })),
+			makeDefault: async (id) => poolOf(await api.updatePool(id, { default: true })),
+			remove: (id) => api.deletePool(id),
+		},
+		move: async (id, poolId) => hostOf(await api.updateHost(id, { pool: poolId })),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
 			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
@@ -1933,6 +1951,7 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 				account: accountId,
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.labels === undefined ? {} : { labels: input.labels }),
+				...(input.pool === undefined ? {} : { pool: input.pool }),
 			});
 			return { token: made.token, expiresAt: made.expiresAt, command: made.command };
 		},
@@ -1943,6 +1962,15 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 		},
 		update: async (id) => hostOf(await api.updateAccountHostAgent(id)),
 		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateAccountHost(id, { savedSnapshotBytesLimit: bytes })),
+		// The account's pools, which its own hosts are in. A pool is changed by its ID, which names it in any account.
+		pools: {
+			list: async () => (await api.listAccountPools({ account: accountId })).items.map(poolOf),
+			create: async (name) => poolOf(await api.createAccountPool({ account: accountId, name })),
+			rename: async (id, name) => poolOf(await api.updateAccountPool(id, { name })),
+			makeDefault: async (id) => poolOf(await api.updateAccountPool(id, { default: true })),
+			remove: (id) => api.deleteAccountPool(id),
+		},
+		move: async (id, poolId) => hostOf(await api.updateAccountHost(id, { pool: poolId })),
 	};
 }
 

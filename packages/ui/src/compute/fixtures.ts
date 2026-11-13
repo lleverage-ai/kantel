@@ -40,6 +40,7 @@ import type {
 	OrganisationMember,
 	PersonalToken,
 	Plan,
+	Pool,
 	ProxySettings,
 	PublicUrl,
 	Sandbox,
@@ -67,6 +68,7 @@ import {
 	DEFAULT_SANDBOX_SHAPES,
 	FilesRefusedError,
 	MAX_SANDBOX_ENVIRONMENTS,
+	POOL_NAME_PATTERN,
 	presetOf,
 	type SandboxSize,
 	sameProxySettings,
@@ -1399,6 +1401,7 @@ export const HOSTS: readonly Host[] = [
 			templates: 96,
 			bundles: 9,
 		}),
+		poolId: "pool_ci",
 	},
 	{
 		id: "hst_hetzner_2",
@@ -1427,6 +1430,7 @@ export const HOSTS: readonly Host[] = [
 			bundles: 4,
 		}),
 		savedSnapshotLimitBytes: 200 * 1024 ** 3,
+		poolId: "pool_ci",
 	},
 	{
 		id: "hst_home",
@@ -1447,6 +1451,7 @@ export const HOSTS: readonly Host[] = [
 		joinedAt: FIXTURE_NOW - 6 * DAY,
 		disk: sampleDiskUsage(1_000, { saved: 41, automatic: 66, sandboxes: 187, images: 21, templates: 24, bundles: 2 }),
 		savedSnapshotLimitBytes: 50 * 1024 ** 3,
+		poolId: "pool_default",
 	},
 	{
 		id: "hst_mac",
@@ -1466,6 +1471,7 @@ export const HOSTS: readonly Host[] = [
 		labels: { owner: "tom", site: "laptop" },
 		lastSeenAt: FIXTURE_NOW - 14 * HOUR,
 		joinedAt: FIXTURE_NOW - 3 * DAY,
+		poolId: "pool_default",
 	},
 ];
 
@@ -1796,6 +1802,34 @@ export interface ComputeFixtureOptions {
 	 * files, the Environments pages offer neither, and setting one is refused as the API refuses it.
 	 */
 	readonly noProtectedValues?: boolean;
+	/**
+	 * The pools the sample hosts are in: `many` (default) the default pool, `ci` with the Hetzner hosts and an empty
+	 * `workflows`; `one` the default alone, with every host in it; `long-names` the three with names as long as a name
+	 * may be; `none` a source with no pools, as an older gateway's; `fail` pools that can't be read.
+	 */
+	readonly pools?: "many" | "one" | "long-names" | "none" | "fail";
+}
+
+/** The sample pools, by the `pools` option: the default first. */
+function samplePools(kind: "many" | "one" | "long-names", at: (time: number) => number): Pool[] {
+	const pool = (id: string, name: string, made: number): Pool => ({
+		id,
+		name,
+		default: id === "pool_default",
+		hosts: 0,
+		createdAt: at(FIXTURE_NOW - made),
+	});
+	if (kind === "one") return [pool("pool_default", "default", 30 * DAY)];
+	const long = kind === "long-names";
+	return [
+		pool("pool_default", long ? "default-pool-for-the-analytical-engines-research-and-dev-team" : "default", 30 * DAY),
+		pool("pool_ci", long ? "continuous-integration-runners-for-every-repository-we-maintain" : "ci", 20 * DAY),
+		pool(
+			"pool_workflows",
+			long ? "workflow-runtimes-and-scheduled-jobs-for-the-production-stack" : "workflows",
+			2 * DAY,
+		),
+	];
 }
 
 /** What the fixtures refuse a protected value or a secret file with under `noProtectedValues`, as the API does. */
@@ -1938,10 +1972,28 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				...moved(host, ["lastSeenAt", "joinedAt"]),
 				...(host.disk === undefined ? {} : { disk: moved(host.disk, ["measuredAt"]) }),
 				...(options.hostsAway?.includes(host.id) === true ? { state: "offline" as const } : {}),
+				...(options.pools === "one" ? { poolId: "pool_default" } : {}),
 				...options.hostOverrides?.[host.id],
 			},
 		]),
 	);
+	const poolKind = options.pools ?? "many";
+	const pools = new Map<string, Pool>(
+		poolKind === "none" || poolKind === "fail" ? [] : samplePools(poolKind, at).map((pool) => [pool.id, pool]),
+	);
+	/** A pool as the API answers it: how many hosts are in it now. */
+	const poolView = (pool: Pool): Pool => ({
+		...pool,
+		hosts: [...hosts.values()].filter((host) => host.poolId === pool.id).length,
+	});
+	const poolNamed = (name: string, except?: string) => {
+		if (!POOL_NAME_PATTERN.test(name)) {
+			throw new Error("A pool's name is lower-case letters, digits and dashes, such as ci");
+		}
+		if ([...pools.values()].some((pool) => pool.name === name && pool.id !== except)) {
+			throw Object.assign(new Error(`The account has a pool named ${name}`), { code: "conflict" });
+		}
+	};
 	/** When each host updating comes back on its new version (wall-clock, so a story sees it finish). */
 	const updateDone = new Map<string, number>();
 	const deploymentUrl =
@@ -3128,6 +3180,79 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								hosts.set(id, host);
 								return host;
 							}),
+						// As Kantel's API moves a host: only a draining one with no sandboxes, refused otherwise with the reason.
+						...(poolKind === "none"
+							? {}
+							: {
+									move: (id: string, poolId: string) =>
+										gate(() => {
+											const host = find(hosts, id, "host");
+											const into = find(pools, poolId, "pool");
+											if (host.poolId === into.id) return host;
+											if (host.state !== "draining") {
+												throw Object.assign(
+													new Error(
+														"Drain the host before moving it to another pool, and move it once it has no sandboxes",
+													),
+													{ code: "conflict" },
+												);
+											}
+											if (host.sandboxes.isolates + host.sandboxes.microvms > 0) {
+												throw Object.assign(new Error("The host still has sandboxes: move it once they are deleted"), {
+													code: "conflict",
+												});
+											}
+											const moved = { ...host, poolId: into.id };
+											hosts.set(id, moved);
+											return moved;
+										}),
+									pools: {
+										list: () =>
+											gate(() => {
+												if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
+												return [...pools.values()].map(poolView);
+											}),
+										create: (name: string) =>
+											gate(() => {
+												poolNamed(name);
+												const pool: Pool = { id: nextId("pool"), name, default: false, hosts: 0, createdAt: now() };
+												pools.set(pool.id, pool);
+												return poolView(pool);
+											}),
+										rename: (id: string, name: string) =>
+											gate(() => {
+												poolNamed(name, id);
+												const pool = { ...find(pools, id, "pool"), name };
+												pools.set(id, pool);
+												return poolView(pool);
+											}),
+										makeDefault: (id: string) =>
+											gate(() => {
+												find(pools, id, "pool");
+												for (const [key, pool] of pools) pools.set(key, { ...pool, default: key === id });
+												return poolView(find(pools, id, "pool"));
+											}),
+										remove: (id: string) =>
+											gate(() => {
+												const pool = poolView(find(pools, id, "pool"));
+												if (pool.default) {
+													throw Object.assign(
+														new Error(`${pool.name} is the default pool: make another the default first`),
+														{ code: "conflict" },
+													);
+												}
+												if (pool.hosts > 0) {
+													throw Object.assign(
+														new Error(
+															`${pool.name} still has ${pool.hosts === 1 ? "a host" : `${pool.hosts} hosts`} in it: move them to another pool first`,
+														),
+														{ code: "conflict" },
+													);
+												}
+												pools.delete(id);
+											}),
+									},
+								}),
 					},
 					images: {
 						overview: () =>
