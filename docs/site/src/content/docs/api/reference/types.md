@@ -1147,6 +1147,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
 | `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
+| `mesh` | [HostMesh](/api/reference/types/#hostmesh) | no |  |
 | `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
@@ -1219,6 +1220,27 @@ A host's memory, in MiB, as it last reported it (every heartbeat).
 | `pressureFull` | number | yes | The share of the last 10 seconds every task waited on memory. (minimum 0, maximum 100) |
 | `maxRatio` | number | yes | The most sandboxes may be given, as a multiple of `capacityMiB`. (minimum 0) |
 | `measuredAt` | integer | no | Epoch milliseconds, UTC. |
+
+### HostMesh
+
+How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | yes | The host's own address on its pool's mesh, an IPv6 address. |
+| `peers` | [HostMeshPeer](/api/reference/types/#hostmeshpeer)[] | yes | The other hosts of its pool, each as it reaches it. |
+
+### HostMeshPeer
+
+One mesh peer as a host reaches it, as the host last reported it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The peer's host ID: another host of the same pool. |
+| `path` | string | yes | How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another. |
+| `endpoint` | string | no | The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`. |
+| `lastHandshake` | integer | no | When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first. (minimum 0) |
+| `rttMs` | number | no | The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. (minimum 0) |
 
 ### HostReleaseCheck
 

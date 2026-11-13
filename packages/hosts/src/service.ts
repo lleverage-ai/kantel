@@ -54,6 +54,7 @@ import {
 	type HostImageChannel,
 	type HostIsolateRuntime,
 	type HostMemoryReport,
+	type HostMeshHealth,
 	type HostMeshPeer,
 	HostMethods,
 	type HostMount,
@@ -204,6 +205,11 @@ export interface HostView {
 	readonly diskUsage?: HostDiskUsage;
 	/** Its memory, from its latest report. */
 	readonly memory?: Omit<HostMemoryReport, "admission">;
+	/**
+	 * How it reaches its mesh peers, from its latest report, while it is connected: a report from before it dropped
+	 * says nothing about now. Absent from a host without a mesh (its pool's sync off, or an older host agent).
+	 */
+	readonly mesh?: HostMeshHealth;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -1757,6 +1763,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
 			...(reported?.disk === undefined ? {} : { diskUsage: { ...reported.disk } }),
 			...(reported?.memory === undefined ? {} : { memory: withoutAdmission(reported.memory) }),
+			...(reported?.mesh === undefined || state === "unreachable" || state === "revoked"
+				? {}
+				: { mesh: { address: reported.mesh.address, peers: reported.mesh.peers.map((peer) => ({ ...peer })) } }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),

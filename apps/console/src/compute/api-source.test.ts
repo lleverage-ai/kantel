@@ -1423,6 +1423,36 @@ describe("pools", () => {
 		const ada = await open(fetchApi);
 		await expect(bob.ownHosts(await personalAccount(ada)).pools?.list()).rejects.toMatchObject({ code: "forbidden" });
 	});
+
+	it("gives New sandbox the account's pools, and names the one picked in its shapes and its create", async () => {
+		const { fetchApi } = setup({ accountHosts: true });
+		const bob = await open(fetchApi, "person-bob");
+		const accountId = await personalAccount(bob);
+		const pools = bob.ownHosts?.(accountId).pools;
+		if (pools === undefined || bob.sandboxes.pools === undefined) throw new Error("No pools for New sandbox");
+		expect((await bob.sandboxes.pools(accountId)).map((pool) => [pool.name, pool.default])).toEqual([
+			["default", true],
+		]);
+		const ci = await pools.create("ci");
+		expect((await bob.sandboxes.pools(accountId)).map((pool) => pool.name).sort()).toEqual(["ci", "default"]);
+		// ci has no hosts: its shapes have no microVMs, and a create in it is refused, naming it.
+		expect((await bob.sandboxes.shapes?.(accountId, undefined, ci.id))?.microvm.available).toBe(false);
+		await expect(bob.sandboxes.create({ accountId, kind: "isolate", poolId: ci.id })).rejects.toMatchObject({
+			code: "unavailable",
+			message: expect.stringContaining("No host in pool ci"),
+		});
+		await expect(bob.sandboxes.shapes?.(accountId, undefined, "pool_missing")).rejects.toMatchObject({
+			code: "not_found",
+		});
+		// Naming none, it goes in the default pools as before: the deployment's shared host takes it.
+		expect((await bob.sandboxes.create({ accountId, kind: "isolate" })).kind).toBe("isolate");
+	});
+
+	it("gives New sandbox no pools where the deployment has account hosts off, so it shows no picker", async () => {
+		const { fetchApi } = setup();
+		const bob = await open(fetchApi, "person-bob");
+		expect(await bob.sandboxes.pools?.(await personalAccount(bob))).toEqual([]);
+	});
 });
 
 describe("mounts", () => {

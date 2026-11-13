@@ -27,7 +27,13 @@ function Scenario({
 	metricsOf,
 	shapes,
 	olderGuest = false,
+	pool,
+	poolsLoading = false,
 }: {
+	/** The pool New sandbox starts with picked, by ID. */
+	pool?: string;
+	/** The account's pools are never read: New sandbox shows no picker meanwhile. */
+	poolsLoading?: boolean;
 	/** Its sandboxes' guest agents are from before processes could be listed: the source answers none. */
 	olderGuest?: boolean;
 	filters?: SandboxFilters;
@@ -45,8 +51,8 @@ function Scenario({
 }) {
 	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
 	const [sandboxes] = useState(() => {
-		const shaped =
-			shapes === undefined ? source.sandboxes : { ...source.sandboxes, shapes: () => Promise.resolve(shapes) };
+		const pooled = poolsLoading ? { ...source.sandboxes, pools: () => new Promise<never>(() => {}) } : source.sandboxes;
+		const shaped = shapes === undefined ? pooled : { ...pooled, shapes: () => Promise.resolve(shapes) };
 		const offered = olderGuest ? { ...shaped, processes: () => Promise.resolve(undefined) } : shaped;
 		if (usage === "live") return offered;
 		const { usageSeries: _, ...rest } = offered;
@@ -66,6 +72,7 @@ function Scenario({
 			narrow={narrow}
 			{...(filters === undefined ? {} : { initialFilters: filters })}
 			{...(metricsOf === undefined ? {} : { metricsOf })}
+			{...(pool === undefined ? {} : { pool })}
 			{...(noHosts ? { addHostHref: "#add-host" } : {})}
 		/>
 	);
@@ -144,9 +151,42 @@ export const BaseOutdated: Story = () => <Scenario />;
 
 /**
  * New's caret: New sandbox, open, with its vCPU, memory and disk sliders. Choose Isolate for its memory slider. Pick a
- * saved snapshot in Start from: the disk slider goes, as a sandbox made from a snapshot keeps its disk.
+ * saved snapshot in Start from: the disk slider goes, as a sandbox made from a snapshot keeps its disk. The account has
+ * three pools, so there's a Pool picker on the default; pick ci and the host picker offers only ci's hosts.
  */
 export const Create: Story = () => <Scenario creating />;
+
+/** New sandbox in an account with one pool: no Pool picker, and the sandbox goes in it. */
+export const CreateOnePool: Story = () => <Scenario creating options={{ pools: "one" }} />;
+
+/** New sandbox with ci picked: the sizes are what ci's hosts offer, and the host picker has only ci's hosts. */
+export const CreateInPool: Story = () => <Scenario creating pool="pool_ci" />;
+
+/** New sandbox with an empty pool picked: the picker says no host is in it yet, and Create waits for another. */
+export const CreateEmptyPool: Story = () => <Scenario creating pool="pool_workflows" />;
+
+/**
+ * New sandbox in ci while ci's hosts are away. Press Create: Kantel refuses it, and the notice over the list says which
+ * pool had no host for it.
+ */
+export const CreatePoolRefused: Story = () => (
+	<Scenario creating pool="pool_ci" options={{ hostsAway: ["hst_hetzner_1", "hst_hetzner_2"] }} />
+);
+
+/** New sandbox while the pools are still being read: no picker yet, and a sandbox made now goes in the default pool. */
+export const CreatePoolsLoading: Story = () => <Scenario creating poolsLoading />;
+
+/** New sandbox when the pools can't be read: a notice says the sandbox goes in the default pool, with Try again. */
+export const CreatePoolsFailed: Story = () => <Scenario creating options={{ pools: "fail" }} />;
+
+/** New sandbox with pool names as long as a name may be: each option and the picked one wrap or are cut short. */
+export const CreatePoolLongNames: Story = () => <Scenario creating options={{ pools: "long-names" }} />;
+
+/** The same on a phone. */
+export const CreatePoolLongNamesMobile: Story = () => (
+	<Scenario creating narrow options={{ pools: "long-names" }} pool="pool_ci" />
+);
+CreatePoolLongNamesMobile.meta = { width: 390 };
 
 /** New sandbox on hosted Kantel: the price follows the vCPUs and memory chosen; the disk isn't priced. */
 export const CreateHosted: Story = () => <Scenario hosting="hosted" creating />;

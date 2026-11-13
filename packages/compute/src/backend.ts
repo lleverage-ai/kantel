@@ -143,6 +143,8 @@ export interface BackendHost {
 	readonly diskUsage?: BackendDiskUsage;
 	/** Its memory, as it last reported it. Absent: it hasn't said (an older host, the stub). */
 	readonly memory?: computeSchema.HostMemory;
+	/** How it reaches its mesh peers, as it last reported it, while connected. Absent: it has no mesh (or the stub). */
+	readonly mesh?: computeSchema.HostMesh;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**
