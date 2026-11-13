@@ -1160,6 +1160,12 @@ export const Sandbox = Type.Object(
 			}),
 		),
 		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools.",
+			}),
+		),
 		hostReachable: Type.Optional(
 			Type.Boolean({
 				description:
@@ -1283,6 +1289,16 @@ export const CreateSandboxBody = Type.Object(
 		hostLabels: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description: 'Place it only on a host with each label, such as `{ site: "home" }`.',
+			}),
+		),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared " +
+					"hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. " +
+					"`unavailable` saying which pool when none of its hosts can take it now. Default: the account's default " +
+					"pool when the account has hosts of its own, else the deployment's default pool, as before pools.",
 			}),
 		),
 		host: Type.Optional(
@@ -2539,6 +2555,13 @@ export const SandboxShapesQuery = Type.Object(
 				description:
 					"The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host " +
 					"alone. Default: from every host the account's sandboxes may use.",
+			}),
+		),
+		pool: Type.Optional(
+			Type.String({
+				description:
+					"The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. " +
+					"Default: from the hosts a create naming no pool may use, in the default pools.",
 			}),
 		),
 	},

@@ -1524,6 +1524,17 @@ const generatedName = () => `${pick(ADJECTIVES)}-${pick(ANIMALS)}`;
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 /** A host's `poolId` field, where it has one. */
 const pooled = (poolId: string | undefined) => (poolId === undefined ? {} : { poolId });
+
+/**
+ * The pools a sandbox may be placed in, before its labels choose among their hosts: of the account's own hosts, those in
+ * `own`, and of the shared hosts, those in `shared`; none of either where it is absent. `name`: the pool it named, which a
+ * refusal says.
+ */
+interface PoolChoice {
+	readonly own?: string;
+	readonly shared?: string;
+	readonly name?: string;
+}
 const notFound = (what: string) => new KantelError("not_found", `No such ${what}`);
 const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 const unique = <T>(items: readonly T[]): T[] => [...new Set(items)];
@@ -2649,6 +2660,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// hosts (or the caller's read of them), and one is written only when it changed: a host's `lastSeenAt` alone moves
 	// on every heartbeat, so it is written once it is `HOST_SEEN_PRECISION_MS` stale, and the answer has it fresh.
 	let hostsReady: Promise<StoredHost[]> | undefined;
+	// The pools as the latest read of the hosts read them, beside the hosts (`placementPool`'s, saving a read a create).
+	let poolsRead: readonly StoredPool[] = [];
 	// Each host's memory as the backend last said, answered with it (`hostView`) but never stored: it moves on every
 	// heartbeat.
 	const hostMemory = new Map<string, computeSchema.HostMemory>();
@@ -2664,6 +2677,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const byId = new Map(records.map((record) => [record.id, record]));
 			const writes: Promise<void>[] = [];
 			hostMemory.clear();
+			poolsRead = allPools;
 			hostMeshAddress.clear();
 			// Each owner's pools, read in the one statement above; an owner with none gets its default made.
 			const ownerPools = new Map<string, Promise<StoredPool[]>>();
@@ -2947,6 +2961,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 *
 	 * `pin`: the one host it was asked to go on (`CreateSandboxBody.host`), whether or not the account has hosts of its
 	 * own; `host_unavailable` when that host can't take it now.
+	 *
+	 * `pool`: the pools it may go in (`PoolChoice`), before its labels choose among their hosts; absent, any.
 	 */
 	function requireHosts(
 		hosts: readonly StoredHost[],
@@ -2956,11 +2972,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine: boolean,
 		shared: boolean,
 		pin?: string,
+		pool?: PoolChoice,
 	): string[] {
 		if (pin !== undefined) {
 			const pinned = hosts.find((host) => host.id === pin);
 			const eligible =
-				pinned === undefined ? [] : requireHostsOrNone([pinned], accountId, type, labels, affine, shared);
+				pinned === undefined ? [] : requireHostsOrNone([pinned], accountId, type, labels, affine, shared, false, pool);
 			if (eligible.length === 0) {
 				throw placementError(
 					"unavailable",
@@ -2970,7 +2987,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			return eligible;
 		}
-		return requireHostsOrNone(hosts, accountId, type, labels, affine, shared, true);
+		return requireHostsOrNone(hosts, accountId, type, labels, affine, shared, true, pool);
 	}
 
 	/** `requireHosts` without a pin: the eligible hosts, or with `refuse` an `unavailable` error when there are none. */
@@ -2982,10 +2999,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine: boolean,
 		shared: boolean,
 		refuse = false,
+		pool?: PoolChoice,
 	): string[] {
-		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none.
+		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none: its pool first.
 		const up = hosts
 			.filter((host) => host.accountId === accountId || (shared && host.accountId === undefined))
+			.filter(
+				(host) =>
+					pool === undefined || (host.accountId === undefined ? host.poolId === pool.shared : host.poolId === pool.own),
+			)
 			.filter((host) => host.state === "online" || (affine && host.state === "draining"));
 		const typed = up.filter((host) => host.tiers.includes(type));
 		const qualifying = typed.filter((host) =>
@@ -3008,12 +3030,67 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw placementError(
 				"unavailable",
 				reason,
-				shared
-					? `No host can run ${what} now`
-					: `No host of this account's own can run ${what} now. Add one with kantel hosts add, or under Hosts in the console`,
+				pool?.name !== undefined
+					? `No host in pool ${pool.name} can run ${what} now`
+					: shared
+						? `No host can run ${what} now`
+						: `No host of this account's own can run ${what} now. Add one with kantel hosts add, or under Hosts in the console`,
 			);
 		}
 		return eligible;
+	}
+
+	/**
+	 * The pools a new sandbox may go in. Named (`CreateSandboxBody.pool`), one of the account's pools, else (where the
+	 * caller may use shared hosts) one of the deployment's: that pool only. Not named, the account's default pool for its
+	 * own hosts (where it has any) and the deployment's default for the shared ones, so it goes as before pools: on its
+	 * own hosts where one qualifies, else a shared one.
+	 */
+	async function placementPool(
+		accountId: string,
+		ref: string | undefined,
+		hosts: readonly StoredHost[],
+		shared: boolean,
+	): Promise<PoolChoice> {
+		// An owner's pools as the hosts' read had them, else read (and its default made) now.
+		const poolsOf = async (owner: string) => {
+			const read = poolsRead.filter((pool) => pool.owner === owner);
+			return read.length > 0 ? read : pools.poolsOf(owner);
+		};
+		const named = (list: readonly StoredPool[], name: string) =>
+			list.find((pool) => pool.id === name) ?? list.find((pool) => pool.name === name);
+		if (ref !== undefined) {
+			// The account's pools as the hosts' read had them, else read again (one made since): none made by naming one.
+			const mine =
+				named(
+					poolsRead.filter((pool) => pool.owner === accountId),
+					ref,
+				) ?? named(await store.pools.list({ owner: accountId }), ref);
+			if (mine !== undefined) return { own: mine.id, name: mine.name };
+			if (shared) {
+				const theirs =
+					named(await poolsOf(OPERATOR_POOLS), ref) ?? named(await store.pools.list({ owner: OPERATOR_POOLS }), ref);
+				if (theirs !== undefined) return { shared: theirs.id, name: theirs.name };
+			}
+			throw new KantelError("not_found", `No pool named ${ref}`);
+		}
+		const hasOwn = hosts.some((host) => host.accountId === accountId && host.state !== "revoked");
+		const [own, common] = await Promise.all([
+			hasOwn ? poolsOf(accountId).then(defaultPoolOf) : undefined,
+			shared ? poolsOf(OPERATOR_POOLS).then(defaultPoolOf) : undefined,
+		]);
+		return { ...(own === undefined ? {} : { own: own.id }), ...(common === undefined ? {} : { shared: common.id }) };
+	}
+
+	/**
+	 * The pools a sandbox placed before may be placed in again: its own (`poolId`) only; any, for one from before pools;
+	 * none, where its pool has gone (it isn't placed elsewhere).
+	 */
+	async function poolOfSandbox(sandbox: StoredSandbox): Promise<PoolChoice | undefined> {
+		if (sandbox.poolId === undefined) return undefined;
+		const pool = await store.pools.get(sandbox.poolId);
+		if (pool === undefined) return { name: sandbox.poolId };
+		return pool.owner === OPERATOR_POOLS ? { shared: pool.id, name: pool.name } : { own: pool.id, name: pool.name };
 	}
 
 	/**
@@ -3227,6 +3304,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...peakView(peakOf(sandbox)),
 			},
 			...host,
+			...pooled(sandbox.poolId),
 			...reachable,
 			base: baseView(sandbox.base),
 			...(sandbox.startup === undefined ? {} : { startup: { ...sandbox.startup } }),
@@ -4795,14 +4873,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * holds its disk or snapshot finds its own host among them.
 	 */
 	async function hostsToBoot(principal: Principal, sandbox: StoredSandbox): Promise<string[]> {
+		const affine = !neverPlaced(sandbox) || sandbox.source !== undefined;
 		return requireHosts(
 			await ensureHosts(),
 			sandbox.accountId,
 			sandbox.type,
 			sandbox.hostLabels,
-			!neverPlaced(sandbox) || sandbox.source !== undefined,
+			affine,
 			await mayShare(principal),
 			sandbox.hostPin,
+			// Placed afresh, in its pool again.
+			affine ? undefined : await poolOfSandbox(sandbox),
 		);
 	}
 
@@ -4840,6 +4921,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const placement = await backend.create({
 			...boot,
 			eligibleHosts,
+			// Placed afresh (from its source's snapshot too): in its pool, kept to it as the host admits it.
+			...pooled(sandbox.poolId),
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
 			type: sandbox.type,
@@ -8031,10 +8114,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// requireHosts's rule, unlabelled: the account's own hosts that run the type, else the shared ones; or the one host
 			// a sandbox is to be pinned to.
 			const pinned = query.host === undefined ? undefined : pinnableHost(principal, account.id, records, query.host).id;
+			// The pool a create would go in (`placementPool`): a pinned one, naming none, wherever its host is.
+			const pool =
+				pinned !== undefined && query.pool === undefined
+					? undefined
+					: await placementPool(account.id, query.pool, records, shared);
 			const usableFor = (type: SandboxType) => {
 				const running = records.filter(
 					(record) =>
-						record.state === "online" && record.tiers.includes(type) && (pinned === undefined || record.id === pinned),
+						record.state === "online" &&
+						record.tiers.includes(type) &&
+						(pinned === undefined || record.id === pinned) &&
+						(pool === undefined ||
+							(record.accountId === undefined ? record.poolId === pool.shared : record.poolId === pool.own)),
 				);
 				const own = running.filter((record) => record.accountId === account.id);
 				const usable =
@@ -8136,6 +8228,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// fleet runs.
 				const hostPin =
 					body.host === undefined ? undefined : pinnableHost(principal, account.id, await known, body.host).id;
+				// The pool it goes in, by name or the default (`placementPool`): one it named that the caller has none of is
+				// `not_found`. Made from a snapshot, or on a host it named, it goes there, in a pool it named only.
+				const pool =
+					(from !== undefined || hostPin !== undefined) && body.pool === undefined
+						? undefined
+						: await placementPool(account.id, body.pool, await known, await mayShare(principal));
 				// From a snapshot, a pin can only be the host that holds it: refused now, before anything is stored, rather than
 				// left as a sandbox that can never start.
 				if (hostPin !== undefined && from?.ref !== undefined) {
@@ -8160,6 +8258,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							from !== undefined,
 							await mayShare(principal),
 							hostPin,
+							pool,
 						);
 					} catch (error) {
 						reason = placementReasonOf(error) ?? reason;
@@ -8206,7 +8305,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 					hostPin,
+					pool,
 				);
+				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the pool of the host
+				// that holds it (its ref's, else its sandbox's), which must be the pool it named.
+				const holderId = from === undefined ? undefined : await hostOfSnapshot(from);
+				const named = pool?.name === undefined ? undefined : (pool.own ?? pool.shared);
+				const holderPool =
+					holderId === undefined ? undefined : (await known).find((host) => host.id === holderId)?.poolId;
+				const placedPool = from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : holderPool;
+				// Naming a pool, the snapshot must be found in it: one whose host can't be told (a backend's opaque ref, its
+				// sandbox gone) can't be, and isn't guessed.
+				if (from !== undefined && named !== undefined && holderPool !== named) {
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						holderPool === undefined
+							? `The snapshot's pool can't be told, so it can't be made in ${body.pool}: name no pool`
+							: `The snapshot is in another pool than ${body.pool}: a sandbox made from it runs only where it is`,
+					);
+				}
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
 				// its template's resources (unless it names a size), which a template snapshot was built as.
 				const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
@@ -8329,6 +8447,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					egressRevision,
 					hostLabels,
 					...(hostPin === undefined ? {} : { hostPin }),
+					...pooled(placedPool),
 					runs: [],
 					samples: [],
 					ports: [],
@@ -8373,6 +8492,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								image: sandbox.image,
 								env: sandbox.env,
 								eligibleHosts: start?.eligibleHosts ?? hosts,
+								// Kept to its pool as the host admits it, from a snapshot too (its host's pool, as recorded).
+								...pooled(sandbox.poolId),
 								fromSnapshot: from?.ref,
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
@@ -8608,6 +8729,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						egressRevision,
 						hostLabels: { ...current.hostLabels },
 						...(current.hostPin === undefined ? {} : { hostPin: current.hostPin }),
+						...pooled(current.poolId),
 						runs: [],
 						samples: [],
 						ports: [],
@@ -10889,7 +11011,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				`This deployment doesn't offer the size ${body.size}`,
 			);
 		}
-		// The hosts its microVM may go on, as a create of one would choose: its labels and pin kept.
+		// The hosts its microVM may go on, as a create of one would choose: its labels, pin and pool kept.
 		const hosts = requireHosts(
 			await known,
 			current.accountId,
@@ -10898,6 +11020,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			false,
 			await mayShare(principal),
 			current.hostPin,
+			await poolOfSandbox(current),
 		);
 		const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
 		const diskAlone =
@@ -11013,6 +11136,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							image,
 							env: starting.env,
 							eligibleHosts: hosts,
+							// Its microVM in its pool: kept to it as its host admits it.
+							...pooled(current.poolId),
 							...(fromSnapshot === undefined ? {} : { fromSnapshot }),
 							...egress,
 						},

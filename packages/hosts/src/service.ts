@@ -244,6 +244,11 @@ export interface CreateSandboxInput {
 	readonly egress?: HostEgress;
 	/** Only these hosts may take it (the control plane's eligible hosts: online, not draining, labelled). */
 	readonly hostIds?: readonly string[];
+	/**
+	 * The pool `hostIds` were chosen in: a host in another as it admits it (moved since) refuses it. Absent, or where the
+	 * registry doesn't know the host's pool yet, any.
+	 */
+	readonly poolId?: string;
 	/** Start from this snapshot, which is on the one host `hostIds` names. */
 	readonly from?: string;
 	/** Read-only mounts: those the chosen host can do are sent, the others answered `failed` (`mountHandoff`). */
@@ -2507,8 +2512,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					updatedAt: now,
 				};
 				// Only while its host still takes sandboxes: a drain since the hosts were read refuses it.
-				if (!(await store.placeOnTakingHost(placement))) {
-					throw placementError("unavailable", "host_unavailable", `The host ${chosen.host.name} is draining`);
+				if (!(await store.placeOnTakingHost(placement, input.poolId))) {
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						`The host ${chosen.host.name} is draining, or was moved to another pool`,
+					);
 				}
 				reserve(chosen.host.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				const mounts = mountHandoff(chosen.host.facts?.features, input.mounts);
@@ -2747,13 +2756,18 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// intent, so a move of the drained host waits for it (`holds`).
 				// (A retry of the same upgrade keeps the intent it may have acted on: its target is counted already.)
 				const taking = source.upgrade === undefined ? await store.getHost(target.id) : target;
-				if (taking === undefined || taking.draining || taking.revoked) {
+				const repooled = input.poolId !== undefined && taking?.poolId !== undefined && taking.poolId !== input.poolId;
+				if (taking === undefined || taking.draining || taking.revoked || repooled) {
 					await store.updatePlacement(sandboxId, (latest) => {
 						if (latest.upgrade?.operationId !== operationId || latest.upgrade.target !== target.id) return undefined;
 						const { upgrade: _intent, ...rest } = latest;
 						return rest;
 					});
-					throw placementError("unavailable", "host_unavailable", `The host ${target.name} is draining`);
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						`The host ${target.name} is draining, or was moved to another pool`,
+					);
 				}
 				reserve(target.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				/** Rolls the copy back: only before the placement is the microVM's, while the isolate is still there. */

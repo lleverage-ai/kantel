@@ -838,6 +838,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				owner: spec.accountId,
 				env: spec.env,
 				hostIds,
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...(from === undefined ? {} : { from: from.snapshotId }),
 				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
 				...egressOf(spec.egress),
@@ -1055,6 +1056,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				owner: spec.accountId,
 				env: spec.env,
 				hostIds: spec.eligibleHosts,
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...egressOf(spec.egress),
 				operationId,
 			});

@@ -427,6 +427,88 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(made.registry.get(STUB_HOST_ID)).toBe(ci.id);
 	});
 
+	it("places a sandbox in the deployment's pool it names, keeps its pool, and says which pool when none can take it", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		// Naming none: the deployment's default, as before pools, kept on the sandbox and its fork.
+		const plain = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		expect(plain.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect((await store.sandboxes.get(plain.id))?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const named = await tom.createSandbox({ type: "microvm", pool: "default", wait: true });
+		expect(named.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// The empty pool can't take it: refused, saying which.
+		const refused = await failure(tom.createSandbox({ type: "microvm", pool: "ci" }));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.details).toMatchObject({ reason: "no_host" });
+		expect(refused.message).toContain("pool ci");
+		expect((await failure(tom.createSandbox({ type: "microvm", pool: "nowhere" }))).code).toBe("not_found");
+	});
+
+	it("keeps a sandbox from a snapshot to the snapshot's pool, and one whose pool has gone to none", async () => {
+		const store = await make();
+		const other = await hostLike("host_ci");
+		const made = hostsBackend(() => [other]);
+		const specs: { readonly sandboxId: string; readonly poolId?: string }[] = [];
+		const backend: SandboxBackend = {
+			...made.backend,
+			create: async (spec) => {
+				specs.push({ sandboxId: spec.sandboxId, ...(spec.poolId === undefined ? {} : { poolId: spec.poolId }) });
+				return made.backend.create(spec);
+			},
+		};
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		// Another shared host, in ci.
+		await root.listHosts();
+		await root.updateHost("host_ci", { draining: true });
+		await root.updateHost("host_ci", { pool: "ci" });
+		await root.updateHost("host_ci", { draining: false });
+		const source = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: source.id });
+		// Made from it, in its host's pool; naming another pool is refused, not left to run elsewhere later.
+		const restored = await tom.createSandbox({ from: saved.id, autoStopMinutes: null, wait: true });
+		expect(restored.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// Its admission is kept to that pool too, as a fresh create's is.
+		expect(specs.find((spec) => spec.sandboxId === restored.id)?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		expect(specs.find((spec) => spec.sandboxId === source.id)?.poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		const elsewhere = await failure(tom.createSandbox({ from: saved.id, pool: "ci" }));
+		expect(elsewhere.code).toBe("unavailable");
+		expect(elsewhere.message).toContain("another pool");
+
+		// Never placed, its pool gone: started again, it isn't placed in another.
+		const lost = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		await tom.stopSandbox(lost.id);
+		await store.sandboxes.update(lost.id, ({ hostId: _host, latestSnapshotId: _snap, ...rest }) => ({
+			...rest,
+			state: "error",
+			poolId: "pool_gone",
+		}));
+		const refused = await failure(tom.startSandbox(lost.id));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.message).toContain("pool_gone");
+	});
+
+	it("offers the shapes of the pool a create would go in", async () => {
+		const store = await make();
+		const big = {
+			...(await hostLike("host_ci")),
+			sizes: [{ name: "xlarge" as const, vcpus: 32, memoryMb: 65_536, diskGb: 100 }],
+		};
+		const { backend } = hostsBackend(() => [big]);
+		const { root, tom } = setup(store, backend);
+		await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost("host_ci", { draining: true });
+		await root.updateHost("host_ci", { pool: "ci" });
+		await root.updateHost("host_ci", { draining: false });
+		const names = (shapes: Awaited<ReturnType<typeof tom.getSandboxShapes>>) =>
+			(shapes.microvm?.presets ?? []).map((preset) => preset.name);
+		expect((await tom.getSandboxShapes()).microvm?.presets).not.toContainEqual(expect.objectContaining({ vcpus: 32 }));
+		expect(names(await tom.getSandboxShapes({ pool: "ci" }))).toEqual(["xlarge"]);
+	});
+
 	it("deletes an account's pools with the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();

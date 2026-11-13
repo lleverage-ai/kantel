@@ -346,6 +346,7 @@ func newCommand() *cli.Command {
 				Description: "K=V: a variable every command sees (not a secret); or an environment to start from. Repeat it for more"},
 			{Name: "host", Type: cli.String, Multiple: true, Value: "<port[:public]>", Description: "Give this port an HTTPS URL once it runs; repeat it"},
 			{Name: "on", Type: cli.String, Value: "<host>", Description: "Run it on this host, its name or ID (kantel hosts list shows them)"},
+			{Name: "pool", Type: cli.String, Value: "<pool>", Description: "Run it in this pool, its name or ID (kantel pools list shows them); default the account's default pool"},
 			{Name: "host-label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "Run it only on a host with this label; repeat for more"},
 			{Name: "auto-upgrade", Type: cli.Bool, Description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again"},
 			noWaitFlag,
@@ -394,7 +395,8 @@ func runNew(c *cli.Context) error {
 		}
 		hosts = append(hosts, body)
 	}
-	body := api.CreateSandboxBody{Name: StrPtr(c, "name"), Image: StrPtr(c, "image"), From: StrPtr(c, "from"), Host: StrPtr(c, "on")}
+	body := api.CreateSandboxBody{Name: StrPtr(c, "name"), Image: StrPtr(c, "image"), From: StrPtr(c, "from"), Host: StrPtr(c, "on"),
+		Pool: StrPtr(c, "pool")}
 	typ, hasType := c.Str("type")
 	if hasType {
 		if _, err := Choice(typ, "--type", "isolate", "microvm"); err != nil {

@@ -198,6 +198,11 @@ export interface SandboxSpec {
 	readonly env: { readonly [name: string]: string };
 	/** The hosts it may be placed on: online, not draining, with the asked-for labels and type. */
 	readonly eligibleHosts: readonly string[];
+	/**
+	 * The pool `eligibleHosts` were chosen in, where one was: a host moved to another since refuses it as it is placed.
+	 * Absent: no pool is kept to (a machine whose disk is somewhere, one from before pools).
+	 */
+	readonly poolId?: string;
 	/** Start from this snapshot's disk (a `ref` the backend answered); absent, from an empty disk. */
 	readonly fromSnapshot?: string;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */

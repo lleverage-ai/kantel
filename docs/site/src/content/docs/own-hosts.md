@@ -71,6 +71,8 @@ kantel pools default ci                # where hosts join, naming no pool
 kantel pools rm ci                     # only an empty pool that isn't the default
 ```
 
+A sandbox goes in a pool too: `kantel new --pool ci` (`pool` on create) places it only on that pool's hosts, and its labels choose among them. Naming none, it goes in the account's default pool, as before pools. A sandbox keeps its pool (`poolId`), and a fork stays in it.
+
 A move is explicit, and only a drained host with no sandboxes moves: drain it, let its sandboxes go, move it, then undrain it. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
 
 ## Turn it on
