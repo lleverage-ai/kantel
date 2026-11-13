@@ -203,9 +203,9 @@ Each host has a sync bandwidth limit (`--sync-rate`, both directions, default 50
 
 Each step is one PR with its own tests:
 
-1. **Spike: WireGuard throughput.** Two Hetzner hosts, in-process WireGuard over TUN against the kernel module, iperf3 and a 50 GB file over HTTP/2. Decided (13 Nov 2026): if in-process is under about 70% of the kernel's speed, hosts that reach each other directly hand the same keys and addresses to the kernel module, and the in-process code stays for NAT traversal and the relay.
+1. **Spike: WireGuard throughput.** Two Hetzner hosts, in-process WireGuard over TUN against the kernel module, TCP with 1 and 8 streams and a large file from disk over HTTP/2. Decided (13 Nov 2026): if in-process is under about 70% of the kernel's speed, hosts that reach each other directly hand the same keys and addresses to the kernel module, and the in-process code stays for NAT traversal and the relay.
 
-   Result (13 Nov 2026): in-process is at least as fast as the kernel, so every host uses it and the kernel path isn't built. Measured between `lleverage-ci-5` and `lleverage-ci-6` (AX102, Ryzen 9 7950X3D, Ubuntu kernel 6.8, wireguard-go of 24 Oct 2026 with its TUN and UDP offloads on), each figure the median of 3 runs, while CI jobs ran on the hosts (up to 2 at once, load average up to 13). TCP ran for 20 seconds; the download was a 20 GiB file of random data on the XFS data volume, dropped from the page cache before each run, fetched over one HTTP/2 connection without TLS as 64 MiB ranges with 8 in flight. CPU is in cores, counting the test's processes, the kernel's worker and softirq threads and interrupt time, so the CI jobs' own work is left out.
+   Result (13 Nov 2026): in-process is at least as fast as the kernel, so every host uses it and the kernel path isn't built. Measured between `lleverage-ci-5` and `lleverage-ci-6` (AX102, Ryzen 9 7950X3D, Ubuntu kernel 6.8, wireguard-go of 24 Oct 2026 with its TUN and UDP offloads on), each figure the median of 3 runs, while CI jobs ran on the hosts (up to 2 at once, load average up to 13). TCP ran for 20 seconds; the download was a 20 GiB file of random data on the XFS data volume, dropped from the page cache before each run, fetched over one HTTP/2 connection without TLS as 64 MiB ranges with 8 in flight. CPU is an estimate in cores: the test's processes, all of the kernel's worker and softirq threads, and interrupt time. That leaves out the CI jobs' processes but not kernel work they cause, so treat it as a rough comparison; the whole machine's figures were too noisy with jobs running.
 
    | Between the hosts (1 Gbit/s link) | No tunnel | Kernel WireGuard | In-process | In-process / kernel |
    | --- | --- | --- | --- | --- |
@@ -216,7 +216,7 @@ Each step is one PR with its own tests:
    | CPU, sender / receiver, TCP 8 streams | 0.02 / 0.32 | 0.71 / 1.83 | 0.51 / 0.81 | |
    | CPU, server / client, download | 0.33 / 0.29 | 0.98 / 1.39 | 0.86 / 1.05 | |
 
-   The hosts' links are 1 Gbit/s, so both tunnels run at the link's speed less WireGuard's overhead, and in-process uses less CPU doing it. To see past the link, the same tests ran on one host between two network namespaces joined by a veth pair (both ends share the machine's CPUs):
+   The hosts' links are 1 Gbit/s, so both tunnels run at the link's speed less WireGuard's overhead, and in-process's CPU estimates are lower. To see past the link, the same tests ran on one host between two network namespaces joined by a veth pair (both ends share the machine's CPUs):
 
    | One host, two namespaces | No tunnel | Kernel WireGuard | In-process | In-process / kernel |
    | --- | --- | --- | --- | --- |
@@ -227,7 +227,7 @@ Each step is one PR with its own tests:
    | CPU, both ends, TCP 8 streams | 15.9 | 7.1 | 6.9 | |
    | CPU, both ends, download | 3.3 | 9.4 | 9.3 | |
 
-   The download without a tunnel is bound by reading the file, and in-process reaches that bound; kernel WireGuard over a veth pair stops at about 3.3 Gbit/s. Two things for step 3: the Robot firewall in front of Lleverage's CI hosts filters IPv4 only and lets in nothing but SSH, ICMP and replies, so the spike ran over the hosts' public IPv6 addresses, and the mesh there needs the same (or a Robot rule for the mesh port); and with 1 Gbit/s links, `--sync-rate`'s default of half the link is about 60 MB/s. The spike's code is on the unmerged branch `tvd/lle-18987-wg-spike` (`apps/host/cmd/wgspike`).
+   In-process and untunnelled downloads reached similar speeds, around 5 Gbit/s (this test doesn't isolate the download's bottleneck); kernel WireGuard over the veth pair reached about 3.3 Gbit/s. Two things for step 3: the Robot firewall in front of Lleverage's CI hosts filters IPv4 only and lets in nothing but SSH, ICMP and replies, so the spike ran over the hosts' public IPv6 addresses, and the mesh there needs the same (or a Robot rule for the mesh port); and with 1 Gbit/s links, `--sync-rate`'s default of half the link is about 60 MB/s. The spike's code is on the unmerged branch `tvd/lle-18987-wg-spike` (`apps/host/cmd/wgspike`).
 
 2. **Pools:** pool records, a host's pool (join tokens name it), placement by pool, data belonging to a pool, then GitHub runner kinds inside pools.
 3. **The mesh with direct endpoints (2a step 1):** keys, addresses, `Welcome.mesh` and `mesh.peers`, the device and firewall, peer health on the host page. Test: `local-stack.sh` with two hosts in network namespaces.
