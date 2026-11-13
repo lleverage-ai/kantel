@@ -1,13 +1,14 @@
-// What scrolls sideways when it's wider than its column: a table with more columns than the page has room for. Two
-// things a plain `overflow-x-auto` doesn't say. Its own scrollbar is at its bottom, which in a long list is far below
-// the window, so nobody knows there is more to the right: SideScroll's bar is pinned to the bottom of whatever scrolls
-// the page (sticky), and sits back right under the content once its end is in view. And an edge with more past it fades
-// the content into its ground, so the cut-off column reads as cut off rather than as the end. The fade deepens over the
-// first few pixels of scroll and thins over the last few, so it never pops in or out.
+// What scrolls sideways when it's wider than its column: a table with more columns than the page has room for. Its own
+// scrollbar shows inside its frame, as any scroller's. Two things a plain `overflow-x-auto` doesn't say. That bar is at
+// its bottom, which in a long list is far below the window, so nobody knows there is more to the right: while the bottom
+// is out of view, a pinned bar shows at the bottom of whatever scrolls the page (sticky), and it goes once the
+// scroller's own bar comes into view. And an edge with more past it fades the content into its ground, so the cut-off
+// column reads as cut off rather than as the end. The fade deepens over the first few pixels of scroll and thins over
+// the last few, so it never pops in or out.
 //
 // With `fill`, the content scrolls down as well, in the room its page leaves it (a list page whose table fills the
-// window under its header and filters, base.css). Its bottom is then always in view, so it shows its own scrollbars,
-// inside its frame, and there is no pinned bar; while it scrolls down its header row sticks.
+// window under its header and filters, base.css). Its bottom is then in view, so the pinned bar doesn't show; while it
+// scrolls down its header row sticks.
 
 import { type ComponentProps, useLayoutEffect, useRef, useState } from "react";
 
@@ -104,6 +105,12 @@ const stickyHead = {
 		"scroll-pt-control-md [&>table>thead_th]:sticky [&>table>thead_th]:top-0 [&>table>thead_th]:z-2 [&>table>thead_th]:bg-canvas [&>table>thead_th]:shadow-[inset_0_-1px_0_var(--kt-border)]",
 } as const;
 
+/** The pinned bar over the rows at the window's bottom, on their ground, with a hairline over it. */
+const pinnedGround = {
+	raised: "bg-raised shadow-[inset_0_1px_0_var(--kt-border)]",
+	canvas: "bg-canvas shadow-[inset_0_1px_0_var(--kt-border)]",
+} as const;
+
 /** An edge's fade, from the content's ground at the edge to clear: over the rows, under nothing a pointer needs. */
 const fade = {
 	raised: { start: "bg-linear-to-r from-raised to-transparent", end: "bg-linear-to-l from-raised to-transparent" },
@@ -111,17 +118,17 @@ const fade = {
 } as const;
 
 /**
- * A container that scrolls sideways when its content is wider than it is, with its scrollbar kept in the window and its
- * cut-off edges faded. `className` styles the scroller itself (a table's frame); it and its bar sit in a wrapper of
- * their own, so the bar sits right under it. When the content fits there is no bar and no fade.
+ * A container that scrolls sideways when its content is wider than it is, with its own scrollbar inside its frame, a
+ * pinned bar at the window's bottom while that one is out of view, and its cut-off edges faded. `className` styles the
+ * scroller itself (a table's frame); it, its fades and the pinned bar sit in a wrapper of their own. When the content
+ * fits there is no bar and no fade.
  *
  * Wheel, trackpad, touch and keyboard scroll the content as any scroller: Tab to a control in it brings it into view,
- * and content with no control in it makes the scroller itself a tab stop, for the arrow keys. The bar is the same
- * scroll for a pointer, so it's hidden from assistive tech and out of the tab order.
+ * and content with no control in it makes the scroller itself a tab stop, for the arrow keys. The pinned bar is the
+ * same scroll for a pointer, so it's hidden from assistive tech and out of the tab order.
  *
  * `fill` lets it scroll down too, as tall as its page lets it be (base.css's `kt-fill`). Its bottom is then always in
- * view, so it shows its own scrollbars inside its frame in place of the pinned bar, and while its content is taller
- * than it, its table's header row sticks.
+ * view, so the pinned bar doesn't show, and while its content is taller than it, its table's header row sticks.
  */
 export function SideScroll({
 	children,
@@ -135,6 +142,8 @@ export function SideScroll({
 	const startFade = useRef<HTMLDivElement>(null);
 	const endFade = useRef<HTMLDivElement>(null);
 	const [edges, setEdges] = useState<Edges>(fits);
+	// The pinned bar is showing: the scroller's bottom, and its own bar with it, is below the window.
+	const [pinned, setPinned] = useState(false);
 	useLayoutEffect(() => {
 		const box = scroller.current;
 		if (box === null) return;
@@ -144,6 +153,26 @@ export function SideScroll({
 			paintFades(box, startFade.current, endFade.current);
 			const rail = bar.current;
 			if (rail !== null && rail.scrollLeft !== box.scrollLeft) rail.scrollLeft = box.scrollLeft;
+			place();
+		};
+		// The pinned bar takes no room: it is pulled up over the scroller's last strip, where it rests over the scroller's
+		// own bar. It shows only while sticky has lifted it off that resting place, so one bar shows at a time.
+		const place = () => {
+			const rail = bar.current;
+			if (rail === null || rail.hidden) {
+				setPinned(false);
+				return;
+			}
+			rail.style.marginTop = `-${rail.offsetHeight}px`;
+			setPinned(rail.getBoundingClientRect().bottom < box.getBoundingClientRect().bottom - 1);
+		};
+		let frame = 0;
+		const onPageScroll = () => {
+			if (frame !== 0) return;
+			frame = requestAnimationFrame(() => {
+				frame = 0;
+				place();
+			});
 		};
 		update();
 		// The scroller changes width with the window, the content with its rows: either can start or end the overflow.
@@ -156,33 +185,50 @@ export function SideScroll({
 		});
 		children.observe(box, { childList: true });
 		box.addEventListener("scroll", update, { passive: true });
+		// Whatever scrolls the page, the window or a panel round it: a scroll event doesn't bubble, so catch it on the way
+		// down.
+		document.addEventListener("scroll", onPageScroll, { capture: true, passive: true });
+		window.addEventListener("resize", onPageScroll, { passive: true });
 		return () => {
 			observer.disconnect();
 			children.disconnect();
 			box.removeEventListener("scroll", update);
+			document.removeEventListener("scroll", onPageScroll, { capture: true });
+			window.removeEventListener("resize", onPageScroll);
+			cancelAnimationFrame(frame);
 		};
 	}, []);
-	// The fades mount once the content overflows: give them their depth before they paint.
+	const filling = fill && edges.scrolls;
+	const wide = edges.range !== undefined;
+	// The fades mount once the content overflows, and the pinned bar shows: give the fades their depth before they paint,
+	// and the bar its place.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: they mount and unmount as the overflow comes and goes
 	useLayoutEffect(() => {
-		if (scroller.current !== null) paintFades(scroller.current, startFade.current, endFade.current);
+		const box = scroller.current;
+		if (box === null) return;
+		paintFades(box, startFade.current, endFade.current);
+		const rail = bar.current;
+		if (rail === null || rail.hidden) {
+			setPinned(false);
+			return;
+		}
+		rail.style.marginTop = `-${rail.offsetHeight}px`;
+		setPinned(rail.getBoundingClientRect().bottom < box.getBoundingClientRect().bottom - 1);
 	}, [edges.range]);
 	const follow = () => {
 		const box = scroller.current;
 		const rail = bar.current;
 		if (box !== null && rail !== null && box.scrollLeft !== rail.scrollLeft) box.scrollLeft = rail.scrollLeft;
 	};
-	// Filling its page, its bottom is in view: its own bars show, inside its frame. Otherwise they are hidden for the
-	// pinned bar (WebKit and Chromium; Firefox can't hide one axis, so it shows its own, thin, beside the pinned bar).
-	const filling = fill && edges.scrolls;
-	const wide = edges.range !== undefined;
+	// Its own scrollbars always show, inside its frame. Filling its page, its bottom is in view, so the pinned bar never
+	// shows; under a window too short to fill (base.css), the page scrolls and it does, as for any table.
 	return (
 		<div className={`relative isolate min-w-0 ${filling ? "kt-fill flex min-h-0 flex-col" : ""}`}>
 			<div
 				{...(edges.reachable ? {} : { tabIndex: 0 })}
 				{...rest}
 				ref={scroller}
-				className={`kt-side-scroll kt-focusable relative overflow-x-auto ${filling ? "kt-table-fill kt-scroll-rounded min-h-0 overflow-y-auto" : "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden"} ${filling && edges.tall ? stickyHead[surface] : ""} ${className ?? ""}`}
+				className={`kt-side-scroll kt-focusable kt-scroll-rounded relative overflow-x-auto ${filling ? "kt-table-fill min-h-0 overflow-y-auto" : ""} ${filling && edges.tall ? stickyHead[surface] : ""} ${className ?? ""}`}
 			>
 				{children}
 			</div>
@@ -200,9 +246,9 @@ export function SideScroll({
 				ref={bar}
 				aria-hidden="true"
 				tabIndex={-1}
-				hidden={!wide || filling}
+				hidden={!wide}
 				onScroll={follow}
-				className="kt-side-scroll-bar sticky bottom-0 z-4 min-w-0 overflow-x-auto overflow-y-hidden bg-canvas outline-none"
+				className={`kt-side-scroll-bar kt-scroll-rounded sticky bottom-0 z-4 mx-px min-w-0 overflow-x-auto overflow-y-hidden outline-none ${pinnedGround[surface]} ${pinned ? "" : "pointer-events-none invisible"}`}
 			>
 				<div className="h-px" style={{ width: `calc(100% + ${edges.range ?? 0}px)` }} />
 			</div>

@@ -237,19 +237,19 @@ row scrolls sideways when the tabs don't fit, as on a phone.
 ### SideScroll
 
 **For** content that is wider than its column and scrolls sideways: a table with more columns than the window has
-room for. A plain `overflow-x-auto` puts its scrollbar at the content's bottom, which in a long list is below the
-window, so nobody knows there is more to the right. `SideScroll` hides that bar and draws its own right under the
-content, sticky to the bottom of whatever scrolls the page, back under the content once its end is in view. An edge with
-more past it fades the content into its ground; the fade deepens over the first 32px of scroll and thins over the last
-32px, so it never switches on or off. `surface` (`raised` for a card, `canvas` for a table on the page) is the ground
-the fades and a stuck header row are painted in. With nothing to scroll there is no bar and no fade. `className` styles
-the scroller itself, which sits with its bar and fades in a wrapper of their own; wheel, trackpad, touch and keys scroll
-it as usual.
+room for. Its own scrollbar shows inside its frame. In a long list that bar is below the window, so nobody would know
+there is more to the right: while it is out of view, a pinned bar shows at the bottom of whatever scrolls the page, and
+it goes once the scroller's own bar comes into view, so one bar shows at a time. An edge with more past it fades the
+content into its ground; the fade deepens over the first 32px of scroll and thins over the last 32px, so it never
+switches on or off. `surface` (`raised` for a card, `canvas` for a table on the page) is the ground the fades, the pinned
+bar and a stuck header row are painted in. With nothing to scroll there is no bar and no fade. `className` styles the
+scroller itself, which sits with its fades and pinned bar in a wrapper of their own; wheel, trackpad, touch and keys
+scroll it as usual.
 
 `fill`, for a page that is a list (Sandboxes, Snapshots, Environments, the egress log; `TableFrame` passes it on): the
 content takes the room its page leaves under the header, filters and notices, and scrolls down in it too, so New and
 the filters stay in view down a long list. Its bottom is then always in view, so it shows its own scrollbars inside its
-frame in place of the pinned bar, and while it scrolls down its table's header row sticks. Every flex column from the
+frame and the pinned bar doesn't show, and while it scrolls down its table's header row sticks. Every flex column from the
 console's page down to it carries `kt-fill`
 (`tokens/base.css`), which lets one holding a filling table shrink; the rest keep their height. A short list stays
 as tall as its rows. A phone (the console puts no `kt-fill` on its page), a window under 36rem tall, and a table shown

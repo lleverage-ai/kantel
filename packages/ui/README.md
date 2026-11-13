@@ -85,7 +85,7 @@ centred on their text within 1px, and a story for every required state; `--only`
 | `TextField` | A labelled single-line input | |
 | `TextAreaField` | A labelled multi-line input, such as a webhook's description | |
 | `PageTabs` | A page's own views, each a link with its address (Egress's Log, Rules, Settings) | The app's pages (use `Sidebar` or `TabBar`); filters with no address (use `SegmentedControl`) |
-| `SideScroll` | Content wider than its column that scrolls sideways, such as a table with more columns than fit: its cut-off edges are shaded and its scrollbar stays at the bottom of the window; with `fill`, a list page's table that scrolls down under its header, with its header row stuck | A compute page's table (use `TableFrame`, which has one); tabs (`PageTabs` scrolls its own row) |
+| `SideScroll` | Content wider than its column that scrolls sideways, such as a table with more columns than fit: its cut-off edges fade and its scrollbar is inside its frame, pinned to the window's bottom while that is out of view; with `fill`, a list page's table that scrolls down under its header, with its header row stuck and its own scrollbars inside its frame | A compute page's table (use `TableFrame`, which has one); tabs (`PageTabs` scrolls its own row) |
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu); a page's views with their own address (use `PageTabs`) |
 | `CheckboxField` | One on/off choice that takes effect with its form or decision | A setting that applies at once (use `Switch`) |
 | `OrderedSelectField` | Several from a list, in the order picked: a new sandbox's environments, the later winning | One choice (use `SelectField`); a set whose order doesn't matter (use `CheckboxField`s) |
