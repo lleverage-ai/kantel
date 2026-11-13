@@ -14,17 +14,20 @@
 #
 #   apps/host/test/disk-sync.sh
 #
-# Needs what local-stack.sh needs (its KANTEL_STACK_* settings pick the images). The stack is named sync-<pid>, so it
-# runs beside other named stacks.
+# Needs what local-stack.sh needs (its KANTEL_STACK_* settings pick the images; KANTEL_STACK_DIR is ignored). The stack
+# is named sync-<pid>, with its own state directory, so it runs beside other stacks.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 stack="$here/local-stack.sh"
 name=sync-$$
+# Its own state directory, from its name: one set for another stack must never be the one this test's cleanup takes
+# down.
+unset KANTEL_STACK_DIR
 trap '"$stack" down --name "$name" >/dev/null || true' EXIT
 KANTEL_STICKY_DISKS=experimental "$stack" up --hosts 2 --name "$name" >/dev/null
 
-dir=${KANTEL_STACK_DIR:-/tmp/kantel-local-stack-$name}
+dir=/tmp/kantel-local-stack-$name
 url=$(cat "$dir/url")
 key=$(jq -r .computeKey "$dir/bootstrap.json")
 gib=$((1 << 30))
