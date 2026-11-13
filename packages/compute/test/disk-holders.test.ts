@@ -104,8 +104,12 @@ function setUp(
 		// Listing the hosts, as Tom administers the deployment, records them.
 		await client.listHosts();
 		await api.store.hosts.update("host_e", (host) => ({ ...host, state: "revoked" }));
-		// The stub's host was first seen before these pools, so it went into the default one: moved, as a move does.
+		// The stub's host was first seen before these pools, so it went into the default one: moved, as a move does, and
+		// the disks made there with it.
 		await api.store.hosts.update(STUB_HOST_ID, (host) => ({ ...host, poolId: "pool_a" }));
+		for (const disk of await api.store.stickyDisks.list()) {
+			await api.store.stickyDisks.update(disk.id, (current) => ({ ...current, poolId: "pool_a" }));
+		}
 	};
 	/** A disk with a version committed on the stub's host. */
 	const committed = async () => {
@@ -250,15 +254,16 @@ describe("disk holders", () => {
 			.replaceAll("/", "_")
 			.replace(/=+$/, "");
 		expect(await verifyGrant(publicKey, `${widened}.${signature}`, tom.clock.now)).toBeUndefined();
-		// Pool B's host finds no holder in its pool, so no grant.
-		expect(await tom.api.service.locateDisk("host_c", request)).toEqual({ holders: [] });
+		// Pool B's host is refused: the disk is pool A's, and pools never share data.
+		await expect(tom.api.service.locateDisk("host_c", request)).rejects.toMatchObject({ code: "not_found" });
 		// With pool A's sync off its hosts' mesh is down: no holder there either.
 		await tom.api.store.pools.update("pool_a", (pool) => ({ ...pool, sync: false }));
 		expect(await tom.api.service.locateDisk(STUB_HOST_ID, request)).toEqual({ holders: [] });
 		await tom.api.store.pools.update("pool_a", (pool) => ({ ...pool, sync: true }));
-		// A move to pool B saved here but not yet in the registry: its address is still pool A's, so it isn't offered in B.
+		// A move to pool B saved here but not yet in the registry: it isn't offered in pool A, and pool B is still refused.
 		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolId: "pool_b" }));
-		expect((await tom.api.service.locateDisk("host_c", request)).holders).toEqual([]);
+		expect((await tom.api.service.locateDisk(STUB_HOST_ID, request)).holders).toEqual([]);
+		await expect(tom.api.service.locateDisk("host_c", request)).rejects.toMatchObject({ code: "not_found" });
 		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolId: "pool_a" }));
 		// A revoked host, and a version or kind that isn't there, are refused.
 		await expect(tom.api.service.locateDisk("host_e", request)).rejects.toMatchObject({ code: "not_found" });
@@ -456,7 +461,7 @@ describe("disk holders", () => {
 		).rejects.toMatchObject({
 			code: "not_found",
 		});
-		expect(await tom.api.service.locateDisk("host_c", request)).toEqual({ holders: [] });
+		await expect(tom.api.service.locateDisk("host_c", request)).rejects.toMatchObject({ code: "not_found" });
 		await expect(tom.api.service.locateDisk(STUB_HOST_ID, request)).rejects.toMatchObject({ code: "unavailable" });
 		// Read again after a failure: once it opens (the key is the one this gateway made), grants are signed.
 		await store.settings.delete("grantKey");

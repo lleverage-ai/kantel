@@ -2136,6 +2136,13 @@ export const Snapshot = Type.Object(
 		createdBy: Type.Optional(CreatedBy),
 		expiresAt: Type.Optional(Timestamp),
 		base: Type.Optional(SandboxBase),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in " +
+					"that pool. Absent for one taken before pools, which is in the pool of the host holding it.",
+			}),
+		),
 	},
 	{ title: "Snapshot" },
 );
@@ -3079,6 +3086,13 @@ export const TemplateCacheKey = Type.Object(
 			description:
 				"With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too.",
 		}),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used " +
+					"in. Absent for one built before pools.",
+			}),
+		),
 	},
 	{
 		title: "TemplateCacheKey",
@@ -4755,6 +4769,13 @@ export const StickyDisk = Type.Object(
 		sizeGb: Type.Integer({ description: "Each copy's size: what a sandbox can fill." }),
 		head: Type.Optional(Type.String({ description: "The newest committed version; absent until one is." })),
 		versions: Type.Optional(Type.Array(StickyDiskVersion, { description: "The newest 20, newest first, on a get." })),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was " +
+					"attached to. It is attached only to sandboxes in that pool. Absent until then.",
+			}),
+		),
 		createdAt: Timestamp,
 		updatedAt: Timestamp,
 	},
@@ -4781,6 +4802,14 @@ export const CreateStickyDiskBody = Type.Object(
 		name: StickyDiskName,
 		description: Type.Optional(Type.String({ maxLength: 500 })),
 		sizeGb: Type.Integer({ minimum: 1, maximum: 2048 }),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in " +
+					"that pool. Default: the pool of the first sandbox it is attached to.",
+			}),
+		),
 	},
 	{ title: "CreateStickyDiskBody" },
 );

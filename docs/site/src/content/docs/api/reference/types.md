@@ -573,6 +573,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `name` | string | yes | Lower-case letters, digits and hyphens, unique in the account. |
 | `description` | string | no |  (at most 500 characters) |
 | `sizeGb` | integer | yes |  (minimum 1, maximum 2048) |
+| `pool` | string | no | The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in that pool. Default: the pool of the first sandbox it is attached to. |
 
 ### CreateTemplateBody
 
@@ -2111,6 +2112,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+| `poolId` | string | no | The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it. |
 
 ### SnapshotKind
 
@@ -2169,6 +2171,7 @@ A named, versioned disk, attached to microVMs at a path. Each sandbox gets its o
 | `sizeGb` | integer | yes | Each copy's size: what a sandbox can fill. |
 | `head` | string | no | The newest committed version; absent until one is. |
 | `versions` | [StickyDiskVersion](/api/reference/types/#stickydiskversion)[] | no | The newest 20, newest first, on a get. |
+| `poolId` | string | no | The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
@@ -2362,6 +2365,7 @@ What a template snapshot is for: a change to any part builds another. A create s
 | `firecracker` | string | yes |  |
 | `vcpus` | integer | yes |  |
 | `memoryMb` | integer | yes | With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. |
+| `poolId` | string | no | The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used in. Absent for one built before pools. |
 
 ### TemplateDockerfileImage
 

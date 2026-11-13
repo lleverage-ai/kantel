@@ -670,8 +670,10 @@ type CreateStickyDiskBody struct {
 	Account     *string `json:"account,omitempty"`
 	Description *string `json:"description,omitempty"`
 	// Lower-case letters, digits and hyphens, unique in the account.
-	Name   string `json:"name"`
-	SizeGb int64  `json:"sizeGb"`
+	Name string `json:"name"`
+	// The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in that pool. Default: the pool of the first sandbox it is attached to.
+	Pool   *string `json:"pool,omitempty"`
+	SizeGb int64   `json:"sizeGb"`
 }
 
 type CreateTemplateBody struct {
@@ -2620,7 +2622,9 @@ type Snapshot struct {
 	// A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any.
 	MinMemoryMb *int64 `json:"minMemoryMb,omitempty"`
 	// A saved snapshot's name, unique in its account.
-	Name      *string           `json:"name,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it.
+	PoolID    *string           `json:"poolId,omitempty"`
 	Resources *SandboxResources `json:"resources,omitempty"`
 	// The sandbox it was taken of; absent once that is deleted.
 	SandboxID   *string          `json:"sandboxId,omitempty"`
@@ -2689,6 +2693,8 @@ type StickyDisk struct {
 	ID string `json:"id"`
 	// Lower-case letters, digits and hyphens, unique in the account.
 	Name string `json:"name"`
+	// The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then.
+	PoolID *string `json:"poolId,omitempty"`
 	// Each copy's size: what a sandbox can fill.
 	SizeGb int64 `json:"sizeGb"`
 	// Epoch milliseconds, UTC.
@@ -2900,6 +2906,8 @@ type TemplateCacheKey struct {
 	Kernel      string  `json:"kernel"`
 	// With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too.
 	MemoryMb int64 `json:"memoryMb"`
+	// The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used in. Absent for one built before pools.
+	PoolID *string `json:"poolId,omitempty"`
 	// A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`.
 	Source *string `json:"source,omitempty"`
 	// `<templateId>@<version>`.
