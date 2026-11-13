@@ -1,8 +1,10 @@
 package mesh
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -272,7 +274,7 @@ func TestEndpointsTriedInTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := h.device()
-	h.m.rotate()
+	h.m.rotate(context.Background())
 	if d.peers[b].Endpoint.String() != "192.0.2.2:51820" {
 		t.Fatal("moved on before the endpoint had its time")
 	}
@@ -282,7 +284,7 @@ func TestEndpointsTriedInTurn(t *testing.T) {
 		h.m.mu.Unlock()
 	}
 	age()
-	h.m.rotate()
+	h.m.rotate(context.Background())
 	if d.peers[b].Endpoint.String() != "[2001:db8::2]:51820" {
 		t.Fatalf("endpoint %s, want the second", d.peers[b].Endpoint)
 	}
@@ -294,18 +296,50 @@ func TestEndpointsTriedInTurn(t *testing.T) {
 	d.stats[b] = PeerStats{LastHandshake: time.Now()}
 	d.mu.Unlock()
 	age()
-	h.m.rotate()
+	h.m.rotate(context.Background())
 	if d.peers[b].Endpoint.String() != "[2001:db8::2]:51820" {
 		t.Fatal("a peer reached was moved off its endpoint")
 	}
 	if hl := h.m.Health(); hl.Peers[0].Path != proto.MeshPathDirect || hl.Peers[0].Endpoint != "[2001:db8::2]:51820" || hl.Peers[0].LastHandshake == 0 {
 		t.Fatalf("health of a peer reached: %+v", hl.Peers[0])
 	}
-	// New endpoints for a peer reached don't move it off the one it is reached on.
+	// New endpoints for a peer reached don't move it off the one it is reached on...
 	pb.Endpoints = []string{"192.0.2.9:51820"}
 	h.m.SetPeers([]proto.MeshPeer{pb})
 	if d.peers[b].Endpoint.String() != "[2001:db8::2]:51820" {
 		t.Fatal("new endpoints moved a peer reached")
+	}
+	// ...until it stops being reached: then its one endpoint is tried, though it has no other to move on to.
+	d.mu.Lock()
+	d.stats[b] = PeerStats{LastHandshake: time.Now().Add(-handshakeFresh)}
+	d.mu.Unlock()
+	age()
+	h.m.rotate(context.Background())
+	if d.peers[b].Endpoint.String() != "192.0.2.9:51820" {
+		t.Fatalf("endpoint %s, want the peer's new one", d.peers[b].Endpoint)
+	}
+}
+
+// A round trip is measured whether the peer's sync port answers or refuses; nothing answering is none.
+func TestProbeRTT(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	loopback := netip.MustParseAddr("127.0.0.1")
+	if probeRTT(context.Background(), loopback, port) <= 0 {
+		t.Fatal("no round trip to a port that answers")
+	}
+	l.Close()
+	if probeRTT(context.Background(), loopback, port) <= 0 {
+		t.Fatal("no round trip to a port that refuses")
+	}
+	// TEST-NET-1 answers nothing.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if rtt := probeRTT(ctx, netip.MustParseAddr("192.0.2.1"), port); rtt != 0 {
+		t.Fatalf("a round trip of %s to an address that answers nothing", rtt)
 	}
 }
 

@@ -204,6 +204,16 @@ func outerRole(t *testing.T) {
 		h.Peers[0].Endpoint != "192.0.2.2:51820" || h.Peers[0].LastHandshake == 0 {
 		t.Fatalf("a's health: %+v", h)
 	}
+	// The round trip, from a's probes of b's sync port, within a probe or two.
+	for deadline := time.Now().Add(2 * probeEvery); ; time.Sleep(time.Second) {
+		h := a.do(t, request{Op: "health"}).Health
+		if len(h.Peers) == 1 && h.Peers[0].RTTMs > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no round trip to b: %+v", h)
+		}
+	}
 
 	// The sandbox on a: IPv6 on its link (as if the host's switch had failed), and a route to the mesh through a. The
 	// firewall's rules for sandboxes (network.Manager) and the mesh's keep it from both hosts' mesh addresses.

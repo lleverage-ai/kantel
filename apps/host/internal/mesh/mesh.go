@@ -43,8 +43,10 @@ const (
 	// probeEvery is how often each peer's round-trip time is measured; probeTimeout is how long a probe waits.
 	probeEvery   = 15 * time.Second
 	probeTimeout = 3 * time.Second
-	// tick is how often the mesh checks its peers' endpoints and probes.
+	// tick is how often the mesh checks its peers' endpoints and whether a probe is due.
 	tick = 3 * time.Second
+	// resolveTimeout bounds the lookup of the names among a list's endpoints, which run at once.
+	resolveTimeout = 2 * time.Second
 )
 
 // Firewall is the mesh's firewall rules (network.MeshFirewall).
@@ -271,6 +273,7 @@ func (m *Mesh) Apply(w *proto.WelcomeMesh) error {
 	if err != nil {
 		return err
 	}
+	resolved := resolveEndpoints(peerEndpoints(w.Peers))
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.dev != nil && (addr != m.addr || prefix != m.prefix) {
@@ -282,20 +285,29 @@ func (m *Mesh) Apply(w *proto.WelcomeMesh) error {
 			return err
 		}
 	}
-	m.setPeersLocked(w.Peers)
+	m.setPeersLocked(w.Peers, resolved)
 	return nil
 }
 
 // SetPeers makes the device's peers those of a mesh.peers. Ignored while the device is down: the welcome that brings
 // it up carries the peers.
 func (m *Mesh) SetPeers(peers []proto.MeshPeer) {
+	resolved := resolveEndpoints(peerEndpoints(peers))
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.dev == nil {
 		m.log.Warn("mesh peers without a mesh: ignored until a welcome brings the mesh up", "peers", len(peers))
 		return
 	}
-	m.setPeersLocked(peers)
+	m.setPeersLocked(peers, resolved)
+}
+
+func peerEndpoints(peers []proto.MeshPeer) []string {
+	var out []string
+	for _, p := range peers {
+		out = append(out, p.Endpoints...)
+	}
+	return out
 }
 
 // parseMesh reads a welcome's address (with or without /128) and prefix: IPv6, the address inside the prefix.
@@ -388,9 +400,9 @@ func (m *Mesh) downLocked() {
 func (m *Mesh) Close() { m.down() }
 
 // setPeersLocked makes the device's peers the list's: a peer not in it is removed, a new one added with its first
-// endpoint, and one whose address or endpoints changed updated. A peer with a bad key or an address outside the pool's
-// prefix is left out, as is the host itself.
-func (m *Mesh) setPeersLocked(list []proto.MeshPeer) {
+// endpoint (as resolved, looked up before the lock was taken), and one whose address or endpoints changed updated. A
+// peer with a bad key or an address outside the pool's prefix is left out, as is the host itself.
+func (m *Mesh) setPeersLocked(list []proto.MeshPeer, resolved map[string]netip.AddrPort) {
 	want := map[Key]proto.MeshPeer{}
 	self := m.PublicKey()
 	for _, p := range list {
@@ -430,9 +442,12 @@ func (m *Mesh) setPeersLocked(list []proto.MeshPeer) {
 			fresh.rtt, fresh.probedAt = p.rtt, p.probedAt
 		}
 		cfg := PeerConfig{PublicKey: k, Address: addr}
-		// A peer already reached keeps the endpoint it is reached on; one not yet starts on its first.
+		// A peer already reached keeps the endpoint it is reached on (rotate moves it to the new ones if it stops being
+		// reached); one not yet starts on its first.
 		if !ok || !m.handshakeFreshLocked(k) {
-			cfg.Endpoint = m.resolve(fresh, 0)
+			if len(fresh.endpoints) > 0 {
+				cfg.Endpoint = resolved[fresh.endpoints[0]]
+			}
 		}
 		if err := m.dev.SetPeer(cfg); err != nil {
 			m.log.Warn("couldn't set a mesh peer", "host", w.HostID, "error", err)
@@ -445,21 +460,43 @@ func (m *Mesh) setPeersLocked(list []proto.MeshPeer) {
 	}
 }
 
-// resolve is the peer's endpoint i as an address (a name is looked up), or zero when it has none that resolves.
-func (m *Mesh) resolve(p *peer, i int) netip.AddrPort {
-	if len(p.endpoints) == 0 {
-		return netip.AddrPort{}
+// resolveEndpoints maps each endpoint to an address: parsed, or for a name looked up (all at once, within
+// resolveTimeout). One that doesn't resolve maps to zero. Called without the lock: a slow lookup mustn't hold up the
+// proxy's checks (Prefix) or the capacity reports (Health).
+func resolveEndpoints(endpoints []string) map[string]netip.AddrPort {
+	out := map[string]netip.AddrPort{}
+	var names []string
+	for _, e := range endpoints {
+		if ap, err := netip.ParseAddrPort(e); err == nil {
+			out[e] = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+		} else if _, ok := out[e]; !ok && !slices.Contains(names, e) {
+			names = append(names, e)
+		}
 	}
-	e := p.endpoints[i%len(p.endpoints)]
-	if ap, err := netip.ParseAddrPort(e); err == nil {
-		return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+	if len(names) == 0 {
+		return out
 	}
-	host, port, err := net.SplitHostPort(e)
+	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+	defer cancel()
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, e := range names {
+		wg.Go(func() {
+			ap := lookup(ctx, e)
+			mu.Lock()
+			out[e] = ap
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return out
+}
+
+func lookup(ctx context.Context, endpoint string) netip.AddrPort {
+	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
 		return netip.AddrPort{}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil || len(addrs) == 0 {
 		return netip.AddrPort{}
@@ -495,71 +532,103 @@ func (m *Mesh) handshakeFreshLocked(k Key) bool {
 }
 
 // watch moves each peer not reached on to its next endpoint after endpointTry, and measures each peer's round-trip
-// time every probeEvery, until ctx ends.
+// time every probeEvery, until ctx ends. The two run apart, so probes of peers that don't answer don't hold up the
+// endpoints.
 func (m *Mesh) watch(ctx context.Context, done chan struct{}) {
 	defer close(done)
-	t := time.NewTicker(tick)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		m.rotate()
-		m.probe(ctx)
+	var wg sync.WaitGroup
+	for _, each := range []func(context.Context){m.rotate, m.probe} {
+		wg.Go(func() {
+			t := time.NewTicker(tick)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+				each(ctx)
+			}
+		})
 	}
+	wg.Wait()
 }
 
-// rotate tries the next endpoint of each peer with no fresh handshake whose endpoint has had its endpointTry.
-func (m *Mesh) rotate() {
+// rotate moves each peer with no fresh handshake whose endpoint has had its endpointTry on to its next endpoint (back
+// to the same one for a peer with one: it may be new since the peer was last reached, or a name that now resolves).
+func (m *Mesh) rotate(ctx context.Context) {
+	type due struct {
+		peer     *peer
+		key      Key
+		endpoint string
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.dev == nil {
+		m.mu.Unlock()
 		return
 	}
 	now := time.Now()
 	stats := m.statsLocked()
+	var list []due
 	for k, p := range m.peers {
-		if fresh(stats[k], now) || len(p.endpoints) < 2 || now.Sub(p.triedAt) < endpointTry {
+		if fresh(stats[k], now) || len(p.endpoints) == 0 || now.Sub(p.triedAt) < endpointTry {
 			continue
 		}
 		p.try = (p.try + 1) % len(p.endpoints)
 		p.triedAt = now
-		if ep := m.resolve(p, p.try); ep.IsValid() {
-			m.log.Debug("mesh peer not reached: trying its next endpoint", "host", p.hostID, "endpoint", ep)
-			if err := m.dev.SetPeer(PeerConfig{PublicKey: k, Address: p.address, Endpoint: ep}); err != nil {
-				m.log.Warn("couldn't set a mesh peer's endpoint", "host", p.hostID, "error", err)
-			}
+		list = append(list, due{p, k, p.endpoints[p.try]})
+	}
+	m.mu.Unlock()
+	if len(list) == 0 {
+		return
+	}
+	var endpoints []string
+	for _, d := range list {
+		endpoints = append(endpoints, d.endpoint)
+	}
+	resolved := resolveEndpoints(endpoints)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range list {
+		ep := resolved[d.endpoint]
+		// Still the same peer (not removed, or the mesh brought up again meanwhile) on the same endpoint.
+		if m.dev == nil || m.peers[d.key] != d.peer || d.peer.endpoints[d.peer.try] != d.endpoint || !ep.IsValid() {
+			continue
+		}
+		m.log.Debug("mesh peer not reached: trying its next endpoint", "host", d.peer.hostID, "endpoint", ep)
+		if err := m.dev.SetPeer(PeerConfig{PublicKey: d.key, Address: d.peer.address, Endpoint: ep}); err != nil {
+			m.log.Warn("couldn't set a mesh peer's endpoint", "host", d.peer.hostID, "error", err)
 		}
 	}
 }
 
-// probe measures the round-trip time to each peer due one: a TCP connection to its sync port over the mesh, answered
-// by the peer's kernel whether or not anything listens there (a refusal is an answer).
+// probe measures the round-trip time to each peer due one, all at once: a TCP connection to its sync port over the
+// mesh, answered by the peer whether or not anything listens there (a refusal is an answer).
 func (m *Mesh) probe(ctx context.Context) {
 	type due struct {
-		key  Key
+		peer *peer
 		addr netip.Addr
 	}
 	m.mu.Lock()
 	var list []due
 	now := time.Now()
-	for k, p := range m.peers {
+	for _, p := range m.peers {
 		if now.Sub(p.probedAt) >= probeEvery {
 			p.probedAt = now
-			list = append(list, due{k, p.address})
+			list = append(list, due{p, p.address})
 		}
 	}
 	m.mu.Unlock()
+	var wg sync.WaitGroup
 	for _, d := range list {
-		rtt := probeRTT(ctx, d.addr, m.cfg.SyncPort)
-		m.mu.Lock()
-		if p, ok := m.peers[d.key]; ok {
-			p.rtt = rtt
-		}
-		m.mu.Unlock()
+		wg.Go(func() {
+			rtt := probeRTT(ctx, d.addr, m.cfg.SyncPort)
+			m.mu.Lock()
+			d.peer.rtt = rtt
+			m.mu.Unlock()
+		})
 	}
+	wg.Wait()
 }
 
 // probeRTT is the time a TCP connection to addr's port takes to be answered, accepted or refused; 0 for none.
