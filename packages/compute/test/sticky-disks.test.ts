@@ -136,7 +136,7 @@ describe("sticky disks", () => {
 		const sweep = async () => {
 			tom.clock.now += 11 * 60_000;
 			await tom.api.service.sweep();
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await tom.api.service.idle();
 		};
 		// A host from before sticky disks says nothing of what it holds: that isn't holding none.
 		reports = [{ hostId: old.hostId, reportedAt: tom.clock.now + 11 * 60_000 }];
@@ -195,6 +195,7 @@ describe("sticky disks", () => {
 		];
 		tom.clock.now += 11 * 60_000;
 		await tom.api.service.sweep();
+		await tom.api.service.idle();
 		expect(await stored(late.id)).toBeUndefined();
 		reports = [
 			{
@@ -214,6 +215,7 @@ describe("sticky disks", () => {
 		];
 		tom.clock.now += 11 * 60_000;
 		await tom.api.service.sweep();
+		await tom.api.service.idle();
 		expect(await stored(late.id)).toBe("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 		expect(await stored(mapped.id)).toBe("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 	});

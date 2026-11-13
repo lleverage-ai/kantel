@@ -611,6 +611,28 @@ export interface HostStickyHolding {
 	readonly versions: readonly HostStickyVersionHolding[];
 }
 
+/** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
+export interface HostDiskLocateParams {
+	/** `sticky` for now; `rootfs`, `template`, `snapshot` and `sandbox` later. */
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+}
+
+/**
+ * The answer to `disk.locate`: the version's block map digest, once Kantel has it; the online hosts in the asker's pool
+ * that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them.
+ *
+ * The grant is `<payload>.<signature>`: the payload is the JSON of `{ kind, objectId, version, accountId, from, to, exp }`
+ * (`from` the holders' host IDs, `to` the asker's, `exp` milliseconds since the epoch, 15 minutes on) in base64url, and
+ * the signature Ed25519 over the payload's ASCII text by the key `HostWelcome.grantKey` names, in base64url.
+ */
+export interface HostDiskLocateResult {
+	readonly mapDigest?: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
+}
+
 /** A version a host holds: the bytes it takes, when it was made there, and its block map's digest once it has one. */
 export interface HostStickyVersionHolding {
 	readonly version: string;
@@ -1039,6 +1061,12 @@ export interface HostWelcome {
 	 * earlier one. A connection's first welcome decides it for the connection.
 	 */
 	readonly usageAcks?: boolean;
+	/**
+	 * The control plane's Ed25519 public key for fetch grants (docs/design/disk-store.md, 2c), its 32 raw bytes in
+	 * base64url: a host serves a peer's fetch only with a grant this key signed (`HostDiskLocateResult.grant`). Absent
+	 * while the control plane has no grant key (sticky disks off, or no secrets key to keep one).
+	 */
+	readonly grantKey?: string;
 }
 
 /**
@@ -1194,6 +1222,11 @@ export const HostMethods = {
 	 * sandbox is on that host and mounts that bucket source.
 	 */
 	bucketFetch: "bucket.fetch",
+	/**
+	 * Host to Kantel: `HostDiskLocateParams`, answered with `HostDiskLocateResult`; `not_found` for a version Kantel
+	 * doesn't have or the host may not have, `not_supported` when Kantel can't sign grants.
+	 */
+	diskLocate: "disk.locate",
 	/** Kantel to host: `HostMountsRefresh`, answered with the sandbox's `HostMountStatus[]`. */
 	mountsRefresh: "sandbox.mounts.refresh",
 	/** Builds a template snapshot: `HostTemplateBuild`, answered with `HostTemplateBuilt`. */

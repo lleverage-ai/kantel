@@ -7,9 +7,9 @@
  * One connection per host: a newer one takes over, and the older is closed with 4008. Only the current connection's
  * close marks the host gone, so a takeover never reads as a disconnect.
  *
- * A welcomed host may call Kantel for two things, `secrets.fetch` and `bucket.fetch`: the hub answers them through
- * `secrets` and `bucketSource`, naming the host the connection was checked against, never one the host names, so a
- * host is given only its own sandboxes' values and bucket sources. Its egress proxy's `egress` events go to
+ * A welcomed host may call Kantel for `secrets.fetch`, `env.fetch`, `bucket.fetch` and `disk.locate`: the hub answers
+ * them through `secrets`, `env`, `bucketSource` and `diskLocate`, naming the host the connection was checked against,
+ * never one the host names, so a host is given only its own sandboxes' values and bucket sources, and grants naming it. Its egress proxy's `egress` events go to
  * `onEgress`, and its `sandbox.mounts` events, checked, to `onMounts`.
  *
  * A file stream (`openFile`) is a port stream carrying a file of a sandbox's: the host sends a read's bytes and ends it
@@ -19,6 +19,7 @@
  *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
+import { isKantelError } from "@kantel/contracts";
 import { parseMountStatuses, parseMountsAt } from "./facts.ts";
 import {
 	decodeStreamFrame,
@@ -30,6 +31,8 @@ import {
 	HOST_PROTOCOL_VERSION,
 	type HostBucketSource,
 	type HostCapacity,
+	type HostDiskLocateParams,
+	type HostDiskLocateResult,
 	type HostEgressRecord,
 	type HostEnvAnswer,
 	type HostError,
@@ -191,6 +194,12 @@ export interface HostHubOptions {
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
 	/**
+	 * A host's `disk.locate`: where the version is, and a grant to fetch it naming `hostId`. A `KantelError` it throws
+	 * (`not_found`, `not_supported`, `invalid`) is answered with its code and message, anything else `unavailable`.
+	 * Absent, every call is answered `unsupported`.
+	 */
+	diskLocate?(hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult>;
+	/**
 	 * A sandbox's mounts changed status (a `sandbox.mounts` event), checked and clipped, with when the host set them
 	 * (`HostSandbox.mountsAt`; absent from a host too old to say).
 	 */
@@ -265,6 +274,11 @@ const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
 
 /** A payload a host sent that is an object, which is all its type claims until it's checked further. */
 const isObject = <T>(value: T): value is NonNullable<T> & object => typeof value === "object" && value !== null;
+
+/** The errors of `diskLocate` a host is answered with as they are; any other is `unavailable`. */
+const LOCATE_ERRORS: ReadonlySet<string> = new Set(["not_found", "not_supported", "invalid"]);
+/** The longest kind, object ID or version a `disk.locate` may name. */
+const LOCATE_NAME_LIMIT = 200;
 
 /** A WebSocket close reason is at most 123 bytes of UTF-8 (RFC 6455); a longer one makes `close` throw. */
 const CLOSE_REASON_BYTES = 123;
@@ -471,7 +485,46 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 	};
 
-	/** Answers a host's call (`secrets.fetch`, `env.fetch` or `bucket.fetch`) for the host its connection was checked against. */
+	/** Answers a host's `disk.locate`, for the host the connection was checked against. */
+	const answerDiskLocate = async (
+		connection: Connection,
+		params: unknown,
+		reply: (body: { readonly result: unknown } | { readonly error: HostError }) => void,
+	) => {
+		const named: { readonly kind?: unknown; readonly objectId?: unknown; readonly version?: unknown } = isObject(params)
+			? params
+			: {};
+		const name = (value: unknown) =>
+			typeof value === "string" && value !== "" && value.length <= LOCATE_NAME_LIMIT ? value : undefined;
+		const kind = name(named.kind);
+		const objectId = name(named.objectId);
+		const version = name(named.version);
+		if (kind === undefined || objectId === undefined || version === undefined) {
+			reply({ error: { code: "invalid", message: "disk.locate names a kind, an object and a version" } });
+			return;
+		}
+		if (options.diskLocate === undefined) {
+			reply({ error: { code: "unsupported", message: "Kantel answers no disk.locate call" } });
+			return;
+		}
+		if (!connection.welcomed) {
+			reply({ error: { code: "unavailable", message: "Kantel can't locate disks now" } });
+			return;
+		}
+		try {
+			reply({
+				result: await options.diskLocate(connection.hostId, { kind, objectId, version }),
+			});
+		} catch (error) {
+			if (isKantelError(error) && LOCATE_ERRORS.has(error.code)) {
+				reply({ error: { code: error.code, message: error.message } });
+			} else {
+				reply({ error: { code: "unavailable", message: "Kantel can't locate disks now" } });
+			}
+		}
+	};
+
+	/** Answers a host's call (`secrets.fetch`, `env.fetch`, `bucket.fetch` or `disk.locate`) for the host its connection was checked against. */
 	const answer = async (connection: Connection, message: HostMessage) => {
 		const id = message.id;
 		if (typeof id !== "string" || id === "") return;
@@ -483,6 +536,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 		if (message.method === HostMethods.envFetch) {
 			await answerEnv(connection, message.params, reply);
+			return;
+		}
+		if (message.method === HostMethods.diskLocate) {
+			await answerDiskLocate(connection, message.params, reply);
 			return;
 		}
 		if (message.method !== HostMethods.secretsFetch) {

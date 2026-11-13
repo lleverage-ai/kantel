@@ -110,6 +110,11 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_pool_name ON compute_api_records (((data::jsonb ->> 'owner')), ((data::jsonb ->> 'name'))) WHERE kind = 'pools'"
 			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_pool_name ON compute_api_records (json_extract(data, '$.owner'), json_extract(data, '$.name')) WHERE kind = 'pools'",
+		// A host's copies of disk versions, as each of its capacity reports reads them (`list({ hostId })`), without every
+		// host's. Postgres's only over holders' rows, as egress's.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders ON compute_api_records (((data::jsonb ->> 'hostId')), seq) WHERE kind = 'diskHolders'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_host ON compute_api_records (kind, json_extract(data, '$.hostId'), seq)",
 	];
 }
 
@@ -538,6 +543,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		stickyDiskVersions: sqlCollection(driver, STICKY_DISK_VERSIONS),
 		stickyDiskNames: sqlCollection(driver, STICKY_DISK_NAMES),
 		stickyDiskWrites: sqlStickyDiskWrites(driver),
+		diskHolders: sqlCollection(driver, "diskHolders"),
 	};
 }
 

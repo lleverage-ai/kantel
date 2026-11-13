@@ -15,6 +15,7 @@ import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
 import type { BackendDiskUsage, SandboxTemplateBoot, SnapshotMadeOn } from "./backend.ts";
 import type { StoredGithubRunnerJob, StoredGithubRunnerMachine, StoredGithubRunners } from "./github-runners.ts";
+import type { DiskKind } from "./grants.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /**
@@ -749,8 +750,15 @@ export interface StoredFileUrl {
  * bundle store, which any gateway's must hold for it to keep, serve or remove bundles' bytes (`BundleBlobStore.mark`).
  */
 export interface StoredSetting {
-	readonly id: "publicUrl" | "bundleStore";
+	/**
+	 * `grantKey`: the control plane's Ed25519 key for fetch grants (`grants.ts`), made by the first gateway that needs it
+	 * and claimed (`insert`), so every gateway over one database signs with the same key. `value` is its public key, and
+	 * `sealed` its private key, sealed with the deployment's secrets key.
+	 */
+	readonly id: "publicUrl" | "bundleStore" | "grantKey";
 	readonly value: string;
+	/** A value kept sealed beside `value`: the grant key's private key. */
+	readonly sealed?: SealedValue;
 	readonly updatedAt: number;
 	readonly updatedBy: string;
 }
@@ -911,6 +919,8 @@ export interface ComputeStore {
 	readonly stickyDiskNames: Collection<StoredStickyDiskName>;
 	/** A sticky disk with its name's claim or its version, written together. */
 	readonly stickyDiskWrites: StickyDiskWrites;
+	/** Which hosts hold which versions of the disk store's objects (`StoredDiskHolder`). */
+	readonly diskHolders: Collection<StoredDiskHolder>;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -979,6 +989,30 @@ export interface StoredStickyDiskVersion {
 	/** The write that recorded it, in SQL: how that write tells it landed (`StickyDiskWrites.commit`). */
 	readonly writeId?: string;
 }
+
+/**
+ * A host's copy of one version of a disk store object (docs/design/disk-store.md, 2c): what the host reports it holds,
+ * reconciled from each of its capacity reports, so these are the copies there are rather than the ones asked for. A
+ * version's own `hostId` stays the host it was made on; this is every host that has it. Its ID is `diskHolderId`.
+ */
+export interface StoredDiskHolder {
+	readonly id: string;
+	readonly kind: DiskKind;
+	/** The object: a sticky disk's ID. */
+	readonly objectId: string;
+	readonly version: string;
+	readonly hostId: string;
+	/**
+	 * `held`: the host has it in full. `fetching`: it is fetching it from others, and reports it held once it has it.
+	 * `deleting`: it has been told to let it go.
+	 */
+	readonly state: "fetching" | "held" | "deleting";
+	/** When it reached `state`. */
+	readonly since: number;
+}
+
+export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>
+	`${kind}:${objectId}:${version}:${hostId}`;
 
 /**
  * Writes of a sticky disk that must land with another record or not at all, so no interruption leaves a name claimed
@@ -1217,6 +1251,7 @@ export function createMemoryStore(): ComputeStore {
 		stickyDiskVersions: stickyDiskVersions.collection,
 		stickyDiskNames: stickyDiskNames.collection,
 		stickyDiskWrites: memoryStickyDiskWrites(stickyDisks, stickyDiskNames, stickyDiskVersions),
+		diskHolders: memoryCollection(),
 	};
 }
 

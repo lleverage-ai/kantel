@@ -38,7 +38,10 @@ import {
 	HOST_CLOSE_REVOKED,
 	HOST_FEATURES,
 	type HostBucketSource,
+	type HostCapacity,
 	type HostDiskLimits,
+	type HostDiskLocateParams,
+	type HostDiskLocateResult,
 	type HostDiskUsage,
 	type HostEgress,
 	type HostEgressRecord,
@@ -521,6 +524,19 @@ export interface HostComputeLink {
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
 	/**
+	 * A host's sticky disk holdings, from each hello and heartbeat that says what it holds, received at `at`: the
+	 * catalogue's copies on that host are made what it reports (`ComputeService.recordStickyHoldings`). Called by the
+	 * gateway holding the connection alone.
+	 */
+	recordStickyHoldings?(hostId: string, at: number, holdings: readonly HostStickyHolding[]): Promise<void>;
+	/** A host's `disk.locate` (`ComputeService.locateDisk`). */
+	locateDisk?(hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult>;
+	/**
+	 * The control plane's grant key's public key, for hosts' welcomes (`ComputeService.grantPublicKey`); undefined while
+	 * it has none. A failure is logged and the welcome goes without, so a host still connects.
+	 */
+	grantKey?(): Promise<string | undefined>;
+	/**
 	 * A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`): only for a
 	 * sandbox whose placement is on that host. `mountsAt` is when the host set them (absent from an older host).
 	 */
@@ -968,19 +984,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// would be, so the host is told nothing and does as with an older Kantel.
 		...(compute?.recordUsage === undefined ? {} : { usageAcks: true }),
 	});
-	// With image patching off the welcome is made at once, as before: no await between a hello and its answer.
+	/** What `read` answers, or undefined (logged) when it fails: the welcome goes without it. */
+	const welcomePart = <T>(host: HostRecord, what: string, read: (() => Promise<T | undefined>) | undefined) =>
+		read === undefined
+			? undefined
+			: read().catch((error: unknown) => {
+					log(
+						`[hosts] no ${what} in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return undefined;
+				});
+	// With image patching and the grant key both off the welcome is made at once, as before: no await between a hello
+	// and its answer.
 	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
 		const base = baseWelcome(host);
-		if (compute?.images === undefined) return base;
-		return compute.images().then(
-			(images) => (images === undefined ? base : { ...base, images }),
-			(error) => {
-				log(
-					`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`,
-				);
-				return base;
-			},
-		);
+		const images = welcomePart(host, "images", compute?.images);
+		const grantKey = welcomePart(host, "grant key", compute?.grantKey);
+		if (images === undefined && grantKey === undefined) return base;
+		return Promise.all([images, grantKey]).then(([images, grantKey]) => ({
+			...base,
+			...(images === undefined ? {} : { images }),
+			...(grantKey === undefined ? {} : { grantKey }),
+		}));
 	};
 
 	/**
@@ -1103,6 +1128,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		);
 	};
 
+	/**
+	 * Keeps a report's sticky disk holdings in the catalogue, in its own time, one at a time per host so an older report
+	 * never lands after a newer. Nothing from a report that doesn't say what it holds: absent isn't none.
+	 */
+	const holdingsRecorded = new Map<string, Promise<void>>();
+	const recordHoldings = (hostId: string, at: number, capacity: HostCapacity) => {
+		const link = compute;
+		const holdings = capacity.stickyDisks;
+		if (link?.recordStickyHoldings === undefined || holdings === undefined) return;
+		const previous = holdingsRecorded.get(hostId) ?? Promise.resolve();
+		const next = previous.then(() => link.recordStickyHoldings?.(hostId, at, holdings));
+		const settled = next.catch(() => undefined);
+		holdingsRecorded.set(hostId, settled);
+		void settled.then(() => {
+			if (holdingsRecorded.get(hostId) === settled) holdingsRecorded.delete(hostId);
+		});
+		report(next);
+	};
+
 	const hello = async (hostId: string, message: HostHello): Promise<void> => {
 		const host = await store.getHost(hostId);
 		if (host === undefined || host.revoked) throw new Error("This host is revoked");
@@ -1123,6 +1167,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			lastSeenAt: now,
 		}));
 		if (reported === undefined || reported.revoked) throw new Error("This host is revoked");
+		recordHoldings(hostId, now, capacity.value);
 		reserved.delete(hostId);
 		// Reconcile: what the host holds is the truth about state; a placement the host no longer has is lost.
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
@@ -1282,6 +1327,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					}));
 				})(),
 			);
+			recordHoldings(hostId, receivedAt, capacity);
 		},
 		onEvent(hostId, event) {
 			const sandbox = event.sandbox;
@@ -1351,6 +1397,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		async bucketSource(hostId, sandboxId, bucketSourceId) {
 			if (compute?.bucketSource === undefined) throw new Error("The compute plane keeps no bucket sources here");
 			return compute.bucketSource(hostId, sandboxId, bucketSourceId);
+		},
+		async diskLocate(hostId, params) {
+			if (compute?.locateDisk === undefined) {
+				throw new KantelError("not_supported", "The compute plane keeps no disk catalogue here");
+			}
+			return compute.locateDisk(hostId, params);
 		},
 		onMounts(hostId, sandboxId, mounts, mountsAt) {
 			const link = compute;
