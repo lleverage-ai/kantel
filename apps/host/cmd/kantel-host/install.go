@@ -68,6 +68,20 @@ func (l labelFlag) Set(v string) error {
 	return nil
 }
 
+// listFlag is a repeatable flag whose values may also be comma-separated.
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(v string) error {
+	for _, item := range strings.Split(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			*l = append(*l, item)
+		}
+	}
+	return nil
+}
+
 // parseInstall reads install's options.
 func parseInstall(args []string) (installOptions, error) {
 	return parseInstallAs("install", args)
@@ -89,6 +103,9 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 	isolateRuntime := fs.String("isolate-runtime", "", "The isolate `runtime`: native runs isolates with kantel-isolate on the host itself (no KVM; trusted code only)")
 	proxyDataPath := fs.Bool("proxy-data-path", false, "Turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
 	injectGuestAgent := fs.Bool("inject-guest-agent", false, "Boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
+	meshPort := fs.Int("mesh-port", 0, "The UDP `port` of the WireGuard mesh with the other hosts of this host's pool (default 51820; -1: no mesh)")
+	meshEndpoints := &listFlag{}
+	fs.Var(meshEndpoints, "mesh-endpoint", "Where the host's mesh peers reach it besides its own addresses, `host:port`, such as a forwarded port (repeatable, or comma-separated)")
 	noStart := fs.Bool("no-start", false, "Install and register, but don't start the service")
 	dryRun := fs.Bool("dry-run", false, "Print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
 	if err := fs.parse(args); err != nil {
@@ -113,7 +130,7 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 	return installOptions{
 		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
 		tiers: *tiers, isolateRuntime: *isolateRuntime, labels: labels, proxyDataPath: *proxyDataPath,
-		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun,
+		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun, meshPort: *meshPort, meshEndpoints: *meshEndpoints,
 	}, nil
 }
 

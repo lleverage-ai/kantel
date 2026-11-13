@@ -1,6 +1,8 @@
 package network
 
 import (
+	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -113,5 +115,40 @@ func TestSlotOfOnlyNamesGuests(t *testing.T) {
 	}
 	if got := m.SlotOf(link.HostIP); got != -1 {
 		t.Errorf("the host's side named slot %d", got)
+	}
+}
+
+// The mesh device takes the sync port from the pool's prefix and replies only; nothing is forwarded through it, and
+// WireGuard's port is open on every device but a sandbox's, below the mesh device's own rules.
+func TestMeshFirewall(t *testing.T) {
+	f := NewMeshFirewall(true)
+	if err := f.Up("kmesh0", netip.MustParsePrefix("fd4b:616e:7465::/48"), 7480, 51820); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"ip6tables -w -t filter -N KANTEL-MESH",
+		"ip6tables -w -t filter -A KANTEL-MESH -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+		"ip6tables -w -t filter -A KANTEL-MESH -s fd4b:616e:7465::/48 -p tcp --dport 7480 -j ACCEPT",
+		"ip6tables -w -t filter -A KANTEL-MESH -j DROP",
+		"iptables -w -t filter -I INPUT 1 ! -i kt+ -p udp --dport 51820 -j ACCEPT",
+		"ip6tables -w -t filter -I INPUT 1 ! -i kt+ -p udp --dport 51820 -j ACCEPT",
+		"ip6tables -w -t filter -I INPUT 1 -i kmesh0 -j KANTEL-MESH",
+		"ip6tables -w -t filter -I FORWARD 1 -i kmesh0 -j DROP",
+		"ip6tables -w -t filter -I FORWARD 1 -o kmesh0 -j DROP",
+		"iptables -w -t filter -I INPUT 1 -i kmesh0 -j DROP",
+		"iptables -w -t filter -I FORWARD 1 -i kmesh0 -j DROP",
+		"iptables -w -t filter -I FORWARD 1 -o kmesh0 -j DROP",
+	}
+	got := f.Commands()
+	if !slices.Equal(got, want) {
+		t.Fatalf("commands:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if err := f.Up("kmesh0", netip.MustParsePrefix("10.0.0.0/8"), 7480, 51820); err == nil {
+		t.Fatal("an IPv4 prefix")
+	}
+	f = NewMeshFirewall(true)
+	f.Down("kmesh0", 51820)
+	if cmds := f.Commands(); !has(cmds, "ip6tables -w -t filter -D INPUT -i kmesh0 -j KANTEL-MESH") || !has(cmds, "ip6tables -w -t filter -X KANTEL-MESH") {
+		t.Fatalf("down: %v", cmds)
 	}
 }
