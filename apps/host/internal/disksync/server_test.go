@@ -121,7 +121,8 @@ func TestServerRefusesFetchesWithoutAGrantForThisHostAndPeer(t *testing.T) {
 	}
 }
 
-// The server listens on the address it is given, speaks HTTP/2 without TLS, moves when the address does, and stops.
+// The server listens on the address it is given, speaks HTTP/2 without TLS, and stops; stopped before its listener is
+// served, and started again at once, it listens again.
 func TestServerListensOverHTTP2OnItsAddress(t *testing.T) {
 	ln, err := net.Listen("tcp", "[::1]:0")
 	if err != nil {
@@ -132,7 +133,12 @@ func TestServerListensOverHTTP2OnItsAddress(t *testing.T) {
 	key := newTestKey(t)
 	s, data := testServer(t, key)
 	s.Port = port
-	s.PeerAt = func(a netip.Addr) (string, bool) { return "host_b", a == netip.IPv6Loopback() }
+	s.PeerAt = func(a netip.Addr) (string, bool) {
+		if a == netip.IPv6Loopback() {
+			return "host_b", true
+		}
+		return "", false
+	}
 	if err := s.Serve(netip.IPv6Loopback()); err != nil {
 		t.Fatal(err)
 	}
@@ -160,5 +166,22 @@ func TestServerListensOverHTTP2OnItsAddress(t *testing.T) {
 	}
 	if _, err := client.Do(req.Clone(req.Context())); err == nil {
 		t.Fatal("still served once stopped")
+	}
+	for range 20 {
+		if err := s.Serve(netip.IPv6Loopback()); err != nil {
+			t.Fatalf("started again: %v", err)
+		}
+		s.Close()
+	}
+	if err := s.Serve(netip.IPv6Loopback()); err != nil {
+		t.Fatalf("started again: %v", err)
+	}
+	res, err = client.Do(req.Clone(req.Context()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusPartialContent {
+		t.Fatalf("started again: %d", res.StatusCode)
 	}
 }

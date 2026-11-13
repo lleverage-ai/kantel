@@ -130,6 +130,8 @@ type Host struct {
 	// grantKey is the control plane's grant key from its last welcome ("" none), and welcomeID the host ID it named.
 	grantKey  atomic.Pointer[string]
 	welcomeID atomic.Pointer[string]
+	// welcomeMu is one welcome's mesh and peer sync server applied at a time (applyWelcome).
+	welcomeMu sync.Mutex
 }
 
 // New starts the tiers the host can run.

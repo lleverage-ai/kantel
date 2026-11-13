@@ -54,6 +54,9 @@ type Server struct {
 	mu   sync.Mutex
 	addr netip.Addr
 	srv  *http.Server
+	// ln is the server's listener, and done closes once its Serve has returned.
+	ln   net.Listener
+	done chan struct{}
 }
 
 // Serve makes the server listen on addr's Port, or with no addr stop: it is called whenever the mesh comes up, goes
@@ -86,8 +89,10 @@ func (s *Server) Serve(addr netip.Addr) error {
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          slog.NewLogLogger(s.Log.Handler(), slog.LevelDebug),
 	}
-	s.srv, s.addr = srv, addr
+	done := make(chan struct{})
+	s.srv, s.addr, s.ln, s.done = srv, addr, ln, done
 	go func() {
+		defer close(done)
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.Log.Warn("the peer sync server stopped", "error", err)
 		}
@@ -113,7 +118,11 @@ func (s *Server) stopLocked() {
 	if err := s.srv.Shutdown(ctx); err != nil {
 		_ = s.srv.Close()
 	}
-	s.srv, s.addr = nil, netip.Addr{}
+	// Closed here too: a Serve not yet under way when the server shut down hasn't registered it, and would keep the
+	// address bound until it ran.
+	_ = s.ln.Close()
+	<-s.done
+	s.srv, s.addr, s.ln, s.done = nil, netip.Addr{}, nil, nil
 }
 
 // Handler is the server's routes.
@@ -166,7 +175,9 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request) (*os.File, []byte,
 	}
 	asker := ""
 	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
-		asker, _ = s.PeerAt(ap.Addr().Unmap())
+		if id, ok := s.PeerAt(ap.Addr().Unmap()); ok {
+			asker = id
+		}
 	}
 	if err := g.Allows(kind, id, version, s.Self(), asker); err != nil {
 		s.Log.Warn("a peer's fetch refused", "peer", r.RemoteAddr, "host", asker, "kind", kind, "object", id, "version", version, "error", err)

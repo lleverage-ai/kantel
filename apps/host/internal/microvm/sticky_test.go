@@ -740,6 +740,16 @@ func TestOpenStickyVersionForAPeer(t *testing.T) {
 	if err := os.WriteFile(m.stickyVersionFile("ci", "v1"), []byte("data"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A version and map outside the sticky root, which a bad disk ID would reach.
+	outside := filepath.Join(m.cfg.Root, "ci")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"v1.img", "v1.map"} {
+		if err := os.WriteFile(filepath.Join(outside, name), []byte("outside"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, c := range [][2]string{{"ci", "v1"}, {"ci", "v2"}, {"other", "v1"}, {"../ci", "v1"}} {
 		if _, _, err := m.OpenStickyVersion(c[0], c[1]); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("%v: %v, want not found", c, err)
