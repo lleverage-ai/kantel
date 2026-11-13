@@ -1015,23 +1015,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	/**
 	 * The host's place in its pool's mesh, for its welcome: its address, the pool's prefix and its peers (every other
 	 * host of the pool that runs the mesh, revoked ones not). Undefined for a host that doesn't run the mesh, isn't in a
-	 * pool, or whose pool has sync off; and when that can't be read, which a later welcome puts right.
+	 * pool, or whose pool has sync off. Rejects when that can't be read: a welcome without the mesh takes the host's mesh
+	 * down, so none is sent then (a hello is refused, and the host tries again; a rewelcome is skipped).
 	 */
 	const meshFor = async (host: HostRecord): Promise<HostWelcomeMesh | undefined> => {
 		if (!meshable(host)) return undefined;
-		try {
-			if ((await compute?.poolSync?.(host.poolId)) !== true) return undefined;
-			const addressed = await withMeshAddress(host);
-			if (addressed.mesh === undefined || addressed.mesh.poolId !== host.poolId) return undefined;
-			return {
-				address: addressed.mesh.address,
-				prefix: await meshPrefix(host.poolId),
-				peers: meshPeersAmong(addressed, await store.listHosts()),
-			};
-		} catch (error) {
-			log(`[hosts] no mesh in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`);
-			return undefined;
-		}
+		if ((await compute?.poolSync?.(host.poolId)) !== true) return undefined;
+		const addressed = await withMeshAddress(host);
+		if (addressed.mesh === undefined || addressed.mesh.poolId !== host.poolId) return undefined;
+		return {
+			address: addressed.mesh.address,
+			prefix: await meshPrefix(host.poolId),
+			peers: meshPeersAmong(addressed, await store.listHosts()),
+		};
 	};
 
 	/**
@@ -1046,16 +1042,24 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * Sends every connected host of a pool that runs the mesh its peers again, but `except`: one of them joined, left,
-	 * was revoked or has a new key, address or endpoints. Nothing while the pool has sync off: its hosts' meshes are down.
+	 * Sends every host of a pool that runs the mesh its peers again, but `except`: one of them joined, left, was revoked
+	 * or has a new key, address or endpoints. Nothing while the pool has sync off: its hosts' meshes are down. Each is
+	 * asked of the hub whether or not it looks connected here: the hub finds the replica holding it as it is now, and one
+	 * still saying hello has its welcome read again once sent.
 	 */
 	const remeshPool = async (poolId: string | undefined, except?: string) => {
 		if (poolId === undefined || (await compute?.poolSync?.(poolId)) !== true) return;
 		for (const member of await store.listHosts()) {
 			if (member.id === except || member.poolId !== poolId || !runsMesh(member)) continue;
-			if (hub.connected(member.id)) hub.remesh(member.id);
+			hub.remesh(member.id);
 		}
 	};
+
+	/**
+	 * Sends a host its welcome again. The hub reads it afresh (`welcomeNow`), here or on the replica holding the host, so
+	 * the welcome handed over is never what is sent: the record's own fields will do, with no mesh to read.
+	 */
+	const rewelcome = (host: HostRecord) => hub.rewelcome(host.id, baseWelcome(host));
 
 	// With image patching off and no mesh the welcome is made at once, as before: no await between a hello and its answer.
 	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
@@ -2384,7 +2388,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			// given before the new pool's hosts are told of it, and its own welcome says where it is now.
 			const moved = next.poolId !== host.poolId;
 			const settled = moved ? await withMeshAddress(next) : next;
-			if (redrained || (moved && runsMesh(settled))) hub.rewelcome(hostId, await welcomeFor(settled));
+			if (redrained || (moved && runsMesh(settled))) rewelcome(settled);
 			if (moved && runsMesh(host)) {
 				await remeshPool(host.poolId, hostId);
 				await remeshPool(settled.poolId, hostId);
@@ -2458,10 +2462,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		async poolChanged(poolId) {
 			if (compute?.poolSync === undefined) return;
 			for (const member of await store.listHosts()) {
-				if (member.poolId !== poolId || !runsMesh(member) || !hub.connected(member.id)) continue;
-				// Its peers (none with sync off), then its welcome, which brings its mesh up with them or takes it down.
+				if (member.poolId !== poolId || !runsMesh(member)) continue;
+				// Its peers (none with sync off), then its welcome, which brings its mesh up with them or takes it down. Asked
+				// of the hub whether or not it looks connected here, as `remeshPool` does.
 				hub.remesh(member.id);
-				hub.rewelcome(member.id, await welcomeFor(member));
+				rewelcome(member);
 			}
 		},
 		sandboxes: {

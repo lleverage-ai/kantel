@@ -49,8 +49,8 @@ export interface PoolServiceOptions {
 	/** Every host as it is now (the service's `ensureHosts`), for how many each pool holds and what may be deleted. */
 	readonly hosts: () => Promise<readonly StoredHost[]>;
 	/**
-	 * A pool's sync was turned on or off: its hosts are brought into its mesh or taken out (`SandboxBackend.updatePool`).
-	 * Absent, nothing is told.
+	 * A call set a pool's sync, on or off, changed or not: its hosts are brought into its mesh or taken out
+	 * (`SandboxBackend.updatePool`). A rejection is answered `unavailable`, the sync kept. Absent, nothing is told.
 	 */
 	readonly syncChanged?: (poolId: string, sync: boolean) => Promise<void>;
 	/** Refuses with `not_supported` while account hosts are off (`KANTEL_ACCOUNT_HOSTS`). */
@@ -160,12 +160,10 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 	async function change(pool: StoredPool, body: computeSchema.UpdatePoolBody): Promise<computeSchema.Pool> {
 		// Past every default the owner has had, so it is the default whatever the clocks of the gateways that made those.
 		const latest = Math.max(now(), ...(await poolsOf(pool.owner)).map((other) => (other.defaultAt ?? 0) + 1));
-		let synced: boolean | undefined;
 		const changed = await naming(pool.owner, body.name ?? pool.name, () =>
 			store.pools.update(pool.id, (current) => {
 				const { sync: _was, ...rest } = current;
 				const sync = body.sync ?? current.sync === true;
-				synced = sync === (current.sync === true) ? undefined : sync;
 				return {
 					...rest,
 					...(body.name === undefined ? {} : { name: body.name }),
@@ -175,8 +173,18 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			}),
 		);
 		if (changed === undefined) throw new KantelError("not_found", "No such pool");
-		// Its hosts are told once it is written: each reads the pool's sync as it is then, so a later change tells them again.
-		if (synced !== undefined) await options.syncChanged?.(pool.id, synced).catch(() => undefined);
+		// Its hosts are told once it is written, each reading the pool's sync as it is then, whenever a call sets it, changed
+		// or not: a call whose telling failed is answered so, and the same call again tells them again.
+		if (body.sync !== undefined && options.syncChanged !== undefined) {
+			try {
+				await options.syncChanged(pool.id, changed.sync === true);
+			} catch (error) {
+				throw new KantelError(
+					"unavailable",
+					`The pool's sync is saved, but its hosts couldn't all be told (${error instanceof Error ? error.message : String(error)}): try again`,
+				);
+			}
+		}
 		return viewOf(changed);
 	}
 

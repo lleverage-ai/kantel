@@ -201,9 +201,11 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		const store = await make();
 		const { backend } = hostsBackend();
 		const pools: { readonly poolId: string; readonly sync: boolean }[] = [];
+		let refuse = false;
 		const { api, root, tom } = setup(store, {
 			...backend,
 			updatePool: async (poolId, change) => {
+				if (refuse) throw new Error("the registry is away");
 				pools.push({ poolId, ...change });
 			},
 		});
@@ -218,17 +220,24 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 
 		expect(await root.updatePool("ci", { sync: true })).toMatchObject({ sync: true });
 		expect(await api.service.poolSync(ci.id)).toBe(true);
-		// A change that leaves it as it was tells nothing; a rename keeps it.
-		expect(await root.updatePool("ci", { sync: true, name: "web" })).toMatchObject({ name: "web", sync: true });
+		// A rename keeps it, and tells nothing.
+		expect(await root.updatePool("ci", { name: "web" })).toMatchObject({ name: "web", sync: true });
 		expect(await root.updatePool("web", { sync: false })).toMatchObject({ sync: false });
 		expect(await api.service.poolSync(ci.id)).toBe(false);
 		expect(pools).toEqual([
 			{ poolId: ci.id, sync: true },
 			{ poolId: ci.id, sync: false },
 		]);
+		// A telling that fails is answered so, the sync kept; the same call again tells them again.
+		refuse = true;
+		expect((await failure(root.updatePool("web", { sync: true }))).code).toBe("unavailable");
+		expect(await api.service.poolSync(ci.id)).toBe(true);
+		refuse = false;
+		expect(await root.updatePool("web", { sync: true })).toMatchObject({ sync: true });
+		expect(pools.at(-1)).toEqual({ poolId: ci.id, sync: true });
 		expect((await root.listPools()).items.map((pool) => [pool.name, pool.sync])).toEqual([
 			["default", false],
-			["web", false],
+			["web", true],
 			["builds", true],
 		]);
 		expect(await api.service.poolSync("pool_gone")).toBe(false);

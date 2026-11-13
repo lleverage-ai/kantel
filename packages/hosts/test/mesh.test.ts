@@ -47,10 +47,21 @@ function setup() {
 		publicUrl: "https://kantel.test",
 	});
 	service.useJoinTokens(joinTokenSpender(api.store));
+	/**
+	 * For a test: a read of a pool's sync answers what it read only once `hold` settles (a slow read), and fails while
+	 * `fail` is set.
+	 */
+	const gate: { hold?: Promise<void>; fail?: boolean; reads: number } = { reads: 0 };
 	service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: async () => undefined,
-		poolSync: (poolId) => api.service.poolSync(poolId),
+		poolSync: async (poolId) => {
+			if (gate.fail === true) throw new Error("the compute store is away");
+			const sync = await api.service.poolSync(poolId);
+			gate.reads += 1;
+			await gate.hold;
+			return sync;
+		},
 	});
 	closers.push(
 		() => service.close(),
@@ -72,7 +83,7 @@ function setup() {
 		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 		return host;
 	};
-	return { service, api, root, join };
+	return { service, api, root, join, gate };
 }
 
 const welcomes = (host: FakeHost): HostWelcome[] =>
@@ -231,6 +242,48 @@ describe("Pool meshes", () => {
 		await root.updatePool("ci", { name: "builds" });
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(a.sent.length).toBe(sent);
+	});
+
+	it("welcomes a host again whose pool's sync was turned off while its hello was being answered", async () => {
+		const { root, join, service, gate } = setup();
+		await root.createPool({ name: "ci", sync: true });
+		await join("ci", meshOf(1));
+		const token = await root.createHostJoinToken({ pool: "ci" });
+		const { hostId } = await service.register({ token: token.token, facts: facts() });
+		const b = new FakeHost(service, hostId, [HOST_FEATURES.mesh]);
+		b.moreFacts = { mesh: meshOf(2) };
+		// Its welcome reads sync on, and is held until after sync is turned off.
+		let release: () => void = () => undefined;
+		gate.hold = new Promise((resolve) => {
+			release = resolve;
+		});
+		const before = gate.reads;
+		b.connect();
+		await vi.waitFor(() => expect(gate.reads).toBeGreaterThanOrEqual(before + 2));
+		expect(b.welcomed()).toBe(false);
+		await root.updatePool("ci", { sync: false });
+		gate.hold = undefined;
+		release();
+		// The welcome read before carries the mesh; the one read again once it was sent doesn't.
+		await vi.waitFor(() => expect(welcomes(b).length).toBeGreaterThanOrEqual(2));
+		expect(welcomes(b)[0]?.mesh).toBeDefined();
+		await vi.waitFor(() => expect(lastWelcome(b)?.mesh).toBeUndefined());
+	});
+
+	it("sends no welcome rather than one without the mesh while the mesh can't be read", async () => {
+		const { root, join, gate } = setup();
+		await root.createPool({ name: "ci", sync: true });
+		const a = await join("ci", meshOf(1));
+		const count = welcomes(a).length;
+		gate.fail = true;
+		// A drain welcomes it again: the welcome can't be made, and none is sent, so its mesh stays up.
+		await root.updateHost(a.hostId, { draining: true });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes(a).length).toBe(count);
+		gate.fail = false;
+		await root.updateHost(a.hostId, { draining: false });
+		await vi.waitFor(() => expect(welcomes(a).length).toBe(count + 1));
+		expect(lastWelcome(a)?.mesh).toBeDefined();
 	});
 
 	it("takes a revoked host out of its peers' lists at once", async () => {

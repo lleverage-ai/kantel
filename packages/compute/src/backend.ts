@@ -1010,8 +1010,9 @@ export interface SandboxBackend {
 	 */
 	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
 	/**
-	 * A pool's settings changed: its sync was turned on or off. The backend's hosts in it that run the pool's mesh are
-	 * brought into it or taken out (`ComputeService.poolSync` says which pools have sync on). Absent, nothing to do.
+	 * A pool's sync was set, on or off (changed, or set again by a call that retries one whose telling failed). The
+	 * backend's hosts in it that run the pool's mesh are brought into it or taken out (`ComputeService.poolSync` says
+	 * which pools have sync on). Absent, nothing to do.
 	 */
 	updatePool?(poolId: string, change: { readonly sync: boolean }): Promise<void>;
 	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */

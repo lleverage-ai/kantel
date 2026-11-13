@@ -200,8 +200,7 @@ describe("gateway replicas", () => {
 			return host;
 		};
 		const onA = await meshHost(a.service, 1);
-		await b.node.tick();
-		// A host joining on B: the host on A is sent its peers by A, as B asks.
+		// A host joining on B, before B's refresh has seen the host on A: that one is sent its peers by A, as B asks.
 		const onB = await meshHost(b.service, 2);
 		await vi.waitFor(() =>
 			expect(onA.sent.filter((message) => message.type === "mesh.peers").at(-1)?.peers?.[0]?.hostId).toBe(onB.hostId),
