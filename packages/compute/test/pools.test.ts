@@ -589,6 +589,38 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		);
 		expect(made.message).toBe(created.message);
 		expect(await store.sandboxes.list({ accountId: there.accountId })).toHaveLength(count);
+
+		// Its source gone, the stub's ref no longer tells its host: the pool it was taken in, kept with it, still does.
+		await tom.deleteSandbox(source.id);
+		const later = await tom.createSandbox({ type: "isolate", autoStopMinutes: null, wait: true });
+		expect(await tom.upgradeSandbox(later.id, { from: saved.id })).toMatchObject({
+			type: "microvm",
+			upgradedFrom: { snapshotId: saved.id },
+		});
+	});
+
+	it("upgrades nothing into a snapshot whose host has moved to the isolate's pool since it was taken", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { root, tom } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		const source = await tom.createSandbox({ type: "microvm", autoStopMinutes: null, wait: true });
+		const saved = await tom.saveSnapshot({ name: "golden", sandboxId: source.id });
+		await tom.deleteSandbox(source.id);
+		await store.snapshots.update(saved.id, (current) => ({ ...current, ref: `${STUB_HOST_ID}/${current.ref}` }));
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		await root.updateHost(STUB_HOST_ID, { pool: ci.id });
+		await root.updateHost(STUB_HOST_ID, { draining: false });
+		// The isolate is in ci with the snapshot's host, but the snapshot stays in the pool it was taken in, as for a create.
+		const isolate = await tom.createSandbox({ type: "isolate", pool: "ci", autoStopMinutes: null, wait: true });
+		const before = await store.sandboxes.get(isolate.id);
+		const refused = await failure(tom.upgradeSandbox(isolate.id, { from: saved.id }));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.details).toMatchObject({ reason: "host_unavailable" });
+		expect(refused.message).toContain("The snapshot is in pool default, and the host holding it is in pool ci now");
+		expect(await store.sandboxes.get(isolate.id)).toEqual(before);
+		const patched = await failure(tom.updateSandbox(isolate.id, { autoUpgrade: true, autoUpgradeFrom: "golden" }));
+		expect(patched.message).toBe(refused.message);
 	});
 
 	it("keeps a snapshot to the pool it was taken in, and makes nothing from it once its host is in another", async () => {
