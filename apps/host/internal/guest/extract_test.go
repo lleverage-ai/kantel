@@ -342,6 +342,59 @@ func TestExtractTarIntoRealDir(t *testing.T) {
 	})
 }
 
+// The directory an extraction into a real directory holds open is refused unless it is still the one at its path
+// with no link above it: a link put there, or another directory moved there, after the path was checked and before
+// it was opened.
+func TestHeldAtRefusesATargetChangedAsItWasOpened(t *testing.T) {
+	for name, change := range map[string]func(t *testing.T, target string){
+		"a link to it": func(t *testing.T, target string) {
+			if err := os.Rename(target, target+".real"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target+".real", target); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"another directory": func(t *testing.T, target string) {
+			if err := os.Rename(target, target+".old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a link above it": func(t *testing.T, target string) {
+			parent := filepath.Dir(target)
+			if err := os.Rename(parent, parent+".real"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(parent+".real", parent); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "user", "workspace")
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			if err := heldAt(root, target, -1, -1); err != nil {
+				t.Fatalf("unchanged: %v", err)
+			}
+			change(t, target)
+			var refused *errArchive
+			if err := heldAt(root, target, -1, -1); !errors.As(err, &refused) {
+				t.Fatalf("changed: %v", err)
+			}
+		})
+	}
+}
+
 // The agent's route extracts a staged tar into its target and deletes the tar; a refused one is a 400 that says why,
 // and its tar goes too.
 func TestExtractArchiveRoute(t *testing.T) {

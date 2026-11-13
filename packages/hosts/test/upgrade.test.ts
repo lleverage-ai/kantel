@@ -98,6 +98,8 @@ class Host {
 	snapshotFiles?: Held["files"];
 	/** `sandbox.files.extract` as a guest agent from before `realTarget`: it goes through a link at or above its target. */
 	olderAgent = false;
+	/** A link put in the microVM as `sandbox.files.extract` starts, by what runs in a snapshot restored with its memory. */
+	linkOnExtract?: { readonly path: string; readonly target: string };
 	/** The next `sandbox.upgrade.thaw` is done, but answered only once this settles. */
 	holdThaw?: Promise<void>;
 	/** How long a file read takes to answer, in milliseconds, and the most answered at once so far. */
@@ -365,6 +367,9 @@ class Host {
 				const archive = sandbox?.files.get(String(p.archive))?.data;
 				if (sandbox === undefined || archive === undefined) return fail({ code: "not_found", message: "no archive" });
 				sandbox.files.delete(String(p.archive));
+				if (this.linkOnExtract !== undefined) {
+					sandbox.files.set(this.linkOnExtract.path, { kind: "symlink", target: this.linkOnExtract.target });
+				}
 				// A link at or above the target: refused when asked for a real one, else gone through, as the guest's
 				// extractor does.
 				let target = "";
@@ -1408,6 +1413,36 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 				expect(text(isolates.sandboxes.get(sandbox.id)?.files.get("notes.md")?.data)).toBe("# notes\n");
 			});
 		}
+	}
+
+	for (const olderAgent of [false, true]) {
+		it(`refuses a link put at /home/user/workspace as the files go in, the isolate kept${olderAgent ? ", its guest agent older" : ""}`, async () => {
+			const { root, service, isolates, holder, sandbox } = await movingInto(
+				new Map<string, HeldFile>([
+					["/home", dir],
+					["/home/user", dir],
+					["/home/user/workspace", dir],
+					["/opt", dir],
+					["/opt/project", dir],
+				]),
+				olderAgent,
+			);
+			holder.linkOnExtract = { path: "/home/user/workspace", target: "/opt/project" };
+			const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
+			expect(refused.status).toBe(400);
+			expect(refused.message).toContain("/home/user/workspace");
+			expect(refused.message).toContain("is a symbolic link");
+			// An older agent went through it, in the microVM deleted for it.
+			expect(holder.methods()).toContain("sandbox.files.extract");
+			expect(holder.sandboxes.has(sandbox.id)).toBe(false);
+			expect(holder.methods()).not.toContain("sandbox.exec");
+			expect(isolates.frozen.size).toBe(0);
+			expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({
+				tier: "isolate",
+				hostId: isolates.hostId,
+			});
+			expect(text(isolates.sandboxes.get(sandbox.id)?.files.get("notes.md")?.data)).toBe("# notes\n");
+		});
 	}
 
 	it("lays the files over a real /home/user/workspace the snapshot has, asking its host for a real target", async () => {

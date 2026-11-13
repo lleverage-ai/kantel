@@ -1808,7 +1808,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * it, as a snapshot may have: the isolate's files would be extracted through it to somewhere else and the upgrade
 	 * would still succeed. Read from its host's listing, which every guest agent answers without following a link, so it
 	 * holds for a snapshot whose agent (run from its own image or memory) is older than the extraction's own check
-	 * (`realTarget`). The first directory missing ends it: the extraction makes the rest.
+	 * (`realTarget`); read again once the files are in, for a link put there meanwhile. The first directory missing ends
+	 * it: the extraction makes the rest.
 	 */
 	const realWorkspace = async (sandboxId: string, hostId: string): Promise<void> => {
 		let at = "";
@@ -2698,6 +2699,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					);
 					await realWorkspace(sandboxId, target.id);
 					moved = await moveFiles(sandboxId, listing, source.hostId, target.id);
+					// Again once they are in: a guest agent older than `realTarget` follows a link what runs in the snapshot put
+					// there meanwhile, and the microVM is deleted with whatever went through it.
+					await realWorkspace(sandboxId, target.id);
 					const linked = await onHost<HostExecResult>(target.id, HostMethods.exec, {
 						sandboxId,
 						argv: ["sh", "-c", UPGRADE_LINK],

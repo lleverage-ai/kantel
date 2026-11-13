@@ -65,15 +65,17 @@ func (s *Server) extractArchive(w http.ResponseWriter, r *http.Request) {
 // but nothing here relies on that: no link is ever followed). An existing file or link is replaced, never written
 // through; an existing directory is kept. Modes are kept but setuid and setgid, and so are modification times. A link
 // at target or above it is followed, as for any path a caller names: an upload into /workspace on an upgraded microVM
-// goes through its link.
+// goes through its link. The target is held open as it is extracted into (os.Root), so nothing written leaves it,
+// whatever is changed meanwhile.
 func ExtractTar(archive, target string, uid, gid int) error {
 	return extractTar(archive, target, uid, gid, false)
 }
 
 // ExtractTarIntoRealDir is ExtractTar into a target that is a directory all the way down from /: a link at target or
 // at any directory above it, or something there that isn't a directory, is refused before anything is written, so
-// nothing goes somewhere else a link there points at. An upgrade's files go in this way, into a /home/user/workspace a
-// snapshot laid out.
+// nothing goes somewhere else a link there points at. The directory held is checked to be the one at that path once
+// it is open, so a link put there meanwhile is refused too. An upgrade's files go in this way, into a
+// /home/user/workspace a snapshot laid out, which what runs in it may change.
 func ExtractTarIntoRealDir(archive, target string, uid, gid int) error {
 	return extractTar(archive, target, uid, gid, true)
 }
@@ -91,10 +93,20 @@ func extractTar(archive, target string, uid, gid int, realTarget bool) error {
 	if err := mkdir(target, uid, gid); err != nil {
 		return err
 	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if realTarget {
+		if err := heldAt(root, target, uid, gid); err != nil {
+			return err
+		}
+	}
 	links := map[string]bool{}
 	type dirTime struct {
-		path string
-		at   time.Time
+		rel string
+		at  time.Time
 	}
 	var dirTimes []dirTime
 	tr := tar.NewReader(f)
@@ -121,40 +133,39 @@ func extractTar(archive, target string, uid, gid int, realTarget bool) error {
 		if links[rel] {
 			return archiveRefusal("%s replaces the archive's own symbolic link", h.Name)
 		}
-		dest := filepath.Join(target, rel)
 		// Never through a link, the archive's or one already there: the tar sits in the sandbox, where what is in it
 		// could change after Kantel checked it, so nothing about it is trusted to stay inside.
-		if err := dirsUnder(target, filepath.Dir(rel), uid, gid); err != nil {
+		if err := dirsUnder(root, target, filepath.Dir(rel), uid, gid); err != nil {
 			return err
 		}
 		switch h.Typeflag {
 		case tar.TypeDir:
-			info, err := os.Lstat(dest)
+			info, err := root.Lstat(rel)
 			switch {
 			case err == nil && info.IsDir():
 			case err == nil:
-				if err := os.Remove(dest); err != nil {
+				if err := root.Remove(rel); err != nil {
 					return err
 				}
 				fallthrough
 			default:
-				if err := os.Mkdir(dest, 0o700); err != nil {
+				if err := root.Mkdir(rel, 0o700); err != nil {
 					return err
 				}
 			}
-			if err := os.Lchown(dest, uid, gid); err != nil {
+			if err := root.Lchown(rel, uid, gid); err != nil {
 				return err
 			}
-			if err := os.Chmod(dest, dirMode(h.Mode)); err != nil {
+			if err := root.Chmod(rel, dirMode(h.Mode)); err != nil {
 				return err
 			}
-			dirTimes = append(dirTimes, dirTime{dest, h.ModTime})
+			dirTimes = append(dirTimes, dirTime{rel, h.ModTime})
 		case tar.TypeReg, tar.TypeCont:
-			if err := replaceable(dest, h.Name); err != nil {
+			if err := replaceable(root, rel, h.Name); err != nil {
 				return err
 			}
 			// O_EXCL: what was there is gone, so a link put back meanwhile isn't written through.
-			out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			out, err := root.OpenFile(rel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 			if err != nil {
 				return err
 			}
@@ -165,27 +176,27 @@ func extractTar(archive, target string, uid, gid int, realTarget bool) error {
 			if err != nil {
 				return err
 			}
-			if err := os.Lchown(dest, uid, gid); err != nil {
+			if err := root.Lchown(rel, uid, gid); err != nil {
 				return err
 			}
 			// After the chown, which would clear setuid and setgid anyway; neither is kept.
-			if err := os.Chmod(dest, os.FileMode(h.Mode).Perm()); err != nil {
+			if err := root.Chmod(rel, os.FileMode(h.Mode).Perm()); err != nil {
 				return err
 			}
 			if !h.ModTime.IsZero() {
-				_ = os.Chtimes(dest, h.ModTime, h.ModTime)
+				_ = root.Chtimes(rel, h.ModTime, h.ModTime)
 			}
 		case tar.TypeSymlink:
 			if !linkInside(rel, h.Linkname) {
 				return archiveRefusal("the archive has a symbolic link that points out: %s -> %s", h.Name, h.Linkname)
 			}
-			if err := replaceable(dest, h.Name); err != nil {
+			if err := replaceable(root, rel, h.Name); err != nil {
 				return err
 			}
-			if err := os.Symlink(h.Linkname, dest); err != nil {
+			if err := root.Symlink(h.Linkname, rel); err != nil {
 				return err
 			}
-			if err := os.Lchown(dest, uid, gid); err != nil {
+			if err := root.Lchown(rel, uid, gid); err != nil {
 				return err
 			}
 			links[rel] = true
@@ -196,8 +207,29 @@ func extractTar(archive, target string, uid, gid int, realTarget bool) error {
 	// Last, as writing into a directory changes its time.
 	for i := len(dirTimes) - 1; i >= 0; i-- {
 		if !dirTimes[i].at.IsZero() {
-			_ = os.Chtimes(dirTimes[i].path, dirTimes[i].at, dirTimes[i].at)
+			_ = root.Chtimes(dirTimes[i].rel, dirTimes[i].at, dirTimes[i].at)
 		}
+	}
+	return nil
+}
+
+// heldAt checks that the directory root holds is still the one at target, a directory all the way down from /: what
+// runs in the sandbox may have put a link at target or above it since it was checked, and opening it would have gone
+// through that. From here every write goes into the directory held, whatever becomes of the path.
+func heldAt(root *os.Root, target string, uid, gid int) error {
+	if err := realDirAll(target, uid, gid); err != nil {
+		return err
+	}
+	held, err := root.Stat(".")
+	if err != nil {
+		return err
+	}
+	there, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(held, there) {
+		return archiveRefusal("%s changed as it was opened; nothing is extracted into it", target)
 	}
 	return nil
 }
@@ -241,38 +273,38 @@ func linkInside(rel, target string) bool {
 	return true
 }
 
-// dirsUnder makes the directories of rel (a clean relative path, "." for none) under target, refusing any that is
-// there as a symbolic link or not a directory, so nothing written under them goes elsewhere.
-func dirsUnder(target, rel string, uid, gid int) error {
+// dirsUnder makes the directories of rel (a clean relative path, "." for none) in root, which is at shown, refusing
+// any that is there as a symbolic link or not a directory, so nothing written under them goes elsewhere.
+func dirsUnder(root *os.Root, shown, rel string, uid, gid int) error {
 	if rel == "." {
 		return nil
 	}
-	at := target
+	at := ""
 	for _, part := range strings.Split(rel, "/") {
 		at = filepath.Join(at, part)
-		info, err := os.Lstat(at)
+		info, err := root.Lstat(at)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			if err := os.Mkdir(at, 0o755); err != nil {
+			if err := root.Mkdir(at, 0o755); err != nil {
 				return err
 			}
-			if err := os.Lchown(at, uid, gid); err != nil {
+			if err := root.Lchown(at, uid, gid); err != nil {
 				return err
 			}
 		case err != nil:
 			return err
 		case info.Mode()&os.ModeSymlink != 0:
-			return archiveRefusal("%s is a symbolic link; nothing is extracted through one", at)
+			return archiveRefusal("%s is a symbolic link; nothing is extracted through one", filepath.Join(shown, at))
 		case !info.IsDir():
-			return archiveRefusal("%s isn't a directory", at)
+			return archiveRefusal("%s isn't a directory", filepath.Join(shown, at))
 		}
 	}
 	return nil
 }
 
-// replaceable clears dest for a file or link: what is there (a file, a link) is removed, but not a directory.
-func replaceable(dest, name string) error {
-	info, err := os.Lstat(dest)
+// replaceable clears rel in root for a file or link: what is there (a file, a link) is removed, but not a directory.
+func replaceable(root *os.Root, rel, name string) error {
+	info, err := root.Lstat(rel)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -282,7 +314,7 @@ func replaceable(dest, name string) error {
 	if info.IsDir() {
 		return archiveRefusal("the archive has %s where a directory is", name)
 	}
-	return os.Remove(dest)
+	return root.Remove(rel)
 }
 
 // dirMode is a directory entry's mode: its permissions and sticky bit (the agent, as root, writes into it whatever
@@ -302,7 +334,12 @@ func realDirAll(dir string, uid, gid int) error {
 	if rel == "" {
 		rel = "."
 	}
-	return dirsUnder("/", rel, uid, gid)
+	top, err := os.OpenRoot("/")
+	if err != nil {
+		return err
+	}
+	defer top.Close()
+	return dirsUnder(top, "/", rel, uid, gid)
 }
 
 // mkdirAllOwned makes dir and what it needs above it, each one it makes owned by uid:gid.

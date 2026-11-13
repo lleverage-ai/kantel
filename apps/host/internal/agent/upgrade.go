@@ -243,6 +243,11 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 	if err != nil {
 		return undo(fmt.Errorf("moving the isolate's files into the microVM: %w", err))
 	}
+	// Again once they are in: a guest agent older than RealTarget follows a link what runs in the snapshot put there
+	// meanwhile, and the microVM is deleted with whatever went through it.
+	if err := realWorkspace(ctx, mv, p.SandboxID); err != nil {
+		return undo(err)
+	}
 	res, err := mv.Exec(ctx, proto.ExecParams{SandboxID: p.SandboxID, Argv: []string{"sh", "-c", upgradeLink}, User: "root", TimeoutMs: 30_000}, nil)
 	if err == nil && res.ExitCode != 0 {
 		err = fmt.Errorf("exit %d: %s", res.ExitCode, res.Stderr)
@@ -384,8 +389,8 @@ func (h *Host) moveFiles(ctx context.Context, source upgradeSource, streamer Fil
 // directory above it, as a snapshot may have: the isolate's files would be extracted through it to somewhere else and
 // the upgrade would still succeed. Read from the guest's listing, which every guest agent answers without following a
 // link, so it holds for a snapshot whose agent is older than the extractor's own check (RealTarget), which an agent
-// running from the snapshot's image or memory may be. The first directory missing ends it: the extraction makes the
-// rest.
+// running from the snapshot's image or memory may be; read again once the files are in, for a link put there
+// meanwhile. The first directory missing ends it: the extraction makes the rest.
 func realWorkspace(ctx context.Context, mv Tier, id string) error {
 	at := "/"
 	for _, name := range strings.Split(strings.TrimPrefix(proto.UpgradeWorkspace, "/"), "/") {
