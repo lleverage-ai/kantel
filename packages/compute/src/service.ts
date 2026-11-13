@@ -2673,7 +2673,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const writes: Promise<void>[] = [];
 			hostMemory.clear();
 			hostMeshAddress.clear();
-			// Mesh addresses are up only in pools with sync on: a host in another is no holder to fetch from.
+			// Mesh addresses are up only in pools with sync on: a host in another is no holder to fetch from (taken below).
 			const syncing = new Set(allPools.filter((pool) => pool.sync === true).map((pool) => pool.id));
 			// Each owner's pools, read in the one statement above; an owner with none gets its default made.
 			const ownerPools = new Map<string, Promise<StoredPool[]>>();
@@ -2709,9 +2709,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
-				if (host.meshAddress !== undefined && host.poolId !== undefined && syncing.has(host.poolId)) {
-					hostMeshAddress.set(host.id, host.meshAddress);
-				}
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
@@ -2842,6 +2839,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const host of capabilities.hosts) {
 				const record = byId.get(host.id);
 				if (record === undefined || record.state === "revoked") continue;
+				// Its mesh address, given in the registry's pool: only while that is the pool here too (a move the registry
+				// hasn't taken yet has an address in the pool it left) and it has sync on.
+				if (host.meshAddress !== undefined && host.poolId === record.poolId && syncing.has(record.poolId ?? "")) {
+					hostMeshAddress.set(host.id, host.meshAddress);
+				}
 				// The registry keeps each host's pool too, for what runs on the hosts (the mesh): told where it differs.
 				if (record.poolId !== undefined && host.poolId !== record.poolId) {
 					tellPool(record.id, record.poolId, host.poolId !== undefined);
