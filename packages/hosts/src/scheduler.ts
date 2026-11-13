@@ -12,7 +12,10 @@
  * scratch while that's being made, or when the host keeps templates per size).
  *
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
- * VM); then the least full once it is placed (`fullness`): the larger of the share of its memory taken and the share of
+ * VM); then a host that holds the head of every sticky disk the sandbox attaches (`holdsHeads`), so it starts with a
+ * warm cache rather than its host's older version or an empty disk (docs/design/disk-store.md, 2d). That is a preference
+ * only: a host without the heads starts from what it has and fetches them in the background. Then the least full once
+ * it is placed (`fullness`): the larger of the share of its memory taken and the share of
  * its vCPUs booked, so sandboxes spread over hosts of different sizes in proportion, and a host whose CPUs are all booked
  * by a few large sandboxes isn't picked for having memory left; then the least loaded for its CPUs. vCPUs are only
  * ranked on, never refused on: a host admits by memory and disk, and a booked vCPU is a share of its CPU time, not a
@@ -47,6 +50,31 @@ export interface PlacementRequest {
 	readonly owner?: string;
 	/** Labels the host must carry, such as `{"region": "eu"}`. */
 	readonly labels?: { readonly [key: string]: string };
+	/** The sticky disks it attaches, each with its head where it has one: a host holding every head is preferred. */
+	readonly stickyDisks?: readonly StickyHead[];
+}
+
+/** A sticky disk a sandbox attaches, and its head (`version`): absent for a disk with no version yet. */
+export interface StickyHead {
+	readonly diskId: string;
+	readonly version?: string;
+}
+
+/**
+ * Whether `host` last reported holding the head of every sticky disk in `disks` (`HostCapacity.stickyDisks`). A disk
+ * with no head yet asks for nothing, so with none every host holds them all; a host that doesn't say what it holds
+ * holds none.
+ */
+export function holdsHeads(host: HostRecord, disks: readonly StickyHead[] | undefined): boolean {
+	const held = host.capacity?.stickyDisks;
+	return (disks ?? []).every(
+		(disk) =>
+			disk.version === undefined ||
+			held?.some(
+				(holding) =>
+					holding.diskId === disk.diskId && holding.versions.some((version) => version.version === disk.version),
+			) === true,
+	);
 }
 
 export interface Candidate {
@@ -257,6 +285,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		custom: boolean;
 		free: number;
 		owner: boolean;
+		heads: boolean;
 		fullness: number;
 	}[] = [];
 	for (const candidate of candidates) {
@@ -319,6 +348,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			custom: shaped.custom,
 			free: freeMemory,
 			owner: request.owner !== undefined && candidate.owners.has(request.owner),
+			heads: holdsHeads(host, request.stickyDisks),
 			fullness: fullness(candidate, size, freeMemory),
 		});
 	}
@@ -329,6 +359,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	fits.sort(
 		(a, b) =>
 			Number(b.owner) - Number(a.owner) ||
+			Number(b.heads) - Number(a.heads) ||
 			a.fullness - b.fullness ||
 			b.free - a.free ||
 			loadPerCpu(a.candidate.host) - loadPerCpu(b.candidate.host) ||

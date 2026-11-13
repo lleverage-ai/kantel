@@ -2774,6 +2774,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						...(shape === undefined ? {} : { shape }),
 						...(input.owner === undefined ? {} : { owner: input.owner }),
 						...(input.labels === undefined ? {} : { labels: input.labels }),
+						// A host holding each disk's head (the version asked for) is preferred.
+						...(sticky ? { stickyDisks: input.stickyDisks } : {}),
 					},
 					candidates,
 				);

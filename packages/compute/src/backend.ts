@@ -228,6 +228,11 @@ export interface BackendStickyDisk {
 	readonly diskId: string;
 	readonly path: string;
 	readonly sizeGiB: number;
+	/**
+	 * The disk's head, where it has one: a host holding it is preferred, and attaches it; another attaches its newest
+	 * version (or a new disk) and, where it syncs, fetches the head in the background for the next sandbox.
+	 */
+	readonly version?: string;
 }
 
 /** A sandbox's sticky disk, as the backend answers it. */

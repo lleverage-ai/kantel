@@ -185,7 +185,7 @@ import type {
 	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
-import { OPERATOR_POOLS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
+import { OPERATOR_POOLS, STICKY_PREFETCH_MS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
@@ -2401,7 +2401,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (disk === undefined || disk.deletedAt !== undefined) {
 				throw new KantelError("not_found", `The sticky disk ${attached.name} was deleted`);
 			}
-			specs.push({ diskId: disk.id, path: attached.path, sizeGiB: disk.sizeGb });
+			// Its head, which placement prefers a host holding (docs/design/disk-store.md, 2d).
+			specs.push({
+				diskId: disk.id,
+				path: attached.path,
+				sizeGiB: disk.sizeGb,
+				...(disk.head === undefined ? {} : { version: disk.head }),
+			});
 		}
 		return { stickyDisks: specs };
 	}
@@ -2579,9 +2585,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const report = reports.get(version.hostId);
 				const digest = report?.digests.get(`${disk.id}/${version.id}`);
 				if (version.mapDigest === undefined && digest !== undefined) {
-					await store.stickyDiskVersions.update(version.id, (current) =>
+					const given = await store.stickyDiskVersions.update(version.id, (current) =>
 						current.mapDigest === undefined ? { ...current, mapDigest: digest } : undefined,
 					);
+					// A head committed before its map was made is sent to its disk's hosts now it can be fetched. Whether it is the
+					// head is read again there: one committed since this pass read the disk is too.
+					if (given !== undefined) keepGoing(prefetchStickyHead(disk.id, version.id));
 				}
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
@@ -2596,6 +2605,62 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await diskHolders.forget("sticky", disk.id, version.id);
 			}
 		}
+	}
+
+	/**
+	 * Writes down that a sandbox with sticky disks started on its host (`StoredStickyDisk.ranOn`), so each new head is sent
+	 * there (`prefetchStickyHead`): only where the host's entry is older than `STICKY_RAN_EVERY_MS`, so most starts only
+	 * read, and entries past `STICKY_PREFETCH_MS` go as it writes (`stickyRunNoted`). Through `StickyDiskWrites`, which
+	 * the account fence leaves alone, so a note landing as the account closes never removes the disk or its tombstone.
+	 */
+	async function noteStickyRuns(sandbox: StoredSandbox): Promise<void> {
+		const hostId = sandbox.hostId;
+		if (options.stickyDisks !== true || hostId === undefined) return;
+		for (const attached of sandbox.stickyDisks ?? [])
+			await store.stickyDiskWrites.noteRun(attached.diskId, hostId, now());
+	}
+
+	/**
+	 * Sends a sticky disk's head to the hosts in its pool that started a sandbox with it within `STICKY_PREFETCH_MS`
+	 * (`StoredStickyDisk.ranOn`), so the next sandbox there starts warm (docs/design/disk-store.md, 2d): `disk.fetch` with
+	 * its pool's holders and a grant, as `fetchHostStickyDisk` sends it. Only while the version is still the head, where
+	 * the disk's pool syncs, and once the head has its block map's digest, which the fetch checks against (a commit whose
+	 * map took longer is sent once the sweep has it). A host that holds or is fetching it, that is away or draining, or
+	 * that doesn't sync is left out, and nothing waits for the fetches, which progress in the hosts' reports.
+	 */
+	async function prefetchStickyHead(diskId: string, versionId: string): Promise<void> {
+		const fetchDisk = backend.fetchDisk;
+		if (fetchDisk === undefined) return;
+		const disk = await store.stickyDisks.get(diskId);
+		if (disk === undefined || disk.deletedAt !== undefined || disk.head !== versionId || disk.poolId === undefined)
+			return;
+		const since = now() - STICKY_PREFETCH_MS;
+		const recent = Object.entries(disk.ranOn ?? {})
+			.filter(([, at]) => at > since)
+			.map(([hostId]) => hostId);
+		if (recent.length === 0) return;
+		const [version, pool] = await Promise.all([store.stickyDiskVersions.get(versionId), store.pools.get(disk.poolId)]);
+		if (version?.mapDigest === undefined || pool?.sync !== true) return;
+		const hosts = new Map((await ensureHosts()).map((host) => [host.id, host]));
+		const holding = new Set(
+			((await diskHolders.holdersOf("sticky", diskId)).get(versionId) ?? [])
+				.filter((holder) => holder.state !== "deleting")
+				.map((holder) => holder.hostId),
+		);
+		const request = { kind: "sticky", objectId: diskId, version: versionId };
+		await Promise.all(
+			recent.map(async (hostId) => {
+				const host = hosts.get(hostId);
+				if (host?.state !== "online" || host.poolId !== disk.poolId || holding.has(hostId)) return;
+				// One host's refusal (it doesn't sync, it went away, nothing it can reach holds the head) is no other's.
+				try {
+					const location = await diskHolders.locate(hostId, request);
+					if (location.holders.length > 0) await fetchDisk(hostId, { ...request, ...location });
+				} catch {
+					// Its next sandbox starts on the version it has, and fetches the head then.
+				}
+			}),
+		);
 	}
 
 	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
@@ -5891,6 +5956,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
+		// Its host uses its sticky disks: sent their new heads from now on.
+		if (next.stickyDisks !== undefined && next.stickyDisks.length > 0) keepGoing(noteStickyRuns(next));
 		await emit("sandbox.running", next.accountId, {
 			sandbox: next,
 			data: { previousState: "starting", ...(startup === undefined ? {} : { startup }) },
@@ -10641,6 +10708,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			// Its host holds it from now; its reports keep that so (`recordStickyHoldings`).
 			await diskHolders.recordCommit("sticky", disk.id, recorded.id, recorded.hostId);
+			// The hosts that use the disk fetch it now, not when their next sandbox asks.
+			keepGoing(prefetchStickyHead(disk.id, recorded.id));
 			return stickyVersionView(recorded);
 		},
 
