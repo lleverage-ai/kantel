@@ -122,7 +122,7 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBe(false);
 	});
 
-	it("finds what other hosts' placements still have on a host: an upgrade's microVM, or an isolate to delete", async () => {
+	it("finds everything on a host in one read: its placements, an upgrade's microVM, an isolate to delete", async () => {
 		const store = await open();
 		const upgrade = { operationId: "op1", target: "host_b", phase: "copy" as const };
 		await store.putPlacement({ ...placement("s1", "host_a", 1), tier: "isolate", upgrade });
@@ -130,23 +130,30 @@ function behaves(open: () => Promise<HostStore>) {
 			...placement("s2", "host_a", 2),
 			upgrade: { ...upgrade, target: "host_a", phase: "host" },
 		});
+		// IDs that start with another's, or match it but for a LIKE wildcard, aren't it.
 		await store.putPlacement({ ...placement("s3", "host_bb", 3), upgrade: { ...upgrade, target: "host_bb" } });
-		await store.putPlacement({ ...placement("s4", "host_c", 4), cleanup: { hostId: "host_d", operationId: "op2" } });
-		expect((await store.heldElsewhere("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
-		expect((await store.heldElsewhere("host_d")).map((p) => p.sandboxId)).toEqual(["s4"]);
-		// A host's own placements, and its own upgrade, aren't another's.
-		expect(await store.heldElsewhere("host_a")).toEqual([]);
-		expect(await store.heldElsewhere("host_c")).toEqual([]);
-		// The handover: the placement moves to the target and its intent ends, in one write.
+		await store.putPlacement({ ...placement("s4", "hostXb", 4), cleanup: { hostId: "hostXc", operationId: "op2" } });
+		await store.putPlacement({ ...placement("s5", "host_c", 5), cleanup: { hostId: "host_d", operationId: "op2" } });
+		await store.putPlacement({ ...placement("s6", "host_e", 6), state: "lost" });
+		const on = async (hostId: string) => (await store.occupying(hostId)).map((p) => p.sandboxId).sort();
+		expect(await on("host_a")).toEqual(["s1", "s2"]);
+		expect(await on("host_b")).toEqual(["s1"]);
+		expect(await on("host_bb")).toEqual(["s3"]);
+		expect(await on("host_d")).toEqual(["s5"]);
+		expect(await on("host_c")).toEqual(["s5"]);
+		expect(await on("hostXc")).toEqual(["s4"]);
+		// A lost one holds nothing.
+		expect(await on("host_e")).toEqual([]);
+		// The handover: the placement moves to the target, its intent ends and the isolate to delete is recorded, in one
+		// write: both hosts are held after it as before.
 		await store.updatePlacement("s1", ({ upgrade: _done, ...rest }) => ({
 			...rest,
 			hostId: "host_b",
 			tier: "microvm",
 			cleanup: { hostId: "host_a", operationId: "op1" },
 		}));
-		expect(await store.heldElsewhere("host_b")).toEqual([]);
-		expect((await store.placementsOn("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
-		expect((await store.heldElsewhere("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		expect(await on("host_b")).toEqual(["s1"]);
+		expect(await on("host_a")).toEqual(["s1", "s2"]);
 	});
 
 	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {

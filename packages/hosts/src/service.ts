@@ -2271,11 +2271,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 		},
 		async holds(hostId) {
-			// What other hosts' placements have here first, then the placements here, one after the other: an upgrade's
-			// handover moves its placement here and ends its intent in one write, so one read before it finds the intent
-			// and one after finds the placement. Read at once, both could miss it.
-			if ((await store.heldElsewhere(hostId)).length > 0) return true;
-			return (await store.placementsOn(hostId)).some((placement) => placement.state !== "lost");
+			// In one read (`occupying`): an upgrade's handover moves its placement from one host to the other and records
+			// the isolate to delete in one write, which one read sees before or after, on either host.
+			return (await store.occupying(hostId)).length > 0;
 		},
 		async revoke(hostId) {
 			const host = await hostOf(hostId);

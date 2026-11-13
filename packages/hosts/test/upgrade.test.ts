@@ -1212,8 +1212,8 @@ describe("a host's report racing an upgrade's handover", () => {
 	});
 });
 
-describe("whether a host holds a sandbox, as an upgrade hands over to it", () => {
-	it("finds the upgrade's microVM whenever its handover lands between the reads", async () => {
+describe("whether a host holds a sandbox, as an upgrade hands over", () => {
+	it("finds the upgrade's microVM on its target, and its isolate on its source, whenever the handover lands", async () => {
 		const upgrading: PlacementRecord = {
 			sandboxId: "sbx_up",
 			hostId: "host_isolates",
@@ -1234,31 +1234,24 @@ describe("whether a host holds a sandbox, as an upgrade hands over to it", () =>
 				tier: "microvm",
 				cleanup: { hostId: "host_isolates", operationId: "op1" },
 			}));
-		for (const when of ["before the other hosts' read", "after the other hosts' read", "after the placements' read"]) {
-			const store = createMemoryHostStore();
-			await store.putPlacement(upgrading);
-			const elsewhere = store.heldElsewhere.bind(store);
-			const placed = store.placementsOn.bind(store);
-			const watched: HostStore = {
-				...store,
-				heldElsewhere: async (hostId) => {
-					if (when === "before the other hosts' read") await handOver(store);
-					const read = await elsewhere(hostId);
-					if (when === "after the other hosts' read") await handOver(store);
-					return read;
-				},
-				placementsOn: async (hostId) => {
-					const read = await placed(hostId);
-					// Where reading the placements first then the intents would miss it.
-					if (when === "after the placements' read") await handOver(store);
-					return read;
-				},
-			};
-			const service = createHostsService({ store: watched, publicUrl: "https://kantel.test" });
-			closers.push(() => service.close());
-			expect(await service.holds("host_vms"), when).toBe(true);
-			// The isolate's host holds its isolate, to delete, once handed over.
-			expect(await service.holds("host_isolates"), when).toBe(true);
+		for (const host of ["host_vms", "host_isolates"]) {
+			for (const when of ["before the read", "after the read"]) {
+				const store = createMemoryHostStore();
+				await store.putPlacement(upgrading);
+				const occupying = store.occupying.bind(store);
+				const watched: HostStore = {
+					...store,
+					occupying: async (hostId) => {
+						if (when === "before the read") await handOver(store);
+						const read = await occupying(hostId);
+						if (when === "after the read") await handOver(store);
+						return read;
+					},
+				};
+				const service = createHostsService({ store: watched, publicUrl: "https://kantel.test" });
+				closers.push(() => service.close());
+				expect(await service.holds(host), `${host}, handed over ${when}`).toBe(true);
+			}
 		}
 	});
 });

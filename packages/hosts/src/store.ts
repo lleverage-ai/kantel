@@ -115,10 +115,11 @@ export interface HostStore {
 	 */
 	placeOnTakingHost(placement: PlacementRecord): Promise<boolean>;
 	/**
-	 * The placements on other hosts that still have something on `hostId`: an upgrade under way whose microVM is (or may
-	 * be) there, or an upgraded isolate there still to be deleted (`cleanup`).
+	 * Everything that has something on `hostId`, in one read: its own placements (a lost one not), and placements on
+	 * other hosts with an upgrade under way whose microVM is (or may be) there, or an upgraded isolate there still to be
+	 * deleted (`cleanup`). One read, so a handover between hosts (one write) is seen on one side of it or the other.
 	 */
-	heldElsewhere(hostId: string): Promise<PlacementRecord[]>;
+	occupying(hostId: string): Promise<PlacementRecord[]>;
 	/**
 	 * Changes a placement as it is now, atomically, as `updateHost` does a host: `change` is given the stored record and
 	 * answers the next (undefined leaves it), and a write that raced another is redone on the newer record. A host's
@@ -138,9 +139,12 @@ export interface HostStore {
 	removePlacementIf(sandboxId: string, should: (placement: PlacementRecord) => boolean): Promise<boolean>;
 }
 
-/** Whether a placement on another host still has something on `hostId`: its upgrade's microVM, or an isolate to delete. */
-function holdsElsewhere(placement: PlacementRecord, hostId: string): boolean {
-	if (placement.hostId === hostId) return false;
+/**
+ * Whether a placement has something on `hostId`: it is there (and not lost), or it is elsewhere with its upgrade's
+ * microVM or an isolate to delete there.
+ */
+function occupies(placement: PlacementRecord, hostId: string): boolean {
+	if (placement.hostId === hostId) return placement.state !== "lost";
 	return placement.upgrade?.target === hostId || placement.cleanup?.hostId === hostId;
 }
 
@@ -204,8 +208,8 @@ export function createMemoryHostStore(): HostStore {
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
 		},
-		async heldElsewhere(hostId) {
-			return [...placements.values()].filter((placement) => holdsElsewhere(placement, hostId)).map(copy);
+		async occupying(hostId) {
+			return [...placements.values()].filter((placement) => occupies(placement, hostId)).map(copy);
 		},
 		async placeOnTakingHost(placement) {
 			const host = hosts.get(placement.hostId);
@@ -417,14 +421,15 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			);
 			return rows.length > 0;
 		},
-		async heldElsewhere(hostId) {
-			// Narrowed in SQL by the host's ID as a JSON string (as a `target`, or a cleanup's `hostId`, which matches the
-			// host's own placements too), then checked exactly.
-			const rows = await driver.query("SELECT data FROM compute_placements WHERE data LIKE ? OR data LIKE ?", [
-				`%"target":${JSON.stringify(hostId)}%`,
-				`%"hostId":${JSON.stringify(hostId)}%`,
-			]);
-			return rows.map((row) => parse<PlacementRecord>(row)).filter((placement) => holdsElsewhere(placement, hostId));
+		async occupying(hostId) {
+			// One statement, so one snapshot. Narrowed by the host's column, and by its ID as a whole JSON string value (a
+			// `target`, or a cleanup's `hostId`: quoted, so an ID that starts another's doesn't match), then checked exactly.
+			const quoted = JSON.stringify(hostId).replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+			const rows = await driver.query(
+				"SELECT data FROM compute_placements WHERE host_id = ? OR data LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\'",
+				[hostId, `%"target":${quoted}%`, `%"hostId":${quoted}%`],
+			);
+			return rows.map((row) => parse<PlacementRecord>(row)).filter((placement) => occupies(placement, hostId));
 		},
 		async updatePlacement(sandboxId, change) {
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
