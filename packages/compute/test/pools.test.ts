@@ -277,6 +277,44 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect((await failure(root.updateHost(STUB_HOST_ID, { pool: "mine" }))).code).toBe("not_found");
 	});
 
+	it("doesn't move a host whose drain was ended (and made again) while its sandboxes were checked", async () => {
+		const store = await make();
+		const made = hostsBackend();
+		let meanwhile: (() => Promise<unknown>) | undefined;
+		const order: string[] = [];
+		const backend: SandboxBackend = {
+			...made.backend,
+			hostHolds: async () => {
+				const run = meanwhile;
+				meanwhile = undefined;
+				await run?.();
+				return false;
+			},
+			updateHost: async (hostId, change) => {
+				// An undrain ends the drain here before the registry takes sandboxes again.
+				if (change.draining === false) order.push(`registry undrained, here ${(await store.hosts.get(hostId))?.state}`);
+				await made.backend.updateHost?.(hostId, change);
+			},
+		};
+		const { root } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		// Undrained and drained again by another call while the move checks the host: the drain it checked under is gone.
+		meanwhile = async () => {
+			await root.updateHost(STUB_HOST_ID, { draining: false });
+			await root.updateHost(STUB_HOST_ID, { draining: true });
+		};
+		const refused = await failure(root.updateHost(STUB_HOST_ID, { pool: "ci" }));
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toContain("undrained meanwhile");
+		expect(order).toEqual(["registry undrained, here online"]);
+		expect((await root.getHost(STUB_HOST_ID)).poolId).toBe(firstPoolId(OPERATOR_POOLS));
+		// Uninterrupted, it moves; the drain's token never shows.
+		const moved = await root.updateHost(STUB_HOST_ID, { pool: "ci" });
+		expect(moved).toMatchObject({ state: "draining", poolId: ci.id });
+		expect(moved).not.toHaveProperty("drainToken");
+	});
+
 	it("counts a create still under way on the host as holding it", async () => {
 		const store = await make();
 		const made = hostsBackend();

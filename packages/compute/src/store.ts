@@ -621,7 +621,15 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 };
 
 /** A host, its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`). */
-export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & { readonly diskUsage?: BackendDiskUsage };
+export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
+	readonly diskUsage?: BackendDiskUsage;
+	/**
+	 * This drain's own token, while it is `draining`: written once its registry has stopped taking sandboxes, and gone
+	 * (here first) before an undrain lets the registry take them again. A move to another pool lands only with the token
+	 * its check of the host's sandboxes was made under, so admission stayed shut from the check to the move.
+	 */
+	readonly drainToken?: string;
+};
 
 export interface StoredJoinToken {
 	readonly id: string;

@@ -1290,7 +1290,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// as it is now, still this host's and of the sandbox's tier: an upgrade's handover since stands.
 				const tier = (sandbox as { tier?: unknown }).tier ?? placement.tier;
 				if (sandbox.state === "deleted") {
-					await store.removePlacementIf(sandbox.id, (latest) => latest.hostId === hostId && latest.tier === tier);
+					await forgetPlacement(sandbox.id, (latest) => latest.hostId === hostId && latest.tier === tier);
 					return;
 				}
 				await applyReport(sandbox.id, hostId, tier, sandbox, await store.getHost(hostId));
@@ -2016,12 +2016,46 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return undefined;
 			}
 		}
+		// What was left of a sandbox deleted since (`forgetPlacement`) goes with its isolate.
+		if (
+			await store.removePlacementIf(
+				sandboxId,
+				(latest) => latest.hostId === hostId && latest.cleanup?.hostId === hostId,
+			)
+		) {
+			return undefined;
+		}
 		const cleaned = await store.updatePlacement(sandboxId, (latest) => {
 			if (latest.cleanup?.hostId !== hostId) return undefined;
 			const { cleanup: _done, ...placed } = latest;
 			return { ...placed, updatedAt: clock.now() };
 		});
 		return cleaned ?? (await store.getPlacement(sandboxId));
+	};
+
+	/**
+	 * Removes a sandbox's placement (only while `should` says so), but not an isolate an upgrade left on another host
+	 * still to be deleted (`cleanup`): that stays, as the isolate's own record on its host (its `hostId` the cleanup's),
+	 * so the host is held (`holds`) and the isolate deleted when it is back, on any gateway, until `cleanUpSource` has
+	 * done it. Whether it changed anything.
+	 */
+	const forgetPlacement = async (
+		sandboxId: string,
+		should: (placement: PlacementRecord) => boolean = () => true,
+	): Promise<boolean> => {
+		const left = await store.updatePlacement(sandboxId, (latest) => {
+			const owed = latest.cleanup;
+			if (!should(latest) || owed === undefined || owed.hostId === latest.hostId) return undefined;
+			const { upgrade: _upgrade, ...rest } = latest;
+			return { ...rest, hostId: owed.hostId, tier: "isolate", state: "deleting", updatedAt: clock.now() };
+		});
+		if (left !== undefined) {
+			const owedHost = left.hostId;
+			cleanupsDue.set(owedHost, new Set([...(cleanupsDue.get(owedHost) ?? []), sandboxId]));
+			if (hub.connected(owedHost)) runCleanups(owedHost);
+			return true;
+		}
+		return store.removePlacementIf(sandboxId, should);
 	};
 
 	/** The isolates upgrades left on each host, deleted on its next heartbeat (once it is welcomed). */
@@ -2768,7 +2802,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					// Its host was revoked (or removed) by an operator: it never connects again to say, so deleting the sandbox
 					// writes off its placement. That is the operator's decision; nothing here claims the machine is gone.
 					log(`[hosts] sandbox ${sandboxId} written off: its host ${placement.hostId} is revoked`);
-					await store.removePlacement(sandboxId);
+					await forgetPlacement(sandboxId);
 					return;
 				}
 				try {
@@ -2777,7 +2811,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					// Gone on the host already is gone.
 					if (!(error instanceof KantelError && error.code === "not_found")) throw error;
 				}
-				await store.removePlacement(sandboxId);
+				await forgetPlacement(sandboxId);
 			},
 			placement(sandboxId) {
 				return store.getPlacement(sandboxId);

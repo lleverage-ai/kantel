@@ -855,6 +855,55 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(vms.hostId);
 	});
 
+	it("keeps the isolate still to delete holding its host when the upgraded sandbox is deleted, until it is gone", async () => {
+		const store = createMemoryHostStore();
+		const { root, service, hosts } = await setup(
+			[
+				{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+				{ name: "vms", facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract]) },
+			],
+			{ store },
+		);
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		isolates.refuseMethod = (method) =>
+			method === "sandbox.delete" ? { code: "unavailable", message: "disk busy" } : undefined;
+		await root.upgradeSandbox(sandbox.id, {});
+		// The upgraded sandbox goes: its microVM on the other host, its record here; the isolate left stays owed.
+		await root.deleteSandbox(sandbox.id);
+		for (let tries = 0; tries < 100 && vms.sandboxes.has(sandbox.id); tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(vms.sandboxes.has(sandbox.id)).toBe(false);
+		expect(isolates.sandboxes.has(sandbox.id)).toBe(true);
+		expect(await store.getPlacement(sandbox.id)).toMatchObject({
+			hostId: isolates.hostId,
+			cleanup: { hostId: isolates.hostId },
+		});
+		expect(await service.holds(isolates.hostId)).toBe(true);
+		expect(await service.holds(vms.hostId)).toBe(false);
+		// Another gateway (or this one restarted) over the same records finds it too.
+		const other = createHostsService({ store, publicUrl: "https://kantel.test" });
+		closers.push(() => other.close());
+		expect(await other.holds(isolates.hostId)).toBe(true);
+		await root.createPool({ name: "elsewhere" });
+		await root.updateHost(isolates.hostId, { draining: true });
+		expect((await failure(root.updateHost(isolates.hostId, { pool: "elsewhere" }))).code).toBe("conflict");
+
+		// Its host back, the isolate goes, and with it the record: the host may move.
+		isolates.refuseMethod = undefined;
+		await isolates.connect();
+		isolates.heartbeat();
+		for (let tries = 0; tries < 100 && (await store.getPlacement(sandbox.id)) !== undefined; tries++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
+		expect(await store.getPlacement(sandbox.id)).toBeUndefined();
+		expect(await service.holds(isolates.hostId)).toBe(false);
+		expect((await root.updateHost(isolates.hostId, { pool: "elsewhere" })).state).toBe("draining");
+	});
+
 	it("counts the bytes it moves as it reads them, not as they were listed", async () => {
 		const { root, hosts } = await setup(
 			[
