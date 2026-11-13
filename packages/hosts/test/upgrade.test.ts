@@ -411,6 +411,9 @@ class Host {
 			case "sandbox.egress":
 			case "sandbox.env":
 				return answer({ ok: true });
+			case "snapshot.save":
+				if (sandbox === undefined) return fail({ code: "not_found", message: "no such sandbox" });
+				return answer({ id: String(p.snapshotId), sandboxId: id, sizeBytes: 0 });
 			default:
 				return fail({ code: "unsupported", message: `unknown method ${message.method}` });
 		}
@@ -1659,7 +1662,7 @@ describe("upgrading an isolate into a snapshot on kantel-host hosts", () => {
 		const refused = await failure(root.upgradeSandbox(sandbox.id, { from: "project" }));
 		expect(refused.status).toBe(503);
 		expect(refused.message).toBe(created.message);
-		expect(refused.message).toContain("another pool than default");
+		expect(refused.message).toContain("The snapshot is in pool ci, not default");
 		expect(isolates.methods()).not.toContain("sandbox.upgrade.freeze");
 		expect(holder.methods()).not.toContain("sandbox.create");
 		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "isolate", hostId: isolates.hostId });
@@ -1707,5 +1710,78 @@ describe("whether a host holds a sandbox, as an upgrade hands over", () => {
 				expect(await service.holds(host), `${host}, handed over ${when}`).toBe(true);
 			}
 		}
+	});
+});
+
+describe("a fork from an upgraded sandbox's snapshot, its host since moved to another pool", () => {
+	const twoHosts = [
+		{ name: "isolates", facts: factsOf(["isolate"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze]) },
+		{
+			name: "vms",
+			facts: factsOf(["microvm"], [HOST_FEATURES.egressPolicy, HOST_FEATURES.filesExtract, HOST_FEATURES.fileStreams]),
+		},
+	];
+
+	it("is refused, or kept to the snapshot's pool, never recorded in one pool while it runs in another", async () => {
+		const { root, service, hosts } = await setup(twoHosts);
+		const [isolates, vms] = hosts;
+		if (isolates === undefined || vms === undefined) throw new Error("no hosts");
+		// An isolate, its snapshot on its host, then upgraded to a microVM on the other: the first host is left empty,
+		// holding the snapshot.
+		const source = await root.createSandbox({ type: "isolate", wait: true });
+		expect(isolates.sandboxes.has(source.id)).toBe(true);
+		const snapshot = await root.takeSnapshot(source.id, {});
+		await root.upgradeSandbox(source.id, {});
+		expect(vms.sandboxes.has(source.id)).toBe(true);
+		expect(isolates.sandboxes.size).toBe(0);
+		const pool = snapshot.poolId;
+		expect(pool).toBeDefined();
+		const other = await root.createPool({ name: "b" });
+		const move = async (to: string) => {
+			await root.updateHost(isolates.hostId, { draining: true });
+			await root.updateHost(isolates.hostId, { pool: to });
+			await root.updateHost(isolates.hostId, { draining: false });
+		};
+
+		// Moved before the fork is asked for: refused, saying both pools, nothing made.
+		await move(other.id);
+		const refused = await failure(root.forkSandbox(source.id, { snapshotId: snapshot.id }));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.message).toContain("and the host holding it is in pool b now");
+		expect(isolates.sandboxes.size).toBe(0);
+
+		// Moved after the fork read the snapshot's host, before its host admits it: the registry's admission refuses it,
+		// so it isn't made there, and it isn't recorded as running.
+		await move(pool ?? "");
+		const create = service.sandboxes.create.bind(service.sandboxes);
+		let racing = true;
+		service.sandboxes.create = async (input) => {
+			if (racing && input.from !== undefined) {
+				racing = false;
+				await move(other.id);
+			}
+			return create(input);
+		};
+		const [fork] = (await root.forkSandbox(source.id, { snapshotId: snapshot.id, wait: true })).items ?? [];
+		expect(racing).toBe(false);
+		expect(fork?.state).toBe("error");
+		expect(fork?.poolId).toBe(pool);
+		expect(isolates.sandboxes.size).toBe(0);
+		expect(await service.sandboxes.placement(fork?.id ?? "")).toBeUndefined();
+
+		// A live fork, on its source's host, is admitted only in the pool it is kept to, and not while that host drains:
+		// nothing is asked of the host, and nothing is placed.
+		const before = vms.methods().length;
+		await expect(service.sandboxes.fork(source.id, { newId: "sbx_otherpool", poolId: other.id })).rejects.toMatchObject(
+			{ code: "unavailable", details: { reason: "host_unavailable" } },
+		);
+		await root.updateHost(vms.hostId, { draining: true });
+		await expect(service.sandboxes.fork(source.id, { newId: "sbx_drained", poolId: pool })).rejects.toMatchObject({
+			code: "unavailable",
+			details: { reason: "host_unavailable" },
+		});
+		expect(vms.methods().length).toBe(before);
+		expect(await service.sandboxes.placement("sbx_otherpool")).toBeUndefined();
+		expect(await service.sandboxes.placement("sbx_drained")).toBeUndefined();
 	});
 });

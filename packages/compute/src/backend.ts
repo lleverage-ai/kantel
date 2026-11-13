@@ -143,6 +143,8 @@ export interface BackendHost {
 	readonly diskUsage?: BackendDiskUsage;
 	/** Its memory, as it last reported it. Absent: it hasn't said (an older host, the stub). */
 	readonly memory?: computeSchema.HostMemory;
+	/** How it reaches its mesh peers, as it last reported it, while connected. Absent: it has no mesh (or the stub). */
+	readonly mesh?: computeSchema.HostMesh;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**
@@ -200,8 +202,9 @@ export interface SandboxSpec {
 	/** The hosts it may be placed on: online, not draining, with the asked-for labels and type. */
 	readonly eligibleHosts: readonly string[];
 	/**
-	 * The pool `eligibleHosts` were chosen in, where one was: a host moved to another since refuses it as it is placed.
-	 * Absent: no pool is kept to (a machine whose disk is somewhere, one from before pools).
+	 * The pool the sandbox is kept to: the one `eligibleHosts` were chosen in, or a snapshot's or a fork's source's. A
+	 * host in another pool by the time it is placed there refuses it (as its spec's `fork`, on its source's host).
+	 * Absent: no pool is kept to (one from before pools).
 	 */
 	readonly poolId?: string;
 	/** Start from this snapshot's disk (a `ref` the backend answered); absent, from an empty disk. */
@@ -471,6 +474,12 @@ export interface BackendEgressGrant {
 /** Where a machine was placed, and what it can do. */
 export interface Placement {
 	readonly hostId: string;
+	/**
+	 * The pool its host was in as the backend admitted it there: the one its spec kept it to (`SandboxSpec.poolId`), or
+	 * for a spec that kept it to none, the one it landed in. The sandbox is recorded in it. Absent where the backend
+	 * doesn't say (the stub, a host whose pool the registry doesn't know yet).
+	 */
+	readonly poolId?: string;
 	readonly resources?: MachineResources;
 	readonly capabilities: computeSchema.SandboxCapabilities;
 	/**

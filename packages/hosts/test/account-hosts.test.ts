@@ -324,7 +324,7 @@ describe("Account hosts", () => {
 	});
 
 	it("places a create naming a pool only on that pool's hosts, and says which pool when none can take it", async () => {
-		const { tom, root, join } = setup();
+		const { tom, root, join, api } = setup();
 		const shared = await join((await root.createHostJoinToken({ name: "shared" })).token);
 		await tom.createAccountPool({ name: "ci" });
 		const inDefault = await join((await tom.createAccountJoinToken({ name: "laptop" })).token);
@@ -362,5 +362,10 @@ describe("Account hosts", () => {
 		const source = await tom.createSandbox({ type: "microvm", pool: "ci", wait: true });
 		const [fork] = (await tom.forkSandbox(source.id, {})).items ?? [];
 		expect(fork?.poolId).toBe(ci?.id);
+		// A fork of a sandbox from before pools is kept to none, and is recorded in the pool of the host that admitted it.
+		await api.store.sandboxes.update(source.id, ({ poolId: _pool, ...rest }) => rest);
+		const [landed] = (await tom.forkSandbox(source.id, { wait: true })).items ?? [];
+		expect(landed).toMatchObject({ state: "running", poolId: ci?.id });
+		expect(inCi.sandboxes.has(landed?.id ?? "")).toBe(true);
 	});
 });

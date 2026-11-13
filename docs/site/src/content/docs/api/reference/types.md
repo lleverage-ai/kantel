@@ -574,6 +574,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `name` | string | yes | Lower-case letters, digits and hyphens, unique in the account. |
 | `description` | string | no |  (at most 500 characters) |
 | `sizeGb` | integer | yes |  (minimum 1, maximum 2048) |
+| `pool` | string | no | The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in that pool. Default: the pool of the first sandbox it is attached to. |
 
 ### CreateTemplateBody
 
@@ -1141,6 +1142,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
 | `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
+| `mesh` | [HostMesh](/api/reference/types/#hostmesh) | no |  |
 | `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
@@ -1213,6 +1215,27 @@ A host's memory, in MiB, as it last reported it (every heartbeat).
 | `pressureFull` | number | yes | The share of the last 10 seconds every task waited on memory. (minimum 0, maximum 100) |
 | `maxRatio` | number | yes | The most sandboxes may be given, as a multiple of `capacityMiB`. (minimum 0) |
 | `measuredAt` | integer | no | Epoch milliseconds, UTC. |
+
+### HostMesh
+
+How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | yes | The host's own address on its pool's mesh, an IPv6 address. |
+| `peers` | [HostMeshPeer](/api/reference/types/#hostmeshpeer)[] | yes | The other hosts of its pool, each as it reaches it. |
+
+### HostMeshPeer
+
+One mesh peer as a host reaches it, as the host last reported it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The peer's host ID: another host of the same pool. |
+| `path` | string | yes | How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another. |
+| `endpoint` | string | no | The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`. |
+| `lastHandshake` | integer | no | When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first. (minimum 0) |
+| `rttMs` | number | no | The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. (minimum 0) |
 
 ### HostReleaseCheck
 
@@ -2085,6 +2108,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+| `poolId` | string | no | The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it. |
 
 ### SnapshotKind
 
@@ -2143,6 +2167,7 @@ A named, versioned disk, attached to microVMs at a path. Each sandbox gets its o
 | `sizeGb` | integer | yes | Each copy's size: what a sandbox can fill. |
 | `head` | string | no | The newest committed version; absent until one is. |
 | `versions` | [StickyDiskVersion](/api/reference/types/#stickydiskversion)[] | no | The newest 20, newest first, on a get. |
+| `poolId` | string | no | The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
@@ -2336,6 +2361,7 @@ What a template snapshot is for: a change to any part builds another. A create s
 | `firecracker` | string | yes |  |
 | `vcpus` | integer | yes |  |
 | `memoryMb` | integer | yes | With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. |
+| `poolId` | string | no | The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used in. Absent for one built before pools. |
 
 ### TemplateDockerfileImage
 

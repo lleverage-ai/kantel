@@ -2175,6 +2175,13 @@ export const Snapshot = Type.Object(
 		createdBy: Type.Optional(CreatedBy),
 		expiresAt: Type.Optional(Timestamp),
 		base: Type.Optional(SandboxBase),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in " +
+					"that pool. Absent for one taken before pools, which is in the pool of the host holding it.",
+			}),
+		),
 	},
 	{ title: "Snapshot" },
 );
@@ -3118,6 +3125,13 @@ export const TemplateCacheKey = Type.Object(
 			description:
 				"With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too.",
 		}),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used " +
+					"in. Absent for one built before pools.",
+			}),
+		),
 	},
 	{
 		title: "TemplateCacheKey",
@@ -3655,6 +3669,49 @@ export const HostMemory = Type.Object(
 	},
 );
 
+export const HostMeshPeer = Type.Object(
+	{
+		hostId: id("The peer's host ID: another host of the same pool."),
+		path: Type.String({
+			description:
+				"How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. " +
+				"`none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another.",
+		}),
+		endpoint: Type.Optional(
+			Type.String({ description: "The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`." }),
+		),
+		lastHandshake: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first.",
+			}),
+		),
+		rttMs: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				description:
+					"The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer.",
+			}),
+		),
+	},
+	{ title: "HostMeshPeer", description: "One mesh peer as a host reaches it, as the host last reported it." },
+);
+
+export const HostMesh = Type.Object(
+	{
+		address: Type.String({ description: "The host's own address on its pool's mesh, an IPv6 address." }),
+		peers: Type.Array(HostMeshPeer, { description: "The other hosts of its pool, each as it reaches it." }),
+	},
+	{
+		title: "HostMesh",
+		description:
+			"How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every " +
+			"heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one " +
+			"that isn't connected.",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -3748,6 +3805,7 @@ export const Host = Type.Object(
 		usage: Type.Optional(UsageSparklines),
 		diskUsage: Type.Optional(HostDiskUsage),
 		memory: Type.Optional(HostMemory),
+		mesh: Type.Optional(HostMesh),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Integer({
 				minimum: 0,
@@ -4342,6 +4400,8 @@ export type Webhook = Static<typeof Webhook>;
 export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
+export type HostMesh = Static<typeof HostMesh>;
+export type HostMeshPeer = Static<typeof HostMeshPeer>;
 export type HostDiskUsage = Static<typeof HostDiskUsage>;
 export type HostMemory = Static<typeof HostMemory>;
 export type HostUsage = Static<typeof HostUsage>;
@@ -4740,6 +4800,13 @@ export const StickyDisk = Type.Object(
 		sizeGb: Type.Integer({ description: "Each copy's size: what a sandbox can fill." }),
 		head: Type.Optional(Type.String({ description: "The newest committed version; absent until one is." })),
 		versions: Type.Optional(Type.Array(StickyDiskVersion, { description: "The newest 20, newest first, on a get." })),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was " +
+					"attached to. It is attached only to sandboxes in that pool. Absent until then.",
+			}),
+		),
 		createdAt: Timestamp,
 		updatedAt: Timestamp,
 	},
@@ -4766,6 +4833,14 @@ export const CreateStickyDiskBody = Type.Object(
 		name: StickyDiskName,
 		description: Type.Optional(Type.String({ maxLength: 500 })),
 		sizeGb: Type.Integer({ minimum: 1, maximum: 2048 }),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in " +
+					"that pool. Default: the pool of the first sandbox it is attached to.",
+			}),
+		),
 	},
 	{ title: "CreateStickyDiskBody" },
 );

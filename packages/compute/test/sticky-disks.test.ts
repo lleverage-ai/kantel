@@ -2,7 +2,7 @@
 // committed from one and started from by the next, and the checks a create's paths get.
 import { createKantelClient } from "@kantel/api/sdk";
 import type { SqlDriver } from "@kantel/sql";
-import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kantel/sql/testing";
+import { type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
@@ -317,8 +317,15 @@ const version = (id: string, diskId: string): StoredStickyDiskVersion => ({
 	createdAt: 2,
 });
 
-/** A fresh SQL store over `kind`; with `interrupt.next` set, its next batch fails after its own statements have run. */
-async function sqlStore(kind: TestDatabaseKind, interrupt: { next: boolean }): Promise<ComputeStore> {
+/**
+ * A fresh SQL store over `kind`; with `interrupt.next` set, its next batch fails after its own statements have run, and
+ * with `interrupt.before` set, its next batch waits for it first (another writer's work, landing between a write's read
+ * and its batch).
+ */
+async function sqlStore(
+	kind: TestDatabaseKind,
+	interrupt: { next: boolean; before?: () => Promise<void> },
+): Promise<ComputeStore> {
 	const database = await kind.open();
 	cleanups.push(() => database.close());
 	await migrateComputeStore(database.driver);
@@ -326,6 +333,9 @@ async function sqlStore(kind: TestDatabaseKind, interrupt: { next: boolean }): P
 		dialect: database.driver.dialect,
 		query: (text, params) => database.driver.query(text, params),
 		async batch(statements) {
+			const before = interrupt.before;
+			interrupt.before = undefined;
+			await before?.();
 			if (!interrupt.next) return database.driver.batch(statements);
 			interrupt.next = false;
 			await database.driver.batch([...statements, { sql: "SELECT no_such_column FROM no_such_table" }]);
@@ -336,13 +346,13 @@ async function sqlStore(kind: TestDatabaseKind, interrupt: { next: boolean }): P
 
 const STORES: readonly { readonly name: string; readonly kind?: TestDatabaseKind }[] = [
 	{ name: "the memory store" },
-	{ name: `a SQL store on ${pgliteDatabase.name}`, kind: pgliteDatabase },
-	{ name: `a SQL store on ${nodeSqliteDatabase.name}`, kind: nodeSqliteDatabase },
+	// Postgres too, where KANTEL_TEST_POSTGRES_URL names one.
+	...testDatabaseKinds().map((kind) => ({ name: `a SQL store on ${kind.name}`, kind })),
 ];
 
 for (const each of STORES) {
 	const timeout = each.kind?.testTimeoutMs === undefined ? {} : { timeout: each.kind.testTimeoutMs };
-	const interrupt = { next: false };
+	const interrupt: { next: boolean; before?: () => Promise<void> } = { next: false };
 	const open = (): Promise<ComputeStore> =>
 		each.kind === undefined ? Promise.resolve(createMemoryStore()) : sqlStore(each.kind, interrupt);
 	const claimOf = async (store: ComputeStore, name = "cache") =>
@@ -417,7 +427,55 @@ for (const each of STORES) {
 			});
 		});
 
+		it("give disks a pool all at once or not at all, and of two sets in opposite orders at once one lands whole", async () => {
+			const store = await open();
+			for (const [id, name] of [
+				["sdk_a", "a"],
+				["sdk_b", "b"],
+				["sdk_c", "c"],
+				["sdk_d", "d"],
+			] as const) {
+				await store.stickyDiskWrites.create(disk(id, name));
+			}
+			expect(await store.stickyDiskWrites.pool(["sdk_c"], "pool_b")).toBeUndefined();
+			// One in another pool: refused, naming it, and the rest are left with none.
+			expect(await store.stickyDiskWrites.pool(["sdk_a", "sdk_c"], "pool_a")).toEqual({
+				diskId: "sdk_c",
+				poolId: "pool_b",
+			});
+			expect((await store.stickyDisks.get("sdk_a"))?.poolId).toBeUndefined();
+			// Two sets at once, in opposite orders: one gives both its pool, the other is refused.
+			const both = await Promise.all([
+				store.stickyDiskWrites.pool(["sdk_a", "sdk_b"], "pool_a"),
+				store.stickyDiskWrites.pool(["sdk_b", "sdk_a"], "pool_x"),
+			]);
+			expect(both.filter((answer) => answer === undefined)).toHaveLength(1);
+			const won = both[0] === undefined ? "pool_a" : "pool_x";
+			expect((await store.stickyDisks.get("sdk_a"))?.poolId).toBe(won);
+			expect((await store.stickyDisks.get("sdk_b"))?.poolId).toBe(won);
+			// Its own pool again, and a tombstoned or missing disk, change nothing.
+			await store.stickyDiskWrites.tombstone("sdk_d", 3);
+			expect(await store.stickyDiskWrites.pool(["sdk_a", "sdk_d", "sdk_missing"], won)).toBeUndefined();
+			expect((await store.stickyDisks.get("sdk_d"))?.poolId).toBeUndefined();
+		});
+
 		if (each.kind !== undefined) {
+			it("give no disk a pool when another of the set got another pool between the read and the write", async () => {
+				const store = await open();
+				await store.stickyDiskWrites.create(disk("sdk_a", "a"));
+				await store.stickyDiskWrites.create(disk("sdk_b", "b"));
+				// Once both are read with no pool, another writer gives sdk_b another pool before this write's batch.
+				interrupt.before = async () => {
+					expect(await store.stickyDiskWrites.pool(["sdk_b"], "pool_b")).toBeUndefined();
+				};
+				expect(await store.stickyDiskWrites.pool(["sdk_a", "sdk_b"], "pool_a")).toEqual({
+					diskId: "sdk_b",
+					poolId: "pool_b",
+				});
+				expect((await store.stickyDisks.get("sdk_a"))?.poolId).toBeUndefined();
+				expect((await store.stickyDisks.get("sdk_b"))?.poolId).toBe("pool_b");
+			});
+
 			it("delete a disk whatever its description holds, and a repeated delete leaves a new disk's name", async () => {
 				const store = await open();
 				// A NUL and a lone surrogate: what a description may hold, and what Postgres's jsonb refuses.

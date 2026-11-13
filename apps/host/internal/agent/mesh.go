@@ -15,6 +15,8 @@ type hostMesh interface {
 	SetPeers(peers []proto.MeshPeer)
 	Health() *proto.MeshHealth
 	Prefix() (netip.Prefix, bool)
+	Address() (netip.Addr, bool)
+	PeerAt(addr netip.Addr) (string, bool)
 	Close()
 }
 

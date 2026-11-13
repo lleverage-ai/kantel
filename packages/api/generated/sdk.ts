@@ -643,6 +643,8 @@ export interface CreateStickyDiskBody {
 	readonly name: string;
 	readonly description?: string;
 	readonly sizeGb: number;
+	/** The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in that pool. Default: the pool of the first sandbox it is attached to. */
+	readonly pool?: string;
 }
 
 export interface CreateTemplateBody {
@@ -1290,6 +1292,8 @@ export interface Host {
 	readonly diskUsage?: HostDiskUsage;
 	/** A host's memory, in MiB, as it last reported it (every heartbeat). */
 	readonly memory?: HostMemory;
+	/** How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected. */
+	readonly mesh?: HostMesh;
 	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
 	readonly savedSnapshotBytesLimit?: number;
 }
@@ -1378,6 +1382,28 @@ export interface HostMemory {
 	readonly maxRatio: number;
 	/** Epoch milliseconds, UTC. */
 	readonly measuredAt?: number;
+}
+
+/** How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected. */
+export interface HostMesh {
+	/** The host's own address on its pool's mesh, an IPv6 address. */
+	readonly address: string;
+	/** The other hosts of its pool, each as it reaches it. */
+	readonly peers: readonly HostMeshPeer[];
+}
+
+/** One mesh peer as a host reaches it, as the host last reported it. */
+export interface HostMeshPeer {
+	/** The peer's host ID: another host of the same pool. */
+	readonly hostId: string;
+	/** How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another. */
+	readonly path: string;
+	/** The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`. */
+	readonly endpoint?: string;
+	/** When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first. */
+	readonly lastHandshake?: number;
+	/** The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. */
+	readonly rttMs?: number;
 }
 
 export interface HostReleaseCheck {
@@ -2426,6 +2452,8 @@ export interface Snapshot {
 	readonly expiresAt?: number;
 	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
 	readonly base?: SandboxBase;
+	/** The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it. */
+	readonly poolId?: string;
 }
 
 export interface SnapshotFilesQuery {
@@ -2493,6 +2521,8 @@ export interface StickyDisk {
 	readonly head?: string;
 	/** The newest 20, newest first, on a get. */
 	readonly versions?: readonly StickyDiskVersion[];
+	/** The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then. */
+	readonly poolId?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
@@ -2688,6 +2718,8 @@ export interface TemplateCacheKey {
 	readonly vcpus: number;
 	/** With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. */
 	readonly memoryMb: number;
+	/** The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used in. Absent for one built before pools. */
+	readonly poolId?: string;
 }
 
 /** Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address. */

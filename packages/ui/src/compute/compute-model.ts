@@ -682,6 +682,11 @@ export interface CreateSandboxInput {
 	readonly templateId?: string;
 	/** The host it goes on, which it then stays on. Absent: Kantel picks. */
 	readonly hostId?: string;
+	/**
+	 * The pool it goes in (`Pool`'s ID), one of the account's other than its default: its host is that pool's. Absent: the
+	 * default, which is the account's default pool for its own hosts and the deployment's for shared ones.
+	 */
+	readonly poolId?: string;
 }
 
 /** A host New sandbox may put a sandbox on: one of the account's own, or for a super-admin a shared one. */
@@ -693,6 +698,8 @@ export interface HostChoice {
 	readonly kinds: readonly SandboxKind[];
 	/** One of the deployment's shared hosts, rather than the account's own. */
 	readonly shared: boolean;
+	/** The pool it is in (`Pool`'s ID), where Kantel says. */
+	readonly poolId?: string;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -892,11 +899,15 @@ export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
 
 export interface SandboxesSource {
 	/**
-	 * What New sandbox's sliders may choose, from the hosts the account may use (or with `hostId` that one host), and
-	 * what each costs. Absent:
-	 * `DEFAULT_SANDBOX_SHAPES`.
+	 * What New sandbox's sliders may choose, from the hosts the account may use (with `hostId` that one host, with
+	 * `poolId` that pool's hosts), and what each costs. Absent: `DEFAULT_SANDBOX_SHAPES`.
 	 */
-	shapes?(accountId: string, hostId?: string): Promise<SandboxShapes>;
+	shapes?(accountId: string, hostId?: string, poolId?: string): Promise<SandboxShapes>;
+	/**
+	 * The account's pools, for New sandbox's pool picker, which it shows only for more than one. Absent: no picker, and
+	 * a sandbox goes in the default pool.
+	 */
+	pools?(accountId: string): Promise<readonly Pool[]>;
 	/**
 	 * The hosts New sandbox may put a sandbox on, for its host picker: the account's own, and for a super-admin the
 	 * shared ones. Absent, or none: no picker, and Kantel picks.
@@ -1878,6 +1889,11 @@ export interface Host {
 	 * from a deployment's shared host.
 	 */
 	readonly accountId?: string;
+	/**
+	 * How it reaches the other hosts of its pool over the pool's mesh, as it last reported it. Absent when it has no mesh
+	 * (its pool's sync is off, or an older host agent) or isn't connected.
+	 */
+	readonly mesh?: HostMesh;
 }
 
 /**
@@ -1909,6 +1925,41 @@ export interface PoolsSource {
 	makeDefault(id: string): Promise<Pool>;
 	/** Only an empty pool that isn't the default: refused otherwise, with the reason. */
 	remove(id: string): Promise<void>;
+}
+
+/** A host's place on its pool's mesh: its own address there, and each peer as it reaches it. */
+export interface HostMesh {
+	readonly address: string;
+	readonly peers: readonly HostMeshPeer[];
+}
+
+/**
+ * One mesh peer as a host reaches it. `path`: `direct` (a handshake in the last 3 minutes) or `none` (none since); a newer
+ * host may say another. `endpoint`: the address and port it uses now. `lastHandshake`: when it last completed one, absent
+ * before the first. `rttMs`: the round trip of its last probe, absent when that got no answer.
+ */
+export interface HostMeshPeer {
+	readonly hostId: string;
+	readonly path: string;
+	readonly endpoint?: string;
+	readonly lastHandshake?: number;
+	readonly rttMs?: number;
+}
+
+/**
+ * How old a peer's last handshake may be before the peer counts as unreachable whatever its path says: the host's own
+ * 3 minutes, plus a heartbeat or two for the report to reach the page.
+ */
+export const MESH_HANDSHAKE_STALE_MS = 5 * 60_000;
+
+/**
+ * Whether a host reaches a peer, as far as its last report says: a path other than `none`, and a handshake no older than
+ * `MESH_HANDSHAKE_STALE_MS`. A peer it never shook hands with isn't reached.
+ */
+export function meshPeerReachable(peer: HostMeshPeer, now: number): boolean {
+	return (
+		peer.path !== "none" && peer.lastHandshake !== undefined && now - peer.lastHandshake <= MESH_HANDSHAKE_STALE_MS
+	);
 }
 
 /**

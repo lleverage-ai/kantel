@@ -373,9 +373,16 @@ export const HOST_FEATURES = {
 	 * The pool's WireGuard mesh (docs/design/disk-store.md, "2a. The mesh"): the host reports its public key, listen port
 	 * and endpoints in `HostFacts.mesh`, brings its mesh device up with the address `HostWelcome.mesh` gives it (and down
 	 * on a welcome without one), and makes its peers match each `mesh.peers`. Kantel sends neither to a host without it,
-	 * nor to a host whose pool has sync off.
+	 * nor to a host whose pool has sync off. While its mesh is up, the host also serves the disk versions it holds to its
+	 * peers, on TCP 7480 at its mesh address, to a peer with a grant `HostWelcome.grantKey` signed.
 	 */
 	mesh: "mesh",
+	/**
+	 * Peer sync (docs/design/disk-store.md, "2c. Peer sync"): the host fetches disk versions from its mesh peers. It takes
+	 * `disk.fetch` (`HostDiskFetchParams`) for sticky disks, and a create attaching a sticky disk version it doesn't hold
+	 * starts on its newest and fetches that one in the background. Reported with `mesh` and `stickyDisks`.
+	 */
+	diskSync: "disk-sync",
 } as const;
 
 /**
@@ -632,8 +639,8 @@ export interface HostCapacity {
 	 */
 	readonly stickyDisks?: readonly HostStickyHolding[];
 	/**
-	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up. Not kept by the registry yet:
-	 * `parseHostCapacity` leaves it out until the host page shows it.
+	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up: the host's page shows it
+	 * (`Host.mesh`). Absent from a host without the feature, or whose mesh is down (its pool's sync off).
 	 */
 	readonly mesh?: HostMeshHealth;
 }
@@ -718,6 +725,21 @@ export interface HostDiskLocateParams {
 export interface HostDiskLocateResult {
 	readonly mapDigest?: string;
 	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
+}
+
+/**
+ * Kantel to host, `disk.fetch` (`HOST_FEATURES.diskSync`): fetch a version from the hosts holding it, with what
+ * `disk.locate` would answer the host (its grant naming the host as `to`). Answered `{}` once the fetch has started or
+ * is queued; the host holds the version once a capacity report lists it. A fetch whose grant expires, or whose holders
+ * refuse it, asks `disk.locate` again.
+ */
+export interface HostDiskFetchParams {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly mapDigest?: string;
+	readonly holders?: readonly { readonly hostId: string; readonly address: string }[];
 	readonly grant?: string;
 }
 
@@ -1331,6 +1353,8 @@ export const HostMethods = {
 	 * doesn't have or the host may not have, `not_supported` when Kantel can't sign grants.
 	 */
 	diskLocate: "disk.locate",
+	/** Kantel to host (`HOST_FEATURES.diskSync`): `HostDiskFetchParams`, answered `{}` once the fetch has started. */
+	diskFetch: "disk.fetch",
 	/** Kantel to host: `HostMountsRefresh`, answered with the sandbox's `HostMountStatus[]`. */
 	mountsRefresh: "sandbox.mounts.refresh",
 	/** Builds a template snapshot: `HostTemplateBuild`, answered with `HostTemplateBuilt`. */

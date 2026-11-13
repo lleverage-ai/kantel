@@ -585,6 +585,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				? {}
 				: { mountsAt: parseMountsAt(sandbox.mountsAt) }),
 			...(startup === undefined ? {} : { startup }),
+			// The pool its host was in as it admitted it (a create's or fork's), which the sandbox is in.
+			...(known.poolId === undefined ? {} : { poolId: known.poolId }),
 		};
 	}
 
@@ -917,6 +919,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
 					// What it admits against is the scheduler's (`freeMemoryOn`), not the API's.
 					...(host.memory === undefined ? {} : { memory: withoutAdmission(host.memory) }),
+					...(host.mesh === undefined
+						? {}
+						: { mesh: { address: host.mesh.address, peers: host.mesh.peers.map((peer) => ({ ...peer })) } }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },
@@ -1034,6 +1039,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					// Its own placeholders, not its source's: the host gives the guest this environment.
 					env: target.env,
 					...(mounts === undefined ? {} : { mounts }),
+					// Admitted on its source's host only while that host is in the fork's pool.
+					...(target.poolId === undefined ? {} : { poolId: target.poolId }),
 				});
 				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}

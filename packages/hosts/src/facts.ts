@@ -21,6 +21,8 @@ import type {
 	HostMemorySource,
 	HostMemoryState,
 	HostMeshFacts,
+	HostMeshHealth,
+	HostMeshPeerHealth,
 	HostMountStatus,
 	HostRuntime,
 	HostSandboxUsage,
@@ -294,7 +296,36 @@ function capacity(value: unknown): HostCapacity {
 		...diskUsage(value.disk),
 		...memoryReport(value.memory),
 		...stickyHoldings(value.stickyDisks),
+		...meshHealth(value.mesh),
 	};
+}
+
+/** The most mesh peers a capacity report's `mesh` keeps: more than a pool has hosts. */
+const MAX_MESH_PEERS = 1024;
+
+const meshText = (value: unknown, longest = MAX_TEXT): value is string =>
+	typeof value === "string" && value !== "" && value.length <= longest;
+
+/**
+ * A capacity's mesh health (`HostMeshHealth`): left out, not refused, when it isn't shaped as kantel-host sends it (an
+ * address and a list of peers), as the rest of the report still stands. A peer without a host ID or a path is left out,
+ * and so is a figure that isn't a number from 0, so a peer is never shown with a handshake or round trip it didn't have.
+ */
+function meshHealth(value: unknown): { mesh?: HostMeshHealth } {
+	if (!isObject(value) || !meshText(value.address)) return {};
+	const peers: HostMeshPeerHealth[] = [];
+	for (const entry of Array.isArray(value.peers) ? value.peers.slice(0, MAX_MESH_PEERS) : []) {
+		if (!isObject(entry) || !meshText(entry.hostId) || !meshText(entry.path, 32)) continue;
+		const { endpoint, lastHandshake, rttMs } = entry;
+		peers.push({
+			hostId: entry.hostId,
+			path: entry.path,
+			...(meshText(endpoint) ? { endpoint } : {}),
+			...(figure(lastHandshake) && Number.isSafeInteger(lastHandshake) && lastHandshake > 0 ? { lastHandshake } : {}),
+			...(figure(rttMs) ? { rttMs } : {}),
+		});
+	}
+	return { mesh: { address: value.address, peers } };
 }
 
 /** Whether `value` is a block map's digest: `sha256:` and 64 lowercase hex digits. */

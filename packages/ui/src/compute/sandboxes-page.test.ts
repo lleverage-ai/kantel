@@ -7,6 +7,7 @@ import {
 	HOST_UNREACHABLE_LABEL,
 	type HostChoice,
 	idleStopText,
+	type Pool,
 	type Sandbox,
 	type SandboxState,
 	sandboxActions,
@@ -33,8 +34,11 @@ import {
 	countdownText,
 	hostOptions,
 	hostProblem,
+	hostsInPool,
 	newSandboxInput,
 	newSandboxType,
+	poolChoices,
+	poolSent,
 	QUICK_SANDBOX,
 	requestedTemplate,
 	SandboxesPage,
@@ -415,6 +419,58 @@ describe("New sandbox", () => {
 		expect(newSandboxInput({ ...form, host: "hst_home" }).hostId).toBe("hst_home");
 		expect("hostId" in newSandboxInput({ ...form, host: "" })).toBe(false);
 		expect("hostId" in newSandboxInput(form)).toBe(false);
+	});
+
+	describe("in a pool", () => {
+		const pool = (id: string, name: string, isDefault = false): Pool => ({
+			id,
+			name,
+			default: isDefault,
+			hosts: 1,
+			createdAt: FIXTURE_NOW,
+		});
+		const pools = [pool("pool_default", "default", true), pool("pool_ci", "ci")];
+
+		it("offers a picker only once the pools are read and there's more than one, so one pool changes nothing", () => {
+			expect(poolChoices({ status: "ready", pools })).toEqual(pools);
+			expect(poolChoices({ status: "ready", pools: [pools[0] as Pool] })).toBeUndefined();
+			expect(poolChoices({ status: "ready", pools: [] })).toBeUndefined();
+			expect(poolChoices({ status: "loading" })).toBeUndefined();
+			expect(poolChoices({ status: "failed" })).toBeUndefined();
+		});
+
+		it("sends the pool picked, and none for the default, so a sandbox may still go on shared hosts", () => {
+			expect(newSandboxInput({ ...form, pool: poolSent(pools, "pool_ci") }).poolId).toBe("pool_ci");
+			expect("poolId" in newSandboxInput({ ...form, pool: poolSent(pools, "pool_default") })).toBe(false);
+			expect("poolId" in newSandboxInput({ ...form, pool: poolSent(pools, "") })).toBe(false);
+			// One the account no longer has, or with no picker (one pool, or pools not read): the default.
+			expect(poolSent(pools, "pool_gone")).toBe("");
+			expect(poolSent(undefined, "pool_ci")).toBe("");
+			expect("poolId" in newSandboxInput(form)).toBe(false);
+		});
+
+		it("offers only the pool's hosts once one is picked, and every host for the default", () => {
+			const hosts: HostChoice[] = [
+				{ id: "hst_a", name: "box-a", state: "online", kinds: ["microvm"], shared: false, poolId: "pool_ci" },
+				{ id: "hst_b", name: "box-b", state: "online", kinds: ["microvm"], shared: false, poolId: "pool_default" },
+				{ id: "hst_c", name: "box-c", state: "online", kinds: ["microvm"], shared: true, poolId: "pool_shared" },
+			];
+			expect(hostsInPool(hosts, "pool_ci").map((host) => host.id)).toEqual(["hst_a"]);
+			expect(hostsInPool(hosts, "")).toEqual(hosts);
+			expect(hostsInPool(hosts, "pool_empty")).toEqual([]);
+		});
+
+		it("is placed in the pool picked, and refused naming it when none of its hosts can take it", async () => {
+			const source = createComputeFixtures({ hostsAway: ["hst_hetzner_1"] });
+			const made = await source.sandboxes.create({ accountId: LLEVERAGE.id, kind: "isolate", poolId: "pool_default" });
+			expect(made.hostId).toBe("hst_home");
+			await expect(
+				source.sandboxes.create({ accountId: LLEVERAGE.id, kind: "microvm", poolId: "pool_ci" }),
+			).rejects.toThrow("No host in pool ci can run a microvm sandbox now");
+			// And its shapes say so: no microVMs in ci while its hosts are away.
+			expect((await source.sandboxes.shapes?.(LLEVERAGE.id, undefined, "pool_ci"))?.microvm.available).toBe(false);
+			expect((await source.sandboxes.shapes?.(LLEVERAGE.id))?.microvm.available).not.toBe(false);
+		});
 	});
 
 	it("offers the hosts that can take the type now, and keeps a picked one that can't with why", () => {

@@ -64,7 +64,6 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/mounts"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
-	"golang.org/x/sys/unix"
 )
 
 // Tier is the microVM tier's name.
@@ -246,6 +245,9 @@ type Config struct {
 	BundleWait   time.Duration
 	// MountEvents receives a sandbox whose mounts changed status after its call answered.
 	MountEvents func(proto.SandboxInfo)
+	// FetchSticky, when set, fetches a sticky disk version from the host's peers in the background: a create attaching
+	// a version the host doesn't hold starts on the host's newest, and asks for that one for the next.
+	FetchSticky func(diskID, version string)
 	// Discard boots every microVM with discard on its writable disk (fc.BootConfig.Discard), for a Firecracker that
 	// can (fc.DiscardSupported): blocks the guest frees, and those a trim before a save frees (trimDisk), are holes in
 	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. It is in the templates' fingerprint.
@@ -1292,7 +1294,7 @@ func copySparse(src, dst string) error {
 // cloneDisk is copySparse, saying how the copy was made: proto.DiskReflink or proto.DiskCopy. The clone is FICLONE
 // itself, so a file system without reflinks answers at once and the copy is the only time spent.
 func cloneDisk(src, dst string) (string, error) {
-	if reflink(src, dst) == nil {
+	if fsutil.Reflink(src, dst) == nil {
 		return proto.DiskReflink, nil
 	}
 	// The failed reflink may have made dst (empty): the sparse copy starts from none.
@@ -1319,29 +1321,7 @@ func canReflink(dir string) bool {
 	}
 	dst := src + ".clone"
 	defer os.Remove(dst)
-	return reflink(src, dst) == nil
-}
-
-// reflink makes dst a clone of src (FICLONE), with src's permissions: its blocks shared until either is written.
-func reflink(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	info, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	if err := unix.IoctlFileClone(int(out.Fd()), int(in.Fd())); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
+	return fsutil.Reflink(src, dst) == nil
 }
 
 // unchanged says whether the file at path looks as it did when before was taken, by its size, inode, and modification
