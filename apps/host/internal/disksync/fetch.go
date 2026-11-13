@@ -600,17 +600,66 @@ func (f *Fetcher) fresh(r Ref, path string, p *partial) error {
 	return nil
 }
 
-// zero makes [start, end) of f zeros: a hole punched, or zeros written where holes can't be.
+// punchHole frees [off, off+n) of f, which then reads as zeros (a variable: tests stand in for a file system without
+// it).
+var punchHole = func(f *os.File, off, n int64) error {
+	return unix.Fallocate(int(f.Fd()), unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE, off, n)
+}
+
+// zero makes [start, end) of f zeros without taking any room: a hole punched, or where holes can't be punched, zeros
+// written over the data the range has already (SEEK_DATA and SEEK_HOLE find it), never into its holes, which read as
+// zeros already. A file system that can't say where its data is has every chunk read, and only those with a byte that
+// isn't zero written.
 func zero(f *os.File, start, end int64) error {
-	err := unix.Fallocate(int(f.Fd()), unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE, start, end-start)
-	if err == nil {
+	if punchHole(f, start, end-start) == nil {
 		return nil
 	}
-	zeros := make([]byte, min(end-start, 1<<20))
-	for off := start; off < end; off += int64(len(zeros)) {
-		n := min(int64(len(zeros)), end-off)
-		if _, err := f.WriteAt(zeros[:n], off); err != nil {
+	zeros := make([]byte, 1<<20)
+	write := func(from, to int64) error {
+		for off := from; off < to; off += int64(len(zeros)) {
+			if _, err := f.WriteAt(zeros[:min(int64(len(zeros)), to-off)], off); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	fd := int(f.Fd())
+	for off := start; off < end; {
+		data, err := unix.Seek(fd, off, unix.SEEK_DATA)
+		if errors.Is(err, unix.ENXIO) {
+			return nil // no data from off on
+		}
+		if err != nil {
+			return zeroByReading(f, off, end, zeros)
+		}
+		if data >= end {
+			return nil
+		}
+		hole, err := unix.Seek(fd, data, unix.SEEK_HOLE)
+		if err != nil {
+			return zeroByReading(f, data, end, zeros)
+		}
+		if err := write(data, min(hole, end)); err != nil {
 			return err
+		}
+		off = hole
+	}
+	return nil
+}
+
+// zeroByReading writes zeros over each chunk of [start, end) of f that has a byte that isn't zero.
+func zeroByReading(f *os.File, start, end int64, zeros []byte) error {
+	buf := make([]byte, len(zeros))
+	for off := start; off < end; off += int64(len(buf)) {
+		b := buf[:min(int64(len(buf)), end-off)]
+		n, err := f.ReadAt(b, off)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if !bytes.Equal(b[:n], zeros[:n]) {
+			if _, err := f.WriteAt(zeros[:n], off); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
