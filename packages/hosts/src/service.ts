@@ -92,7 +92,7 @@ import {
 	shapeOn,
 	sizeOn,
 } from "./scheduler.ts";
-import { type HostRecord, type HostStore, isLeftover, type PlacementRecord } from "./store.ts";
+import { admits, type HostRecord, type HostStore, isLeftover, type PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
 export const enforcesPolicy = (host: HostRecord): boolean =>
@@ -668,6 +668,11 @@ export interface SandboxPlacement {
 	readonly nestedVirtualisation?: boolean;
 	/** Each of the input's mounts' status (`MountHandoff.status`); absent when it named none. */
 	readonly mounts?: readonly HostMountStatus[];
+	/**
+	 * The pool its host was in as it admitted it (`admits`), which the sandbox is in: the one asked for, where it was kept
+	 * to one, or for one that wasn't, where it landed. Absent where the registry doesn't know the host's pool yet.
+	 */
+	readonly poolId?: string;
 }
 
 /** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
@@ -772,6 +777,8 @@ export interface HostsService {
 				readonly env?: { readonly [key: string]: string };
 				/** The fork's mounts, as for a create (`mountHandoff`, with its source's host). */
 				readonly mounts?: readonly HostMount[];
+				/** The pool it is kept to, as a create's (`CreateSandboxInput.poolId`): its source's host must be in it. */
+				readonly poolId?: string;
 			},
 		): Promise<SandboxPlacement>;
 		/**
@@ -1917,6 +1924,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
+	 * Admits a new placement (a create, a snapshot's restore, a never-placed start, a fork) on its host: the one rule
+	 * every one is put under (`admits`), in one write (`placeOnTakingHost`). Answers the pool its host was in as it took
+	 * it, which the sandbox is in. `unavailable`, `host_unavailable`, writing nothing, while the host drains, once it is
+	 * revoked, or once it is in another pool than `poolId`.
+	 */
+	const admit = async (
+		placement: PlacementRecord,
+		poolId: string | undefined,
+		hostName: string,
+	): Promise<{ readonly poolId?: string }> => {
+		const admitted = await store.placeOnTakingHost(placement, poolId);
+		if (admitted === undefined) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				`The host ${hostName} is draining, or was moved to another pool`,
+			);
+		}
+		return admitted;
+	};
+
+	/**
 	 * A create or fork that failed. What the host refused, or a call that never reached it, made nothing: its placement
 	 * goes. One sent and never answered may have made the sandbox there, so its placement stays, `starting`, counted on
 	 * that host, until the host says: its event once it is made, or its next hello (what it holds, or `lost`). Answers the
@@ -2152,6 +2181,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			path: "host",
 			files: sandbox.moved?.files ?? 0,
 			bytes: sandbox.moved?.bytes ?? 0,
+			// Its own host's, which held the isolate all along, so stayed in its pool.
+			...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		};
 	};
 
@@ -2259,6 +2290,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					path: placement.cleanup === undefined ? "host" : "control-plane",
 					files: sandbox.moved?.files ?? 0,
 					bytes: sandbox.moved?.bytes ?? 0,
+					// The pool of the host it is placed on, which holds it, so can't have moved since it was admitted.
+					...(host?.poolId === undefined ? {} : { poolId: host.poolId }),
 				},
 			};
 		}
@@ -2754,14 +2787,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					createdAt: now,
 					updatedAt: now,
 				};
-				// Only while its host still takes sandboxes: a drain since the hosts were read refuses it.
-				if (!(await store.placeOnTakingHost(placement, input.poolId))) {
-					throw placementError(
-						"unavailable",
-						"host_unavailable",
-						`The host ${chosen.host.name} is draining, or was moved to another pool`,
-					);
-				}
+				// Only while its host still takes sandboxes in its pool: a drain or move since the hosts were read refuses it.
+				const admitted = await admit(placement, input.poolId, chosen.host.name);
 				reserve(chosen.host.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				const mounts = mountHandoff(chosen.host.facts?.features, input.mounts);
 				try {
@@ -2807,6 +2834,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						placement: settled,
 						nestedVirtualisation: chosen.host.facts?.nested ?? false,
 						...(statuses === undefined ? {} : { mounts: statuses }),
+						...admitted,
 					};
 				} catch (error) {
 					throw await unplace(placement, chosen.host, error);
@@ -2825,7 +2853,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					createdAt: now,
 					updatedAt: now,
 				};
-				await store.putPlacement(placement);
+				// Admitted as a create is, on its source's host: refused while that host drains, or once it is in another pool.
+				const admitted = await admit(placement, input.poolId, source.hostId);
 				try {
 					// The host is read only for a fork with mounts, to know which it can do.
 					const features =
@@ -2852,6 +2881,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						hostId: source.hostId,
 						placement: await settle(placement, sandbox),
 						...(statuses === undefined ? {} : { mounts: statuses }),
+						...admitted,
 					};
 				} catch (error) {
 					throw await unplace(placement, await store.getHost(source.hostId), error);
@@ -2999,8 +3029,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// intent, so a move of the drained host waits for it (`holds`).
 				// (A retry of the same upgrade keeps the intent it may have acted on: its target is counted already.)
 				const taking = source.upgrade === undefined ? await store.getHost(target.id) : target;
-				const repooled = input.poolId !== undefined && taking?.poolId !== undefined && taking.poolId !== input.poolId;
-				if (taking === undefined || taking.draining || taking.revoked || repooled) {
+				if (!admits(taking, input.poolId)) {
 					await store.updatePlacement(sandboxId, (latest) => {
 						if (latest.upgrade?.operationId !== operationId || latest.upgrade.target !== target.id) return undefined;
 						const { upgrade: _intent, ...rest } = latest;
@@ -3095,6 +3124,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					nestedVirtualisation: target.facts?.nested ?? false,
 					path: "control-plane" as const,
 					...moved,
+					// The target's as it admitted it, once its intent was written.
+					...(taking.poolId === undefined ? {} : { poolId: taking.poolId }),
 				};
 			},
 			async settleUpgrade(sandboxId, operationId) {

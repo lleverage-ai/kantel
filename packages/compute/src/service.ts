@@ -5779,6 +5779,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const sandbox = published(stored);
 			return withState(sandbox, "running", {
 				hostId: placement.hostId,
+				// The pool its host was in as its backend admitted it there, where it says: the one it was kept to, or for one
+				// from before pools, the one it landed in.
+				...pooled(placement.poolId),
 				// This run's machine, which fences a late report of an earlier one's exit (`reportExit`); none where not said.
 				machineAt: placement.machineAt,
 				resources: placement.resources ?? sandbox.resources,
@@ -8958,6 +8961,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											image: fork.image,
 											env: fork.env,
 											eligibleHosts: hosts,
+											// Its pool, which its source's host (or its snapshot's) admits it only while in.
+											...pooled(fork.poolId),
 											...egress,
 											...(fork.mounts === undefined ? {} : { mounts: backendMounts(fork.mounts) }),
 										},

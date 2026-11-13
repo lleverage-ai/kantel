@@ -50,6 +50,17 @@ export interface HostRecord {
 	readonly drainEpoch?: number;
 }
 
+/**
+ * Whether `host` admits a new placement (a create, a snapshot's restore, a fork) or an upgrade's microVM: there, neither
+ * draining nor revoked, and, kept to `poolId`, in that pool where its pool is known here (a host the compute plane hasn't
+ * told its pool yet admits). The one rule for every admission: `placeOnTakingHost` writes under it in one statement
+ * (the SQL stores as its own predicate, kept the same), and an upgrade checks its target by it once its intent is written.
+ */
+export function admits(host: HostRecord | undefined, poolId: string | undefined): host is HostRecord {
+	if (host === undefined || host.draining === true || host.revoked === true) return false;
+	return poolId === undefined || host.poolId === undefined || host.poolId === poolId;
+}
+
 export interface JoinTokenRecord {
 	readonly id: string;
 	/** The token's SHA-256, hex. */
@@ -121,11 +132,13 @@ export interface HostStore {
 	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
 	/**
-	 * Puts a new sandbox's placement only while its host is neither draining nor revoked, as one write: whether it did. A
-	 * create that read its host before a drain is refused here, so a host drained, found empty and moved to another pool
-	 * never takes one after (the compute plane's move).
+	 * Puts a new sandbox's placement only while its host admits it (`admits`: neither draining nor revoked, and in
+	 * `poolId` where that is given and the host's pool is known), as one write. A create that read its host before a
+	 * drain is refused here, so a host drained, found empty and moved to another pool never takes one after (the compute
+	 * plane's move). Answers the pool its host was in as it admitted it (absent where it has none yet), or undefined,
+	 * writing nothing, when it didn't.
 	 */
-	placeOnTakingHost(placement: PlacementRecord, poolId?: string): Promise<boolean>;
+	placeOnTakingHost(placement: PlacementRecord, poolId?: string): Promise<{ readonly poolId?: string } | undefined>;
 	/**
 	 * Everything that has something on `hostId`, in one read: its own placements (a lost one not), and placements on
 	 * other hosts with an upgrade under way whose microVM is (or may be) there, or an upgraded isolate there still to be
@@ -238,10 +251,9 @@ export function createMemoryHostStore(): HostStore {
 		},
 		async placeOnTakingHost(placement, poolId) {
 			const host = hosts.get(placement.hostId);
-			if (host === undefined || host.draining || host.revoked) return false;
-			if (poolId !== undefined && host.poolId !== undefined && host.poolId !== poolId) return false;
+			if (!admits(host, poolId)) return undefined;
 			placements.set(placement.sandboxId, copy(placement));
-			return true;
+			return host.poolId === undefined ? {} : { poolId: host.poolId };
 		},
 		async updatePlacement(sandboxId, change) {
 			// Read, change and write with no await between them: nothing else runs in between.
@@ -429,15 +441,17 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			// In the pool it was chosen in, where the host's row says one: its own top-level `poolId` (not a label's).
 			const field = driver.dialect === "postgres" ? "(data::jsonb ->> 'poolId')" : "json_extract(data, '$.poolId')";
 			const pooled = poolId === undefined ? "" : ` AND (${field} IS NULL OR ${field} = ?)`;
+			// The host's pool comes back with the placement, from the row as it admitted it: the same statement.
 			const rows = await driver.query(
 				`WITH taking AS (
-					SELECT id FROM compute_hosts WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${pooled}${lock}
+					SELECT id, ${field} AS pool FROM compute_hosts
+					WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${pooled}${lock}
 				)
 				INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
 				SELECT ?, ?, ?, ? FROM taking WHERE true
 				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
 					data = excluded.data
-				RETURNING sandbox_id`,
+				RETURNING sandbox_id, (SELECT pool FROM taking) AS pool`,
 				[
 					placement.hostId,
 					DRAINING_PATTERN,
@@ -449,7 +463,9 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 					JSON.stringify(placement),
 				],
 			);
-			return rows.length > 0;
+			const [row] = rows;
+			if (row === undefined) return undefined;
+			return typeof row.pool === "string" ? { poolId: row.pool } : {};
 		},
 		async occupying(hostId) {
 			// One statement, so one snapshot. Narrowed by the host's column, and by its ID as a whole JSON string value (a
