@@ -151,6 +151,8 @@ export interface BackendHost {
 	readonly connected?: boolean;
 	/** The account it was added to as one of its own hosts, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
+	/** The pool it is in, as its registry has it (from its join token, or a move); absent where it keeps none. */
+	readonly poolId?: string;
 	readonly lastSeenAt?: number;
 }
 
@@ -973,13 +975,14 @@ export interface SandboxBackend {
 	 * once every 30 seconds (`checked` false within it). Absent: no release is read here (the stub).
 	 */
 	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
-	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */
+	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,
 		change: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			readonly poolId?: string;
 		},
 	): Promise<void>;
 }

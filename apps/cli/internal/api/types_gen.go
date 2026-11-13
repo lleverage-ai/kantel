@@ -519,6 +519,14 @@ type CreateAccountJoinTokenBody struct {
 	Labels           map[string]string `json:"labels,omitzero"`
 	// The host's name. Default: the machine's hostname.
 	Name *string `json:"name,omitempty"`
+	// The pool the host joins, an ID or name. Default: the account's default pool.
+	Pool *string `json:"pool,omitempty"`
+}
+
+type CreateAccountPoolBody struct {
+	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
+	Account *string `json:"account,omitempty"`
+	Name    string  `json:"name"`
 }
 
 type CreateBucketSourceBody struct {
@@ -572,6 +580,8 @@ type CreateHostJoinTokenBody struct {
 	ExpiresInMinutes *int64            `json:"expiresInMinutes,omitempty"`
 	Labels           map[string]string `json:"labels,omitzero"`
 	Name             *string           `json:"name,omitempty"`
+	// The pool the host joins, an ID or name among the deployment's pools. Default: its default pool.
+	Pool *string `json:"pool,omitempty"`
 }
 
 type CreateInviteBody struct {
@@ -596,6 +606,10 @@ type CreatePersonalTokenBody struct {
 	Name          string        `json:"name"`
 	Preset        *APIKeyPreset `json:"preset,omitempty"`
 	Scopes        []APIKeyScope `json:"scopes,omitzero"`
+}
+
+type CreatePoolBody struct {
+	Name string `json:"name"`
 }
 
 // Any other field is refused as `invalid`.
@@ -1390,11 +1404,15 @@ type Host struct {
 	// Epoch milliseconds, UTC.
 	LastSeenAt *int64 `json:"lastSeenAt,omitempty"`
 	// The version hosts should run: the deployment's `KANTEL_HOST_VERSION` when it sets one, otherwise Kantel's latest release. Absent when neither is known.
-	LatestVersion        *string     `json:"latestVersion,omitempty"`
-	Memory               *HostMemory `json:"memory,omitempty"`
-	Name                 string      `json:"name"`
-	NestedVirtualisation bool        `json:"nestedVirtualisation"`
-	OS                   *string     `json:"os,omitempty"`
+	LatestVersion *string     `json:"latestVersion,omitempty"`
+	Memory        *HostMemory `json:"memory,omitempty"`
+	// The pool it is moving to (`UpdateHostBody.pool`): it is draining, and joins that pool once no sandboxes are left on it.
+	MovingTo             *string `json:"movingTo,omitempty"`
+	Name                 string  `json:"name"`
+	NestedVirtualisation bool    `json:"nestedVirtualisation"`
+	OS                   *string `json:"os,omitempty"`
+	// The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in.
+	PoolID *string `json:"poolId,omitempty"`
 	// The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit.
 	SavedSnapshotBytesLimit *int64    `json:"savedSnapshotBytesLimit,omitempty"`
 	State                   HostState `json:"state"`
@@ -1752,6 +1770,26 @@ const (
 
 type PollDeviceLoginBody struct {
 	DeviceCode string `json:"deviceCode"`
+}
+
+// A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the deployment start with a pool named `default`, which their hosts are in until moved.
+type Pool struct {
+	// The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts.
+	AccountID *string `json:"accountId,omitempty"`
+	// Epoch milliseconds, UTC.
+	CreatedAt int64 `json:"createdAt"`
+	// Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool.
+	Default bool `json:"default"`
+	// How many hosts are in it, revoked ones not counted.
+	Hosts int64 `json:"hosts"`
+	// The pool's ID, such as `pool_6t5r4e`.
+	ID string `json:"id"`
+	// Its name, unique among its owner's pools.
+	Name string `json:"name"`
+}
+
+type PoolList struct {
+	Items []Pool `json:"items"`
 }
 
 type Project struct {
@@ -2984,12 +3022,20 @@ type UpdateHostBody struct {
 	Draining *bool             `json:"draining,omitempty"`
 	Labels   map[string]string `json:"labels,omitzero"`
 	Name     *string           `json:"name,omitempty"`
+	// Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host). It drains first and joins the pool once no sandboxes are left on it (`Host.movingTo`), then takes new sandboxes again. Its own pool cancels a move under way, leaving it draining.
+	Pool *string `json:"pool,omitempty"`
 	// The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit.
 	SavedSnapshotBytesLimit Nullable[int64] `json:"savedSnapshotBytesLimit,omitzero"`
 }
 
 type UpdateMemberBody struct {
 	Role MemberRole `json:"role"`
+}
+
+type UpdatePoolBody struct {
+	// Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again.
+	Default *bool   `json:"default,omitempty"`
+	Name    *string `json:"name,omitempty"`
 }
 
 type UpdateSandboxBody struct {

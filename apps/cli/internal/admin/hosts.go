@@ -114,10 +114,20 @@ func describeHost(c *cli.Context, h api.Host) string {
 		{"runs", tiers(h, ", ")},
 		{"kvm", kvm},
 		{"sandboxes", strconv.FormatInt(h.Allocated.Sandboxes, 10)},
+		{"pool", hostPool(h)},
 		{"labels", strings.Join(labels, ", ")},
 		{"joined", cli.Timestamp(h.JoinedAt)},
 		{"seen", seen},
 	})
+}
+
+// hostPool is the pool a host is in, and the one it's moving to while it drains.
+func hostPool(h api.Host) string {
+	pool := deref(h.PoolID)
+	if h.MovingTo != nil {
+		return pool + " (moving to " + *h.MovingTo + " once drained)"
+	}
+	return pool
 }
 
 // linuxOnly fails on a machine kantel-host doesn't run on.
@@ -183,6 +193,7 @@ func hosts(sys System) cli.Section {
 			Flags: []cli.Flag{
 				{Name: "name", Type: cli.String, Value: "<name>", Description: "The host's name"},
 				{Name: "label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "A label; repeat for more"},
+				{Name: "pool", Type: cli.String, Value: "<pool>", Description: "The pool it joins, an ID or name; default the default pool"},
 				{Name: "expires-minutes", Type: cli.String, Value: "<n>", Description: "How long the token works (default 60)"},
 				{Name: "ssh", Type: cli.String, Value: "<user@machine>", Description: "Run the join command on that machine now, over ssh"},
 			},
@@ -243,6 +254,24 @@ func hosts(sys System) cli.Section {
 				return hostCall(c, func(client *api.Client, raw *json.RawMessage) (*api.Host, error) {
 					return client.UpdateHost(c.Ctx, c.Arg(0), api.UpdateHostBody{Draining: api.Ptr(!off)}, api.Raw(raw))
 				}, hostState(c))
+			},
+		},
+		{
+			Name:    "host move",
+			Summary: "Move a host to another pool: it drains, and moves once it has no sandboxes",
+			Args:    []cli.Arg{{Name: "hostId"}, {Name: "pool"}},
+			Details: "It takes no new sandboxes from now on, and joins the pool (an ID or name) once its last sandbox is deleted;\n" +
+				"then it takes new sandboxes again. Moving it to the pool it is in cancels a move, leaving it draining.",
+			Run: func(c *cli.Context) error {
+				pool := c.Arg(1)
+				return hostCall(c, func(client *api.Client, raw *json.RawMessage) (*api.Host, error) {
+					return client.UpdateHost(c.Ctx, c.Arg(0), api.UpdateHostBody{Pool: &pool}, api.Raw(raw))
+				}, func(h api.Host) string {
+					if h.MovingTo != nil {
+						return h.ID + " draining, moving to " + *h.MovingTo
+					}
+					return h.ID + " in " + deref(h.PoolID) + " " + c.Style.State(string(h.State))
+				})
 			},
 		},
 		{
@@ -326,6 +355,9 @@ func hostAdd(c *cli.Context, sys System) error {
 	body := api.CreateHostJoinTokenBody{}
 	if name, ok := c.Str("name"); ok {
 		body.Name = &name
+	}
+	if pool, ok := c.Str("pool"); ok {
+		body.Pool = &pool
 	}
 	if len(labels) > 0 {
 		body.Labels = labels

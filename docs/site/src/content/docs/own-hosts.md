@@ -57,6 +57,20 @@ kantel hosts rm host_…          # revoke its credential and close its connecti
 
 Asking for a host in another account gives `not_found`, so nobody can learn whether a host exists. Once a host is removed, `kantel-host` stops and doesn't retry. `kantel host <id> <port>` (singular) is a different command: it gives a sandbox's port a URL.
 
+## Pools
+
+An account's hosts are in pools, each host in exactly one. Every account starts with a pool named `default`, which its hosts join unless their token names another, so an account with one pool sees no change. Pools are the boundary that sharing data between hosts will keep to (see the disk store's design), so a CI pool and a pool for agent sandboxes don't mix.
+
+```sh
+kantel pools add ci                    # an empty pool
+kantel hosts add builder-1 --pool ci   # a token whose host joins ci
+kantel hosts move host_… ci            # drains the host; it moves once it has no sandboxes
+kantel pools default ci                # where hosts join, naming no pool
+kantel pools rm ci                     # only an empty pool that isn't the default
+```
+
+A move is explicit, and drains the host first: it takes no new sandboxes, and joins the new pool once its last sandbox is deleted, then takes sandboxes again. Moving it to the pool it's in cancels the move and leaves it draining. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
+
 ## Turn it on
 
 **Self-hosted:** set `KANTEL_ACCOUNT_HOSTS=experimental` in `deploy/compose/.env`, along with `KANTEL_PUBLIC_URL` (or `KANTEL_COMPUTE_PUBLIC_URL`), the address hosts can reach. See [Install](/self-hosting/install/). Direct and private-network hosts that the super-admin joins keep working as before, and they're the shared hosts in the table above.
@@ -65,4 +79,4 @@ Asking for a host in another account gives `not_found`, so nobody can learn whet
 
 ## API
 
-The routes are in the API reference under [Your hosts](/api/reference/account-hosts/): `POST /v1/hosts/join-tokens`, `GET /v1/hosts`, and `GET`, `PATCH` and `DELETE /v1/hosts/{hostId}`. A host's `accountId` says which account it belongs to. A host the super-admin joined has no `accountId`.
+The routes are in the API reference under [Your hosts](/api/reference/account-hosts/): `POST /v1/hosts/join-tokens`, `GET /v1/hosts`, and `GET`, `PATCH` and `DELETE /v1/hosts/{hostId}`. A host's `accountId` says which account it belongs to. A host the super-admin joined has no `accountId`. Its `poolId` says which pool it is in, and `movingTo` the pool it is moving to; the pools are `GET` and `POST /v1/pools` and `PATCH` and `DELETE /v1/pools/{poolId}`.

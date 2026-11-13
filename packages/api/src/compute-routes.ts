@@ -34,6 +34,7 @@ import {
 	CommandPath,
 	CommitStickyDiskPath,
 	CreateAccountJoinTokenBody,
+	CreateAccountPoolBody,
 	CreateApiKeyBody,
 	CreateBucketSourceBody,
 	CreateEnvironmentBody,
@@ -42,6 +43,7 @@ import {
 	CreateInviteBody,
 	CreateOrganisationBody,
 	CreatePersonalTokenBody,
+	CreatePoolBody,
 	CreateSandboxBody,
 	CreateStickyDiskBody,
 	CreateTemplateBody,
@@ -102,6 +104,9 @@ import {
 	PersonalTokenList,
 	PersonalTokenPath,
 	PollDeviceLoginBody,
+	Pool,
+	PoolList,
+	PoolPath,
 	PortPath,
 	ProxySettings,
 	PublicUrl,
@@ -159,6 +164,7 @@ import {
 	UpdateGithubRunnersBody,
 	UpdateHostBody,
 	UpdateMemberBody,
+	UpdatePoolBody,
 	UpdateSandboxBody,
 	UpdateTemplateBody,
 	UpdateWebhookBody,
@@ -2233,7 +2239,8 @@ export const updateHost = defineRoute({
 	tag: "hosts",
 	summary: "Change a host",
 	description: describe(
-		"Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots.",
+		"Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on",
+		"each account's saved snapshots.",
 		SUPER_ADMIN,
 	),
 	params: HostPath,
@@ -2363,6 +2370,69 @@ export const setPublicUrl = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
+// Pools: sets of hosts, each host in exactly one, where sandboxes are placed (docs/design/disk-store.md, "Pools").
+
+const POOL_MOVE = "Its hosts are moved between pools with `pool` on a host's change, which drains the host first.";
+
+export const listPools = defineRoute({
+	operationId: "listPools",
+	method: "GET",
+	path: "/admin/pools",
+	tag: "hosts",
+	summary: "List the deployment's pools",
+	description: describe(
+		"The pools the deployment's shared hosts are in, the default first made if there is none yet.",
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The pools.", schema: PoolList },
+	errors: ["forbidden"],
+});
+
+export const createPool = defineRoute({
+	operationId: "createPool",
+	method: "POST",
+	path: "/admin/pools",
+	tag: "hosts",
+	summary: "Make a pool of shared hosts",
+	description: describe(
+		"An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken.",
+		POOL_MOVE,
+		SUPER_ADMIN,
+	),
+	body: CreatePoolBody,
+	idempotent: true,
+	answer: { status: 201, description: "The pool.", schema: Pool },
+	errors: ["invalid", "forbidden", "conflict"],
+});
+
+export const updatePool = defineRoute({
+	operationId: "updatePool",
+	method: "PATCH",
+	path: "/admin/pools/{poolId}",
+	tag: "hosts",
+	summary: "Change a pool of shared hosts",
+	description: describe("Renames it, or makes it the deployment's default pool.", SUPER_ADMIN),
+	params: PoolPath,
+	body: UpdatePoolBody,
+	answer: { status: 200, description: "The pool.", schema: Pool },
+	errors: changeErrors,
+});
+
+export const deletePool = defineRoute({
+	operationId: "deletePool",
+	method: "DELETE",
+	path: "/admin/pools/{poolId}",
+	tag: "hosts",
+	summary: "Delete a pool of shared hosts",
+	description: describe(
+		"Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it.",
+		SUPER_ADMIN,
+	),
+	params: PoolPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: changeErrors,
+});
+
 export const hostRoutes = {
 	listHosts,
 	createHostJoinToken,
@@ -2374,6 +2444,10 @@ export const hostRoutes = {
 	revokeHost,
 	getPublicUrl,
 	setPublicUrl,
+	listPools,
+	createPool,
+	updatePool,
+	deletePool,
 } as const;
 
 // Kantel's base images and how far behind each is (image patching, experimental): the deployment's super-admins only.
@@ -2477,7 +2551,8 @@ export const updateAccountHost = defineRoute({
 	tag: "account-hosts",
 	summary: "Change one of an account's hosts",
 	description: describe(
-		"Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots.",
+		"Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on",
+		"each account's saved snapshots.",
 		scope("account:admin"),
 		ACCOUNT_HOSTS,
 	),
@@ -2523,6 +2598,75 @@ export const removeAccountHost = defineRoute({
 	params: HostPath,
 	answer: { status: 200, description: "The host, revoked.", schema: Host },
 	errors: [...readErrors, "not_supported"],
+});
+
+export const listAccountPools = defineRoute({
+	operationId: "listAccountPools",
+	method: "GET",
+	path: "/pools",
+	tag: "account-hosts",
+	summary: "List an account's pools",
+	description: describe(
+		"The pools the account's own hosts are in, the default first made if there is none yet.",
+		scope("account:read"),
+		ACCOUNT_HOSTS,
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The pools.", schema: PoolList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createAccountPool = defineRoute({
+	operationId: "createAccountPool",
+	method: "POST",
+	path: "/pools",
+	tag: "account-hosts",
+	summary: "Make a pool of an account's hosts",
+	description: describe(
+		"An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool",
+		"of that name.",
+		POOL_MOVE,
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	body: CreateAccountPoolBody,
+	idempotent: true,
+	answer: { status: 201, description: "The pool.", schema: Pool },
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
+});
+
+export const updateAccountPool = defineRoute({
+	operationId: "updateAccountPool",
+	method: "PATCH",
+	path: "/pools/{poolId}",
+	tag: "account-hosts",
+	summary: "Change one of an account's pools",
+	description: describe(
+		"Renames it, or makes it the account's default pool. A name is looked for in the caller's own account (its",
+		"personal account, or an API key's).",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: PoolPath,
+	body: UpdatePoolBody,
+	answer: { status: 200, description: "The pool.", schema: Pool },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const deleteAccountPool = defineRoute({
+	operationId: "deleteAccountPool",
+	method: "DELETE",
+	path: "/pools/{poolId}",
+	tag: "account-hosts",
+	summary: "Delete one of an account's pools",
+	description: describe(
+		"Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: PoolPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...changeErrors, "not_supported"],
 });
 
 // Bundles and bucket sources: what mounts are made from (experimental, behind the deployment's KANTEL_MOUNTS switch).
@@ -2695,6 +2839,10 @@ export const accountHostRoutes = {
 	updateAccountHost,
 	updateAccountHostAgent,
 	removeAccountHost,
+	listAccountPools,
+	createAccountPool,
+	updateAccountPool,
+	deleteAccountPool,
 } as const;
 
 /** Every compute-plane route, in the order the document and the SDK list them. */

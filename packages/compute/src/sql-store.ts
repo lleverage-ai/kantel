@@ -106,6 +106,10 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_template_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'templates'"
 			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_template_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'templates'",
+		// No two pools of an owner (an account, or the deployment) share a name (`poolNameKey`), as environments' names.
+		dialect === "postgres"
+			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_pool_name ON compute_api_records (((data::jsonb ->> 'owner')), ((data::jsonb ->> 'name'))) WHERE kind = 'pools'"
+			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_pool_name ON compute_api_records (json_extract(data, '$.owner'), json_extract(data, '$.name')) WHERE kind = 'pools'",
 	];
 }
 
@@ -509,6 +513,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		proxies: sqlCollection(driver, "proxies"),
 		hosts: sqlCollection(driver, "hosts"),
 		joinTokens: sqlCollection(driver, "joinTokens"),
+		pools: sqlCollection(driver, "pools"),
 		events: sqlCollection(driver, "events"),
 		idempotency: sqlCollection(driver, "idempotency"),
 		deviceLogins: sqlCollection(driver, "deviceLogins"),

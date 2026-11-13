@@ -262,6 +262,21 @@ func (q *ListAccountHostsQuery) values() url.Values {
 	return v
 }
 
+// ListAccountPoolsQuery is ListAccountPools's query.
+type ListAccountPoolsQuery struct {
+	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
+	Account *string
+}
+
+func (q *ListAccountPoolsQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "account", q.Account)
+	return v
+}
+
 // ListBucketSourcesQuery is ListBucketSources's query.
 type ListBucketSourcesQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
@@ -783,7 +798,7 @@ func (c *Client) GetHost(ctx context.Context, hostID string, opts ...CallOption)
 	return &out, nil
 }
 
-// UpdateHost PATCH /admin/hosts/{hostId}: Change a host. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
+// UpdateHost PATCH /admin/hosts/{hostId}: Change a host. Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
 func (c *Client) UpdateHost(ctx context.Context, hostID string, body UpdateHostBody, opts ...CallOption) (*Host, error) {
 	var out Host
 	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/admin/hosts/%s", url.PathEscape(hostID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
@@ -805,6 +820,38 @@ func (c *Client) UpdateHostAgent(ctx context.Context, hostID string, opts ...Cal
 func (c *Client) GetHostUsage(ctx context.Context, hostID string, query *GetHostUsageQuery, opts ...CallOption) (*HostUsage, error) {
 	var out HostUsage
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/admin/hosts/%s/usage", url.PathEscape(hostID)), Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListPools GET /admin/pools: List the deployment's pools. The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) ListPools(ctx context.Context, opts ...CallOption) (*PoolList, error) {
+	var out PoolList
+	if err := c.Do(ctx, Call{Method: "GET", Path: "/admin/pools", Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreatePool POST /admin/pools: Make a pool of shared hosts. An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) CreatePool(ctx context.Context, body CreatePoolBody, opts ...CallOption) (*Pool, error) {
+	var out Pool
+	if err := c.Do(ctx, Call{Method: "POST", Path: "/admin/pools", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeletePool DELETE /admin/pools/{poolId}: Delete a pool of shared hosts. Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) DeletePool(ctx context.Context, poolID string, opts ...CallOption) error {
+	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/admin/pools/%s", url.PathEscape(poolID)), Query: nil}, opts...)
+}
+
+// UpdatePool PATCH /admin/pools/{poolId}: Change a pool of shared hosts. Renames it, or makes it the deployment's default pool. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) UpdatePool(ctx context.Context, poolID string, body UpdatePoolBody, opts ...CallOption) (*Pool, error) {
+	var out Pool
+	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/admin/pools/%s", url.PathEscape(poolID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -1172,7 +1219,7 @@ func (c *Client) GetAccountHost(ctx context.Context, hostID string, opts ...Call
 	return &out, nil
 }
 
-// UpdateAccountHost PATCH /hosts/{hostId}: Change one of an account's hosts. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+// UpdateAccountHost PATCH /hosts/{hostId}: Change one of an account's hosts. Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 func (c *Client) UpdateAccountHost(ctx context.Context, hostID string, body UpdateHostBody, opts ...CallOption) (*Host, error) {
 	var out Host
 	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/hosts/%s", url.PathEscape(hostID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
@@ -1221,6 +1268,38 @@ func (c *Client) CreatePersonalToken(ctx context.Context, body CreatePersonalTok
 func (c *Client) RevokePersonalToken(ctx context.Context, tokenID string, opts ...CallOption) (*PersonalToken, error) {
 	var out PersonalToken
 	if err := c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/personal-tokens/%s", url.PathEscape(tokenID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListAccountPools GET /pools: List an account's pools. The pools the account's own hosts are in, the default first made if there is none yet. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) ListAccountPools(ctx context.Context, query *ListAccountPoolsQuery, opts ...CallOption) (*PoolList, error) {
+	var out PoolList
+	if err := c.Do(ctx, Call{Method: "GET", Path: "/pools", Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CreateAccountPool POST /pools: Make a pool of an account's hosts. An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) CreateAccountPool(ctx context.Context, body CreateAccountPoolBody, opts ...CallOption) (*Pool, error) {
+	var out Pool
+	if err := c.Do(ctx, Call{Method: "POST", Path: "/pools", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteAccountPool DELETE /pools/{poolId}: Delete one of an account's pools. Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) DeleteAccountPool(ctx context.Context, poolID string, opts ...CallOption) error {
+	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/pools/%s", url.PathEscape(poolID)), Query: nil}, opts...)
+}
+
+// UpdateAccountPool PATCH /pools/{poolId}: Change one of an account's pools. Renames it, or makes it the account's default pool. A name is looked for in the caller's own account (its personal account, or an API key's). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) UpdateAccountPool(ctx context.Context, poolID string, body UpdatePoolBody, opts ...CallOption) (*Pool, error) {
+	var out Pool
+	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/pools/%s", url.PathEscape(poolID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

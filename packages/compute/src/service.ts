@@ -143,6 +143,7 @@ import {
 	sandboxNotRunning,
 	sandboxUnresponsive,
 } from "./not-running.ts";
+import { createPoolService, defaultPoolOf, poolOwnerOf } from "./pools.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -161,8 +162,10 @@ import type {
 	StoredHost,
 	StoredIdempotency,
 	StoredInvite,
+	StoredJoinToken,
 	StoredPeak,
 	StoredPersonalToken,
+	StoredPool,
 	StoredProxy,
 	StoredSample,
 	StoredSandbox,
@@ -174,7 +177,7 @@ import type {
 	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
-import { stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
+import { OPERATOR_POOLS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
@@ -2525,6 +2528,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		once: (principal, operation, input, work) => once(principal, operation, input, work),
 	});
 
+	// Pools: an account's hosts, or the shared ones, in sets (`pools.ts`).
+	const pools = createPoolService({
+		store,
+		now,
+		hosts: () => ensureHosts(),
+		requireAccountHosts: () => requireAccountHosts(),
+		once: (principal, operation, input, work) => once(principal, operation, input, work),
+	});
+
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
 	function track<T>(ids: readonly string[], work: () => Promise<T>): Promise<T> {
 		const previous = Promise.all(ids.map((id) => pending.get(id) ?? Promise.resolve()));
@@ -2559,14 +2571,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const byId = new Map(records.map((record) => [record.id, record]));
 			const writes: Promise<void>[] = [];
 			hostMemory.clear();
+			// Each owner's pools, read once for the hosts that have none yet: a new host, or one from before pools.
+			const ownerPools = new Map<string, Promise<StoredPool[]>>();
+			// None where they can't be made (an account closing): its host is left in none, as it is being revoked.
+			const poolFor = async (owner: string, wanted: string | undefined): Promise<string | undefined> => {
+				let read = ownerPools.get(owner);
+				if (read === undefined) {
+					read = pools.poolsOf(owner).catch(() => []);
+					ownerPools.set(owner, read);
+				}
+				const known = await read;
+				if (wanted !== undefined && known.some((pool) => pool.id === wanted)) return wanted;
+				return defaultPoolOf(known)?.id;
+			};
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
 				// (looked up once, when the host is first seen). Once private, never shared again.
-				const accountId =
-					known?.accountId ?? host.accountId ?? (known === undefined ? await enrolledInto(host.id) : undefined);
+				const enrolment =
+					known === undefined && (host.accountId === undefined || host.poolId === undefined)
+						? await enrolmentOf(host.id)
+						: undefined;
+				const accountId = known?.accountId ?? host.accountId ?? enrolment?.accountId;
+				// Its pool: the one it is in; else, first seen, the one its join token named (where it is still its owner's);
+				// else its owner's default, which every host from before pools goes into.
+				const poolId = known?.poolId ?? (await poolFor(accountId ?? OPERATOR_POOLS, host.poolId ?? enrolment?.poolId));
 				// Applied to the record as it is when written, not only as read above: a revocation or drain that lands
 				// meanwhile (another request, another gateway) is kept.
 				const refresh = (current: StoredHost): StoredHost => {
@@ -2588,6 +2619,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					return {
 						...rest,
 						...(owner === undefined ? {} : { accountId: owner }),
+						...(current.poolId === undefined && poolId === undefined ? {} : { poolId: current.poolId ?? poolId }),
 						state: held ? current.state : reachable ? "online" : "unreachable",
 						...hostVersions(host),
 						...(pending ? { updating } : {}),
@@ -2632,6 +2664,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
 					labels: { ...host.labels },
 					...(accountId === undefined ? {} : { accountId }),
+					...(poolId === undefined ? {} : { poolId }),
 					joinedAt: now(),
 					lastSeenAt: now(),
 				};
@@ -2647,8 +2680,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// so placement passes it over, its record (owner, revocation, sandboxes) kept for when the backend has it again.
 			const advertised = new Set(capabilities.hosts.map((host) => host.id));
 			for (const record of records) {
+				// One from before pools that isn't here now goes into its owner's default pool too.
+				const poolId =
+					advertised.has(record.id) || record.poolId !== undefined || record.state === "revoked"
+						? undefined
+						: await poolFor(poolOwnerOf(record), undefined);
+				if (poolId !== undefined) {
+					byId.set(record.id, { ...(byId.get(record.id) ?? record), poolId });
+					writes.push(
+						store.hosts
+							.update(record.id, (current) => (current.poolId === undefined ? { ...current, poolId } : undefined))
+							.then(() => undefined),
+					);
+				}
 				if (advertised.has(record.id) || record.state !== "online") continue;
-				byId.set(record.id, { ...record, state: "unreachable" });
+				byId.set(record.id, { ...(byId.get(record.id) ?? record), state: "unreachable" });
 				writes.push(
 					store.hosts
 						.update(record.id, (current) =>
@@ -2658,17 +2704,83 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 			}
 			await Promise.all(writes);
-			return [...byId.values()];
+			const answer = [...byId.values()];
+			for (const host of capabilities.hosts) {
+				const record = byId.get(host.id);
+				if (record === undefined || record.state === "revoked") continue;
+				// The registry keeps each host's pool too, for what runs on the hosts (the mesh): told where it differs.
+				if (record.poolId !== undefined && host.poolId !== record.poolId) tellPool(record.id, record.poolId);
+				// A move whose host has drained finishes.
+				if (record.movingTo !== undefined) finishMoveSoon(record.id);
+			}
+			return answer;
 		})().finally(() => {
 			hostsReady = undefined;
 		});
 		return hostsReady;
 	};
 
-	/** The account the enrolment a host spent joined it to, if it was an enrolment. */
-	async function enrolledInto(hostId: string): Promise<string | undefined> {
+	/** The join token a host spent, where this store minted it: the account and pool it joined the host to. */
+	async function enrolmentOf(hostId: string): Promise<StoredJoinToken | undefined> {
 		const [token] = await store.joinTokens.list({ hostId });
-		return token?.accountId;
+		return token;
+	}
+
+	// The pool each host's registry was told (`tellPool`), and the moves being finished (`finishMoveSoon`), by host.
+	const told = new Map<string, string>();
+	const finishing = new Set<string>();
+
+	/**
+	 * Tells the backend's registry the pool a host is in, in the background: once per pool from this gateway, so a
+	 * backend that keeps no pool for it (a routed backend's other side) isn't asked again on every read. A failure is
+	 * tried again on a later read.
+	 */
+	function tellPool(hostId: string, poolId: string): void {
+		const updateHost = backend.updateHost?.bind(backend);
+		if (updateHost === undefined || told.get(hostId) === poolId) return;
+		told.set(hostId, poolId);
+		keepGoing(
+			updateHost(hostId, { poolId }).catch((error: unknown) => {
+				if (told.get(hostId) === poolId) told.delete(hostId);
+				throw error;
+			}),
+		);
+	}
+
+	/** Finishes a host's move in the background (`finishMove`), once at a time. */
+	function finishMoveSoon(hostId: string): void {
+		if (finishing.has(hostId)) return;
+		finishing.add(hostId);
+		keepGoing(
+			(async () => {
+				const host = await store.hosts.get(hostId);
+				if (host !== undefined) await finishMove(host);
+			})().finally(() => finishing.delete(hostId)),
+		);
+	}
+
+	/**
+	 * A host's move to another pool (`movingTo`), finished once no sandbox is left on it: it joins the pool, in the
+	 * registry and here, and takes new sandboxes again. One whose pool has gone since stays where it is, draining.
+	 * Answers the host as it is then.
+	 */
+	async function finishMove(host: StoredHost): Promise<StoredHost> {
+		const target = host.movingTo;
+		if (target === undefined || host.state === "revoked") return host;
+		const held = (await store.sandboxes.list({ hostId: host.id })).filter((sandbox) =>
+			NOT_DELETED.includes(sandbox.state),
+		);
+		if (held.length > 0) return host;
+		const pool = await store.pools.get(target);
+		const into = pool !== undefined && pool.owner === poolOwnerOf(host);
+		if (into) await backend.updateHost?.(host.id, { poolId: target, draining: false });
+		const moved = await store.hosts.update(host.id, (current) => {
+			if (current.movingTo !== target || current.state === "revoked") return undefined;
+			const { movingTo: _moved, ...rest } = current;
+			if (!into) return rest;
+			return { ...rest, poolId: target, state: current.state === "draining" ? "online" : current.state };
+		});
+		return moved ?? host;
 	}
 
 	/**
@@ -5756,11 +5868,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		body: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
+			readonly pool?: string;
 			readonly expiresInMinutes?: number;
 		},
 		request: Request,
 		owner?: { readonly accountId: string; readonly createdBy: string },
 	): Promise<computeSchema.HostJoinToken> {
+		// The pool it joins the host to, by ID: absent, its owner's default when it joins.
+		const pool =
+			body.pool === undefined ? undefined : await pools.poolIn(owner?.accountId ?? OPERATOR_POOLS, body.pool);
 		const token = randomSecret("kth_", 32);
 		const expiresAt = now() + (body.expiresInMinutes ?? 60) * 60_000;
 		const id = randomId(owner === undefined ? "hjt" : "enr");
@@ -5772,6 +5888,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			expiresAt,
 			createdAt: now(),
 			...(owner === undefined ? {} : { accountId: owner.accountId, createdBy: owner.createdBy }),
+			...(pool === undefined ? {} : { poolId: pool.id }),
 		});
 		const { publicUrl } = await publicUrlView(request);
 		return {
@@ -5973,14 +6090,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			readonly pool?: string;
 			readonly savedSnapshotBytesLimit?: number | null;
 		},
 	): Promise<computeSchema.Host> {
 		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+		// A move to another pool of its owner's: it drains first, and joins the pool once it has (`finishMove`). Its own
+		// pool cancels a move under way, leaving it draining.
+		const into = body.pool === undefined ? undefined : await pools.poolIn(poolOwnerOf(host), body.pool);
+		const moving = into !== undefined && into.id !== host.poolId;
+		if (moving && body.draining === false) {
+			throw new KantelError("invalid", "A host moving to another pool drains first: leave out draining");
+		}
+		const draining = moving ? true : body.draining;
 		await backend.updateHost?.(host.id, {
 			...(body.name === undefined ? {} : { name: body.name }),
 			...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
-			...(body.draining === undefined ? {} : { draining: body.draining }),
+			...(draining === undefined ? {} : { draining }),
 		});
 		// On the record as it is now: a revocation that landed meanwhile stays (and the change is refused).
 		let revoked = false;
@@ -5988,21 +6114,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			revoked = current.state === "revoked";
 			if (revoked) return undefined;
 			let state = current.state;
-			if (body.draining === true) state = "draining";
-			if (body.draining === false && current.state === "draining") state = "online";
-			const { savedSnapshotBytesLimit: kept, ...rest } = current;
+			if (draining === true) state = "draining";
+			if (draining === false && current.state === "draining") state = "online";
+			const { savedSnapshotBytesLimit: kept, movingTo, ...rest } = current;
 			const limit = body.savedSnapshotBytesLimit === undefined ? kept : (body.savedSnapshotBytesLimit ?? undefined);
+			// Where it is moving to: the pool asked for unless that is the one it is in, else where it was moving.
+			const target = into === undefined ? movingTo : into.id === current.poolId ? undefined : into.id;
 			return {
 				...rest,
 				name: body.name ?? current.name,
 				labels: body.labels === undefined ? current.labels : { ...body.labels },
 				state,
+				...(target === undefined ? {} : { movingTo: target }),
 				...(limit === undefined ? {} : { savedSnapshotBytesLimit: limit }),
 			};
 		});
 		if (revoked) throw new KantelError("conflict", "The host is revoked");
 		if (updated === undefined) throw new KantelError("not_found", "No such host");
-		return hostView(updated);
+		// A host with no sandboxes moves at once.
+		return hostView(updated.movingTo === undefined ? updated : await finishMove(updated));
 	}
 
 	/**
@@ -6194,6 +6324,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const entry of await store.egress.list({ accountId })) await store.egress.delete(entry.id);
 		await store.telemetry.delete(accountId);
 		await store.proxies.delete(accountId);
+		for (const pool of await store.pools.list({ owner: accountId })) await store.pools.delete(pool.id);
 		// The account before its memberships: should what follows fail, a membership left names it, for the next pass.
 		await store.accounts.delete(accountId);
 		for (const member of await store.members.list({ accountId })) await store.members.delete(member.id);
@@ -7565,6 +7696,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await forgetStickyDisks(account.id);
 			await store.telemetry.delete(account.id);
 			await store.proxies.delete(account.id);
+			for (const pool of await store.pools.list({ owner: account.id })) await store.pools.delete(pool.id);
 			await store.accounts.delete(account.id);
 			return undefined;
 		},
@@ -10370,6 +10502,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
+
+		// Pools: `pools.ts`.
+
+		...pools.handlers,
 
 		...(mounts?.handlers ?? MOUNTS_OFF_HANDLERS),
 	};

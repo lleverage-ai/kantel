@@ -76,6 +76,54 @@ func TestHostsListInfoDrainRemove(t *testing.T) {
 	contains(t, "empty", empty.Stdout, "kantel hosts add")
 }
 
+func TestPoolsAndHostsMove(t *testing.T) {
+	pool := func(id, name string, def bool) map[string]any {
+		return map[string]any{"id": id, "name": name, "default": def, "hosts": 1, "accountId": "acc_org", "createdAt": 1}
+	}
+	r := routes{
+		"GET /v1/pools": func(call) any {
+			return map[string]any{"items": []any{pool("pool_acc_org", "default", true), pool("pool_ci", "ci", false)}}
+		},
+		"POST /v1/pools":           func(c call) any { return pool("pool_ci", c.Body["name"].(string), false) },
+		"PATCH /v1/pools/pool_ci":  func(c call) any { return pool("pool_ci", "builds", c.Body["default"] == true) },
+		"DELETE /v1/pools/pool_ci": func(call) any { return nil },
+		"PATCH /v1/hosts/host_own1": func(c call) any {
+			return ownHost(map[string]any{"state": "draining", "poolId": "pool_acc_org", "movingTo": "pool_ci"})
+		},
+		"GET /v1/hosts/host_own1": func(call) any {
+			return ownHost(map[string]any{"poolId": "pool_acc_org", "movingTo": "pool_ci"})
+		},
+		"POST /v1/hosts/join-tokens": func(c call) any {
+			return map[string]any{"id": "enr_1", "accountId": "acc_org", "token": "kth_secret", "command": "install",
+				"expiresAt": time.Now().UnixMilli() + 3_600_000}
+		},
+	}
+	listed := run(t, []string{"pools", "list", "--account", "acc_org"}, opts{routes: r})
+	matches(t, "list", listed.Stdout, `pool_acc_org\s+default\s+yes\s+1`)
+	made := run(t, []string{"pools", "add", "ci", "--account", "acc_org"}, opts{routes: r})
+	jsonEq(t, "add", made.Calls[0].Body, `{"account":"acc_org","name":"ci"}`)
+	eq(t, "add out", made.Stdout, "Made pool ci (pool_ci).\n")
+	// With --account, a name is looked up in that account.
+	renamed := run(t, []string{"pools", "rename", "ci", "builds", "--account", "acc_org"}, opts{routes: r})
+	eq(t, "rename calls", strings.Join(lines(renamed.Calls), ", "), "GET /v1/pools, PATCH /v1/pools/pool_ci")
+	eq(t, "rename out", renamed.Stdout, "pool_ci is now builds.\n")
+	defaulted := run(t, []string{"pools", "default", "pool_ci"}, opts{routes: r})
+	jsonEq(t, "default", defaulted.Calls[0].Body, `{"default":true}`)
+	removed := run(t, []string{"pools", "rm", "pool_ci"}, opts{routes: r})
+	eq(t, "rm calls", strings.Join(lines(removed.Calls), ", "), "DELETE /v1/pools/pool_ci")
+	missing := run(t, []string{"pools", "rm", "nowhere", "--account", "acc_org"}, opts{routes: r})
+	eq(t, "missing exit", missing.Code, 1)
+	contains(t, "missing", missing.Stderr, "no pool named nowhere")
+
+	moved := run(t, []string{"hosts", "move", "host_own1", "pool_ci"}, opts{routes: r})
+	jsonEq(t, "move", moved.Calls[0].Body, `{"pool":"pool_ci"}`)
+	eq(t, "move out", moved.Stdout, "host_own1 (tom-box) is draining: it moves to pool_ci once it has no sandboxes.\n")
+	shown := run(t, []string{"hosts", "info", "host_own1"}, opts{routes: r})
+	matches(t, "pool", shown.Stdout, `pool\s+pool_acc_org \(moving to pool_ci once drained\)`)
+	added := run(t, []string{"hosts", "add", "--pool", "ci", "--account", "acc_org"}, opts{routes: r})
+	jsonEq(t, "add host", added.Calls[1].Body, `{"account":"acc_org","pool":"pool_ci"}`)
+}
+
 func TestHostMemory(t *testing.T) {
 	memory := map[string]any{"totalMiB": 65536, "reserveMiB": 4096, "capacityMiB": 61440, "reservedMiB": 30720,
 		"committedMiB": 15360, "guestUsedMiB": 10240, "residentMiB": 12288, "availableMiB": 40960, "swapUsedMiB": 0,

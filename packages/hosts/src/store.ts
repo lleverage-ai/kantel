@@ -31,6 +31,11 @@ export interface HostRecord {
 	 * the operator joined, which every account shares.
 	 */
 	readonly accountId?: string;
+	/**
+	 * The pool it is in, as the compute plane keeps pools: from the join token it spent, or a move. Absent for a host
+	 * joined before pools, or with the registry's own join token, until the compute plane says.
+	 */
+	readonly poolId?: string;
 }
 
 export interface JoinTokenRecord {

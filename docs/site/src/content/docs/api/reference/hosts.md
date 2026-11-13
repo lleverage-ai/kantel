@@ -75,7 +75,7 @@ A deployment super-admin only (a key needs `hosts:admin`).
 
 `PATCH /v1/admin/hosts/{hostId}` (SDK method `updateHost`)
 
-Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
+Renames it, replaces its labels, drains it, moves it to another pool (draining it first), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
@@ -188,3 +188,73 @@ Sets where hosts reach this control plane, for the join commands made from now o
 - `200`: [PublicUrl](/api/reference/types/#publicurl) (`application/json`). The public URL.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## List the deployment's pools
+
+`GET /v1/admin/pools` (SDK method `listPools`)
+
+The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [PoolList](/api/reference/types/#poollist) (`application/json`). The pools.
+
+**Errors**: `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Make a pool of shared hosts
+
+`POST /v1/admin/pools` (SDK method `createPool`)
+
+An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. Its hosts are moved between pools with `pool` on a host's change, which drains the host first. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
+**Body**: [CreatePoolBody](/api/reference/types/#createpoolbody)
+
+**Answers**
+
+- `201`: [Pool](/api/reference/types/#pool) (`application/json`). The pool.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Change a pool of shared hosts
+
+`PATCH /v1/admin/pools/{poolId}` (SDK method `updatePool`)
+
+Renames it, or makes it the deployment's default pool. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolId` | string | yes | The pool's ID or name. |
+
+**Body**: [UpdatePoolBody](/api/reference/types/#updatepoolbody)
+
+**Answers**
+
+- `200`: [Pool](/api/reference/types/#pool) (`application/json`). The pool.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Delete a pool of shared hosts
+
+`DELETE /v1/admin/pools/{poolId}` (SDK method `deletePool`)
+
+Only an empty pool that isn't the default: `conflict` while a host is in it or moving to it. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolId` | string | yes | The pool's ID or name. |
+
+**Answers**
+
+- `204`: no body. Deleted.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).

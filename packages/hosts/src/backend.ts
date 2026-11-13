@@ -895,6 +895,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };

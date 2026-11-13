@@ -201,6 +201,8 @@ export interface HostView {
 	readonly labels: { readonly [key: string]: string };
 	/** The account whose own host it is, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
+	/** The pool it is in (`HostRecord.poolId`); absent until the compute plane has said. */
+	readonly poolId?: string;
 	readonly joinedAt: number;
 	readonly lastSeenAt?: number;
 }
@@ -456,8 +458,8 @@ export interface ExternalJoinTokens {
 	 */
 	accountOpen?(accountId: string): Promise<boolean>;
 	/**
-	 * Spends the token with this SHA-256 hex once: its name and labels, and the account an account's join token joins
-	 * the host to; or undefined if unknown, used or expired.
+	 * Spends the token with this SHA-256 hex once: its name and labels, the account an account's join token joins the
+	 * host to, and the pool; or undefined if unknown, used or expired.
 	 */
 	spendJoinToken(
 		hash: string,
@@ -469,6 +471,7 @@ export interface ExternalJoinTokens {
 				readonly name?: string;
 				readonly labels: { readonly [key: string]: string };
 				readonly accountId?: string;
+				readonly poolId?: string;
 		  }
 		| undefined
 	>;
@@ -680,6 +683,8 @@ export interface HostsService {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** The pool the compute plane put it in: a move, once it has drained. */
+			readonly poolId?: string;
 		},
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
@@ -1459,6 +1464,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			},
 			labels: { ...facts?.labels, ...host.labels },
 			...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+			...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 			joinedAt: host.joinedAt,
 			...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 		};
@@ -2150,6 +2156,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				revoked: false,
 				draining: false,
 				...(token.accountId === undefined ? {} : { accountId: token.accountId }),
+				...(token.poolId === undefined ? {} : { poolId: token.poolId }),
 				joinedAt: now,
 				...(facts === undefined ? {} : { facts }),
 			});
@@ -2190,6 +2197,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			) {
 				throw new KantelError("invalid", "A host's name is 1 to 100 characters");
 			}
+			if (change.poolId !== undefined && (typeof change.poolId !== "string" || change.poolId.length === 0)) {
+				throw new KantelError("invalid", "A pool's ID is a non-empty string");
+			}
 			const labels = change.labels === undefined ? undefined : labelsOf(change.labels);
 			// On the host as stored now, so a report that lands meanwhile neither undoes this nor is undone by it.
 			const next = await store.updateHost(hostId, (latest) => ({
@@ -2197,6 +2207,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				...(change.name === undefined ? {} : { name: change.name }),
 				...(labels === undefined ? {} : { labels }),
 				...(change.draining === undefined ? {} : { draining: change.draining === true }),
+				...(change.poolId === undefined ? {} : { poolId: change.poolId }),
 			}));
 			if (next === undefined) throw new KantelError("not_found", "No such host");
 			if (next.revoked) throw new KantelError("conflict", "The host is revoked");

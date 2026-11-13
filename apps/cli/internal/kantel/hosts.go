@@ -101,6 +101,7 @@ func describeHost(c *cli.Context, h api.Host) string {
 		{"name", h.Name},
 		{"state", c.Style.State(string(h.State))},
 		{"account", Deref(h.AccountID)},
+		{"pool", hostPool(h)},
 		{"version", Deref(h.Version)},
 		{"machine", strings.Join(machine, "/")},
 		{"tiers", strings.Join(tiers, ", ")},
@@ -117,6 +118,67 @@ func describeHost(c *cli.Context, h api.Host) string {
 	return cli.Fields(c.Style, rows)
 }
 
+// hostPool is the pool a host is in, and the one it's moving to while it drains.
+func hostPool(h api.Host) string {
+	pool := Deref(h.PoolID)
+	if h.MovingTo != nil {
+		return pool + " (moving to " + *h.MovingTo + " once drained)"
+	}
+	return pool
+}
+
+// poolID is a pool's ID from its ID or name: a name is looked up in the account acted in, which the API does itself
+// only for the caller's own account.
+func poolID(c *cli.Context, client *api.Client, ref string) (string, error) {
+	account, err := AccountPtr(c)
+	if err != nil || account == nil || strings.HasPrefix(ref, "pool_") {
+		return ref, err
+	}
+	pools, err := client.ListAccountPools(c.Ctx, &api.ListAccountPoolsQuery{Account: account})
+	if err != nil {
+		return "", err
+	}
+	for _, p := range pools.Items {
+		if p.Name == ref {
+			return p.ID, nil
+		}
+	}
+	return "", cli.Fail("no pool named " + ref + " in account " + *account + ": kantel pools list")
+}
+
+// poolTable is pools as a table.
+func poolTable(c *cli.Context, pools []api.Pool) string {
+	var rows [][]string
+	for _, p := range pools {
+		def := ""
+		if p.Default {
+			def = "yes"
+		}
+		rows = append(rows, []string{p.ID, p.Name, def, fmt.Sprint(p.Hosts)})
+	}
+	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "HOSTS"}, rows)
+}
+
+// poolCommand runs a call that answers a pool on the pool its first argument names, and prints it.
+func poolCommand(c *cli.Context, call func(client *api.Client, id string, raw *json.RawMessage) (*api.Pool, error),
+	human func(api.Pool) string) error {
+	client, err := Client(c)
+	if err != nil {
+		return err
+	}
+	id, err := poolID(c, client, c.Arg(0))
+	if err != nil {
+		return err
+	}
+	var raw json.RawMessage
+	pool, err := call(client, id, &raw)
+	if err != nil {
+		return err
+	}
+	c.Emit(raw, pool, func() string { return human(*pool) })
+	return nil
+}
+
 // ownHosts is the "Your own hosts (experimental)" section.
 func ownHosts() cli.Section {
 	return cli.Section{Title: "Your own hosts (experimental)", Commands: []*cli.Command{
@@ -125,6 +187,7 @@ func ownHosts() cli.Section {
 			Args: []cli.Arg{{Name: "name", Optional: true}},
 			Flags: []cli.Flag{
 				{Name: "label", Type: cli.String, Multiple: true, Value: "<K=V>", Description: "A label for the host; repeat it"},
+				{Name: "pool", Type: cli.String, Value: "<pool>", Description: "The pool it joins, an ID or name; default the account's default pool"},
 				{Name: "expires", Type: cli.String, Value: "<minutes>", Description: "How long the token lasts, 5 to 10080; default 60"},
 			},
 			Details: "It prints a one-line command to run on the machine, as root. kantel-host installs, dials out to\n" +
@@ -149,13 +212,20 @@ func ownHosts() cli.Section {
 				if err != nil {
 					return err
 				}
-				var name *string
+				var name, pool *string
 				if n, ok := c.Optional(0); ok {
 					name = &n
 				}
+				if p, ok := c.Str("pool"); ok {
+					id, err := poolID(c, client, p)
+					if err != nil {
+						return err
+					}
+					pool = &id
+				}
 				var raw json.RawMessage
 				token, err := client.CreateAccountJoinToken(c.Ctx, api.CreateAccountJoinTokenBody{
-					Account: account, Name: name, Labels: labels, ExpiresInMinutes: expires,
+					Account: account, Name: name, Labels: labels, Pool: pool, ExpiresInMinutes: expires,
 				}, api.Raw(&raw))
 				if err != nil {
 					return err
@@ -244,6 +314,34 @@ func ownHosts() cli.Section {
 			},
 		},
 		{
+			Name: "hosts move", Summary: "Move one of your hosts to another of your pools: it drains, and moves once it has no sandboxes",
+			Args: []cli.Arg{{Name: "id"}, {Name: "pool"}},
+			Details: "It takes no new sandboxes from now on, and joins the pool once its last sandbox is deleted; then it\n" +
+				"takes new sandboxes again. Moving it to the pool it is in cancels a move, leaving it draining.",
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				pool, err := poolID(c, client, c.Arg(1))
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				host, err := client.UpdateAccountHost(c.Ctx, c.Arg(0), api.UpdateHostBody{Pool: &pool}, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, host, func() string {
+					if host.MovingTo != nil {
+						return fmt.Sprintf("%s (%s) is draining: it moves to %s once it has no sandboxes.", host.ID, host.Name, *host.MovingTo)
+					}
+					return fmt.Sprintf("%s (%s) is in %s; it is %s.", host.ID, host.Name, Deref(host.PoolID), host.State)
+				})
+				return nil
+			},
+		},
+		{
 			Name: "hosts rm", Summary: "Remove one of your hosts: revoke its credential and close its connection (needs --yes)", Args: IDArg,
 			Flags: []cli.Flag{{Name: "yes", Type: cli.Bool, Short: "y", Description: "Yes, remove it: it can't join again"}},
 			Details: "Its sandboxes keep their disks on the machine but can't be reached. To take kantel-host off the\n" +
@@ -264,6 +362,84 @@ func ownHosts() cli.Section {
 					return err
 				}
 				c.Emit(raw, host, func() string { return fmt.Sprintf("Removed %s (%s); it is %s.", host.ID, host.Name, host.State) })
+				return nil
+			},
+		},
+		{
+			Name: "pools list", Summary: "Your account's pools: sets of its hosts, each host in one",
+			Details: "A sandbox goes on a host of a pool, and a host joins the default pool unless its token names another.",
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				account, err := AccountPtr(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				pools, err := client.ListAccountPools(c.Ctx, &api.ListAccountPoolsQuery{Account: account}, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, pools, func() string { return poolTable(c, pools.Items) })
+				return nil
+			},
+		},
+		{
+			Name: "pools add", Summary: "Make an empty pool in your account", Args: []cli.Arg{{Name: "name"}},
+			Details: "Put hosts in it with kantel hosts add --pool <name>, or kantel hosts move <id> <name>.",
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				account, err := AccountPtr(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				pool, err := client.CreateAccountPool(c.Ctx, api.CreateAccountPoolBody{Account: account, Name: c.Arg(0)}, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, pool, func() string { return fmt.Sprintf("Made pool %s (%s).", pool.Name, pool.ID) })
+				return nil
+			},
+		},
+		{
+			Name: "pools rename", Summary: "Rename one of your pools", Args: []cli.Arg{{Name: "pool"}, {Name: "name"}},
+			Run: func(c *cli.Context) error {
+				name := c.Arg(1)
+				return poolCommand(c, func(client *api.Client, id string, raw *json.RawMessage) (*api.Pool, error) {
+					return client.UpdateAccountPool(c.Ctx, id, api.UpdatePoolBody{Name: &name}, api.Raw(raw))
+				}, func(p api.Pool) string { return fmt.Sprintf("%s is now %s.", p.ID, p.Name) })
+			},
+		},
+		{
+			Name: "pools default", Summary: "Make one of your pools the default: where hosts join and sandboxes go, naming none",
+			Args: []cli.Arg{{Name: "pool"}},
+			Run: func(c *cli.Context) error {
+				return poolCommand(c, func(client *api.Client, id string, raw *json.RawMessage) (*api.Pool, error) {
+					return client.UpdateAccountPool(c.Ctx, id, api.UpdatePoolBody{Default: api.Ptr(true)}, api.Raw(raw))
+				}, func(p api.Pool) string { return fmt.Sprintf("%s (%s) is the default pool.", p.Name, p.ID) })
+			},
+		},
+		{
+			Name: "pools rm", Summary: "Delete one of your pools: an empty one that isn't the default", Args: []cli.Arg{{Name: "pool"}},
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				id, err := poolID(c, client, c.Arg(0))
+				if err != nil {
+					return err
+				}
+				if err := client.DeleteAccountPool(c.Ctx, id); err != nil {
+					return err
+				}
+				c.Emit(nil, map[string]string{"deleted": id}, func() string { return "Deleted pool " + c.Arg(0) + "." })
 				return nil
 			},
 		},

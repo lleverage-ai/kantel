@@ -4,7 +4,7 @@
 // else uses, and the routes answer `not_supported` while the switch is off.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender, type PersonIdentity } from "@kantel/compute";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService } from "../src/service.ts";
@@ -267,5 +267,31 @@ describe("Account hosts", () => {
 			service.sandboxes.create({ sandboxId: "sbx_other", tier: "microvm", owner: "acc_other", hostIds: [own.hostId] }),
 		).rejects.toThrow();
 		expect(own.sandboxes.has("sbx_other")).toBe(false);
+	});
+
+	it("joins a host to the pool its token names, which the registry keeps, and moves it once drained", async () => {
+		const { tom, join, service } = setup();
+		const ci = await tom.createAccountPool({ name: "ci" });
+		const inCi = await join((await tom.createAccountJoinToken({ name: "builder", pool: "ci" })).token);
+		const inDefault = await join((await tom.createAccountJoinToken({ name: "laptop" })).token);
+		const [first] = (await tom.listAccountPools()).items;
+		expect((await service.get(inCi.hostId)).poolId).toBe(ci.id);
+		expect((await tom.getAccountHost(inCi.hostId)).poolId).toBe(ci.id);
+		expect((await tom.getAccountHost(inDefault.hostId)).poolId).toBe(first?.id);
+
+		// A move drains it, in the registry too, and once it holds no sandbox it joins the pool there and here.
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const holder = inDefault.sandboxes.has(sandbox.id) ? inDefault : inCi;
+		const moving = await tom.updateAccountHost(holder.hostId, { pool: holder === inCi ? "default" : "ci" });
+		expect(moving.state).toBe("draining");
+		expect((await service.get(holder.hostId)).state).toBe("draining");
+		await tom.deleteSandbox(sandbox.id);
+		await tom.listAccountHosts();
+		await vi.waitFor(async () => {
+			expect((await tom.getAccountHost(holder.hostId)).movingTo).toBeUndefined();
+		});
+		const moved = await service.get(holder.hostId);
+		expect(moved.state).toBe("online");
+		expect(moved.poolId).toBe(holder === inCi ? first?.id : ci.id);
 	});
 });
