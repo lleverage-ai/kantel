@@ -28,13 +28,31 @@ type templateTier interface {
 }
 
 // withRuntime adds the microVM tier's Firecracker and guest kernel to the host's facts: a template snapshot restores
-// only onto the same two, so the control plane keys its template snapshots by them.
+// only onto the same two, so the control plane keys its template snapshots by them. And the host's CPU fingerprint:
+// a snapshot's memory restores only onto the same CPU.
 func (h *Host) withRuntime(f proto.Facts) proto.Facts {
-	if _, ok := h.tiers[microvm.Tier]; ok {
+	if t, ok := h.tiers[microvm.Tier]; ok {
 		f.Firecracker = hostinfo.FirecrackerVersion(h.cfg.Firecracker)
 		f.GuestKernel = hostinfo.GuestKernel(h.cfg.Kernel)
+		if mv, ok := t.(*microvm.Manager); ok {
+			f.CPU = mv.CPU()
+		}
 	}
 	return f
+}
+
+// runtimes are the microVM tier's runtime fingerprints (Facts.Runtimes), for the host image versions it has now: an
+// update adds one, and a prune takes one away. None without the tier.
+func (h *Host) runtimes() []proto.HostRuntime {
+	mv, ok := h.tiers[microvm.Tier].(*microvm.Manager)
+	if !ok {
+		return nil
+	}
+	var versions []string
+	if h.cfg.ImagePatching {
+		versions = imageStore(h.cfg).SandboxImages()
+	}
+	return mv.Runtimes(versions)
 }
 
 // canBuildTemplates says whether the host can build templates now: it runs the microVM tier and that can build their

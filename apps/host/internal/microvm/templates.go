@@ -112,14 +112,18 @@ type templateSnapshotMeta struct {
 	Base string `json:"base,omitempty"`
 	// Runtime is the Firecracker and kernel it was made with, and the host's image when Rootfs is Config.Rootfs itself
 	// (runtimeFingerprint): it restores only onto those.
-	Runtime   string            `json:"runtime"`
-	BuiltFrom templateBuiltFrom `json:"builtFrom"`
-	VCPUs     int               `json:"vcpus"`
-	MemoryMiB int               `json:"memoryMiB"`
-	DiskGiB   int               `json:"diskGiB"`
-	SizeBytes int64             `json:"sizeBytes"`
-	CreatedAt int64             `json:"createdAt"`
-	Timings   timings           `json:"timings,omitempty"`
+	Runtime string `json:"runtime"`
+	// CPU and PortableRuntime are what it was made on as other hosts can compare it (fingerprint.go): its host's CPU
+	// and its runtime (portableRuntime). Absent from one made before they were kept.
+	CPU             *proto.CPUFingerprint `json:"cpu,omitempty"`
+	PortableRuntime string                `json:"portableRuntime,omitempty"`
+	BuiltFrom       templateBuiltFrom     `json:"builtFrom"`
+	VCPUs           int                   `json:"vcpus"`
+	MemoryMiB       int                   `json:"memoryMiB"`
+	DiskGiB         int                   `json:"diskGiB"`
+	SizeBytes       int64                 `json:"sizeBytes"`
+	CreatedAt       int64                 `json:"createdAt"`
+	Timings         timings               `json:"timings,omitempty"`
 	// Guest is what the template's image has, as its agent reported it at the build, before the setup ran (nil: an
 	// agent too old to say). Not the host's shared report (Manager.guest): that is the default image's. A restore of
 	// the snapshot reports this, as a fresh boot of the template reports what its own agent says at the same point.
@@ -127,7 +131,10 @@ type templateSnapshotMeta struct {
 }
 
 func (k templateSnapshotMeta) result() proto.TemplateBuildResult {
-	res := proto.TemplateBuildResult{Ref: k.SnapshotID, ImageDigest: k.BuiltFrom.ImageDigest, SizeBytes: k.SizeBytes, Timings: k.Timings}
+	res := proto.TemplateBuildResult{
+		Ref: k.SnapshotID, ImageDigest: k.BuiltFrom.ImageDigest, SizeBytes: k.SizeBytes, Timings: k.Timings,
+		CPU: k.CPU, Runtime: k.PortableRuntime,
+	}
 	if k.BuiltFrom.custom() {
 		res.RootfsKey, res.Source = k.BuiltFrom.RootfsKey, k.BuiltFrom.Image
 		res.DockerfileDigest, res.ImageRef = k.BuiltFrom.DockerfileDigest, k.BuiltFrom.ImageRef
@@ -314,6 +321,7 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	}
 	kept := templateSnapshotMeta{
 		SnapshotID: p.SnapshotID, KeyHash: p.KeyHash, Rootfs: booting, Runtime: m.runtimeFingerprint(booting),
+		CPU: m.CPU(), PortableRuntime: m.portableRuntime(booting),
 		BuiltFrom: builtFrom,
 		VCPUs:     size.VCPUs, MemoryMiB: size.MemoryMiB, DiskGiB: size.DiskGiB, CreatedAt: time.Now().UnixMilli(), Timings: t,
 		Guest: caps,

@@ -1110,6 +1110,8 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `tiers` | [SandboxType](/api/reference/types/#sandboxtype)[] | yes | The sandbox types it runs. |
 | `kvm` | boolean | yes |  |
 | `nestedVirtualisation` | boolean | yes |  |
+| `cpuFingerprint` | string | no | Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said. |
+| `runtimeFingerprints` | string[] | no | The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said. |
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |

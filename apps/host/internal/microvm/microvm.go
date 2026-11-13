@@ -228,6 +228,9 @@ type Config struct {
 	// FreePageReporting boots every microVM's balloon with free page reporting: the guest hands the pages it frees
 	// back to the host, so a VM's resident memory falls after a peak. In the templates' fingerprint.
 	FreePageReporting bool
+	// CPU is the host's CPU fingerprint, which snapshots record (fingerprint.go); nil reads it (hostinfo.CPU) once,
+	// when first asked.
+	CPU *proto.CPUFingerprint
 	// ExitCause, when set, says why a VM exited that the host didn't end itself ("": not known), such as the kernel's
 	// out-of-memory killer at the host's memory limit: the error its exit is reported with. Called with the sandbox's
 	// lock held, so it mustn't call the tier.
@@ -412,6 +415,8 @@ type Manager struct {
 	// stickyCommits are the versions being committed now, by "<disk>/<version>" (reserveStickyVersion). Guarded by
 	// stickyMu.
 	stickyCommits map[string]bool
+	// fingerprints is the CPU and the runtime's files, as fingerprint.go reads them.
+	fingerprints fingerprints
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -3510,6 +3515,7 @@ func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, tran
 	defer m.holdBases()()
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
+	snap.CPU, snap.Runtime = m.CPU(), m.portableRuntime(rootfs)
 	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest, Transient: transient}
 	if snap.Memory {
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
@@ -3961,7 +3967,7 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	}
 	kept := src
 	// Its own save time, and its source's state's time (TakenAt).
-	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), Memory: src.Memory, Base: src.Base, Tier: Tier}
+	kept.SnapshotInfo = proto.SnapshotInfo{ID: p.SnapshotID, SandboxID: src.SandboxID, Kind: "saved", Name: p.Name, CreatedAt: time.Now().UnixMilli(), TakenAt: src.TakenAtOrCreated(), Memory: src.Memory, Base: src.Base, Tier: Tier, CPU: src.CPU, Runtime: src.Runtime}
 	if kept.Memory {
 		ok := os.Link(filepath.Join(from, "state"), filepath.Join(sdir, "state")) == nil &&
 			m.spool.link(filepath.Join(from, "mem"), filepath.Join(sdir, "mem")) == nil

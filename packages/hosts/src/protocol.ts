@@ -106,6 +106,41 @@ export interface HostFacts {
 	 * isolate tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
 	 */
 	readonly isolate?: HostIsolateRuntime;
+	/**
+	 * Its CPU as a microVM sees it: a snapshot's memory restores only onto a host whose CPU fingerprint is the same
+	 * (`sameCpu`), since Kantel sets no Firecracker CPU template. Absent on a host without the microVM tier, or from before
+	 * it said.
+	 */
+	readonly cpu?: HostCpuFingerprint;
+	/**
+	 * The microVM runtime fingerprints it restores snapshots with, one for each host image it has: a snapshot's memory
+	 * restores only onto a host with its `runtime` among them and the same CPU. Absent on a host without the microVM
+	 * tier, or from before it said.
+	 */
+	readonly runtimes?: readonly HostRuntime[];
+}
+
+/**
+ * What a CPU is to a guest (`CPUFingerprint` in proto.go): its vendor (`AuthenticAMD`), family and model as
+ * /proc/cpuinfo has them, and `featuresHash`, a hash of the CPUID feature bits KVM offers a guest (`sha256:` and 16 hex
+ * digits). Two match when all four are equal.
+ */
+export interface HostCpuFingerprint {
+	readonly vendor: string;
+	readonly family: number;
+	readonly model: number;
+	readonly featuresHash: string;
+}
+
+/**
+ * The runtime fingerprint of a microVM booted on one host image (`HostRuntime` in proto.go): its Firecracker, guest
+ * kernel, image, sticky drives and balloon, such as
+ * `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. `image` is the host image
+ * version, `sha256:…` for a host image that isn't versioned, or empty for templates' own root filesystems.
+ */
+export interface HostRuntime {
+	readonly image: string;
+	readonly runtime: string;
 }
 
 /**
@@ -769,6 +804,13 @@ export interface HostSnapshot {
 	readonly uniqueBytes?: number;
 	/** On `snapshot.keep`'s answer: the groups of files it shares with other snapshots (`HostSharedBytes`). */
 	readonly shared?: readonly HostSharedBytes[] | null;
+	/**
+	 * A microVM snapshot's host's CPU and its runtime fingerprint (`HostRuntime.runtime`; empty when it couldn't be told)
+	 * when it was made: its memory restores only onto a host with both. Absent from an isolate's, or from a host from
+	 * before they were kept.
+	 */
+	readonly cpu?: HostCpuFingerprint;
+	readonly runtime?: string;
 }
 
 /**
@@ -1225,6 +1267,9 @@ export interface HostTemplateBuilt {
 	readonly imageRef?: string;
 	readonly sizeBytes: number;
 	readonly timings?: { readonly [step: string]: number };
+	/** What it was made on, as a snapshot's are (`HostSnapshot.cpu`, `runtime`); absent from a host from before. */
+	readonly cpu?: HostCpuFingerprint;
+	readonly runtime?: string;
 }
 
 /** A binary frame: the stream ID, then the payload. */

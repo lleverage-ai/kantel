@@ -59,6 +59,8 @@ class FakeHost {
 	 * guest agent is from before it could.
 	 */
 	processes?: (params: { [key: string]: unknown }) => unknown;
+	/** What its snapshots' answers say they were made on (`cpu`, `runtime`); absent, a host from before it said. */
+	madeOn?: { readonly [key: string]: unknown };
 	/** An error `snapshot.keep` answers instead of keeping, such as a conflict on its ID. */
 	keepRefusal?: { code: string; message: string };
 	/** What `snapshot.list` answers, and whether it refuses instead. */
@@ -161,7 +163,14 @@ class FakeHost {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
 				this.snapshots.set(String(p.snapshotId), new Map(sandbox.files));
 				if (message.method === "sandbox.stop") sandbox.state = "stopped";
-				return answer({ id: p.snapshotId, sandboxId: sandbox.id, kind: "auto", sizeBytes: 42, memory: true });
+				return answer({
+					id: p.snapshotId,
+					sandboxId: sandbox.id,
+					kind: "auto",
+					sizeBytes: 42,
+					memory: true,
+					...this.madeOn,
+				});
 			}
 			case "sandbox.resume":
 			case "sandbox.start":
@@ -595,6 +604,67 @@ describe("the compute API on kantel-host hosts", () => {
 		const second = await service.register({ token: older.token, facts });
 		new FakeHost(service, second.hostId).connect();
 		expect((await root.getSandboxShapes()).isolate.enforced).toBe(false);
+	});
+
+	it("shows a host's CPU and runtime fingerprints, and keeps what each snapshot's memory was made on", async () => {
+		const { service, root, api } = setup();
+		const cpu = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+		const runtime = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4";
+		const template = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=4";
+		const said: HostFacts = {
+			...facts,
+			cpu,
+			runtimes: [
+				{ image: "host-images-20261103", runtime },
+				{ image: "", runtime: template },
+			],
+		};
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts: said });
+		const host = new FakeHost(service, hostId);
+		host.facts = said;
+		host.madeOn = { cpu, runtime };
+		host.connect();
+		const text = "AuthenticAMD family 25 model 97, features sha256:0123456789abcdef";
+		expect((await service.list()).find((view) => view.id === hostId)).toMatchObject({
+			cpuFingerprint: text,
+			runtimeFingerprints: [runtime, template],
+		});
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		expect(await root.getHost(hostId)).toMatchObject({
+			cpuFingerprint: text,
+			runtimeFingerprints: [runtime, template],
+		});
+
+		const saved = await root.saveSnapshot({ name: "warm", sandboxId: sandbox.id, memory: true });
+		expect(await api.store.snapshots.get(saved.id)).toMatchObject({ cpu, runtime });
+		// Never answered by the API.
+		expect(saved).not.toHaveProperty("cpu");
+		expect(saved).not.toHaveProperty("runtime");
+		await root.stopSandbox(sandbox.id, { wait: true });
+		const stopped = await root.getSandbox(sandbox.id);
+		expect(await api.store.snapshots.get(stopped.latestSnapshotId ?? "")).toMatchObject({ cpu, runtime });
+
+		// A host from before they were kept, or one saying something else: nothing is kept.
+		host.madeOn = { cpu: { vendor: "AuthenticAMD", family: "25" }, runtime: 7 };
+		await root.startSandbox(sandbox.id, { wait: true });
+		const older = await root.saveSnapshot({ name: "cold", sandboxId: sandbox.id });
+		const kept = await api.store.snapshots.get(older.id);
+		expect(kept).not.toHaveProperty("cpu");
+		expect(kept).not.toHaveProperty("runtime");
+	});
+
+	it("shows no fingerprints for a host from before it said them", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts });
+		new FakeHost(service, hostId).connect();
+		const view = (await service.list()).find((each) => each.id === hostId);
+		expect(view).not.toHaveProperty("cpuFingerprint");
+		expect(view).not.toHaveProperty("runtimeFingerprints");
+		const listed = await root.getHost(hostId);
+		expect(listed).not.toHaveProperty("cpuFingerprint");
+		expect(listed).not.toHaveProperty("runtimeFingerprints");
 	});
 
 	it("runs neither node nor python in an isolate on a host from before kantel-isolate", async () => {

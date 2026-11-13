@@ -352,8 +352,8 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 }
 
-// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates, and
-// what its isolate runtime said it can do once it has (Isolate).
+// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates, what
+// its isolate runtime said it can do once it has (Isolate), and its microVM runtimes for the images it has now.
 func (h *Host) Facts() proto.Facts {
 	f := h.facts
 	if held := h.patching.facts.Load(); held != nil {
@@ -363,6 +363,7 @@ func (h *Host) Facts() proto.Facts {
 	if iso, ok := h.tiers[isolate.Tier].(*isolate.Manager); ok {
 		f.Isolate = iso.RuntimeInfo()
 	}
+	f.Runtimes = h.runtimes()
 	if h.canBuildTemplates(context.Background()) == nil {
 		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
 		// Custom images only beside template builds: the control plane sends them to a host with both.

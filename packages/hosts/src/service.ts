@@ -15,6 +15,7 @@ import {
 import { type Clock, isKantelError, KantelError, placementError, systemClock } from "@kantel/contracts";
 import type { HostCluster } from "./cluster.ts";
 import {
+	cpuFingerprintText,
 	parseHostCapacity,
 	parseHostFacts,
 	parseHostUsage,
@@ -182,6 +183,10 @@ export interface HostView {
 	readonly features: readonly string[];
 	/** What its isolate runtime can do, as it last said (its hello's facts); absent until it has said. */
 	readonly isolate?: HostIsolateRuntime;
+	/** Its CPU fingerprint as text (`cpuFingerprintText`), from its facts; absent until it has said. */
+	readonly cpuFingerprint?: string;
+	/** Its microVM runtime fingerprints (`HostRuntime.runtime`), from its facts; absent until it has said. */
+	readonly runtimeFingerprints?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported (its hello or a heartbeat), what placement admits a create against;
@@ -1442,6 +1447,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			nestedVirtualisation: facts?.nested ?? false,
 			features: [...(facts?.features ?? [])],
 			...(facts?.isolate === undefined ? {} : { isolate: { ...facts.isolate } }),
+			...(facts?.cpu === undefined ? {} : { cpuFingerprint: cpuFingerprintText(facts.cpu) }),
+			...(facts?.runtimes === undefined ? {} : { runtimeFingerprints: facts.runtimes.map((each) => each.runtime) }),
 			// Disk is free space, which changes as the host runs: the latest heartbeat's, else the hello's.
 			capacity: {
 				vcpus: facts?.cpus ?? 0,

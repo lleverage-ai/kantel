@@ -1245,6 +1245,10 @@ export interface Host {
 	readonly tiers: readonly SandboxType[];
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
+	/** Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said. */
+	readonly cpuFingerprint?: string;
+	/** The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said. */
+	readonly runtimeFingerprints?: readonly string[];
 	readonly capacity: HostCapacity;
 	readonly allocated: HostAllocated;
 	readonly labels: {
