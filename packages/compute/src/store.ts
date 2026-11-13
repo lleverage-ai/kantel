@@ -1027,6 +1027,11 @@ export interface StoredDiskHolder {
 	 * template's root filesystem); absent for a sticky disk's, whose version has it.
 	 */
 	readonly mapDigest?: string;
+	/**
+	 * The pool its host was in when the host first reported it, for a kind with no record of its own (a template's root
+	 * filesystem): it is offered only there, so a host moved to another pool doesn't take the old pool's copies with it.
+	 */
+	readonly poolId?: string;
 }
 
 export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>

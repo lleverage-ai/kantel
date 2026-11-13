@@ -38,6 +38,8 @@ function setUp(
 		secretsKey?: string;
 		stickyDisks?: boolean;
 		templates?: boolean;
+		/** Hosts of an architecture other than the stub's. */
+		arch?: { readonly [hostId: string]: "x86_64" | "aarch64" };
 		/** What hosts last reported holding, for the sweep (`SandboxBackend.stickyHoldings`). */
 		holdings?: () => BackendStickyHoldings[];
 		/** The backend's `disk.fetch` (`SandboxBackend.fetchDisk`); absent, it has none. */
@@ -60,6 +62,7 @@ function setUp(
 				id,
 				name: id,
 				poolId,
+				...(options.arch?.[id] === undefined ? {} : { arch: options.arch[id] }),
 				...more,
 			});
 			return {
@@ -377,6 +380,16 @@ describe("disk holders", () => {
 		});
 		// Pool B's host has no other holder in its pool.
 		expect(await tom.api.service.locateDisk("host_c", request)).toEqual({ holders: [] });
+		// A copy made in another pool (its host moved here since) isn't offered, and stays that pool's as its host goes on
+		// reporting it.
+		const madeElsewhere = (await tom.api.store.diskHolders.list()).find((holder) => holder.hostId === "host_f");
+		if (madeElsewhere === undefined) throw new Error("no holder on host_f");
+		await tom.api.store.diskHolders.put({ ...madeElsewhere, poolId: "pool_b" });
+		await held("host_f", OTHER_DIGEST);
+		const offered = (await tom.api.service.locateDisk("host_d", request)).holders.map((each) => each.hostId);
+		expect(offered).not.toContain("host_f");
+		expect(offered).toHaveLength(1);
+		expect((await tom.api.store.diskHolders.get(madeElsewhere.id))?.poolId).toBe("pool_b");
 		// A revoked host, a key or version that isn't one, are refused.
 		await expect(tom.api.service.locateDisk("host_e", request)).rejects.toMatchObject({ code: "not_found" });
 		await expect(tom.api.service.locateDisk("host_b", { ...request, objectId: "nope" })).rejects.toMatchObject({
@@ -385,6 +398,13 @@ describe("disk holders", () => {
 		await expect(tom.api.service.locateDisk("host_b", { ...request, version: "2" })).rejects.toMatchObject({
 			code: "not_found",
 		});
+		// A host of another architecture isn't offered one: the same image is other bytes there.
+		const mixed = setUp({ templates: true, arch: { host_b: "aarch64" } });
+		await mixed.pool();
+		await mixed.api.service.recordHoldings("host_b", mixed.clock.now, {
+			objects: { rootfs: [{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST }] }] },
+		});
+		expect(await mixed.api.service.locateDisk(STUB_HOST_ID, request)).toEqual({ holders: [] });
 		// Templates off: refused, and nothing recorded.
 		const off = setUp();
 		await off.pool();

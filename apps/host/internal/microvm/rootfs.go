@@ -284,6 +284,8 @@ func (b *rootfsBuilder) rootfs(ctx context.Context, img templateImage) (string, 
 		return "", "", err
 	}
 	path := b.path(key)
+	// A map left of a fetch cut short describes other bytes: this file gets its own (mapRootfsLater).
+	_ = os.Remove(b.mapPath(key))
 	if err := os.Rename(filepath.Join(work, "rootfs.ext4"), path); err != nil {
 		return "", "", err
 	}

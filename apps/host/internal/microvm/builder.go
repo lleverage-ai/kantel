@@ -299,6 +299,8 @@ func commitCustomRootfs(b *rootfsBuilder, key, built string, rec builtRootfs) (s
 	if err := syncFile(built); err != nil {
 		return fail(err)
 	}
+	// A map left of a fetch cut short describes other bytes: this file gets its own (mapRootfsLater).
+	_ = os.Remove(b.mapPath(key))
 	if err := os.Rename(built, path); err != nil {
 		return fail(err)
 	}

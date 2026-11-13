@@ -35,12 +35,13 @@ const (
 	rootfsDoneSuffix    = ".done"
 )
 
-// rootfsMaps is the root filesystems' maps being made, and the digests of those made, as read when their file had
-// that size and time.
+// rootfsMaps is the root filesystems' maps being made, or waiting their turn (one is made at a time, as each reads a
+// whole file), and the digests of those made, as read when their file had that size and time.
 type rootfsMaps struct {
 	mu      sync.Mutex
 	making  map[string]chan struct{}
 	digests map[string]stickyDigest
+	turn    sync.Mutex
 }
 
 func (b *rootfsBuilder) mapPath(key string) string     { return filepath.Join(b.dir, key+".map") }
@@ -121,9 +122,9 @@ func (m *Manager) ReserveRootfsFetch(bytes int64) (release func(), err error) {
 }
 
 // PublishFetchedRootfs makes a fetched partial file, written through partial, the root filesystem, under the key's
-// lock (a build of it waits, then finds it made): its map first, then the file, then its record, when the holder had
-// one, as a build writes them. One the host has already is kept, and the partial dropped. A partial removed meanwhile
-// isn't published.
+// lock (a build of it waits, then finds it made): the file, then its map, then its record when the holder had one (as
+// a build writes the file and then its record). One the host has already is kept, and the partial dropped. A partial
+// removed meanwhile isn't published.
 func (m *Manager) PublishFetchedRootfs(key, version string, partial *os.File, mapFile []byte, files map[string][]byte) error {
 	if !rootfsObject(key, version) {
 		return fmt.Errorf("bad root filesystem key or version")
@@ -142,15 +143,18 @@ func (m *Manager) PublishFetchedRootfs(key, version string, partial *os.File, ma
 	if !sameFileAt(mine, path) {
 		return fmt.Errorf("the fetch of root filesystem %s was removed before it was published", key)
 	}
-	if err := fsutil.WriteFileDurably(b.mapPath(key), mapFile, 0o600); err != nil {
-		return err
-	}
+	// The file first, then its map: a map is never left without the file it describes (a stop between the two leaves
+	// a file without one, which the host maps itself when it starts).
+	_ = os.Remove(b.mapPath(key))
 	if err := os.Rename(path, b.path(key)); err != nil {
-		_ = os.Remove(b.mapPath(key))
 		return err
 	}
 	if err := syncDir(b.dir); err != nil {
 		return err
+	}
+	if err := fsutil.WriteFileDurably(b.mapPath(key), mapFile, 0o600); err != nil {
+		m.log.Warn("a fetched root filesystem's map couldn't be written; it is made again", "key", key, "error", err)
+		m.mapRootfsLater(key)
 	}
 	if record, ok := files[RootfsRecordFile]; ok {
 		if err := fsutil.WriteFileDurably(b.recordPath(key), record, 0o600); err != nil {
@@ -252,8 +256,8 @@ func (m *Manager) rootfsMapDigest(key string) string {
 	return digest
 }
 
-// mapRootfsLater makes a root filesystem's map in the background, under the tier's own context, unless it has one or
-// it is being made: a build or a cache hit asks for it, so one made before maps gets one too. Not on a Manager made
+// mapRootfsLater makes a root filesystem's map in the background, under the tier's own context, after any being made,
+// unless it has one or it is being made: a build or a cache hit asks for it, so one made before maps gets one too. Not on a Manager made
 // without New (tests), which has no background of its own to end.
 func (m *Manager) mapRootfsLater(key string) {
 	b := m.tpl.rootfs
@@ -278,6 +282,11 @@ func (m *Manager) mapRootfsLater(key string) {
 			b.maps.mu.Unlock()
 			close(done)
 		}()
+		b.maps.turn.Lock()
+		defer b.maps.turn.Unlock()
+		if fileExists(b.mapPath(key)) {
+			return
+		}
 		if err := m.mapRootfs(m.background(), key); err != nil {
 			m.log.Warn("a template's root filesystem's block map couldn't be made", "key", key, "error", err)
 		}

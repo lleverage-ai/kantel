@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -168,5 +169,58 @@ func TestRootfsFetchReservesRoom(t *testing.T) {
 	var pe *proto.Error
 	if _, err := m.ReserveRootfsFetch(1 << 30); !errors.As(err, &pe) || pe.Code != proto.ErrCapacity {
 		t.Fatalf("with no room: %v", err)
+	}
+}
+
+// A map a fetch cut short left behind (its file never published) is no map of the file a build makes then.
+func TestABuildDropsAMapLeftWithoutItsFile(t *testing.T) {
+	b, _ := testBuilder(t)
+	img := templateImage{BaseImage: "kantel/sandbox", BaseDigest: testDigest}
+	if err := os.MkdirAll(b.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.mapPath(img.key()), []byte("another file's map"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.rootfs(context.Background(), img); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(b.mapPath(img.key())) {
+		t.Fatal("the stale map was kept")
+	}
+}
+
+// Root filesystems made before maps get theirs in the background, one after another.
+func TestOldRootfsGetMapsInTurn(t *testing.T) {
+	m, _ := testManager(t)
+	m.bg, m.bgStop = context.WithCancel(context.Background())
+	defer m.bgStop()
+	b := m.tpl.rootfs
+	if err := os.MkdirAll(b.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{
+		templateImage{BaseImage: "kantel/sandbox", BaseDigest: testDigest}.key(),
+		templateImage{BaseImage: "kantel/sandbox", BaseDigest: otherDigest}.key(),
+	}
+	for i, key := range keys {
+		if err := os.WriteFile(b.path(key), bytes.Repeat([]byte{byte(i + 1)}, blockmap.BlockSize+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Held by the test, so both wait their turn behind it.
+	b.maps.turn.Lock()
+	m.mapOldRootfs()
+	m.mapOldRootfs()
+	if got := m.RootfsHoldings(); len(got) != 0 {
+		t.Fatalf("mapped while it waited: %v", got)
+	}
+	b.maps.turn.Unlock()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(m.RootfsHoldings()) != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("holdings %+v", m.RootfsHoldings())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

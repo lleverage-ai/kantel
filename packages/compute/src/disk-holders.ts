@@ -10,8 +10,9 @@
  *   holds only versions the catalogue has, of an account whose data it may have.
  * - `rootfs`: a template's root filesystem (`images/templates/<key>.ext4` on a host), its ID the key and its one version
  *   `1`. No record of its own: each holder carries the map digest its host reported, as two hosts that each built one
- *   before they synced may hold different bytes under one key. `disk.locate` answers the digest most of the asker's
- *   pool's holders have, and only those holders.
+ *   before they synced may hold different bytes under one key, and the pool its host was in when it first reported it.
+ *   `disk.locate` answers the digest most of the asker's pool's holders of its architecture have, and only those
+ *   holders.
  *
  * The grant key is one Ed25519 key per control plane, made by the first gateway that needs it and kept sealed with the
  * deployment's secrets key (`StoredSetting` `grantKey`), so every gateway over one database signs with it. Without a
@@ -160,9 +161,9 @@ export function createDiskHolders(options: {
 	const versionKey = (objectId: string, version: string) => `${objectId}/${version}`;
 
 	/**
-	 * `disk.locate` for a template's root filesystem: the holders in the asker's pool that hold the map digest most of
-	 * them hold (of two as many, the one held longest), and that digest, with a grant naming the pool's owner. None, and
-	 * no digest, when no other host in the pool holds it.
+	 * `disk.locate` for a template's root filesystem: the holders in the asker's pool (which made or fetched their copy
+	 * there) of its architecture that hold the map digest most of them hold (of two as many, the one held longest), and
+	 * that digest, with a grant naming the pool's owner. None, and no digest, when no other such host holds it.
 	 */
 	async function locateRootfs(hostId: string, request: DiskLocateRequest): Promise<DiskLocation> {
 		if (!options.templates) throw new KantelError("not_supported", "Templates are off here");
@@ -180,9 +181,12 @@ export function createDiskHolders(options: {
 			if (holder.kind !== "rootfs" || holder.version !== ROOTFS_VERSION || holder.state !== "held") continue;
 			if (holder.hostId === hostId || holder.mapDigest === undefined) continue;
 			const host = hosts.get(holder.hostId);
-			// Online (a draining host still serves), and in the asker's pool: pools never share data.
+			// Online (a draining host still serves), and in the asker's pool, where it made or fetched the copy: pools never
+			// share data.
 			if (host === undefined || (host.state !== "online" && host.state !== "draining")) continue;
-			if (host.poolId !== asker.poolId) continue;
+			if (host.poolId !== asker.poolId || holder.poolId !== asker.poolId) continue;
+			// Of the asker's architecture: a base's digest, or an image reference, names one image for each.
+			if (host.arch !== asker.arch) continue;
 			const address = options.meshAddress(host.id);
 			if (address === undefined) continue;
 			byDigest.set(holder.mapDigest, [
@@ -292,9 +296,14 @@ export function createDiskHolders(options: {
 				}
 				const mine = current.filter((holder) => holder.kind === "rootfs");
 				const known = new Map(mine.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
+				const reporter = (await options.hosts()).find((host) => host.id === hostId);
+				const poolId = reporter?.state === "revoked" ? undefined : reporter?.poolId;
 				for (const [key, { objectId, mapDigest }] of reported) {
 					const holder = known.get(key);
+					// Kept as it is, its pool too: a copy made in one pool stays that pool's after its host moves.
 					if (holder !== undefined && holder.state === "held" && holder.mapDigest === mapDigest) continue;
+					// A new copy (or the file made again) is the pool's its host is in now; none, while it is in none.
+					if (poolId === undefined) continue;
 					if (holder !== undefined) release.push(holder);
 					hold.push({
 						id: diskHolderId("rootfs", objectId, ROOTFS_VERSION, hostId),
@@ -305,6 +314,7 @@ export function createDiskHolders(options: {
 						state: "held",
 						since: at,
 						mapDigest,
+						poolId,
 					});
 				}
 				letGo(mine, new Set(reported.keys()));
