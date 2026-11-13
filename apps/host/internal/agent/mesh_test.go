@@ -17,6 +17,8 @@ type fakeMesh struct {
 	applied []*proto.WelcomeMesh
 	peers   [][]proto.MeshPeer
 	up      bool
+	// addr is its address while up (default fd4b::1).
+	addr netip.Addr
 }
 
 func (f *fakeMesh) Facts() *proto.MeshFacts {
@@ -40,6 +42,20 @@ func (f *fakeMesh) Health() *proto.MeshHealth {
 
 func (f *fakeMesh) Prefix() (netip.Prefix, bool) {
 	return netip.MustParsePrefix("fd4b::/48"), f.up
+}
+
+func (f *fakeMesh) Address() (netip.Addr, bool) {
+	if f.addr.IsValid() {
+		return f.addr, f.up
+	}
+	return netip.MustParseAddr("fd4b::1"), f.up
+}
+
+func (f *fakeMesh) PeerAt(addr netip.Addr) (string, bool) {
+	if f.up && addr == netip.MustParseAddr("fd4b::2") {
+		return "host_b", true
+	}
+	return "", false
 }
 
 func (f *fakeMesh) Close() {}

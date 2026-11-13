@@ -288,6 +288,29 @@ func (m *Mesh) Prefix() (netip.Prefix, bool) {
 	return m.prefix, m.dev != nil
 }
 
+// Address is the host's mesh address while the device is up: where its peer sync server listens.
+func (m *Mesh) Address() (netip.Addr, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.addr, m.dev != nil
+}
+
+// PeerAt is the host ID of the peer at a mesh address: false for none. WireGuard takes a packet from a peer only from
+// its one address (its allowed IP), so a connection from that address is that peer's.
+func (m *Mesh) PeerAt(addr netip.Addr) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dev == nil {
+		return "", false
+	}
+	for _, p := range m.peers {
+		if p.address == addr {
+			return p.hostID, true
+		}
+	}
+	return "", false
+}
+
 // Apply makes the mesh what a welcome says: with w, the device up with w's address and the pool's prefix, and its
 // peers w's; without (the host's pool has sync off, or the control plane has no mesh), the device down.
 func (m *Mesh) Apply(w *proto.WelcomeMesh) error {

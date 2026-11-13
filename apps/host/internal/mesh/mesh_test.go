@@ -433,3 +433,38 @@ func TestParseStats(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// The host's address and its peers' are known while the device is up, for the peer sync server: a connection from a
+// peer's mesh address is that peer's, and from any other address no peer's.
+func TestAddressAndPeerAt(t *testing.T) {
+	h := newHarness(t, t.TempDir())
+	if _, up := h.m.Address(); up {
+		t.Fatal("an address before the mesh is up")
+	}
+	b := testKey(t)
+	pb := proto.MeshPeer{HostID: "host_b", PublicKey: b.String(), Address: "fd12:3456:789a::2", Endpoints: []string{"192.0.2.2:51820"}}
+	if err := h.m.Apply(welcome(pb)); err != nil {
+		t.Fatal(err)
+	}
+	if addr, up := h.m.Address(); !up || addr != netip.MustParseAddr("fd12:3456:789a::1") {
+		t.Fatalf("address %v %v", addr, up)
+	}
+	if id, ok := h.m.PeerAt(netip.MustParseAddr("fd12:3456:789a::2")); !ok || id != "host_b" {
+		t.Fatalf("peer at ::2: %q %v", id, ok)
+	}
+	for _, a := range []string{"fd12:3456:789a::1", "fd12:3456:789a::3", "192.0.2.2"} {
+		if id, ok := h.m.PeerAt(netip.MustParseAddr(a)); ok {
+			t.Fatalf("peer at %s: %q", a, id)
+		}
+	}
+	h.m.SetPeers(nil)
+	if _, ok := h.m.PeerAt(netip.MustParseAddr("fd12:3456:789a::2")); ok {
+		t.Fatal("a removed peer is still known")
+	}
+	if err := h.m.Apply(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, up := h.m.Address(); up {
+		t.Fatal("an address once the mesh is down")
+	}
+}

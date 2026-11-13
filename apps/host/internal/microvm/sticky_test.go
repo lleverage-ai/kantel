@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -726,5 +727,55 @@ func TestStickyKeepsAVersionUntilItsCommitIsAnswered(t *testing.T) {
 	commit("v7", true)
 	if fileExists(m.stickyVersionFile("ci", "v5")) {
 		t.Fatal("a pin past its time kept its version")
+	}
+}
+
+// A peer fetches a version only with its map: one without a map yet, or not held, isn't there.
+func TestOpenStickyVersionForAPeer(t *testing.T) {
+	m := &Manager{cfg: Config{Root: t.TempDir()}, log: slog.New(slog.DiscardHandler)}
+	dir := filepath.Join(m.stickyRoot(), "ci")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.stickyVersionFile("ci", "v1"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A version and map outside the sticky root, which a bad disk ID would reach.
+	outside := filepath.Join(m.cfg.Root, "ci")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"v1.img", "v1.map"} {
+		if err := os.WriteFile(filepath.Join(outside, name), []byte("outside"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range [][2]string{{"ci", "v1"}, {"ci", "v2"}, {"other", "v1"}, {"../ci", "v1"}} {
+		for _, withMap := range []bool{true, false} {
+			if _, _, err := m.OpenStickyVersion(c[0], c[1], withMap); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%v: %v, want not found", c, err)
+			}
+		}
+	}
+	if err := os.WriteFile(m.stickyMapFile("ci", "v1"), []byte("map"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, raw, err := m.OpenStickyVersion("ci", "v1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(f)
+	f.Close()
+	if string(data) != "data" || string(raw) != "map" {
+		t.Fatalf("%q %q", data, raw)
+	}
+	// For a range of its data, the map isn't read.
+	f, raw, err = m.OpenStickyVersion("ci", "v1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if raw != nil {
+		t.Fatalf("map read for data: %q", raw)
 	}
 }
