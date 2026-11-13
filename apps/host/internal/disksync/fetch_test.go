@@ -30,6 +30,27 @@ type dirStore struct {
 	base string
 	// cloned, when set, is called once CloneNearest has made its clone.
 	cloned func(dst string)
+	// cloneErr, when set, is what CloneNearest fails with.
+	cloneErr error
+	// room is the most a fetch may reserve (0: no limit); reserved what is reserved now, and most the most at once.
+	mu             sync.Mutex
+	room           int64
+	reserved, most int64
+}
+
+func (s *dirStore) Reserve(r Ref, bytes int64) (func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.room > 0 && s.reserved+bytes > s.room {
+		return nil, &proto.Error{Code: proto.ErrCapacity, Message: "no room"}
+	}
+	s.reserved += bytes
+	s.most = max(s.most, s.reserved)
+	return func() {
+		s.mu.Lock()
+		s.reserved -= bytes
+		s.mu.Unlock()
+	}, nil
 }
 
 func (s *dirStore) img(v string) string { return filepath.Join(s.dir, v+".img") }
@@ -56,6 +77,9 @@ func (s *dirStore) Partial(r Ref) (string, error) {
 }
 
 func (s *dirStore) CloneNearest(r Ref, dst string) (*blockmap.Map, error) {
+	if s.cloneErr != nil {
+		return nil, s.cloneErr
+	}
 	if s.base == "" {
 		return nil, nil
 	}
@@ -280,6 +304,10 @@ func TestFetchFromNothing(t *testing.T) {
 	if st.Blocks != 6 || st.Fetched != 5 || st.FetchedBytes != int64(4*block+1000) || f.locates.Load() != 1 {
 		t.Fatalf("stats %+v, locates %d", st, f.locates.Load())
 	}
+	// It held room for what it wrote, and gave it back.
+	if f.local.most != int64(4*block+1000) || f.local.reserved != 0 {
+		t.Fatalf("reserved %d at most, %d now", f.local.most, f.local.reserved)
+	}
 	if f.holders[0].data.Load() == 0 || f.holders[1].data.Load() == 0 {
 		t.Fatalf("runs not spread over the holders: %d, %d", f.holders[0].data.Load(), f.holders[1].data.Load())
 	}
@@ -475,6 +503,91 @@ func TestResumeWhileAFetchFails(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	f.checkHeld("v2", data)
+}
+
+// A fetch the host has no room for writes nothing: neither the blocks it lacks, nor (with no room for a full copy of
+// its nearest version) the whole version from nothing.
+func TestFetchNeedsRoom(t *testing.T) {
+	f := newFixture(t, 1)
+	f.put("v2", disk(t, 2, 0))
+	ref := Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}
+	f.local.room = block
+	if _, err := wait(t, f.fetcher().Start(Request{Ref: ref})); !isCapacity(err) {
+		t.Fatalf("with room for one block of two: %v", err)
+	}
+	// What it prepared is kept for when there is room; a fetch from afresh needs a clone of the nearest version.
+	if got := f.local.Partials(); len(got) != 1 {
+		t.Fatalf("partials %v", got)
+	}
+	f.local.Discard(ref)
+	f.local.room = 0
+	f.local.cloneErr = &proto.Error{Code: proto.ErrCapacity, Message: "no room for a full copy"}
+	if _, err := wait(t, f.fetcher().Start(Request{Ref: ref})); !isCapacity(err) {
+		t.Fatalf("with no room to copy the nearest version: %v", err)
+	}
+	if f.holders[0].data.Load() != 0 || f.local.Held(ref) {
+		t.Fatal("fetched without room")
+	}
+}
+
+func isCapacity(err error) bool {
+	var pe *proto.Error
+	return errors.As(err, &pe) && pe.Code == proto.ErrCapacity
+}
+
+// A holder that redirects is a holder that failed: the fetch never goes where it points.
+func TestFetchFollowsNoRedirect(t *testing.T) {
+	f := newFixture(t, 3)
+	data := disk(t, 2, 0)
+	f.put("v2", data)
+	// The third serves, but isn't a holder disk.locate names; the first redirects there.
+	elsewhere := f.holders[2]
+	f.holders = f.holders[:2]
+	var visited atomic.Int32
+	elsewhere.fail = func(w http.ResponseWriter, r *http.Request) bool { visited.Add(1); return false }
+	f.holders[0].fail = func(w http.ResponseWriter, r *http.Request) bool {
+		http.Redirect(w, r, "http://"+netip.AddrPortFrom(elsewhere.addr, uint16(f.port)).String()+r.URL.Path, http.StatusFound)
+		return true
+	}
+	retryWait = time.Millisecond
+	t.Cleanup(func() { retryWait = time.Second })
+	if _, err := wait(t, f.fetcher().Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})); err != nil {
+		t.Fatal(err)
+	}
+	f.checkHeld("v2", data)
+	if visited.Load() != 0 {
+		t.Fatalf("followed a redirect %d times", visited.Load())
+	}
+}
+
+// A partial of a version the host holds (published, then the host stopped before removing it) is removed, and nothing
+// fetched.
+func TestFetchOfAVersionHeldDropsItsPartial(t *testing.T) {
+	f := newFixture(t, 1)
+	data := disk(t, 1, 0)
+	f.local.put(t, "v2", data)
+	ref := Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}
+	partial, _ := f.local.Partial(ref)
+	for _, path := range []string{partial, partial + ".done"} {
+		if err := os.WriteFile(path, []byte("left"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fetcher := f.fetcher()
+	fetcher.ResumeAll()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.local.Partials()) != 0 || fetcher.Running(ref) {
+		if time.Now().After(deadline) {
+			t.Fatal("the partial of a version held was kept")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(partial + ".done"); !errors.Is(err, fs.ErrNotExist) || f.locates.Load() != 0 {
+		t.Fatalf("bitmap kept, or asked where it is (%d)", f.locates.Load())
+	}
+	if got, _ := os.ReadFile(f.local.img("v2")); !bytes.Equal(got, data) {
+		t.Fatal("the version held changed")
+	}
 }
 
 // A map that isn't the catalogue's is refused.

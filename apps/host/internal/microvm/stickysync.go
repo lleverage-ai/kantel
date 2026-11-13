@@ -15,6 +15,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // stickyPartialSuffix ends a fetch's file; its bitmap's adds stickyDoneSuffix.
@@ -72,6 +73,17 @@ func (m *Manager) CloneNearestSticky(diskID, version, dst string) (*blockmap.Map
 	}
 	m.log.Info("a sticky disk version's fetch starts from the host's nearest version", "disk", diskID, "version", version, "from", from)
 	return bm, nil
+}
+
+// ReserveStickyFetch holds room for the bytes a fetch of a version is to write (the blocks it doesn't have), beside
+// every other copy the host makes, until release: refused (ErrCapacity) when that would leave the host less than
+// snapshotHeadroom free.
+func (m *Manager) ReserveStickyFetch(bytes int64) (release func(), err error) {
+	return m.reserveRoom(bytes, func(free, size int64) error {
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
+			"This host has %s of disk free, and fetching a sticky disk version writes %s and must leave %s free.",
+			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
+	})
 }
 
 // openNearestSticky opens the newest version of the disk with a map other than version, read-locked, and reads its

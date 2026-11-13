@@ -3,10 +3,12 @@ package microvm
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
@@ -123,6 +125,29 @@ func TestStickyFetchStore(t *testing.T) {
 	if got, _ := os.ReadFile(m.stickyVersionFile("ci", "v3")); !bytes.Equal(got, data) || fileExists(partial) {
 		t.Fatal("a version held was replaced")
 	}
+}
+
+// A fetch's room is held beside the host's other copies, with the headroom kept free, and given back.
+func TestStickyFetchRoom(t *testing.T) {
+	m := &Manager{cfg: Config{Root: t.TempDir()}, log: slog.New(slog.DiscardHandler)}
+	m.statfs = func(_ string, st *syscall.Statfs_t) error {
+		st.Bsize, st.Bavail = 1, uint64(snapshotHeadroom+(10<<30))
+		return nil
+	}
+	release, err := m.ReserveStickyFetch(6 << 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if _, err := m.ReserveStickyFetch(6 << 30); !errors.As(err, &pe) || pe.Code != proto.ErrCapacity {
+		t.Fatalf("a second fetch past the room: %v", err)
+	}
+	release()
+	again, err := m.ReserveStickyFetch(6 << 30)
+	if err != nil {
+		t.Fatalf("once the first gave its room back: %v", err)
+	}
+	again()
 }
 
 // Deleting a disk's last version keeps its directory while a fetch of another has its partial there; deleting the
