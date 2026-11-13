@@ -619,6 +619,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
 		reportExit: (...report) => api.service.reportExit(...report),
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
+		// Which pools' hosts peer in their pool's mesh.
+		poolSync: (poolId) => api.service.poolSync(poolId),
 		// Which hosts hold which disk versions, from their reports, and where a host fetches one from, with a grant.
 		recordStickyHoldings: (hostId, at, holdings) => api.service.recordStickyHoldings(hostId, at, holdings),
 		locateDisk: (hostId, params) => api.service.locateDisk(hostId, params),

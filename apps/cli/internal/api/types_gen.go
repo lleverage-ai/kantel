@@ -527,6 +527,8 @@ type CreateAccountPoolBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account *string `json:"account,omitempty"`
 	Name    string  `json:"name"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
+	Sync *bool `json:"sync,omitempty"`
 }
 
 type CreateBucketSourceBody struct {
@@ -610,6 +612,8 @@ type CreatePersonalTokenBody struct {
 
 type CreatePoolBody struct {
 	Name string `json:"name"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
+	Sync *bool `json:"sync,omitempty"`
 }
 
 // Any other field is refused as `invalid`.
@@ -1410,6 +1414,7 @@ type Host struct {
 	// The version hosts should run: the deployment's `KANTEL_HOST_VERSION` when it sets one, otherwise Kantel's latest release. Absent when neither is known.
 	LatestVersion        *string     `json:"latestVersion,omitempty"`
 	Memory               *HostMemory `json:"memory,omitempty"`
+	Mesh                 *HostMesh   `json:"mesh,omitempty"`
 	Name                 string      `json:"name"`
 	NestedVirtualisation bool        `json:"nestedVirtualisation"`
 	OS                   *string     `json:"os,omitempty"`
@@ -1540,6 +1545,28 @@ const (
 	HostMemoryStateRefusing HostMemoryState = "refusing"
 	HostMemoryStateCritical HostMemoryState = "critical"
 )
+
+// How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected.
+type HostMesh struct {
+	// The host's own address on its pool's mesh, an IPv6 address.
+	Address string `json:"address"`
+	// The other hosts of its pool, each as it reaches it.
+	Peers []HostMeshPeer `json:"peers"`
+}
+
+// One mesh peer as a host reaches it, as the host last reported it.
+type HostMeshPeer struct {
+	// The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`.
+	Endpoint *string `json:"endpoint,omitempty"`
+	// The peer's host ID: another host of the same pool.
+	HostID string `json:"hostId"`
+	// When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first.
+	LastHandshake *int64 `json:"lastHandshake,omitempty"`
+	// How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another.
+	Path string `json:"path"`
+	// The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer.
+	RttMs *float64 `json:"rttMs,omitempty"`
+}
 
 type HostReleaseCheck struct {
 	// True when this call read Kantel's latest release again. False when another check was made in the last 30 seconds, whose answer stands: nothing more was read.
@@ -1790,6 +1817,8 @@ type Pool struct {
 	ID string `json:"id"`
 	// Its name, unique among its owner's pools.
 	Name string `json:"name"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default.
+	Sync bool `json:"sync"`
 }
 
 type PoolList struct {
@@ -3042,6 +3071,8 @@ type UpdatePoolBody struct {
 	// Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again.
 	Default *bool   `json:"default,omitempty"`
 	Name    *string `json:"name,omitempty"`
+	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
+	Sync *bool `json:"sync,omitempty"`
 }
 
 type UpdateSandboxBody struct {

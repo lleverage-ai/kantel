@@ -1850,6 +1850,20 @@ function hostOf(host: Host): UiHost {
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+		...(host.mesh === undefined
+			? {}
+			: {
+					mesh: {
+						address: host.mesh.address,
+						peers: host.mesh.peers.map((peer) => ({
+							hostId: peer.hostId,
+							path: peer.path,
+							...(peer.endpoint === undefined ? {} : { endpoint: peer.endpoint }),
+							...(peer.lastHandshake === undefined ? {} : { lastHandshake: peer.lastHandshake }),
+							...(peer.rttMs === undefined ? {} : { rttMs: peer.rttMs }),
+						})),
+					},
+				}),
 	};
 }
 

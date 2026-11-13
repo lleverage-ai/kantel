@@ -1402,6 +1402,20 @@ export const HOSTS: readonly Host[] = [
 			bundles: 9,
 		}),
 		poolId: "pool_ci",
+		// Its pool syncs: it reaches the other Hetzner host directly, and the home server not at all.
+		mesh: {
+			address: "fd4b:91c2:7e10:0:5a1e:3f20:9c4d:1b07",
+			peers: [
+				{
+					hostId: "hst_hetzner_2",
+					path: "direct",
+					endpoint: "203.0.113.24:51820",
+					lastHandshake: FIXTURE_NOW - 42_000,
+					rttMs: 0.4,
+				},
+				{ hostId: "hst_home", path: "none", endpoint: "198.51.100.7:51820", lastHandshake: FIXTURE_NOW - 26 * MINUTE },
+			],
+		},
 	},
 	{
 		id: "hst_hetzner_2",

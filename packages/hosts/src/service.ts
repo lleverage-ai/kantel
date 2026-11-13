@@ -34,6 +34,7 @@ import {
 	type PortSink,
 	type PortStream,
 } from "./hub.ts";
+import { meshAddressFor, meshPeerChanged, meshPeersAmong, meshPrefix, runsMesh } from "./mesh.ts";
 import {
 	HOST_CLOSE_REVOKED,
 	HOST_FEATURES,
@@ -52,6 +53,8 @@ import {
 	type HostImageChannel,
 	type HostIsolateRuntime,
 	type HostMemoryReport,
+	type HostMeshHealth,
+	type HostMeshPeer,
 	HostMethods,
 	type HostMount,
 	type HostMountStatus,
@@ -66,6 +69,7 @@ import {
 	type HostTemplateBuilt,
 	type HostUsageReport,
 	type HostWelcome,
+	type HostWelcomeMesh,
 	needsEgressPolicy,
 	type SandboxTier,
 } from "./protocol.ts";
@@ -200,6 +204,11 @@ export interface HostView {
 	readonly diskUsage?: HostDiskUsage;
 	/** Its memory, from its latest report. */
 	readonly memory?: Omit<HostMemoryReport, "admission">;
+	/**
+	 * How it reaches its mesh peers, from its latest report, while it is connected: a report from before it dropped
+	 * says nothing about now. Absent from a host without a mesh (its pool's sync off, or an older host agent).
+	 */
+	readonly mesh?: HostMeshHealth;
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -211,6 +220,11 @@ export interface HostView {
 	readonly accountId?: string;
 	/** The pool it is in (`HostRecord.poolId`); absent until the compute plane has said. */
 	readonly poolId?: string;
+	/**
+	 * Its address in its pool's mesh (`HostRecord.mesh`): only for a host that runs the mesh, given in the pool it is in
+	 * now. Whether the pool has sync on, so the address is up, is the compute plane's to say.
+	 */
+	readonly meshAddress?: string;
 	readonly joinedAt: number;
 	readonly lastSeenAt?: number;
 }
@@ -578,6 +592,11 @@ export interface HostComputeLink {
 	 */
 	hostConnection?(hostId: string, connected: boolean): Promise<void>;
 	/**
+	 * Whether a pool has sync on (`ComputeService.poolSync`): only its hosts that run the mesh get their place in it
+	 * (`HostWelcome.mesh`) and their peers (`mesh.peers`). Absent, no pool has.
+	 */
+	poolSync?(poolId: string): Promise<boolean>;
+	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
 	 */
@@ -717,6 +736,11 @@ export interface HostsService {
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
 	/**
+	 * A pool's settings changed (its sync, as `HostComputeLink.poolSync` reads it now): each of its hosts that runs the
+	 * mesh is sent its peers (none, with sync off) and its welcome again, which brings its mesh up or takes it down.
+	 */
+	poolChanged(poolId: string): Promise<void>;
+	/**
 	 * Whether a sandbox is placed on the host, one being made there included (a lost one not), an upgrade under way
 	 * makes its microVM there, or an upgraded isolate there is still to be deleted.
 	 */
@@ -822,6 +846,13 @@ const LIVE = new Set(["starting", "running", "stopping"]);
 const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 /** How often a connected host is told again which images Kantel wants it on (image patching): 15 minutes. */
 export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
+
+/**
+ * How often a connected host that runs the mesh has what it was last told of its pool's mesh checked against what it
+ * should have now, on a heartbeat: a telling missed (a read that failed, a replica that couldn't be reached, a change
+ * whose telling failed after it was written) is made good within this.
+ */
+export const MESH_REFRESH_MS = 60 * 1000;
 
 /** How often a connected host's snapshot list is read again for their sizes (`HOST_FEATURES.snapshotSizes`). */
 export const SNAPSHOT_SIZES_REFRESH_MS = 10 * 60 * 1000;
@@ -989,6 +1020,157 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// would be, so the host is told nothing and does as with an older Kantel.
 		...(compute?.recordUsage === undefined ? {} : { usageAcks: true }),
 	});
+	/**
+	 * Whether a host may be in its pool's mesh as far as the host is concerned: it runs the mesh and is in a pool, with
+	 * a compute plane linked that says which pools have sync on.
+	 */
+	const meshable = (host: HostRecord): host is HostRecord & { readonly poolId: string } =>
+		runsMesh(host) && host.poolId !== undefined && compute?.poolSync !== undefined;
+
+	/**
+	 * The host as written with its mesh address in its pool: the one it has there, or a new one none of the pool's other
+	 * hosts has (`mesh.ts`), written only while it is still in that pool without one. Unchanged for a host not meshable.
+	 */
+	const withMeshAddress = async (host: HostRecord): Promise<HostRecord> => {
+		if (!meshable(host) || host.mesh?.poolId === host.poolId) return host;
+		const poolId = host.poolId;
+		const taken = new Set<string>();
+		for (const other of await store.listHosts()) {
+			if (other.id !== host.id && other.poolId === poolId && other.mesh?.poolId === poolId) {
+				taken.add(other.mesh.address);
+			}
+		}
+		const address = await meshAddressFor(poolId, host.id, taken);
+		if (address === undefined) {
+			log(`[hosts] no mesh address left for host ${host.id} in pool ${poolId}`);
+			return host;
+		}
+		const written = await store.updateHost(host.id, (latest) =>
+			latest.poolId !== poolId || latest.mesh?.poolId === poolId ? undefined : { ...latest, mesh: { poolId, address } },
+		);
+		return written ?? (await store.getHost(host.id)) ?? host;
+	};
+
+	/**
+	 * The host's place in its pool's mesh, for its welcome: its address, the pool's prefix and its peers (every other
+	 * host of the pool that runs the mesh, revoked ones not). Undefined for a host that doesn't run the mesh, isn't in a
+	 * pool, or whose pool has sync off. Rejects when that can't be read: a welcome without the mesh takes the host's mesh
+	 * down, so none is sent then (a hello is refused, and the host tries again; a rewelcome is skipped).
+	 */
+	const meshFor = async (
+		host: HostRecord,
+		/** The hosts to find its peers among: read now unless given. */
+		hosts?: readonly HostRecord[],
+	): Promise<HostWelcomeMesh | undefined> => {
+		if (!meshable(host)) return undefined;
+		if ((await compute?.poolSync?.(host.poolId)) !== true) return undefined;
+		const addressed = await withMeshAddress(host);
+		if (addressed.mesh === undefined || addressed.mesh.poolId !== host.poolId) return undefined;
+		return {
+			address: addressed.mesh.address,
+			prefix: await meshPrefix(host.poolId),
+			peers: meshPeersAmong(addressed, hosts ?? (await store.listHosts())),
+		};
+	};
+
+	/**
+	 * The host's mesh peers now, for `mesh.peers`: undefined for a host that doesn't run the mesh or isn't in a pool
+	 * (nothing is sent), none while its pool has sync off.
+	 */
+	const meshPeersNow = async (hostId: string): Promise<HostMeshPeer[] | undefined> => {
+		const host = await store.getHost(hostId);
+		if (host === undefined || !meshable(host)) return undefined;
+		const peers =
+			(await compute?.poolSync?.(host.poolId)) === true ? meshPeersAmong(host, await store.listHosts()) : [];
+		const told = meshTold.get(hostId);
+		if (told !== undefined) meshTold.set(hostId, { ...told, peers: JSON.stringify(peers) });
+		return peers;
+	};
+
+	/**
+	 * What each host that runs the mesh, connected here, was last told of its pool's mesh: its address and prefix (none,
+	 * its mesh down) by its last welcome, and its peers by that or a later `mesh.peers`.
+	 */
+	const meshTold = new Map<
+		string,
+		{ readonly mesh?: { readonly address: string; readonly prefix: string }; readonly peers?: string }
+	>();
+	/** When each host's mesh was last checked (`reconcileMesh`). */
+	const meshCheckedAt = new Map<string, number>();
+	/**
+	 * Every host, as read for the checks of one `MESH_REFRESH_MS`: one read of the registry a pass for all the hosts
+	 * connected here, not one each. A check that finds a difference has the hub read afresh what it sends, so a stale
+	 * read sends nothing stale, and a difference it misses is found on the next pass.
+	 */
+	let meshHosts: { readonly at: number; readonly read: Promise<HostRecord[]> } | undefined;
+	const meshHostsNow = (): Promise<HostRecord[]> => {
+		const at = clock.now();
+		if (meshHosts === undefined || at - meshHosts.at >= MESH_REFRESH_MS) {
+			const read = store.listHosts();
+			meshHosts = { at, read };
+			read.catch(() => {
+				if (meshHosts?.read === read) meshHosts = undefined;
+			});
+		}
+		return meshHosts.read;
+	};
+
+	/**
+	 * Tells a host connected here what it should have of its pool's mesh now, where that differs from what it was last
+	 * told, every `MESH_REFRESH_MS` on its heartbeat: its welcome again when its mesh should come up, go down or move,
+	 * else its peers when they differ. So a telling missed is made good: the tellings on a change are only the fast way.
+	 * A read that fails is tried on a later heartbeat.
+	 */
+	const reconcileMesh = (hostId: string) => {
+		const told = meshTold.get(hostId);
+		if (told === undefined || compute?.poolSync === undefined) return;
+		const at = clock.now();
+		if (at - (meshCheckedAt.get(hostId) ?? Number.NEGATIVE_INFINITY) < MESH_REFRESH_MS) return;
+		meshCheckedAt.set(hostId, at);
+		report(
+			(async () => {
+				const hosts = await meshHostsNow();
+				const host = hosts.find((each) => each.id === hostId);
+				if (host === undefined || host.revoked) return;
+				const wanted = await meshFor(host, hosts);
+				if (wanted?.address !== told.mesh?.address || wanted?.prefix !== told.mesh?.prefix) {
+					rewelcome(host);
+				} else if (wanted !== undefined && JSON.stringify(wanted.peers) !== told.peers) {
+					hub.remesh(hostId);
+				}
+			})(),
+		);
+	};
+
+	/** Runs a telling of hosts on a change, logging rather than failing it: `reconcileMesh` makes good one that fails. */
+	const tellMesh = async (work: Promise<void>) => {
+		await work.catch((error: unknown) => {
+			log(
+				`[hosts] couldn't tell hosts of a mesh change (made good later): ${error instanceof Error ? error.message : String(error)}`,
+			);
+		});
+	};
+
+	/**
+	 * Sends every host of a pool that runs the mesh its peers again, but `except`: one of them joined, left, was revoked
+	 * or has a new key, address or endpoints. Nothing while the pool has sync off: its hosts' meshes are down. Each is
+	 * asked of the hub whether or not it looks connected here: the hub finds the replica holding it as it is now, and one
+	 * still saying hello has its welcome read again once sent.
+	 */
+	const remeshPool = async (poolId: string | undefined, except?: string) => {
+		if (poolId === undefined || (await compute?.poolSync?.(poolId)) !== true) return;
+		for (const member of await store.listHosts()) {
+			if (member.id === except || member.poolId !== poolId || !runsMesh(member)) continue;
+			hub.remesh(member.id);
+		}
+	};
+
+	/**
+	 * Sends a host its welcome again. The hub reads it afresh (`welcomeNow`), here or on the replica holding the host, so
+	 * the welcome handed over is never what is sent: the record's own fields will do, with no mesh to read.
+	 */
+	const rewelcome = (host: HostRecord) => hub.rewelcome(host.id, baseWelcome(host));
+
 	/** What `read` answers, or undefined (logged) when it fails: the welcome goes without it. */
 	const welcomePart = <T>(host: HostRecord, what: string, read: (() => Promise<T | undefined>) | undefined) =>
 		read === undefined
@@ -999,17 +1181,21 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					);
 					return undefined;
 				});
-	// With image patching and the grant key both off the welcome is made at once, as before: no await between a hello
-	// and its answer.
+	// With image patching, the grant key and the mesh all off the welcome is made at once, as before: no await between a
+	// hello and its answer.
 	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
 		const base = baseWelcome(host);
 		const images = welcomePart(host, "images", compute?.images);
 		const grantKey = welcomePart(host, "grant key", compute?.grantKey);
-		if (images === undefined && grantKey === undefined) return base;
-		return Promise.all([images, grantKey]).then(([images, grantKey]) => ({
+		// The mesh isn't left out when it can't be read, as the others are: a welcome without it takes the host's mesh down
+		// (`meshFor`).
+		const mesh = meshable(host) ? meshFor(host) : undefined;
+		if (images === undefined && grantKey === undefined && mesh === undefined) return base;
+		return Promise.all([images, grantKey, mesh]).then(([images, grantKey, mesh]) => ({
 			...base,
 			...(images === undefined ? {} : { images }),
 			...(grantKey === undefined ? {} : { grantKey }),
+			...(mesh === undefined ? {} : { mesh }),
 		}));
 	};
 
@@ -1165,6 +1351,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		const now = clock.now();
 		// Only what the host reports: what an operator set meanwhile (its name, labels, drain) stands.
+		const before = host;
 		const reported = await store.updateHost(hostId, (latest) => ({
 			...latest,
 			facts: facts.value,
@@ -1173,6 +1360,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			lastSeenAt: now,
 		}));
 		if (reported === undefined || reported.revoked) throw new Error("This host is revoked");
+		// Its place in its pool's mesh: its address given before its peers are told of it, and they are told when it is
+		// new to them, or its key, address or endpoints changed (a reinstall makes a new key; a move of network, new
+		// endpoints).
+		const addressed = await withMeshAddress(reported).catch((error: unknown) => {
+			log(`[hosts] no mesh address for host ${hostId}: ${error instanceof Error ? error.message : String(error)}`);
+			return reported;
+		});
+		if (meshPeerChanged(before, addressed)) report(tellMesh(remeshPool(addressed.poolId, hostId)));
+		meshCheckedAt.set(hostId, now);
 		recordHoldings(hostId, now, capacity.value);
 		reserved.delete(hostId);
 		// Reconcile: what the host holds is the truth about state; a placement the host no longer has is lost.
@@ -1270,7 +1466,22 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const welcomeNow = async (hostId: string): Promise<HostWelcome> => {
 		const latest = await store.getHost(hostId);
 		if (latest === undefined || latest.revoked) throw new Error("This host is revoked");
-		return welcomeFor(latest);
+		// What it is told of the mesh, for `reconcileMesh`: only a host that runs it. A welcome made at once is answered at
+		// once, with no await more than before.
+		const noted = (welcome: HostWelcome): HostWelcome => {
+			const mesh = welcome.mesh;
+			if (!runsMesh(latest)) meshTold.delete(hostId);
+			else if (mesh === undefined) meshTold.set(hostId, {});
+			else {
+				meshTold.set(hostId, {
+					mesh: { address: mesh.address, prefix: mesh.prefix },
+					peers: JSON.stringify(mesh.peers),
+				});
+			}
+			return welcome;
+		};
+		const welcome = welcomeFor(latest);
+		return welcome instanceof Promise ? welcome.then(noted) : noted(welcome);
 	};
 
 	/** When each host still reporting warm machines was last told to keep none. */
@@ -1310,6 +1521,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		welcomeNow(hostId) {
 			return welcomeNow(hostId);
 		},
+		meshPeersNow(hostId) {
+			return meshPeersNow(hostId);
+		},
 		onHeartbeat(hostId, reported) {
 			const receivedAt = clock.now();
 			const parsed = parseHostCapacity(reported);
@@ -1321,6 +1535,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const capacity = parsed.value;
 			reserved.delete(hostId);
 			refreshImages(hostId);
+			reconcileMesh(hostId);
 			readSnapshots(hostId);
 			runCleanups(hostId);
 			report(
@@ -1459,6 +1674,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			snapshotSizesReadAt.delete(hostId);
 			measuresSnapshots.delete(hostId);
 			poolsEnded.delete(hostId);
+			meshTold.delete(hostId);
+			meshCheckedAt.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {
@@ -1540,6 +1757,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			...(reported === undefined ? {} : { freeDiskGb: reported.freeDiskGiB }),
 			...(reported?.disk === undefined ? {} : { diskUsage: { ...reported.disk } }),
 			...(reported?.memory === undefined ? {} : { memory: withoutAdmission(reported.memory) }),
+			...(reported?.mesh === undefined || state === "unreachable" || state === "revoked"
+				? {}
+				: { mesh: { address: reported.mesh.address, peers: reported.mesh.peers.map((peer) => ({ ...peer })) } }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),
@@ -1549,6 +1769,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			labels: { ...facts?.labels, ...host.labels },
 			...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 			...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+			...(runsMesh(host) && host.mesh !== undefined && host.mesh.poolId === host.poolId
+				? { meshAddress: host.mesh.address }
+				: {}),
 			joinedAt: host.joinedAt,
 			...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 		};
@@ -2335,8 +2558,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (next === undefined) throw new KantelError("not_found", "No such host");
 			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
 			const redrained = next.draining !== host.draining;
-			if (redrained) hub.rewelcome(hostId, await welcomeFor(next));
-			return view(next);
+			// Moved to another pool: it leaves the old pool's mesh at once and joins the new one's, with an address there
+			// given before the new pool's hosts are told of it, and its own welcome says where it is now.
+			const moved = next.poolId !== host.poolId;
+			const settled = moved ? await withMeshAddress(next) : next;
+			if (redrained || (moved && runsMesh(settled))) rewelcome(settled);
+			if (moved && runsMesh(host)) {
+				await tellMesh(remeshPool(host.poolId, hostId));
+				await tellMesh(remeshPool(settled.poolId, hostId));
+			}
+			return view(settled);
 		},
 		async updateAgent(hostId) {
 			const host = await hostOf(hostId);
@@ -2398,7 +2629,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const next = { ...host, revoked: true };
 			await store.putHost(next);
 			hub.disconnect(hostId, HOST_CLOSE_REVOKED, "The host's credential was revoked");
+			// Out of its pool's mesh at once: its peers are sent their list without it.
+			if (runsMesh(host)) await tellMesh(remeshPool(host.poolId, hostId));
 			return view(next);
+		},
+		async poolChanged(poolId) {
+			if (compute?.poolSync === undefined) return;
+			for (const member of await store.listHosts()) {
+				if (member.poolId !== poolId || !runsMesh(member)) continue;
+				// Its peers (none with sync off), then its welcome, which brings its mesh up with them or takes it down. Asked
+				// of the hub whether or not it looks connected here, as `remeshPool` does.
+				hub.remesh(member.id);
+				rewelcome(member);
+			}
 		},
 		sandboxes: {
 			async create(input) {

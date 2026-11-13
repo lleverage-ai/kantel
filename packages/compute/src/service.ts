@@ -748,6 +748,11 @@ export interface ComputeService {
 	 */
 	reportHostConnection(hostId: string, connected: boolean): Promise<void>;
 	/**
+	 * Whether a pool has sync on (`Pool.sync`): its hosts that run the mesh peer with each other. False for a pool that
+	 * has gone.
+	 */
+	poolSync(poolId: string): Promise<boolean>;
+	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
 	 * `hostId` holds its placement); a path the sandbox doesn't mount is ignored. `mountsAt` is when the host set them:
@@ -2620,6 +2625,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		store,
 		now,
 		hosts: () => ensureHosts(),
+		syncChanged: async (poolId, sync) => {
+			await backend.updatePool?.(poolId, { sync });
+		},
 		requireAccountHosts: () => requireAccountHosts(),
 		once: (principal, operation, input, work) => once(principal, operation, input, work),
 	});
@@ -2667,6 +2675,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const hostMemory = new Map<string, computeSchema.HostMemory>();
 	// Each host's mesh address as the backend last said, for `disk.locate`'s answers; not stored either.
 	const hostMeshAddress = new Map<string, string>();
+	// Each host's mesh health as the backend last said, kept as its memory is: it moves on every heartbeat too.
+	const hostMesh = new Map<string, computeSchema.HostMesh>();
 	const ensureHosts = (read?: Promise<BackendCapabilities>): Promise<StoredHost[]> => {
 		hostsReady ??= (async () => {
 			const [capabilities, records, allPools] = await Promise.all([
@@ -2679,6 +2689,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			hostMemory.clear();
 			poolsRead = allPools;
 			hostMeshAddress.clear();
+			// Mesh addresses are up only in pools with sync on: a host in another is no holder to fetch from (taken below).
+			const syncing = new Set(allPools.filter((pool) => pool.sync === true).map((pool) => pool.id));
+			hostMesh.clear();
 			// Each owner's pools, read in the one statement above; an owner with none gets its default made.
 			const ownerPools = new Map<string, Promise<StoredPool[]>>();
 			const grouped = new Map<string, StoredPool[]>();
@@ -2713,7 +2726,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
-				if (host.meshAddress !== undefined) hostMeshAddress.set(host.id, host.meshAddress);
+				if (host.mesh !== undefined) hostMesh.set(host.id, host.mesh);
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
@@ -2844,6 +2857,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const host of capabilities.hosts) {
 				const record = byId.get(host.id);
 				if (record === undefined || record.state === "revoked") continue;
+				// Its mesh address, given in the registry's pool: only while that is the pool here too (a move the registry
+				// hasn't taken yet has an address in the pool it left) and it has sync on.
+				if (host.meshAddress !== undefined && host.poolId === record.poolId && syncing.has(record.poolId ?? "")) {
+					hostMeshAddress.set(host.id, host.meshAddress);
+				}
 				// The registry keeps each host's pool too, for what runs on the hosts (the mesh): told where it differs.
 				if (record.poolId !== undefined && host.poolId !== record.poolId) {
 					tellPool(record.id, record.poolId, host.poolId !== undefined);
@@ -4367,6 +4385,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return memory === undefined ? {} : { memory: { ...memory } };
 	}
 
+	/** How a host reaches its mesh peers, as it last reported it, when it is connected and has a mesh. */
+	function hostMeshOf(hostId: string): { mesh?: computeSchema.HostMesh } {
+		const mesh = hostMesh.get(hostId);
+		return mesh === undefined
+			? {}
+			: { mesh: { address: mesh.address, peers: mesh.peers.map((peer) => ({ ...peer })) } };
+	}
+
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
@@ -4385,6 +4411,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
 			...hostMemoryOf(host.id),
+			// A revoked or dropped host's last report says nothing about now (a revoke answers before the next read).
+			...(host.state === "revoked" || host.state === "unreachable" ? {} : hostMeshOf(host.id)),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),
@@ -11812,6 +11840,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		reportExit,
 		reportHostConnection,
+
+		async poolSync(poolId) {
+			return (await store.pools.get(poolId))?.sync === true;
+		},
 
 		recordStickyHoldings: (hostId, at, disks) => diskHolders.recordStickyHoldings(hostId, at, disks),
 		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),

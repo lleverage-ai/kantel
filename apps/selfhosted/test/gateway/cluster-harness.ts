@@ -133,6 +133,8 @@ export interface ConnectedHost {
 	readonly closed: Promise<number>;
 	/** The reason the gateway closed with. */
 	readonly reason: Promise<string>;
+	/** Every text message Kantel sent it. */
+	readonly messages: HostMessage[];
 	sandboxes(): HostSandbox[];
 }
 
@@ -184,8 +186,11 @@ export async function connectHost(
 	credential: string,
 	cleanups: Cleanup[],
 	sandboxes: HostSandbox[] = [],
-	/** `portOpenError`: refuse every `port.open` with this message, as a host may with anything. */
-	options: { readonly portOpenError?: string } = {},
+	/**
+	 * `portOpenError`: refuse every `port.open` with this message, as a host may with anything. `facts`: more it says of
+	 * itself in its hello, such as its features.
+	 */
+	options: { readonly portOpenError?: string; readonly facts?: { readonly [key: string]: unknown } } = {},
 ): Promise<ConnectedHost> {
 	const socket = new WebSocket(`${target.url.replace("http", "ws")}${HOSTS_CONNECT_PATH}`, {
 		headers: { authorization: `Bearer ${credential}` },
@@ -193,6 +198,7 @@ export async function connectHost(
 	cleanups.push(() => socket.terminate());
 	const held = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
 	const calls: string[] = [];
+	const messages: HostMessage[] = [];
 	/** Streams past their first bytes: whether they still echo. */
 	const streams = new Map<number, boolean>();
 	const closed = new Promise<number>((resolve) => socket.on("close", (code) => resolve(code)));
@@ -217,6 +223,7 @@ export async function connectHost(
 				return;
 			}
 			const message = JSON.parse(data.toString()) as HostMessage;
+			messages.push(message);
 			if (message.type === "welcome") return resolve();
 			if (message.type === "stream.close") {
 				streams.delete(message.stream ?? 0);
@@ -263,13 +270,13 @@ export async function connectHost(
 		type: "hello",
 		hello: {
 			hostId,
-			facts: HOST_FACTS,
+			facts: { ...HOST_FACTS, ...options.facts },
 			sandboxes: [...held.values()],
 			capacity: { freeMemoryMiB: 20_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} },
 		},
 	});
 	await welcomed;
-	return { socket, calls, closed, reason, sandboxes: () => [...held.values()] };
+	return { socket, calls, closed, reason, messages, sandboxes: () => [...held.values()] };
 }
 
 /** Joins a host through `target`'s registry. */

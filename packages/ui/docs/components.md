@@ -449,6 +449,25 @@ being read, the pools not read, long names and a phone; the Sandboxes page's `Cr
 
 **Cost:** one read of the pools the first time New sandbox opens, and a read of the sizes each time the pool changes.
 
+### HostPeers
+
+A host's mesh peers (`src/compute/host-peers.tsx`), under its disk when its row on the Hosts page is opened: each other
+host of its pool by name (its ID where the page has no name for it), whether the host reaches it, the path (direct, or
+none), the endpoint it uses, its last handshake as a relative time and the round trip of its last probe, as the host
+last reported them. A peer is unreachable when its path is none or its last handshake is more than 5 minutes old
+(`meshPeerReachable`: the host's own 3 minutes and a heartbeat or two); unreachable peers come first, in the error
+colour, and the heading counts them. `narrow` gives a short row per peer instead of the table. A host without a mesh
+(its pool's sync off, or an older host agent) says so plainly, as does one that isn't connected, and one alone on its
+pool's mesh says it has no peers yet.
+
+**Don't use it for** a pool's mesh as a whole (each host shows its own view of it) or a sandbox's network.
+
+**States:** reachable, unreachable (no path, a stale handshake, never shaken hands), many peers, long names, no peers,
+no mesh, not connected, and a phone; all in its stories. Loading and a failed read are the Hosts page's, whose list
+brings the peers.
+
+**Cost:** none: the host sends it with every heartbeat.
+
 ### SandboxStateLabel
 
 A sandbox's state in words with its status dot (`src/compute/parts.tsx`), as the Sandboxes list and a sandbox's page

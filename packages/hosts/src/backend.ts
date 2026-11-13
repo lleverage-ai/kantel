@@ -917,6 +917,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
 					// What it admits against is the scheduler's (`freeMemoryOn`), not the API's.
 					...(host.memory === undefined ? {} : { memory: withoutAdmission(host.memory) }),
+					...(host.mesh === undefined
+						? {}
+						: { mesh: { address: host.mesh.address, peers: host.mesh.peers.map((peer) => ({ ...peer })) } }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },
@@ -924,6 +927,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+					...(host.meshAddress === undefined ? {} : { meshAddress: host.meshAddress }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
@@ -1660,6 +1664,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async hostHolds(hostId) {
 			return hosts.holds(hostId);
+		},
+		async updatePool(poolId) {
+			await hosts.poolChanged(poolId);
 		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {

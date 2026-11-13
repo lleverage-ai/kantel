@@ -1889,6 +1889,11 @@ export interface Host {
 	 * from a deployment's shared host.
 	 */
 	readonly accountId?: string;
+	/**
+	 * How it reaches the other hosts of its pool over the pool's mesh, as it last reported it. Absent when it has no mesh
+	 * (its pool's sync is off, or an older host agent) or isn't connected.
+	 */
+	readonly mesh?: HostMesh;
 }
 
 /**
@@ -1920,6 +1925,41 @@ export interface PoolsSource {
 	makeDefault(id: string): Promise<Pool>;
 	/** Only an empty pool that isn't the default: refused otherwise, with the reason. */
 	remove(id: string): Promise<void>;
+}
+
+/** A host's place on its pool's mesh: its own address there, and each peer as it reaches it. */
+export interface HostMesh {
+	readonly address: string;
+	readonly peers: readonly HostMeshPeer[];
+}
+
+/**
+ * One mesh peer as a host reaches it. `path`: `direct` (a handshake in the last 3 minutes) or `none` (none since); a newer
+ * host may say another. `endpoint`: the address and port it uses now. `lastHandshake`: when it last completed one, absent
+ * before the first. `rttMs`: the round trip of its last probe, absent when that got no answer.
+ */
+export interface HostMeshPeer {
+	readonly hostId: string;
+	readonly path: string;
+	readonly endpoint?: string;
+	readonly lastHandshake?: number;
+	readonly rttMs?: number;
+}
+
+/**
+ * How old a peer's last handshake may be before the peer counts as unreachable whatever its path says: the host's own
+ * 3 minutes, plus a heartbeat or two for the report to reach the page.
+ */
+export const MESH_HANDSHAKE_STALE_MS = 5 * 60_000;
+
+/**
+ * Whether a host reaches a peer, as far as its last report says: a path other than `none`, and a handshake no older than
+ * `MESH_HANDSHAKE_STALE_MS`. A peer it never shook hands with isn't reached.
+ */
+export function meshPeerReachable(peer: HostMeshPeer, now: number): boolean {
+	return (
+		peer.path !== "none" && peer.lastHandshake !== undefined && now - peer.lastHandshake <= MESH_HANDSHAKE_STALE_MS
+	);
 }
 
 /**

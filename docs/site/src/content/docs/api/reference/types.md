@@ -436,6 +436,7 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### CreateApiKeyBody
 
@@ -533,6 +534,7 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### CreateSandboxBody
 
@@ -1138,6 +1140,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
 | `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
+| `mesh` | [HostMesh](/api/reference/types/#hostmesh) | no |  |
 | `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
@@ -1210,6 +1213,27 @@ A host's memory, in MiB, as it last reported it (every heartbeat).
 | `pressureFull` | number | yes | The share of the last 10 seconds every task waited on memory. (minimum 0, maximum 100) |
 | `maxRatio` | number | yes | The most sandboxes may be given, as a multiple of `capacityMiB`. (minimum 0) |
 | `measuredAt` | integer | no | Epoch milliseconds, UTC. |
+
+### HostMesh
+
+How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | yes | The host's own address on its pool's mesh, an IPv6 address. |
+| `peers` | [HostMeshPeer](/api/reference/types/#hostmeshpeer)[] | yes | The other hosts of its pool, each as it reaches it. |
+
+### HostMeshPeer
+
+One mesh peer as a host reaches it, as the host last reported it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The peer's host ID: another host of the same pool. |
+| `path` | string | yes | How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another. |
+| `endpoint` | string | no | The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`. |
+| `lastHandshake` | integer | no | When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first. (minimum 0) |
+| `rttMs` | number | no | The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. (minimum 0) |
 
 ### HostReleaseCheck
 
@@ -1435,6 +1459,7 @@ A set of an account's hosts (or of the deployment's shared hosts), each host in 
 | `accountId` | string | no | The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts. |
 | `default` | boolean | yes | Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. |
 | `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
+| `sync` | boolean | yes | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### PoolList
@@ -2496,6 +2521,7 @@ A template version's definition, never changed once made. Answered with every de
 | --- | --- | --- | --- |
 | `name` | string | no |  |
 | `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 
 ### UpdateSandboxBody
 

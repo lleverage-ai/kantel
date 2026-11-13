@@ -197,6 +197,58 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect((await root.listPools()).items.map((pool) => pool.name)).toEqual(["default"]);
 	});
 
+	it("keeps a pool's sync, off by default, and tells the backend when it is turned on or off", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const pools: { readonly poolId: string; readonly sync: boolean }[] = [];
+		let refuse = false;
+		const { api, root, tom } = setup(store, {
+			...backend,
+			updatePool: async (poolId, change) => {
+				if (refuse) throw new Error("the registry is away");
+				pools.push({ poolId, ...change });
+			},
+		});
+		const ci = await root.createPool({ name: "ci" });
+		expect(ci.sync).toBe(false);
+		expect(await api.service.poolSync(ci.id)).toBe(false);
+		const synced = await root.createPool({ name: "builds", sync: true });
+		expect(synced.sync).toBe(true);
+		expect(await api.service.poolSync(synced.id)).toBe(true);
+		// A new pool has no hosts to tell.
+		expect(pools).toEqual([]);
+
+		expect(await root.updatePool("ci", { sync: true })).toMatchObject({ sync: true });
+		expect(await api.service.poolSync(ci.id)).toBe(true);
+		// A rename keeps it, and tells nothing.
+		expect(await root.updatePool("ci", { name: "web" })).toMatchObject({ name: "web", sync: true });
+		expect(await root.updatePool("web", { sync: false })).toMatchObject({ sync: false });
+		expect(await api.service.poolSync(ci.id)).toBe(false);
+		expect(pools).toEqual([
+			{ poolId: ci.id, sync: true },
+			{ poolId: ci.id, sync: false },
+		]);
+		// A telling that fails is answered so, the sync kept; the same call again tells them again.
+		refuse = true;
+		expect((await failure(root.updatePool("web", { sync: true }))).code).toBe("unavailable");
+		expect(await api.service.poolSync(ci.id)).toBe(true);
+		refuse = false;
+		expect(await root.updatePool("web", { sync: true })).toMatchObject({ sync: true });
+		expect(pools.at(-1)).toEqual({ poolId: ci.id, sync: true });
+		expect((await root.listPools()).items.map((pool) => [pool.name, pool.sync])).toEqual([
+			["default", false],
+			["web", true],
+			["builds", true],
+		]);
+		expect(await api.service.poolSync("pool_gone")).toBe(false);
+
+		// An account's pools too.
+		const own = await tom.createAccountPool({ name: "ci", sync: true });
+		expect(own.sync).toBe(true);
+		expect(await tom.updateAccountPool(own.id, { sync: false })).toMatchObject({ sync: false });
+		expect(pools.at(-1)).toEqual({ poolId: own.id, sync: false });
+	});
+
 	it("keeps an account's pools to the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();

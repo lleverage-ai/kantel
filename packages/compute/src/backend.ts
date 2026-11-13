@@ -143,6 +143,8 @@ export interface BackendHost {
 	readonly diskUsage?: BackendDiskUsage;
 	/** Its memory, as it last reported it. Absent: it hasn't said (an older host, the stub). */
 	readonly memory?: computeSchema.HostMemory;
+	/** How it reaches its mesh peers, as it last reported it, while connected. Absent: it has no mesh (or the stub). */
+	readonly mesh?: computeSchema.HostMesh;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**
@@ -158,8 +160,9 @@ export interface BackendHost {
 	/** The pool it is in, as its registry has it (from its join token, or a move); absent where it keeps none. */
 	readonly poolId?: string;
 	/**
-	 * Its address on its pool's mesh (docs/design/disk-store.md, 2a), where its peers fetch disk versions from it.
-	 * Absent until it has one: such a host isn't offered to others as a holder (`disk.locate`).
+	 * Its address on its pool's mesh (docs/design/disk-store.md, 2a), where its peers fetch disk versions from it: the
+	 * registry's, for a host that runs the mesh, given in `poolId`. Absent until it has one, and taken only while the pool
+	 * has sync on: a host without one there isn't offered to others as a holder (`disk.locate`).
 	 */
 	readonly meshAddress?: string;
 	readonly lastSeenAt?: number;
@@ -1019,6 +1022,12 @@ export interface SandboxBackend {
 	 * once every 30 seconds (`checked` false within it). Absent: no release is read here (the stub).
 	 */
 	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
+	/**
+	 * A pool's sync was set, on or off (changed, or set again by a call that retries one whose telling failed). The
+	 * backend's hosts in it that run the pool's mesh are brought into it or taken out (`ComputeService.poolSync` says
+	 * which pools have sync on). Absent, nothing to do.
+	 */
+	updatePool?(poolId: string, change: { readonly sync: boolean }): Promise<void>;
 	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,

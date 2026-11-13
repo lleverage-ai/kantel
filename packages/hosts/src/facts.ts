@@ -20,6 +20,9 @@ import type {
 	HostMemoryReport,
 	HostMemorySource,
 	HostMemoryState,
+	HostMeshFacts,
+	HostMeshHealth,
+	HostMeshPeerHealth,
 	HostMountStatus,
 	HostRuntime,
 	HostSandboxUsage,
@@ -177,6 +180,30 @@ function hostRuntimes(value: unknown): HostRuntime[] | undefined {
 	return out.length === 0 ? undefined : out;
 }
 
+/** A WireGuard key as WireGuard writes it: 32 bytes in base64, 44 characters with the padding. */
+const WIREGUARD_KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
+
+/**
+ * A host's side of its pool's mesh (`HostMeshFacts`), or undefined where it sends none or none shaped as kantel-host
+ * sends it (a WireGuard public key and a UDP port): a host without it is left out of the mesh, as is one whose report is
+ * malformed, rather than refused. Its endpoints are kept as they came, those that aren't text of a sane length left out:
+ * peers try them all, so one Kantel can't read is the host's to fix.
+ */
+export function meshFacts(value: unknown): HostMeshFacts | undefined {
+	if (!isObject(value)) return undefined;
+	const { publicKey, listenPort, endpoints } = value;
+	if (typeof publicKey !== "string" || !WIREGUARD_KEY.test(publicKey)) return undefined;
+	if (typeof listenPort !== "number" || !Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
+		return undefined;
+	}
+	const kept = (Array.isArray(endpoints) ? endpoints : [])
+		.filter(
+			(endpoint): endpoint is string => typeof endpoint === "string" && endpoint !== "" && endpoint.length <= MAX_TEXT,
+		)
+		.slice(0, MAX_ITEMS);
+	return { publicKey, listenPort, endpoints: kept };
+}
+
 /** Two CPU fingerprints restore each other's snapshots: both known, and vendor, family, model and features all equal. */
 export function sameCpu(a: HostCpuFingerprint | undefined, b: HostCpuFingerprint | undefined): boolean {
 	return (
@@ -225,6 +252,7 @@ function facts(value: unknown): HostFacts {
 	const isolate = isolateRuntime(value.isolate);
 	const cpu = cpuFingerprint(value.cpu);
 	const runtimes = hostRuntimes(value.runtimes);
+	const mesh = meshFacts(value.mesh);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -250,6 +278,7 @@ function facts(value: unknown): HostFacts {
 		...(isolate === undefined ? {} : { isolate }),
 		...(cpu === undefined ? {} : { cpu }),
 		...(runtimes === undefined ? {} : { runtimes }),
+		...(mesh === undefined ? {} : { mesh }),
 	};
 }
 
@@ -267,7 +296,36 @@ function capacity(value: unknown): HostCapacity {
 		...diskUsage(value.disk),
 		...memoryReport(value.memory),
 		...stickyHoldings(value.stickyDisks),
+		...meshHealth(value.mesh),
 	};
+}
+
+/** The most mesh peers a capacity report's `mesh` keeps: more than a pool has hosts. */
+const MAX_MESH_PEERS = 1024;
+
+const meshText = (value: unknown, longest = MAX_TEXT): value is string =>
+	typeof value === "string" && value !== "" && value.length <= longest;
+
+/**
+ * A capacity's mesh health (`HostMeshHealth`): left out, not refused, when it isn't shaped as kantel-host sends it (an
+ * address and a list of peers), as the rest of the report still stands. A peer without a host ID or a path is left out,
+ * and so is a figure that isn't a number from 0, so a peer is never shown with a handshake or round trip it didn't have.
+ */
+function meshHealth(value: unknown): { mesh?: HostMeshHealth } {
+	if (!isObject(value) || !meshText(value.address)) return {};
+	const peers: HostMeshPeerHealth[] = [];
+	for (const entry of Array.isArray(value.peers) ? value.peers.slice(0, MAX_MESH_PEERS) : []) {
+		if (!isObject(entry) || !meshText(entry.hostId) || !meshText(entry.path, 32)) continue;
+		const { endpoint, lastHandshake, rttMs } = entry;
+		peers.push({
+			hostId: entry.hostId,
+			path: entry.path,
+			...(meshText(endpoint) ? { endpoint } : {}),
+			...(figure(lastHandshake) && Number.isSafeInteger(lastHandshake) && lastHandshake > 0 ? { lastHandshake } : {}),
+			...(figure(rttMs) ? { rttMs } : {}),
+		});
+	}
+	return { mesh: { address: value.address, peers } };
 }
 
 /** Whether `value` is a block map's digest: `sha256:` and 64 lowercase hex digits. */
