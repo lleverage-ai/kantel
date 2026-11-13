@@ -328,6 +328,14 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						await Promise.all([primary.deleteStickyDisk?.(diskId), fallback.deleteStickyDisk?.(diskId)]);
 					},
 				}),
+		...(primary.stickyHoldings === undefined && fallback.stickyHoldings === undefined
+			? {}
+			: {
+					async stickyHoldings() {
+						const [first, second] = await Promise.all([primary.stickyHoldings?.(), fallback.stickyHoldings?.()]);
+						return [...(first ?? []), ...(second ?? [])];
+					},
+				}),
 		async updateHost(hostId, change) {
 			await primary.updateHost?.(hostId, change);
 		},

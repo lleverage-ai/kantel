@@ -1055,8 +1055,17 @@ const STICKY_DISKS_OFF =
 	"Sticky disks are off here; the deployment turns them on with KANTEL_STICKY_DISKS=experimental";
 /** How long a deleted sticky disk's tombstone is kept, its versions deleted from hosts that come back meanwhile. */
 const STICKY_TOMBSTONE_MS = 30 * 24 * 3_600_000;
-/** How often the sweep deletes tombstoned sticky disks' versions from hosts again. */
+/**
+ * How often the sweep deletes tombstoned sticky disks' versions from hosts again, and forgets versions their hosts no
+ * longer hold.
+ */
 const STICKY_SWEEP_EVERY_MS = 10 * 60_000;
+/**
+ * How long before a host's report arrived a version must have been committed for the report to say whether the host
+ * holds it: the host measures its holdings a moment before it sends them, so a version committed meanwhile may be
+ * missing from them.
+ */
+const STICKY_REPORT_GRACE_MS = 2 * 60_000;
 /** How many of a disk's versions a get answers. */
 const STICKY_VERSIONS_LISTED = 20;
 /** How long the sweep leaves between the broker's passes when it has no word of when the next is due. */
@@ -2439,25 +2448,57 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const disk of await store.stickyDisks.list({ accountId })) await deleteStickyDiskNow(disk.id);
 	}
 
-	/** When the sweep last deleted tombstoned sticky disks' versions from hosts. */
+	/** When the sweep last went over sticky disks. */
 	let stickySweptAt = Number.NEGATIVE_INFINITY;
 	/**
 	 * Deletes deleted sticky disks' versions from every connected host again (a host away at the delete, or a commit
 	 * that finished after it), and their catalogue versions a delete stopped before, and forgets tombstones past
-	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it.
+	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then forgets the versions of
+	 * live disks their hosts no longer hold (`forgetDroppedStickyVersions`).
 	 */
-	async function sweepStickyTombstones(): Promise<void> {
-		if (options.stickyDisks !== true || backend.deleteStickyDisk === undefined) return;
+	async function sweepStickyDisks(): Promise<void> {
+		if (options.stickyDisks !== true) return;
 		const t = now();
 		if (t - stickySweptAt < STICKY_SWEEP_EVERY_MS) return;
 		stickySweptAt = t;
-		for (const disk of await store.stickyDisks.list()) {
-			if (disk.deletedAt === undefined) continue;
-			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
-				await store.stickyDiskVersions.delete(version.id);
+		const disks = await store.stickyDisks.list();
+		if (backend.deleteStickyDisk !== undefined) {
+			for (const disk of disks) {
+				if (disk.deletedAt === undefined) continue;
+				for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
+					await store.stickyDiskVersions.delete(version.id);
+				}
+				await backend.deleteStickyDisk(disk.id).catch(() => undefined);
+				if (t - disk.deletedAt > STICKY_TOMBSTONE_MS) await store.stickyDisks.delete(disk.id);
 			}
-			await backend.deleteStickyDisk(disk.id).catch(() => undefined);
-			if (t - disk.deletedAt > STICKY_TOMBSTONE_MS) await store.stickyDisks.delete(disk.id);
+		}
+		await forgetDroppedStickyVersions(disks);
+	}
+	/**
+	 * Forgets each version of a live disk that its host, connected and reporting what it holds, no longer holds (it
+	 * keeps only its newest few), so a disk lists the versions there are. Never the disk's head, which a later commit
+	 * replaces; never on the word of a host that doesn't say what it holds (absent isn't none); and never a version
+	 * committed within `STICKY_REPORT_GRACE_MS` of the report, which may have been measured before it.
+	 */
+	async function forgetDroppedStickyVersions(disks: readonly StoredStickyDisk[]): Promise<void> {
+		if (backend.stickyHoldings === undefined) return;
+		const live = disks.filter((disk) => disk.deletedAt === undefined);
+		if (live.length === 0) return;
+		const reports = new Map<string, { readonly reportedAt: number; readonly held: ReadonlySet<string> }>();
+		for (const report of await backend.stickyHoldings()) {
+			if (report.disks === undefined) continue;
+			const held = new Set(report.disks.flatMap((disk) => disk.versions.map((version) => `${disk.diskId}/${version}`)));
+			reports.set(report.hostId, { reportedAt: report.reportedAt, held });
+		}
+		if (reports.size === 0) return;
+		for (const disk of live) {
+			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
+				const report = reports.get(version.hostId);
+				if (version.id === disk.head || report === undefined) continue;
+				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
+				if (report.held.has(`${disk.id}/${version.id}`)) continue;
+				await store.stickyDiskWrites.forget(version.id);
+			}
 		}
 	}
 
@@ -11019,7 +11060,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async sweep() {
 			const at = now();
-			keepGoing(sweepStickyTombstones().catch(() => undefined));
+			keepGoing(sweepStickyDisks().catch(() => undefined));
 			// The GitHub runner broker's pass, when one is due: in the background, as it calls hosts and GitHub.
 			if (runnerSettings !== undefined && at >= runnersDueAt) {
 				runnersDueAt = at + IDLE_RUNNER_PASS_MS;

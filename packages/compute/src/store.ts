@@ -942,6 +942,7 @@ export interface StoredStickyDiskVersion {
  *   delayed delete never frees a newer disk's name.
  * - `commit` records a version and makes it the disk's head, numbered after its other commits, together, and only while
  *   the disk is there and not tombstoned: once a tombstone lands, no version of the disk is recorded again.
+ * - `forget` deletes a version's record only while it isn't its disk's head, so the head always has its version.
  */
 export interface StickyDiskWrites {
 	/** Inserts `disk` and claims its name in its account; false, writing neither, when the name or the ID is taken. */
@@ -956,6 +957,11 @@ export interface StickyDiskWrites {
 	 * undefined, writing nothing, when the disk is gone or tombstoned.
 	 */
 	commit(version: StoredStickyDiskVersion, at: number): Promise<StoredStickyDiskVersion | undefined>;
+	/**
+	 * Deletes the version `id`'s record (its host no longer holds it) unless it is its disk's head. Answers whether it is
+	 * gone, false leaving it as it was.
+	 */
+	forget(id: string): Promise<boolean>;
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -1086,6 +1092,13 @@ function memoryStickyDiskWrites(
 			disks.records.set(current.id, { ...current, head: version.id, commits, updatedAt: at });
 			versions.records.set(version.id, structuredClone(recorded));
 			return structuredClone(recorded);
+		},
+		async forget(id) {
+			const version = versions.records.get(id);
+			if (version === undefined) return true;
+			if (disks.records.get(version.diskId)?.head === id) return false;
+			versions.records.delete(id);
+			return true;
 		},
 	};
 }

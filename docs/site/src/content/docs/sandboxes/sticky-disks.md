@@ -37,7 +37,7 @@ The sandbox's `stickyDisks` says, for each, the version its copy came from (none
 curl -X POST https://<your-kantel>/v1/sandboxes/<sandbox>/sticky-disks/ci-cache/commit -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
-The sandbox must be running. Its filesystem is frozen for the moment the copy takes, so stop anything still writing first (Docker, say). `GET /v1/sticky-disks/ci-cache` lists the newest versions, and `head` is the one new sandboxes start from.
+The sandbox must be running. Its filesystem is frozen for the moment the copy takes, so stop anything still writing first (Docker, say). `GET /v1/sticky-disks/ci-cache` lists the newest versions there are, and `head` is the one new sandboxes start from. A version its host has deleted drops off the list within about ten minutes; the head stays listed until a commit replaces it.
 
 ## Tips
 
