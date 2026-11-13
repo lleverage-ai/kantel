@@ -228,6 +228,11 @@ type MeshPeerHealth struct {
 	RTTMs         float64 `json:"rttMs,omitempty"`
 }
 
+// FeatureDiskSync: the host fetches disk versions from its mesh peers (docs/design/disk-store.md, "2c. Peer sync"):
+// it takes disk.fetch (DiskFetchParams) for sticky disks, and a create attaching a sticky disk version it doesn't hold
+// starts on its newest and fetches that one in the background. It needs FeatureMesh and FeatureStickyDisks.
+const FeatureDiskSync = "disk-sync"
+
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
@@ -1105,6 +1110,19 @@ type DiskLocateResult struct {
 	Grant     string       `json:"grant,omitempty"`
 }
 
+// DiskFetchParams (Kantel → host, MethodDiskFetch; FeatureDiskSync) asks the host to fetch a version from the hosts
+// that hold it: what disk.locate would answer the host (MapDigest, Holders and Grant, naming the host as to). It is
+// answered {} once the fetch has started, or is queued behind others; the host holds the version once a capacity report
+// lists it. A fetch whose grant expires, or whose holders refuse it, asks disk.locate again.
+type DiskFetchParams struct {
+	Kind      string       `json:"kind"`
+	ObjectID  string       `json:"objectId"`
+	Version   string       `json:"version"`
+	MapDigest string       `json:"mapDigest,omitempty"`
+	Holders   []DiskHolder `json:"holders,omitempty"`
+	Grant     string       `json:"grant,omitempty"`
+}
+
 // DiskHolder is a host holding a version, and its mesh address.
 type DiskHolder struct {
 	HostID  string `json:"hostId"`
@@ -1619,6 +1637,8 @@ const (
 	MethodBucketResolve = "bucket.fetch"
 	// MethodDiskLocate (host → Kantel, DiskLocateParams) answers a DiskLocateResult.
 	MethodDiskLocate = "disk.locate"
+	// MethodDiskFetch (Kantel → host, DiskFetchParams; FeatureDiskSync) answers {} once the fetch has started.
+	MethodDiskFetch = "disk.fetch"
 	// MethodStickyCommit (Kantel → host, StickyCommitParams; FeatureStickyDisks) answers a StickyCommitResult.
 	MethodStickyCommit = "sticky.commit"
 	// MethodStickyDelete (Kantel → host, StickyDeleteParams; FeatureStickyDisks) answers {}.

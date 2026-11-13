@@ -126,6 +126,12 @@ type Config struct {
 	// MeshEndpoints are where the host's peers reach it besides its interface addresses: "host:port", or a host with
 	// MeshPort, such as a forwarded port or a name. Peers try them first.
 	MeshEndpoints []string `json:"meshEndpoints,omitempty"`
+	// SyncRateMbit is the most peer sync may move over the mesh, in Mbit/s, each way: what the host serves its peers, and
+	// what it fetches from them (default 0: half the link of its default route, or of 1 Gbit/s when that isn't known;
+	// -1: no limit).
+	SyncRateMbit int `json:"syncRateMbit,omitempty"`
+	// SyncFetches is how many disk versions the host fetches from its peers at once (default 2); others wait their turn.
+	SyncFetches int `json:"syncFetches,omitempty"`
 
 	// ImagePatching is the switch for versioned host images (experimental, default off): the host keeps each version
 	// of the kernel and images side by side under ImagesDir, takes new ones from the control plane's image channel,

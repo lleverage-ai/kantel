@@ -393,6 +393,10 @@ func (m *Manager) attachStickyDrive(ctx context.Context, s *sandbox, slot int, s
 	tmp := file + ".new"
 	_ = os.Remove(tmp)
 	version, err := m.cloneStickyVersion(spec.DiskID, spec.Version, tmp)
+	if spec.Version != "" && version != spec.Version && m.cfg.FetchSticky != nil {
+		// A sticky disk is a cache: the sandbox doesn't wait for the version it asked for, which is fetched for the next.
+		m.cfg.FetchSticky(spec.DiskID, spec.Version)
+	}
 	if err == nil && version == "" {
 		err = newStickyDisk(tmp, spec.SizeGiB)
 	}
@@ -608,7 +612,7 @@ func stickyUsage(s *sandbox) int64 {
 // come from, so counting each sandbox's whole disk would refuse sandboxes on a host with room for them. What a full
 // copy really takes is reserved here instead, when it is made.
 func (m *Manager) cloneStickyFile(src, dst string) (string, error) {
-	if reflink(src, dst) == nil {
+	if fsutil.Reflink(src, dst) == nil {
 		return proto.DiskReflink, nil
 	}
 	_ = os.Remove(dst)
@@ -815,7 +819,7 @@ func cloneWithin(ctx context.Context, src, dst string, deadline time.Time, reser
 	if time.Now().After(deadline) {
 		return late()
 	}
-	if reflink(src, dst) == nil {
+	if fsutil.Reflink(src, dst) == nil {
 		if time.Now().After(deadline) {
 			return late()
 		}
@@ -919,12 +923,14 @@ func (m *Manager) DeleteSticky(p proto.StickyDeleteParams) error {
 		return err
 	}
 	m.removeStickyMap(p.DiskID, p.Version)
+	// A fetch of it under way fails to publish once its partial is gone.
+	m.discardPartialLocked(p.DiskID, p.Version)
 	order := m.readStickyOrder(p.DiskID)
 	if _, ok := order.Seq[p.Version]; ok {
 		delete(order.Seq, p.Version)
 		_ = m.writeStickyOrder(p.DiskID, order)
 	}
-	if len(m.stickyVersions(p.DiskID)) == 0 && len(m.stickyCommitsOf(p.DiskID)) == 0 {
+	if len(m.stickyVersions(p.DiskID)) == 0 && len(m.stickyCommitsOf(p.DiskID)) == 0 && !m.fetchingStickyLocked(p.DiskID) {
 		_ = os.RemoveAll(dir)
 	}
 	return nil

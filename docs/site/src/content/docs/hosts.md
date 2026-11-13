@@ -235,6 +235,7 @@ It ends with what install leaves to the service, as above. The real output has t
 | `--inject-guest-agent` | Boot microVMs through Kantel's initramfs, which puts the guest agent into [any Linux image](/sandboxes/custom-images/). Experimental |
 | `--mesh-port PORT` | The UDP port of the WireGuard mesh with the other hosts in the host's pool. Default `51820`; `-1` turns the mesh off. See [The pool mesh](#the-pool-mesh) |
 | `--mesh-endpoint HOST:PORT` | Where the host's pool peers reach it besides its own addresses, such as a forwarded port. Repeat it, or separate several with commas |
+| `--sync-rate MBIT` | The most the host moves to and from its pool peers over the mesh, in Mbit/s, each way. Default: half the speed of the link its default route uses (half of 1 Gbit/s when that isn't known); `-1` sets no limit |
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
@@ -245,6 +246,8 @@ Put any of these after the token in the join command. `sudo kantel-admin host jo
 ### The pool mesh
 
 Hosts in a pool with sync on join a WireGuard mesh with each other, for moving disks between them. Sync is off by default: turn it on with `kantel-admin pool sync <pool> on` (or `kantel pools sync <pool> on` for an account's own hosts). Each host makes its key the first time it starts (kept in `/var/lib/kantel-host/mesh`, never sent anywhere) and brings up a device named `kmesh0` with an IPv6 address the control plane gives it. Peers connect directly to each other's addresses on UDP port 51820, IPv6 ones first, so that port must be reachable between the pool's hosts over IPv6 or IPv4. `kantel-host` accepts it itself in iptables. Over the mesh a host accepts only the peer sync port (TCP 7480) from its pool's addresses, forwards nothing, and its sandboxes can't reach it. A host in a pool without sync keeps the device down. The mesh needs `ip6tables` and `/dev/net/tun`.
+
+Over the mesh, hosts fetch sticky disk versions from each other. A host fetches only the 4 MiB blocks that differ from the newest version of the disk it already has. It checks each block against the version's block map, and it carries on from where it stopped after a restart. A sandbox never waits for a fetch: one created with a version its host doesn't have yet starts on the host's newest version, and the host fetches the one it asked for in the background. Peer sync is held to `--sync-rate` each way (`syncRateMbit` in the config), and a host fetches at most two versions at once (`syncFetches`).
 
 ### Without KVM
 
