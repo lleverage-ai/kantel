@@ -114,6 +114,11 @@ func (m *Manager) runtimeImage(rootfs string) (image string, ok bool) {
 // `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103@sha256:0123456789abcdef;sticky=4;free-page-reporting`.
 // Empty when any of them can't be told: such a snapshot's memory goes to no other host.
 func (m *Manager) portableRuntime(rootfs string) string {
+	return m.runtimeWith(rootfs, StickyDrives)
+}
+
+// runtimeWith is portableRuntime for a machine with sticky sticky drives: a sandbox made before them boots with none.
+func (m *Manager) runtimeWith(rootfs string, sticky int) string {
 	image, ok := m.runtimeImage(rootfs)
 	if !ok {
 		return ""
@@ -127,7 +132,7 @@ func (m *Manager) portableRuntime(rootfs string) string {
 	if image != "" {
 		fp += ";image=" + image
 	}
-	fp += fmt.Sprintf(";sticky=%d", StickyDrives)
+	fp += fmt.Sprintf(";sticky=%d", sticky)
 	if m.cfg.FreePageReporting {
 		fp += ";free-page-reporting"
 	}

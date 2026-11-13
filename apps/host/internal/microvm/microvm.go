@@ -307,6 +307,9 @@ type sandbox struct {
 	machine *fc.Machine
 	guest   *guest.Client
 	link    *network.Link
+	// starting is the runtime of the machine a create or start is starting (fingerprint.go), taken as it launches:
+	// meta.Runtime once it runs, and never if its start fails, so a stopped sandbox's memory keeps its own.
+	starting string
 	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
 	// start, writes it before it answers.
 	unsaved bool
@@ -2364,15 +2367,7 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 		origin.takeDisk = takeDisk && p.From != ""
 		// A template snapshot that didn't restore leaves what it got to: the fresh boot's phases replace them.
 		*ph = proto.StartPhases{}
-		if err := m.startMachine(ctx, s, origin, size, p.Egress, t, ph); err != nil {
-			return err
-		}
-		if origin.state == "" {
-			s.meta.Runtime = m.portableRuntime(vmRootfs(s.vmDir()))
-		} else {
-			s.meta.Runtime = m.restoredRuntime(origin.runtime)
-		}
-		return nil
+		return m.startMachine(ctx, s, origin, size, p.Egress, t, ph)
 	})
 	if err != nil {
 		return fail(err)
@@ -2463,6 +2458,7 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = s.link.Slot
 	s.meta.Pid = s.machine.Pid()
+	s.meta.Runtime = s.starting
 	if err := m.writeMeta(s); err != nil {
 		return fail(err)
 	}
@@ -2647,6 +2643,11 @@ func (m *Manager) startSandbox(ctx context.Context, p proto.CreateParams, size p
 // failure it leaves no machine, link or vm directory behind; the record goes with s's directory (Create's fail).
 func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOrigin, size proto.Size, e *proto.Egress, t timings, ph *proto.StartPhases) (err error) {
 	vm := s.vmDir()
+	// A restore runs the memory's kernel and image under the Firecracker it launches; a boot sets its own (boot).
+	s.starting = ""
+	if origin.state != "" {
+		s.starting = m.restoredRuntime(origin.runtime)
+	}
 	defer func() {
 		if err == nil {
 			return
@@ -2743,6 +2744,8 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size, ph *pro
 	start := time.Now()
 	vm := s.vmDir()
 	kernel := m.kernelFor(vmRootfs(vm))
+	// Its runtime as it launches, with the sticky drives it has (none for a sandbox from before them).
+	s.starting = m.runtimeWith(vmRootfs(vm), s.meta.StickyDrives)
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
 	if err != nil {
 		return err
@@ -2997,6 +3000,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	source := "snapshot"
 	_, statErr := os.Stat(filepath.Join(vm, "mem"))
 	if s.meta.Memory && statErr == nil && !coldBoot {
+		s.starting = m.restoredRuntime(s.meta.Runtime)
 		machine, client, err := m.restore(ctx, vm, filepath.Join(vm, "state"), filepath.Join(vm, "mem"), link, ph)
 		if err != nil {
 			m.cfg.Network.Remove(link)
@@ -3004,7 +3008,6 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 			return proto.SandboxInfo{}, err
 		}
 		s.machine, s.guest = machine, client
-		s.meta.Runtime = m.restoredRuntime(s.meta.Runtime)
 		t.step("restore", &start)
 	} else {
 		if err := m.boot(ctx, s, size, ph); err != nil {
@@ -3012,7 +3015,6 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 			s.link = nil
 			return proto.SandboxInfo{}, err
 		}
-		s.meta.Runtime = m.portableRuntime(vmRootfs(vm))
 		source = "boot"
 		t.step("boot", &start)
 		if coldBoot && p.Rebase {
@@ -3053,6 +3055,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = link.Slot
 	s.meta.Pid = s.machine.Pid()
+	s.meta.Runtime = s.starting
 	s.meta.Error = ""
 	if err := m.writeMeta(s); err != nil {
 		m.releaseBundles(s, nil)

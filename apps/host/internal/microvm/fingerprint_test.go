@@ -240,3 +240,18 @@ func TestTemplateSnapshotAnswersWhatItWasMadeOn(t *testing.T) {
 		t.Fatalf("an older one's result has %+v, %q", old.CPU, old.Runtime)
 	}
 }
+
+// A sandbox made before the sticky drives boots with none, and its runtime says so: it isn't the host's.
+func TestRuntimeWithTheMachinesStickyDrives(t *testing.T) {
+	m := fingerprintHost(t)
+	rootfs := versionFile(m, "old")
+	legacy := m.runtimeWith(rootfs, 0)
+	if !strings.HasSuffix(legacy, ";sticky=0") || legacy == m.portableRuntime(rootfs) {
+		t.Fatalf("a sandbox without sticky drives: %q, the host's %q", legacy, m.portableRuntime(rootfs))
+	}
+	for _, r := range m.Runtimes(images.Store{Dir: filepath.Dir(m.cfg.Rootfs)}.SandboxImages()) {
+		if r.Runtime == legacy {
+			t.Fatalf("the host reports %q", legacy)
+		}
+	}
+}
