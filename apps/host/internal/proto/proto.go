@@ -293,6 +293,11 @@ const FeatureStickyDisks = "sticky-disks"
 // SandboxInfo and Moved. Reported by a host that runs both tiers.
 const FeatureIsolateUpgrade = "isolate-upgrade"
 
+// FeatureIsolateUpgradeFrom (HOST_FEATURES.isolateUpgradeFrom): sandbox.upgrade also takes From, one of the host's
+// microVM snapshots, or Template, and starts the microVM from it as sandbox.create would (a snapshot's memory
+// restored), the isolate's files laid over what it has at UpgradeWorkspace. Reported with FeatureIsolateUpgrade.
+const FeatureIsolateUpgradeFrom = "isolate-upgrade-from"
+
 // FeatureIsolateFreeze (HOST_FEATURES.isolateFreeze): the host takes sandbox.upgrade.freeze and sandbox.upgrade.thaw
 // (UpgradeRef) for its isolates, so Kantel can copy one version of an isolate's files to a microVM on another host
 // while nothing writes to them. Reported by a host with the isolate tier.

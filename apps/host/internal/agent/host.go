@@ -318,7 +318,7 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps)
 	}
 	if h.upgradesIsolates() {
-		features = append(features, proto.FeatureIsolateUpgrade)
+		features = append(features, proto.FeatureIsolateUpgrade, proto.FeatureIsolateUpgradeFrom)
 	}
 	if _, ok := h.tiers[isolate.Tier].(upgradeSource); ok {
 		features = append(features, proto.FeatureIsolateFreeze)

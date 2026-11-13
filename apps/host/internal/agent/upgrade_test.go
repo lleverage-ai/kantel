@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -101,14 +102,33 @@ type upgradeMicrovmTier struct {
 	deleted    []string
 	// onCreate runs inside a create, as the microVM tier's events are sent while it makes a sandbox.
 	onCreate func()
+	// snapshots are the tier's snapshots by ID, each its files by path under the guest's root, which a create from it
+	// writes into root as a restore leaves its disk.
+	snapshots map[string]map[string]string
+	created   []proto.CreateParams
+}
+
+func (f *upgradeMicrovmTier) HasSnapshot(id string) bool {
+	_, ok := f.snapshots[id]
+	return ok
 }
 
 func (f *upgradeMicrovmTier) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
 	if f.failCreate {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrCapacity, Message: "no room for the microVM"}
 	}
+	f.created = append(f.created, p)
 	if f.onCreate != nil {
 		f.onCreate()
+	}
+	for name, content := range f.snapshots[p.From] {
+		path := filepath.Join(f.root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return proto.SandboxInfo{}, err
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return proto.SandboxInfo{}, err
+		}
 	}
 	return f.lifecycleTier.Create(ctx, p)
 }
@@ -329,6 +349,100 @@ func TestAFailedUpgradeLeavesTheIsolate(t *testing.T) {
 			// Sent again, it answers the same failure rather than trying again.
 			if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up"}); err == nil {
 				t.Fatal("the failed upgrade succeeded when sent again")
+			}
+		})
+	}
+}
+
+// An upgrade into one of the host's microVM snapshots makes the microVM from it as a create does, then lays the
+// isolate's files over what the snapshot has at /home/user/workspace: the isolate's win where both have a file, and
+// nothing of the snapshot's is deleted, there or anywhere else.
+func TestUpgradeIntoASnapshotLaysTheIsolatesFilesOverIt(t *testing.T) {
+	h, iso, mv, _ := newUpgradeHost(t)
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureIsolateUpgradeFrom) {
+		t.Fatalf("its features %v don't say %s", h.makeFacts().Features, proto.FeatureIsolateUpgradeFrom)
+	}
+	mv.snapshots = map[string]map[string]string{"snap_project": {
+		"home/user/workspace/src/a.txt":         "the snapshot's\n",
+		"home/user/workspace/package.json":      "{}\n",
+		"home/user/workspace/node_modules/x.js": "x\n",
+		"etc/project.conf":                      "kept\n",
+	}}
+	info, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up", Size: "default", From: "snap_project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Tier != microvm.Tier || info.Moved == nil || info.Moved.Files != 2 {
+		t.Fatalf("answered %+v", info)
+	}
+	if len(mv.created) != 1 || mv.created[0].From != "snap_project" || mv.created[0].SandboxID != "sbx_up" {
+		t.Fatalf("created %+v", mv.created)
+	}
+	for name, want := range map[string]string{
+		"home/user/workspace/src/a.txt":         "hello\n",
+		"home/user/workspace/notes.md":          "# notes\n",
+		"home/user/workspace/package.json":      "{}\n",
+		"home/user/workspace/node_modules/x.js": "x\n",
+		"etc/project.conf":                      "kept\n",
+	} {
+		if got, err := os.ReadFile(filepath.Join(mv.root, name)); err != nil || string(got) != want {
+			t.Errorf("%s: %q %v, want %q", name, got, err, want)
+		}
+	}
+	if len(iso.disposed) != 1 {
+		t.Fatalf("disposed %v", iso.disposed)
+	}
+}
+
+// A snapshot the microVM tier doesn't hold (an isolate's, or none) is refused before anything is frozen or made, as
+// a create from it would be; so are mounts, and a snapshot with a template.
+func TestUpgradeIntoASnapshotRefusesWhatItCantStartFrom(t *testing.T) {
+	for name, p := range map[string]proto.CreateParams{
+		"no such snapshot": {SandboxID: "sbx_up", From: "snap_gone"},
+		"mounts":           {SandboxID: "sbx_up", Mounts: []proto.Mount{{Path: "/data"}}},
+		"both":             {SandboxID: "sbx_up", From: "snap_project", Template: &proto.TemplateBoot{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, iso, mv, events := newUpgradeHost(t)
+			mv.snapshots = map[string]map[string]string{"snap_project": {}}
+			_, err := upgradeCall(t, h, p)
+			want := proto.ErrInvalid
+			if name == "no such snapshot" {
+				want = proto.ErrNotFound
+			}
+			if codeOf(err) != want {
+				t.Fatalf("got %v, want %s", err, want)
+			}
+			if iso.frozen != "" || len(mv.created) != 0 || len(iso.disposed) != 0 || len(*events) != 0 {
+				t.Fatalf("it acted: frozen %q, created %v, disposed %v, events %v", iso.frozen, mv.created, iso.disposed, *events)
+			}
+			if _, name, err := h.tierOfNamed("sbx_up"); err != nil || name != isolate.Tier {
+				t.Fatalf("sbx_up is %s (%v)", name, err)
+			}
+		})
+	}
+}
+
+// An upgrade into a snapshot that fails once the microVM is made (the files won't go in, or /workspace is the
+// snapshot's own directory of files and can't be linked) deletes that microVM and leaves the isolate as it was.
+func TestAFailedUpgradeIntoASnapshotLeavesTheIsolate(t *testing.T) {
+	for _, fail := range []string{"tar", "link"} {
+		t.Run(fail, func(t *testing.T) {
+			h, iso, mv, events := newUpgradeHost(t)
+			mv.snapshots = map[string]map[string]string{"snap_project": {"workspace/README": "the snapshot's\n"}}
+			if fail == "tar" {
+				iso.failTar = errors.New("blob gone")
+			} else {
+				mv.failLink = true
+			}
+			if _, err := upgradeCall(t, h, proto.CreateParams{SandboxID: "sbx_up", From: "snap_project"}); err == nil {
+				t.Fatal("the upgrade succeeded")
+			}
+			if len(mv.deleted) != 1 || len(iso.disposed) != 0 || iso.frozen != "" || len(*events) != 0 {
+				t.Fatalf("deleted %v, disposed %v, frozen %q, events %v", mv.deleted, iso.disposed, iso.frozen, *events)
+			}
+			if _, name, err := h.tierOfNamed("sbx_up"); err != nil || name != isolate.Tier {
+				t.Fatalf("sbx_up is %s (%v)", name, err)
 			}
 		})
 	}

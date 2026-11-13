@@ -29,6 +29,11 @@ import (
 // answered, so an answer Kantel never got is not an unknown: sandbox.upgrade sent again answers the same outcome, and
 // sandbox.upgrade.settle answers it, waiting for one under way, or rolls back and fails one that never finished (or
 // never came), so it can't land after Kantel has given up on it.
+//
+// The microVM may start from one of this host's microVM snapshots (From) or a template (Template), as a create from
+// them does (FeatureIsolateUpgradeFrom), its memory restored where the snapshot holds it: the files go in after it
+// runs, laid over what the snapshot has at UpgradeWorkspace (an isolate's file replaces the snapshot's, nothing of the
+// snapshot's is deleted).
 
 // upgradeSource is the isolate tier as an upgrade's source.
 type upgradeSource interface {
@@ -146,12 +151,19 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 	if err := validUpgrade(p.SandboxID, p.OperationID); err != nil {
 		return proto.SandboxInfo{}, err
 	}
-	if p.Template != nil || len(p.Mounts) > 0 || p.From != "" {
-		return proto.SandboxInfo{}, invalid("an upgrade makes a microVM from no template, snapshot or mounts")
+	if len(p.Mounts) > 0 {
+		return proto.SandboxInfo{}, invalid("an upgrade makes a microVM with no mounts")
+	}
+	if p.From != "" && p.Template != nil {
+		return proto.SandboxInfo{}, invalid("an upgrade makes a microVM from a snapshot or a template, not both")
 	}
 	source, mv, streamer, extractor, err := h.upgradeTiers()
 	if err != nil {
 		return proto.SandboxInfo{}, err
+	}
+	// Only a microVM's snapshot: an isolate's (its own, perhaps) is no machine to start.
+	if p.From != "" && !mv.HasSnapshot(p.From) {
+		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no microVM snapshot %s on this host", p.From)}
 	}
 	defer h.lifecycle.lock(p.SandboxID)()
 	// Sent again: the first's outcome.
@@ -231,6 +243,7 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 		err = fmt.Errorf("exit %d: %s", res.ExitCode, res.Stderr)
 	}
 	if err != nil {
+		// A snapshot whose /workspace is a directory with files in it, say: those are left alone, so no link is made.
 		return undo(fmt.Errorf("linking /workspace to %s: %w", proto.UpgradeWorkspace, err))
 	}
 	// Kept before the isolate goes and before it is answered: from here the upgrade is done, whatever becomes of the
