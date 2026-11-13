@@ -522,8 +522,11 @@ const DISK_REPORTS = "diskReports";
 
 /**
  * `DiskHolderWrites` in SQL. `claim` is one conditional write of the host's report row. `reconcile` is one batch (one
- * transaction), each statement only while the report row holds exactly the report's `at`: the releases, each only as it
- * was read; then for each holder, its sticky version's row's version moved on (which takes the row, so a `forget`
+ * transaction), each statement only while the report row holds exactly the report's `at`. It starts by moving that row's
+ * version on, which takes the row: on Postgres a newer report's `claim` waits for the batch to commit (and then finds the
+ * row changed, and reads it again), so the newer report reads the holders only once the older batch has landed, and an
+ * older batch that starts after a newer claim finds the row changed and writes nothing. Then the releases, each only as
+ * it was read; then for each holder, its sticky version's row's version moved on (which takes the row, so a `forget`
  * deleting it at the version it read waits and then finds it changed) and the holder's insert, only while that version's
  * row is there.
  */
@@ -536,6 +539,7 @@ function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
 	const newest = "EXISTS (SELECT 1 FROM compute_api_records r WHERE r.kind = ? AND r.id = ? AND r.data = ?)";
 	const release = `DELETE FROM compute_api_records WHERE kind = ? AND id = ? AND data = ? AND ${newest}`;
 	const touch = `UPDATE compute_api_records SET version = version + 1 WHERE kind = ? AND id = ? AND ${newest}`;
+	const lockReport = "UPDATE compute_api_records SET version = version + 1 WHERE kind = ? AND id = ? AND data = ?";
 	const hold = `INSERT INTO compute_api_records (kind, id, seq, version, data)
 		SELECT ?, ?, ${seq}, 1, ?
 		WHERE EXISTS (SELECT 1 FROM compute_api_records v WHERE v.kind = ? AND v.id = ?) AND ${newest}
@@ -549,6 +553,7 @@ function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
 		async reconcile(hostId, at, changes) {
 			const report = [DISK_REPORTS, hostId, JSON.stringify({ id: hostId, at } satisfies StoredDiskReport)];
 			const statements = [
+				{ sql: lockReport, params: report },
 				...changes.release.map((holder) => ({
 					sql: release,
 					params: [DISK_HOLDERS, holder.id, JSON.stringify(holder), ...report],
@@ -569,7 +574,7 @@ function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
 					},
 				]),
 			];
-			if (statements.length > 0) await driver.batch(statements);
+			if (statements.length > 1) await driver.batch(statements);
 		},
 	};
 }

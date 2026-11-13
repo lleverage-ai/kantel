@@ -316,6 +316,32 @@ describe("disk holders", () => {
 		});
 	}
 
+	it("takes the host's report row first in a reconcile, so a newer claim on Postgres waits for the batch to land", async () => {
+		// PGlite has one connection, so two transactions can't overlap here: this checks the batch's shape, that it takes
+		// the report row (as Postgres's row lock needs) before it changes a holder.
+		const database = await nodeSqliteDatabase.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		const batches: string[][] = [];
+		const store = createSqlComputeStore({
+			dialect: database.driver.dialect,
+			query: (text, params) => database.driver.query(text, params),
+			async batch(statements) {
+				batches.push(statements.map((statement) => statement.sql.replace(/\s+/g, " ").trim()));
+				return database.driver.batch(statements);
+			},
+		});
+		await store.stickyDiskVersions.put(VERSION);
+		await store.diskHolderWrites.claim("host_b", 5);
+		batches.length = 0;
+		await store.diskHolderWrites.reconcile("host_b", 5, { hold: [holder("host_b", 5)], release: [] });
+		expect(batches).toHaveLength(1);
+		expect(batches[0]?.[0]).toBe(
+			"UPDATE compute_api_records SET version = version + 1 WHERE kind = ? AND id = ? AND data = ?",
+		);
+		expect(await store.diskHolders.list()).toEqual([holder("host_b", 5)]);
+	});
+
 	for (const kind of [nodeSqliteDatabase, pgliteDatabase]) {
 		it(`never forgets a version a host recorded holding after the sweep read its holders, in ${kind.name}`, {
 			timeout: kind.testTimeoutMs,
