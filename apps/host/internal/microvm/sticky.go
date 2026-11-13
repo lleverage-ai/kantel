@@ -645,19 +645,14 @@ var (
 // disk's stickyKeep last published versions. A thaw that fails is reported in the answer (ThawError): the guest thaws
 // by itself when the lease lapses.
 //
-// Then, with the sandbox free again, the version's block map is made from its parent's (mapStickyWithin), and its
-// digest answered as MapDigest when it is made within stickyMapWait; a map that takes longer is finished in the
-// background, and capacity reports give its digest once it is.
+// Then the version's block map is started, in the background, from its parent's (startStickyMap): the caller waits for
+// it with StickyMapDigest once it has let the sandbox go, so a slow map holds up no other call on the sandbox.
 func (m *Manager) CommitSticky(ctx context.Context, p proto.StickyCommitParams) (proto.StickyCommitResult, error) {
 	res, parent, err := m.commitSticky(ctx, p)
 	if err != nil {
 		return res, err
 	}
-	digest, err := m.mapStickyWithin(ctx, p.DiskID, p.Version, parent, stickyMapWait)
-	if err != nil {
-		m.log.Warn("a committed sticky disk version's map", "disk", p.DiskID, "version", p.Version, "error", err)
-	}
-	res.MapDigest = digest
+	m.startStickyMap(p.DiskID, p.Version, parent)
 	return res, nil
 }
 
@@ -912,7 +907,7 @@ func (m *Manager) DeleteSticky(p proto.StickyDeleteParams) error {
 	dir := filepath.Join(m.stickyRoot(), p.DiskID)
 	if p.Version == "" {
 		// A commit under way keeps its own file and fails to publish into the gone directory.
-		m.forgetStickyDigest(p.DiskID, "")
+		m.forgetStickyMap(p.DiskID, "")
 		return os.RemoveAll(dir)
 	}
 	if err := os.Remove(m.stickyVersionFile(p.DiskID, p.Version)); err != nil && !errors.Is(err, fs.ErrNotExist) {

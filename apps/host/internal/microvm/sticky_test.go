@@ -319,8 +319,9 @@ func TestStickyAttachCommitAndKeep(t *testing.T) {
 		if err != nil || res.Version != v || res.SizeBytes != 1<<30 || res.AllocatedBytes <= 0 {
 			t.Fatalf("commit %s: %+v %v", v, res, err)
 		}
-		checkStickyMap(t, m, "ci", v, res.MapDigest)
-		digests[v] = res.MapDigest
+		digest := m.StickyMapDigest(ctx, "ci", v)
+		checkStickyMap(t, m, "ci", v, digest)
+		digests[v] = digest
 	}
 	if fileExists(m.stickyMapFile("ci", "v3")) {
 		t.Fatal("a pruned version's map is left")
@@ -609,9 +610,11 @@ func TestStickyMapsLateAndOld(t *testing.T) {
 	stickyMapWait = 50 * time.Millisecond
 	t.Cleanup(func() { stickyMapWait = wait })
 	m.holdMaps = make(chan struct{})
-	res, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v1"})
-	if err != nil || res.MapDigest != "" {
-		t.Fatalf("%+v %v: want no digest yet", res, err)
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if digest := m.StickyMapDigest(ctx, "ci", "v1"); digest != "" {
+		t.Fatalf("digest %q before its map is made", digest)
 	}
 	close(m.holdMaps)
 	m.holdMaps = nil
@@ -638,11 +641,36 @@ func TestStickyMapsLateAndOld(t *testing.T) {
 	if err := os.WriteFile(m.stickyMapFile("ci", "v2"), []byte("an old map"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res, err = m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v2"})
-	if err != nil {
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v2"}); err != nil {
 		t.Fatal(err)
 	}
-	checkStickyMap(t, m, "ci", "v2", res.MapDigest)
+	checkStickyMap(t, m, "ci", "v2", m.StickyMapDigest(ctx, "ci", "v2"))
+
+	// A version deleted while its map is made, and committed again: the new file gets a map of its own, which the old
+	// one's, finding its file gone, neither writes over nor stands in for.
+	m.holdMaps = make(chan struct{})
+	held := m.holdMaps
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v3"}); err != nil {
+		t.Fatal(err)
+	}
+	m.stickyMapMu.Lock()
+	old := m.stickyMaps["ci/v3"]
+	m.stickyMapMu.Unlock()
+	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci", Version: "v3"}); err != nil {
+		t.Fatal(err)
+	}
+	m.holdMaps = nil
+	if _, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: "v3"}); err != nil {
+		t.Fatal(err)
+	}
+	digest = m.StickyMapDigest(ctx, "ci", "v3")
+	checkStickyMap(t, m, "ci", "v3", digest)
+	close(held)
+	<-old.done
+	if old.err == nil {
+		t.Fatal("the deleted file's map was written")
+	}
+	checkStickyMap(t, m, "ci", "v3", digest)
 	if err := m.DeleteSticky(proto.StickyDeleteParams{DiskID: "ci"}); err != nil {
 		t.Fatal(err)
 	}

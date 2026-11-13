@@ -417,7 +417,7 @@ type Manager struct {
 	stickyMapMu   sync.Mutex
 	stickyMaps    map[string]*stickyMapJob
 	stickyDigests map[string]stickyDigest
-	// holdMaps (tests), when set, holds every block map until it is closed.
+	// holdMaps (tests), when set, holds every block map started meanwhile, once its files are open, until it is closed.
 	holdMaps chan struct{}
 }
 

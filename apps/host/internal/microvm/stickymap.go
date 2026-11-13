@@ -21,8 +21,9 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 )
 
-// stickyMapWait is how long a commit waits for its version's map before it answers without its digest.
-var stickyMapWait = 60 * time.Second
+// stickyMapWait is how long a commit waits for its version's map before it answers without its digest: with a commit
+// queued behind another's freeze and clone, and its own, within the control plane's 120 seconds for a call.
+var stickyMapWait = 45 * time.Second
 
 func (m *Manager) stickyMapFile(diskID, version string) string {
 	return filepath.Join(m.stickyRoot(), diskID, version+".map")
@@ -50,20 +51,36 @@ func (m *Manager) background() context.Context {
 	return m.bg
 }
 
-// mapStickyWithin makes a version's map (mapSticky) and answers its digest, or "" when it isn't made within wait or
-// ctx ends first: it goes on in the background all the same.
-func (m *Manager) mapStickyWithin(ctx context.Context, diskID, version, parent string, wait time.Duration) (string, error) {
-	job := m.startStickyMap(diskID, version, parent)
-	timer := time.NewTimer(wait)
+// StickyMapDigest waits up to stickyMapWait (or until ctx ends) for the map of a version a commit has just made
+// (CommitSticky starts it), and answers its digest: "" when it isn't made by then, as it goes on in the background, or
+// couldn't be made.
+func (m *Manager) StickyMapDigest(ctx context.Context, diskID, version string) string {
+	if !validID(diskID) || !validID(version) {
+		return ""
+	}
+	m.stickyMapMu.Lock()
+	job := m.stickyMaps[diskID+"/"+version]
+	m.stickyMapMu.Unlock()
+	if job == nil {
+		// Made already, or never started.
+		return m.stickyMapDigest(diskID, version)
+	}
+	timer := time.NewTimer(stickyMapWait)
 	defer timer.Stop()
+	var err error
 	select {
 	case <-job.done:
-		return job.digest, job.err
+		if job.err == nil {
+			return job.digest
+		}
+		err = job.err
 	case <-timer.C:
-		return "", fmt.Errorf("not made within %s; it goes on in the background", wait)
+		err = fmt.Errorf("not made within %s; it goes on in the background", stickyMapWait)
 	case <-ctx.Done():
-		return "", ctx.Err()
+		err = ctx.Err()
 	}
+	m.log.Warn("a committed sticky disk version's map", "disk", diskID, "version", version, "error", err)
+	return ""
 }
 
 // startStickyMap makes a version's map in the background, under the tier's own context, unless it is being made already:
@@ -82,12 +99,12 @@ func (m *Manager) startStickyMap(diskID, version, parent string) *stickyMapJob {
 	m.stickyMaps[key] = job
 	hold := m.holdMaps
 	go func() {
-		if hold != nil {
-			<-hold
-		}
-		job.digest, job.err = m.mapSticky(m.background(), diskID, version, parent)
+		job.digest, job.err = m.mapSticky(m.background(), diskID, version, parent, hold)
 		m.stickyMapMu.Lock()
-		delete(m.stickyMaps, key)
+		// Unless a delete, or a new commit of the name, let it go already (forgetStickyMap).
+		if m.stickyMaps[key] == job {
+			delete(m.stickyMaps, key)
+		}
 		m.stickyMapMu.Unlock()
 		close(job.done)
 	}()
@@ -97,8 +114,8 @@ func (m *Manager) startStickyMap(diskID, version, parent string) *stickyMapJob {
 // mapSticky makes a version's map and writes it beside the version, answering its digest. Its base is the map of
 // parent (the version its sandbox's copy came from), else of the newest other version the host holds that has one:
 // only blocks whose extents the version doesn't share with the base's file are read. A version deleted meanwhile gets
-// no map.
-func (m *Manager) mapSticky(ctx context.Context, diskID, version, parent string) (string, error) {
+// no map. hold (tests), when set, holds it once its files are open until it is closed.
+func (m *Manager) mapSticky(ctx context.Context, diskID, version, parent string, hold <-chan struct{}) (string, error) {
 	f, base, err := m.openStickyForMap(diskID, version, parent)
 	if err != nil {
 		return "", err
@@ -106,6 +123,9 @@ func (m *Manager) mapSticky(ctx context.Context, diskID, version, parent string)
 	defer f.Close()
 	if base != nil {
 		defer base.File.Close()
+	}
+	if hold != nil {
+		<-hold
 	}
 	start := time.Now()
 	bm, st, err := blockmap.Make(ctx, f, base)
@@ -174,7 +194,7 @@ func (m *Manager) removeStickyMap(diskID, version string) {
 	if err := os.Remove(m.stickyMapFile(diskID, version)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		m.log.Warn("deleting a sticky disk version's map", "disk", diskID, "version", version, "error", err)
 	}
-	m.forgetStickyDigest(diskID, version)
+	m.forgetStickyMap(diskID, version)
 }
 
 // stickyMapDigest is a version's map's digest, "" when it has none (yet), read again only when the file changes.
@@ -204,13 +224,24 @@ func (m *Manager) stickyMapDigest(diskID, version string) string {
 	return digest
 }
 
-// forgetStickyDigest drops a version's cached map digest, or with no version every one of the disk's.
-func (m *Manager) forgetStickyDigest(diskID, version string) {
+// forgetStickyMap lets go of a version's map being made and its cached digest, or with no version every one of the
+// disk's: the version is gone, or a new one of the name is being committed, whose map is made afresh. A map still being
+// made of the old file finds it gone and writes nothing.
+func (m *Manager) forgetStickyMap(diskID, version string) {
 	m.stickyMapMu.Lock()
 	defer m.stickyMapMu.Unlock()
+	mine := func(key string) bool {
+		d, v, _ := strings.Cut(key, "/")
+		return d == diskID && (version == "" || v == version)
+	}
 	for key := range m.stickyDigests {
-		if d, v, _ := strings.Cut(key, "/"); d == diskID && (version == "" || v == version) {
+		if mine(key) {
 			delete(m.stickyDigests, key)
+		}
+	}
+	for key := range m.stickyMaps {
+		if mine(key) {
+			delete(m.stickyMaps, key)
 		}
 	}
 }
