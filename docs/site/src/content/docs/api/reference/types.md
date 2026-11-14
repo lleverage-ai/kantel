@@ -21,6 +21,7 @@ An account the caller may act in, with the caller's role in it.
 | `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `personalTokens` | [PersonalTokenPolicy](/api/reference/types/#personaltokenpolicy) | no |  |
+| `snapshotCopies` | boolean | no | Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### AccountJoinToken
@@ -2151,6 +2152,18 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 | `poolId` | string | no | The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it. |
+| `hosts` | [SnapshotHost](/api/reference/types/#snapshothost)[] | no | Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it. |
+
+### SnapshotHost
+
+A host a saved snapshot is on (`Snapshot.hosts`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | no | The host; absent where the caller may not be told it (a shared host). |
+| `hostName` | string | no | Its name, where `hostId` is given. |
+| `state` | `"held"` or `"fetching"` | yes | `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host. |
+| `memory` | boolean | yes | Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose memory came too, which a host fetches only where it restores. Always false for a snapshot without memory. |
 
 ### SnapshotKind
 
@@ -2526,6 +2539,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  (at most 100 characters) |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `personalTokens` | [PersonalTokenPolicy](/api/reference/types/#personaltokenpolicy) | no |  |
+| `snapshotCopies` | boolean | no | Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; those there are stay until their snapshots are deleted. |
 
 ### UpdateEnvironmentBody
 

@@ -16,6 +16,8 @@ export interface Account {
 	readonly defaultVisibility: SandboxVisibility;
 	/** Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`. */
 	readonly personalTokens?: PersonalTokenPolicy;
+	/** Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it. */
+	readonly snapshotCopies?: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 }
@@ -2531,6 +2533,8 @@ export interface Snapshot {
 	readonly base?: SandboxBase;
 	/** The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it. */
 	readonly poolId?: string;
+	/** Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it. */
+	readonly hosts?: readonly SnapshotHost[];
 }
 
 export interface SnapshotFilesQuery {
@@ -2540,6 +2544,18 @@ export interface SnapshotFilesQuery {
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+/** A host a saved snapshot is on (`Snapshot.hosts`). */
+export interface SnapshotHost {
+	/** The host; absent where the caller may not be told it (a shared host). */
+	readonly hostId?: string;
+	/** Its name, where `hostId` is given. */
+	readonly hostName?: string;
+	/** `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host. */
+	readonly state: "held" | "fetching";
+	/** Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose memory came too, which a host fetches only where it restores. Always false for a snapshot without memory. */
+	readonly memory: boolean;
 }
 
 /** `automatic`: one of a sandbox's own history, taken as it runs and at each stop; the newest is what a resume or fork uses, and older ones expire. `saved`: kept under a name until deleted, and usable as a template for new sandboxes, even after its sandbox is deleted. */
@@ -2907,6 +2923,8 @@ export interface UpdateAccountBody {
 	readonly defaultVisibility?: SandboxVisibility;
 	/** Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`. */
 	readonly personalTokens?: PersonalTokenPolicy;
+	/** Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; those there are stay until their snapshots are deleted. */
+	readonly snapshotCopies?: boolean;
 }
 
 export interface UpdateEnvironmentBody {

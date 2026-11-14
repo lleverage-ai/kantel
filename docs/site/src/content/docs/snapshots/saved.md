@@ -145,6 +145,12 @@ curl -s "$KANTEL_URL/v1/snapshots?kind=saved" \
 
 A saved snapshot's `sandboxId` is the sandbox it came from, and is gone once that sandbox is deleted. One saved snapshot is `GET /v1/snapshots/{snapshotId}` (`getSnapshot`), and you can [browse its files](/snapshots/history/#browse-a-snapshots-files) like any other.
 
+## Two copies
+
+Where a saved snapshot's pool has two or more hosts that sync snapshots (current `kantel-host`, in a [pool with sync on](/hosts/)), Kantel keeps it on two of them, so losing a host doesn't lose it. Once the host it was saved on has it ready, usually within a minute of the save, Kantel picks a second host in the pool and that host copies it: preferably one with the same CPU and runtime, which takes the memory too, otherwise the one with the most free disk. If a host with a copy is revoked, or has been offline for 24 hours, the remaining host copies it to another. Hosts never delete a copy to free space; they refuse new copies instead, and a host whose saved snapshot limit the account has used up isn't given one. A snapshot's details (`GET /v1/snapshots/{snapshotId}`, or `kantel snapshot info`) list its `hosts` as they report it (none until the host it was saved on has, usually within a minute), each `held` or `fetching`, with `memory` saying whether a sandbox made from it there restores its memory. A host you can't see (a shared one) is listed without its name.
+
+Copies are on by default. An account's admin turns them off with `snapshotCopies: false` (`PATCH /v1/accounts/{accountId}`, or `kantel org set --snapshot-copies off`). New saves then stay on their own host, and copies that already exist stay until their snapshots are deleted. Snapshots saved on a host from before snapshot sync aren't copied.
+
 ## Limits
 
 A deployment may cap how many saved snapshots an account keeps. Saving past the cap answers `429` with `exhausted`. Your account's usage shows the cap as `limits.savedSnapshots`; see [Accounts and organisations](/accounts/organisations/#usage-and-limits).

@@ -100,6 +100,13 @@ export const Account = Type.Object(
 		role: MemberRole,
 		defaultVisibility: SandboxVisibility,
 		personalTokens: Type.Optional(PersonalTokenPolicy),
+		snapshotCopies: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold " +
+					"it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it.",
+			}),
+		),
 		createdAt: Timestamp,
 	},
 	{
@@ -188,6 +195,13 @@ export const UpdateAccountBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		defaultVisibility: Type.Optional(SandboxVisibility),
 		personalTokens: Type.Optional(PersonalTokenPolicy),
+		snapshotCopies: Type.Optional(
+			Type.Boolean({
+				description:
+					"Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; " +
+					"those there are stay until their snapshots are deleted.",
+			}),
+		),
 	},
 	{ title: "UpdateAccountBody" },
 );
@@ -2139,6 +2153,24 @@ const snapshotLabels = Type.Record(Type.String(), Type.String({ maxLength: 500 }
 		"Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given.",
 });
 
+export const SnapshotHost = Type.Object(
+	{
+		hostId: Type.Optional(
+			Type.String({ description: "The host; absent where the caller may not be told it (a shared host)." }),
+		),
+		hostName: Type.Optional(Type.String({ description: "Its name, where `hostId` is given." })),
+		state: Type.Union([Type.Literal("held"), Type.Literal("fetching")], {
+			description: "`held`: the host has the snapshot's disk. `fetching`: it is copying it from another host.",
+		}),
+		memory: Type.Boolean({
+			description:
+				"Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose " +
+				"memory came too, which a host fetches only where it restores. Always false for a snapshot without memory.",
+		}),
+	},
+	{ title: "SnapshotHost", description: "A host a saved snapshot is on (`Snapshot.hosts`)." },
+);
+
 export const Snapshot = Type.Object(
 	{
 		id: id("The snapshot's ID, such as `snap_2h8d6f`."),
@@ -2196,6 +2228,14 @@ export const Snapshot = Type.Object(
 				description:
 					"The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in " +
 					"that pool. Absent for one taken before pools, which is in the pool of the host holding it.",
+			}),
+		),
+		hosts: Type.Optional(
+			Type.Array(SnapshotHost, {
+				description:
+					"Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then " +
+					"each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of " +
+					"its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it.",
 			}),
 		),
 	},
@@ -4591,6 +4631,7 @@ export type RunCommandBody = Static<typeof RunCommandBody>;
 export type FileEntry = Static<typeof FileEntry>;
 export type ExposedPort = Static<typeof ExposedPort>;
 export type Snapshot = Static<typeof Snapshot>;
+export type SnapshotHost = Static<typeof SnapshotHost>;
 export type SnapshotKind = Static<typeof SnapshotKind>;
 export type ApiKeyScope = Static<typeof ApiKeyScope>;
 export type ApiKeyPreset = Static<typeof ApiKeyPreset>;

@@ -542,3 +542,47 @@ func TestDeletingASnapshotBeingFetched(t *testing.T) {
 		t.Fatalf("a snapshot the host never had: %v", err)
 	}
 }
+
+// A copy of a saved snapshot, one Kantel counts among its required copies, is never freed by its host: the host's own
+// pruning of a sandbox's automatic snapshots passes it over (even one of the sandbox it was taken of, should that sandbox
+// run here), and its image version stays in use, so an image prune keeps it. Only a delete from the control plane removes
+// it.
+func TestAFetchedCopyOutlivesTheHostsPruning(t *testing.T) {
+	a, _ := snapshotSyncHost(t)
+	b, _ := snapshotSyncHost(t)
+	b.cfg.AutoSnapshots = 1
+	ctx := context.Background()
+	saveTestSnapshot(t, a, "snap1", "old", false)
+	if err := a.mapSnapshot(ctx, "snap1"); err != nil {
+		t.Fatal(err)
+	}
+	record, err := a.ReadSnapshotFile("snap1", SnapshotDisk, SnapshotRecordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", record); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchTestVersion(t, a, b, "snap1", SnapshotDisk); err != nil {
+		t.Fatal(err)
+	}
+	// Two automatic snapshots of the same sandbox on B, past its AutoSnapshots of 1.
+	for _, id := range []string{"auto1", "auto2"} {
+		auto := saveTestSnapshot(t, b, id, "old", false)
+		auto.Kind = "auto"
+		raw, _ := json.Marshal(auto)
+		if err := os.WriteFile(filepath.Join(b.snapshotDir(id), "meta.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.pruneAuto("sb1")
+	if fileExists(b.snapshotDir("auto1")) == fileExists(b.snapshotDir("auto2")) {
+		t.Fatal("the prune didn't keep one automatic snapshot")
+	}
+	if !b.HoldsSnapshot("snap1", SnapshotDisk) {
+		t.Fatal("the prune freed the copy")
+	}
+	if in, err := BasesUnder(b.cfg.Root); err != nil || !in["old"] {
+		t.Fatalf("the copy's image version isn't in use: %v %v", in, err)
+	}
+}

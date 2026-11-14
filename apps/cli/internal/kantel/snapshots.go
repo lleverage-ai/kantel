@@ -90,10 +90,33 @@ func DescribeSnapshot(c *cli.Context, s api.Snapshot) string {
 		{"base", base},
 		{"size", size},
 		{"uses", uses},
+		{"hosts", snapshotHostsText(s.Hosts)},
 		{"taken", taken},
 		{createdKey, at(s.CreatedAt)},
 		{"expires", expires},
 	})
+}
+
+// snapshotHostsText is the hosts a saved snapshot is on, by name, each being fetched or restoring its memory said so: "a
+// shared host" for one the caller may not be told of. Empty with none (an automatic snapshot, or a list's).
+func snapshotHostsText(hosts []api.SnapshotHost) string {
+	parts := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		name := "a shared host"
+		if h.HostName != nil {
+			name = *h.HostName
+		} else if h.HostID != nil {
+			name = *h.HostID
+		}
+		switch {
+		case h.State == api.SnapshotHostStateFetching:
+			name += " (fetching)"
+		case h.Memory:
+			name += " (with memory)"
+		}
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // fileListTable is a directory's listing: its kind, size, age and name, a directory's with a slash.
