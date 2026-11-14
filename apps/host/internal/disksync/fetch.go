@@ -105,11 +105,15 @@ type Store interface {
 }
 
 // Request is a fetch of a version, with what disk.locate said of it; with no holders, grant or digest it is asked.
+// Prepare, when set, readies the host for the fetch before it waits its turn (a saved snapshot's record read, and the
+// root image its disk is over made sure of): the fetch is reported queued while it runs, and an error it answers ends
+// the fetch as one of the fetch's own would. It holds no turn, so a fetch it waits for (a root filesystem's) can run.
 type Request struct {
 	Ref
 	MapDigest string
 	Holders   []proto.DiskHolder
 	Grant     string
+	Prepare   func(ctx context.Context) error
 }
 
 // Stats are what a fetch did: of the version's blocks, how many it had already (Reused: the nearest version had them,
@@ -240,10 +244,20 @@ func (f *Fetcher) Start(req Request) *Job {
 			again := j.again && j.err != nil && f.Context.Err() == nil
 			f.mu.Unlock()
 			if again {
-				// A resume came while it was failing (the control plane back, say): what it left goes on.
+				// A resume came while it was failing (the control plane back, say): what it left goes on, asked of the
+				// control plane afresh and without its preparation, as ResumeAll starts one.
 				f.Start(Request{Ref: req.Ref})
 			}
 		}()
+		if req.Prepare != nil {
+			if j.err = req.Prepare(f.Context); j.err != nil {
+				if IsNotFound(j.err) {
+					f.Store.Discard(req.Ref)
+				}
+				f.Log.Warn("a disk version's fetch couldn't be prepared", "version", req.Ref.String(), "error", j.err)
+				return
+			}
+		}
 		select {
 		case f.slots <- struct{}{}:
 		case <-f.Context.Done():
