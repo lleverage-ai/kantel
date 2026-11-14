@@ -381,12 +381,11 @@ describe("host backend templates", () => {
 			hostId: "host_a",
 			bootedFresh: true,
 		});
-		// The emptier one refusing for want of room itself (another replica's work): the other with the snapshot takes it,
-		// with room to spare (under half full), though the host without it is emptier.
+		// The emptier one refusing for want of room itself (another replica's work): the other with the snapshot takes it.
 		built.refuse = undefined;
 		built.send({
 			type: "heartbeat",
-			heartbeat: { capacity: { freeMemoryMiB: 20_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
+			heartbeat: { capacity: { freeMemoryMiB: 3000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
 		});
 		await tick();
 		expect(await backend.create({ ...spec, sandboxId: "sbx_next" })).toMatchObject({ hostId: "host_b" });
@@ -432,6 +431,21 @@ describe("host backend templates", () => {
 			expect(templateOf(other, "sbx_spread")).toMatchObject({ baseImage: "kantel/sandbox" });
 			expect(templateOf(other, "sbx_spread")).not.toHaveProperty("snapshot");
 			expect(holder.calls.some((call) => call.params.sandboxId === "sbx_spread")).toBe(false);
+		});
+
+		it("restores on the host with it when the emptier host refuses the fresh boot for want of room", async () => {
+			const { store, service, backend } = await setup();
+			const holder = await addHost(store, service, "host_b", { freeMemoryMiB: 10_000 });
+			const other = await addHost(store, service, "host_a", { freeMemoryMiB: 32_768 });
+			holder.createSource = "snapshot";
+			// Another replica's work filled it since its last report.
+			other.refuse = (method) =>
+				method === "sandbox.create" ? { code: "capacity", message: "this host hasn't 2048 MiB free" } : undefined;
+			const placement = await backend.create(specOf("sbx_refused"));
+			expect(placement.hostId).toBe("host_b");
+			expect(placement.bootedFresh).toBeUndefined();
+			expect(templateOf(holder, "sbx_refused")?.snapshot).toBe("tsn_1");
+			expect(other.calls.filter((call) => call.params.sandboxId === "sbx_refused").length).toBe(1);
 		});
 
 		it("restores on the host with it while it has plenty of room, however empty the others", async () => {

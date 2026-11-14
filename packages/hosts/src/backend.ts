@@ -867,15 +867,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			});
 		if (templateFrom !== undefined) {
 			const elsewhere = spec.eligibleHosts.filter((hostId) => !withSnapshot.includes(hostId));
-			// All the hosts with it at once (the registry picks the one with most room), then, should the one it picked refuse
-			// for want of room itself (another replica's work), each in turn. Each time the others may boot it fresh instead,
-			// should the one with it be much fuller.
-			const tries =
-				withSnapshot.length > 1 ? [withSnapshot, ...withSnapshot.map((hostId) => [hostId])] : [withSnapshot];
+			// All the hosts with it at once (the registry picks the one with most room), the others booting it fresh instead
+			// should those be much fuller. Then, should the one it picked refuse for want of room itself (another replica's
+			// work), each host with it in turn, restoring there: a refused fresh boot still leaves the restores to try.
+			const tries = withSnapshot.length > 1 ? withSnapshot.map((hostId) => [hostId]) : [withSnapshot];
 			let refused: unknown;
-			for (const hostIds of tries) {
+			for (const [index, hostIds] of [withSnapshot, ...tries].entries()) {
 				try {
-					const { sandbox, hostId, ...known } = await create(hostIds, templateFrom.snapshotId, elsewhere);
+					const { sandbox, hostId, ...known } = await create(
+						hostIds,
+						templateFrom.snapshotId,
+						index === 0 ? elsewhere : [],
+					);
 					const placement = await placed(spec.sandboxId, sandbox, hostId, known);
 					// On a host without the snapshot, or its host couldn't restore it (gone, broken, made for another machine):
 					// booted fresh, running the template's setup.
