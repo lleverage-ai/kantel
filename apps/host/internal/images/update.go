@@ -47,6 +47,47 @@ func (u *Updater) Check(ctx context.Context, ch proto.ImageChannel) error {
 	if current, ok := u.Store.Current(); ok && current == ch.Version {
 		return nil
 	}
+	if err := u.install(ctx, ch); err != nil {
+		return err
+	}
+	if err := u.Store.Activate(ch.Version); err != nil {
+		return err
+	}
+	if u.Log != nil {
+		u.Log.Info("host images updated; new sandboxes start on them", "version", ch.Version, "channel", ch.Channel)
+	}
+	if u.OnActivate != nil {
+		u.OnActivate(ch.Version)
+	}
+	return nil
+}
+
+// Install installs ch.Version without making it current, as Check does, unless it is installed already: a snapshot
+// fetched from another host is a layer over the version its sandbox booted, which needn't be the channel's.
+func (u *Updater) Install(ctx context.Context, ch proto.ImageChannel) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !ValidVersion(ch.Version) {
+		return fmt.Errorf("the version %q can't name a directory", ch.Version)
+	}
+	if u.Store.installed(ch.Version) {
+		return nil
+	}
+	if ch.URL == "" {
+		return errors.New("no URL for the version")
+	}
+	if err := u.install(ctx, ch); err != nil {
+		return err
+	}
+	if u.Log != nil {
+		u.Log.Info("host images installed for a snapshot fetched from a peer", "version", ch.Version)
+	}
+	return nil
+}
+
+// install downloads and installs ch.Version, with mu held: the manifest's signature is checked before anything else
+// is downloaded, and every file against the manifest's digest.
+func (u *Updater) install(ctx context.Context, ch proto.ImageChannel) error {
 	if err := os.MkdirAll(u.Store.Dir, 0o755); err != nil {
 		return err
 	}
@@ -82,19 +123,8 @@ func (u *Updater) Check(ctx context.Context, ch proto.ImageChannel) error {
 	// A manifest's own version is the kantel-host build that wrote it, not the release: the channel's names the
 	// version here.
 	m.Version = ch.Version
-	if _, err := u.Store.Install(ctx, ch.URL, m, u.Arch, u.KVM); err != nil {
-		return err
-	}
-	if err := u.Store.Activate(ch.Version); err != nil {
-		return err
-	}
-	if u.Log != nil {
-		u.Log.Info("host images updated; new sandboxes start on them", "version", ch.Version, "channel", ch.Channel)
-	}
-	if u.OnActivate != nil {
-		u.OnActivate(ch.Version)
-	}
-	return nil
+	_, err = u.Store.Install(ctx, ch.URL, m, u.Arch, u.KVM)
+	return err
 }
 
 // Prune is Store.Prune, one at a time with Check, so a version being installed or activated is never removed. inUse,

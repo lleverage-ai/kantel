@@ -212,7 +212,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
 			FetchSticky: h.fetchStickyLater, FetchRootfs: h.fetchRootfs, FetchTemplate: h.fetchTemplate,
-			Pool: h.pool,
+			Pool: h.pool, HostImage: h.hostImage,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
@@ -389,6 +389,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.fetches(proto.DiskKindTemplate) {
 		features = append(features, proto.FeatureTemplateSync)
 	}
+	if h.fetches(proto.DiskKindSnapshot) {
+		features = append(features, proto.FeatureSnapshotSync)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -465,6 +468,15 @@ func (h *Host) Capacity() proto.Capacity {
 				c.Holdings = map[string][]proto.ObjectHolding{}
 			}
 			c.Holdings[proto.DiskKindTemplate] = held
+		}
+	}
+	// Saved snapshots, with FeatureSnapshotSync.
+	if t, ok := h.tiers[microvm.Tier].(SnapshotFetcher); ok && h.fetches(proto.DiskKindSnapshot) {
+		if held := t.SnapshotHoldings(); held != nil {
+			if c.Holdings == nil {
+				c.Holdings = map[string][]proto.ObjectHolding{}
+			}
+			c.Holdings[proto.DiskKindSnapshot] = held
 		}
 	}
 	// The fetches under way, waiting or failed (FeatureDiskSync), of the kinds the host fetches: [] for none, so the

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +34,8 @@ type imagePatching struct {
 	// held are the image files a tier was given for the daemon's lifetime (the isolate VM tier's, isolateImages):
 	// their versions are kept by every prune.
 	held []string
+	// channel is the image channel the last welcome named, whose release URL says where other versions are.
+	channel atomic.Pointer[proto.ImageChannel]
 }
 
 // isolateImages are the kernel and root filesystem the isolate VM tier runs on, with image patching: the immutable
@@ -190,6 +194,10 @@ func (h *Host) stopImagePatching() {
 // followImages starts a check of the images the control plane wants, in the background: the session never waits on
 // a download.
 func (h *Host) followImages(ctx context.Context, ch *proto.ImageChannel) {
+	if ch != nil {
+		kept := *ch
+		h.patching.channel.Store(&kept)
+	}
 	u := h.patching.updater
 	if ch == nil || u == nil || !h.cfg.ImagePatching || !h.cfg.autoUpdateImages() {
 		return
@@ -210,6 +218,35 @@ func (h *Host) followImages(ctx context.Context, ch *proto.ImageChannel) {
 			h.log.Error("host images update failed; new sandboxes stay on the current images", "to", ch.Version, "error", err)
 		}
 	}()
+}
+
+// hostImage is the microVMs' root filesystem of a host image version (microvm.Config.HostImage), installed (not made
+// current) when the host hasn't it: a snapshot fetched from a peer is a layer over the version its sandbox booted. The
+// version's release is found beside the channel's: the channel's URL with its version replaced. Only with image
+// patching, which keeps images by version.
+func (h *Host) hostImage(ctx context.Context, version string) (string, error) {
+	u := h.patching.updater
+	if !h.cfg.ImagePatching || u == nil {
+		return "", errors.New("image patching is off on this host (imagePatching in its config)")
+	}
+	if p := u.Store.SandboxImage(version); p != "" {
+		return p, nil
+	}
+	ch := h.patching.channel.Load()
+	if ch == nil {
+		return "", errors.New("the control plane has named no image channel, so where the version is isn't known")
+	}
+	base, ok := strings.CutSuffix(strings.TrimSuffix(ch.URL, "/"), "/"+ch.Version)
+	if !ok || ch.Version == "" {
+		return "", fmt.Errorf("the image channel's URL (%s) doesn't name its version, so where %s is isn't known", ch.URL, version)
+	}
+	if err := u.Install(ctx, proto.ImageChannel{Channel: ch.Channel, Version: version, URL: base + "/" + version}); err != nil {
+		return "", err
+	}
+	if p := u.Store.SandboxImage(version); p != "" {
+		return p, nil
+	}
+	return "", fmt.Errorf("host images %s were installed without a microVM root filesystem", version)
 }
 
 // checkImages runs an update the gateway asked for, with the images sandboxes boot from pinned first.

@@ -959,6 +959,11 @@ export interface ExtractedArchive {
 	readonly bytes: number;
 }
 
+export interface FetchHostSnapshotBody {
+	/** The saved snapshot's ID. */
+	readonly snapshotId: string;
+}
+
 export interface FetchHostStickyDiskBody {
 	/** The sticky disk's ID. */
 	readonly stickyDiskId: string;
@@ -3774,6 +3779,8 @@ export interface KantelClient {
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Fetch a sticky disk version onto a host. Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/sticky-disk-fetches` */
 	fetchHostStickyDisk(hostId: string, body: FetchHostStickyDiskBody, options?: CallOptions): Promise<void>;
+	/** Fetch a saved snapshot onto a host. Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started. `not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/snapshot-fetches` */
+	fetchHostSnapshot(hostId: string, body: FetchHostSnapshotBody, options?: CallOptions): Promise<void>;
 	/** Check for host updates. Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/check-for-updates` */
 	checkHostUpdates(options?: CallOptions): Promise<HostReleaseCheck>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
@@ -4276,6 +4283,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/sticky-disk-fetches`, body },
+				callOptions,
+			),
+		fetchHostSnapshot: (hostId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/snapshot-fetches`, body },
 				callOptions,
 			),
 		checkHostUpdates: (callOptions) =>

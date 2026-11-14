@@ -288,6 +288,26 @@ func BasesUnder(root string) (map[string]bool, error) {
 	for _, snap := range snaps {
 		add(snap.Rootfs)
 	}
+	// A snapshot being fetched from a peer is over the image its staged record names (snapshotsync.go).
+	fetches, err := entriesOf(filepath.Join(root, snapshotFetchesDir))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, dir := range fetches {
+		raw, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+		if gone(err) {
+			continue
+		}
+		var staged snapshotMeta
+		if err == nil {
+			err = json.Unmarshal(raw, &staged)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			continue
+		}
+		add(staged.Rootfs)
+	}
 	templates, err := entriesOf(filepath.Join(root, "templates"))
 	if err != nil {
 		errs = append(errs, err)

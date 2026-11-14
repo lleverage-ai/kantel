@@ -64,6 +64,7 @@ import {
 	ExposePortBody,
 	ExtractArchiveQuery,
 	ExtractedArchive,
+	FetchHostSnapshotBody,
 	FetchHostStickyDiskBody,
 	FileContent,
 	FileEntry,
@@ -2311,6 +2312,30 @@ export const fetchHostStickyDisk = defineRoute({
 	errors: lifecycleErrors,
 });
 
+export const fetchHostSnapshot = defineRoute({
+	operationId: "fetchHostSnapshot",
+	method: "POST",
+	path: "/admin/hosts/{hostId}/snapshot-fetches",
+	tag: "hosts",
+	summary: "Fetch a saved snapshot onto a host",
+	description: describe(
+		"Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its",
+		"pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host",
+		"image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches",
+		"the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its",
+		"copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started.",
+		"`not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another",
+		"pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host",
+		"doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants;",
+		"`unavailable` while it's away. Experimental.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	body: FetchHostSnapshotBody,
+	answer: { status: 204, description: "The fetch has started." },
+	errors: lifecycleErrors,
+});
+
 export const checkHostUpdates = defineRoute({
 	operationId: "checkHostUpdates",
 	method: "POST",
@@ -2506,6 +2531,7 @@ export const hostRoutes = {
 	updateHost,
 	updateHostAgent,
 	fetchHostStickyDisk,
+	fetchHostSnapshot,
 	checkHostUpdates,
 	revokeHost,
 	getPublicUrl,

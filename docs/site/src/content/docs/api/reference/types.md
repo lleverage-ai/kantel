@@ -853,6 +853,12 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 | `symlinks` | integer | yes | Symbolic links made. |
 | `bytes` | integer | yes | Bytes of the files written. |
 
+### FetchHostSnapshotBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `snapshotId` | string | yes | The saved snapshot's ID. |
+
 ### FetchHostStickyDiskBody
 
 | Field | Type | Required | Description |

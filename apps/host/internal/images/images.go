@@ -241,6 +241,19 @@ func (s Store) SandboxImages() []string {
 	return out
 }
 
+// SandboxImage is the microVMs' root filesystem of an installed version, resolved: "" when the version isn't
+// installed.
+func (s Store) SandboxImage(version string) string {
+	if !ValidVersion(version) || !s.installed(version) {
+		return ""
+	}
+	p, err := filepath.EvalSymlinks(filepath.Join(s.versionDir(version), sandboxImageFile))
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
 // Version is the version a resolved image path is under in this store, or "".
 func (s Store) Version(p string) string {
 	v := VersionOf(p)

@@ -3900,6 +3900,13 @@ export const FetchHostStickyDiskBody = Type.Object(
 	{ title: "FetchHostStickyDiskBody" },
 );
 
+export const FetchHostSnapshotBody = Type.Object(
+	{
+		snapshotId: id("The saved snapshot's ID."),
+	},
+	{ title: "FetchHostSnapshotBody" },
+);
+
 export const CreateHostJoinTokenBody = Type.Object(
 	{
 		name: Type.Optional(Type.String({ maxLength: 100 })),

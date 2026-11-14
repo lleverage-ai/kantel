@@ -420,6 +420,7 @@ function heldObjects(value: unknown): HostObjectHolding[] | undefined {
 				...(typeof version.runtime === "string" && version.runtime !== "" && version.runtime.length <= MAX_RUNTIME
 					? { runtime: version.runtime }
 					: {}),
+				...(version.copy === true ? { copy: true } : {}),
 			});
 		}
 		out.push({ objectId: entry.objectId, versions });
