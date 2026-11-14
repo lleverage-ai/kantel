@@ -389,22 +389,17 @@ describe("image patching on", () => {
 		});
 		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
 		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
-		// Its kill can't be written: not restarted, paused still with its memory and its command.
+		// Its kill can't be written: it restarts all the same, and a read of the command then kills it.
 		const update = api.store.commands.update.bind(api.store.commands);
 		api.store.commands.update = async () => {
 			throw new Error("the store went away");
 		};
-		expect((await failure(tom.restartSandboxOnLatest(sandbox.id))).code).toBe("unavailable");
-		api.store.commands.update = update;
-		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({
-			state: "paused",
-			pausedSnapshotId: expect.any(String),
-		});
-		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
 		await tom.restartSandboxOnLatest(sandbox.id);
 		await api.service.idle();
+		api.store.commands.update = update;
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
-		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		expect(await tom.getCommand(sandbox.id, "cmd_kept")).toMatchObject({
 			state: "killed",
 			stderr: expect.stringContaining("started afresh from its disk, which let go of the memory it was paused with"),
 		});

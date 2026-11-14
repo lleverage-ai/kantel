@@ -1440,11 +1440,11 @@ describe("pausing a sandbox keeps its commands running", () => {
 	 * backend no longer knows is taken as lost when it is asked for it.
 	 */
 	async function olderCommand(api: ComputeApi, sandboxId: string, id: string, ageMs = 120_000) {
-		const accountId = (await api.store.sandboxes.get(sandboxId))?.accountId ?? "";
+		const sandbox = await api.store.sandboxes.get(sandboxId);
 		await api.store.commands.put({
 			id,
 			sandboxId,
-			accountId,
+			accountId: sandbox?.accountId ?? "",
 			command: "./serve",
 			state: "running",
 			stdout: "",
@@ -1452,6 +1452,8 @@ describe("pausing a sandbox keeps its commands running", () => {
 			truncated: false,
 			startedAt: Date.now() - ageMs,
 			detached: true,
+			// In the memory it runs in now, as a command started through Kantel is.
+			...(sandbox?.memoryDropped === undefined ? {} : { memoryGeneration: sandbox.memoryDropped.generation }),
 		});
 		FakeHost.guestCommands.set(`${sandboxId}/${id}`, { commandId: id, state: "running", stdout: "so far\n" });
 	}
@@ -1493,44 +1495,215 @@ describe("pausing a sandbox keeps its commands running", () => {
 		expect(await root.getCommand(sandbox.id, "cmd_older")).toMatchObject({ state: "exited", exitCode: 0 });
 	}, 20_000);
 
-	it("keeps a kill made while a start that fails is killing its commands, and puts back the rest", async () => {
+	/**
+	 * A sandbox on a host that keeps commands, with commands started before it is paused (`older` of them older than
+	 * 60 s, the rest started now), paused; and its commands' writes as `wrap` makes them from then on, every write that
+	 * puts one back to running after it was killed noted.
+	 */
+	async function pausedWith(older: readonly string[], fresh: number) {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
 		a.keepsCommands = true;
 		const sandbox = await runningOn(root, api, a, "disk");
-		const ids: string[] = [];
-		for (const name of ["./a", "./b", "./c"]) {
-			ids.push((await root.runCommand(sandbox.id, { command: name, detached: true })).id);
+		const ids = [...older];
+		for (const id of older) await olderCommand(api, sandbox.id, id);
+		for (let i = 0; i < fresh; i++) {
+			ids.push((await root.runCommand(sandbox.id, { command: `./job-${i}`, detached: true })).id);
 		}
 		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
-		// The start kills one, someone kills that one too, and the start's next kill can't be written.
 		const update = api.store.commands.update.bind(api.store.commands);
-		let updates = 0;
-		let first = "";
+		const revived: string[] = [];
+		let wrap: ((...args: Parameters<typeof update>) => ReturnType<typeof update>) | undefined;
 		api.store.commands.update = async (...args) => {
-			updates += 1;
-			if (updates === 1) first = args[0];
-			if (updates === 2) {
-				expect(await root.killCommand(sandbox.id, first)).toMatchObject({ state: "killed" });
+			const before = await api.store.commands.get(args[0]);
+			const written = await (wrap ?? update)(...args);
+			if (before?.state === "killed" && written?.state === "running") revived.push(args[0]);
+			return written;
+		};
+		return {
+			root,
+			api,
+			a,
+			sandbox,
+			ids,
+			update,
+			revived,
+			wrapWith: (next: typeof wrap) => {
+				wrap = next;
+			},
+		};
+	}
+
+	const startedAfresh = expect.stringContaining(
+		"started afresh from its disk, which let go of the memory it was paused with",
+	);
+
+	it("starts from paused though none of its kills can be written, and each read then kills them, not one started since", async () => {
+		const { root, api, sandbox, ids, revived, wrapWith } = await pausedWith(["cmd_old_a", "cmd_old_b"], 1);
+		// Every kill fails, and every write putting one back would too: nothing is put back, and the start goes on.
+		wrapWith(async () => {
+			throw new Error("the store went away");
+		});
+		await root.startSandbox(sandbox.id, { wait: true });
+		wrapWith(undefined);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await api.store.sandboxes.get(sandbox.id))?.memoryDropped?.generation).toBe(1);
+		for (const id of ids) expect((await api.store.commands.get(id))?.state).toBe("running");
+		// Started on its new machine, after its memory went: of the new memory, never killed with the old.
+		const later = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		expect((await api.store.commands.get(later.id))?.memoryGeneration).toBe(1);
+		// A get, a list and a kill each kill those of the memory let go, saying why, and never take one older than 60 s
+		// as lost.
+		expect(await root.getCommand(sandbox.id, "cmd_old_a")).toMatchObject({ state: "killed", stderr: startedAfresh });
+		const listed = (await root.listCommands(sandbox.id)).items;
+		expect(listed.find((command) => command.id === "cmd_old_b")).toMatchObject({
+			state: "killed",
+			stderr: startedAfresh,
+		});
+		expect(listed.find((command) => command.id === later.id)?.state).toBe("running");
+		expect(await root.killCommand(sandbox.id, ids[2] ?? "")).toMatchObject({ state: "killed", stderr: startedAfresh });
+		await api.service.sweep();
+		expect((await api.store.commands.get(later.id))?.state).toBe("running");
+		expect(revived).toEqual([]);
+	}, 20_000);
+
+	it("keeps a foreground call waiting when its end can't be checked against its memory, to its kill", async () => {
+		const { root, api, a, sandbox, revived, wrapWith } = await pausedWith([], 0);
+		await root.resumeSandbox(sandbox.id, { wait: true });
+		const foreground = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const id = await foregroundId(a, sandbox.id);
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		// Started afresh, every command write failing for a while: the start's kill, and the call's own check of the end
+		// its follow reads (its new machine doesn't know it), can't be written.
+		wrapWith(async () => {
+			throw new Error("the store went away");
+		});
+		await root.startSandbox(sandbox.id, { wait: true });
+		await vi.waitFor(
+			() =>
+				expect(
+					a.calls.filter((call) => call.method === "sandbox.exec.get" && call.params.commandId === id).length,
+				).toBeGreaterThan(1),
+			{ timeout: 10_000 },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect((await api.store.commands.get(id))?.state).toBe("running");
+		wrapWith(undefined);
+		expect(await foreground).toMatchObject({ id, state: "killed", stderr: startedAfresh });
+		expect(revived).toEqual([]);
+	}, 30_000);
+
+	it("runs a command whose start read the sandbox before a start from paused on the new machine, of the new memory", async () => {
+		const { root, api, sandbox } = await pausedWith(["cmd_old"], 0);
+		await root.resumeSandbox(sandbox.id, { wait: true });
+		// As the command is being admitted (its account read), the sandbox is paused and started afresh.
+		const accounts = api.store.accounts.get.bind(api.store.accounts);
+		let raced = false;
+		let admitting = false;
+		api.store.accounts.get = async (id) => {
+			if (admitting && !raced) {
+				raced = true;
+				await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+				await root.startSandbox(sandbox.id, { wait: true });
+			}
+			return accounts(id);
+		};
+		admitting = true;
+		const started = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		admitting = false;
+		api.store.accounts.get = accounts;
+		expect(raced).toBe(true);
+		expect(await api.store.commands.get(started.id)).toMatchObject({ state: "running", memoryGeneration: 1 });
+		expect(await root.getCommand(sandbox.id, started.id)).toMatchObject({ state: "running" });
+		expect(await root.getCommand(sandbox.id, "cmd_old")).toMatchObject({ state: "killed", stderr: startedAfresh });
+	}, 30_000);
+
+	it("keeps a command's end read while its sandbox can't be, to record once it can, on a host that can't be asked again", async () => {
+		const { root, api, join } = await setup();
+		// Commands aren't kept by ID here: its end is only what its call answers.
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const sandbox = await runningOn(root, api, a, "disk");
+		const get = api.store.sandboxes.get.bind(api.store.sandboxes);
+		let failing = 0;
+		api.store.sandboxes.get = async (id) => {
+			if (failing > 0) {
+				failing -= 1;
 				throw new Error("the store went away");
 			}
-			return update(...args);
+			return get(id);
 		};
-		expect((await failure(root.startSandbox(sandbox.id, { wait: true }))).code).toBe("unavailable");
-		api.store.commands.update = update;
-		expect((await root.getSandbox(sandbox.id)).state).toBe("paused");
-		expect(await api.store.commands.get(first)).toMatchObject({ state: "killed", killPending: true });
-		const rest = ids.filter((id) => id !== first);
-		for (const id of rest) expect(await api.store.commands.get(id)).toMatchObject({ state: "running", stderr: "" });
-		// Resumed: the kill reaches the one killed, and the rest run on, followed and killed by their IDs.
-		await root.resumeSandbox(sandbox.id, { wait: true });
-		expect(FakeHost.guestCommands.get(`${sandbox.id}/${first}`)?.result?.exitCode).toBe(137);
-		for (const id of rest) {
-			expect(await root.getCommand(sandbox.id, id)).toMatchObject({ state: "running", stdout: "so far\n" });
-			expect(FakeHost.guestCommands.get(`${sandbox.id}/${id}`)?.state).toBe("running");
+		// As its call is answered, its sandbox can't be read twice.
+		a.hold = (method) => {
+			if (method === "sandbox.exec") failing = 2;
+			return undefined;
+		};
+		expect(await root.runCommand(sandbox.id, { command: "echo hi" })).toMatchObject({
+			state: "exited",
+			exitCode: 0,
+			stdout: "hi\n",
+		});
+		expect(failing).toBe(0);
+	}, 20_000);
+
+	it("kills them by the sweep when a start's kills failed and nobody reads them", async () => {
+		const { root, api, sandbox, ids, wrapWith } = await pausedWith(["cmd_old_a"], 1);
+		wrapWith(async () => {
+			throw new Error("the store went away");
+		});
+		await root.startSandbox(sandbox.id, { wait: true });
+		wrapWith(undefined);
+		const later = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		await api.service.sweep();
+		for (const id of ids) {
+			await vi.waitFor(async () =>
+				expect(await api.store.commands.get(id)).toMatchObject({ state: "killed", stderr: startedAfresh }),
+			);
 		}
-		expect(await root.killCommand(sandbox.id, rest[0] ?? "")).toMatchObject({ state: "killed" });
-		expect(FakeHost.guestCommands.get(`${sandbox.id}/${rest[0]}`)?.result?.exitCode).toBe(137);
+		expect((await api.store.commands.get(later.id))?.state).toBe("running");
+	}, 20_000);
+
+	it("keeps a kill that was written but answered as failed, and kills the rest, putting none back", async () => {
+		const { root, sandbox, ids, update, revived, wrapWith } = await pausedWith(["cmd_old_a", "cmd_old_b"], 0);
+		// The first kill lands but answers an error.
+		let first = true;
+		wrapWith(async (...args) => {
+			const written = await update(...args);
+			if (first) {
+				first = false;
+				throw new Error("the answer was lost");
+			}
+			return written;
+		});
+		await root.startSandbox(sandbox.id, { wait: true });
+		wrapWith(undefined);
+		for (const id of ids) {
+			expect(await root.getCommand(sandbox.id, id)).toMatchObject({ state: "killed", stderr: startedAfresh });
+		}
+		expect(revived).toEqual([]);
+	}, 20_000);
+
+	it("keeps a kill someone makes while a start from paused is killing its commands", async () => {
+		const { root, api, sandbox, ids, update, revived, wrapWith } = await pausedWith([], 2);
+		const [raced, after] = ids;
+		// As the start's first kill is about to be written, someone kills that command (it reads it running): theirs lands
+		// first. The start's own then finds it killed and leaves it.
+		let first = true;
+		let answered: unknown;
+		wrapWith(async (...args) => {
+			if (first && args[0] === raced) {
+				first = false;
+				answered = await root.killCommand(sandbox.id, raced ?? "");
+			}
+			return update(...args);
+		});
+		await root.startSandbox(sandbox.id, { wait: true });
+		wrapWith(undefined);
+		expect(answered).toMatchObject({ state: "killed" });
+		expect(await root.getCommand(sandbox.id, raced ?? "")).toMatchObject({ state: "killed" });
+		// The other, killed by the start first: a kill of it then answers it killed, as it stays.
+		expect(await root.killCommand(sandbox.id, after ?? "")).toMatchObject({ state: "killed", stderr: startedAfresh });
+		expect((await api.store.commands.get(after ?? ""))?.state).toBe("killed");
+		expect(revived).toEqual([]);
 	}, 20_000);
 
 	it("sends a kill made while it was paused as it resumes, though its publishing fails", async () => {
@@ -1605,20 +1778,6 @@ describe("pausing a sandbox keeps its commands running", () => {
 		// Started afresh from its disk rather than resumed: none is asked of its new machine, which doesn't know them.
 		const fresh = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
 		await paused("cmd_started");
-		// The second of their kills can't be written: not started, paused still with its memory, and both its commands
-		// running, the first's kill put back.
-		const update = api.store.commands.update.bind(api.store.commands);
-		let updates = 0;
-		api.store.commands.update = async (...args) => {
-			updates += 1;
-			if (updates === 2) throw new Error("the store went away");
-			return update(...args);
-		};
-		expect((await failure(root.startSandbox(sandbox.id, { wait: true }))).code).toBe("unavailable");
-		api.store.commands.update = update;
-		expect((await root.getSandbox(sandbox.id)).state).toBe("paused");
-		for (const id of [fresh.id, "cmd_started"])
-			expect(await api.store.commands.get(id)).toMatchObject({ state: "running", stderr: "" });
 		await root.startSandbox(sandbox.id, { wait: true });
 		for (const id of [fresh.id, "cmd_started"]) {
 			expect(await api.store.commands.get(id)).toMatchObject({
@@ -1688,25 +1847,48 @@ describe("pausing a sandbox keeps its commands running", () => {
 				},
 			}),
 		},
-		{
-			// Its kill of the commands can't be written: the move is left unpublished, for the sweep.
-			how: "whose gateway couldn't kill them",
-			wrap: (gone: () => boolean) => (shared: ComputeStore) => ({
-				...shared,
-				commands: {
-					...shared.commands,
-					update: async (...args: Parameters<ComputeStore["commands"]["update"]>) => {
-						if (gone()) throw new Error("the store went away");
-						return shared.commands.update(...args);
-					},
-				},
-			}),
-		},
 	]) {
 		it(`kills them when another gateway settles a paused sandbox's restart move ${how}`, async () => {
 			await settledElsewhere(wrap);
 		}, 20_000);
 	}
+
+	it("kills them by another gateway's sweep when a paused sandbox's restart move couldn't", async () => {
+		const { root, api, join, gateway } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		await olderCommand(api, sandbox.id, "cmd_paused");
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		// The mover's kill of its commands can't be written: it is published all the same, its memory let go.
+		const mover = gateway({
+			wrap: (shared) => ({
+				...shared,
+				commands: {
+					...shared.commands,
+					update: async () => {
+						throw new Error("the store went away");
+					},
+				},
+			}),
+		});
+		expect(await mover.root.moveSandbox(sandbox.id, { keepMemory: false })).toMatchObject({
+			state: "running",
+			hostId: b.hostId,
+		});
+		expect((await api.store.commands.get("cmd_paused"))?.state).toBe("running");
+		const started = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const later = gateway({ now: () => Date.now() + 10 * 60_000 });
+		await later.api.service.sweep();
+		await vi.waitFor(async () =>
+			expect(await api.store.commands.get("cmd_paused")).toMatchObject({
+				state: "killed",
+				stderr: expect.stringContaining("restarted there (the move was asked to restart it)"),
+			}),
+		);
+		expect((await api.store.commands.get(started.id))?.state).toBe("running");
+	}, 20_000);
 
 	it("leaves them running when a pause fails and leaves the machine running, through its resume from error", async () => {
 		const { root, api, join } = await setup();
@@ -1815,9 +1997,11 @@ describe("pausing a sandbox keeps its commands running", () => {
 		const later = gateway({ now: () => Date.now() + 10 * 60_000 });
 		await later.api.service.sweep();
 		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "running", hostId: b.hostId });
-		expect(await api.store.commands.get("cmd_paused")).toMatchObject({
-			state: "killed",
-			stderr: expect.stringContaining("restarted there (the move was asked to restart it)"),
-		});
+		await vi.waitFor(async () =>
+			expect(await api.store.commands.get("cmd_paused")).toMatchObject({
+				state: "killed",
+				stderr: expect.stringContaining("restarted there (the move was asked to restart it)"),
+			}),
+		);
 	}
 });

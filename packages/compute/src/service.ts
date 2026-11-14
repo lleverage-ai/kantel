@@ -915,6 +915,8 @@ export const MAX_OUTPUT_CHARS = 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 /** How long after its start a detached command its backend doesn't know is taken as lost, not as not yet started. */
 const LOST_COMMAND_MS = 60_000;
+/** How long after a boot let go of a sandbox's memory the sweep looks for its commands from before (`killDroppedOf`). */
+const DROPPED_SWEEP_MS = 60 * 60_000;
 /** How often a foreground call whose follow can't say asks for its command's end: from the first to the second. */
 const EXEC_FOLLOW_MIN_MS = 1_000;
 const EXEC_FOLLOW_MAX_MS = 30_000;
@@ -6379,7 +6381,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
-		if (command.state !== "running" || backend.commandResult === undefined) return command;
+		if (command.state !== "running") return command;
+		// Its memory let go by a boot since it started: killed, saying why, never asked for.
+		const gone = await endedWithMemory(command).catch(() => command);
+		if (gone !== undefined) return gone;
+		if (backend.commandResult === undefined) return command;
 		const followed = runningCommands.has(command.id);
 		// A foreground one a gateway here waits for is ended by that wait, and only its output so far is recorded; one none
 		// here does outlived its gateway (on a backend that runs commands on past their call) or is another replica's, and
@@ -6410,6 +6416,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		if (result === undefined) return command;
 		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
+		// Checked again now it has been read: a boot may have let go of its memory meanwhile.
+		const may = await endable(command);
+		if (may === "hold" || may === "unknown") return command;
+		if (may !== "end") return may.gone;
 		// Its owner runs it again in the microVM its sandbox upgrades to, and records its end with that: seen, and left.
 		if (heldForRerun(command, result, now())) {
 			if (command.rerunPending !== undefined) return command;
@@ -6466,19 +6476,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Killed before, but its kill never reached its backend: sent again.
 		if (stored.state === "killed" && stored.killPending === true) {
 			return reachRerun(sandboxId, await deliverKill(sandboxId, stored));
-		}
-		// Killed by a start from paused under way (`killPausedOrPutBack`), which may yet fail and put it back running in
-		// the memory it kept: this kill is kept on it, pending, so that putting back leaves it killed and its kill is sent
-		// as that memory resumes. A start that goes on has let the process go already.
-		if (
-			stored.state === "killed" &&
-			backend.killCommand !== undefined &&
-			(await store.sandboxes.get(sandboxId))?.state === "starting"
-		) {
-			const kept = await store.commands.update(stored.id, (latest) =>
-				latest.state === "killed" && latest.killPending !== true ? { ...latest, killPending: true } : undefined,
-			);
-			return reachRerun(sandboxId, kept ?? (await store.commands.get(stored.id)) ?? stored);
 		}
 		// One that ended where no gateway here saw it is answered with its end, not killed.
 		const command = await fetchedCommand(stored);
@@ -6612,13 +6609,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const command of reconciled) {
 			if (command.state !== "running") continue;
 			const at = now();
-			await settleCommand(command.id, (latest) => ({
-				...latest,
-				state: "killed",
-				endedAt: at,
-				durationMs: at - latest.startedAt,
-				...(note === undefined ? {} : noted(latest, note)),
-			}));
+			// Only in the memory it was listed in: one moved on to a later memory since (`runCommandOnce`, sent after its
+			// sandbox's next boot) runs there, and isn't this kill's.
+			const killed = await settleCommand(command.id, (latest) =>
+				(latest.memoryGeneration ?? 0) !== (command.memoryGeneration ?? 0)
+					? undefined
+					: {
+							...latest,
+							state: "killed",
+							endedAt: at,
+							durationMs: at - latest.startedAt,
+							...(note === undefined ? {} : noted(latest, note)),
+						},
+			);
+			if (killed === undefined) continue;
 			runningCommands.get(command.id)?.abort();
 			runningCommands.delete(command.id);
 		}
@@ -6661,16 +6665,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A foreground command's end, for a call whose follow of it can't say (its sandbox's paused restart move): its record
-	 * read until it ends there (the move's commit kills it), and once the move is over without it ending (rolled back),
-	 * asked of its backend as a detached one is (`fetchedCommand`), from 1 s doubling to 30 s apart.
+	 * A foreground command's end, for a call whose follow of it read an end that can't be recorded yet (`endable`): its
+	 * record read, and asked of its backend as a detached one is (`fetchedCommand`, which holds as `endable` does), from
+	 * 1 s doubling to 30 s apart, until it ends: killed by the move's commit, or its own end once the move is over.
 	 */
 	async function awaitedEnd(command: StoredCommand): Promise<StoredCommand> {
 		let wait = EXEC_FOLLOW_MIN_MS;
 		for (;;) {
 			const stored = await store.commands.get(command.id).catch(() => undefined);
 			if (stored !== undefined && stored.state !== "running") return stored;
-			if (stored !== undefined && !(await inPausedRestart(command.sandboxId))) {
+			if (stored !== undefined) {
 				const fetched = await fetchedCommand(stored).catch(() => stored);
 				if (fetched.state !== "running") return fetched;
 			}
@@ -6680,12 +6684,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Whether a paused sandbox is being moved to another host without its memory (its move's `keepMemory` not `true`):
-	 * none of its commands can end in that memory meanwhile, and the new machine its move places it on doesn't know them.
+	 * What may be recorded of a running command once an end of it has been read (its backend's answer, or that its
+	 * backend doesn't know it), checked after the read, against its sandbox as it is now:
+	 * - `gone`: a boot has let go of its memory since it started, and it is killed, saying why (`endedWithMemory`);
+	 * - `hold`: nothing, for now: its sandbox is being moved without its memory, past where anything ends in it (paused,
+	 *   or stopped for the move), and the move's commit kills it, or a rollback leaves it running;
+	 * - `unknown`: its sandbox or that kill couldn't be read or written, so whether its memory went isn't known: asked
+	 *   again;
+	 * - `end`: the end is its own, read from the memory it runs in (a boot that lets that memory go writes so before
+	 *   any machine that doesn't know it can be asked).
 	 */
-	async function inPausedRestart(sandboxId: string): Promise<boolean> {
-		const moving = (await store.sandboxes.get(sandboxId).catch(() => undefined))?.moving;
-		return moving?.from === "paused" && moving.keepMemory !== true;
+	async function endable(
+		command: StoredCommand,
+	): Promise<{ readonly gone: StoredCommand } | "hold" | "unknown" | "end"> {
+		let sandbox: StoredSandbox | undefined;
+		try {
+			sandbox = await store.sandboxes.get(command.sandboxId);
+			const gone = await endedWithMemory(command, sandbox);
+			if (gone !== undefined) return { gone };
+		} catch {
+			return "unknown";
+		}
+		const moving = sandbox?.moving;
+		if (
+			moving !== undefined &&
+			moving.keepMemory !== true &&
+			(moving.from === "paused" || (moving.from === "running" && moving.phase !== "copying"))
+		) {
+			return "hold";
+		}
+		return "end";
 	}
 
 	/** Why a command ended with its sandbox's move to another host that restarted it, `reason` its move's restartReason. */
@@ -6704,69 +6732,57 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		`kantel: killed: the sandbox was ${by}, which let go of the memory it was paused with, and its processes with it\n`;
 
 	/**
-	 * A paused sandbox (`paused`, as read), now `starting` (`starting`, as written) to boot from its disk: the commands
-	 * its memory kept running killed, saying why, as listed now (none can start on the machine it boots), never asked of
-	 * its backend, which would ask that new machine. Where that fails (its commands can't be read or written), it is
-	 * put back as it was, paused with its memory, and the start fails, so no boot lets the memory go with its commands
-	 * still running.
+	 * What a sandbox's record says as a boot lets go of the memory its commands ran in (`memoryDropped`), `why` being
+	 * what each of them killed so says: written in the same write that moves it to `starting` (a move's, as it is
+	 * published on its new host), so a command started after it (on the machine it boots) carries the new generation.
 	 */
-	async function killPausedOrPutBack(paused: StoredSandbox, starting: StoredSandbox): Promise<void> {
-		const note = pausedMemoryGone("started afresh from its disk");
+	const droppedMemory = (sandbox: StoredSandbox, why: string): Pick<StoredSandbox, "memoryDropped"> => ({
+		memoryDropped: { at: now(), generation: (sandbox.memoryDropped?.generation ?? 0) + 1, why },
+	});
+
+	/**
+	 * The one rule for a command whose memory went: one still `running` whose `memoryGeneration` is behind its
+	 * sandbox's `memoryDropped.generation` ran in a memory a boot let go, so it is killed, saying why (`memoryDropped.why`),
+	 * never asked of its backend (whose machine now is a new one, which doesn't know it) nor taken as lost. "Behind" is
+	 * by generations its sandbox's record counts, never a gateway's clock. Answers the command as it is then, or
+	 * undefined where the rule doesn't apply. `sandbox`: its sandbox as just read, if the caller has it.
+	 */
+	async function endedWithMemory(command: StoredCommand, sandbox?: StoredSandbox): Promise<StoredCommand | undefined> {
+		if (command.state !== "running") return undefined;
+		const dropped = (sandbox ?? (await store.sandboxes.get(command.sandboxId)))?.memoryDropped;
+		if (dropped === undefined || (command.memoryGeneration ?? 0) >= dropped.generation) return undefined;
 		const at = now();
-		// Each one as it was before this kill, and as this kill wrote it, to put back if a later one fails.
-		const settled: { readonly before: StoredCommand; readonly written: StoredCommand }[] = [];
-		try {
-			for (const command of await store.commands.list({ sandboxId: paused.id, state: "running" })) {
-				let before: StoredCommand | undefined;
-				const written = await settleCommand(command.id, (latest) => {
-					before = latest;
-					return {
-						...latest,
-						state: "killed",
-						endedAt: at,
-						durationMs: at - latest.startedAt,
-						...noted(latest, note),
-					};
-				});
-				if (written !== undefined && before !== undefined) settled.push({ before, written });
-			}
-		} catch (error) {
-			// Put back as they were, those this kill settled and nothing has changed since: their processes run on in the
-			// memory it is paused with again, followed and killed by their IDs once it resumes. One killed meanwhile by
-			// someone else has changed (`killStored` keeps that kill pending), and stays killed, its kill sent as it resumes.
-			for (const { before, written } of settled) {
-				await store.commands
-					.update(before.id, (latest) => (JSON.stringify(latest) === JSON.stringify(written) ? before : undefined))
-					.catch(() => undefined);
-			}
-			await transition(
-				paused.id,
-				"starting",
-				(latest) => ({
-					...latest,
-					state: "paused",
-					lifecycle: (latest.lifecycle ?? 0) + 1,
-					size: paused.size,
-					shape: paused.shape,
-					stoppedAt: paused.stoppedAt,
-					reason: paused.reason,
-					pausedSnapshotId: paused.pausedSnapshotId,
-					mounts: paused.mounts,
-					mountsAt: paused.mountsAt,
-				}),
-				(latest) => (latest.lifecycle ?? 0) === (starting.lifecycle ?? 0),
-			).catch(() => undefined);
-			throw new KantelError(
-				"unavailable",
-				`The sandbox wasn't started: the commands its memory kept running couldn't be recorded as ended (${messageOf(error)}); try again`,
-			);
+		const killed = await settleCommand(command.id, (latest) =>
+			(latest.memoryGeneration ?? 0) < dropped.generation
+				? { ...latest, state: "killed", endedAt: at, durationMs: at - latest.startedAt, ...noted(latest, dropped.why) }
+				: undefined,
+		);
+		if (killed !== undefined) {
+			runningCommands.get(command.id)?.abort();
+			runningCommands.delete(command.id);
 		}
-		// All of them killed: their waits are over.
-		for (const { before } of settled) {
-			runningCommands.get(before.id)?.abort();
-			runningCommands.delete(before.id);
-		}
+		return killed ?? (await store.commands.get(command.id)) ?? command;
 	}
+
+	/**
+	 * Each of a sandbox's commands whose memory went, killed (`endedWithMemory`): straight after the boot that let it go,
+	 * and by the sweep after, in case that failed. One that fails is left for the next.
+	 */
+	async function killDroppedOf(sandbox: StoredSandbox): Promise<void> {
+		const dropped = sandbox.memoryDropped;
+		if (dropped === undefined || cleared.get(sandbox.id) === dropped.generation) return;
+		let all = true;
+		for (const command of await store.commands.list({ sandboxId: sandbox.id, state: "running" })) {
+			const ended = await endedWithMemory(command, sandbox).catch(() => undefined);
+			if (ended?.state === "running" && (ended.memoryGeneration ?? 0) < dropped.generation) all = false;
+			if (ended === undefined && (command.memoryGeneration ?? 0) < dropped.generation) all = false;
+		}
+		// None left from before: this gateway's sweep looks no more, until its memory goes again.
+		if (all) cleared.set(sandbox.id, dropped.generation);
+	}
+
+	/** The sandboxes whose commands from before their memory went this gateway has seen all ended, by generation. */
+	const cleared = new Map<string, number>();
 
 	/** Why a pause's commands were killed when its host stopped the sandbox instead, without its memory. */
 	const PAUSE_STOPPED_COLD =
@@ -10301,6 +10317,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							egressRevision: later(latest.egressRevision),
 							// Its mounts go with it, as a start's do, each pending until the boot says.
 							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+							// Paused: the commands its memory kept running go with that memory.
+							...(latest.state === "paused"
+								? droppedMemory(latest, pausedMemoryGone("started afresh from its disk"))
+								: {}),
 						}),
 					unmoved(current),
 				);
@@ -10308,9 +10328,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
-				// Paused: the commands its memory kept running go with that memory. Killed, saying why, as listed now, while it
-				// is starting (none can start on the machine it boots), and never asked of the new one.
-				if (stopped.state === "paused") await killPausedOrPutBack(stopped, starting);
+				// Its memory let go: the commands it kept running killed, saying why (and by any later read or sweep, if not now).
+				if ((starting.memoryDropped?.generation ?? 0) > (stopped.memoryDropped?.generation ?? 0))
+					await killDroppedOf(starting).catch(() => undefined);
 				// An environment attached while it was stopped: its files and repositories, once it runs.
 				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
@@ -12379,6 +12399,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			truncated: false,
 			startedAt: now(),
 			...(detached ? { detached: true } : {}),
+			// The memory it runs in, as its sandbox was read running.
+			...(current.memoryDropped === undefined ? {} : { memoryGeneration: current.memoryDropped.generation }),
 		};
 		await store.commands.put(command);
 		// Checked once stored, as a create is: a command landing as its sandbox's account is deleted (its sandbox gone
@@ -12387,6 +12409,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await store.commands.delete(command.id);
 			throw accountClosed();
 		}
+		// Read again last, just before it is sent: a boot that let go of the memory it was read in since then (which a
+		// pause, or a move's stop, had to come before) means it runs in the one after, as it isn't sent yet. One killed
+		// meanwhile (with that memory, or by anyone) never runs. A drop between this read and its sending would need a
+		// whole stop and boot in that time.
+		const generation = (await store.sandboxes.get(current.id))?.memoryDropped?.generation ?? 0;
+		let admitted = false;
+		await store.commands.update(command.id, (latest) => {
+			admitted = latest.state === "running";
+			return admitted && generation > (latest.memoryGeneration ?? 0)
+				? { ...latest, memoryGeneration: generation }
+				: undefined;
+		});
+		if (!admitted) return (await store.commands.get(command.id)) ?? command;
 		const controller = new AbortController();
 		runningCommands.set(command.id, controller);
 		// A run again starts only while the command it runs again still runs: one killed meanwhile (the kill found no run
@@ -12427,13 +12462,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 		const finish = async (result: ExecResult): Promise<StoredCommand> => {
 			stopUsing();
-			// Its sandbox paused, and being moved now without its memory: nothing ends in that memory, so an end read now is
-			// its new machine not knowing it (once the move has placed it there). Not recorded: the move's commit kills it,
-			// saying why, and a move rolled back leaves it running in that memory. A detached one's follow lets it go; a
-			// foreground call waits on for its end, as recorded, or as its backend says once the move is over.
-			if (await inPausedRestart(current.id)) {
+			// What of its end may be recorded (`endable`): its memory let go by a boot since it started (the end read is its
+			// new machine not knowing it), it is killed, saying why; a move that lets its memory go under way, or what
+			// became of its memory not known, nothing yet: a detached one's follow lets it go, and a foreground call waits
+			// on for its end, as recorded or as its backend says.
+			const read = async () => endable((await store.commands.get(command.id).catch(() => undefined)) ?? command);
+			let may = await read();
+			// Not known (its store not answering): asked again, the end it read kept, from 1 s doubling to 30 s apart.
+			for (let wait = EXEC_FOLLOW_MIN_MS; may === "unknown"; wait = Math.min(wait * 2, EXEC_FOLLOW_MAX_MS)) {
+				await delay(wait).done;
+				may = await read();
+			}
+			if (may !== "end") {
 				runningCommands.delete(command.id);
-				if (detached) return (await store.commands.get(command.id)) ?? command;
+				if (may !== "hold") return may.gone;
+				if (detached) return (await store.commands.get(command.id).catch(() => undefined)) ?? command;
 				return awaitedEnd(command);
 			}
 			const more = await how.beforeEnd?.(command, result).catch(() => undefined);
@@ -14004,20 +14047,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const latest = await store.sandboxes.get(sandboxId);
 		const moving = latest?.moving;
 		if (latest === undefined || moving?.operationId !== operationId) return latest;
-		// Restarted there: the commands its memory ran (a paused one's kept running in it, a running one's that its stop
-		// didn't end yet) went with it. Killed, saying why, before it is published running, as listed while it was still
-		// `starting` with this move (read again after the list: a commit on another gateway may have published it, and
-		// another gateway may have started a command on its new machine since). Never asked of its backend, which would
-		// ask the new machine, which doesn't know them. Whichever gateway commits the move (its own, or the sweep's for
-		// one whose gateway went) does it.
-		// One that fails leaves the move unpublished, for the sweep to commit again.
-		if (moving.from !== "stopped" && moving.keepMemory !== true) {
-			const listed = await store.commands.list({ sandboxId, state: "running" });
-			const still = await store.sandboxes.get(sandboxId);
-			if (still?.state === "starting" && still.moving?.operationId === operationId) {
-				await killCommandsOf(sandboxId, { listed, note: restartedByMove(moving.restartReason), reconcile: false });
-			}
-		}
+		// Restarted there: the memory its commands ran in (a paused one's, a running one's its move stopped) is let go as
+		// it is published on its new host, in that write (`memoryDropped`): a command another gateway starts there once it
+		// runs is of the new generation, and the commands of the old one are killed, saying why, straight after, and by
+		// any later read or sweep. Whichever gateway commits the move (its own, or the sweep's for one whose gateway went)
+		// does it, and nothing is put back.
+		const drops = moving.from !== "stopped" && moving.keepMemory !== true;
 		// Its memory kept: a kill made while it was stopped for the move (or paused before it) reaches its command, which
 		// runs on its new machine already, before it is published (whatever happens to its publishing).
 		if (moving.from !== "stopped" && moving.keepMemory === true)
@@ -14038,9 +14073,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					keptMemory: latest.moving?.keepMemory === true,
 					...(latest.moving?.restartReason === undefined ? {} : { restartReason: latest.moving.restartReason }),
 				},
+				...(drops ? droppedMemory(latest, restartedByMove(moving.restartReason)) : {}),
 				...owedStop(latest),
 			}),
 		);
+		if (drops && committed !== undefined) await killDroppedOf(committed).catch(() => undefined);
 		return committed;
 	}
 
@@ -14121,6 +14158,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				shape: body.size === undefined ? latest.shape : undefined,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
 				...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+				// Paused, and started from its disk rather than resumed: the commands its memory kept running go with that
+				// memory. (One in `error` is left as it is: its machine may still be running, as a pause whose snapshot failed
+				// resumes it, and a start finds it running.)
+				...(how === "start" && latest.state === "paused"
+					? droppedMemory(latest, pausedMemoryGone("started afresh from its disk"))
+					: {}),
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
 				egressRevision: later(latest.egressRevision),
@@ -14132,11 +14175,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
-		// Paused, and started from its disk rather than resumed: the commands its memory kept running go with that memory.
-		// Killed, saying why, as listed now, while it is starting and none can start on the machine it boots; not asked of
-		// its backend, which would ask that new machine, which doesn't know them. (One in `error` is left as it is: its
-		// machine may still be running, a pause whose snapshot failed resumes it, and a start finds it running.)
-		if (how === "start" && current.state === "paused") await killPausedOrPutBack(current, starting);
+		// Its memory let go: the commands it kept running killed, saying why (and by any later read or sweep, if not now).
+		if ((starting.memoryDropped?.generation ?? 0) > (current.memoryDropped?.generation ?? 0))
+			await killDroppedOf(starting).catch(() => undefined);
 		const provisioning = await provisionedAgain(principal, role, starting, true);
 		const bootOptions = {
 			fromSnapshot,
@@ -14311,6 +14352,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
 					await settleStuckMove(sandbox).catch(() => undefined);
 					continue;
+				}
+				// A boot let go of its memory lately: any of its commands still running from before are killed, saying why, in
+				// case the boot's own kill failed (a read of one does the same). Only lately, as each pass lists its commands.
+				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
+					keepGoing(killDroppedOf(sandbox));
 				}
 				// An egress update that didn't get through (its host away, a call that failed) is sent again, as it is now,
 				// once its host is there: a later revision the host has taken already makes this one moot.

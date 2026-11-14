@@ -212,6 +212,13 @@ export type StoredSandbox = Omit<
 	 */
 	readonly egressApplied?: number;
 	/**
+	 * The last time a boot let go of the memory its commands ran in, so they were ended though it runs again (a start or
+	 * a restart on the latest base from paused, a move that restarted it): `generation` counts these (absent: 0), and
+	 * `why` is what each command killed so says (`StoredCommand.memoryGeneration`). Written in the same write that
+	 * moves it to `starting` (a move's, as it is published on its new host).
+	 */
+	readonly memoryDropped?: { readonly at: number; readonly generation: number; readonly why: string };
+	/**
 	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
 	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).
 	 */
@@ -410,6 +417,11 @@ export type StoredCommand = computeSchema.Command & {
 	readonly detached?: boolean;
 	/** Killed, and its kill not yet taken by its backend: a later kill sends it again. */
 	readonly killPending?: boolean;
+	/**
+	 * Its sandbox's `memoryDropped.generation` (absent: 0) as it started: the memory it runs in. One still running once
+	 * its sandbox's generation is past it ran in a memory let go, and is killed, saying why, never taken as lost.
+	 */
+	readonly memoryGeneration?: number;
 	/** Its sandbox was an isolate with `autoUpgrade` when it started: a needsMicrovm end may be run again. */
 	readonly autoUpgrade?: true;
 	/**
