@@ -427,10 +427,11 @@ Every connected host on another version then fetches that version from Kantel's 
 
 ```sh
 kantel-admin host drain host_u7nfa06bgsim          # no new sandboxes; --undo takes it back
+kantel-admin host evacuate host_u7nfa06bgsim --wait  # drain it and move its sandboxes off
 kantel-admin host revoke host_u7nfa06bgsim --yes   # its credential stops working
 ```
 
-Draining stops new sandboxes going on a host, and the ones already there keep running. Revoking closes its connection and refuses its credential, so its sandboxes can't be reached until it joins again with a new token. Removing a host on the console's **Hosts** page revokes it.
+Draining stops new sandboxes going on a host, and the ones already there keep running. To update, resize or retire a host without anyone losing a sandbox, move its sandboxes off: `host evacuate`, or **Move sandboxes off** in a host's menu on the console's **Hosts** page, drains it and moves each running, stopped and paused sandbox to another host in its pool, two at a time. Each moves as `kantel move` does by default: with its memory where the two hosts' CPU and runtime match, restarted otherwise, and a stopped one boots on its new host. One that can't move is skipped with the reason: an isolate, one whose create named the host, one in error, or one no other host in its pool can take. It carries on through a control plane restart; `host evacuation <id>` and the host's row show how far it has got, and undraining the host stops it once the moves under way finish. Revoking closes its connection and refuses its credential, so its sandboxes can't be reached until it joins again with a new token. Removing a host on the console's **Hosts** page revokes it.
 
 To take `kantel-host` off the machine:
 

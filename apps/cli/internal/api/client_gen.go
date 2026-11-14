@@ -828,6 +828,24 @@ func (c *Client) UpdateHost(ctx context.Context, hostID string, body UpdateHostB
 	return &out, nil
 }
 
+// GetHostEvacuation GET /admin/hosts/{hostId}/evacuation: Get a host's evacuation. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) GetHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/admin/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StartHostEvacuation POST /admin/hosts/{hostId}/evacuation: Move every sandbox off a host. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) StartHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/admin/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // FetchHostSnapshot POST /admin/hosts/{hostId}/snapshot-fetches: Fetch a saved snapshot onto a host. Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started. `not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
 func (c *Client) FetchHostSnapshot(ctx context.Context, hostID string, body FetchHostSnapshotBody, opts ...CallOption) error {
 	return c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/admin/hosts/%s/snapshot-fetches", url.PathEscape(hostID)), Query: nil, Body: body}, opts...)
@@ -1254,6 +1272,24 @@ func (c *Client) GetAccountHost(ctx context.Context, hostID string, opts ...Call
 func (c *Client) UpdateAccountHost(ctx context.Context, hostID string, body UpdateHostBody, opts ...CallOption) (*Host, error) {
 	var out Host
 	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/hosts/%s", url.PathEscape(hostID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetAccountHostEvacuation GET /hosts/{hostId}/evacuation: Get the evacuation of one of an account's hosts. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) GetAccountHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StartAccountHostEvacuation POST /hosts/{hostId}/evacuation: Move every sandbox off one of an account's hosts. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) StartAccountHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

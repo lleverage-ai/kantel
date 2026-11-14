@@ -4,6 +4,7 @@
 // its host agent's version, flagged when it's out of date; opening a row shows its CPU, memory and disk as graphs over
 // the last 10 minutes. Where the source has pools, the hosts are grouped by the pool they are in, each pool with its
 // menu, and a host's menu moves it to another (host-pools.tsx). A host can be drained, so no new sandboxes land on it,
+// have every sandbox moved off it to other hosts in its pool, its progress in its opened row (host-evacuation.tsx),
 // updated to the version it should run (where the source offers it; the page reads again every few seconds until it's
 // back on it), or removed, which revokes its credential. Add host makes a one-time join command to run on the new machine and waits for it to join; the host
 // agent dials out, so a host needs no inbound ports. Every call goes through the `HostsSource` the host binds; stories
@@ -19,6 +20,7 @@ import { useLoad, useReloadOn } from "../primitives/load.ts";
 import {
 	DownloadIcon,
 	EllipsisIcon,
+	MoveHostIcon,
 	MoveIcon,
 	PauseIcon,
 	PlayIcon,
@@ -40,6 +42,7 @@ import {
 	usedShare,
 } from "./compute-model.ts";
 import { HostDiskUsage } from "./host-disk.tsx";
+import { EvacuateDialog, evacuationRowText, HostEvacuationSection } from "./host-evacuation.tsx";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostMemoryUsage } from "./host-memory.tsx";
 import { HostPeers } from "./host-peers.tsx";
@@ -85,6 +88,8 @@ export interface HostsPageProps {
 	readonly moving?: string;
 	/** A pool dialog open at first, for a story: New pool, or Rename or Delete of the pool with this ID. */
 	readonly poolDialog?: PoolDialogState;
+	/** The host whose Move sandboxes off dialog is open at first, for a story. */
+	readonly evacuating?: string;
 }
 
 type PoolDialogState =
@@ -146,6 +151,7 @@ export function HostsPage({
 	limiting: limitingAtFirst,
 	moving: movingAtFirst,
 	poolDialog: poolDialogAtFirst,
+	evacuating: evacuatingAtFirst,
 }: HostsPageProps) {
 	const { state, reload, pending } = useLoad(() => source.list(), [source]);
 	// Hosts changed here, ahead of the next read: a drain shows at once; null is a removed host.
@@ -158,6 +164,9 @@ export function HostsPage({
 	const [updatingId, setUpdatingId] = useState(confirmUpdate);
 	const [limitingId, setLimitingId] = useState(limitingAtFirst);
 	const [movingId, setMovingId] = useState(movingAtFirst);
+	const [evacuatingId, setEvacuatingId] = useState(evacuatingAtFirst);
+	// Rows asked to open (each time Move sandboxes off begins on one), by host ID.
+	const [openings, setOpenings] = useState<ReadonlyMap<string, number>>(new Map());
 	const [poolDialog, setPoolDialog] = useState<PoolDialogState | undefined>(poolDialogAtFirst);
 	const [notice, setNotice] = useState<NoticeState>();
 	const now = fixedNow ?? Date.now();
@@ -176,9 +185,10 @@ export function HostsPage({
 	const names = useMemo(() => new Map((hosts ?? []).map((host) => [host.id, host.name])), [hosts]);
 
 	// Read again a while after each read settles: every few seconds while a host is updating, so it shows its new version
-	// once it's back, and otherwise every minute, so a host that falls out of date (or a release the control plane read
-	// after this page's first read) shows without a reload. Never while a read is under way, so a slow one isn't dropped.
-	const awaiting = hosts?.some((host) => host.updating !== undefined) ?? false;
+	// once it's back, or has its sandboxes moving off, so its row's count moves on, and otherwise every minute, so a host
+	// that falls out of date (or a release the control plane read after this page's first read) shows without a reload.
+	// Never while a read is under way, so a slow one isn't dropped.
+	const awaiting = hosts?.some((host) => host.updating !== undefined || host.evacuation?.state === "running") ?? false;
 	useEffect(() => {
 		if (!poll || pending || state.status !== "ready") return;
 		const timer = setTimeout(reload, awaiting ? UPDATE_POLL_MS : REFRESH_MS);
@@ -345,7 +355,10 @@ export function HostsPage({
 		...(source.update === undefined ? {} : { onUpdate: () => setUpdatingId(host.id) }),
 		...(source.setSnapshotLimit === undefined ? {} : { onLimit: () => setLimitingId(host.id) }),
 		...(moves && (owner !== undefined || host.accountId === undefined) ? { onMove: () => setMovingId(host.id) } : {}),
+		...(source.evacuate === undefined ? {} : { onEvacuate: () => setEvacuatingId(host.id) }),
 		opened: host.id === opened,
+		openings: openings.get(host.id) ?? 0,
+		poll,
 	});
 	const newPoolButton =
 		poolsSource === undefined || pools === undefined ? null : (
@@ -623,6 +636,24 @@ export function HostsPage({
 					setNotice({ level: "info", text: `Removed ${host.name}. Its credential no longer works.` });
 				}}
 			/>
+			<EvacuateDialog
+				host={hosts?.find((host) => host.id === evacuatingId)}
+				onClose={() => setEvacuatingId(undefined)}
+				onStart={async (host) => {
+					if (source.evacuate === undefined) return;
+					const begun = await source.evacuate(host.id);
+					const { sandboxes: _sandboxes, ...progress } = begun;
+					change(host.id, { ...host, state: "draining", evacuation: progress });
+					setOpenings((current) => new Map(current).set(host.id, (current.get(host.id) ?? 0) + 1));
+					setNotice({
+						level: "info",
+						text:
+							begun.remaining === 0
+								? `${host.name} is drained. None of its sandboxes can move: its row says why.`
+								: `Moving ${begun.remaining.toLocaleString("en-GB")} ${begun.remaining === 1 ? "sandbox" : "sandboxes"} off ${host.name}, two at a time. Its row shows each one.`,
+					});
+				}}
+			/>
 			{pools === undefined ? null : (
 				<MoveHostDialog
 					host={hosts?.find((host) => host.id === movingId)}
@@ -714,9 +745,9 @@ function HostsSummary({ hosts }: { hosts: readonly Host[] }) {
 	);
 }
 
-/** A host's state, and how long since an offline one was last seen. */
+/** A host's state, how long since an offline one was last seen, and its sandboxes moving off, while they are. */
 function HostState({ host, now }: { host: Host; now: number }) {
-	return (
+	const label = (
 		<StatusLabel status={HOST_STATE_STATUS[host.state]}>
 			{HOST_STATE_LABELS[host.state]}
 			{host.state === "offline" ? (
@@ -727,9 +758,16 @@ function HostState({ host, now }: { host: Host; now: number }) {
 			) : null}
 		</StatusLabel>
 	);
+	if (host.evacuation?.state !== "running") return label;
+	return (
+		<span className="flex flex-col items-start gap-1">
+			{label}
+			<span className="text-sm text-muted">{evacuationRowText(host.evacuation)}</span>
+		</span>
+	);
 }
 
-/** Update when it's out of date, drain or undrain, then Remove: a host's ⋯. */
+/** Update when it's out of date, drain or undrain, Move sandboxes off, then Remove: a host's ⋯. */
 function hostMenu(
 	host: Host,
 	onDrain: (on: boolean) => void,
@@ -737,6 +775,7 @@ function hostMenu(
 	onUpdate?: () => void,
 	onLimit?: () => void,
 	onMove?: () => void,
+	onEvacuate?: () => void,
 ) {
 	const update: MenuEntry[] =
 		onUpdate === undefined || host.updateAvailable === undefined || host.updating !== undefined
@@ -764,6 +803,19 @@ function hostMenu(
 					disabled: host.state !== "online",
 					onSelect: () => onDrain(true),
 				},
+		...(onEvacuate === undefined
+			? []
+			: [
+					{
+						kind: "item" as const,
+						id: "evacuate",
+						label: "Move sandboxes off",
+						icon: <MoveHostIcon />,
+						// Over its connection: a host away moves them once it's back; one moving them already shows it in its row.
+						disabled: host.state === "offline" || host.state === "joining" || host.evacuation?.state === "running",
+						onSelect: onEvacuate,
+					},
+				]),
 		...(onMove === undefined
 			? []
 			: [{ kind: "item" as const, id: "move", label: "Move to pool", icon: <MoveIcon />, onSelect: onMove }]),
@@ -845,8 +897,14 @@ type RowProps = {
 	onLimit?: () => void;
 	/** Absent: hosts aren't moved between pools from here. */
 	onMove?: () => void;
+	/** Absent: sandboxes aren't moved off hosts from here. */
+	onEvacuate?: () => void;
 	/** Its graphs show at first. */
 	opened: boolean;
+	/** Moves on each time it should open (Move sandboxes off began on it). */
+	openings: number;
+	/** Reads its sandboxes' moves off again while they run; off for stories. */
+	poll: boolean;
 };
 
 /** The columns a host's row has, for its opened graphs' one cell. */
@@ -859,9 +917,26 @@ const Chevron = ({ open }: { open: boolean }) => (
 	</span>
 );
 
-function HostRow({ host, source, now, names, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
+function HostRow({
+	host,
+	source,
+	now,
+	names,
+	onDrain,
+	onRemove,
+	onUpdate,
+	onLimit,
+	onMove,
+	onEvacuate,
+	opened,
+	openings,
+	poll,
+}: RowProps) {
 	const labels = Object.entries(host.labels).sort(([a], [b]) => a.localeCompare(b));
 	const [open, setOpen] = useState(opened);
+	useEffect(() => {
+		if (openings > 0) setOpen(true);
+	}, [openings]);
 	const live = useHostUsage(source, host);
 	const graphsId = `host-graphs-${host.id}`;
 	const shows = source.usage !== undefined && live.status !== "off";
@@ -915,13 +990,20 @@ function HostRow({ host, source, now, names, onDrain, onRemove, onUpdate, onLimi
 					<Agent host={host} />
 				</td>
 				<td className={`${open ? cellOpen : cell} w-0 text-right`}>
-					{hostMenu(host, onDrain, onRemove, onUpdate, onLimit, onMove)}
+					{hostMenu(host, onDrain, onRemove, onUpdate, onLimit, onMove, onEvacuate)}
 				</td>
 			</tr>
 			{open ? (
 				<tr className="kt-host-graphs bg-hover" id={graphsId}>
 					<td className={`${cell} pt-1 pb-4 pl-8`} colSpan={COLUMNS}>
 						<div className="flex min-w-0 flex-col gap-6">
+							<HostEvacuationSection
+								host={host}
+								source={source}
+								names={names}
+								poll={poll}
+								{...(onEvacuate === undefined ? {} : { onStart: onEvacuate })}
+							/>
 							<HostGraphs host={host} live={live} />
 							<HostMemoryUsage host={host} />
 							<HostDiskUsage host={host} now={now} />
@@ -938,8 +1020,25 @@ function HostRow({ host, source, now, names, onDrain, onRemove, onUpdate, onLimi
  * A phone's row: the name with its CPU line and state beside it, then the machine, its vCPU and sandboxes, and ⋯.
  * Tapping it opens its graphs under it.
  */
-function HostPhoneRow({ host, source, now, names, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
+function HostPhoneRow({
+	host,
+	source,
+	now,
+	names,
+	onDrain,
+	onRemove,
+	onUpdate,
+	onLimit,
+	onMove,
+	onEvacuate,
+	opened,
+	openings,
+	poll,
+}: RowProps) {
 	const [open, setOpen] = useState(opened);
+	useEffect(() => {
+		if (openings > 0) setOpen(true);
+	}, [openings]);
 	const live = useHostUsage(source, host);
 	const graphsId = `host-graphs-${host.id}`;
 	return (
@@ -978,10 +1077,18 @@ function HostPhoneRow({ host, source, now, names, onDrain, onRemove, onUpdate, o
 						)}
 					</span>
 				</button>
-				{hostMenu(host, onDrain, onRemove, onUpdate, onLimit, onMove)}
+				{hostMenu(host, onDrain, onRemove, onUpdate, onLimit, onMove, onEvacuate)}
 			</div>
 			{open ? (
 				<div id={graphsId} className="flex min-w-0 flex-col gap-6">
+					<HostEvacuationSection
+						host={host}
+						source={source}
+						names={names}
+						narrow
+						poll={poll}
+						{...(onEvacuate === undefined ? {} : { onStart: onEvacuate })}
+					/>
 					<HostGraphs host={host} live={live} narrow />
 					<HostMemoryUsage host={host} narrow />
 					<HostDiskUsage host={host} now={now} narrow />

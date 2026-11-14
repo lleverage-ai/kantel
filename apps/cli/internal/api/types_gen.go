@@ -1483,8 +1483,9 @@ type Host struct {
 	Arch      *HostArch     `json:"arch,omitempty"`
 	Capacity  HostCapacity  `json:"capacity"`
 	// Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said.
-	CPUFingerprint *string        `json:"cpuFingerprint,omitempty"`
-	DiskUsage      *HostDiskUsage `json:"diskUsage,omitempty"`
+	CPUFingerprint *string                 `json:"cpuFingerprint,omitempty"`
+	DiskUsage      *HostDiskUsage          `json:"diskUsage,omitempty"`
+	Evacuation     *HostEvacuationProgress `json:"evacuation,omitempty"`
 	// The host's ID, such as `host_6t5r4e`.
 	ID string `json:"id"`
 	// Epoch milliseconds, UTC.
@@ -1560,6 +1561,98 @@ type HostDiskUsage struct {
 	// What is used on it, by anything.
 	UsedBytes int64 `json:"usedBytes"`
 }
+
+// Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting it otherwise). It carries on across a control plane restart.
+type HostEvacuation struct {
+	// Epoch milliseconds, UTC.
+	EndedAt *int64 `json:"endedAt,omitempty"`
+	// Those whose move failed: each is where it was, as it was.
+	Failed int64 `json:"failed"`
+	// The host's ID.
+	HostID string `json:"hostId"`
+	// The sandboxes moved to another host.
+	Moved int64 `json:"moved"`
+	// Why it failed or stopped, where that wasn't a sandbox's move (each says its own).
+	Reason *string `json:"reason,omitempty"`
+	// Those still to move, or moving now.
+	Remaining int64 `json:"remaining"`
+	// Each sandbox that was on the host when it began, or came onto it since, in the order taken.
+	Sandboxes []HostEvacuationSandbox `json:"sandboxes"`
+	// Those that can't move, each with its reason.
+	Skipped int64 `json:"skipped"`
+	// Epoch milliseconds, UTC.
+	StartedAt int64               `json:"startedAt"`
+	State     HostEvacuationState `json:"state"`
+}
+
+// How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got.
+type HostEvacuationProgress struct {
+	// Epoch milliseconds, UTC.
+	EndedAt *int64 `json:"endedAt,omitempty"`
+	// Those whose move failed: each is where it was, as it was.
+	Failed int64 `json:"failed"`
+	// The sandboxes moved to another host.
+	Moved int64 `json:"moved"`
+	// Why it failed or stopped, where that wasn't a sandbox's move (each says its own).
+	Reason *string `json:"reason,omitempty"`
+	// Those still to move, or moving now.
+	Remaining int64 `json:"remaining"`
+	// Those that can't move, each with its reason.
+	Skipped int64 `json:"skipped"`
+	// Epoch milliseconds, UTC.
+	StartedAt int64               `json:"startedAt"`
+	State     HostEvacuationState `json:"state"`
+}
+
+// One sandbox of a host's evacuation.
+type HostEvacuationSandbox struct {
+	// The host it moved to.
+	HostID *string `json:"hostId,omitempty"`
+	// Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there.
+	KeptMemory *bool `json:"keptMemory,omitempty"`
+	// Its name, where the caller may see the sandbox.
+	Name *string `json:"name,omitempty"`
+	// Where its move has got, while it moves: as its own `move.phase`.
+	Phase *HostEvacuationSandboxPhase `json:"phase,omitempty"`
+	// Why it was skipped, why its move failed, or why it restarted where it moved.
+	Reason *string `json:"reason,omitempty"`
+	// The sandbox's ID.
+	SandboxID string `json:"sandboxId"`
+	// `waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was.
+	State HostEvacuationSandboxState `json:"state"`
+	Type  SandboxType                `json:"type"`
+}
+
+// Where its move has got, while it moves: as its own `move.phase`.
+type HostEvacuationSandboxPhase string
+
+const (
+	HostEvacuationSandboxPhaseCopying   HostEvacuationSandboxPhase = "copying"
+	HostEvacuationSandboxPhaseStopping  HostEvacuationSandboxPhase = "stopping"
+	HostEvacuationSandboxPhaseFinalCopy HostEvacuationSandboxPhase = "final-copy"
+	HostEvacuationSandboxPhaseStarting  HostEvacuationSandboxPhase = "starting"
+)
+
+// `waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was.
+type HostEvacuationSandboxState string
+
+const (
+	HostEvacuationSandboxStateWaiting HostEvacuationSandboxState = "waiting"
+	HostEvacuationSandboxStateMoving  HostEvacuationSandboxState = "moving"
+	HostEvacuationSandboxStateMoved   HostEvacuationSandboxState = "moved"
+	HostEvacuationSandboxStateSkipped HostEvacuationSandboxState = "skipped"
+	HostEvacuationSandboxStateFailed  HostEvacuationSandboxState = "failed"
+)
+
+// `running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes.
+type HostEvacuationState string
+
+const (
+	HostEvacuationStateRunning HostEvacuationState = "running"
+	HostEvacuationStateDone    HostEvacuationState = "done"
+	HostEvacuationStateFailed  HostEvacuationState = "failed"
+	HostEvacuationStateStopped HostEvacuationState = "stopped"
+)
 
 type HostJoinToken struct {
 	// The one-line command that installs and registers a host with it.

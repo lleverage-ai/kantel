@@ -1367,6 +1367,8 @@ export interface Host {
 	readonly memory?: HostMemory;
 	/** How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected. */
 	readonly mesh?: HostMesh;
+	/** How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got. */
+	readonly evacuation?: HostEvacuationProgress;
 	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
 	readonly savedSnapshotBytesLimit?: number;
 }
@@ -1407,6 +1409,73 @@ export interface HostDiskUsage {
 	/** Epoch milliseconds, UTC. */
 	readonly measuredAt: number;
 }
+
+/** Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting it otherwise). It carries on across a control plane restart. */
+export interface HostEvacuation {
+	/** The host's ID. */
+	readonly hostId: string;
+	/** `running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes. */
+	readonly state: HostEvacuationState;
+	/** Why it failed or stopped, where that wasn't a sandbox's move (each says its own). */
+	readonly reason?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly endedAt?: number;
+	/** The sandboxes moved to another host. */
+	readonly moved: number;
+	/** Those still to move, or moving now. */
+	readonly remaining: number;
+	/** Those that can't move, each with its reason. */
+	readonly skipped: number;
+	/** Those whose move failed: each is where it was, as it was. */
+	readonly failed: number;
+	/** Each sandbox that was on the host when it began, or came onto it since, in the order taken. */
+	readonly sandboxes: readonly HostEvacuationSandbox[];
+}
+
+/** How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got. */
+export interface HostEvacuationProgress {
+	/** `running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes. */
+	readonly state: HostEvacuationState;
+	/** Why it failed or stopped, where that wasn't a sandbox's move (each says its own). */
+	readonly reason?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly endedAt?: number;
+	/** The sandboxes moved to another host. */
+	readonly moved: number;
+	/** Those still to move, or moving now. */
+	readonly remaining: number;
+	/** Those that can't move, each with its reason. */
+	readonly skipped: number;
+	/** Those whose move failed: each is where it was, as it was. */
+	readonly failed: number;
+}
+
+/** One sandbox of a host's evacuation. */
+export interface HostEvacuationSandbox {
+	/** The sandbox's ID. */
+	readonly sandboxId: string;
+	/** Its name, where the caller may see the sandbox. */
+	readonly name?: string;
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly type: SandboxType;
+	/** `waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was. */
+	readonly state: "waiting" | "moving" | "moved" | "skipped" | "failed";
+	/** Where its move has got, while it moves: as its own `move.phase`. */
+	readonly phase?: "copying" | "stopping" | "final-copy" | "starting";
+	/** The host it moved to. */
+	readonly hostId?: string;
+	/** Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there. */
+	readonly keptMemory?: boolean;
+	/** Why it was skipped, why its move failed, or why it restarted where it moved. */
+	readonly reason?: string;
+}
+
+/** `running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes. */
+export type HostEvacuationState = "running" | "done" | "failed" | "stopped";
 
 export interface HostJoinToken {
 	/** The token's ID. */
@@ -3865,6 +3934,10 @@ export interface KantelClient {
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Move every sandbox off a host. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/evacuation` */
+	startHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
+	/** Get a host's evacuation. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}/evacuation` */
+	getHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
 	/** Fetch a sticky disk version onto a host. Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/sticky-disk-fetches` */
 	fetchHostStickyDisk(hostId: string, body: FetchHostStickyDiskBody, options?: CallOptions): Promise<void>;
 	/** Fetch a saved snapshot onto a host. Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started. `not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/snapshot-fetches` */
@@ -3901,6 +3974,10 @@ export interface KantelClient {
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
 	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Move every sandbox off one of an account's hosts. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/evacuation` */
+	startAccountHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
+	/** Get the evacuation of one of an account's hosts. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}/evacuation` */
+	getAccountHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** List an account's pools. The pools the account's own hosts are in, the default first made if there is none yet. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /pools` */
@@ -4375,6 +4452,10 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		updateHostAgent: (hostId, callOptions) =>
 			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
+		startHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
+		getHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "GET", path: `/admin/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
 		fetchHostStickyDisk: (hostId, body, callOptions) =>
 			send(
 				options,
@@ -4413,6 +4494,10 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		updateAccountHostAgent: (hostId, callOptions) =>
 			send(options, { method: "POST", path: `/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
+		startAccountHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "POST", path: `/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
+		getAccountHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "GET", path: `/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
 		removeAccountHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		listAccountPools: (query, callOptions) => send(options, { method: "GET", path: "/pools", query }, callOptions),

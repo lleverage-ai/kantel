@@ -30,6 +30,8 @@ import type {
 	FileRange,
 	Host,
 	HostDisk,
+	HostEvacuation,
+	HostEvacuationSandbox,
 	HostingMode,
 	ImageBuildReason,
 	ImageFinding,
@@ -2064,6 +2066,49 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const article = (kind: SandboxKind): string => `${kind === "isolate" ? "an" : "a"} ${kind}`;
 	/** When each host updating comes back on its new version (wall-clock, so a story sees it finish). */
 	const updateDone = new Map<string, number>();
+	/**
+	 * Each host's sandboxes moving off, as begun (wall-clock, so a story sees it go): two at a time, each taking a few
+	 * seconds, to the other online hosts of its pool; isolates skipped, and every microVM where there is no other host.
+	 */
+	const evacuations = new Map<
+		string,
+		{ readonly startedAt: number; readonly items: readonly HostEvacuationSandbox[]; readonly to: readonly string[] }
+	>();
+	const EVACUATION_STEP_MS = 4_000;
+	const evacuationView = (id: string): HostEvacuation | undefined => {
+		const begun = evacuations.get(id);
+		if (begun === undefined) return undefined;
+		const elapsed = Date.now() - begun.startedAt;
+		let turn = 0;
+		const sandboxes = begun.items.map((item, index): HostEvacuationSandbox => {
+			if (item.state !== "waiting") return item;
+			const slot = Math.floor(turn++ / 2);
+			const to = begun.to[index % Math.max(1, begun.to.length)] as string;
+			if (elapsed >= (slot + 1) * EVACUATION_STEP_MS) {
+				return { ...item, state: "moved", hostId: to, keptMemory: index % 3 !== 2 };
+			}
+			if (elapsed >= slot * EVACUATION_STEP_MS) return { ...item, state: "moving", phase: "copying", hostId: to };
+			return item;
+		});
+		const counted = (state: HostEvacuationSandbox["state"]) => sandboxes.filter((item) => item.state === state).length;
+		const remaining = counted("waiting") + counted("moving");
+		return {
+			state: remaining > 0 ? "running" : "done",
+			startedAt: begun.startedAt,
+			...(remaining > 0 ? {} : { endedAt: begun.startedAt + Math.ceil(turn / 2) * EVACUATION_STEP_MS }),
+			moved: counted("moved"),
+			remaining,
+			skipped: counted("skipped"),
+			failed: counted("failed"),
+			sandboxes,
+		};
+	};
+	const withEvacuation = (host: Host): Host => {
+		const view = evacuationView(host.id);
+		if (view === undefined) return host;
+		const { sandboxes: _sandboxes, ...progress } = view;
+		return { ...host, evacuation: progress };
+	};
 	const deploymentUrl =
 		options.publicUrl ?? (hosting === "hosted" ? "https://kantel.example.com" : "http://127.0.0.1:58090");
 	let publicUrlSet: string | undefined;
@@ -3234,8 +3279,47 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									hosts.set(id, { ...rest, version: updating.version });
 									updateDone.delete(id);
 								}
-								return [...hosts.values()];
+								return [...hosts.values()].map(withEvacuation);
 							}),
+						evacuate: (id) =>
+							gate(() => {
+								const host = find(hosts, id, "host");
+								if (host.state === "offline" || host.state === "joining") {
+									throw new Error(`${host.name} isn't connected: move its sandboxes off once it's back.`);
+								}
+								const under = evacuationView(id);
+								if (under?.state === "running") return under;
+								const to = [...hosts.values()]
+									.filter((other) => other.id !== id && other.poolId === host.poolId && other.state === "online")
+									.map((other) => other.id);
+								const items: HostEvacuationSandbox[] = [
+									...Array.from(
+										{ length: host.sandboxes.microvms },
+										(_, index): HostEvacuationSandbox => ({
+											id: `sbx_${id.slice(4, 10)}${index}`,
+											name: `${host.name.split("-")[0]}-agent-${index + 1}`,
+											kind: "microvm",
+											...(to.length === 0
+												? { state: "skipped" as const, reason: "No other host in its pool can take it now" }
+												: { state: "waiting" as const }),
+										}),
+									),
+									...Array.from(
+										{ length: Math.min(host.sandboxes.isolates, 3) },
+										(_, index): HostEvacuationSandbox => ({
+											id: `sbx_${id.slice(4, 10)}i${index}`,
+											name: `script-${index + 1}`,
+											kind: "isolate",
+											state: "skipped",
+											reason: "An isolate doesn't move to another host",
+										}),
+									),
+								];
+								evacuations.set(id, { startedAt: Date.now(), items, to });
+								hosts.set(id, { ...host, state: "draining" });
+								return evacuationView(id) as HostEvacuation;
+							}),
+						evacuation: (id) => gate(() => evacuationView(id)),
 						update: (id) =>
 							gate(() => {
 								const host = find(hosts, id, "host");
@@ -3294,7 +3378,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							gate(() => {
 								const host = { ...find(hosts, id, "host"), state: "draining" as const };
 								hosts.set(id, host);
-								return host;
+								return withEvacuation(host);
 							}),
 						undrain: (id) =>
 							gate(() => {

@@ -18,6 +18,7 @@ function Scenario({
 	confirmUpdate,
 	limiting,
 	moving,
+	evacuating,
 	poolDialog,
 	usage = "live",
 	updateFails = false,
@@ -32,6 +33,7 @@ function Scenario({
 	confirmUpdate?: string;
 	limiting?: string;
 	moving?: string;
+	evacuating?: string;
 	poolDialog?: HostsPageProps["poolDialog"];
 	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
 	usage?: "live" | "loading" | "none";
@@ -63,6 +65,7 @@ function Scenario({
 			{...(confirmUpdate === undefined ? {} : { confirmUpdate })}
 			{...(limiting === undefined ? {} : { limiting })}
 			{...(moving === undefined ? {} : { moving })}
+			{...(evacuating === undefined ? {} : { evacuating })}
 			{...(poolDialog === undefined ? {} : { poolDialog })}
 			{...(owner === undefined ? {} : { owner })}
 		/>
@@ -223,3 +226,9 @@ export const EmptyOnePool: Story = () => <Scenario options={{ empty: true, pools
 export const WithAccountHosts: Story = () => (
 	<Scenario options={{ hostOverrides: { hst_mac: { accountId: "acc_ada", poolId: "pool_ada_default" } } }} />
 );
+
+/** Move sandboxes off, from a host's menu: what it does, before it begins. Begun, its row opens on its progress. */
+export const MoveSandboxesOff: Story = () => <Scenario evacuating="hst_hetzner_2" />;
+
+/** The same on a phone. */
+export const MobileMoveSandboxesOff: Story = () => <Scenario narrow evacuating="hst_hetzner_2" />;

@@ -149,6 +149,42 @@ Asks the host to update its host agent to `latestVersion`, which it does when `u
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Get the evacuation of one of an account's hosts
+
+`GET /v1/hosts/{hostId}/evacuation` (SDK method `getAccountHostEvacuation`)
+
+How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Answers**
+
+- `200`: [HostEvacuation](/api/reference/types/#hostevacuation) (`application/json`). The evacuation.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Move every sandbox off one of an account's hosts
+
+`POST /v1/hosts/{hostId}/evacuation` (SDK method `startAccountHostEvacuation`)
+
+It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Answers**
+
+- `200`: [HostEvacuation](/api/reference/types/#hostevacuation) (`application/json`). The evacuation, under way.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List an account's pools
 
 `GET /v1/pools` (SDK method `listAccountPools`)
