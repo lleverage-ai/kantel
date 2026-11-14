@@ -1506,6 +1506,15 @@ describe("pausing a sandbox keeps its commands running", () => {
 		// Started afresh from its disk rather than resumed: none is asked of its new machine, which doesn't know them.
 		const fresh = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
 		await paused("cmd_started");
+		// Their kill can't be written: not started, paused still with its memory and its commands.
+		const update = api.store.commands.update.bind(api.store.commands);
+		api.store.commands.update = async () => {
+			throw new Error("the store went away");
+		};
+		expect((await failure(root.startSandbox(sandbox.id, { wait: true }))).code).toBe("unavailable");
+		api.store.commands.update = update;
+		expect((await root.getSandbox(sandbox.id)).state).toBe("paused");
+		expect((await api.store.commands.get("cmd_started"))?.state).toBe("running");
 		await root.startSandbox(sandbox.id, { wait: true });
 		for (const id of [fresh.id, "cmd_started"]) {
 			expect(await api.store.commands.get(id)).toMatchObject({

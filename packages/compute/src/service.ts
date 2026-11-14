@@ -6668,6 +6668,41 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const pausedMemoryGone = (by: "stopped" | "deleted" | "started afresh from its disk"): string =>
 		`kantel: killed: the sandbox was ${by}, which let go of the memory it was paused with, and its processes with it\n`;
 
+	/**
+	 * A paused sandbox (`paused`, as read), now `starting` (`starting`, as written) to boot from its disk: the commands
+	 * its memory kept running killed, saying why, as listed now (none can start on the machine it boots), never asked of
+	 * its backend, which would ask that new machine. Where that fails (its commands can't be read or written), it is
+	 * put back as it was, paused with its memory, and the start fails, so no boot lets the memory go with its commands
+	 * still running.
+	 */
+	async function killPausedOrPutBack(paused: StoredSandbox, starting: StoredSandbox): Promise<void> {
+		try {
+			await killCommandsOf(paused.id, { note: pausedMemoryGone("started afresh from its disk"), reconcile: false });
+		} catch (error) {
+			await transition(
+				paused.id,
+				"starting",
+				(latest) => ({
+					...latest,
+					state: "paused",
+					lifecycle: (latest.lifecycle ?? 0) + 1,
+					size: paused.size,
+					shape: paused.shape,
+					stoppedAt: paused.stoppedAt,
+					reason: paused.reason,
+					pausedSnapshotId: paused.pausedSnapshotId,
+					mounts: paused.mounts,
+					mountsAt: paused.mountsAt,
+				}),
+				(latest) => (latest.lifecycle ?? 0) === (starting.lifecycle ?? 0),
+			).catch(() => undefined);
+			throw new KantelError(
+				"unavailable",
+				`The sandbox wasn't started: the commands its memory kept running couldn't be recorded as ended (${messageOf(error)}); try again`,
+			);
+		}
+	}
+
 	/** Why a pause's commands were killed when its host stopped the sandbox instead, without its memory. */
 	const PAUSE_STOPPED_COLD =
 		"kantel: killed: the sandbox's host couldn't pause it keeping its memory, so it stopped it, which ended its processes\n";
@@ -10210,12 +10245,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const stopped = current;
 				// Paused: the commands its memory kept running go with that memory. Killed, saying why, as listed now, while it
 				// is starting (none can start on the machine it boots), and never asked of the new one.
-				if (stopped.state === "paused") {
-					await killCommandsOf(stopped.id, {
-						note: pausedMemoryGone("started afresh from its disk"),
-						reconcile: false,
-					}).catch(() => undefined);
-				}
+				if (stopped.state === "paused") await killPausedOrPutBack(stopped, starting);
 				// An environment attached while it was stopped: its files and repositories, once it runs.
 				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
@@ -12355,7 +12385,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			// Its call may have broken as its sandbox was paused, by a host that then stopped it cold instead: that stop's
 			// kill, saying so, is waited for, and lands first.
-			if ((await store.commands.get(command.id))?.state === "running") await stopSettled(current.id);
+			if ((await store.commands.get(command.id).catch(() => undefined))?.state === "running") {
+				await stopSettled(current.id);
+			}
 			// Its call may have broken as its sandbox's move stopped it: said so, beside the failure.
 			const note = await moveNote(current.id);
 			return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n${note ?? ""}`, timedOut: false });
@@ -14039,12 +14071,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Killed, saying why, as listed now, while it is starting and none can start on the machine it boots; not asked of
 		// its backend, which would ask that new machine, which doesn't know them. (One in `error` is left as it is: its
 		// machine may still be running, a pause whose snapshot failed resumes it, and a start finds it running.)
-		if (how === "start" && current.state === "paused") {
-			await killCommandsOf(current.id, {
-				note: pausedMemoryGone("started afresh from its disk"),
-				reconcile: false,
-			}).catch(() => undefined);
-		}
+		if (how === "start" && current.state === "paused") await killPausedOrPutBack(current, starting);
 		const provisioning = await provisionedAgain(principal, role, starting, true);
 		const bootOptions = {
 			fromSnapshot,
