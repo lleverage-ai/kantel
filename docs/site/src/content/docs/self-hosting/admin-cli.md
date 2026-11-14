@@ -84,4 +84,6 @@ kantel-admin host revoke host_6t5r4e --yes
 
 `host list` shows each host's state, its agent's version (and a newer one when there is), the sandbox types it runs and how many sandboxes it has. Draining a host stops new sandboxes going on it; the ones there keep running. Revoking it revokes its credential and closes its connection: its sandboxes keep their disks but can't be reached until it joins again with a new token.
 
-The host commands call the [hosts API](/api/reference/hosts/) and need a key with `hosts:admin`. They take the same settings as `kantel`: `--url` and `--key`, `KANTEL_URL` and `KANTEL_API_KEY`, or the file `kantel login` (or `bootstrap-key --save`) writes. Every command takes `--json`.
+The control plane signs the grants hosts fetch [sticky disk](/sandboxes/sticky-disks/) versions from each other with a key of its own. `kantel-admin grant-key show` prints it, and `kantel-admin grant-key rotate` replaces it, if you think it has leaked: hosts get the new key at once, it signs grants from 3 minutes later, and hosts accept the old one for 16 minutes after that, so fetches under way finish.
+
+The host and grant key commands call the [hosts API](/api/reference/hosts/) and need a key with `hosts:admin`. They take the same settings as `kantel`: `--url` and `--key`, `KANTEL_URL` and `KANTEL_API_KEY`, or the file `kantel login` (or `bootstrap-key --save`) writes. Every command takes `--json`.

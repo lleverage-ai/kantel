@@ -181,6 +181,8 @@ echo "KANTEL_SECRETS_KEY=$(openssl rand -base64 32)" >> ~/.kantel/src/deploy/com
 
 Then run the installer with `--upgrade`, as in [Your own settings](#your-own-settings), to restart with it. Without the key, an install that keeps its data in a database refuses protected values and secret files, and plain variables still work. Keep a copy of the key somewhere safe, apart from the database's backups: without it, the protected values and secret files can't be read, and you have to set them again. Changing the key isn't supported yet, so set it once.
 
+With [sticky disks](/sandboxes/sticky-disks/) on, the control plane also keeps the key it signs hosts' disk fetch grants with sealed with `KANTEL_SECRETS_KEY`. To replace that grant key, if you think it has leaked, run `kantel-admin grant-key rotate` (or `POST /v1/admin/grant-key/rotate`): connected hosts get the new key at once, it signs grants from 3 minutes later, and hosts accept the old one for 16 minutes after that, so fetches under way finish. If the secrets key changes, the first gateway that can't open the grant key as it signs a grant replaces it, with a new key that signs at once; change the secrets key on every gateway together, as gateways with different secrets keys can't sign with each other's grant keys. Update the control plane before hosts: a host on an older kantel-host holds one key, takes the new one when it begins signing, and asks again for a grant only for a fetch already under way.
+
 ## Your own settings
 
 The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upgrades keep. The ones you're most likely to want:

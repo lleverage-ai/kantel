@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // Port is the server's TCP port on the mesh address (mesh.SyncPort).
@@ -41,8 +43,8 @@ type Server struct {
 	Source Source
 	// Self is this host's ID, which a grant must name in from.
 	Self func() string
-	// Key is the control plane's grant key (Welcome.GrantKey); "" while it has none, when nothing is served.
-	Key func() string
+	// Keys are the control plane's grant keys (Welcome.GrantKeys); none while it has none, when nothing is served.
+	Keys func() []proto.GrantKey
 	// PeerAt is the pool host at a mesh address, the host the peer reports: false for none.
 	PeerAt func(addr netip.Addr) (hostID string, ok bool)
 	Log    *slog.Logger
@@ -157,8 +159,8 @@ func (s *Server) Handler() http.Handler {
 // with one that isn't for this version, this host or the asking peer, 404 for a version the host doesn't hold.
 func (s *Server) open(w http.ResponseWriter, r *http.Request, withMap bool) (*os.File, []byte, bool) {
 	kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
-	key := s.Key()
-	if key == "" {
+	keys := s.Keys()
+	if len(keys) == 0 {
 		http.Error(w, "this host has no grant key from the control plane yet", http.StatusServiceUnavailable)
 		return nil, nil, false
 	}
@@ -171,7 +173,7 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request, withMap bool) (*os
 	if s.Now != nil {
 		now = s.Now
 	}
-	g, err := VerifyGrant(key, strings.TrimSpace(token), now())
+	g, err := VerifyGrant(keys, strings.TrimSpace(token), now())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return nil, nil, false

@@ -4251,6 +4251,53 @@ export const PublicUrl = Type.Object(
 	{ title: "PublicUrl" },
 );
 
+// The control plane's grant keys: what it signs hosts' fetch grants with, for host-to-host sync.
+
+const GrantKeyId = Type.String({ description: "The key's ID, which each grant it signs names as `kid`." });
+const GrantPublicKey = Type.String({ description: "The Ed25519 public key, its 32 raw bytes in base64url." });
+
+export const GrantKeys = Type.Object(
+	{
+		current: Type.Object(
+			{
+				id: GrantKeyId,
+				publicKey: GrantPublicKey,
+				since: Type.Integer({
+					description: "When it was made, on first use or by a rotation: epoch milliseconds, UTC.",
+				}),
+			},
+			{ description: "The key that signs grants now." },
+		),
+		next: Type.Optional(
+			Type.Object(
+				{
+					id: GrantKeyId,
+					publicKey: GrantPublicKey,
+					from: Type.Integer({ description: "When it begins signing: epoch milliseconds, UTC." }),
+				},
+				{
+					description:
+						"The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the " +
+						"rotation, once every connected host has it. Absent between rotations.",
+				},
+			),
+		),
+		retired: Type.Array(
+			Type.Object({
+				id: GrantKeyId,
+				publicKey: GrantPublicKey,
+				until: Type.Integer({
+					description:
+						"When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began " +
+						"signing: epoch milliseconds, UTC.",
+				}),
+			}),
+			{ description: "Keys rotated out that hosts still accept, oldest first." },
+		),
+	},
+	{ title: "GrantKeys" },
+);
+
 export const HostReleaseCheck = Type.Object(
 	{
 		checked: Type.Boolean({
@@ -4552,6 +4599,7 @@ export type CreatePoolBody = Static<typeof CreatePoolBody>;
 export type CreateAccountPoolBody = Static<typeof CreateAccountPoolBody>;
 export type UpdatePoolBody = Static<typeof UpdatePoolBody>;
 export type PublicUrl = Static<typeof PublicUrl>;
+export type GrantKeys = Static<typeof GrantKeys>;
 export type AccountJoinToken = Static<typeof AccountJoinToken>;
 export type DeviceLogin = Static<typeof DeviceLogin>;
 export type DeviceLoginState = Static<typeof DeviceLoginState>;

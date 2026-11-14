@@ -1,13 +1,15 @@
 /**
  * Fetch grants for host-to-host sync (docs/design/disk-store.md, 2c): the control plane's word that one host may fetch
  * one version of a disk from others, for 15 minutes. A grant is signed with the control plane's Ed25519 grant key, whose
- * public key hosts get in their welcome (`HostWelcome.grantKey`); a holder serves a fetch only with a grant naming it in
- * `from` and the mesh peer asking as `to`.
+ * public key hosts get in their welcome (`HostWelcome.grantKeys`, and `grantKey` for hosts from before rotation); a
+ * holder serves a fetch only with a grant naming it in `from` and the mesh peer asking as `to`.
  *
  * A signed grant is one string, `<payload>.<signature>`: the payload is the grant's JSON in base64url, and the
  * signature is Ed25519 over the payload's ASCII text, in base64url, so a verifier checks the bytes it was given and
- * never has to write the JSON again. Keys are base64url too: the public key its 32 raw bytes, the private key its PKCS #8
- * bytes (kept sealed, never sent). WebCrypto only, so it runs on Node, Bun and Cloudflare Workers alike.
+ * never has to write the JSON again. The JSON names the key that signed it (`kid`, the key's ID), so a host that holds
+ * more than one key while the grant key is rotated checks it with that one. Keys are base64url too: the public key its
+ * 32 raw bytes, the private key its PKCS #8 bytes (kept sealed, never sent). WebCrypto only, so it runs on Node, Bun and
+ * Cloudflare Workers alike.
  */
 import { base64ToBytes, bytesToBase64 } from "./util.ts";
 
@@ -31,13 +33,26 @@ export interface DiskGrant {
 	readonly to: string;
 	/** When it stops being valid, in milliseconds since the epoch. */
 	readonly exp: number;
+	/** The ID of the key that signed it (`grantKeyId`); absent from grants signed before keys had IDs. */
+	readonly kid?: string;
 }
 
-/** A grant key: its public key (base64url, 32 bytes) and a signer over its private key. */
+/** A grant key: its ID, its public key (base64url, 32 bytes) and a signer over its private key. */
 export interface GrantKey {
+	readonly id: string;
 	readonly publicKey: string;
-	/** `grant`, signed: `<payload>.<signature>`. */
-	sign(grant: DiskGrant): Promise<string>;
+	/** `grant`, signed with its `kid` set to this key's ID: `<payload>.<signature>`. */
+	sign(grant: Omit<DiskGrant, "kid">): Promise<string>;
+}
+
+/**
+ * A key a grant may be signed with, as a verifier holds it: its ID (absent, it is tried for any grant), its public key,
+ * and when it stops being accepted (milliseconds since the epoch; absent, never), for a key that was rotated out.
+ */
+export interface GrantVerifyingKey {
+	readonly id?: string;
+	readonly publicKey: string;
+	readonly until?: number;
 }
 
 type CryptoKeyOf = Parameters<typeof crypto.subtle.sign>[1];
@@ -53,11 +68,21 @@ const fromBase64url = (text: string): Uint8Array<ArrayBuffer> => {
 	return base64ToBytes(padded + "=".repeat((4 - (padded.length % 4)) % 4));
 };
 
-function signerOver(publicKey: string, privateKey: CryptoKeyOf): GrantKey {
+/**
+ * A key's ID: the first 9 bytes of the SHA-256 of its public key's raw bytes, in base64url (12 characters). Any key
+ * kept, from before keys had IDs too, has one without anything more being kept.
+ */
+export async function grantKeyId(publicKey: string): Promise<string> {
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", fromBase64url(publicKey)));
+	return toBase64url(digest.subarray(0, 9));
+}
+
+function signerOver(id: string, publicKey: string, privateKey: CryptoKeyOf): GrantKey {
 	return {
+		id,
 		publicKey,
 		async sign(grant) {
-			const payload = toBase64url(encoder.encode(JSON.stringify(grant)));
+			const payload = toBase64url(encoder.encode(JSON.stringify({ ...grant, kid: id })));
 			const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", privateKey, encoder.encode(payload)));
 			return `${payload}.${toBase64url(signature)}`;
 		},
@@ -73,7 +98,8 @@ export async function createGrantKey(): Promise<{ readonly key: GrantKey; readon
 	// Exports are bytes for these formats (Workers' types allow a JWK for any format).
 	const raw = new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
 	const pkcs8 = new Uint8Array((await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer);
-	return { key: signerOver(toBase64url(raw), pair.privateKey), privateKey: pkcs8 };
+	const publicKey = toBase64url(raw);
+	return { key: signerOver(await grantKeyId(publicKey), publicKey, pair.privateKey), privateKey: pkcs8 };
 }
 
 /** The grant key `createGrantKey` made, from its public key and its private key's PKCS #8 bytes. */
@@ -81,23 +107,36 @@ export async function grantKeyFrom(publicKey: string, privateKey: Uint8Array): P
 	const key = (await crypto.subtle.importKey("pkcs8", new Uint8Array(privateKey), { name: "Ed25519" }, false, [
 		"sign",
 	])) as unknown as CryptoKeyOf;
-	return signerOver(publicKey, key);
+	return signerOver(await grantKeyId(publicKey), publicKey, key);
 }
 
 /**
- * The grant `token` carries, when `publicKey` signed it and it is still valid at `now`; undefined when it isn't signed by
- * that key, isn't a grant, or has expired.
+ * The grant `token` carries, when one of `keys` (or the one public key given) signed it and it is still valid at `now`;
+ * undefined when it isn't signed by one of them, isn't a grant, or has expired. A grant naming its key (`kid`) is checked
+ * with the key of that ID and keys with none; a key past its `until` signs nothing.
  */
-export async function verifyGrant(publicKey: string, token: string, now: number): Promise<DiskGrant | undefined> {
+export async function verifyGrant(
+	keys: string | readonly GrantVerifyingKey[],
+	token: string,
+	now: number,
+): Promise<DiskGrant | undefined> {
 	const [payload, signature, ...rest] = token.split(".");
 	if (payload === undefined || signature === undefined || rest.length > 0) return undefined;
 	try {
-		const key = await crypto.subtle.importKey("raw", fromBase64url(publicKey), { name: "Ed25519" }, false, ["verify"]);
-		const signed = await crypto.subtle.verify("Ed25519", key, fromBase64url(signature), encoder.encode(payload));
-		if (!signed) return undefined;
 		const grant = JSON.parse(new TextDecoder().decode(fromBase64url(payload))) as unknown;
 		if (!isGrant(grant) || grant.exp <= now) return undefined;
-		return grant;
+		const candidates = (typeof keys === "string" ? [{ publicKey: keys }] : keys).filter(
+			(key) =>
+				(key.until === undefined || key.until > now) &&
+				(grant.kid === undefined || key.id === undefined || key.id === grant.kid),
+		);
+		for (const candidate of candidates) {
+			const key = await crypto.subtle.importKey("raw", fromBase64url(candidate.publicKey), { name: "Ed25519" }, false, [
+				"verify",
+			]);
+			if (await crypto.subtle.verify("Ed25519", key, fromBase64url(signature), encoder.encode(payload))) return grant;
+		}
+		return undefined;
 	} catch {
 		return undefined;
 	}
@@ -115,6 +154,7 @@ function isGrant(value: unknown): value is DiskGrant {
 		Array.isArray(grant.from) &&
 		grant.from.every((host) => typeof host === "string") &&
 		typeof grant.to === "string" &&
-		typeof grant.exp === "number"
+		typeof grant.exp === "number" &&
+		(grant.kid === undefined || typeof grant.kid === "string")
 	);
 }

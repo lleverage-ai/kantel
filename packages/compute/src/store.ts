@@ -758,12 +758,26 @@ export interface StoredSetting {
 	/**
 	 * `grantKey`: the control plane's Ed25519 key for fetch grants (`grants.ts`), made by the first gateway that needs it
 	 * and claimed (`insert`), so every gateway over one database signs with the same key. `value` is its public key, and
-	 * `sealed` its private key, sealed with the deployment's secrets key.
+	 * `sealed` its private key, sealed with the deployment's secrets key. A rotation writes `next` in one conditional
+	 * write (`update`); once `next.from` has passed it is the key that signs and the one before it is retired, whether or
+	 * not a later write has moved them into `value` and `retired` yet (`disk-holders.ts`).
 	 */
 	readonly id: "publicUrl" | "bundleStore" | "grantKey";
 	readonly value: string;
 	/** A value kept sealed beside `value`: the grant key's private key. */
 	readonly sealed?: SealedValue;
+	/** When the grant key in `value` began signing (absent: `updatedAt`). Only `grantKey` has it. */
+	readonly since?: number;
+	/**
+	 * The grant key a rotation published, which signs from `from` (milliseconds since the epoch): its public key and its
+	 * private key, sealed as `sealed` is. Only `grantKey` has it.
+	 */
+	readonly next?: { readonly publicKey: string; readonly sealed: SealedValue; readonly from: number };
+	/**
+	 * The grant keys rotated out, by their public keys, each still accepted until `until` (milliseconds since the epoch)
+	 * so grants signed with it just before stay good for their lifetime. Only `grantKey` has them.
+	 */
+	readonly retired?: readonly { readonly publicKey: string; readonly until: number }[];
 	readonly updatedAt: number;
 	readonly updatedBy: string;
 }

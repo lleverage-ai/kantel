@@ -1,9 +1,10 @@
 // The disk store over the host link (docs/design/disk-store.md, 2c): a host's welcome carries the control plane's grant
-// key, its reports' sticky disk holdings reach the catalogue, and its `disk.locate` is answered for its own connection.
+// keys (told again when they change), its reports' sticky disk holdings reach the catalogue, and its `disk.locate` is answered for its own connection.
 import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HostGrantKey } from "../src/protocol.ts";
 import type { HostComputeLink } from "../src/service.ts";
-import { createHostsService } from "../src/service.ts";
+import { createHostsService, GRANT_KEYS_REFRESH_MS } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost } from "./fake-host.ts";
 
@@ -43,15 +44,85 @@ async function setup(link: Partial<HostComputeLink>) {
 }
 
 describe("the disk store on the host link", () => {
-	it("welcomes a host with the grant key, and without one when there is none or it can't be read", async () => {
-		const { host } = await setup({ grantKey: async () => "A".repeat(43) });
-		expect(host.sent.find((message) => message.type === "welcome")?.welcome?.grantKey).toBe("A".repeat(43));
-		for (const grantKey of [async () => undefined, async () => Promise.reject(new Error("no secrets key"))]) {
-			const { host: other } = await setup({ grantKey });
+	it("welcomes a host with the grant keys, and without them when there are none or they can't be read", async () => {
+		const keys = [
+			{ id: "key_new", publicKey: "A".repeat(43) },
+			{ id: "key_old", publicKey: "B".repeat(43), until: Date.UTC(2026, 10, 14) },
+		];
+		const { host } = await setup({ grantKeys: async () => keys });
+		const welcome = host.sent.find((message) => message.type === "welcome")?.welcome;
+		// The key that signs as `grantKey` too, for hosts from before rotation.
+		expect(welcome?.grantKey).toBe("A".repeat(43));
+		expect(welcome?.grantKeys).toEqual(keys);
+		for (const grantKeys of [async () => undefined, async () => Promise.reject(new Error("no secrets key"))]) {
+			const { host: other } = await setup({ grantKeys });
 			const welcome = other.sent.find((message) => message.type === "welcome")?.welcome;
 			expect(welcome).toBeDefined();
 			expect(welcome?.grantKey).toBeUndefined();
+			expect(welcome?.grantKeys).toBeUndefined();
 		}
+	});
+
+	it("sends connected hosts their welcome again when the grant keys change, and makes good a telling missed", async () => {
+		let keys: HostGrantKey[] = [{ id: "key_1", publicKey: "A".repeat(43) }];
+		const { service, host, clock } = await setup({ grantKeys: async () => keys });
+		const welcomes = () =>
+			host.sent.filter((message) => message.type === "welcome").map((message) => message.welcome?.grantKeys);
+		const heartbeat = () => host.send({ type: "heartbeat", heartbeat: { capacity } });
+		expect(welcomes()).toEqual([keys]);
+		// A rotation: told at once.
+		keys = [
+			{ id: "key_2", publicKey: "B".repeat(43) },
+			{ id: "key_1", publicKey: "A".repeat(43), until: clock.at + 16 * 60_000 },
+		];
+		await service.grantKeysChanged();
+		await vi.waitFor(() => expect(welcomes()).toEqual([expect.anything(), keys]));
+		// Unchanged: a heartbeat sends nothing.
+		heartbeat();
+		clock.at += GRANT_KEYS_REFRESH_MS;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toHaveLength(2);
+		// A change whose telling missed the host (another replica's, or the retired key's time up): on a later heartbeat.
+		keys = [{ id: "key_2", publicKey: "B".repeat(43) }];
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toHaveLength(2);
+		clock.at += GRANT_KEYS_REFRESH_MS;
+		heartbeat();
+		await vi.waitFor(() => expect(welcomes()).toEqual([expect.anything(), expect.anything(), keys]));
+	});
+
+	it("sends a host its welcome again on the first heartbeat once a key it was told of begins signing", async () => {
+		const at = Date.UTC(2026, 10, 13);
+		let keys: HostGrantKey[] = [
+			{ id: "key_1", publicKey: "A".repeat(43) },
+			{ id: "key_2", publicKey: "B".repeat(43), from: at + 3 * 60_000 },
+		];
+		const { host, clock } = await setup({ grantKeys: async () => keys });
+		const welcomes = () =>
+			host.sent.filter((message) => message.type === "welcome").map((message) => message.welcome?.grantKey);
+		const heartbeat = () => host.send({ type: "heartbeat", heartbeat: { capacity } });
+		// Checked half a minute before its time: nothing to tell yet.
+		clock.at = at + 3 * 60_000 - 30_000;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toEqual(["A".repeat(43)]);
+		// Its time comes within the minute between checks: on the next heartbeat, a host that holds only `grantKey` (one
+		// from before rotation) is given the key that signs now.
+		keys = [
+			{ id: "key_2", publicKey: "B".repeat(43) },
+			{ id: "key_1", publicKey: "A".repeat(43), until: at + 19 * 60_000 },
+		];
+		clock.at = at + 3 * 60_000;
+		heartbeat();
+		await vi.waitFor(() => expect(welcomes()).toEqual(["A".repeat(43), "B".repeat(43)]));
+		// Then nothing more until something changes.
+		heartbeat();
+		clock.at += GRANT_KEYS_REFRESH_MS;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toHaveLength(2);
 	});
 
 	it("passes each report's sticky disk holdings on, and none from a report that doesn't say", async () => {

@@ -696,9 +696,10 @@ export interface HostDiskLocateParams {
  * The answer to `disk.locate`: the version's block map digest, once Kantel has it; the online hosts in the asker's pool
  * that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them.
  *
- * The grant is `<payload>.<signature>`: the payload is the JSON of `{ kind, objectId, version, accountId, from, to, exp }`
- * (`from` the holders' host IDs, `to` the asker's, `exp` milliseconds since the epoch, 15 minutes on) in base64url, and
- * the signature Ed25519 over the payload's ASCII text by the key `HostWelcome.grantKey` names, in base64url.
+ * The grant is `<payload>.<signature>`: the payload is the JSON of `{ kind, objectId, version, accountId, from, to, exp, kid }`
+ * (`from` the holders' host IDs, `to` the asker's, `exp` milliseconds since the epoch, 15 minutes on, `kid` the ID of
+ * the key that signed it, one of `HostWelcome.grantKeys`) in base64url, and the signature Ed25519 over the payload's
+ * ASCII text by that key (`HostWelcome.grantKey`, the one that signs now), in base64url.
  */
 export interface HostDiskLocateResult {
 	readonly mapDigest?: string;
@@ -1157,9 +1158,32 @@ export interface HostWelcome {
 	/**
 	 * The control plane's Ed25519 public key for fetch grants (docs/design/disk-store.md, 2c), its 32 raw bytes in
 	 * base64url: a host serves a peer's fetch only with a grant this key signed (`HostDiskLocateResult.grant`). Absent
-	 * while the control plane has no grant key (sticky disks off, or no secrets key to keep one).
+	 * while the control plane has no grant key (sticky disks off, or no secrets key to keep one). The key that signs now,
+	 * the first of `grantKeys`, for hosts from before rotation.
 	 */
 	readonly grantKey?: string;
+	/**
+	 * Every grant key a host accepts grants from now: the one that signs first, then one a rotation published (signing
+	 * from its `from`), then those rotated out, each until its `until`. A host that reads it serves a grant signed by any
+	 * of them (by the key its `kid` names) and keeps the list until a welcome brings another; one from before rotation
+	 * reads only `grantKey`. Absent with `grantKey`.
+	 */
+	readonly grantKeys?: readonly HostGrantKey[];
+}
+
+/** A grant key a host accepts fetch grants from (`HostWelcome.grantKeys`). */
+export interface HostGrantKey {
+	/** Its ID, which a grant names as its `kid`. */
+	readonly id: string;
+	/** Its 32 raw bytes, in base64url. */
+	readonly publicKey: string;
+	/** For a key rotated out, when it stops being accepted, in milliseconds since the epoch. */
+	readonly until?: number;
+	/**
+	 * For a key a rotation published, when it begins signing, in milliseconds since the epoch: a host accepts it already,
+	 * and is sent its welcome again then, with it first.
+	 */
+	readonly from?: number;
 }
 
 /**

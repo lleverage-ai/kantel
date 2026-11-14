@@ -465,11 +465,30 @@ type Welcome struct {
 	// first welcome decides it; a later one doesn't change it.
 	UsageAcks bool `json:"usageAcks,omitempty"`
 	// GrantKey is the control plane's Ed25519 public key for fetch grants, its 32 raw bytes in base64url: a host serves
-	// a peer's fetch only with a grant it signed (DiskLocateResult.Grant). Empty while the control plane has none.
+	// a peer's fetch only with a grant it signed (DiskLocateResult.Grant). Empty while the control plane has none. It is
+	// the first of GrantKeys, for hosts from before rotation.
 	GrantKey string `json:"grantKey,omitempty"`
+	// GrantKeys are every grant key a host accepts grants from now: the one that signs first, then one a rotation
+	// published (signing from its From), then those rotated out, each until its Until. A host serves a grant any of them
+	// signed (by the key its kid names) and keeps the list until a welcome brings another. Empty from a control plane
+	// from before rotation, which sends GrantKey alone.
+	GrantKeys []GrantKey `json:"grantKeys,omitempty"`
 	// Mesh is the host's place in its pool's mesh (FeatureMesh), sent only to a host in a pool with sync on. A welcome
 	// without it takes the host's mesh device down.
 	Mesh *WelcomeMesh `json:"mesh,omitempty"`
+}
+
+// GrantKey is a grant key a host accepts fetch grants from (Welcome.GrantKeys).
+type GrantKey struct {
+	// ID is the key's ID, which a grant names as its kid.
+	ID string `json:"id"`
+	// PublicKey is its 32 raw bytes, in base64url.
+	PublicKey string `json:"publicKey"`
+	// Until is when a key rotated out stops being accepted, in milliseconds since the epoch; 0 for the others.
+	Until int64 `json:"until,omitempty"`
+	// From is when a key a rotation published begins signing, in milliseconds since the epoch; 0 for the others. A host
+	// accepts it already.
+	From int64 `json:"from,omitempty"`
 }
 
 // Capacity is what is free now.
@@ -1101,9 +1120,10 @@ type DiskLocateParams struct {
 
 // DiskLocateResult is where the version is: its block map digest, once Kantel has it; the online hosts in the asker's
 // pool that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them. The grant
-// is "<payload>.<signature>": the payload is the base64url JSON of {kind, objectId, version, accountId, from, to, exp}
-// (from the holders' host IDs, to the asker's, exp milliseconds since the epoch), and the signature Ed25519 over the
-// payload's ASCII text by Welcome.GrantKey, in base64url.
+// is "<payload>.<signature>": the payload is the base64url JSON of {kind, objectId, version, accountId, from, to, exp,
+// kid} (from the holders' host IDs, to the asker's, exp milliseconds since the epoch, kid the ID of the key that signed
+// it, one of Welcome.GrantKeys), and the signature Ed25519 over the payload's ASCII text by that key (Welcome.GrantKey,
+// the one that signs now), in base64url.
 type DiskLocateResult struct {
 	MapDigest string       `json:"mapDigest,omitempty"`
 	Holders   []DiskHolder `json:"holders"`

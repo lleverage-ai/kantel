@@ -12,11 +12,13 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // Grant is the control plane's word that host To may fetch Version of an object from the hosts in From, until Exp
-// (milliseconds since the epoch). It is signed with the control plane's grant key (Welcome.GrantKey), as
-// packages/compute/src/grants.ts makes it.
+// (milliseconds since the epoch). It is signed with the control plane's grant key whose ID is Kid (one of
+// Welcome.GrantKeys), as packages/compute/src/grants.ts makes it.
 type Grant struct {
 	Kind      string   `json:"kind"`
 	ObjectID  string   `json:"objectId"`
@@ -25,6 +27,8 @@ type Grant struct {
 	From      []string `json:"from"`
 	To        string   `json:"to"`
 	Exp       int64    `json:"exp"`
+	// Kid is the ID of the key that signed it; empty in a grant from a control plane from before key IDs.
+	Kid string `json:"kid,omitempty"`
 }
 
 // ErrBadGrant is the error of a grant that isn't one the key signed, or isn't valid now.
@@ -35,19 +39,17 @@ func decode(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
 }
 
-// VerifyGrant is the grant token carries, when publicKey (32 raw bytes in base64url) signed it and it is still valid at
-// now. A token is "<payload>.<signature>": the grant's JSON in base64url, and Ed25519 over the payload's text.
-func VerifyGrant(publicKey, token string, now time.Time) (Grant, error) {
-	key, err := decode(publicKey)
-	if err != nil || len(key) != ed25519.PublicKeySize {
-		return Grant{}, errors.New("no grant key")
-	}
+// VerifyGrant is the grant token carries, when one of keys (each 32 raw bytes in base64url) signed it and it is still
+// valid at now. A token is "<payload>.<signature>": the grant's JSON in base64url, and Ed25519 over the payload's text.
+// A grant naming its key (Kid) is checked with the key of that ID, and keys with none (a control plane's from before
+// rotation); a key past its Until signs nothing.
+func VerifyGrant(keys []proto.GrantKey, token string, now time.Time) (Grant, error) {
 	payload, signature, ok := strings.Cut(token, ".")
 	if !ok || strings.Contains(signature, ".") {
 		return Grant{}, ErrBadGrant
 	}
 	sig, err := decode(signature)
-	if err != nil || !ed25519.Verify(ed25519.PublicKey(key), []byte(payload), sig) {
+	if err != nil {
 		return Grant{}, ErrBadGrant
 	}
 	raw, err := decode(payload)
@@ -56,6 +58,27 @@ func VerifyGrant(publicKey, token string, now time.Time) (Grant, error) {
 	}
 	var g Grant
 	if err := json.Unmarshal(raw, &g); err != nil || g.Kind == "" || g.ObjectID == "" || g.Version == "" || g.To == "" {
+		return Grant{}, ErrBadGrant
+	}
+	signed, usable := false, false
+	for _, k := range keys {
+		key, err := decode(k.PublicKey)
+		if err != nil || len(key) != ed25519.PublicKeySize || (k.Until != 0 && k.Until <= now.UnixMilli()) {
+			continue
+		}
+		usable = true
+		if g.Kid != "" && k.ID != "" && k.ID != g.Kid {
+			continue
+		}
+		if ed25519.Verify(ed25519.PublicKey(key), []byte(payload), sig) {
+			signed = true
+			break
+		}
+	}
+	if !usable {
+		return Grant{}, errors.New("no grant key")
+	}
+	if !signed {
 		return Grant{}, ErrBadGrant
 	}
 	if g.Exp <= now.UnixMilli() {

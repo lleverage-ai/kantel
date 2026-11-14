@@ -209,6 +209,30 @@ Sets where hosts reach this control plane, for the join commands made from now o
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Get the grant keys
+
+`GET /v1/admin/grant-key` (SDK method `getGrantKeys`)
+
+The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [GrantKeys](/api/reference/types/#grantkeys) (`application/json`). The grant keys.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Rotate the grant key
+
+`POST /v1/admin/grant-key/rotate` (SDK method `rotateGrantKey`)
+
+Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [GrantKeys](/api/reference/types/#grantkeys) (`application/json`). The grant keys after the rotation.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List the deployment's pools
 
 `GET /v1/admin/pools` (SDK method `listPools`)
