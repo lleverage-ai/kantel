@@ -20,6 +20,7 @@ import { KantelError, placementError } from "@kantel/contracts";
 import type {
 	BackendCapabilities,
 	BackendSize,
+	MoveSpec,
 	Placement,
 	SandboxBackend,
 	SandboxSpec,
@@ -236,6 +237,23 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						const backend = await on(id);
 						if (backend.settleUpgrade === undefined) return { state: "failed" as const };
 						return backend.settleUpgrade(id, operationId);
+					},
+				}),
+		// A move stays on the backend that holds the sandbox, among its own hosts: its disk is there.
+		...(primary.move === undefined && fallback.move === undefined
+			? {}
+			: {
+					async move(id: string, spec: MoveSpec, operationId: string) {
+						const backend = await on(id);
+						if (backend.move === undefined) {
+							throw new KantelError("not_supported", "This sandbox's hosts don't move sandboxes between them");
+						}
+						return backend.move(id, await affine(backend, spec), operationId);
+					},
+					async settleMove(id: string, operationId: string) {
+						const backend = await on(id);
+						if (backend.settleMove === undefined) return { state: "failed" as const };
+						return backend.settleMove(id, operationId);
 					},
 				}),
 		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.

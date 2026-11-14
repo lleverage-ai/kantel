@@ -91,13 +91,25 @@ export class FakeHost {
 	answer?: (method: string) => unknown;
 	/** Facts it reports beyond the usual: its Firecracker and guest kernel, say. */
 	moreFacts: Partial<HostFacts> = {};
+	/** What is on each sandbox's disk and sticky drives here, by sandbox, which a move takes with it. */
+	readonly disks = new Map<string, string>();
+	/** The sandboxes' exports for a move (`sandbox.export`), by `<sandboxId>/<version>`: what was on their disks. */
+	readonly exports = new Map<string, string>();
+	/** The move each sandbox here was last exported by (`sandbox.export`), which a delete with `exported` must name. */
+	readonly exportedBy = new Map<string, string>();
+	/** The moves whose import was cancelled here (`sandbox.import.cancel`), by `<sandboxId>/<version>`. */
+	readonly cancelled = new Set<string>();
+	/** Every host made, by ID: a move's target reads its holder's export from it, as from a peer. */
+	static readonly byId = new Map<string, FakeHost>();
 
 	constructor(
 		readonly service: HostsService,
 		readonly hostId: string,
 		/** What it reports doing beyond protocol 1 as first released; absent, an older host's report. */
 		readonly features?: readonly string[],
-	) {}
+	) {
+		FakeHost.byId.set(hostId, this);
+	}
 
 	connect(held: HostSandbox[] = []) {
 		for (const sandbox of held) this.sandboxes.set(sandbox.id, sandbox);
@@ -303,8 +315,73 @@ export class FakeHost {
 				return answer({ exitCode: 0, stdout: "hi\n", stderr: "", durationMs: 3 });
 			}
 			case "sandbox.delete":
+				if (
+					typeof (message.params as { exported?: unknown }).exported === "string" &&
+					this.exportedBy.get(params.sandboxId) !== (message.params as { exported: string }).exported
+				) {
+					return fail("not_found", "not the copy that move exported");
+				}
+				this.exportedBy.delete(params.sandboxId);
 				this.sandboxes.delete(params.sandboxId);
+				this.disks.delete(params.sandboxId);
+				for (const key of this.exports.keys()) if (key.startsWith(`${params.sandboxId}/`)) this.exports.delete(key);
 				return answer({ ok: true });
+			case "sandbox.get": {
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer(sandbox);
+			}
+			case "sandbox.export": {
+				const { version } = message.params as { version: string };
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				if (sandbox.state !== "stopped") return fail("conflict", `sandbox ${sandbox.id} is ${sandbox.state}`);
+				this.exports.set(`${params.sandboxId}/${version}`, this.disks.get(params.sandboxId) ?? "");
+				this.exportedBy.set(params.sandboxId, version);
+				return answer({ mapDigest: `sha256:${"a".repeat(64)}`, allocatedBytes: 4096 });
+			}
+			case "sandbox.export.delete": {
+				const { version } = message.params as { version?: string };
+				for (const key of this.exports.keys()) {
+					if (
+						key === `${params.sandboxId}/${version}` ||
+						(version === undefined && key.startsWith(`${params.sandboxId}/`))
+					)
+						this.exports.delete(key);
+				}
+				return answer({});
+			}
+			case "sandbox.import": {
+				const { version, holders, grant, mapDigest } = message.params as {
+					version: string;
+					holders: { hostId: string; address: string }[];
+					grant: string;
+					mapDigest: string;
+				};
+				const key = `${params.sandboxId}/${version}`;
+				if (this.cancelled.has(key)) return fail("conflict", "the move was cancelled here");
+				const held = this.sandboxes.get(params.sandboxId);
+				if (held !== undefined) return answer(held);
+				const from = FakeHost.byId.get(holders[0]?.hostId ?? "");
+				const disk = from?.exports.get(key);
+				if (disk === undefined || grant === "" || mapDigest === "") return fail("unavailable", "no holder has it");
+				const sandbox: HostSandbox = {
+					id: params.sandboxId,
+					tier: "microvm",
+					size: "default",
+					state: "stopped",
+					createdAt: 1,
+				};
+				this.sandboxes.set(params.sandboxId, sandbox);
+				this.disks.set(params.sandboxId, disk);
+				return answer(sandbox);
+			}
+			case "sandbox.import.cancel": {
+				const { version } = message.params as { version: string };
+				this.cancelled.add(`${params.sandboxId}/${version}`);
+				this.sandboxes.delete(params.sandboxId);
+				this.disks.delete(params.sandboxId);
+				return answer({});
+			}
 			case "port.open":
 			case "sandbox.egress":
 			case "sandbox.env":

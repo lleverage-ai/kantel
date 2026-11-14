@@ -107,8 +107,43 @@ export interface PlacementRecord {
 		 */
 		readonly settling?: { readonly by: string; readonly until: number };
 	};
-	/** An upgraded microVM's isolate still to be deleted from its own host (`hostId`), once that host can be reached. */
-	readonly cleanup?: { readonly hostId: string; readonly operationId: string };
+	/**
+	 * A stopped microVM's move to another host under way (docs/design/disk-store.md, "Moving a sandbox to another host"),
+	 * kept before anything is sent: its operation ID (the version its source exports, `sandbox.export`), the host it is
+	 * (or may be) copied to and at what size, how far it got (`copy`: its files being exported and fetched; `start`:
+	 * started on the target), and the export's map digest once its source has made it, which the target's
+	 * `disk.locate` is answered from. Until the placement switches, a failure rolls it back (`settling`, as an
+	 * upgrade's): the target's copy cancelled, the source's export deleted, the sandbox stopped where it was.
+	 */
+	readonly move?: {
+		readonly operationId: string;
+		readonly target: string;
+		readonly phase: "copy" | "start";
+		readonly size: {
+			readonly name: string;
+			readonly vcpus: number;
+			readonly memoryMiB: number;
+			readonly diskGiB: number;
+		};
+		readonly mapDigest?: string;
+		readonly settling?: { readonly by: string; readonly until: number };
+		/**
+		 * A rollback has begun (its first claim): the move never switches from then on, whatever becomes of that claim,
+		 * since a compensating call may have landed already. Only a rollback that finishes clears it, with the move.
+		 */
+		readonly rollingBack?: true;
+	};
+	/**
+	 * The last move that switched the sandbox here (its operation ID) and the host it came from: kept until another move
+	 * switches it, so a move whose gateway went after the switch (its source's copy deleted or not) is settled as done,
+	 * never taken for one rolled back.
+	 */
+	readonly moved?: { readonly operationId: string; readonly from: string };
+	/**
+	 * What is still to be deleted from another host (`hostId`), once that host can be reached: an upgraded microVM's
+	 * isolate, or a moved microVM's source copy (`tier` `microvm`; absent, an isolate).
+	 */
+	readonly cleanup?: { readonly hostId: string; readonly operationId: string; readonly tier?: SandboxTier };
 }
 
 export interface HostStore {
@@ -174,11 +209,13 @@ export function isLeftover(placement: PlacementRecord): boolean {
 
 /**
  * Whether a placement has something on `hostId`: it is there (and not lost), or it is elsewhere with its upgrade's
- * microVM or an isolate to delete there.
+ * microVM, its move's copy, or what is left of it to delete there.
  */
 function occupies(placement: PlacementRecord, hostId: string): boolean {
 	if (placement.hostId === hostId) return placement.state !== "lost";
-	return placement.upgrade?.target === hostId || placement.cleanup?.hostId === hostId;
+	return (
+		placement.upgrade?.target === hostId || placement.move?.target === hostId || placement.cleanup?.hostId === hostId
+	);
 }
 
 /** `value` as a whole JSON string, escaped for a `LIKE ... ESCAPE '\'` pattern. */

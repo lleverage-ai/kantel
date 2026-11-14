@@ -870,9 +870,9 @@ export interface Event {
 
 export interface EventData {
 	readonly name?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state?: SandboxState;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly previousState?: SandboxState;
 	readonly reason?: string;
 	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
@@ -1596,7 +1596,7 @@ export interface ListFilesQuery {
 export interface ListSandboxesQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state?: SandboxState;
 	/** Include stopped, paused and errored sandboxes. Default: only active ones. */
 	readonly all?: boolean;
@@ -1648,9 +1648,9 @@ export interface LiveSandboxChange {
 	readonly type: "sandbox";
 	readonly sandboxId: string;
 	readonly accountId: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly previousState?: SandboxState;
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
@@ -1700,6 +1700,16 @@ export type MountSource = BundleMountSource | BucketMountSource;
 
 /** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
 export type MountStatus = "pending" | "ready" | "failed";
+
+/** Where to move it, and whether its memory goes with it. Every field is optional. */
+export interface MoveSandboxBody {
+	/** The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox. */
+	readonly hostId?: string;
+	/** Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new host and its memory is lost. */
+	readonly keepMemory?: boolean;
+	/** Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was. */
+	readonly wait?: boolean;
+}
 
 /** A personal access token (`kpt_…`). Its secret is never stored or shown after it is made. */
 export interface PersonalToken {
@@ -1954,7 +1964,7 @@ export interface Sandbox {
 	readonly resources?: SandboxResources;
 	/** The base image a microVM was made from, such as `ubuntu-26.04`. */
 	readonly image?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
 	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
 	readonly health?: SandboxHealth;
@@ -1986,6 +1996,8 @@ export interface Sandbox {
 	readonly autoUpgradeFrom?: string;
 	/** A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings. */
 	readonly upgradedFrom?: SandboxUpgrade;
+	/** A move to another host under way (its `state` is `moving`). */
+	readonly move?: SandboxMove;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
 	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
@@ -2156,12 +2168,24 @@ export interface SandboxMount {
 	readonly error?: string;
 }
 
+/** A move to another host under way (its `state` is `moving`). */
+export interface SandboxMove {
+	/** `copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it is starting on it. */
+	readonly phase: "copying" | "starting";
+	/** The host it is moving to, where the caller may know it, once chosen. */
+	readonly hostId?: string;
+	/** Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host. */
+	readonly keepMemory: boolean;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+}
+
 /** The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call. */
 export interface SandboxNotRunning {
 	/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. */
 	readonly code: SandboxNotRunningCode;
 	readonly sandboxId: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
 	/** Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. */
 	readonly stopReason?: string;
@@ -2309,13 +2333,14 @@ export interface SandboxStartup {
 	readonly totalMs: number;
 }
 
-/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 export type SandboxState =
 	| "starting"
 	| "running"
 	| "stopping"
 	| "stopped"
 	| "paused"
+	| "moving"
 	| "error"
 	| "deleting"
 	| "deleted";
@@ -3555,6 +3580,8 @@ export interface KantelClient {
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
 	/** Upgrade an isolate to a microVM. Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and `/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`, Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was. Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the upgrade; a `sandbox.upgraded` event records it. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/upgrade` */
 	upgradeSandbox(sandboxId: string, body?: UpgradeSandboxBody, options?: CallOptions): Promise<Sandbox>;
+	/** Move a sandbox to another host. Moves a stopped microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a paused sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left stopped where it was. Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/move` */
+	moveSandbox(sandboxId: string, body?: MoveSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/restart-on-latest` */
@@ -3958,6 +3985,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/upgrade`, body, idempotent: true },
+				callOptions,
+			),
+		moveSandbox: (sandboxId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/move`, body, idempotent: true },
 				callOptions,
 			),
 		recoverSandbox: (sandboxId, callOptions) =>

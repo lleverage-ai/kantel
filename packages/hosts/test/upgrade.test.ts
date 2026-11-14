@@ -579,6 +579,7 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(isolates.calls.find((call) => call.method === "sandbox.delete")?.params).toEqual({
 			sandboxId: sandbox.id,
 			keepSnapshots: true,
+			tier: "isolate",
 		});
 		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ tier: "microvm", hostId: vms.hostId });
 		const event = (await root.listEvents({ sandboxId: sandbox.id })).items.find(
@@ -898,7 +899,7 @@ describe("an upgrade whose answer is lost, or whose isolate is busy", () => {
 		}
 		expect(isolates.sandboxes.has(sandbox.id)).toBe(false);
 		const deletes = isolates.calls.filter((call) => call.method === "sandbox.delete");
-		expect(deletes.at(-1)?.params).toEqual({ sandboxId: sandbox.id, keepSnapshots: true });
+		expect(deletes.at(-1)?.params).toEqual({ sandboxId: sandbox.id, keepSnapshots: true, tier: "isolate" });
 		for (
 			let tries = 0;
 			tries < 100 && (await service.sandboxes.placement(sandbox.id))?.cleanup !== undefined;

@@ -46,6 +46,7 @@ import { memoryRestoresOn, type SnapshotMadeOn } from "./backend.ts";
 import {
 	createGrantKey,
 	DISK_KINDS,
+	type DiskGrant,
 	type DiskKind,
 	GRANT_TTL_MS,
 	type GrantKey,
@@ -198,9 +199,13 @@ export interface DiskHolders {
 	/** Answers `disk.locate` from `hostId`. */
 	locate(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
-	 * The grant keys, made on first use; undefined while there can be none (sticky disks and templates off, no secrets
-	 * key). A key that
-	 * can't be opened here is answered as it is, and replaced by the next grant signed.
+	 * Signs a grant whose holders the caller knows (a move's export, kind `sandbox`, which the host registry tracks), for
+	 * `GRANT_TTL_MS`. `not_supported` while there can be no grant key.
+	 */
+	grant(grant: Omit<DiskGrant, "exp" | "kid">): Promise<string>;
+	/**
+	 * The grant keys, made on first use; undefined while there can be none (no secrets key over a persistent store). A
+	 * key that can't be opened here is answered as it is, and replaced by the next grant signed.
 	 */
 	keys(): Promise<GrantKeyring | undefined>;
 	/**
@@ -1131,17 +1136,24 @@ export function createDiskHolders(options: {
 			return { ...mapDigest, holders, grant };
 		},
 
+		async grant(grant) {
+			// A move's grant needs a grant key only, whichever of the catalogue's kinds are on.
+			if (sealer === undefined) {
+				throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+			}
+			const signing = await signer(sealer);
+			return signing.sign({ ...grant, exp: now() + GRANT_TTL_MS });
+		},
+
 		async keys() {
-			if ((!options.stickyDisks && !options.templates) || sealer === undefined) return undefined;
+			// Wherever a grant can be signed (a move's, at least), so hosts can check it.
+			if (sealer === undefined) return undefined;
 			// Public keys only, so nothing is opened: a key that can't be opened here is replaced when a grant is signed, not
 			// on a welcome, so gateways whose secrets keys differ don't replace it for each other's welcomes.
 			return viewOf(await kept(sealer), now());
 		},
 
 		async rotate(by) {
-			if (!options.stickyDisks && !options.templates) {
-				throw new KantelError("not_supported", "Sticky disks and templates are off here");
-			}
 			if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 			// Made first if there is none, so there is one to rotate; a rotation then always writes.
 			await kept(sealer);

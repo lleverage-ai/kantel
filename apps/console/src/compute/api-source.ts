@@ -404,6 +404,8 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	stopping: "stopping",
 	stopped: "stopped",
 	paused: "paused",
+	// The UI has no moving yet: one moving to another host is starting there.
+	moving: "starting",
 	error: "error",
 	// The UI has no deleting or deleted: one being erased is on its way out, and a deleted one is gone.
 	deleting: "stopping",

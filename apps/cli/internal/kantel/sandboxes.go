@@ -171,6 +171,7 @@ func sandboxes() cli.Section {
 				return client.RecoverSandbox(c.Ctx, id, api.Raw(raw))
 			}),
 		upgradeCommand(),
+		moveCommand(),
 		{
 			Name: "fork", Summary: "Copy a sandbox into new ones", Args: IDArg,
 			Flags: []cli.Flag{
@@ -708,6 +709,61 @@ func accountLabel(a api.Account) string {
 		return "your personal account (" + a.ID + ")"
 	}
 	return a.Name + " (" + a.ID + ")"
+}
+
+// moveCommand is kantel move: a stopped microVM moved to another host in its pool, and started there.
+func moveCommand() *cli.Command {
+	return &cli.Command{
+		Name: "move", Summary: "Move a stopped sandbox to another host in its pool, and start it there", Args: IDArg,
+		Flags: []cli.Flag{
+			{Name: "to", Type: cli.String, Value: "<host>", Description: "The host to move it to, by ID (default: the scheduler's pick)"},
+			{Name: "drop-memory", Type: cli.Bool, Description: "Move a paused sandbox, booting it on its disk on the new host (its memory is lost)"},
+			{Name: "wait", Type: cli.Bool, Description: "Answer once it runs on the new host (the default)"},
+			noWaitFlag,
+		},
+		Details: "Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts\n" +
+			"there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name,\n" +
+			"settings and URLs, and never leaves its pool. If it can't be moved, it is left stopped where it was.\n\n" +
+			"Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet, so a paused one\n" +
+			"moves only with --drop-memory. Its automatic snapshots from before stay on the old host.",
+		Examples: []cli.Example{
+			{What: "Move a stopped sandbox to whichever host the scheduler picks", Line: "kantel move sbx_4kq9x2mt"},
+			{What: "To a host of your choosing", Line: "kantel move sbx_4kq9x2mt --to hst_7c2m9q4k"},
+		},
+		Run: func(c *cli.Context) error {
+			if c.Bool("wait") && c.Bool("no-wait") {
+				return cli.Usage("give --wait or --no-wait, not both")
+			}
+			body := api.MoveSandboxBody{HostID: StrPtr(c, "to"), Wait: api.Ptr(!c.Bool("no-wait"))}
+			if c.Bool("drop-memory") {
+				body.KeepMemory = api.Ptr(false)
+			}
+			client, err := Client(c)
+			if err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			var sandbox *api.Sandbox
+			err = c.Spin("Moving "+c.Arg(0)+" to another host…", func() error {
+				sandbox, err = client.MoveSandbox(c.Ctx, c.Arg(0), body, api.Raw(&raw))
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			c.Emit(raw, sandbox, func() string {
+				if sandbox.State != api.SandboxStateRunning {
+					return sandbox.ID + " " + c.Style.State(StateOf(*sandbox))
+				}
+				return "Moved " + sandbox.ID + " (" + sandbox.Name + ") to " + hostOf(*sandbox) + ", " + c.Style.State(StateOf(*sandbox)) + ".\n" +
+					"  It booted on its disk there: what ran before it stopped isn't running."
+			})
+			if sandbox.State == api.SandboxStateError {
+				return cli.ExitCode(cli.ExitFailed)
+			}
+			return nil
+		},
+	}
 }
 
 // upgradeCommand is kantel upgrade: an isolate made a microVM with the same ID, files and settings.

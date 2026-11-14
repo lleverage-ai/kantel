@@ -38,7 +38,8 @@ func (s *moveTier) OpenSandboxPart(string, string, string, bool) (*os.File, []by
 func (s *moveTier) ReadSandboxFile(string, string, string) ([]byte, error) {
 	return nil, os.ErrNotExist
 }
-func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ []byte) error {
+func (s *moveTier) ImportGeneration(string) uint64 { return 0 }
+func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ uint64, _ []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prepared = append(s.prepared, id+"/"+version)
@@ -61,6 +62,7 @@ func (s *moveTier) CancelSandboxImport(id, version string) (bool, error) {
 	defer s.mu.Unlock()
 	return s.made[id] == version, nil
 }
+func (s *moveTier) DeleteExported(id, _ string) error { return s.DeleteMoved(id) }
 func (s *moveTier) DeleteMoved(id string) error {
 	s.mu.Lock()
 	s.moved = append(s.moved, id)
@@ -132,6 +134,23 @@ func TestSandboxMove(t *testing.T) {
 	h.floorMu.Unlock()
 	if kept4 || !kept5 {
 		t.Fatalf("after the cancels, sb4's floor kept %v, sb5's %v", kept4, kept5)
+	}
+	// A source's late cleanup (by its move's export, or of a tier) finds nothing of its own where the host has only a
+	// later move's import under way, or a sandbox of another tier: refused, nothing deleted.
+	for name, p := range map[string]proto.DeleteParams{
+		"an exported copy not here": {SandboxID: "sb6", KeepSnapshots: true, Exported: "mov_1"},
+		"an isolate not here":       {SandboxID: "sb6", KeepSnapshots: true, Tier: "isolate"},
+	} {
+		if err := call(t, h, proto.MethodDelete, p); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	tier.lifecycleTier.stopped["sb7"] = true
+	if err := call(t, h, proto.MethodDelete, proto.DeleteParams{SandboxID: "sb7", KeepSnapshots: true, Tier: "isolate"}); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+		t.Fatalf("an isolate's cleanup of a microVM: %v", err)
+	}
+	if _, err := tier.lifecycleTier.Get("sb7"); err != nil {
+		t.Fatal("an isolate's cleanup deleted a microVM")
 	}
 	tier.mu.Lock()
 	defer tier.mu.Unlock()

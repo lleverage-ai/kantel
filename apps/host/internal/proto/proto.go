@@ -1437,6 +1437,13 @@ type SandboxRef struct {
 type DeleteParams struct {
 	SandboxID     string `json:"sandboxId"`
 	KeepSnapshots bool   `json:"keepSnapshots,omitempty"`
+	// Exported, a move's operation ID (FeatureSandboxMove), deletes the sandbox only while it is the copy that move
+	// exported (ErrNotFound otherwise): a late delete of a moved sandbox's source never removes a later move's copy of it
+	// back on this host.
+	Exported string `json:"exported,omitempty"`
+	// Tier, when set, deletes the sandbox only while it is of that tier (ErrNotFound otherwise): an upgrade's late cleanup
+	// of its isolate never removes a microVM of the same ID moved back to this host since.
+	Tier string `json:"tier,omitempty"`
 }
 
 // StopParams is sandbox.stop.
