@@ -391,6 +391,15 @@ export const HOST_FEATURES = {
 	 */
 	rootfsSync: "rootfs-sync",
 	/**
+	 * Template snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"), kind
+	 * `template`, each its snapshot ID in one version, `1`: its disk and memory are its parts (each block-mapped, its
+	 * manifest the version's map) and its state, meta and drive counts go whole. The host lists those with maps in
+	 * `HostCapacity.holdings` with what each was made on (`HostObjectVersionHolding.cpu` and `runtime`), serves them to
+	 * its mesh peers, and a `template.build` first fetches the snapshot from a peer whose copy restores on its CPU and
+	 * runtime (`disk.locate` answers only those), booting it only when none has one. Reported with `rootfsSync`.
+	 */
+	templateSync: "template-sync",
+	/**
 	 * Saved snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"): kind `snapshot`,
 	 * each its snapshot ID (a ref's), in two versions, one for each block-mapped file: `disk` (`disk.ext4`, with its
 	 * record) and `memory` (`mem`, with the machine's state). The host maps each saved snapshot's files, lists those with
@@ -411,10 +420,10 @@ export const GUEST_FEATURES = {
 } as const;
 
 /**
- * The kinds of disk store object hosts report in `HostCapacity.holdings`: templates' root filesystems, and saved
- * snapshots.
+ * The kinds of disk store object hosts report in `HostCapacity.holdings`: templates' root filesystems, template
+ * snapshots, and saved snapshots.
  */
-export const HOST_OBJECT_KINDS = ["rootfs", "snapshot"] as const;
+export const HOST_OBJECT_KINDS = ["rootfs", "template", "snapshot"] as const;
 export type HostObjectKind = (typeof HOST_OBJECT_KINDS)[number];
 
 /** A saved snapshot's versions as a disk store object (`HOST_FEATURES.snapshotSync`): its disk, and its memory. */
@@ -665,9 +674,9 @@ export interface HostCapacity {
 	 */
 	readonly stickyDisks?: readonly HostStickyHolding[];
 	/**
-	 * The disk store objects of other kinds it holds (`HOST_FEATURES.rootfsSync`, `HOST_FEATURES.snapshotSync`), by kind:
-	 * a kind's list is every object of that kind it holds, [] for none. A kind left out says nothing of it (a host without
-	 * it, or one whose inventory couldn't be read in full), so nothing of that kind is forgotten on it.
+	 * The disk store objects of other kinds it holds (`HOST_FEATURES.rootfsSync`, `templateSync`, `snapshotSync`), by
+	 * kind: a kind's list is every object of that kind it holds, [] for none. A kind left out says nothing of it (a host
+	 * without it, or one whose inventory couldn't be read in full), so nothing of that kind is forgotten on it.
 	 */
 	readonly holdings?: { readonly [kind in HostObjectKind]?: readonly HostObjectHolding[] };
 	/**
@@ -755,12 +764,19 @@ export interface HostObjectVersionHolding {
 	readonly mapDigest: string;
 	readonly allocatedBytes: number;
 	readonly pool?: string;
+	/**
+	 * What a template snapshot's memory was made on (`HOST_FEATURES.templateSync`), as `HostTemplateBuildResult` says it:
+	 * its CPU and its portable runtime. Only a host with the same CPU and that runtime among its own restores it.
+	 */
+	readonly cpu?: HostCpuFingerprint;
+	readonly runtime?: string;
 }
 
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
 export interface HostDiskLocateParams {
 	/**
-	 * `sticky`, `rootfs` (`HOST_FEATURES.rootfsSync`) or `snapshot` (`HOST_FEATURES.snapshotSync`); `template` and
+	 * `sticky`, `rootfs` (`HOST_FEATURES.rootfsSync`), `template` (`HOST_FEATURES.templateSync`), for which only holders
+	 * whose copy restores on the asking host's CPU and runtime are answered, or `snapshot` (`HOST_FEATURES.snapshotSync`);
 	 * `sandbox` later.
 	 */
 	readonly kind: string;

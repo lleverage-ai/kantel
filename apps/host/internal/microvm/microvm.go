@@ -252,6 +252,11 @@ type Config struct {
 	// that holds it, and answers once it is in place: ErrNoPeerRootfs when none holds it, or why the fetch failed. A
 	// template build asks it before it builds one.
 	FetchRootfs func(ctx context.Context, key string) error
+	// FetchTemplate, when set, fetches a template snapshot (template-snapshots/<id>) from a host in the pool whose copy
+	// of it restores on this host's CPU and runtime, and answers once it is in place: ErrNoPeerTemplate when none holds
+	// one, or why the fetch failed. A template build asks it once the template's root filesystem is on the host, before
+	// it boots the template (templatesync.go).
+	FetchTemplate func(ctx context.Context, snapshotID string) error
 	// Pool, when set, is the pool the host is in now, as the last welcome said ("" while none has): a template's root
 	// filesystem built or fetched is stamped with it, so it is offered only in that pool (rootfssync.go).
 	Pool func() string
@@ -448,6 +453,10 @@ type Manager struct {
 	holdMaps *mapHold
 	// fingerprints is the CPU and the runtime's files, as fingerprint.go reads them.
 	fingerprints fingerprints
+	// templateMaps are the template snapshots' block maps being made, and their manifests' digests; templateFetches
+	// keeps a fetch of one deleted from publishing it (templatesync.go).
+	templateMaps    templateMaps
+	templateFetches templateFetches
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -711,6 +720,8 @@ func New(cfg Config) (*Manager, error) {
 	// Block maps of the sticky disk versions committed before them, and of templates' root filesystems made before them.
 	m.mapOldSticky(m.bg)
 	m.mapOldRootfs()
+	// And of template snapshots, for peers to fetch (templatesync.go).
+	m.mapOldTemplates()
 	// And of saved snapshots.
 	m.mapOldSnapshots()
 	return m, nil

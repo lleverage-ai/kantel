@@ -8,7 +8,7 @@ import (
 )
 
 // Objects are the versions of one kind of disk store object the host holds, serves and fetches: sticky disks', or
-// templates' root filesystems'.
+// templates' root filesystems', or template snapshots' (whose versions have parts, Parted).
 type Objects interface {
 	Source
 	Store
@@ -21,7 +21,38 @@ type Kinds map[string]Objects
 var (
 	_ Source = Kinds(nil)
 	_ Store  = Kinds(nil)
+	_ Parted = Kinds(nil)
 )
+
+// Parts are the kind's parts, when its Objects has them (Parted).
+func (k Kinds) Parts(kind string) []string {
+	_, names := partsOf(k[kind], kind)
+	return names
+}
+
+func (k Kinds) OpenPart(r Ref, part string, withMap bool) (*os.File, []byte, error) {
+	p, ok := validPart(k[r.Kind], r.Kind, part)
+	if !ok {
+		return nil, nil, fs.ErrNotExist
+	}
+	return p.OpenPart(r, part, withMap)
+}
+
+func (k Kinds) PartPartial(r Ref, part string) (string, error) {
+	p, ok := validPart(k[r.Kind], r.Kind, part)
+	if !ok {
+		return "", fs.ErrNotExist
+	}
+	return p.PartPartial(r, part)
+}
+
+func (k Kinds) PublishParts(r Ref, parts map[string]FetchedPart, files map[string][]byte) error {
+	p, names := partsOf(k[r.Kind], r.Kind)
+	if len(names) == 0 {
+		return fs.ErrNotExist
+	}
+	return p.PublishParts(r, parts, files)
+}
 
 func (k Kinds) Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error) {
 	o, ok := k[kind]
