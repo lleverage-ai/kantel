@@ -281,6 +281,8 @@ A running sandbox is recovered too, so a retry would restart it again and end wh
 
 `hostId` (`--to <host>`) picks the host. Otherwise the scheduler picks one, as for a create. While it moves, its state is `moving`.
 
+In the console, **Move to host** in the sandbox's menu lists the other hosts of its pool that can run it. While it moves, the sandbox shows **Moving** and how far it has got. If the move fails, the console says why.
+
 Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet. A paused sandbox moves only with `keepMemory: false` (`--drop-memory`), and boots on its disk on the new host. Its automatic snapshots from before stay on the old host.
 
 ```sh

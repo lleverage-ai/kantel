@@ -489,10 +489,36 @@ read, an older gateway and a phone; the switch on, off, read only and refused. A
 
 **Cost:** one read of the snapshot (`getSnapshot`) each time its hosts open.
 
+### MoveDialog
+
+Move to host (`src/compute/sandbox-move.tsx`), from a microVM's menu on its page and its row in the Sandboxes list,
+where the `SandboxesSource` has `move` and `moveTargets`. The item is there for every microVM, greyed out unless it can
+move now (`canMove`: stopped or paused, on a host the viewer can see, connected). The dialog lists the hosts it may move
+to (`moveTargets`: the other hosts of its pool that run microVMs), one radio row each with the host's name, cut short
+with the whole name in its tooltip, and what a move there does: Keeps memory or Restarts, and the pause Kantel expects
+(`pauseMs`) where it gives one. Until Kantel answers a move's dry run, `memory` and `pauseMs` are absent: every host
+says Restarts and there is no pause. Where the chosen host keeps memory, Restart it instead sends `keepMemory: false`.
+A paused sandbox whose chosen host restarts it says its memory is lost.
+
+Move switches the dialog to the move's progress: its phase from the sandbox's reads (`moving` and its `move`), worded by
+`movePhaseText` (`copying`, `starting`, and a running sandbox's `stopping` and `final-copy`; a phase it doesn't know
+reads as Kantel names it), with the time it has taken. Close leaves it moving: the page shows Moving, and on the sandbox's
+page its phase, and the result comes as the page's notice. A failure keeps the dialog open with Kantel's reason and the
+hosts to try again; the sandbox is where it was.
+
+**Don't use it for** a host's pool (the Hosts page's Move to pool) or where a new sandbox goes (New sandbox's pickers).
+
+**States:** loading, no hosts, several hosts, the dry run (memory kept, a pause), paused, in progress and each phase
+(copying, starting, stopping, final copy, one it doesn't know), failed with the reason, hosts not read, long names and
+a phone; all in its stories.
+
+**Cost:** one read of the hosts each time it opens (`listHosts`, or the account's own); while it moves, the page reads the
+sandbox as it does for any state change.
+
 ### SandboxStateLabel
 
 A sandbox's state in words with its status dot (`src/compute/parts.tsx`), as the Sandboxes list and a sandbox's page
-show it: its lifecycle state in its colour, "Unresponsive" in the error colour for a running one whose guest agent
+show it: its lifecycle state in its colour (Moving, pulsing, while it moves to another host), "Unresponsive" in the error colour for a running one whose guest agent
 doesn't answer, and "Host unreachable" in the warning colour for one whose host isn't connected to Kantel
 (`showsHostUnreachable`: starting, running, stopping or paused; a stopped one, or one in error, keeps its state). With
 its host away, the page says why in a warning notice and offers only Stop (`sandboxActions`), and the pages read it

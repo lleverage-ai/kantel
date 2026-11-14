@@ -227,6 +227,9 @@ export const HostUnreachableMobile: Story = () => (
 );
 HostUnreachableMobile.meta = { width: 390 };
 
+/** One moving to another host: Moving in its row while it does. */
+export const Moving: Story = () => <Scenario options={{ moving: { sbx_2q8w5e1rz4: "copying" } }} />;
+
 /** On a phone: a row for each, its CPU beside its state. */
 export const Mobile: Story = () => <Scenario narrow />;
 Mobile.meta = { width: 390 };
