@@ -6577,10 +6577,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const restartedByMove = (reason: string | undefined): string =>
 		`kantel: killed: the sandbox moved to another host and restarted there (${restartWhy(reason)}), which ended its processes\n`;
 
-	/** Why a paused sandbox's commands were killed as a boot let its memory go: a start, or a restart on a new base. */
-	const PAUSED_MEMORY_DROPPED =
-		"kantel: killed: the sandbox was started afresh from its disk, which let go of the memory it was paused with, and its processes with it\n";
-
 	/** Why a move restarted a sandbox, as a clause: its restartReason, or that it was asked to. */
 	const restartWhy = (reason: string | undefined): string =>
 		reason === undefined ? "the move was asked to restart it" : `${reason.charAt(0).toLowerCase()}${reason.slice(1)}`;
@@ -6898,16 +6894,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		const work = track([sandbox.id], async () => {
 			try {
-				// A stop ends its commands' processes; a pause keeps them in its memory, its commands running on (followed by
-				// their IDs once it runs again) unless the pause turns out a cold stop.
-				if (!keepMemory) await killCommandsOf(sandbox.id);
+				await killCommandsOf(sandbox.id);
 				// A stop someone asked for waits a while for a host that is away, rather than leaving the sandbox in error
 				// (#737); a sweep's hands the sandbox back for a later sweep instead (`handBack`).
 				const taken = await backend.stop(sandbox.id, { keepMemory, waitForHost: !handBack });
 				// What it kept: a host that couldn't pause the machine (its Firecracker not answering) stops it cold, and says
 				// so (`memory: false`); it is then stopped, not paused.
 				const kept = keepMemory && taken.memory !== false;
-				if (keepMemory && !kept) await killCommandsOf(sandbox.id);
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -10116,8 +10109,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
-				// Paused: its memory, and the commands it kept running, go with the cold boot.
-				if (current.state === "paused") keepGoing(killCommandsOf(current.id, undefined, PAUSED_MEMORY_DROPPED));
 				// An environment attached while it was stopped: its files and repositories, once it runs.
 				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
@@ -13043,10 +13034,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					placement = outcome.placement;
 				}
 				const committed = await commitMove(sandboxId, operationId, placement);
-				// Paused, and restarted on its new host: the commands its memory kept went with it.
-				if (!running && current.state === "paused" && !keptMemory && committed !== undefined) {
-					keepGoing(killCommandsOf(sandboxId, undefined, restartedByMove(restartReason)));
-				}
 				if (committed?.state === "running" && provisioning !== undefined) {
 					await provision(committed.id, provisioning.environments).catch(() => undefined);
 				}
@@ -13326,10 +13313,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
-		// Paused and started rather than resumed: its memory, and the commands it kept running, go.
-		if (current.state === "paused" && how === "start") {
-			keepGoing(killCommandsOf(current.id, undefined, PAUSED_MEMORY_DROPPED));
-		}
 		const provisioning = await provisionedAgain(principal, role, starting, true);
 		const bootOptions = {
 			fromSnapshot,

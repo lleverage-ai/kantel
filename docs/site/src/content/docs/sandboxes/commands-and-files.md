@@ -86,7 +86,7 @@ console.log(now.state, now.stdout);
 await kantel.killCommand("sbx_4kq9x2mt", server.id); // state: "killed"
 ```
 
-A kill ends the command and every process it started. Killing a command that has already ended answers it as it is. A stop ends every running command, so after a resume from a stop, start your servers again. A paused sandbox's programs carry on when it resumes, and so do its commands: each stays `running` while it is paused, and a call waiting on a foreground one gets its end once it has resumed (within the command's time limit and two minutes more).
+A kill ends the command and every process it started. Killing a command that has already ended answers it as it is. A stop ends every running command, so after a resume from a stop, start your servers again. A paused sandbox's programs carry on when it resumes.
 
 A detached command doesn't keep its sandbox running: the sandbox still stops at its `stopsAt` (see [auto-stop](/sandboxes/lifecycle/#auto-stop-and-extending)), so give a long job a sandbox with a later stop time, or none.
 
