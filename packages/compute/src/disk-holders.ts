@@ -121,12 +121,6 @@ export interface HoldingsReport {
 /** The one version of a template's root filesystem. */
 export const ROOTFS_VERSION = "1";
 
-/**
- * How long a host told to fetch a saved snapshot is counted as fetching it (`DiskHolders.recordSnapshotFetch`) while its
- * reports don't list it.
- */
-export const SNAPSHOT_FETCH_MS = 24 * 60 * 60_000;
-
 /** A saved snapshot's versions (the host's `SnapshotDiskVersion` and `SnapshotMemoryVersion`): its disk, and its memory. */
 export const SNAPSHOT_VERSIONS: readonly string[] = ["disk", "memory"];
 
@@ -152,9 +146,10 @@ export interface DiskHolders {
 	/** A version just committed on `hostId`: the host it was made on holds it. */
 	recordCommit(kind: DiskKind, objectId: string, version: string, hostId: string): Promise<void>;
 	/**
-	 * `hostId` was told to fetch a saved snapshot's version, a copy of `ref`: it is `fetching` there until its reports
-	 * say it holds it (or for `SNAPSHOT_FETCH_MS` at most), so deleting the snapshot reaches it before its first report.
-	 * Nothing when it holds it already. Answers the holder's ID when it wrote one.
+	 * `hostId` is to be told to fetch a saved snapshot's version, a copy of `ref`: it is `fetching` there until its
+	 * reports say it holds it, or the snapshot is deleted, however long its fetch takes or if it never finishes, so
+	 * deleting the snapshot reaches it before its first report. Nothing when it holds it already. Answers the holder's
+	 * ID when it wrote one.
 	 */
 	recordSnapshotFetch(objectId: string, version: string, hostId: string, ref: string): Promise<string | undefined>;
 	/** Answers `disk.locate` from `hostId`. */
@@ -595,9 +590,7 @@ export function createDiskHolders(options: {
 			const letGo = (holders: readonly StoredDiskHolder[], reported: ReadonlySet<string>) => {
 				for (const holder of holders) {
 					if (reported.has(versionKey(holder.objectId, holder.version))) continue;
-					// One being fetched is let go only once its fetch has had long enough (SNAPSHOT_FETCH_MS).
-					const fetching = holder.state === "fetching" && holder.since > at - SNAPSHOT_FETCH_MS;
-					if (fetching || holder.since > at - options.reportGraceMs) continue;
+					if (holder.state === "fetching" || holder.since > at - options.reportGraceMs) continue;
 					release.push(holder);
 				}
 			};
