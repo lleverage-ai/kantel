@@ -1191,11 +1191,34 @@ describe("moving a sandbox with its memory", () => {
 		FakeHost.endCommand(sandbox.id, id, { exitCode: 2, stdout: "so far\nfailed\n", stderr: "", durationMs: 9 });
 		expect(await running).toMatchObject({ id, state: "exited", exitCode: 2, stdout: "so far\nfailed\n" });
 		// A stop (no memory kept) ends the commands running.
-		const stopped = root.runCommand(sandbox.id, { command: "./serve", detached: true });
-		const serving = (await stopped).id;
+		const serving = (await root.runCommand(sandbox.id, { command: "./serve", detached: true })).id;
 		await root.stopSandbox(sandbox.id, { wait: true });
 		expect((await api.store.commands.get(serving))?.state).toBe("killed");
-	}, 20_000);
+		// Paused, then started afresh rather than resumed: its memory goes, and the commands it kept with it.
+		await root.startSandbox(sandbox.id, { wait: true });
+		const fresh = (await root.runCommand(sandbox.id, { command: "./serve", detached: true })).id;
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		expect((await api.store.commands.get(fresh))?.state).toBe("running");
+		await root.startSandbox(sandbox.id, { wait: true });
+		await vi.waitFor(async () =>
+			expect(await api.store.commands.get(fresh)).toMatchObject({
+				state: "killed",
+				stderr: expect.stringContaining("let go of the memory it was paused with"),
+			}),
+		);
+		// Paused, then moved with a restart: the same, saying why.
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		b.keepsCommands = true;
+		const moving = (await root.runCommand(sandbox.id, { command: "./serve", detached: true })).id;
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		await root.moveSandbox(sandbox.id, { keepMemory: false });
+		await vi.waitFor(async () =>
+			expect(await api.store.commands.get(moving)).toMatchObject({
+				state: "killed",
+				stderr: expect.stringContaining("restarted there (the move was asked to restart it)"),
+			}),
+		);
+	}, 30_000);
 
 	it("asks again where it runs now when its old host, asked as it moved, no longer knows a command", async () => {
 		const { root, api, join } = await setup();
