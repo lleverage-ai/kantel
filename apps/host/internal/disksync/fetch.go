@@ -310,6 +310,22 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 	return st, nil
 }
 
+// ReadFile fetches one of a version's small files (Store.Files) from the hosts that hold it, whole, without fetching
+// the version or waiting for a fetch's turn: a snapshot's record, which says what the host needs before its disk is
+// worth fetching. nil when no holder has such a file. With no holders, grant or digest in req, disk.locate is asked.
+func (f *Fetcher) ReadFile(ctx context.Context, req Request, name string) ([]byte, error) {
+	f.init()
+	src := &holders{f: f, ref: req.Ref, digest: req.MapDigest}
+	if len(req.Holders) == 0 || req.Grant == "" || req.MapDigest == "" {
+		if err := src.refresh(ctx, 0); err != nil {
+			return nil, err
+		}
+	} else {
+		src.set(req.Holders, req.Grant)
+	}
+	return src.fetchFile(ctx, name)
+}
+
 // holders are the hosts a fetch fetches from, and its grant, asked for again when a holder refuses it or it is about
 // to expire.
 type holders struct {

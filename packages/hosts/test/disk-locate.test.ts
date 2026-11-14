@@ -148,7 +148,7 @@ describe("the disk store on the host link", () => {
 		const rootfs = [{ objectId: "b".repeat(64), versions: [{ version: "1", mapDigest: digest, allocatedBytes: 10 }] }];
 		host.send({
 			type: "heartbeat",
-			heartbeat: { capacity: { ...capacity, holdings: { rootfs, snapshot: [{ objectId: "t", versions: [] }] } } },
+			heartbeat: { capacity: { ...capacity, holdings: { rootfs, sandbox: [{ objectId: "t", versions: [] }] } } },
 		});
 		await vi.waitFor(() =>
 			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), { objects: { rootfs } }),
@@ -161,6 +161,14 @@ describe("the disk store on the host link", () => {
 			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs: [] } }),
 		);
 		expect(recordHoldings).toHaveBeenCalledTimes(2);
+		// Saved snapshots, beside them.
+		const snapshot = [
+			{ objectId: "snap_1", versions: [{ version: "disk", mapDigest: digest, allocatedBytes: 10, copy: true }] },
+		];
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { rootfs, snapshot } } } });
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs, snapshot } }),
+		);
 	});
 
 	it("passes each report's template snapshots on with what each was made on, dropping a fingerprint not shaped as one", async () => {
