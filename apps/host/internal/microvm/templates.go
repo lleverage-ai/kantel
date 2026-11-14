@@ -318,6 +318,14 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		t.step("rootfs", &start)
 	}
 	builtFrom.ImageDigest = imageDigest
+	// Its root filesystem is here now: a peer's copy of the snapshot that restores here is fetched rather than booted.
+	if fetched, err := m.fetchTemplateFirst(ctx, p, size); err != nil {
+		return proto.TemplateBuildResult{}, err
+	} else if fetched != nil {
+		return fetched.result(), nil
+	}
+	// The pool it is built in, as it began: a copy of it is offered only there.
+	pool := m.tpl.rootfs.currentPool()
 	// The build is a sandbox to the egress proxy while its setup runs, named after the snapshot, with the template's
 	// grants; it has no network once the setup is done.
 	build := &sandbox{meta: meta{ID: p.SnapshotID, Env: p.Env, Egress: p.Egress, Owner: p.Owner}}
@@ -354,15 +362,18 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		VCPUs:     size.VCPUs, MemoryMiB: size.MemoryMiB, DiskGiB: size.DiskGiB, CreatedAt: time.Now().UnixMilli(), Timings: t,
 		Guest: caps,
 	}
+	stampTemplatePool(dir, pool)
 	if err := keepTemplateSnapshot(dir, &kept); err != nil {
 		_ = os.RemoveAll(dir)
 		return proto.TemplateBuildResult{}, err
 	}
 	m.log.Info("template snapshot ready", "snapshot", p.SnapshotID, "timings", t)
+	// For peers to fetch it (templatesync.go): made in the background once the build has let its lock go.
+	m.mapTemplateLater(p.SnapshotID)
 	return kept.result(), nil
 }
 
-// DeleteTemplate is template.delete: the template snapshot's directory goes, and nothing else (not its root
+// DeleteTemplate is template.delete: the template snapshot's directory goes, with any fetch of it, and nothing else (not its root
 // filesystem, which sandboxes made from it read). One that isn't there is gone already. It waits for the creates
 // restoring the snapshot to have loaded it; creates that come meanwhile boot the template fresh.
 func (m *Manager) DeleteTemplate(id string) error {
@@ -370,6 +381,8 @@ func (m *Manager) DeleteTemplate(id string) error {
 		return badTemplateSnapshot()
 	}
 	defer m.tpl.snapshots.lock(id)()
+	// A fetch of it under way finds its partials gone, and publishes nothing.
+	m.discardTemplateFetch(id)
 	return os.RemoveAll(m.templateSnapshotDir(id))
 }
 
