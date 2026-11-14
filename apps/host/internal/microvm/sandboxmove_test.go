@@ -520,3 +520,37 @@ func TestAMovedSandboxKeepsItsGuestReport(t *testing.T) {
 		t.Fatalf("its guest report on the target: %+v, %v", info.Guest, err)
 	}
 }
+
+// A moved sandbox's source copy is deleted by its move's cleanup only while it is the copy that move exported: once a
+// later move has brought the sandbox back to the host, a late cleanup of the first move finds nothing of its own.
+func TestALateCleanupNeverDeletesALaterMovesCopy(t *testing.T) {
+	a, b := moveHost(t), moveHost(t)
+	stoppedTestSandbox(t, a, "sb1", "old")
+	if _, err := a.ExportSandbox(context.Background(), proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := importTestSandbox(t, a, b, "sb1", "mov_1"); err != nil {
+		t.Fatal(err)
+	}
+	// A wrong version leaves it; the right one deletes it, its snapshots kept.
+	var pe *proto.Error
+	if err := a.DeleteExported("sb1", "mov_0"); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+		t.Fatalf("another move's cleanup: %v", err)
+	}
+	if err := a.DeleteExported("sb1", "mov_1"); err != nil {
+		t.Fatal(err)
+	}
+	// And back: B exports it, A imports it.
+	if _, err := b.ExportSandbox(context.Background(), proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := importTestSandbox(t, b, a, "sb1", "mov_2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DeleteExported("sb1", "mov_1"); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+		t.Fatalf("a late cleanup of the first move: %v", err)
+	}
+	if _, err := a.ImportedSandbox("sb1", "mov_2"); err != nil {
+		t.Fatalf("the later move's copy is gone: %v", err)
+	}
+}

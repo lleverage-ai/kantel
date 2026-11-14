@@ -2668,11 +2668,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 */
 	const cleanUpSource = async (hostId: string, sandboxId: string): Promise<PlacementRecord | undefined> => {
 		const placement = await store.getPlacement(sandboxId);
-		if (placement?.cleanup?.hostId !== hostId) return placement;
+		const owed = placement?.cleanup;
+		if (owed?.hostId !== hostId) return placement;
 		try {
 			// Its snapshots kept: the sandbox lives on, and they stay its, an isolate's (a host from before
-			// `keepSnapshots` deletes them as a delete does).
-			await onHost(hostId, HostMethods.delete, { sandboxId, keepSnapshots: true });
+			// `keepSnapshots` deletes them as a delete does). A moved microVM's source copy is deleted only as the copy
+			// that move exported (`exported`), so a delete sent late never removes a later move's copy back on that host.
+			await onHost(hostId, HostMethods.delete, {
+				sandboxId,
+				keepSnapshots: true,
+				...(owed.tier === "microvm" ? { exported: owed.operationId } : {}),
+			});
 		} catch (error) {
 			if (!(isKantelError(error) && error.code === "not_found")) {
 				const why = error instanceof Error ? error.message : String(error);
@@ -2689,7 +2695,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const leftoverHere = (latest: PlacementRecord) => isLeftover(latest) && latest.hostId === hostId;
 		if (await store.removePlacementIf(sandboxId, leftoverHere)) return undefined;
 		const cleaned = await store.updatePlacement(sandboxId, (latest) => {
-			if (latest.cleanup?.hostId !== hostId || leftoverHere(latest)) return undefined;
+			// Only the debt this deleted: a later one to the same host (a move away again) stays owed.
+			if (latest.cleanup?.hostId !== hostId || latest.cleanup.operationId !== owed.operationId) return undefined;
+			if (leftoverHere(latest)) return undefined;
 			const { cleanup: _done, ...placed } = latest;
 			return { ...placed, updatedAt: clock.now() };
 		});
@@ -2802,6 +2810,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			[claimed.hostId, HostMethods.sandboxExportDelete],
 		] as const) {
 			if (!(await stillOurs())) return "superseded";
+			// A host an operator revoked never connects again: nothing of the move is left there to undo.
+			const host = await store.getHost(hostId);
+			if (host === undefined || host.revoked) continue;
 			try {
 				await onHost(hostId, method, { sandboxId, version: operationId });
 			} catch (error) {
@@ -3936,10 +3947,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return result;
 			},
 			async delete(sandboxId) {
-				const placement = await placementOf(sandboxId);
-				// A move under way leaves nothing on its target: its copy is cancelled there first (its gateway, if it is still
-				// at it, then finds the sandbox gone and rolls back the rest). While that host can't be told, the delete fails
-				// and the placement keeps the move, so a retry, or the move's own rollback, still knows where the copy is.
+				let placement = await placementOf(sandboxId);
+				// A move under way leaves nothing on its target. It is fenced first, in the store (its rollback begun, so it
+				// never switches from here), then its copy there cancelled, and the delete goes on against the placement as it
+				// is then: on the target, if the move switched before the fence. While the target can't be told, the delete
+				// fails and the move stays fenced on the placement, so a retry, or its rollback, still knows where the copy is.
+				if (placement.move !== undefined) {
+					const fenced = await store.updatePlacement(sandboxId, (latest) =>
+						latest.move === undefined || latest.move.rollingBack === true
+							? undefined
+							: { ...latest, move: { ...latest.move, rollingBack: true } },
+					);
+					placement = fenced ?? (await placementOf(sandboxId));
+				}
 				const moving = placement.move;
 				if (moving !== undefined) {
 					const target = await store.getHost(moving.target);

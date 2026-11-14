@@ -32,7 +32,7 @@ const meshOf = (byte: number): HostMeshFacts => ({
 
 const MOVES = [HOST_FEATURES.mesh, HOST_FEATURES.sandboxMove, HOST_FEATURES.egressPolicy];
 
-async function setup(options: { readonly now?: () => number } = {}) {
+async function setup(options: { readonly now?: () => number; readonly stickyDisks?: boolean } = {}) {
 	const store = createMemoryHostStore();
 	const service = createHostsService({
 		store,
@@ -40,17 +40,18 @@ async function setup(options: { readonly now?: () => number } = {}) {
 		log: () => undefined,
 		...(options.now === undefined ? {} : { clock: { now: options.now } }),
 	});
+	const backend = createHostBackend({
+		hosts: service,
+		publicUrl: "https://kantel.test",
+		tickets: createTunnelTickets(createMemoryRelayStore()),
+	});
 	const api: ComputeApi = createComputeApi({
-		backend: createHostBackend({
-			hosts: service,
-			publicUrl: "https://kantel.test",
-			tickets: createTunnelTickets(createMemoryRelayStore()),
-		}),
+		backend,
 		authenticatePerson: async (request) =>
 			PEOPLE[request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? ""],
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
-		stickyDisks: true,
+		stickyDisks: options.stickyDisks ?? true,
 		secretsKey: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))),
 		...(options.now === undefined ? {} : { now: options.now }),
 	});
@@ -85,7 +86,7 @@ async function setup(options: { readonly now?: () => number } = {}) {
 		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 		return host;
 	};
-	return { service, store, api, root, join, pool };
+	return { service, store, api, root, join, pool, backend };
 }
 
 /** A stopped microVM on `on`, with what is on its disk there. */
@@ -466,6 +467,117 @@ describe("moving a stopped sandbox to another host", () => {
 		release();
 		await vi.waitFor(async () => expect((await other.getSandbox(sandbox.id)).state).toBe("running"));
 		expect(b.sandboxes.get(sandbox.id)?.state).toBe("running");
+	});
+
+	it("lists a moving sandbox by the state it answers, and lets its target fetch its mounts while it starts there", async () => {
+		const { root, api, backend, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		b.hold = (method) => (method === "sandbox.start" ? held : undefined);
+		const moving = root.moveSandbox(sandbox.id, {});
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true));
+		expect((await root.listSandboxes({ state: "moving" })).items.map((each) => each.id)).toEqual([sandbox.id]);
+		expect((await root.listSandboxes({ state: "starting" })).items).toEqual([]);
+		// It boots on its target: that host, not its source, may fetch its mounts' sources now.
+		expect(await backend.placedOn?.(sandbox.id)).toBe(b.hostId);
+		release();
+		await moving;
+		expect(await backend.placedOn?.(sandbox.id)).toBe(b.hostId);
+		expect((await root.listSandboxes({ state: "moving" })).items).toEqual([]);
+	});
+
+	it("moves with sticky disks and templates off: its grant needs only the grant key", async () => {
+		const { root, api, join } = await setup({ stickyDisks: false });
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		expect(await root.moveSandbox(sandbox.id, {})).toMatchObject({ state: "running", hostId: b.hostId });
+		expect(b.disks.get(sandbox.id)).toBe("disk");
+	});
+
+	it("finishes a move whose source is revoked as it copies, never leaving it in error", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		b.hold = (method) => (method === "sandbox.start" ? held : undefined);
+		const moving = root.moveSandbox(sandbox.id, {});
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true));
+		await service.revoke(a.hostId);
+		await api.service.sweep();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("moving");
+		release();
+		expect(await moving).toMatchObject({ state: "running", hostId: b.hostId });
+	});
+
+	it("never leaves a copy or a placement when a delete meets a move about to switch", async () => {
+		const { root, api, service, store, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		const update = store.updatePlacement.bind(store);
+		let atSwitch: () => void = () => undefined;
+		const reached = new Promise<void>((resolve) => {
+			atSwitch = resolve;
+		});
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		store.updatePlacement = async (id, change) => {
+			const latest = await store.getPlacement(id);
+			if (latest !== undefined && change(latest)?.moved !== undefined) {
+				atSwitch();
+				await held;
+			}
+			return update(id, change);
+		};
+		const moving = failure(root.moveSandbox(sandbox.id, {}));
+		await reached;
+		await service.sandboxes.delete(sandbox.id);
+		release();
+		await moving;
+		expect(b.sandboxes.has(sandbox.id)).toBe(false);
+		expect(a.sandboxes.has(sandbox.id)).toBe(false);
+		expect(await service.sandboxes.placement(sandbox.id)).toBeUndefined();
+	});
+
+	it("deletes a source's copy only as the copy its move exported, so a late cleanup never removes a later move's", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		await root.moveSandbox(sandbox.id, {});
+		const first = String(b.calls.find((call) => call.method === "sandbox.import")?.params.version);
+		// Its source's copy went by that move's ID.
+		expect(a.calls.find((call) => call.method === "sandbox.delete")?.params).toMatchObject({
+			keepSnapshots: true,
+			exported: first,
+		});
+		await root.stopSandbox(sandbox.id, { wait: true });
+		await root.moveSandbox(sandbox.id, { hostId: a.hostId });
+		expect(a.sandboxes.has(sandbox.id)).toBe(true);
+		// The first move's cleanup, arriving late at A (sent before, delivered after the move back): A's copy is the
+		// second move's, so the host refuses it, and it stays.
+		await expect(
+			service.sandboxes.call(sandbox.id, "sandbox.delete", { keepSnapshots: true, exported: first }),
+		).rejects.toMatchObject({ code: "not_found" });
+		expect(a.sandboxes.has(sandbox.id)).toBe(true);
+		expect((await root.getSandbox(sandbox.id)).hostId).toBe(a.hostId);
 	});
 
 	it("settles a move that switched as done, its source's copy deleted or not, and answers a retry with it", async () => {

@@ -95,6 +95,8 @@ export class FakeHost {
 	readonly disks = new Map<string, string>();
 	/** The sandboxes' exports for a move (`sandbox.export`), by `<sandboxId>/<version>`: what was on their disks. */
 	readonly exports = new Map<string, string>();
+	/** The move each sandbox here was last exported by (`sandbox.export`), which a delete with `exported` must name. */
+	readonly exportedBy = new Map<string, string>();
 	/** The moves whose import was cancelled here (`sandbox.import.cancel`), by `<sandboxId>/<version>`. */
 	readonly cancelled = new Set<string>();
 	/** Every host made, by ID: a move's target reads its holder's export from it, as from a peer. */
@@ -313,6 +315,13 @@ export class FakeHost {
 				return answer({ exitCode: 0, stdout: "hi\n", stderr: "", durationMs: 3 });
 			}
 			case "sandbox.delete":
+				if (
+					typeof (message.params as { exported?: unknown }).exported === "string" &&
+					this.exportedBy.get(params.sandboxId) !== (message.params as { exported: string }).exported
+				) {
+					return fail("not_found", "not the copy that move exported");
+				}
+				this.exportedBy.delete(params.sandboxId);
 				this.sandboxes.delete(params.sandboxId);
 				this.disks.delete(params.sandboxId);
 				for (const key of this.exports.keys()) if (key.startsWith(`${params.sandboxId}/`)) this.exports.delete(key);
@@ -327,6 +336,7 @@ export class FakeHost {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
 				if (sandbox.state !== "stopped") return fail("conflict", `sandbox ${sandbox.id} is ${sandbox.state}`);
 				this.exports.set(`${params.sandboxId}/${version}`, this.disks.get(params.sandboxId) ?? "");
+				this.exportedBy.set(params.sandboxId, version);
 				return answer({ mapDigest: `sha256:${"a".repeat(64)}`, allocatedBytes: 4096 });
 			}
 			case "sandbox.export.delete": {

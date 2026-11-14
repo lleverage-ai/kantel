@@ -126,7 +126,7 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 	m.moves.turn.Lock()
 	defer m.moves.turn.Unlock()
 	if !m.exportWhole(p.SandboxID, p.Version) {
-		if err := m.cloneForExport(s, dir); err != nil {
+		if err := m.cloneForExport(s, dir, p); err != nil {
 			_ = os.RemoveAll(dir)
 			return proto.SandboxExportResult{}, err
 		}
@@ -148,7 +148,7 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 
 // cloneForExport clones a stopped sandbox's files into dir, made afresh, and writes its record there last: under its
 // lock, so nothing starts it meanwhile, and what is cloned is one state of it.
-func (m *Manager) cloneForExport(s *sandbox, dir string) error {
+func (m *Manager) cloneForExport(s *sandbox, dir string, p proto.SandboxExportParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State != proto.StateStopped {
@@ -187,7 +187,12 @@ func (m *Manager) cloneForExport(s *sandbox, dir string) error {
 		}
 	}
 	raw, _ := json.MarshalIndent(rec, "", "  ")
-	return fsutil.WriteFileDurably(filepath.Join(dir, sandboxRecordName), raw, 0o600)
+	if err := fsutil.WriteFileDurably(filepath.Join(dir, sandboxRecordName), raw, 0o600); err != nil {
+		return err
+	}
+	// The copy this version exported, which its source cleanup deletes (DeleteExported).
+	s.meta.Exported = p.Version
+	return m.writeMeta(s)
 }
 
 // cloneExportFile is cloneDisk for an export: a reflink takes no room; a full copy, on a file system without them,
@@ -570,7 +575,7 @@ func importedMeta(src meta, version string, pulled bool, rootfs string) meta {
 	if pulled {
 		out.Rootfs = rootfs
 	}
-	out.Imported = version
+	out.Imported, out.Exported = version, ""
 	return out
 }
 
@@ -631,6 +636,22 @@ func (m *Manager) CancelSandboxImport(id, version string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// DeleteExported removes a sandbox moved to another host (sandbox.delete with Exported), its automatic snapshots kept,
+// only while it is the copy move version exported: ErrNotFound for one a later move made here since.
+func (m *Manager) DeleteExported(id, version string) error {
+	s, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	exported := s.meta.Exported
+	s.mu.Unlock()
+	if exported != version {
+		return &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s here isn't the copy move %s exported", id, version)}
+	}
+	return m.deleteSandbox(id, true)
 }
 
 // madeBy says whether a sandbox here was made by version's import.

@@ -422,6 +422,8 @@ type SandboxMover interface {
 	CancelSandboxImport(id, version string) (deleted bool, err error)
 	// DeleteMoved removes a sandbox moved to another host, its automatic snapshots kept.
 	DeleteMoved(id string) error
+	// DeleteExported is DeleteMoved, only while the sandbox is the copy that move exported.
+	DeleteExported(id, version string) error
 }
 
 var _ SandboxMover = (*microvm.Manager)(nil)

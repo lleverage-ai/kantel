@@ -62,6 +62,7 @@ func (s *moveTier) CancelSandboxImport(id, version string) (bool, error) {
 	defer s.mu.Unlock()
 	return s.made[id] == version, nil
 }
+func (s *moveTier) DeleteExported(id, _ string) error { return s.DeleteMoved(id) }
 func (s *moveTier) DeleteMoved(id string) error {
 	s.mu.Lock()
 	s.moved = append(s.moved, id)

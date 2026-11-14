@@ -65,7 +65,7 @@ func SandboxTable(c *cli.Context, sandboxes []api.Sandbox) string {
 	header = append(header, "CREATED", "STOPS")
 	var rows [][]string
 	for _, s := range sandboxes {
-		row := []string{s.ID, s.Name, KindOf(s), c.Style.State(string(s.State))}
+		row := []string{s.ID, s.Name, KindOf(s), c.Style.State(StateOf(s))}
 		if hosts {
 			row = append(row, hostOf(s))
 		}

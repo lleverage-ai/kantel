@@ -769,8 +769,8 @@ export interface ComputeService {
 		readonly to: string;
 	}): Promise<string>;
 	/**
-	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with
-	 * sticky disks and templates off, or with no secrets key over a persistent store.
+	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with no
+	 * secrets key over a persistent store.
 	 */
 	grantPublicKey(): Promise<string | undefined>;
 	/**
@@ -3779,6 +3779,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if ((await backend.hostConnected(hostId).catch(() => undefined)) === false) throw hostNotConnected();
 	}
 
+	/** Its state as the API answers it: a move under way is `starting` here, as a boot is, and answered `moving`. */
+	function publicState(sandbox: StoredSandbox): SandboxState {
+		return sandbox.moving !== undefined && sandbox.state === "starting" ? "moving" : sandbox.state;
+	}
+
 	/** A move under way, as the API answers it: its target only where the caller may know the host. */
 	function moveView(sandbox: StoredSandbox, host: { readonly hostId?: string }): { readonly move?: Sandbox["move"] } {
 		const moving = sandbox.moving;
@@ -3819,8 +3824,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			shape: sandbox.shape === undefined ? undefined : { ...sandbox.shape },
 			resources: sandbox.resources,
 			image: sandbox.image,
-			// A move under way is `starting` here, as a boot is, and answered as the move it is.
-			state: sandbox.moving !== undefined && sandbox.state === "starting" ? "moving" : sandbox.state,
+			state: publicState(sandbox),
 			...moveView(sandbox, host),
 			health: sandbox.health,
 			reason: sandbox.reason,
@@ -7391,6 +7395,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			let previous: SandboxState | undefined;
 			await store.sandboxes.update(sandbox.id, (current) => {
 				previous = undefined;
+				// A move under way stays as it is, for its gateway or the sweep to settle: its outcome (a copy running on
+				// another host, perhaps) is known only from its hosts, and settlement allows for its source being revoked.
+				if (current.moving !== undefined && current.state === "starting") return undefined;
 				if (current.hostId === hostId && STRANDABLE.includes(current.state)) {
 					previous = current.state;
 					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
@@ -8762,7 +8769,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (onHost !== undefined && sandbox.hostId !== onHost) continue;
 				const wanted =
 					query.state !== undefined
-						? sandbox.state === query.state
+						? publicState(sandbox) === query.state
 						: query.all === true || active.includes(sandbox.state);
 				if (!wanted) continue;
 				const labels = query.label ?? {};
@@ -11525,12 +11532,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getGrantKeys: async (principal) => {
 			requireScope(principal, "hosts:admin");
 			const keys = await diskHolders.keys();
-			if (keys === undefined) {
-				throw new KantelError(
-					"not_supported",
-					options.stickyDisks === true ? GRANT_KEY_UNAVAILABLE : "Sticky disks are off here",
-				);
-			}
+			if (keys === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 			return grantKeysView(keys);
 		},
 

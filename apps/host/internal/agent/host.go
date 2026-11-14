@@ -963,6 +963,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		// microVM moved to another host.
 		if source, ok := t.(upgradeSource); ok && p.KeepSnapshots {
 			err = source.Dispose(p.SandboxID)
+		} else if moved, ok := t.(SandboxMover); ok && p.Exported != "" {
+			err = moved.DeleteExported(p.SandboxID, p.Exported)
 		} else if moved, ok := t.(SandboxMover); ok && p.KeepSnapshots {
 			err = moved.DeleteMoved(p.SandboxID)
 		} else {

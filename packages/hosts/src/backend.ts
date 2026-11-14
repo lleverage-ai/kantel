@@ -1583,9 +1583,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async placedOn(sandboxId) {
 			const placement = await hosts.sandboxes.placement(sandboxId);
 			// A lost one is an earlier attempt its host said it doesn't have: not where it is placed now.
-			return placement === undefined || placement.state === "deleted" || placement.state === "lost"
-				? undefined
-				: placement.hostId;
+			if (placement === undefined || placement.state === "deleted" || placement.state === "lost") return undefined;
+			// A move starting it on its target (its files there, its rollback not begun): it boots there, so that host
+			// fetches its mounts' sources, though it is placed on its source until it runs.
+			const move = placement.move;
+			if (move?.phase === "start" && move.rollingBack !== true && move.settling === undefined) return move.target;
+			return placement.hostId;
 		},
 		async writeFileStream(sandboxId, path, body, mode) {
 			await streamingHost(sandboxId);

@@ -1437,6 +1437,10 @@ type SandboxRef struct {
 type DeleteParams struct {
 	SandboxID     string `json:"sandboxId"`
 	KeepSnapshots bool   `json:"keepSnapshots,omitempty"`
+	// Exported, a move's operation ID (FeatureSandboxMove), deletes the sandbox only while it is the copy that move
+	// exported (ErrNotFound otherwise): a late delete of a moved sandbox's source never removes a later move's copy of it
+	// back on this host.
+	Exported string `json:"exported,omitempty"`
 }
 
 // StopParams is sandbox.stop.
