@@ -3422,6 +3422,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						`The host ${host.name} doesn't build templates' custom images; switch its templateBuilder on`,
 					);
 				}
+				// A copy only to a host that keeps it to the entry's image: an older one would drop `copy`, and might build or
+				// pull another image under the entry's ID.
+				if (
+					input.copy !== undefined &&
+					storedFacts(host.facts)?.features?.includes(HOST_FEATURES.templateImageCopies) !== true
+				) {
+					throw new KantelError(
+						"not_supported",
+						`The host ${host.name} doesn't copy templates' custom images; upgrade its kantel-host`,
+					);
+				}
 				const shape = buildShape(host, input);
 				const params: HostTemplateBuild = {
 					...input,

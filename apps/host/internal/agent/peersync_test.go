@@ -301,7 +301,8 @@ func TestTemplateSync(t *testing.T) {
 	tier := &templateFetchTier{&rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
 	without := newLifecycleHost(t, tier.lifecycleTier)
 	without.tiers[microvm.Tier] = tier
-	if slices.Contains(without.makeFacts().Features, proto.FeatureTemplateSync) || without.Capacity().Holdings != nil {
+	if slices.Contains(without.makeFacts().Features, proto.FeatureTemplateSync) ||
+		slices.Contains(without.makeFacts().Features, proto.FeatureTemplateImageCopies) || without.Capacity().Holdings != nil {
 		t.Fatal("template-sync, or holdings, without the mesh")
 	}
 	if err := without.fetchTemplate(context.Background(), "tsn_2"); !errors.Is(err, microvm.ErrNoPeerTemplate) {
@@ -319,7 +320,8 @@ func TestTemplateSync(t *testing.T) {
 	}
 	h.startPeerSync()
 	defer h.syncStop()
-	if !slices.Contains(h.makeFacts().Features, proto.FeatureTemplateSync) {
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureTemplateSync) ||
+		!slices.Contains(h.makeFacts().Features, proto.FeatureTemplateImageCopies) {
 		t.Fatalf("features %v", h.makeFacts().Features)
 	}
 	holdings := h.Capacity().Holdings

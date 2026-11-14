@@ -248,6 +248,12 @@ const FeatureRootfsSync = "rootfs-sync"
 // only when none has one. It comes with FeatureRootfsSync, on the microVM tier.
 const FeatureTemplateSync = "template-sync"
 
+// FeatureTemplateImageCopies: a template.build of a custom image with Copy (TemplateBuildParams.Copy) is a copy of an
+// entry another host built: its root filesystem is only the one Copy names, with the digest Copy names, held here or
+// fetched from a peer, never built or pulled again (which might make another image under the same key), so whatever
+// snapshot the build fetches or boots is over the entry's image. It comes with FeatureTemplateSync.
+const FeatureTemplateImageCopies = "template-image-copies"
+
 // Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
 // filesystem, and a template snapshot.
 const (
@@ -1273,6 +1279,16 @@ type TemplateBuildParams struct {
 	Egress *Egress `json:"egress,omitempty"`
 	// Owner is the account the template is of, which the egress proxy names the build's requests after.
 	Owner string `json:"owner,omitempty"`
+	// Copy makes a custom image's build a copy of an entry built on another host (FeatureTemplateImageCopies), over
+	// only that entry's image. Nil: a root filesystem no peer holds is built or pulled here.
+	Copy *TemplateCopy `json:"copy,omitempty"`
+}
+
+// TemplateCopy is the image a copy of a custom image's template snapshot is over: the root filesystem the entry's
+// build made (its TemplateBuildResult.RootfsKey) and the image digest that build named (ImageDigest).
+type TemplateCopy struct {
+	RootfsKey   string `json:"rootfsKey"`
+	ImageDigest string `json:"imageDigest"`
 }
 
 // TemplateBuildResult is template.build's answer. Ref names the snapshot on this host (its ID).

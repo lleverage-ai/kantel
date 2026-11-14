@@ -36,14 +36,18 @@ const (
 	rootfsDoneSuffix    = ".done"
 )
 
+// buildingHere is what a build does when its root filesystem isn't fetched from a peer, as fetchRootfsFirst logs it.
+const buildingHere = "building it here"
+
 // ErrNoPeerRootfs is Config.FetchRootfs's answer when no host the fetch may reach holds the root filesystem.
 var ErrNoPeerRootfs = errors.New("no host in the pool holds the root filesystem")
 
 // fetchRootfsFirst has a build's root filesystem fetched from a peer that holds it (Config.FetchRootfs) when the host
 // hasn't it, so the build boots that rather than pulling or building the image again; one no peer holds, or whose fetch
-// fails, the build makes itself. It answers whether the root filesystem came from a peer, and the build's own end (its
-// context's error) when that came first: then nothing is built, and the fetch goes on for the next build.
-func (m *Manager) fetchRootfsFirst(ctx context.Context, key string) (bool, error) {
+// fails, the build makes itself (or, for a copy, otherwise says what it does instead). It answers whether the root
+// filesystem came from a peer, and the build's own end (its context's error) when that came first: then nothing is
+// built, and the fetch goes on for the next build.
+func (m *Manager) fetchRootfsFirst(ctx context.Context, key, otherwise string) (bool, error) {
 	if m.cfg.FetchRootfs == nil || !validKey(key) || fileExists(m.tpl.rootfs.path(key)) {
 		return false, nil
 	}
@@ -57,13 +61,40 @@ func (m *Manager) fetchRootfsFirst(ctx context.Context, key string) (bool, error
 		m.log.Info("template root filesystem fetched from a peer", "key", key, "took", time.Since(start).Round(time.Millisecond))
 		return true, nil
 	case err == nil:
-		m.log.Warn("a template root filesystem's fetch ended without it; building it here", "key", key)
+		m.log.Warn("a template root filesystem's fetch ended without it; "+otherwise, "key", key)
 	case errors.Is(err, ErrNoPeerRootfs):
-		m.log.Info("no peer holds the template's root filesystem; building it here", "key", key)
+		m.log.Info("no peer holds the template's root filesystem; "+otherwise, "key", key)
 	default:
-		m.log.Warn("the template's root filesystem couldn't be fetched from a peer; building it here", "key", key, "error", err)
+		m.log.Warn("the template's root filesystem couldn't be fetched from a peer; "+otherwise, "key", key, "error", err)
 	}
 	return false, nil
+}
+
+// copiedRootfs is the root filesystem of a copy of a custom image's entry (TemplateBuildParams.Copy): the one the
+// entry's build made, under its key and with its digest, held here already or fetched from a peer now. It is never
+// built or pulled here, which might give another digest under the same key (a moved tag, a Dockerfile that installs the
+// latest packages): with no peer holding it, or one holding another image under the key, the copy fails. It answers
+// the file, and whether it came from a peer.
+func (m *Manager) copiedRootfs(ctx context.Context, owner string, img *proto.TemplateImage, base templateImage, c proto.TemplateCopy) (string, bool, error) {
+	key := customImageKey(owner, img, base)
+	if c.RootfsKey != key || c.ImageDigest == "" || digestOnly(c.ImageDigest) != c.ImageDigest {
+		return "", false, &proto.Error{Code: proto.ErrInvalid, Message: "the copy names another image than the template's"}
+	}
+	fetched, err := m.fetchRootfsFirst(ctx, key, "the copy fails, building nothing")
+	if err != nil {
+		return "", false, err
+	}
+	b := m.tpl.rootfs
+	defer b.locks.lock(key)()
+	path, rec, ok := customCached(b, key)
+	if !ok {
+		return "", fetched, &proto.Error{Code: proto.ErrNotFound, Message: "no host in the pool holds the template's image to copy, and a copy never builds it"}
+	}
+	if rec.ImageDigest != c.ImageDigest {
+		return "", fetched, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("the template's image here is %s, not the %s the copy is of", rec.ImageDigest, c.ImageDigest)}
+	}
+	m.mapRootfsLater(key)
+	return path, fetched, nil
 }
 
 // rootfsMaps is the root filesystems' maps being made, or waiting their turn (one is made at a time, as each reads a

@@ -387,7 +387,7 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureRootfsSync)
 	}
 	if h.fetches(proto.DiskKindTemplate) {
-		features = append(features, proto.FeatureTemplateSync)
+		features = append(features, proto.FeatureTemplateSync, proto.FeatureTemplateImageCopies)
 	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
