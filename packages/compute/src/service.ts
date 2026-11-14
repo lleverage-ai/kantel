@@ -81,9 +81,11 @@ import {
 	type Placement,
 	refusedBeforeTheMachine,
 	type SandboxBackend,
+	type SandboxSpec,
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
 	SNAPSHOT_KEEP_FEATURE,
+	type SnapshotCopies,
 	type SnapshotMadeOn,
 	type TakenSnapshot,
 	type UpgradedPlacement,
@@ -1464,11 +1466,41 @@ function goneAlready(error: unknown): boolean {
 	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "not_found";
 }
 
-/** The host a snapshot's ref names, `<hostId>/<id>` as a host backend's are; undefined for another backend's. */
+/**
+ * The host a snapshot's ref names, `<hostId>/<id>` as a host backend's are; undefined for one that names none (a saved
+ * snapshot's ID alone, or another backend's).
+ */
 function refHost(ref: string): string | undefined {
 	const slash = ref.indexOf("/");
 	return slash > 0 ? ref.slice(0, slash) : undefined;
 }
+
+/** A snapshot's ID on its hosts (a disk store object's, kind `snapshot`): a ref's second half, or one naming no host whole. */
+function refId(ref: string): string {
+	const slash = ref.indexOf("/");
+	return slash > 0 ? ref.slice(slash + 1) : ref;
+}
+
+/**
+ * A snapshot's ref naming its host, for a call to that host (its files, a keep, a fork or upgrade from it, its delete):
+ * its ref, or for one naming none, its copy on the host it was taken on (`StoredSnapshot.hostId`), `<hostId>/<ref>`.
+ */
+function hostRef(snapshot: Pick<StoredSnapshot, "ref" | "hostId">): string | undefined {
+	const { ref, hostId } = snapshot;
+	if (ref === undefined || hostId === undefined || refHost(ref) !== undefined) return ref;
+	return `${hostId}/${ref}`;
+}
+
+/** Whether a ref `hostId` reports its snapshots by is one of its own: `<hostId>/<id>`, or one naming no host. */
+const reportsOwn = (hostId: string, ref: string): boolean => ref.startsWith(`${hostId}/`) || refHost(ref) === undefined;
+
+/**
+ * Whether a record's bytes are those `hostId` took, which it reports by their ref: a ref naming that host, or one naming
+ * none whose record says it was taken there (a copy elsewhere is reported by the same ref).
+ */
+const takenHere = (hostId: string, snapshot: StoredSnapshot): snapshot is StoredSnapshot & { readonly ref: string } =>
+	snapshot.ref !== undefined &&
+	(refHost(snapshot.ref) === undefined ? snapshot.hostId === hostId : refHost(snapshot.ref) === hostId);
 
 /** A byte count for a message: in GiB to one decimal place, or MiB below 1 GiB. */
 function bytesText(bytes: number): string {
@@ -3476,7 +3508,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const holderId = await hostOfSnapshot(snapshot);
 		const holderPool = holderId === undefined ? undefined : hosts.find((host) => host.id === holderId)?.poolId;
 		const recorded = await livePool(snapshot.poolId);
-		if (recorded !== undefined && holderPool !== undefined && holderPool !== recorded) {
+		// A ref naming no host (a saved snapshot's ID alone) is its pool's, on any of its holders there: the host it was
+		// taken on moving to another pool leaves the copies in its own.
+		const named = snapshot.ref !== undefined && refHost(snapshot.ref) !== undefined;
+		if (recorded !== undefined && holderPool !== undefined && holderPool !== recorded && named) {
 			throw placementError(
 				"unavailable",
 				"host_unavailable",
@@ -3570,12 +3605,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * The host a snapshot's disk is on, where its backend's ref says (a host backend's is `{hostId}/{snapshotId}`);
-	 * undefined where the ref names no known host.
+	 * The hosts a sandbox made from `snapshot` can start on (`SandboxSpec.snapshotCopies`, docs/design/disk-store.md,
+	 * "Phase 3 notes"): the host it was taken on (`hostOfSnapshot`), its first holder, then each host with a copy of its
+	 * disk (the catalogue's `snapshot` holders of its ref), each with whether its copy restores the snapshot's memory (the
+	 * host it was taken on, or a copy whose memory came too, which a host fetches only where it restores it). It may be
+	 * fetched by another host where snapshots are synced, its pool can be told (a copy is offered only in it), and a
+	 * holder online in it has reported its disk.
 	 */
-	function snapshotHolder(ref: string, hosts: readonly StoredHost[]): StoredHost | undefined {
-		const [hostId] = ref.split("/");
-		return hosts.find((host) => host.id === hostId);
+	async function snapshotCopiesOf(
+		snapshot: StoredSnapshot,
+		hosts: readonly StoredHost[],
+		poolId: string | undefined,
+	): Promise<SnapshotCopies> {
+		const memory = await holdsMemory(snapshot);
+		const origin = await hostOfSnapshot(snapshot);
+		const holders: { hostId: string; memory: boolean }[] = origin === undefined ? [] : [{ hostId: origin, memory }];
+		const { ref } = snapshot;
+		if (ref === undefined) return { holders, memory, fetch: false };
+		const byVersion = await diskHolders.holdersOf("snapshot", refId(ref));
+		const held = (version: string) =>
+			(byVersion.get(version) ?? []).filter((holder) => holder.ref === ref && holder.state === "held");
+		const withMemory = new Set(held("memory").map((holder) => holder.hostId));
+		const disks = held("disk");
+		for (const holder of disks) {
+			if (holders.some((each) => each.hostId === holder.hostId)) continue;
+			holders.push({ hostId: holder.hostId, memory: memory && withMemory.has(holder.hostId) });
+		}
+		const online = new Map(
+			hosts
+				.filter((host) => (host.state === "online" || host.state === "draining") && host.poolId === poolId)
+				.map((host) => [host.id, host]),
+		);
+		// The holders that serve it (a full or draining one too), which a host fetches from only of its architecture.
+		const serving = disks.filter((holder) => holder.mapDigest !== undefined && online.has(holder.hostId));
+		const architectures = [...new Set(serving.flatMap((holder) => online.get(holder.hostId)?.arch ?? []))];
+		// Only a saved snapshot's ID alone: an older ref's host-local ID may name another snapshot on the host fetching it.
+		const fetch =
+			diskHolders.syncsSnapshots && poolId !== undefined && refHost(ref) === undefined && serving.length > 0;
+		return { holders, memory, fetch, ...(fetch && architectures.length > 0 ? { architectures } : {}) };
 	}
 
 	/**
@@ -5353,7 +5420,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * (routed there, or refused while it is unreachable).
 	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
-		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
+		if (sandbox.latestSnapshotId !== undefined) {
+			const latest = await store.snapshots.get(sandbox.latestSnapshotId);
+			return latest === undefined ? undefined : hostRef(latest);
+		}
 		if (!neverPlaced(sandbox) || sandbox.source === undefined) return undefined;
 		const from = sandbox.source.snapshotId;
 		const source = from === undefined ? undefined : await store.snapshots.get(from);
@@ -5419,8 +5489,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}
 		}
+		// From a saved snapshot named by its ID alone: on its holders in its pool, or a host that fetches it, as its create.
+		const source =
+			sandbox.source?.snapshotId === undefined || boot.fromSnapshot === undefined
+				? undefined
+				: await store.snapshots.get(sandbox.source.snapshotId);
+		let fromCopies: Pick<SandboxSpec, "fromSnapshot" | "snapshotCopies"> = {};
+		// Either kind of ref: an older one names its host and is never fetched, but goes on a copy held under it too.
+		if (source?.ref !== undefined && (refHost(source.ref) !== undefined || source.hostId !== undefined)) {
+			const known = await ensureHosts();
+			const poolId = sandbox.poolId ?? source.poolId;
+			fromCopies = { fromSnapshot: source.ref, snapshotCopies: await snapshotCopiesOf(source, known, poolId) };
+			if (poolId !== undefined) {
+				const inPool = new Set(known.filter((host) => host.poolId === poolId).map((host) => host.id));
+				eligibleHosts = eligibleHosts.filter((hostId) => inPool.has(hostId));
+			}
+		}
 		const placement = await backend.create({
 			...boot,
+			...fromCopies,
 			eligibleHosts,
 			// Placed afresh (from its source's snapshot too): in its pool, kept to it as the host admits it.
 			...pooled(sandbox.poolId),
@@ -5542,27 +5629,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await store.snapshots.delete(snapshot.id);
 	}
 
-	async function releaseRef(ref: string | undefined): Promise<void> {
+	/** Lets the backend drop a snapshot's bytes (`ref`, on `hostId` where it names none) once no record has their ref. */
+	async function releaseRef(bytes: Pick<StoredSnapshot, "ref" | "hostId">): Promise<void> {
+		const { ref } = bytes;
 		if (ref === undefined) return;
 		if ((await store.snapshots.list({ ref })).length > 0) return;
-		await deleteSnapshotBytes(ref).catch(() => undefined);
+		await deleteSnapshotBytes({ ...bytes, ref }).catch(() => undefined);
 	}
 
 	/**
-	 * Deletes a snapshot's bytes on the host its ref names, then the copies other hosts fetched of it, or are fetching
-	 * (`disk-holders.ts`, kind `snapshot`: the holders recorded as copies of this ref, never of another ref that shares
-	 * its host's ID), whose holders go with them. That is the prompt path only: a copy it doesn't reach (its host away,
-	 * or told to fetch it just as this ran) is deleted when its host next reports it (`DiskHolders.recordHoldings`). Bytes their
-	 * host no longer has count as deleted; any other failure there is thrown, and the copies are left for a retry.
+	 * Deletes a snapshot's bytes on the host they were taken on (its ref's, or `hostId` for a ref naming none), then the
+	 * copies other hosts fetched of it, or are fetching (`disk-holders.ts`, kind `snapshot`: the holders recorded as copies
+	 * of this ref, never of another ref that shares its host's ID), whose holders go with them. That is the prompt path
+	 * only: a copy it doesn't reach (its host away, or told to fetch it just as this ran) is deleted when its host next
+	 * reports it (`DiskHolders.recordHoldings`). Bytes their host no longer has count as deleted; any other failure there
+	 * is thrown, and the copies are left for a retry.
 	 */
-	async function deleteSnapshotBytes(ref: string): Promise<void> {
+	async function deleteSnapshotBytes(bytes: { readonly ref: string; readonly hostId?: string }): Promise<void> {
+		const { ref } = bytes;
+		const named = hostRef(bytes) ?? ref;
 		try {
-			await backend.deleteSnapshot(ref);
+			await backend.deleteSnapshot(named);
 		} catch (error) {
 			if (!goneAlready(error)) throw error;
 		}
-		const [hostId, objectId] = ref.split("/");
-		if (hostId === undefined || objectId === undefined) return;
+		const hostId = refHost(named);
+		if (hostId === undefined) return;
+		const objectId = refId(named);
 		const copies = [...(await diskHolders.holdersOf("snapshot", objectId)).values()]
 			.flat()
 			.filter((holder) => holder.ref === ref);
@@ -5576,9 +5669,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Refuses bytes just taken of `read` (a running sandbox, as read before they were taken) when what they are of can't
 	 * be told: the sandbox began or ended an upgrade meanwhile, so they may be the isolate's or the microVM's. The bytes go
-	 * again (`ref`). A snapshot's `sandboxType` is then always what its bytes are of.
+	 * again (`taken`). A snapshot's `sandboxType` is then always what its bytes are of.
 	 */
-	async function requireSameTier(read: StoredSandbox, ref: string | undefined): Promise<void> {
+	async function requireSameTier(read: StoredSandbox, taken: Pick<StoredSnapshot, "ref" | "hostId">): Promise<void> {
 		const latest = await store.sandboxes.get(read.id);
 		if (latest === undefined) return;
 		if (
@@ -5588,7 +5681,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		) {
 			return;
 		}
-		await releaseRef(ref);
+		await releaseRef(taken);
 		throw new KantelError("conflict", "The sandbox was upgraded while its snapshot was taken; take it again");
 	}
 
@@ -5749,7 +5842,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const { ref } = snapshot;
 		if (ref !== undefined && !(await store.snapshots.list({ ref })).some((other) => other.id !== snapshot.id)) {
 			try {
-				await deleteSnapshotBytes(ref);
+				await deleteSnapshotBytes({ ref, ...(snapshot.hostId === undefined ? {} : { hostId: snapshot.hostId }) });
 			} catch (error) {
 				if (!goneAlready(error)) return false;
 			}
@@ -6488,6 +6581,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdAt: at,
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
+					...(taken.hostId === undefined ? {} : { hostId: taken.hostId }),
 					...(taken.base === undefined ? {} : { base: taken.base }),
 					...madeOnOf(taken),
 					...pooled(await poolOfTaken(was, taken.ref)),
@@ -6582,11 +6676,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return snapshot;
 	}
 
+	/** A ready snapshot's ref naming its host (`hostRef`), for a call to that host. */
 	const readyRef = (snapshot: StoredSnapshot): string => {
-		if (snapshot.state !== "ready" || snapshot.ref === undefined) {
+		const ref = hostRef(snapshot);
+		if (snapshot.state !== "ready" || ref === undefined) {
 			throw new KantelError("conflict", "The snapshot isn't ready");
 		}
-		return snapshot.ref;
+		return ref;
 	};
 
 	async function apiKeyFor(principal: Principal, apiKeyId: string, scope: computeSchema.ApiKeyScope) {
@@ -6718,7 +6814,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	async function hostOfSnapshot(snapshot: StoredSnapshot): Promise<string | undefined> {
-		const named = snapshot.ref === undefined ? undefined : refHost(snapshot.ref);
+		const named = snapshot.hostId ?? (snapshot.ref === undefined ? undefined : refHost(snapshot.ref));
 		if (named !== undefined) return named;
 		if (snapshot.sandboxId === undefined) return undefined;
 		return (await store.sandboxes.get(snapshot.sandboxId))?.hostId;
@@ -7004,7 +7100,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		for (const snapshot of await store.snapshots.list({ sandboxId: sandbox.id })) {
 			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
+			await releaseRef(snapshot);
 		}
 		for (const command of await store.commands.list({ sandboxId: sandbox.id })) await store.commands.delete(command.id);
 		await store.sandboxes.delete(sandbox.id);
@@ -7116,7 +7212,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const sandbox of await store.sandboxes.list({ accountId })) await forgetSandbox(sandbox);
 		for (const snapshot of await store.snapshots.list({ accountId })) {
 			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
+			await releaseRef(snapshot);
 		}
 		for (const bundle of await store.bundles.list({ accountId })) {
 			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
@@ -7247,7 +7343,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function holdSnapshot(snapshot: StoredSnapshot): Promise<void> {
 		if (await accountOpen(snapshot.accountId)) return;
 		await forgetSnapshot(snapshot);
-		await releaseRef(snapshot.ref);
+		await releaseRef(snapshot);
 		throw accountClosed();
 	}
 
@@ -8838,15 +8934,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (stickyPool !== undefined && named !== undefined && named !== stickyPool.poolId) {
 					throw await stickyPoolRefusal(stickyPool.disk, stickyPool.poolId, named);
 				}
-				// From a snapshot, a pin can only be the host that holds it: refused now, before anything is stored, rather than
-				// left as a sandbox that can never start.
-				if (hostPin !== undefined && from?.ref !== undefined) {
-					const holder = snapshotHolder(from.ref, await known);
-					if (holder !== undefined && holder.id !== hostPin) {
+				// Where a sandbox made from the snapshot can start: its holders, or a host that fetches it first.
+				const copies = from === undefined ? undefined : await snapshotCopiesOf(from, await known, snapshotPool);
+				// From a snapshot that can't be fetched, a pin can only be a host that holds it: refused now, before anything is
+				// stored, rather than left as a sandbox that can never start.
+				if (hostPin !== undefined && copies !== undefined && !copies.fetch) {
+					const holder = (await known).find((host) => host.id === copies.holders[0]?.hostId);
+					if (holder !== undefined && !copies.holders.some((each) => each.hostId === hostPin)) {
 						throw placementError(
 							"unavailable",
 							"host_unavailable",
-							`The snapshot is on another host (${mayKnowHost(principal, holder, account.id) ? holder.name : "not one you can name"}): a sandbox made from it runs only there`,
+							`The snapshot is on another host (${mayKnowHost(principal, holder, account.id) ? holder.name : "not one you can name"}), and can't be fetched from it here: a sandbox made from it runs only there`,
 						);
 					}
 				}
@@ -8917,6 +9015,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					hostPin,
 					pool,
 				);
+				// From a snapshot, placed in its pool, where a copy of it may be fetched as well as on its holders. None there
+				// now: the create is kept, and fails as it boots, to be made again once one is.
+				const inSnapshotPool = new Set(
+					(await known).filter((host) => host.poolId === snapshotPool).map((host) => host.id),
+				);
+				const placeOn =
+					from === undefined || snapshotPool === undefined
+						? hosts
+						: hosts.filter((hostId) => inSnapshotPool.has(hostId));
 				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the snapshot's.
 				const placedPool =
 					from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : snapshotPool;
@@ -9105,10 +9212,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 								image: sandbox.image,
 								env: sandbox.env,
-								eligibleHosts: start?.eligibleHosts ?? hosts,
+								eligibleHosts: start?.eligibleHosts ?? placeOn,
 								// Kept to its pool as the host admits it, from a snapshot too (its host's pool, as recorded).
 								...pooled(sandbox.poolId),
 								fromSnapshot: from?.ref,
+								...(copies === undefined ? {} : { snapshotCopies: copies }),
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
@@ -9690,7 +9798,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
 								await forgetSnapshot(snapshot);
-								await releaseRef(snapshot.ref);
+								await releaseRef(snapshot);
 							} else {
 								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
 								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
@@ -10127,7 +10235,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return once(principal, "takeSnapshot", { params, body, idempotencyKey }, async () => {
 				const current = await requireRunning(principal, sandbox.id);
 				const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
-				await requireSameTier(current, taken.ref);
+				await requireSameTier(current, taken);
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -10147,6 +10255,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdBy: actorOf(principal),
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
+					...(taken.hostId === undefined ? {} : { hostId: taken.hostId }),
 					...(taken.base === undefined ? {} : { base: taken.base }),
 					...madeOnOf(taken),
 					...pooled(await poolOfTaken(current, taken.ref)),
@@ -10207,6 +10316,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				let ref: string;
+				// The host its bytes were taken on, where the backend said: where its ref names none, its first holder.
+				let takenOn: string | undefined;
 				let sizeBytes: number | undefined;
 				// All its files take, shared ones included: what the host's limit counts it at.
 				let fullSizeBytes: number | undefined;
@@ -10225,7 +10336,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const from = readyRef(source);
 					await requireSnapshotHostReachable(from);
 					const kept = await backend.keepSnapshot?.(from);
-					ref = kept?.ref ?? from;
+					// Sharing its source's bytes, it names them as its source does.
+					ref = kept?.ref ?? source.ref ?? from;
+					takenOn = kept === undefined ? source.hostId : kept.hostId;
 					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
 					sizeBytes =
 						kept === undefined ? source.sizeBytes : await keptSize(kept, existing).catch(() => kept.sizeBytes);
@@ -10243,8 +10356,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const full = await savedBytesOver(current.accountId, current.hostId, existing);
 					if (full !== undefined) throw full;
 					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
-					await requireSameTier(current, taken.ref);
+					await requireSameTier(current, taken);
 					ref = taken.ref;
+					takenOn = taken.hostId;
 					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
 					fullSizeBytes = taken.sizeBytes;
 					base = taken.base;
@@ -10276,6 +10390,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(source === undefined ? { takenAt: savedAt } : takenAt === undefined ? {} : { takenAt }),
 					createdBy: actorOf(principal),
 					ref,
+					...(takenOn === undefined ? {} : { hostId: takenOn }),
 					...(base === undefined ? {} : { base }),
 					...made,
 					// A copy's is its source's: the pool it was taken in.
@@ -10285,7 +10400,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await holdSnapshot(snapshot);
 				if (existing !== undefined) {
 					await forgetSnapshot(existing);
-					await releaseRef(existing.ref);
+					await releaseRef(existing);
 					await emit("snapshot.deleted", existing.accountId, {
 						snapshotId: existing.id,
 						data: { name: existing.name, actor: actorOf(principal) },
@@ -10343,7 +10458,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}
 			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
+			await releaseRef(snapshot);
 			// Its running sandbox's newest moves back to the one before it, by `adopt` (expiry may be deleting that one): the
 			// first still there, else none; a pointer another write moved meanwhile is left as it is. Only one of what the
 			// sandbox is now: an upgraded sandbox's from before are an isolate's, which its microVM never starts from.
@@ -11459,7 +11574,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const snapshot = await store.snapshots.get(body.snapshotId);
 			const ref = snapshot?.ref;
-			const objectId = ref?.split("/")[1];
+			const objectId = ref === undefined ? undefined : refId(ref);
 			if (
 				snapshot === undefined ||
 				snapshot.kind !== "saved" ||
@@ -11823,7 +11938,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (from !== undefined) await poolOfSnapshot(from, await known, keptPool(pool, UPGRADE_IN_POOL));
 		// From a snapshot, the microVM goes only on the host that holds it: refused now, the isolate untouched, when that
 		// host isn't one the sandbox may use.
-		const holder = from?.ref === undefined ? undefined : refHost(from.ref);
+		const into = from === undefined ? undefined : hostRef(from);
+		const holder = into === undefined ? undefined : refHost(into);
 		if (holder !== undefined && !hosts.includes(holder)) {
 			const named = (await known).find((host) => host.id === holder);
 			throw placementError(
@@ -11973,7 +12089,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							// Its microVM in its pool: kept to it as its host admits it.
 							...pooled(current.poolId),
 							...(fromSnapshot === undefined ? {} : { fromSnapshot }),
-							...(from?.ref === undefined ? {} : { intoSnapshot: from.ref }),
+							...(into === undefined ? {} : { intoSnapshot: into }),
 							...egress,
 						},
 						operationId,
@@ -12822,12 +12938,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// indexed): only those with no base yet are written.
 			const reported = new Map<string, string>();
 			for (const { ref, base } of reports.snapshots ?? []) {
-				if (typeof ref !== "string" || !ref.startsWith(`${hostId}/`) || !valid(base)) continue;
+				if (typeof ref !== "string" || !reportsOwn(hostId, ref) || !valid(base)) continue;
 				reported.set(ref, base);
 			}
 			if (reported.size === 0) return;
 			for (const snapshot of await store.snapshots.list()) {
-				const base = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
+				const base = takenHere(hostId, snapshot) ? reported.get(snapshot.ref) : undefined;
 				if (base === undefined || snapshot.base !== undefined) continue;
 				const { ref } = snapshot;
 				await store.snapshots.update(snapshot.id, (current) =>
@@ -12837,7 +12953,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async recordSnapshotSizes(hostId, sizes, shared = []) {
-			const own = (ref: unknown): ref is string => typeof ref === "string" && ref.startsWith(`${hostId}/`);
+			const own = (ref: unknown): ref is string => typeof ref === "string" && reportsOwn(hostId, ref);
 			const whole = (value: unknown): value is number =>
 				typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 			const reported = new Map<string, number>();
@@ -12849,8 +12965,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			if (reported.size === 0) return;
 			const full = new Map(reported);
-			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written.
-			const records = await store.snapshots.list();
+			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written. A
+			// saved snapshot's copy on another host is named as it is, and is that host's to measure, not the snapshot's.
+			const records = (await store.snapshots.list()).filter((snapshot) => takenHere(hostId, snapshot));
 			// Each snapshot whose host says what is its own (a microVM's; an isolate's says nothing): its shared files counted
 			// once, by this plane's records. One that doesn't say keeps the size it was reported with.
 			if (unique.size > 0) {
@@ -12861,7 +12978,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const ref of unique.keys()) reported.set(ref, attributed.get(ref) ?? 0);
 			}
 			for (const snapshot of records) {
-				if (snapshot.ref === undefined) continue;
 				const sizeBytes = reported.get(snapshot.ref);
 				// All its files, shared ones included: what a host's limit on saved bytes counts it at.
 				const fullSizeBytes = full.get(snapshot.ref);

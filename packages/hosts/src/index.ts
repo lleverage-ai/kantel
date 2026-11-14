@@ -16,5 +16,6 @@ export * from "./relay-store.ts";
 export * from "./releases.ts";
 export * from "./scheduler.ts";
 export * from "./service.ts";
+export * from "./snapshot-refs.ts";
 export * from "./store.ts";
 export * from "./tunnel.ts";

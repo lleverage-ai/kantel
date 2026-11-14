@@ -1968,11 +1968,13 @@ How its machine's latest start (a create, fork, start or resume) took its time, 
 | --- | --- | --- | --- |
 | `disk` | `"reflink"` or `"copy"` or `"move"` or `"new"` | no | How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume). |
 | `diskMs` | number | yes | Making its disk, in milliseconds. |
+| `fetchMs` | number | no | For a sandbox made from a saved snapshot on a host that didn't hold it: its host fetching the snapshot's disk from another host in its pool first, in milliseconds, until the host reported it (each 15 seconds or so). Not in `hostMs`. |
+| `restoredMemory` | boolean | no | For a sandbox made from a snapshot that holds memory: whether its memory was restored, its processes carrying on (`true`), or it booted on the snapshot's disk alone (`false`), on a host whose copy of the snapshot has no memory it can restore (another CPU or runtime, or its memory not fetched yet). |
 | `snapshotMs` | number | no | For a fork of a running sandbox: the live snapshot of its source it was made from. |
 | `bootMs` | number | yes | Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. |
 | `agentMs` | number | yes | From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too. |
 | `hostMs` | number | yes | The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). |
-| `totalMs` | number | yes | From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. |
+| `totalMs` | number | yes | From Kantel's call to its host until the host answered, in milliseconds, its fetch (`fetchMs`) included. Well over `hostMs` and `fetchMs` is time on the way to and from the host, not on it. |
 
 ### SandboxState
 

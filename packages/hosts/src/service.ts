@@ -51,6 +51,7 @@ import {
 	type HostEnvAnswer,
 	type HostExecResult,
 	type HostFacts,
+	type HostFetchProgress,
 	type HostGrantKey,
 	type HostHello,
 	type HostImageChannel,
@@ -61,6 +62,7 @@ import {
 	HostMethods,
 	type HostMount,
 	type HostMountStatus,
+	type HostObjectKind,
 	type HostSandbox,
 	type HostSandboxUsage,
 	type HostSecrets,
@@ -88,6 +90,7 @@ import {
 	buildFitsOn,
 	type Candidate,
 	type HeldMemory,
+	type Placement as HostPlacement,
 	hostSizeNamed,
 	isRefusal,
 	makesCustomShapes,
@@ -96,6 +99,7 @@ import {
 	shapeOn,
 	sizeOn,
 } from "./scheduler.ts";
+import { snapshotRef } from "./snapshot-refs.ts";
 import { admits, type HostRecord, type HostStore, isLeftover, type PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
@@ -556,7 +560,8 @@ export interface HostComputeLink {
 	/**
 	 * Fills in the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching: its hello and events)
 	 * and snapshots (its snapshot list, read once a connection), so what was made before it versioned its images shows
-	 * its base without another boot (`ComputeService.recordBases`). A snapshot is named by its ref, `<hostId>/<id>`.
+	 * its base without another boot (`ComputeService.recordBases`). A snapshot is named by its ref (`snapshotRef`:
+	 * `<hostId>/<id>`, or a saved snapshot's ID alone).
 	 */
 	recordBases?(
 		hostId: string,
@@ -568,8 +573,8 @@ export interface HostComputeLink {
 	/**
 	 * Updates the sizes of a host's snapshots to what they take on its disk now (`HOST_FEATURES.snapshotSizes`), from its
 	 * snapshot list, read once a connection and every `SNAPSHOT_SIZES_REFRESH_MS`: each snapshot's bytes and what of them
-	 * are its own, and the files several share, by their refs. A snapshot is named by its ref, `<hostId>/<id>`
-	 * (`ComputeService.recordSnapshotSizes`).
+	 * are its own, and the files several share, by their refs. A snapshot is named by its ref (`snapshotRef`:
+	 * `<hostId>/<id>`, or a saved snapshot's ID alone) (`ComputeService.recordSnapshotSizes`).
 	 */
 	recordSnapshotSizes?(
 		hostId: string,
@@ -739,6 +744,18 @@ export interface HostHoldingsReport {
 	readonly fetches?: HostCapacity["fetches"];
 }
 
+/**
+ * What a host's last capacity report says of a version of a disk store object: when Kantel received the report (absent
+ * with none), whether the host holds the version, and its fetch there as listed, `queued`, `running` or `failed` with
+ * its error. Without `fetch`, the report lists no fetch of it, or says nothing of fetches (a host that doesn't fetch, or
+ * from before it said).
+ */
+export interface HostObjectFetch {
+	readonly at?: number;
+	readonly held: boolean;
+	readonly fetch?: HostFetchProgress;
+}
+
 /** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
 export interface HostStickyReport {
 	readonly hostId: string;
@@ -756,9 +773,16 @@ export interface HostsService {
 	stickyReports(): Promise<HostStickyReport[]>;
 	/**
 	 * Has a host fetch a disk version from its peers (`disk.fetch`, `HOST_FEATURES.diskSync`), resolving once the fetch
-	 * has started; `unavailable` if away.
+	 * has started, to when the host answered (the clock a capacity report's `HostObjectFetch.at` is on): a report received
+	 * after says how this fetch goes. `unavailable` if away.
 	 */
-	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<void>;
+	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<number>;
+	/**
+	 * What a host's last capacity report, as kept, says of a version of a disk store object (`HostObjectFetch`): whether
+	 * it holds it (`HostCapacity.holdings`), as a fetch it was told of has arrived once it does, and how its fetch goes
+	 * (`HostCapacity.fetches`).
+	 */
+	objectFetch(hostId: string, kind: HostObjectKind, objectId: string, version: string): Promise<HostObjectFetch>;
 	/** Registration spends join tokens from here from now on, not the registry's own. */
 	useJoinTokens(tokens: ExternalJoinTokens): void;
 	/**
@@ -842,6 +866,11 @@ export interface HostsService {
 	checkForUpdates(): Promise<ReleaseCheck>;
 	readonly sandboxes: {
 		create(input: CreateSandboxInput): Promise<SandboxPlacement>;
+		/**
+		 * The host a create of `input` would go on now, as `create` places it among the hosts it may use, without placing
+		 * it: for a create whose snapshot that host fetches first. Refused as `create` would refuse it.
+		 */
+		choose(input: CreateSandboxInput): Promise<string>;
 		fork(
 			sandboxId: string,
 			input?: {
@@ -1435,7 +1464,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const sizeReports: { ref: string; sizeBytes: number; uniqueBytes?: number }[] = [];
 				for (const snap of listed.snapshots ?? []) {
 					if (typeof snap.id !== "string") continue;
-					const ref = `${hostId}/${snap.id}`;
+					const ref = snapshotRef(hostId, snap.id);
 					if (typeof snap.base === "string" && snap.base !== "") baseReports.push({ ref, base: snap.base });
 					if (bytes(snap.sizeBytes)) {
 						sizeReports.push({
@@ -1454,7 +1483,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						const ids = group.snapshots;
 						if (!bytes(group.bytes) || !Array.isArray(ids) || ids.length < 2) continue;
 						if (!ids.every((id): id is string => typeof id === "string")) continue;
-						shared.push({ refs: ids.map((id) => `${hostId}/${id}`), bytes: group.bytes });
+						shared.push({ refs: ids.map((id) => snapshotRef(hostId, id)), bytes: group.bytes });
 					}
 				}
 				if (bases && baseReports.length > 0) await link?.recordBases?.(hostId, { snapshots: baseReports });
@@ -2161,6 +2190,138 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		throw new KantelError("conflict", "A sandbox with that ID exists");
 	};
 
+	/**
+	 * Where a create goes (`place`) among the hosts `input` may use (`hostIds`, of `listed`): its tier and shape checked,
+	 * then only hosts that run what it needs (templates, egress policy, sticky disks), and among them the one placement
+	 * prefers with room. Refused `exhausted` (a refusal's reason) when none has room, or of the hosts named, none is up.
+	 */
+	async function placeAmong(
+		input: CreateSandboxInput,
+		listed: readonly HostRecord[],
+	): Promise<{
+		readonly tier: SandboxTier;
+		readonly shape: Shape | undefined;
+		readonly chosen: HostPlacement;
+		/** Its template as the host chosen boots it: without its snapshot where an emptier host boots it fresh. */
+		readonly template: HostTemplateBoot | undefined;
+	}> {
+		const tier = input.tier;
+		if (tier !== "microvm" && tier !== "isolate") throw new KantelError("invalid", "tier is microvm or isolate");
+		const shape = input.shape === undefined ? undefined : shapeIn(input.shape, tier);
+		const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
+		// A sandbox's snapshot is on the hosts named: the one it was taken on and those with a copy, or one about to fetch it.
+		if (input.from !== undefined && (only === undefined || only.size === 0)) {
+			throw new KantelError("invalid", "A sandbox made from a snapshot goes on a host that holds it");
+		}
+		// The hosts without the template snapshot that may boot it fresh instead.
+		const fresh = new Set(
+			input.template?.snapshot === undefined || only === undefined
+				? []
+				: (input.freshHosts ?? []).filter((hostId) => !only.has(hostId)),
+		);
+		if (input.template !== undefined && tier !== "microvm") {
+			throw new KantelError("invalid", "A sandbox made from a template is a microVM");
+		}
+		// A template snapshot is on the hosts named: the one that built it and those with a copy, any of which restores it.
+		if (input.template?.snapshot !== undefined && (only === undefined || only.size === 0)) {
+			throw new KantelError("invalid", "A sandbox made from a template snapshot goes on a host that holds it");
+		}
+		const usable = listed
+			.map(sane)
+			.filter((host) => only === undefined || only.has(host.id) || fresh.has(host.id))
+			// An account's own host takes only that account's sandboxes, whatever the caller named.
+			.filter((host) => host.accountId === undefined || host.accountId === input.owner);
+		// A template goes only to a host that runs templates; a custom image's only to one that builds them.
+		const templating =
+			input.template === undefined
+				? usable
+				: usable.filter(input.template.image === undefined ? runsTemplates : buildsTemplateImages);
+		if (templating.length === 0 && usable.length > 0) {
+			throw placementError(
+				"not_supported",
+				"no_host_for_template",
+				"No host that could take it runs templates; upgrade kantel-host",
+			);
+		}
+		// Grants and protected variables go only where they are enforced.
+		const enforcing = needsEgressPolicy(input.egress) ? templating.filter(enforcesPolicy) : templating;
+		if (enforcing.length === 0 && templating.length > 0) {
+			throw placementError(
+				"not_supported",
+				"no_host_enforces_egress",
+				"No host that could take it enforces egress grants or protected variables; upgrade kantel-host",
+			);
+		}
+		// Sticky disks go only where they can be attached.
+		const sticky = (input.stickyDisks?.length ?? 0) > 0;
+		if (sticky && tier !== "microvm") throw new KantelError("invalid", "Sticky disks are a microVM's");
+		const hosts = sticky
+			? enforcing.filter((host) => host.facts?.features?.includes(HOST_FEATURES.stickyDisks) === true)
+			: enforcing;
+		if (hosts.length === 0 && enforcing.length > 0) {
+			throw placementError(
+				"not_supported",
+				"no_host_for_type",
+				"No host that could take it runs sticky disks; upgrade kantel-host",
+			);
+		}
+		// Every candidate's placements in one read: the owners' isolates there, and the vCPUs booked.
+		const placed = await store.placementsOnHosts(hosts.map((host) => host.id));
+		const candidates: Candidate[] = await Promise.all(
+			hosts.map(async (host) => {
+				const placements = placed.get(host.id) ?? [];
+				const held = reservedOn(host);
+				return {
+					host,
+					connected: hub.connected(host.id),
+					reservedMemoryMiB: held.memoryMiB,
+					reservedDiskGiB: held.diskGiB,
+					heldMemory: held.memory,
+					owners: new Set(
+						placements
+							.filter((placement) => placement.tier === "isolate" && placement.owner !== undefined)
+							.map((placement) => placement.owner as string),
+					),
+					bookedVcpus: bookedVcpus(placements),
+				};
+			}),
+		);
+		const request = {
+			tier,
+			...(input.size === undefined ? {} : { size: input.size }),
+			...(shape === undefined ? {} : { shape }),
+			...(input.owner === undefined ? {} : { owner: input.owner }),
+			...(input.labels === undefined ? {} : { labels: input.labels }),
+			// A host holding each disk's head (the version asked for) is preferred.
+			...(sticky ? { stickyDisks: input.stickyDisks } : {}),
+		};
+		let template = input.template;
+		let chosen = place(
+			request,
+			candidates.filter((candidate) => !fresh.has(candidate.host.id)),
+		);
+		// On a host with the template snapshot, unless that host would be much fuller than the emptiest without it, which
+		// boots the template fresh instead. With no room on any host with it, the caller boots it fresh elsewhere.
+		if (!isRefusal(chosen) && fresh.size > 0) {
+			const instead = place(
+				request,
+				candidates.filter((candidate) => fresh.has(candidate.host.id)),
+			);
+			if (!isRefusal(instead) && template !== undefined && bootsFreshInstead(chosen, instead)) {
+				const { snapshot: _restore, ...boot } = template;
+				template = boot;
+				chosen = instead;
+			}
+		}
+		if (isRefusal(chosen)) {
+			// From a snapshot it goes only on the hosts that hold it: those not being up is the reason, not a lack of hosts.
+			const pinned = input.from !== undefined || input.template?.snapshot !== undefined;
+			const reason = pinned && chosen.code === "no_host" ? "host_unavailable" : chosen.code;
+			throw placementError("exhausted", reason, chosen.reason);
+		}
+		return { tier, shape, chosen, template };
+	}
+
 	const tooMuchToMove = (what: string) =>
 		new KantelError(
 			"not_supported",
@@ -2811,9 +2972,26 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.stickyDelete, { diskId, ...(version === undefined ? {} : { version }) });
 		},
+		async objectFetch(hostId, kind, objectId, version) {
+			const host = await store.getHost(hostId);
+			const capacity = storedCapacity(host?.capacity);
+			const held =
+				capacity?.holdings?.[kind]?.some(
+					(each) => each.objectId === objectId && each.versions.some((stored) => stored.version === version),
+				) === true;
+			const fetch = capacity?.fetches?.find(
+				(each) => each.kind === kind && each.objectId === objectId && each.version === version,
+			);
+			return {
+				...(capacity === undefined || host?.capacityAt === undefined ? {} : { at: host.capacityAt }),
+				held,
+				...(fetch === undefined ? {} : { fetch }),
+			};
+		},
 		async diskFetch(hostId, params) {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.diskFetch, params);
+			return clock.now();
 		},
 		async stickyReports() {
 			// Only hosts connected here: one away (or on another replica) is left to whoever holds it now.
@@ -3045,125 +3223,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 		},
 		sandboxes: {
+			async choose(input) {
+				return (await placeAmong(input, await store.listHosts())).chosen.host.id;
+			},
 			async create(input) {
-				const tier = input.tier;
-				if (tier !== "microvm" && tier !== "isolate") throw new KantelError("invalid", "tier is microvm or isolate");
 				const sandboxId = input.sandboxId ?? shortId("sbx");
 				if (!SANDBOX_ID.test(sandboxId)) throw new KantelError("invalid", "Not a valid sandbox ID");
-				const shape = input.shape === undefined ? undefined : shapeIn(input.shape, tier);
-				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
-				if (input.from !== undefined && only?.size !== 1) {
-					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
-				}
-				// The hosts without the template snapshot that may boot it fresh instead.
-				const fresh = new Set(
-					input.template?.snapshot === undefined || only === undefined
-						? []
-						: (input.freshHosts ?? []).filter((hostId) => !only.has(hostId)),
-				);
-				if (input.template !== undefined && tier !== "microvm") {
-					throw new KantelError("invalid", "A sandbox made from a template is a microVM");
-				}
-				// A template snapshot is on the hosts named: the one that built it and those with a copy, any of which restores it.
-				if (input.template?.snapshot !== undefined && (only === undefined || only.size === 0)) {
-					throw new KantelError("invalid", "A sandbox made from a template snapshot goes on a host that holds it");
-				}
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
 				refuseTaken(existing);
-				const usable = listed
-					.map(sane)
-					.filter((host) => only === undefined || only.has(host.id) || fresh.has(host.id))
-					// An account's own host takes only that account's sandboxes, whatever the caller named.
-					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
-				// A template goes only to a host that runs templates; a custom image's only to one that builds them.
-				const templating =
-					input.template === undefined
-						? usable
-						: usable.filter(input.template.image === undefined ? runsTemplates : buildsTemplateImages);
-				if (templating.length === 0 && usable.length > 0) {
-					throw placementError(
-						"not_supported",
-						"no_host_for_template",
-						"No host that could take it runs templates; upgrade kantel-host",
-					);
-				}
-				// Grants and protected variables go only where they are enforced.
-				const enforcing = needsEgressPolicy(input.egress) ? templating.filter(enforcesPolicy) : templating;
-				if (enforcing.length === 0 && templating.length > 0) {
-					throw placementError(
-						"not_supported",
-						"no_host_enforces_egress",
-						"No host that could take it enforces egress grants or protected variables; upgrade kantel-host",
-					);
-				}
-				// Sticky disks go only where they can be attached.
+				const { tier, shape, chosen, template } = await placeAmong(input, listed);
 				const sticky = (input.stickyDisks?.length ?? 0) > 0;
-				if (sticky && tier !== "microvm") throw new KantelError("invalid", "Sticky disks are a microVM's");
-				const hosts = sticky
-					? enforcing.filter((host) => host.facts?.features?.includes(HOST_FEATURES.stickyDisks) === true)
-					: enforcing;
-				if (hosts.length === 0 && enforcing.length > 0) {
-					throw placementError(
-						"not_supported",
-						"no_host_for_type",
-						"No host that could take it runs sticky disks; upgrade kantel-host",
-					);
-				}
-				// Every candidate's placements in one read: the owners' isolates there, and the vCPUs booked.
-				const placed = await store.placementsOnHosts(hosts.map((host) => host.id));
-				const candidates: Candidate[] = await Promise.all(
-					hosts.map(async (host) => {
-						const placements = placed.get(host.id) ?? [];
-						const held = reservedOn(host);
-						return {
-							host,
-							connected: hub.connected(host.id),
-							reservedMemoryMiB: held.memoryMiB,
-							reservedDiskGiB: held.diskGiB,
-							heldMemory: held.memory,
-							owners: new Set(
-								placements
-									.filter((placement) => placement.tier === "isolate" && placement.owner !== undefined)
-									.map((placement) => placement.owner as string),
-							),
-							bookedVcpus: bookedVcpus(placements),
-						};
-					}),
-				);
-				const request = {
-					tier,
-					...(input.size === undefined ? {} : { size: input.size }),
-					...(shape === undefined ? {} : { shape }),
-					...(input.owner === undefined ? {} : { owner: input.owner }),
-					...(input.labels === undefined ? {} : { labels: input.labels }),
-					// A host holding each disk's head (the version asked for) is preferred.
-					...(sticky ? { stickyDisks: input.stickyDisks } : {}),
-				};
-				let template = input.template;
-				let chosen = place(
-					request,
-					candidates.filter((candidate) => !fresh.has(candidate.host.id)),
-				);
-				// On a host with the template snapshot, unless that host would be much fuller than the emptiest without it, which
-				// boots the template fresh instead. With no room on any host with it, the caller boots it fresh elsewhere.
-				if (!isRefusal(chosen) && fresh.size > 0) {
-					const instead = place(
-						request,
-						candidates.filter((candidate) => fresh.has(candidate.host.id)),
-					);
-					if (!isRefusal(instead) && template !== undefined && bootsFreshInstead(chosen, instead)) {
-						const { snapshot: _restore, ...boot } = template;
-						template = boot;
-						chosen = instead;
-					}
-				}
-				if (isRefusal(chosen)) {
-					// From a snapshot it goes only on the snapshot's host: that host not being up is the reason, not a lack of hosts.
-					const pinned = input.from !== undefined || input.template?.snapshot !== undefined;
-					const reason = pinned && chosen.code === "no_host" ? "host_unavailable" : chosen.code;
-					throw placementError("exhausted", reason, chosen.reason);
-				}
 				const now = clock.now();
 				const placement: PlacementRecord = {
 					sandboxId,
