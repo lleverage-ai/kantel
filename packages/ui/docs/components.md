@@ -503,14 +503,14 @@ A paused sandbox whose chosen host restarts it says its memory is lost.
 Move switches the dialog to the move's progress: its phase from the sandbox's reads (`moving` and its `move`), worded by
 `movePhaseText` (`copying`, `starting`, and a running sandbox's `stopping` and `final-copy`; a phase it doesn't know
 reads as Kantel names it), with the time it has taken. Close leaves it moving: the page shows Moving, and on the sandbox's
-page its phase, and the result comes as the page's notice. A failure keeps the dialog open with Kantel's reason and the
-hosts to try again; the sandbox is where it was.
+page its phase, and the result comes as the page's notice, also when the dialog went because a list's filter took its
+row away. A failure keeps the dialog open with Kantel's reason and the hosts to try again; the sandbox is where it was.
 
 **Don't use it for** a host's pool (the Hosts page's Move to pool) or where a new sandbox goes (New sandbox's pickers).
 
 **States:** loading, no hosts, several hosts, the dry run (memory kept, a pause), paused, in progress and each phase
-(copying, starting, stopping, final copy, one it doesn't know), failed with the reason, hosts not read, long names and
-a phone; all in its stories.
+(copying, starting, stopping, final copy, one it doesn't know), failed with the reason (in the dialog, and on the page
+once the dialog has gone), hosts not read, long names and a phone; all in its stories.
 
 **Cost:** one read of the hosts each time it opens (`listHosts`, or the account's own); while it moves, the page reads the
 sandbox as it does for any state change.

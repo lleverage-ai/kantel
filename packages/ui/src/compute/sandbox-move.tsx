@@ -3,7 +3,7 @@
 // progress as its phases go by. A move keeps going when the dialog closes; a failure says why, here or in the page's
 // notice once it has closed.
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -93,6 +93,14 @@ export function MoveDialog({ sandbox, targets, onClose, onMove, onFailed }: Move
 	const [failure, setFailure] = useState<string>();
 	// Which attempt the dialog is showing: one that settles after the dialog closed (or opened again) isn't shown here.
 	const attempt = useRef(0);
+	// Gone while a move is under way (its row filtered out of the list, say): its failure goes to `onFailed`, as after
+	// Close, so the page still says why.
+	useEffect(
+		() => () => {
+			attempt.current += 1;
+		},
+		[],
+	);
 	const list = state.status === "ready" ? state.value : [];
 	const target = list.find((host) => host.hostId === chosen) ?? list[0];
 	// A failure says so even while the page's last read still has it moving.

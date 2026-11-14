@@ -44,6 +44,7 @@ function Scenario({
 	fail,
 	slow = false,
 	press = false,
+	unmount = false,
 }: {
 	sandbox?: Sandbox;
 	targets?: readonly MoveTarget[];
@@ -52,6 +53,8 @@ function Scenario({
 	slow?: boolean;
 	/** Presses Move once the hosts are in, so the story opens on what comes of it. */
 	press?: boolean;
+	/** Takes the dialog away as soon as it moves, as a list does a row its filter no longer shows. */
+	unmount?: boolean;
 }) {
 	const [open, setOpen] = useState(true);
 	const [asked, setAsked] = useState<string>();
@@ -65,23 +68,26 @@ function Scenario({
 	return (
 		<div className="p-6">
 			<p className="text-muted">{asked ?? "Not moved yet."}</p>
-			<MoveDialog
-				sandbox={open ? sandbox : undefined}
-				targets={async () => {
-					if (read === "hang") return new Promise(() => {});
-					// Pressed stories read at once, so what comes of the press is on screen when the workbench looks.
-					await new Promise((resolve) => setTimeout(resolve, press ? 0 : 300));
-					if (read === "fail") throw new Error("Kantel couldn't list the hosts: the gateway didn't answer.");
-					return targets;
-				}}
-				onClose={() => setOpen(false)}
-				onMove={async (box, choice) => {
-					await new Promise((resolve) => setTimeout(resolve, slow ? 60_000 : press ? 50 : 800));
-					if (fail !== undefined) throw new Error(fail);
-					setAsked(`Moved ${box.name} to ${choice.hostId}, ${choice.keepMemory ? "with its memory" : "restarting"}.`);
-				}}
-				onFailed={(_box, reason) => setAsked(reason)}
-			/>
+			{unmount && asked !== undefined ? null : (
+				<MoveDialog
+					sandbox={open ? sandbox : undefined}
+					targets={async () => {
+						if (read === "hang") return new Promise(() => {});
+						// Pressed stories read at once, so what comes of the press is on screen when the workbench looks.
+						await new Promise((resolve) => setTimeout(resolve, press ? 0 : 300));
+						if (read === "fail") throw new Error("Kantel couldn't list the hosts: the gateway didn't answer.");
+						return targets;
+					}}
+					onClose={() => setOpen(false)}
+					onMove={async (box, choice) => {
+						if (unmount) setAsked("Moving; its row has gone from the list.");
+						await new Promise((resolve) => setTimeout(resolve, slow ? 60_000 : press ? 50 : 800));
+						if (fail !== undefined) throw new Error(fail);
+						setAsked(`Moved ${box.name} to ${choice.hostId}, ${choice.keepMemory ? "with its memory" : "restarting"}.`);
+					}}
+					onFailed={(_box, reason) => setAsked(reason)}
+				/>
+			)}
 		</div>
 	);
 }
@@ -125,6 +131,11 @@ export const Failed: Story = () => (
 		press
 		fail="hetzner-fsn1-01 can't take the sandbox's root image: its disk has 3 GB free of the 40 GB it needs. It's stopped where it was."
 	/>
+);
+
+/** The dialog goes mid-move (its row filtered out of the list): the failure still says why, on the page. */
+export const FailedAfterRowGone: Story = () => (
+	<Scenario press unmount fail="lle-h2 refused the move: the pool's sync is off. It's stopped where it was." />
 );
 
 /** The hosts can't be read. */
