@@ -389,6 +389,11 @@ export type StoredSandbox = Omit<
 			readonly mountsAt?: number;
 		};
 		readonly egressRevision?: number;
+		/**
+		 * A stop owed once the move ends, wherever it runs then (its person left the organisation as it moved): its
+		 * reason, which becomes its `stopFor` as it runs again, for the sweep to carry out.
+		 */
+		readonly stopAfter?: string;
 	};
 };
 

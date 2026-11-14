@@ -4051,6 +4051,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if ((await backend.hostConnected(hostId).catch(() => undefined)) === false) throw hostNotConnected();
 	}
 
+	/** The stop a move owed its sandbox (`moving.stopAfter`), as its `stopFor` once it runs again; none kept otherwise. */
+	const owedStop = (sandbox: StoredSandbox): Pick<StoredSandbox, "stopFor"> =>
+		sandbox.moving?.stopAfter === undefined || sandbox.stopFor !== undefined
+			? {}
+			: { stopFor: sandbox.moving.stopAfter };
+
 	const movingConflict = () =>
 		new KantelError("conflict", "The sandbox is moving to another host; try again once the move ends");
 
@@ -8990,24 +8996,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const key of await store.apiKeys.list({ accountId: params.accountId, ownerUserId: params.userId })) {
 				if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
 			}
-			// Their private sandboxes stay, stopped. One moving (a running sandbox's move, whose stop is its move's) is
-			// stopped once it runs where it went: its stop is owed (`stopFor`), which the sweep carries out.
-			for (const sandbox of await store.sandboxes.list({ accountId: params.accountId, ownerUserId: params.userId })) {
-				if (sandbox.visibility !== "private" || sandbox.state !== "running") continue;
-				const stopping = await beginStop(sandbox, false, "Its person left the organisation", principal).catch(
-					(error: unknown) => {
-						if (!(error instanceof KantelError && error.code === "conflict")) throw error;
-						return undefined;
-					},
+			// Their private sandboxes stay, stopped. One moving (whose stop and boot are its move's) is stopped once it runs
+			// wherever its move leaves it: its stop is owed on its move (`stopAfter`), which becomes its `stopFor` as it runs
+			// again, for the sweep to carry out.
+			const left = "Its person left the organisation";
+			const oweStop = (sandboxId: string) =>
+				patchSandbox(sandboxId, (latest) =>
+					latest.moving === undefined || latest.moving.stopAfter !== undefined
+						? undefined
+						: { ...latest, moving: { ...latest.moving, stopAfter: left } },
 				);
-				if (stopping !== undefined) keepGoing(stopping.work);
-				else {
-					await patchSandbox(sandbox.id, (latest) =>
-						latest.moving !== undefined && latest.stopFor === undefined
-							? { ...latest, stopFor: "Its person left the organisation" }
-							: undefined,
-					);
+			for (const sandbox of await store.sandboxes.list({ accountId: params.accountId, ownerUserId: params.userId })) {
+				if (sandbox.visibility !== "private") continue;
+				if (sandbox.moving !== undefined) {
+					await oweStop(sandbox.id);
+					continue;
 				}
+				if (sandbox.state !== "running") continue;
+				const stopping = await beginStop(sandbox, false, left, principal).catch((error: unknown) => {
+					if (!(error instanceof KantelError && error.code === "conflict")) throw error;
+					return undefined;
+				});
+				if (stopping !== undefined) keepGoing(stopping.work);
+				// A move begun since it was read: its stop owed on that move.
+				else await oweStop(sandbox.id);
 			}
 			return undefined;
 		},
@@ -12961,7 +12973,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					latest.hostId !== undefined &&
 					latest.strandedOn?.includes(latest.hostId) === true
 					? withState(rest, "error", { reason: HOST_REVOKED_REASON, ports: [] })
-					: rest;
+					: latest.state === "running"
+						? { ...rest, ...owedStop(latest) }
+						: rest;
 			}).catch(() => undefined);
 			if (cleared === undefined && (await store.sandboxes.get(sandboxId))?.moving?.operationId === operationId) {
 				return startAfterMove(sandboxId, operationId);
@@ -13037,7 +13051,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			},
 			undefined,
 			{ egressRevision: again.egressRevision },
-			() => ({ moving: undefined }),
+			(latest) => ({ moving: undefined, ...owedStop(latest) }),
 		).catch(() => undefined);
 		// A boot that failed leaves it `error` with its move, which is undone: cleared, as the error leaves it.
 		await patchSandbox(sandboxId, (latest) =>
@@ -13065,11 +13079,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			async () => placement,
 			undefined,
 			{ egressRevision: moving.egressRevision },
-			() => ({
+			(latest) => ({
 				moving: undefined,
 				latestSnapshotId: undefined,
 				latestSnapshotAt: undefined,
 				pausedSnapshotId: undefined,
+				...owedStop(latest),
 			}),
 		);
 	}

@@ -3373,7 +3373,7 @@ describe("organisations", () => {
 		expect((await failure(key.listSandboxes({ account: org.id }))).code).toBe("unauthenticated");
 		expect(await api.store.sandboxes.get(theirs.id)).toMatchObject({
 			state: "running",
-			stopFor: "Its person left the organisation",
+			moving: { operationId: "mov_1", stopAfter: "Its person left the organisation" },
 		});
 	});
 

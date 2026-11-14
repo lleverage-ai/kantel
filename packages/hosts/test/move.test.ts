@@ -983,4 +983,45 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		expect(after).toMatchObject({ state: "error", hostId: a.hostId });
 		expect(after?.moving).toBeUndefined();
 	});
+
+	it("keeps a stop owed as it moved (its person left) until the sweep stops it, wherever the move leaves it", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const owe = (id: string) =>
+			api.store.sandboxes.update(id, (latest) =>
+				latest.moving === undefined
+					? latest
+					: { ...latest, moving: { ...latest.moving, stopAfter: "Its person left the organisation" } },
+			);
+		// Moved: owed as its first copy was made, it runs on its target owing its stop, which the sweep carries out.
+		const moved = await runningOn(root, api, a, "disk");
+		let release = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		let moving = root.moveSandbox(moved.id, { keepMemory: false });
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		await owe(moved.id);
+		release();
+		expect(await moving).toMatchObject({ state: "running", hostId: b.hostId });
+		expect(await api.store.sandboxes.get(moved.id)).toMatchObject({ stopFor: "Its person left the organisation" });
+		await api.service.sweep();
+		await vi.waitFor(async () => expect((await root.getSandbox(moved.id)).state).toBe("stopped"));
+		// Rolled back before its stop: running on where it was, owing its stop.
+		const back = await runningOn(root, api, a, "disk");
+		const staged = b.calls.filter((call) => call.method === "sandbox.import").length;
+		b.refuse = (method, params) =>
+			method === "sandbox.import" && params.stage === true ? { code: "unavailable", message: "no room" } : undefined;
+		release = holding(b, (method) => method === "sandbox.import");
+		moving = root.moveSandbox(back.id, { keepMemory: false });
+		await vi.waitFor(() =>
+			expect(b.calls.filter((call) => call.method === "sandbox.import").length).toBeGreaterThan(staged),
+		);
+		await owe(back.id);
+		release();
+		await failure(moving);
+		expect(await api.store.sandboxes.get(back.id)).toMatchObject({
+			state: "running",
+			hostId: a.hostId,
+			stopFor: "Its person left the organisation",
+		});
+	});
 });
