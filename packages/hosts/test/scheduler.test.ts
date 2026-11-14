@@ -268,18 +268,24 @@ describe("place", () => {
 			const chosen = place(request, candidates);
 			return isRefusal(chosen) ? chosen.reason : chosen.host.id;
 		};
-		const warm = holding("warm", 4_000, { sdk_cache: ["sdv_1", "sdv_2"], sdk_docker: ["sdv_9"] });
+		// 0.45 full with it placed: under half, so the heads win over emptier hosts.
+		const warm = holding("warm", 20_000, { sdk_cache: ["sdv_1", "sdv_2"], sdk_docker: ["sdv_9"] });
 		// Emptier, but holding an older version of one disk, or one head of two, or nothing it says.
 		const older = holding("older", 30_000, { sdk_cache: ["sdv_1"], sdk_docker: ["sdv_9"] });
 		const half = holding("half", 30_000, { sdk_cache: ["sdv_2"] });
 		const silent = candidate("silent", capacity(30_000));
 		expect(pick(older, half, silent, warm)).toBe("warm");
 		// Between hosts that both hold the heads, or that both don't, projected fullness still decides.
-		const roomier = holding("roomier", 20_000, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_8", "sdv_9"] });
+		const roomier = holding("roomier", 24_000, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_8", "sdv_9"] });
 		expect(pick(warm, roomier, older)).toBe("roomier");
 		expect(pick(holding("fuller", 8_000, {}), older)).toBe("older");
 		// It is a preference only: a host without the heads takes it when the one with them is full.
 		expect(pick(holding("full", 1_000, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_9"] }), older)).toBe("older");
+		// Or would be at least half full and a quarter fuller than it (`muchFuller`): 0.56 against 0.15.
+		const busy = holding("busy", 16_384, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_9"] });
+		expect(pick(busy, older)).toBe("older");
+		// Within a quarter, the heads still win: 0.56 against 0.38.
+		expect(pick(busy, holding("middling", 22_400, {}))).toBe("busy");
 		// Without sticky disks, or with ones that have no head yet, nothing is preferred for them.
 		const plain = place({ tier: "microvm", size: "default" }, [warm, older]);
 		expect(isRefusal(plain) ? plain.reason : plain.host.id).toBe("older");

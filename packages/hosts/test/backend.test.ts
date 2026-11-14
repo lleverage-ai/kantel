@@ -1030,8 +1030,9 @@ describe("the compute API on kantel-host hosts", () => {
 		const head = await root.commitStickyDisk(first.id, "ci-cache");
 		await root.deleteSandbox(first.id);
 		const cold = await hostWith("cold");
-		// The host holding the head wins, though the other has more memory free; the head goes with the create.
-		await report(warm, 8_000, [head.id]);
+		// The host holding the head wins, though the other has more memory free (while it wouldn't be half full); the head
+		// goes with the create.
+		await report(warm, 20_000, [head.id]);
 		await report(cold, 30_000, []);
 		const placed = await root.createSandbox(attach);
 		expect(placed.hostId).toBe(warm.hostId);
@@ -1039,7 +1040,7 @@ describe("the compute API on kantel-host hosts", () => {
 		// A host holding only an older version is no better than one holding none: the emptier wins, told the head, which
 		// it attaches if it has it and else fetches for the next sandbox.
 		await root.deleteSandbox(placed.id);
-		await report(warm, 8_000, ["sdv_older"]);
+		await report(warm, 20_000, ["sdv_older"]);
 		const elsewhere = await root.createSandbox(attach);
 		expect(elsewhere.hostId).toBe(cold.hostId);
 		expect(created(cold).at(-1)).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50, version: head.id }]);
