@@ -229,19 +229,6 @@ export type StoredSandbox = Omit<
 	 */
 	readonly lifecycle?: number;
 	/**
-	 * A gateway's claim to settle this create whose answer was lost (`settleLostCreate`), for its starting attempt
-	 * (`lifecycle`) until `until`: only its claimant (`by`) destroys what the host made or publishes the outcome, and one
-	 * gone quiet past `until` is taken over. `failed` is the failure it decided, kept before the host's machine is
-	 * destroyed (`destroy`), so a gateway that takes it over finishes it once the host's placement is gone. Any state
-	 * change ends it.
-	 */
-	readonly createSettling?: {
-		readonly by: string;
-		readonly until: number;
-		readonly lifecycle: number;
-		readonly failed?: { readonly reason: string; readonly destroy: boolean };
-	};
-	/**
 	 * Hosts revoked while its boot was under way there, as far as its placement said (`strandOn`): its boot's move from
 	 * `starting` is `error` when the host it ended up on is one of them (`boot`), since only the boot knows for certain
 	 * where its attempt went. Cleared by every change of its state.

@@ -99,12 +99,13 @@ export function isCreateOutcomeUnknown(error: unknown): boolean {
 
 /**
  * A create's outcome as `settleCreate` answers it, from what its host reported since its answer was lost: made and
- * running (its placement), or not made (`failed`, why, and whether the host holds a machine for it still, to destroy);
+ * running (its placement); made and ended since (its placement, and the host's word on why); not made (`lost`, why);
  * `pending` while the host hasn't said, or the create isn't placed. `reportedAt` is when its host's report was taken.
  */
 export type CreateOutcome =
 	| { readonly state: "running"; readonly placement: Placement; readonly reportedAt: number }
-	| { readonly state: "failed"; readonly reason: string; readonly held: boolean; readonly reportedAt: number }
+	| { readonly state: "ended"; readonly placement: Placement; readonly reason: string; readonly reportedAt: number }
+	| { readonly state: "lost"; readonly reason: string; readonly reportedAt: number }
 	| { readonly state: "pending" };
 
 /**

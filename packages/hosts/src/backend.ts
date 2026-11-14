@@ -1207,15 +1207,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (placement === undefined || placement.state === "starting") return { state: "pending" };
 			const reportedAt = placement.updatedAt;
 			// Its host's hello didn't name it: never made there, or gone with its create.
-			if (placement.state === "lost") return { state: "failed", reason: CREATE_LOST, held: false, reportedAt };
+			if (placement.state === "lost") return { state: "lost", reason: CREATE_LOST, reportedAt };
 			// Made there: as the host has it now.
 			const sandbox = await call<HostSandbox>(sandboxId, HostMethods.get);
 			if (sandbox.state !== "running") {
-				const error = typeof sandbox.error === "string" && sandbox.error !== "" ? `: ${sandbox.error}` : "";
+				// Made, and ended since: kept there as the host has it, for a start to boot again.
+				const error =
+					typeof sandbox.error === "string" && sandbox.error !== "" ? `: ${sandbox.error.slice(0, 1000)}` : "";
 				return {
-					state: "failed",
-					reason: `${CREATE_ENDED} (${String(sandbox.state)}${error}): start it to make it again`,
-					held: true,
+					state: "ended",
+					placement: await placed(sandboxId, sandbox, placement.hostId, { placement }),
+					reason: `${CREATE_ENDED} (${String(sandbox.state)}${error}): start it to boot it again`,
 					reportedAt,
 				};
 			}
