@@ -400,6 +400,14 @@ export const HOST_FEATURES = {
 	 */
 	templateSync: "template-sync",
 	/**
+	 * A `template.build` of a custom image with `copy` (`HostTemplateBuild.copy`) is a copy of an entry another host
+	 * built: its root filesystem is only the one `copy` names, with the digest `copy` names, held on the host or fetched
+	 * from a peer, never built or pulled again (which might make another image under the same key), so whatever snapshot
+	 * the build fetches or boots is over the entry's image. A host without it would ignore `copy`. Reported with
+	 * `templateSync`.
+	 */
+	templateImageCopies: "template-image-copies",
+	/**
 	 * Saved snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"): kind `snapshot`,
 	 * each its snapshot ID (a ref's), in two versions, one for each block-mapped file: `disk` (`disk.ext4`, with its
 	 * record) and `memory` (`mem`, with the machine's state). The host maps each saved snapshot's files, lists those with
@@ -1530,6 +1538,18 @@ export interface HostTemplateBuild extends HostTemplateBase {
 	readonly egress?: HostEgress;
 	/** The account the template is of. */
 	readonly owner?: string;
+	/**
+	 * Makes a custom image's build a copy of an entry built on another host (`HOST_FEATURES.templateImageCopies`), over
+	 * only that entry's image: the root filesystem its build made (`HostTemplateBuilt.rootfsKey`) and the digest it named.
+	 * Absent: a root filesystem no peer holds is built or pulled on the host.
+	 */
+	readonly copy?: HostTemplateCopy;
+}
+
+/** The image a copy of a custom image's template snapshot is over (`HostTemplateBuild.copy`). */
+export interface HostTemplateCopy {
+	readonly rootfsKey: string;
+	readonly imageDigest: string;
 }
 
 /** `template.build`'s answer: `ref` names the snapshot on its host. */

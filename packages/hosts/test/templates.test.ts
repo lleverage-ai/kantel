@@ -61,6 +61,8 @@ async function addHost(
 		custom?: boolean;
 		/** It builds templates' custom images in a build microVM (`HOST_FEATURES.templateImages`). */
 		images?: boolean;
+		/** It keeps a custom image's copy to its entry's image (`HOST_FEATURES.templateImageCopies`). */
+		imageCopies?: boolean;
 		freeMemoryMiB?: number;
 	} = {},
 ) {
@@ -85,6 +87,7 @@ async function addHost(
 					...(options.custom === false ? [] : [HOST_FEATURES.customShapes]),
 					...(options.templates === false ? [] : [HOST_FEATURES.templates]),
 					...(options.images === true ? [HOST_FEATURES.templateImages] : []),
+					...(options.imageCopies === true ? [HOST_FEATURES.templateSync, HOST_FEATURES.templateImageCopies] : []),
 				];
 	const host = new FakeHost(service, id, features);
 	if (options.freeMemoryMiB !== undefined) host.freeMemoryMiB = options.freeMemoryMiB;
@@ -549,6 +552,24 @@ describe("templates' custom images", () => {
 			service.sandboxes.create({ tier: "microvm", template: boot, hostIds: ["host_plain"] }),
 		).rejects.toSatisfy((error) => isKantelError(error, "not_supported"));
 		expect(plain.calls.some((call) => call.method === "sandbox.create")).toBe(false);
+	});
+
+	it("are copied only to a host that keeps the copy to the entry's image, which is told it", async () => {
+		const { store, service, backend } = await setup();
+		const older = await addHost(store, service, "host_older", { images: true });
+		const copier = await addHost(store, service, "host_copier", { images: true, imageCopies: true });
+		const copy = { rootfsKey: "f".repeat(64), imageDigest: `sha256:${"c".repeat(64)}` };
+		// A host from before copies would drop `copy`, and might build or pull another image: it is sent nothing.
+		await expect(backend.buildTemplate?.({ ...buildSpec("host_older"), image, copy })).rejects.toSatisfy((error) =>
+			isKantelError(error, "not_supported"),
+		);
+		expect(older.calls.some((call) => call.method === "template.build")).toBe(false);
+		copier.answer = (method) =>
+			method === "template.build"
+				? { ref: "tsn_1", imageDigest: copy.imageDigest, rootfsKey: copy.rootfsKey, source: "dockerfile", sizeBytes: 7 }
+				: undefined;
+		expect(await backend.buildTemplate?.({ ...buildSpec("host_copier"), image, copy })).toMatchObject(copy);
+		expect(copier.calls.find((call) => call.method === "template.build")?.params).toMatchObject({ image, copy });
 	});
 });
 

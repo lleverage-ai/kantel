@@ -22,7 +22,7 @@
  * $KANTEL_BASE` is the base) or an `image` reference. Only a host that builds custom images (`customImages`) builds
  * one, in an isolated build microVM whose sole way out is the sandbox egress proxy, under the template's grants and its
  * operator's registries, never on the host's Docker; it keeps the root filesystem made, and boots it for the
- * template's sandboxes there, which no other host can. Its key has its source (the Dockerfile's digest, or the
+ * template's sandboxes there, as only a host with a copy of the entry does elsewhere (below). Its key has its source (the Dockerfile's digest, or the
  * reference) from the claim, and the image's digest once the build named it (`key.imageDigest`, which `keyHash` then
  * covers; a reconcile wants the entry by the hash it was claimed under, `claimHash`). An entry is built once: a new
  * digest comes only with a new entry, of a new version or a rebuild, which builds or pulls the image again.
@@ -41,13 +41,16 @@
  * Template snapshots are not user snapshots: they are kept in `store.templateSnapshots` and their bytes are deleted
  * with `backend.deleteTemplateSnapshot`. Nothing here reads or writes `store.snapshots` or calls `backend.deleteSnapshot`.
  *
- * A pool's hosts share a Kantel base's build (docs/design/disk-store.md, "Phase 3 notes"; a custom image's isn't copied,
- * as a copy says nothing of the image it was made of): once an entry is ready and a host holds
- * it (the catalogue's `template` holders, from hosts' reports), each other host in its pool on its runtime that takes
- * copies (`takesCopies`: it syncs templates, in a pool with sync on) is asked to build it too, under the same ID. A host
- * fetches it from a peer whose copy restores on its CPU and runtime rather than booting it, and builds its own when none
- * has one. A create then starts from the snapshot on any host with a copy that restores there (`snapshotHosts`), so the
- * pool's hosts fill by fullness rather than the first builder first. Thrown away, an entry's copies are deleted with its
+ * A pool's hosts share a template's build (docs/design/disk-store.md, "Phase 3 notes"): once an entry is ready and a host
+ * holds it (the catalogue's `template` holders, from hosts' reports), each other host in its pool on its runtime that
+ * takes copies (`takesCopies`: it syncs templates, in a pool with sync on) is asked to build it too, under the same ID. A
+ * host fetches it from a peer whose copy restores on its CPU and runtime rather than booting it, and builds its own when
+ * none has one. A custom image's copy is over only the entry's image (`TemplateBuildSpec.copy`, of a host with
+ * `template-image-copies`): its root filesystem fetched from a peer under the entry's `rootfsKey`, with the digest its key
+ * covers, never built or pulled again, which might give another digest; with no peer holding it the copy fails. So a host
+ * with a copy holds the entry's image as its own host does. A create then starts from the snapshot on any host with a
+ * copy that restores there (`snapshotHosts`), so the pool's hosts fill by fullness rather than the first builder first;
+ * a custom image's boots fresh only on a host holding its image (`startCustom`). Thrown away, an entry's copies are deleted with its
  * bytes; a copy of an entry gone or thrown away (one that finished after its entry went) is deleted by the sweep.
  */
 import { computeSchema, type RouteHandlers, type SignedInComputeRoutes, type templateRoutes } from "@kantel/api";
@@ -128,6 +131,12 @@ export const TEMPLATE_COPY_RETRY_MS = 10 * 60_000;
 
 /** The host feature of a host that fetches template snapshots from its peers and serves its own (`template-sync`). */
 export const TEMPLATE_SYNC_FEATURE = "template-sync";
+
+/**
+ * The host feature of a host that keeps a copy of a custom image's entry to that entry's image (`template-image-copies`):
+ * its root filesystem fetched from a peer, never built or pulled again.
+ */
+export const TEMPLATE_IMAGE_COPIES_FEATURE = "template-image-copies";
 
 /** What `KANTEL_TEMPLATES` being off answers. */
 export const TEMPLATES_OFF = "Templates are off on this deployment (KANTEL_TEMPLATES)";
@@ -844,10 +853,15 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		custom: CustomSource | undefined,
 	): Promise<void> {
 		const takesCopies = options.takesCopies;
-		// Not of a custom image: a host that can't fetch its root filesystem builds or pulls the image again, which may give
-		// another digest than the one the entry's key covers, and a copy says nothing of its image.
-		if (custom !== undefined) return;
 		if (takesCopies === undefined || entry.state !== "ready" || entry.ref === undefined) return;
+		// A custom image's copy is over only the entry's image: its root filesystem, fetched from a peer under the key the
+		// entry's build made, with the digest its key covers, and never built or pulled again (which might give another
+		// digest), so only of a host that keeps a copy to that (`template-image-copies`).
+		let copy: TemplateBuildSpec["copy"];
+		if (custom !== undefined) {
+			if (entry.rootfsKey === undefined || entry.key.imageDigest === undefined) return;
+			copy = { rootfsKey: entry.rootfsKey, imageDigest: entry.key.imageDigest };
+		}
 		const { poolId } = entry.key;
 		if (poolId === undefined || entry.hostId === undefined) return;
 		const copies = await copiesOf(entry.id);
@@ -860,6 +874,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			if (runtime.kernel !== entry.key.kernel || runtime.firecracker !== entry.key.firecracker) continue;
 			const host = hosts.find((each) => each.id === hostId);
 			if (host?.features?.includes(TEMPLATE_SYNC_FEATURE) !== true || !takesCopies(hostId)) continue;
+			if (copy !== undefined && host.features?.includes(TEMPLATE_IMAGE_COPIES_FEATURE) !== true) continue;
 			const key = `${entry.id}/${hostId}`;
 			if (copying.has(key) || (copyAgain.get(key) ?? 0) > now()) continue;
 			copying.add(key);
@@ -867,10 +882,16 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				(async () => {
 					try {
 						// Under the hash it was claimed and built under, which its bytes on its first host record.
-						await (backend.buildTemplate as NonNullable<SandboxBackend["buildTemplate"]>)(
-							await buildSpecOf(template, entry, base, shape, custom, hostId, claimHashOf(entry)),
-						);
+						const built = await (backend.buildTemplate as NonNullable<SandboxBackend["buildTemplate"]>)({
+							...(await buildSpecOf(template, entry, base, shape, custom, hostId, claimHashOf(entry))),
+							...(copy === undefined ? {} : { copy }),
+						});
 						copyAgain.set(key, now() + TEMPLATE_COPY_RETRY_MS);
+						// A copy that says it is over another image (a host that didn't keep to `copy`) is deleted: no create may
+						// start from it as the entry.
+						if (copy !== undefined && (built.imageDigest !== copy.imageDigest || built.rootfsKey !== copy.rootfsKey)) {
+							await backend.deleteTemplateSnapshot?.({ snapshotId: entry.id, hostId, ref: built.ref });
+						}
 					} catch (error) {
 						copyAgain.set(
 							key,
@@ -891,9 +912,9 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	 * lease lapsed is taken to have died with its gateway: it is thrown away (its bytes, which its host may have made or
 	 * be making, deleted by its ID there) and the key's next attempt claimed, so its ID and host stay its bytes' name.
 	 *
-	 * A custom image is only on the host that built it, and nothing boots it elsewhere (`startCustom`), so a ready or
-	 * stale one whose host can't serve the template now (`servedBy` false: disconnected, draining, no longer one the
-	 * account may use) doesn't satisfy its key: it is set aside (stale, its ID and host kept for its bytes, replaced and
+	 * A custom image is only on the host that built it and the hosts with a copy of its entry, and nothing boots it
+	 * elsewhere (`startCustom`), so a ready or stale one none of whose hosts can serve the template now (`servedBy`
+	 * false: disconnected, draining, no longer one the account may use) doesn't satisfy its key: it is set aside (stale, its ID and host kept for its bytes, replaced and
 	 * deleted once the next attempt is ready) and the next attempt claimed on an eligible host. A Kantel base's entry is
 	 * kept whatever its host: a create boots its base fresh on another.
 	 */
@@ -990,16 +1011,34 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			customSource(template.spec.image),
 		]);
 		const hostRuntimes = runtimesFor(eligible);
-		// Whether an entry's host may serve creates from it now, on the runtime it was built for, in the pool it was built
-		// in (any, for one built before pools).
-		const servedBy = (entry: StoredTemplateSnapshot) =>
+		// A custom image's ready and stale entries' copies (`spread`), by entry: the hosts in its pool that hold one, and so
+		// its image.
+		const copyHosts = new Map<string, string[]>();
+		if (custom !== undefined) {
+			for (const entry of await store.templateSnapshots.list({ templateId })) {
+				if (entry.state !== "ready" && entry.state !== "stale") continue;
+				const held = (await copiesOf(entry.id)).filter(
+					(copy) => copy.state === "held" && copy.poolId !== undefined && copy.poolId === entry.key.poolId,
+				);
+				copyHosts.set(
+					entry.id,
+					held.map((copy) => copy.hostId),
+				);
+			}
+		}
+		// Whether a host may serve creates from an entry now, on the runtime it was built for, in the pool it was built in
+		// (any, for one built before pools).
+		const servesOn = (entry: StoredTemplateSnapshot, hostId: string | undefined) =>
 			eligible.some(
 				(runtime) =>
-					runtime.hostId === entry.hostId &&
+					runtime.hostId === hostId &&
 					runtime.kernel === entry.key.kernel &&
 					runtime.firecracker === entry.key.firecracker &&
 					(entry.key.poolId === undefined || runtime.poolId === entry.key.poolId),
 			);
+		// Whether its own host or a host with a copy of it may.
+		const servedBy = (entry: StoredTemplateSnapshot) =>
+			servesOn(entry, entry.hostId) || (copyHosts.get(entry.id) ?? []).some((hostId) => servesOn(entry, hostId));
 		// By each wanted key's hash (a custom image's as it is claimed, before its build names its digest), one for each
 		// runtime in each pool; none while no host can make its shape.
 		const wanted = new Map<string, { runtime: PooledRuntime; key: TemplateCacheKeyHash }>();
@@ -1356,11 +1395,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		 * The hosts among `among` that would restore an entry: its own host, built in its pool on its runtime, then each
 		 * host in its pool now with a copy (a `template` holder made there) whose memory restores on it.
 		 */
-		const restoringHosts = async (
-			entry: StoredTemplateSnapshot,
-			among: readonly string[],
-			withCopies = true,
-		): Promise<string[]> => {
+		const restoringHosts = async (entry: StoredTemplateSnapshot, among: readonly string[]): Promise<string[]> => {
 			const out: string[] = [];
 			if (
 				entry.hostId !== undefined &&
@@ -1378,8 +1413,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			}
 			const { poolId } = entry.key;
 			const fingerprints = start.hostFingerprints;
-			if (!withCopies || poolId === undefined || fingerprints === undefined || start.hostPools === undefined)
-				return out;
+			if (poolId === undefined || fingerprints === undefined || start.hostPools === undefined) return out;
 			for (const copy of await copiesOf(entry.id)) {
 				const hostId = copy.hostId;
 				if (copy.state !== "held" || out.includes(hostId) || !among.includes(hostId) || !restores(hostId)) continue;
@@ -1389,15 +1423,42 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			return out;
 		};
 		if (custom) {
+			/**
+			 * The hosts among `among` with a copy of a custom image's entry, which hold its image too (a copy is over only its
+			 * root filesystem): in its pool now, on its runtime. Those whose copy's memory restores there are `restoringHosts`'.
+			 */
+			const copyHosts = async (entry: StoredTemplateSnapshot, among: readonly string[]): Promise<string[]> => {
+				const { poolId } = entry.key;
+				if (poolId === undefined || start.hostFingerprints === undefined || start.hostPools === undefined) return [];
+				const out: string[] = [];
+				for (const copy of await copiesOf(entry.id)) {
+					const hostId = copy.hostId;
+					if (copy.state !== "held" || out.includes(hostId) || !among.includes(hostId)) continue;
+					if (copy.poolId !== poolId || start.hostPools.get(hostId) !== poolId) continue;
+					if (
+						hostRuntimes.some(
+							(runtime) =>
+								runtime.hostId === hostId &&
+								runtime.kernel === entry.key.kernel &&
+								runtime.firecracker === entry.key.firecracker,
+						)
+					) {
+						out.push(hostId);
+					}
+				}
+				return out;
+			};
 			return startCustom(
 				template,
 				start.shape,
 				base,
 				hostRuntimes,
-				entries.filter(inItsPool),
+				// Its own host's pool is no copy's concern: an entry is offered by whichever of its hosts are in its pool now.
+				entries,
 				eligible,
-				// A custom image's entry is only on its own host: none is copied (`spread`).
-				(entry, among) => restoringHosts(entry, among, false),
+				inItsPool,
+				restoringHosts,
+				copyHosts,
 			);
 		}
 		// A snapshot is the machine it was built as: only one built as this sandbox's shape will do, so a restore and a
@@ -1450,10 +1511,11 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 
 	/**
 	 * How a sandbox made from a template with a custom image starts. A host boots one only from the root filesystem a
-	 * build there made, so the create goes only to the hosts holding the image of the template's version its newest usable
-	 * entry was built from (a rebuild's new image once one of its entries is ready): from that entry's snapshot when it was
-	 * built as this shape, on its host, else booting that image fresh on one of them. None yet: `unavailable`, for trying
-	 * again once a build is ready.
+	 * build there made, or a copy of an entry there fetched (`spread`), so the create goes only to the hosts holding the
+	 * image of the template's version its newest usable entry was built from (a rebuild's new image once one of its
+	 * entries is ready): its own host, and each host with a copy of it. From that entry's snapshot when it was built as
+	 * this shape, on a host that would restore it, else booting that image fresh on one of them. None yet: `unavailable`,
+	 * for trying again once a build is ready.
 	 */
 	async function startCustom(
 		template: StoredTemplate,
@@ -1462,7 +1524,9 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		hostRuntimes: readonly TemplateRuntime[],
 		entries: readonly StoredTemplateSnapshot[],
 		eligibleHosts: readonly string[],
+		inItsPool: (entry: StoredTemplateSnapshot) => boolean,
 		restoringHosts: (entry: StoredTemplateSnapshot, among: readonly string[]) => Promise<string[]>,
+		copyHosts: (entry: StoredTemplateSnapshot, among: readonly string[]) => Promise<string[]>,
 	): Promise<TemplateStart> {
 		const { spec } = template;
 		const image = spec.image as CustomSource["image"];
@@ -1473,18 +1537,27 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					runtime.kernel === entry.key.kernel &&
 					runtime.firecracker === entry.key.firecracker,
 			);
+		const built = entries.filter(
+			(entry) =>
+				(entry.state === "ready" || entry.state === "stale") &&
+				entry.ref !== undefined &&
+				entry.rootfsKey !== undefined &&
+				entry.key.imageDigest !== undefined &&
+				entry.version === template.version,
+		);
+		// Each built entry's hosts this create may use that hold its image: its own, still in its pool on its runtime, and
+		// those with a copy of it.
+		const imageHosts = new Map<string, string[]>();
+		for (const entry of built) {
+			const own =
+				entry.hostId !== undefined && eligibleHosts.includes(entry.hostId) && inItsPool(entry) && onRuntime(entry)
+					? [entry.hostId]
+					: [];
+			const copies = await copyHosts(entry, eligibleHosts);
+			imageHosts.set(entry.id, [...own, ...copies.filter((hostId) => !own.includes(hostId))]);
+		}
 		const usable = newestFirst(
-			entries.filter(
-				(entry) =>
-					(entry.state === "ready" || entry.state === "stale") &&
-					entry.ref !== undefined &&
-					entry.rootfsKey !== undefined &&
-					entry.key.imageDigest !== undefined &&
-					entry.version === template.version &&
-					entry.hostId !== undefined &&
-					eligibleHosts.includes(entry.hostId) &&
-					onRuntime(entry),
-			),
+			built.filter((entry) => (imageHosts.get(entry.id) ?? []).length > 0),
 			(entry) => (entry.state === "ready" ? 1 : 0) * 1e15 + (entry.readyAt ?? entry.startedAt),
 		);
 		const [newest] = usable;
@@ -1492,29 +1565,19 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			const message =
 				"The template's image isn't built yet on a host this sandbox may use; try again once its build is ready";
 			// Built, but only on hosts it may not use now: those hosts are the reason. Not built anywhere yet is no placement's.
-			const heldElsewhere = entries.some(
-				(entry) =>
-					(entry.state === "ready" || entry.state === "stale") &&
-					entry.rootfsKey !== undefined &&
-					entry.version === template.version &&
-					entry.hostId !== undefined &&
-					!eligibleHosts.includes(entry.hostId),
-			);
-			throw heldElsewhere
+			throw built.length > 0
 				? placementError("unavailable", "host_unavailable", message)
 				: new KantelError("unavailable", message);
 		}
 		// The image that entry was built from, on each host holding it: its root filesystem, and the digest the key covers.
-		// A host with a copy of one of its entries holds the image too: it fetched or built the root filesystem first.
 		const same = usable.filter(
 			(entry) => entry.rootfsKey === newest.rootfsKey && entry.key.imageDigest === newest.key.imageDigest,
 		);
-		const holders = new Set(same.map((entry) => entry.hostId as string));
+		const holders = new Set(same.flatMap((entry) => imageHosts.get(entry.id) ?? []));
 		let snapshot: StoredTemplateSnapshot | undefined;
 		let snapshotHosts: string[] = [];
 		for (const entry of same) {
 			const restoring = await restoringHosts(entry, eligibleHosts);
-			for (const hostId of restoring) holders.add(hostId);
 			if (
 				snapshot === undefined &&
 				restoring.length > 0 &&

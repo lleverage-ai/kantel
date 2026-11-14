@@ -1517,6 +1517,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...hostTemplateBase(spec.baseImage, spec.baseDigest),
 				...(spec.setup === undefined ? {} : { setup: spec.setup }),
 				...(spec.image === undefined ? {} : { image: { ...spec.image } }),
+				...(spec.copy === undefined ? {} : { copy: { ...spec.copy } }),
 				env: { ...spec.env },
 				vcpus: spec.shape.vcpus,
 				memoryMiB: spec.shape.memoryMb,

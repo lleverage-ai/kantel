@@ -387,7 +387,7 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureRootfsSync)
 	}
 	if h.fetches(proto.DiskKindTemplate) {
-		features = append(features, proto.FeatureTemplateSync)
+		features = append(features, proto.FeatureTemplateSync, proto.FeatureTemplateImageCopies)
 	}
 	if h.fetches(proto.DiskKindSnapshot) {
 		features = append(features, proto.FeatureSnapshotSync)
