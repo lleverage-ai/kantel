@@ -45,6 +45,7 @@ import { memoryRestoresOn, type SnapshotMadeOn } from "./backend.ts";
 import {
 	createGrantKey,
 	DISK_KINDS,
+	type DiskGrant,
 	type DiskKind,
 	GRANT_TTL_MS,
 	type GrantKey,
@@ -183,6 +184,11 @@ export interface DiskHolders {
 	recordSnapshotFetch(objectId: string, version: string, hostId: string, ref: string): Promise<string | undefined>;
 	/** Answers `disk.locate` from `hostId`. */
 	locate(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
+	/**
+	 * Signs a grant whose holders the caller knows (a move's export, kind `sandbox`, which the host registry tracks), for
+	 * `GRANT_TTL_MS`. `not_supported` while there can be no grant key.
+	 */
+	grant(grant: Omit<DiskGrant, "exp" | "kid">): Promise<string>;
 	/**
 	 * The grant keys, made on first use; undefined while there can be none (sticky disks and templates off, no secrets
 	 * key). A key that
@@ -991,6 +997,14 @@ export function createDiskHolders(options: {
 				exp: now() + GRANT_TTL_MS,
 			});
 			return { ...mapDigest, holders, grant };
+		},
+
+		async grant(grant) {
+			if ((!options.stickyDisks && !options.templates) || sealer === undefined) {
+				throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+			}
+			const signing = await signer(sealer);
+			return signing.sign({ ...grant, exp: now() + GRANT_TTL_MS });
 		},
 
 		async keys() {

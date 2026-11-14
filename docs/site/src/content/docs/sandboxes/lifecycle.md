@@ -145,6 +145,7 @@ The same goes for a start, resume or fork, and for a create from a snapshot. The
 | `stopping` | Its disk is being saved |
 | `stopped` | It has no machine. Its disk is kept, and its running programs are gone |
 | `paused` | Like `stopped`, but its memory is kept too (microVMs only) |
+| `moving` | Being moved to another host, then started there; its `move` says how far (`copying`, `starting`) |
 | `error` | The last operation failed or its machine was lost |
 | `deleting`, `deleted` | Erased for good |
 
@@ -273,6 +274,19 @@ A running sandbox is recovered too, so a retry would restart it again and end wh
 ## Upgrade an isolate
 
 `POST /v1/sandboxes/{id}/upgrade` (`kantel upgrade <id>`) turns a running or stopped isolate into a microVM with the same ID, files and settings: see [Upgrade an isolate to a microVM](/sandboxes/types/#upgrade-an-isolate-to-a-microvm). With `from` (`kantel upgrade <id> --from <snapshot>`) the microVM starts from a snapshot of a microVM, as a create from it would, with the isolate's files laid over it: see [Upgrade into a snapshot](/sandboxes/types/#upgrade-into-a-snapshot). `autoUpgrade` on a create or a `PATCH` has an isolate do it by itself when a command needs a microVM, into the snapshot `autoUpgradeFrom` names, if any.
+
+## Move to another host
+
+`POST /v1/sandboxes/{id}/move` (`kantel move <id>`) moves a stopped microVM to another host in its pool and starts it there. It keeps its ID, name, settings and URLs. Its disk and its sticky disks' copies go with it, including writes to them that weren't committed. Only once it runs on the new host is it placed there and its copy on the old host deleted. If it can't be moved, it is left stopped where it was. A move never leaves the sandbox's pool, and it needs the pool's sync on and hosts with a kantel-host that moves sandboxes.
+
+`hostId` (`--to <host>`) picks the host. Otherwise the scheduler picks one, as for a create. While it moves, its state is `moving`.
+
+Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet. A paused sandbox moves only with `keepMemory: false` (`--drop-memory`), and boots on its disk on the new host. Its automatic snapshots from before stay on the old host.
+
+```sh
+curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/move" \
+  -H "authorization: Bearer $KANTEL_API_KEY" -H 'content-type: application/json' -d '{}'
+```
 
 ## Delete permanently
 

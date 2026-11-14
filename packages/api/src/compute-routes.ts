@@ -102,6 +102,7 @@ import {
 	Member,
 	MemberList,
 	MemberPath,
+	MoveSandboxBody,
 	PageQueryCompute,
 	PersonalToken,
 	PersonalTokenList,
@@ -610,6 +611,29 @@ export const upgradeSandbox = defineRoute({
 	errors: [...lifecycleErrors, "exhausted"],
 });
 
+export const moveSandbox = defineRoute({
+	operationId: "moveSandbox",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/move",
+	tag: "sandboxes",
+	summary: "Move a sandbox to another host",
+	description: describe(
+		"Moves a stopped microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its",
+		"sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then",
+		"is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a",
+		"paused sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. `hostId` picks the host;",
+		"else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and",
+		"`move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the",
+		"call fails and it is left stopped where it was. Its automatic snapshots from before stay on the old host.",
+		scope("sandboxes:write"),
+	),
+	params: SandboxPath,
+	body: MoveSandboxBody,
+	idempotent: true,
+	answer: { status: 200, description: "The sandbox, running on its new host (or `moving`).", schema: Sandbox },
+	errors: [...lifecycleErrors, "exhausted"],
+});
+
 export const recoverSandbox = defineRoute({
 	operationId: "recoverSandbox",
 	method: "POST",
@@ -716,6 +740,7 @@ export const sandboxRoutes = {
 	resumeSandbox,
 	forkSandbox,
 	upgradeSandbox,
+	moveSandbox,
 	recoverSandbox,
 	restartSandboxOnLatest,
 	deleteSandbox,

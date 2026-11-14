@@ -292,6 +292,33 @@ export interface UpgradedSandbox extends SandboxPlacement {
 	readonly bytes: number;
 }
 
+/**
+ * A stopped microVM's move to another host in its pool (`sandboxes.move`, docs/design/disk-store.md, "Moving a sandbox
+ * to another host"): Kantel's ID for it, which its source exports as the version of the sandbox's object and its
+ * target fetches; the hosts it may go to, or the one asked for; and how it starts there.
+ */
+export interface MoveSandboxInput {
+	readonly operationId: string;
+	/** Its account: an account's own host takes only that account's sandboxes. */
+	readonly owner?: string;
+	/** Only these hosts may take it (the control plane's eligible hosts); its own is never one. */
+	readonly hostIds?: readonly string[];
+	/** The one host asked for, among `hostIds`. */
+	readonly to?: string;
+	/** The pool it is kept to: the target must be in it as it admits the move, as its own host is. */
+	readonly poolId?: string;
+	/**
+	 * The start's params on the target, for the features it reports, as a boot sends them (its egress, revision and the
+	 * mounts that host takes), and how to read the mounts' statuses from its answer.
+	 */
+	readonly start: (features: readonly string[]) => {
+		readonly params: object;
+		readonly mounts?: (sandbox: HostSandbox) => readonly HostMountStatus[] | undefined;
+	};
+	/** Told, with the target, once the sandbox's files are there and it starts there. */
+	readonly onStarting?: (hostId: string) => void;
+}
+
 /** Where an upgrade's tar is put in the microVM before its host extracts it (and deletes it). */
 const UPGRADE_STAGING = "/tmp/.kantel-upgrade.tar";
 /** Makes `/workspace` a link to the upgraded files, as root: an empty directory there is replaced. */
@@ -556,6 +583,19 @@ export interface HostComputeLink {
 	recordHoldings?(hostId: string, at: number, holdings: HostHoldingsReport): Promise<void>;
 	/** A host's `disk.locate` (`ComputeService.locateDisk`). */
 	locateDisk?(hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult>;
+	/**
+	 * A grant for host `to` to fetch a version of an object of `accountId`'s from the hosts `from`
+	 * (`ComputeService.grantFetch`), signed with the control plane's grant key: a move's (kind `sandbox`), whose holders
+	 * the registry knows. `not_supported` while there is no grant key.
+	 */
+	grantFetch?(grant: {
+		readonly kind: "sandbox";
+		readonly objectId: string;
+		readonly version: string;
+		readonly accountId: string;
+		readonly from: readonly string[];
+		readonly to: string;
+	}): Promise<string>;
 	/**
 	 * The grant keys hosts accept fetch grants from, for their welcomes (`ComputeService.grantKeys`): the one that signs
 	 * first, then those rotated out. Undefined while there are none. A failure is logged and the welcome goes without, so
@@ -823,6 +863,27 @@ export interface HostsService {
 			operationId: string,
 		): Promise<
 			| { readonly state: "done"; readonly upgraded: UpgradedSandbox }
+			| { readonly state: "failed"; readonly reason?: string }
+		>;
+		/**
+		 * Moves a stopped microVM to another host in its pool (`HOST_FEATURES.sandboxMove` on both), with its ID: its disk
+		 * and sticky drives exported on its host and fetched by the target from it over the pool's mesh, then started there.
+		 * The move is kept on the placement before anything is sent, the target reserved, and the placement switched only
+		 * once the sandbox runs there; its source's copy is then deleted, owed until that host confirms it. A failure before
+		 * the switch rolls it back: the target's copy cancelled, the source's export deleted, the sandbox stopped where it
+		 * was. `upgradeOutcomeUnknown` when that can't be done yet (`settleMove` says). Sent again with the same
+		 * `operationId`, it goes on with the first.
+		 */
+		move(sandboxId: string, input: MoveSandboxInput): Promise<SandboxPlacement>;
+		/**
+		 * Move `operationId`'s outcome, for one whose answer or gateway was lost: done (switched, the sandbox running on its
+		 * new host), or failed and rolled back. Rejects while a host it needs can't be reached.
+		 */
+		settleMove(
+			sandboxId: string,
+			operationId: string,
+		): Promise<
+			| { readonly state: "done"; readonly moved: SandboxPlacement }
 			| { readonly state: "failed"; readonly reason?: string }
 		>;
 		/** Any other method of a sandbox, on its host: stop, resume, exec, files, snapshots. */
@@ -1724,6 +1785,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			return compute.bucketSource(hostId, sandboxId, bucketSourceId);
 		},
 		async diskLocate(hostId, params) {
+			// A move's export: where it is the registry knows, not the catalogue.
+			if (params.kind === "sandbox") return locateMove(hostId, params);
 			if (compute?.locateDisk === undefined) {
 				throw new KantelError("not_supported", "The compute plane keeps no disk catalogue here");
 			}
@@ -2473,8 +2536,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const left = await store.updatePlacement(sandboxId, (latest) => {
 			const owed = latest.cleanup;
 			if (!should(latest) || owed === undefined || owed.hostId === latest.hostId) return undefined;
-			const { upgrade: _upgrade, ...rest } = latest;
-			return { ...rest, hostId: owed.hostId, tier: "isolate", state: "deleting", updatedAt: clock.now() };
+			const { upgrade: _upgrade, move: _move, ...rest } = latest;
+			return {
+				...rest,
+				hostId: owed.hostId,
+				tier: owed.tier ?? "isolate",
+				state: "deleting",
+				updatedAt: clock.now(),
+			};
 		});
 		if (left !== undefined) {
 			const owedHost = left.hostId;
@@ -2493,6 +2562,159 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		if (due === undefined) return;
 		cleanupsDue.delete(hostId);
 		for (const sandboxId of due) report(cleanUpSource(hostId, sandboxId).then(() => undefined));
+	};
+
+	/** Whether a placement is still the move `operationId` is under way on: the sandbox on its source, not switched. */
+	const movingBy = (placement: PlacementRecord | undefined, operationId: string): placement is PlacementRecord =>
+		placement?.tier === "microvm" && placement.move?.operationId === operationId;
+
+	/**
+	 * Clears move `operationId` off its placement (`settling` by `token`, where given), as the placement is now: its
+	 * host's reports since are kept, and a placement another gateway settled, or a later move's, is left as it is.
+	 * Whether it did.
+	 */
+	const clearMove = async (sandboxId: string, operationId: string, token?: string): Promise<boolean> =>
+		(await store.updatePlacement(sandboxId, (latest) => {
+			if (!movingBy(latest, operationId)) return undefined;
+			if (token !== undefined && latest.move?.settling?.by !== token) return undefined;
+			const { move: _done, ...placed } = latest;
+			return { ...placed, updatedAt: clock.now() };
+		})) !== undefined;
+
+	/**
+	 * Rolls back a move that hasn't switched: the target's copy cancelled (`sandbox.import.cancel`: whatever it fetched,
+	 * and a sandbox it made or started there, deleted, and never made after by an import still under way), the source's
+	 * export deleted, the move cleared off the placement, which never left the source. Claimed first, as an upgrade's
+	 * rollback is (`move.settling`, for `settleLeaseMs`), so only one gateway sends the compensating calls at a time, and
+	 * each only while its claim and the move still stand. `done` once rolled back; `unreachable` when a host couldn't be
+	 * reached (the claim let go, the move left on the placement to be settled later); `busy` while another gateway has
+	 * it; `superseded` when it is no longer this rollback's.
+	 */
+	const rollBackMove = async (
+		sandboxId: string,
+		operationId: string,
+	): Promise<"done" | "unreachable" | "busy" | "superseded"> => {
+		const token = shortId("rbm");
+		const claimed = await store.updatePlacement(sandboxId, (latest) => {
+			if (!movingBy(latest, operationId) || latest.move === undefined) return undefined;
+			const held = latest.move.settling;
+			if (held !== undefined && held.until > clock.now()) return undefined;
+			return { ...latest, move: { ...latest.move, settling: { by: token, until: clock.now() + settleLeaseMs } } };
+		});
+		if (claimed?.move === undefined) {
+			return movingBy(await store.getPlacement(sandboxId), operationId) ? "busy" : "superseded";
+		}
+		const stillOurs = async () => {
+			const read = await store.getPlacement(sandboxId);
+			return movingBy(read, operationId) && read.move?.settling?.by === token;
+		};
+		const letGo = () =>
+			store
+				.updatePlacement(sandboxId, (latest) => {
+					if (!movingBy(latest, operationId) || latest.move?.settling?.by !== token) return undefined;
+					const { settling: _gone, ...move } = latest.move;
+					return { ...latest, move };
+				})
+				.catch(() => undefined);
+		for (const [hostId, method] of [
+			[claimed.move.target, HostMethods.sandboxImportCancel],
+			[claimed.hostId, HostMethods.sandboxExportDelete],
+		] as const) {
+			if (!(await stillOurs())) return "superseded";
+			try {
+				await onHost(hostId, method, { sandboxId, version: operationId });
+			} catch (error) {
+				if (!(isKantelError(error) && error.code === "not_found")) {
+					await letGo();
+					return "unreachable";
+				}
+			}
+		}
+		return (await clearMove(sandboxId, operationId, token)) ? "done" : "superseded";
+	};
+
+	/**
+	 * A move's outcome, settled: one switched (the placement on its target, owing its source its copy's removal under
+	 * the move's ID) is done; one not switched is rolled back, however far it got. Rejects while a host it needs can't be
+	 * reached, or another gateway is settling it.
+	 */
+	const settleMoveWith = async (
+		sandboxId: string,
+		operationId: string,
+	): Promise<
+		| { readonly state: "done"; readonly moved: SandboxPlacement }
+		| { readonly state: "failed"; readonly reason?: string }
+	> => {
+		const placement = await store.getPlacement(sandboxId);
+		if (placement === undefined) return { state: "failed", reason: "The sandbox is gone" };
+		if (placement.cleanup?.operationId === operationId && placement.hostId !== placement.cleanup.hostId) {
+			const sandbox = await onHost<HostSandbox>(placement.hostId, HostMethods.get, { sandboxId });
+			const host = await store.getHost(placement.hostId);
+			return {
+				state: "done",
+				moved: {
+					sandbox,
+					hostId: placement.hostId,
+					placement,
+					nestedVirtualisation: host?.facts?.nested ?? false,
+					...(host?.poolId === undefined ? {} : { poolId: host.poolId }),
+				},
+			};
+		}
+		if (!movingBy(placement, operationId)) return { state: "failed", reason: "The move never began, or was undone" };
+		const rolled = await rollBackMove(sandboxId, operationId);
+		if (rolled === "unreachable") {
+			throw new KantelError("unavailable", "A host the move used can't be reached to roll it back yet");
+		}
+		if (rolled === "busy") throw new KantelError("unavailable", "The move is being settled by another gateway");
+		return { state: "failed", reason: "The move didn't finish, and was rolled back" };
+	};
+
+	/**
+	 * `disk.locate` for a move's export (kind `sandbox`): only to the move's target, while the move is under way with
+	 * that version and its source has made it (its map digest kept), from the source, at its mesh address, with a grant
+	 * naming the sandbox's account. `not_found` otherwise: a fetch of it is no use.
+	 */
+	const locateMove = async (hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult> => {
+		const missing = () => new KantelError("not_found", "No such move under way to this host");
+		const placement = await store.getPlacement(params.objectId);
+		const move = placement?.move;
+		if (
+			placement === undefined ||
+			move === undefined ||
+			move.operationId !== params.version ||
+			move.target !== hostId ||
+			move.mapDigest === undefined
+		) {
+			throw missing();
+		}
+		return grantMove(placement, move.target, move.mapDigest);
+	};
+
+	/** Where a move's export is for its target: its source, at its mesh address, with a grant naming the target. */
+	const grantMove = async (
+		placement: PlacementRecord,
+		target: string,
+		mapDigest: string,
+	): Promise<HostDiskLocateResult & { readonly grant: string }> => {
+		const source = await store.getHost(placement.hostId);
+		const address = source?.mesh?.address;
+		if (address === undefined) {
+			throw new KantelError("unavailable", "The sandbox's host has no address in its pool's mesh");
+		}
+		if (compute?.grantFetch === undefined) {
+			throw new KantelError("not_supported", "The compute plane signs no fetch grants here");
+		}
+		if (placement.owner === undefined) throw new KantelError("invalid", "The sandbox has no account");
+		const grant = await compute.grantFetch({
+			kind: "sandbox",
+			objectId: placement.sandboxId,
+			version: placement.move?.operationId ?? "",
+			accountId: placement.owner,
+			from: [placement.hostId],
+			to: target,
+		});
+		return { mapDigest, holders: [{ hostId: placement.hostId, address }], grant };
 	};
 
 	/**
@@ -3294,6 +3516,267 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			async settleUpgrade(sandboxId, operationId) {
 				return settleWith(sandboxId, operationId);
 			},
+			async move(sandboxId, input) {
+				const { operationId } = input;
+				let source = await placementOf(sandboxId);
+				if (source.tier !== "microvm" || isLeftover(source)) {
+					throw new KantelError("conflict", "Only a microVM moves to another host");
+				}
+				if (source.upgrade !== undefined) throw new KantelError("conflict", "The sandbox is being upgraded");
+				if (source.move !== undefined && source.move.operationId !== operationId) {
+					throw new KantelError("conflict", "Another move of the sandbox is under way");
+				}
+				// What an earlier move or upgrade left on another host is deleted first: the switch below owes its source the
+				// same, and one placement owes one host at a time.
+				if (source.cleanup !== undefined && source.cleanup.hostId !== source.hostId) {
+					const owed = source.cleanup.hostId;
+					source = (await cleanUpSource(owed, sandboxId)) ?? source;
+					if (source.cleanup !== undefined) {
+						throw new KantelError(
+							"unavailable",
+							`What the sandbox's last move left on host ${owed} isn't deleted yet; try again once that host is back`,
+						);
+					}
+				}
+				if (source.move === undefined && source.state !== "stopped") {
+					throw new KantelError("conflict", `The sandbox is ${source.state} on its host: only a stopped sandbox moves`);
+				}
+				const sourceHost = sane(await hostOf(source.hostId));
+				const meshed = (host: HostRecord) =>
+					host.mesh !== undefined && host.poolId !== undefined && host.mesh.poolId === host.poolId;
+				const moves = (host: HostRecord) => host.facts?.features?.includes(HOST_FEATURES.sandboxMove) === true;
+				if (!moves(sourceHost)) {
+					throw new KantelError(
+						"not_supported",
+						`The sandbox's host ${sourceHost.name} can't move sandboxes; upgrade its kantel-host`,
+					);
+				}
+				if (!meshed(sourceHost) || !(await (compute?.poolSync?.(sourceHost.poolId ?? "") ?? false))) {
+					throw new KantelError(
+						"not_supported",
+						"The sandbox's host isn't in its pool's mesh: turn the pool's sync on to move sandboxes between its hosts",
+					);
+				}
+				if (!hub.connected(sourceHost.id)) {
+					throw new KantelError("unavailable", `The sandbox's host ${sourceHost.name} isn't connected`);
+				}
+				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
+				// Never off its pool (its host's, which it is in), nor onto a host it may not use.
+				const listed = (await store.listHosts())
+					.map(sane)
+					.filter((host) => host.id !== sourceHost.id && (only === undefined || only.has(host.id)))
+					.filter((host) => input.to === undefined || host.id === input.to)
+					.filter((host) => host.accountId === undefined || host.accountId === input.owner)
+					.filter((host) => host.poolId !== undefined && host.poolId === sourceHost.poolId);
+				if (input.to !== undefined && listed.length === 0) {
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						"The host asked for isn't one this sandbox may move to: another host in its pool that it may use",
+					);
+				}
+				// A host that fetches it (`sandboxMove`, in the mesh) and boots its disk: its root image is the same
+				// architecture's, and the host gets the image itself (`sandbox.import` refuses one it can't have).
+				const able = listed.filter(
+					(host) => moves(host) && meshed(host) && host.facts?.arch === sourceHost.facts?.arch,
+				);
+				const shape = /^custom-/.test(source.size)
+					? { vcpus: source.vcpus, memoryMiB: source.memoryMiB, diskGiB: source.diskGiB }
+					: undefined;
+				const request = {
+					tier: "microvm" as const,
+					...(shape === undefined ? { size: source.size } : { shape }),
+					...(input.owner === undefined ? {} : { owner: input.owner }),
+				};
+				const candidateOf = (host: HostRecord): Candidate => {
+					const held = reservedOn(host);
+					return {
+						host,
+						connected: hub.connected(host.id),
+						reservedMemoryMiB: held.memoryMiB,
+						reservedDiskGiB: held.diskGiB,
+						heldMemory: held.memory,
+						owners: new Set(),
+					};
+				};
+				// A retry of the same move goes on to the target its intent names.
+				const retried = source.move === undefined ? undefined : listed.find((host) => host.id === source.move?.target);
+				const chosen =
+					retried !== undefined && source.move !== undefined
+						? { host: retried, size: source.move.size, custom: shape !== undefined }
+						: place(request, able.map(candidateOf));
+				if (isRefusal(chosen)) {
+					throw placementError(
+						"exhausted",
+						chosen.code,
+						able.length === 0
+							? listed.length === 0
+								? "No other host in the sandbox's pool may take it"
+								: "No other host in the sandbox's pool can take a moved sandbox: each needs a kantel-host that moves sandboxes, in the pool's mesh, of the same architecture"
+							: chosen.reason,
+					);
+				}
+				const target = chosen.host;
+				const size = {
+					name: source.size,
+					vcpus: chosen.size.vcpus,
+					memoryMiB: chosen.size.memoryMiB,
+					diskGiB: chosen.size.diskGiB,
+				};
+				// The move, kept on the placement before anything is sent: where its copy may be, so one whose gateway or
+				// answer is lost is settled (`settleMove`) rather than guessed. Only on the stopped microVM it was read as,
+				// with no other move or upgrade on it.
+				const intended = await store.updatePlacement(sandboxId, (latest) =>
+					latest.hostId === source.hostId &&
+					latest.tier === "microvm" &&
+					latest.upgrade === undefined &&
+					(latest.move === undefined
+						? latest.state === "stopped" && latest.cleanup === undefined
+						: latest.move.operationId === operationId && latest.move.target === target.id)
+						? {
+								...latest,
+								move: latest.move ?? { operationId, target: target.id, phase: "copy", size },
+								updatedAt: clock.now(),
+							}
+						: undefined,
+				);
+				if (intended?.move === undefined) {
+					throw new KantelError("conflict", "The sandbox changed, or another move of it began; try again");
+				}
+				// Read again once the intent is written, as an upgrade's target is: a drain or a pool move written before this
+				// read refuses it (its intent goes, nothing sent yet), and one written after finds the intent (`holds`).
+				const taking = source.move === undefined ? await store.getHost(target.id) : target;
+				if (!admits(taking, input.poolId ?? sourceHost.poolId)) {
+					await clearMove(sandboxId, operationId);
+					throw placementError(
+						"unavailable",
+						"host_unavailable",
+						`The host ${target.name} is draining, or was moved to another pool`,
+					);
+				}
+				reserve(target.id, size.memoryMiB, size.diskGiB);
+				/** Rolls the move back: only before the placement is switched, with the sandbox still on its source. */
+				const rollBack = async (error: unknown): Promise<never> => {
+					const rolled = await rollBackMove(sandboxId, operationId).catch(() => "unreachable" as const);
+					if (rolled === "done") throw error;
+					throw upgradeOutcomeUnknown(
+						rolled === "unreachable"
+							? `The move failed (${error instanceof Error ? error.message : String(error)}) and couldn't be rolled back yet: a host didn't answer`
+							: `The move failed (${error instanceof Error ? error.message : String(error)}), and another gateway is settling it`,
+					);
+				};
+				let started: HostSandbox;
+				let mounts: readonly HostMountStatus[] | undefined;
+				try {
+					const exported = await onHost<{ readonly mapDigest: string }>(
+						sourceHost.id,
+						HostMethods.sandboxExport,
+						{ sandboxId, version: operationId },
+						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+					);
+					if (typeof exported.mapDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(exported.mapDigest)) {
+						throw new KantelError("unavailable", "The sandbox's host answered its export without a map digest");
+					}
+					// Its map digest, for the target's own `disk.locate` (a grant renewed, a fetch asked again): only while this
+					// move is the one on the placement.
+					const recorded = await store.updatePlacement(sandboxId, (latest) =>
+						movingBy(latest, operationId) && latest.move !== undefined
+							? { ...latest, move: { ...latest.move, mapDigest: exported.mapDigest } }
+							: undefined,
+					);
+					if (recorded === undefined) throw new KantelError("conflict", "The move was undone meanwhile");
+					const location = await grantMove(recorded, target.id, exported.mapDigest);
+					await onHost(
+						target.id,
+						HostMethods.sandboxImport,
+						{ sandboxId, version: operationId, ...location },
+						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+						target,
+					);
+					const starting = await store.updatePlacement(sandboxId, (latest) =>
+						movingBy(latest, operationId) && latest.move !== undefined
+							? { ...latest, move: { ...latest.move, phase: "start" } }
+							: undefined,
+					);
+					if (starting === undefined) throw new KantelError("conflict", "The move was undone meanwhile");
+					input.onStarting?.(target.id);
+					const boot = input.start(target.facts?.features ?? []);
+					started = await onHost<HostSandbox>(
+						target.id,
+						HostMethods.start,
+						{ sandboxId, ...boot.params },
+						undefined,
+						target,
+					);
+					mounts = boot.mounts?.(started);
+				} catch (error) {
+					return rollBack(error);
+				}
+				// The sandbox runs on its target: the placement switches there in one conditional write, owing its source its
+				// copy's removal. A write that fails may still have landed: read back, the placement says which, and only one
+				// that never switched is rolled back.
+				const switched = (latest: PlacementRecord): PlacementRecord | undefined => {
+					if (!movingBy(latest, operationId) || latest.hostId !== source.hostId) return undefined;
+					const { move: _done, ...rest } = latest;
+					return {
+						...asReported(
+							{
+								...rest,
+								hostId: target.id,
+								size: size.name,
+								vcpus: size.vcpus,
+								memoryMiB: size.memoryMiB,
+								diskGiB: size.diskGiB,
+							},
+							started,
+							target,
+							clock.now(),
+						),
+						cleanup: { hostId: source.hostId, operationId, tier: "microvm" },
+						updatedAt: clock.now(),
+					};
+				};
+				let placement: PlacementRecord;
+				try {
+					const written = await store.updatePlacement(sandboxId, switched);
+					if (written === undefined) {
+						const read = await store.getPlacement(sandboxId);
+						if (read?.hostId === target.id && read.cleanup?.operationId === operationId) placement = read;
+						// Undone meanwhile (a delete, or another gateway's rollback): what was started on the target goes too.
+						else return rollBack(new KantelError("conflict", "The sandbox changed while it moved"));
+					} else placement = written;
+				} catch (error) {
+					const read = await store.getPlacement(sandboxId).catch(() => undefined);
+					if (read?.hostId === target.id && read.cleanup?.operationId === operationId) placement = read;
+					else if (movingBy(read, operationId)) return rollBack(error);
+					else {
+						throw upgradeOutcomeUnknown(
+							`The moved sandbox's placement couldn't be recorded (${error instanceof Error ? error.message : String(error)}), nor read back yet`,
+						);
+					}
+				}
+				// From here its source's copy (and the export) may be deleted: nothing rolls back. A removal not done, or not
+				// recorded, stays owed (`cleanup`), done once its host is back.
+				const cleaned = await cleanUpSource(source.hostId, sandboxId).catch((error: unknown) => {
+					const why = error instanceof Error ? error.message : String(error);
+					log(
+						`[hosts] the moved sandbox ${sandboxId}'s removal from ${source.hostId} wasn't recorded (${why}); again once it's back`,
+					);
+					cleanupsDue.set(source.hostId, new Set([...(cleanupsDue.get(source.hostId) ?? []), sandboxId]));
+					return undefined;
+				});
+				return {
+					sandbox: started,
+					hostId: target.id,
+					placement: cleaned ?? placement,
+					nestedVirtualisation: target.facts?.nested ?? false,
+					...(mounts === undefined ? {} : { mounts }),
+					...(taking?.poolId === undefined ? {} : { poolId: taking.poolId }),
+				};
+			},
+			async settleMove(sandboxId, operationId) {
+				return settleMoveWith(sandboxId, operationId);
+			},
 			async call<T>(sandboxId: string, method: string, params: object = {}, callOptions?: CallOptions) {
 				if (
 					method === HostMethods.create ||
@@ -3333,6 +3816,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				} catch (error) {
 					// Gone on the host already is gone.
 					if (!(error instanceof KantelError && error.code === "not_found")) throw error;
+				}
+				// A move under way leaves nothing on its target: its gateway rolls it back when its switch finds the sandbox
+				// gone, and this does it now in case that gateway is gone too.
+				const moving = placement.move;
+				if (moving !== undefined) {
+					await onHost(moving.target, HostMethods.sandboxImportCancel, {
+						sandboxId,
+						version: moving.operationId,
+					}).catch((error: unknown) => {
+						const why = error instanceof Error ? error.message : String(error);
+						log(
+							`[hosts] the copy of deleted sandbox ${sandboxId} moving to ${moving.target} wasn't cancelled (${why})`,
+						);
+					});
 				}
 				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
 				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);

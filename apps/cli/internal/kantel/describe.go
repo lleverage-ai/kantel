@@ -30,6 +30,9 @@ func diskOf(s api.Sandbox) string {
 // StateOf is a sandbox's state with why: `error (insufficient_capacity): out of memory`.
 func StateOf(s api.Sandbox) string {
 	state := string(s.State)
+	if s.Move != nil {
+		state += " (" + string(s.Move.Phase) + ")"
+	}
 	if s.PlacementReason != nil {
 		state += " (" + string(*s.PlacementReason) + ")"
 	}

@@ -71,6 +71,28 @@ export type UpgradeOutcome =
 	| { readonly state: "done"; readonly placement: UpgradedPlacement }
 	| { readonly state: "failed"; readonly reason?: string };
 
+/**
+ * A move's outcome as `settleMove` answers it: done, the sandbox running on its new host, or failed and rolled back
+ * (stopped where it was).
+ */
+export type MoveOutcome =
+	| { readonly state: "done"; readonly placement: Placement }
+	| { readonly state: "failed"; readonly reason?: string };
+
+/**
+ * A move of a stopped microVM to another host (`SandboxBackend.move`): a boot's options on its new host (its egress,
+ * revision, mounts, the hosts it may go to), its account, and the host asked for.
+ */
+export interface MoveSpec extends Omit<BootOptions, "fromSnapshot" | "rebase" | "rebaseTo" | "size" | "shape"> {
+	readonly accountId: string;
+	/** The one host asked for (`POST /sandboxes/{id}/move`'s `hostId`), among `eligibleHosts`. */
+	readonly to?: string;
+	/** The pool it is kept to, as a create's: the new host must be in it. */
+	readonly poolId?: string;
+	/** Told, with its new host, once its files are there and it starts there. */
+	readonly onStarting?: (hostId: string) => void;
+}
+
 /** Where an upgraded isolate's `/workspace` files are in its microVM; `/workspace` there is a link to it. */
 export const UPGRADE_WORKSPACE = "/home/user/workspace";
 
@@ -884,6 +906,19 @@ export interface SandboxBackend {
 	 * be told (the host away). Absent with `upgrade` absent.
 	 */
 	settleUpgrade?(sandboxId: string, operationId: string): Promise<UpgradeOutcome>;
+	/**
+	 * Moves a stopped microVM to another host in its pool (`POST /sandboxes/{id}/move`), with its ID, disk and sticky
+	 * disks' copies, and starts it there as `spec` boots it, cold, on its disk: answers its placement there, running. The
+	 * sandbox is on its old host until it runs on its new one; a failure before then leaves it stopped where it was.
+	 * `upgradeOutcomeUnknown` when that isn't known (`settleMove` says). Sent again with the same `operationId`, it goes
+	 * on with the first. Absent: sandboxes don't move here (`not_supported`).
+	 */
+	move?(sandboxId: string, spec: MoveSpec, operationId: string): Promise<Placement>;
+	/**
+	 * The outcome of move `operationId`, for one whose answer was lost: done once it switched, else rolled back so that
+	 * it can't land later. Rejects `unavailable` while it can't be told. Absent with `move` absent.
+	 */
+	settleMove?(sandboxId: string, operationId: string): Promise<MoveOutcome>;
 	/**
 	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
 	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.

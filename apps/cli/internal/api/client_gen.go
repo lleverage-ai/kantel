@@ -426,7 +426,7 @@ func (q *ListSandboxProcessesQuery) values() url.Values {
 type ListSandboxesQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account *string
-	// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+	// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
 	State *SandboxState
 	// Include stopped, paused and errored sandboxes. Default: only active ones.
 	All *bool
@@ -1588,6 +1588,15 @@ func (c *Client) PutSandboxGrants(ctx context.Context, sandboxID string, body Pu
 func (c *Client) RefreshSandboxMounts(ctx context.Context, sandboxID string, body RefreshMountsBody, opts ...CallOption) (*RefreshedMountList, error) {
 	var out RefreshedMountList
 	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/mounts/refresh", url.PathEscape(sandboxID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MoveSandbox POST /sandboxes/{sandboxId}/move: Move a sandbox to another host. Moves a stopped microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a paused sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left stopped where it was. Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.
+func (c *Client) MoveSandbox(ctx context.Context, sandboxID string, body MoveSandboxBody, opts ...CallOption) (*Sandbox, error) {
+	var out Sandbox
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/move", url.PathEscape(sandboxID)), Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

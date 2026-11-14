@@ -1339,7 +1339,7 @@
 						"name": "state",
 						"in": "query",
 						"required": false,
-						"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.",
+						"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.",
 						"schema": {
 							"$ref": "#/components/schemas/SandboxState"
 						}
@@ -2497,6 +2497,148 @@
 				"responses": {
 					"200": {
 						"description": "The sandbox, now a microVM.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Sandbox"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/move": {
+			"post": {
+				"operationId": "moveSandbox",
+				"summary": "Move a sandbox to another host",
+				"description": "Moves a stopped microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a paused sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left stopped where it was. Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MoveSandboxBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The sandbox, running on its new host (or `moving`).",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -18206,6 +18348,25 @@
 				"title": "MountStatus",
 				"description": "`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it."
 			},
+			"MoveSandboxBody": {
+				"type": "object",
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox."
+					},
+					"keepMemory": {
+						"type": "boolean",
+						"description": "Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new host and its memory is lost."
+					},
+					"wait": {
+						"type": "boolean",
+						"description": "Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was."
+					}
+				},
+				"title": "MoveSandboxBody",
+				"description": "Where to move it, and whether its memory goes with it. Every field is optional."
+			},
 			"PersonalToken": {
 				"type": "object",
 				"required": ["id", "name", "prefix", "createdAt", "expiresAt"],
@@ -18978,6 +19139,9 @@
 					"upgradedFrom": {
 						"$ref": "#/components/schemas/SandboxUpgrade"
 					},
+					"move": {
+						"$ref": "#/components/schemas/SandboxMove"
+					},
 					"latestSnapshotId": {
 						"type": "string",
 						"description": "The snapshot a resume or fork would use."
@@ -19394,6 +19558,39 @@
 				"title": "SandboxMount",
 				"description": "A mount of a sandbox's, and whether its files are in place."
 			},
+			"SandboxMove": {
+				"type": "object",
+				"required": ["phase", "keepMemory", "startedAt"],
+				"properties": {
+					"phase": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "copying"
+							},
+							{
+								"type": "string",
+								"const": "starting"
+							}
+						],
+						"description": "`copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it is starting on it."
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it is moving to, where the caller may know it, once chosen."
+					},
+					"keepMemory": {
+						"type": "boolean",
+						"description": "Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SandboxMove",
+				"description": "A move to another host under way (its `state` is `moving`)."
+			},
 			"SandboxNotRunning": {
 				"type": "object",
 				"required": ["code", "sandboxId", "state", "hint"],
@@ -19772,6 +19969,10 @@
 					},
 					{
 						"type": "string",
+						"const": "moving"
+					},
+					{
+						"type": "string",
 						"const": "error"
 					},
 					{
@@ -19784,7 +19985,7 @@
 					}
 				],
 				"title": "SandboxState",
-				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots."
+				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots."
 			},
 			"SandboxStickyDisk": {
 				"type": "object",

@@ -12,7 +12,7 @@ sidebar:
 Every command of `kantel` as `kantel help <command>` shows it. [Command line](/tools/cli/) explains signing in and how the commands fit together. `kantel help --json` prints the same as JSON, for a script or a coding agent, and needs no sign-in.
 
 - **Signing in:** [`login`](#kantel-login), [`logout`](#kantel-logout), [`whoami`](#kantel-whoami)
-- **Sandboxes:** [`new`](#kantel-new), [`sizes`](#kantel-sizes), [`list`](#kantel-list), [`info`](#kantel-info), [`start`](#kantel-start), [`stop`](#kantel-stop), [`resume`](#kantel-resume), [`recover`](#kantel-recover), [`upgrade`](#kantel-upgrade), [`fork`](#kantel-fork), [`delete`](#kantel-delete), [`extend`](#kantel-extend), [`usage`](#kantel-usage)
+- **Sandboxes:** [`new`](#kantel-new), [`sizes`](#kantel-sizes), [`list`](#kantel-list), [`info`](#kantel-info), [`start`](#kantel-start), [`stop`](#kantel-stop), [`resume`](#kantel-resume), [`recover`](#kantel-recover), [`upgrade`](#kantel-upgrade), [`move`](#kantel-move), [`fork`](#kantel-fork), [`delete`](#kantel-delete), [`extend`](#kantel-extend), [`usage`](#kantel-usage)
 - **Commands and files:** [`exec`](#kantel-exec), [`attach`](#kantel-attach), [`ps`](#kantel-ps), [`kill`](#kantel-kill), [`files ls`](#kantel-files-ls), [`files cat`](#kantel-files-cat), [`files put`](#kantel-files-put), [`files get`](#kantel-files-get), [`files rm`](#kantel-files-rm), [`scp`](#kantel-scp), [`push`](#kantel-push), [`sync`](#kantel-sync)
 - **Ports, SSH, desktop and browser:** [`host`](#kantel-host), [`port list`](#kantel-port-list), [`port hide`](#kantel-port-hide), [`ssh`](#kantel-ssh), [`desktop`](#kantel-desktop), [`browser`](#kantel-browser)
 - **Snapshots:** [`snapshot list`](#kantel-snapshot-list), [`snapshot info`](#kantel-snapshot-info), [`snapshot take`](#kantel-snapshot-take), [`snapshot save`](#kantel-snapshot-save), [`snapshot files`](#kantel-snapshot-files), [`snapshot rm`](#kantel-snapshot-rm)
@@ -309,6 +309,33 @@ kantel upgrade sbx_4kq9x2mt --vcpus 8 --memory 16
 
 # One from a saved snapshot with the project in it
 kantel upgrade sbx_4kq9x2mt --from monorepo-ci
+```
+
+### kantel move
+
+Move a stopped sandbox to another host in its pool, and start it there.
+
+```sh
+kantel move <id> [flags]
+```
+
+Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name, settings and URLs, and never leaves its pool. If it can't be moved, it is left stopped where it was.
+
+Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet, so a paused one moves only with --drop-memory. Its automatic snapshots from before stay on the old host.
+
+| Flag | What it does |
+| --- | --- |
+| `--to <host>` | The host to move it to, by ID (default: the scheduler's pick) |
+| `--drop-memory` | Move a paused sandbox, booting it on its disk on the new host (its memory is lost) |
+| `--wait` | Answer once it runs on the new host (the default) |
+| `--no-wait` | Answer at once rather than once it runs |
+
+```sh
+# Move a stopped sandbox to whichever host the scheduler picks
+kantel move sbx_4kq9x2mt
+
+# To a host of your choosing
+kantel move sbx_4kq9x2mt --to hst_7c2m9q4k
 ```
 
 ### kantel fork

@@ -624,6 +624,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		// Which hosts hold which disk versions, from their reports, and where a host fetches one from, with a grant.
 		recordHoldings: (hostId, at, holdings) => api.service.recordHoldings(hostId, at, holdings),
 		locateDisk: (hostId, params) => api.service.locateDisk(hostId, params),
+		// A move's export, whose holder the registry knows: a grant for its target.
+		grantFetch: (grant) => api.service.grantFetch(grant),
 		grantKeys: () => api.service.grantKeys(),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();

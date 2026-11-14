@@ -276,6 +276,7 @@ export const SandboxState = Type.Union(
 		Type.Literal("stopping"),
 		Type.Literal("stopped"),
 		Type.Literal("paused"),
+		Type.Literal("moving"),
 		Type.Literal("error"),
 		Type.Literal("deleting"),
 		Type.Literal("deleted"),
@@ -284,6 +285,8 @@ export const SandboxState = Type.Union(
 		title: "SandboxState",
 		description:
 			"`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. " +
+			"`moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then " +
+			"started there; commands and file calls wait for it as they do for a start. " +
 			"`stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like " +
 			"`stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the " +
 			"last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for " +
@@ -1119,6 +1122,29 @@ export const Sandbox = Type.Object(
 				},
 			),
 		),
+		move: Type.Optional(
+			Type.Object(
+				{
+					phase: Type.Union([Type.Literal("copying"), Type.Literal("starting")], {
+						description:
+							"`copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it " +
+							"is starting on it.",
+					}),
+					hostId: Type.Optional(
+						Type.String({ description: "The host it is moving to, where the caller may know it, once chosen." }),
+					),
+					keepMemory: Type.Boolean({
+						description:
+							"Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host.",
+					}),
+					startedAt: Timestamp,
+				},
+				{
+					title: "SandboxMove",
+					description: "A move to another host under way (its `state` is `moving`).",
+				},
+			),
+		),
 		latestSnapshotId: Type.Optional(Type.String({ description: "The snapshot a resume or fork would use." })),
 		latestSnapshotAt: Type.Optional(
 			Type.Integer({
@@ -1427,6 +1453,37 @@ export const UpgradeSandboxBody = Type.Object(
 		description:
 			"The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is " +
 			"optional: `{}` makes the deployment's default microVM.",
+	},
+);
+
+export const MoveSandboxBody = Type.Object(
+	{
+		hostId: Type.Optional(
+			Type.String({
+				description:
+					"The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for " +
+					"a create, among the pool's hosts that can take a moved sandbox.",
+			}),
+		),
+		keepMemory: Type.Optional(
+			Type.Boolean({
+				description:
+					"Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped " +
+					"sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new " +
+					"host and its memory is lost.",
+			}),
+		),
+		wait: Type.Optional(
+			Type.Boolean({
+				description:
+					"Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). " +
+					"Either way a failed move leaves it where and as it was.",
+			}),
+		),
+	},
+	{
+		title: "MoveSandboxBody",
+		description: "Where to move it, and whether its memory goes with it. Every field is optional.",
 	},
 );
 
@@ -4553,6 +4610,7 @@ export type GuestFeature = Static<typeof GuestFeature>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
 export type UpgradeSandboxBody = Static<typeof UpgradeSandboxBody>;
+export type MoveSandboxBody = Static<typeof MoveSandboxBody>;
 export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;
