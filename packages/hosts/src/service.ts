@@ -352,7 +352,9 @@ export interface MoveSandboxInput {
 	readonly keepMemory?: boolean;
 	/**
 	 * Awaited once the target is chosen and the move kept on the placement, before anything is sent: the target, and
-	 * whether its memory goes too (and why not). A failure of it is ignored.
+	 * whether its memory goes too (and why not; the reason names no host). A rejection gives the move up, its intent
+	 * cleared, or, where that can't be done (or the move was sent before), rejects `upgradeOutcomeUnknown`, for
+	 * `settleMove`.
 	 */
 	readonly onPlanned?: (hostId: string, memory: MoveMemoryWay) => Promise<void>;
 }

@@ -1483,7 +1483,7 @@ describe("moving a sandbox to another host", () => {
 								hostId,
 								memory: {
 									kept: false,
-									reason: "Host host_c has another CPU than stub, so its memory can't be restored there",
+									reason: "The new host has another CPU than its host, so its memory can't be restored there",
 								},
 							},
 				),
@@ -1501,7 +1501,7 @@ describe("moving a sandbox to another host", () => {
 				hostId: "host_c",
 				hostName: "host_c",
 				memory: "restarts",
-				restartReason: "Host host_c has another CPU than stub, so its memory can't be restored there",
+				restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
 			},
 		]);
 		// Nothing moved.

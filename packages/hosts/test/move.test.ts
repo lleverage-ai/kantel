@@ -1143,7 +1143,7 @@ describe("moving a sandbox with its memory", () => {
 	});
 
 	it("restarts it between hosts whose CPUs differ, and says why before it copies anything", async () => {
-		const { root, api, join } = await setup();
+		const { root, api, join, store } = await setup();
 		const a = await join(MOVES_MEMORY, undefined, fingerprints());
 		const b = await join(MOVES_MEMORY, undefined, fingerprints({ cpu: { ...AX102, model: 68 } }));
 		const sandbox = await runningOn(root, api, a, "disk");
@@ -1162,6 +1162,11 @@ describe("moving a sandbox with its memory", () => {
 		const moved = await root.getSandbox(sandbox.id);
 		expect(moved).toMatchObject({ hostId: b.hostId, moved: { keptMemory: false } });
 		expect(moved.moved?.restartReason).toContain("CPU");
+		// It names no host: callers who may not know its hosts read it too.
+		for (const host of [a, b]) {
+			const name = (await store.getHost(host.hostId))?.name ?? host.hostId;
+			expect(moved.moved?.restartReason).not.toContain(name);
+		}
 		expect(b.processes.get(sandbox.id)).toBe("booted");
 		expect(a.calls.find((call) => call.method === "sandbox.stop")?.params).toMatchObject({ memory: false });
 		expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true);

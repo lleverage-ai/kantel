@@ -110,7 +110,8 @@ export interface MoveSpec extends Omit<BootOptions, "fromSnapshot" | "rebase" | 
 	readonly keepMemory?: boolean;
 	/**
 	 * Awaited once its new host is chosen, before anything is copied: that host, and whether its memory goes too (and
-	 * why not, where it might have). A failure of it is ignored.
+	 * why not, where it might have; the reason names no host). A rejection gives the move up before anything is sent,
+	 * its intent cleared, or, where that can't be done, leaves it to be settled (`settleMove`).
 	 */
 	readonly onPlanned?: (hostId: string, memory: MoveMemory) => Promise<void>;
 }

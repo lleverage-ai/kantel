@@ -47,15 +47,15 @@ func TestMoveSaysWhatBecameOfItsMemory(t *testing.T) {
 	contains(t, "kept", r.Stdout, "Its memory moved with it")
 
 	restarted := func(call) any {
-		return sandbox(map[string]any{"type": "microvm", "hostId": "hst_b", "moved": map[string]any{"at": 1, "keptMemory": false, "restartReason": "Host box-b has another CPU than box-a"}})
+		return sandbox(map[string]any{"type": "microvm", "hostId": "hst_b", "moved": map[string]any{"at": 1, "keptMemory": false, "restartReason": "The new host has another CPU than its host"}})
 	}
 	r = run(t, []string{"move", "sbx_test1"}, opts{routes: routes{"POST /v1/sandboxes/sbx_test1/move": restarted}})
-	contains(t, "restarted", r.Stdout, "Its memory couldn't move: Host box-b has another CPU than box-a.")
+	contains(t, "restarted", r.Stdout, "Its memory couldn't move: The new host has another CPU than its host.")
 
 	plan := func(call) any {
 		return map[string]any{"targets": []any{
 			map[string]any{"hostId": "hst_b", "keepsMemory": true, "pauseMs": 4300, "memoryBytes": 536870912, "bytesPerSecond": 125000000, "rateMeasured": false},
-			map[string]any{"hostId": "hst_c", "keepsMemory": false, "restartReason": "Host box-c has another CPU than box-a"},
+			map[string]any{"hostId": "hst_c", "keepsMemory": false, "restartReason": "The new host has another CPU than its host"},
 		}}
 	}
 	r = run(t, []string{"move", "sbx_test1", "--dry-run"}, opts{routes: routes{"GET /v1/sandboxes/sbx_test1/move": plan}})
@@ -63,5 +63,5 @@ func TestMoveSaysWhatBecameOfItsMemory(t *testing.T) {
 	eq(t, "dry-run calls", len(r.Calls), 1)
 	contains(t, "keeps", r.Stdout, "keeps memory")
 	contains(t, "pause", r.Stdout, "about 4s (rate assumed)")
-	contains(t, "restarts", r.Stdout, "restarts: Host box-c has another CPU than box-a")
+	contains(t, "restarts", r.Stdout, "restarts: The new host has another CPU than its host")
 }

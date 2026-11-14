@@ -23,7 +23,7 @@ const DRY_RUN: readonly MoveTarget[] = [
 		hostId: "hst_intel_1",
 		hostName: "hetzner-fsn1-07",
 		memory: "restarts",
-		restartReason: "Host hetzner-fsn1-07 has another CPU than hetzner-fsn1-01, so its memory can't be restored there",
+		restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
 	},
 ];
 
@@ -33,13 +33,13 @@ const NONE_MATCH: readonly MoveTarget[] = [
 		hostId: "hst_intel_1",
 		hostName: "hetzner-fsn1-07",
 		memory: "restarts",
-		restartReason: "Host hetzner-fsn1-07 has another CPU than hetzner-fsn1-01, so its memory can't be restored there",
+		restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
 	},
 	{
 		hostId: "hst_old_1",
 		hostName: "hetzner-fsn1-09",
 		memory: "restarts",
-		restartReason: "Host hetzner-fsn1-09 can't take a sandbox's memory: upgrade its kantel-host",
+		restartReason: "The new host can't take a sandbox's memory: upgrade its kantel-host",
 	},
 ];
 
@@ -167,7 +167,7 @@ export const KeepingMemory: Story = () => <Scenario sandbox={moving("final-copy"
 export const RestartingWithReason: Story = () => (
 	<Scenario
 		sandbox={moving("copying", "hetzner-fsn1-07", {
-			restartReason: "Host hetzner-fsn1-07 has another CPU than hetzner-fsn1-01, so its memory can't be restored there",
+			restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
 		})}
 	/>
 );
