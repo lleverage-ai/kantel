@@ -8943,7 +8943,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				await requireCapacity(account.id, 1);
 				const hostLabels = { ...body.hostLabels };
-				// From a snapshot, in its pool, where a copy of it may be fetched as well as on its holders.
 				const hosts = requireHosts(
 					await known,
 					account.id,
@@ -8952,8 +8951,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 					hostPin,
-					pool ?? (snapshotPool === undefined ? undefined : await poolChoiceOf(snapshotPool)),
+					pool,
 				);
+				// From a snapshot, placed in its pool, where a copy of it may be fetched as well as on its holders. None there
+				// now: the create is kept, and fails as it boots, to be made again once one is.
+				const inSnapshotPool = new Set(
+					(await known).filter((host) => host.poolId === snapshotPool).map((host) => host.id),
+				);
+				const placeOn =
+					from === undefined || snapshotPool === undefined
+						? hosts
+						: hosts.filter((hostId) => inSnapshotPool.has(hostId));
 				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the snapshot's.
 				const placedPool =
 					from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : snapshotPool;
@@ -9142,7 +9150,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 								image: sandbox.image,
 								env: sandbox.env,
-								eligibleHosts: start?.eligibleHosts ?? hosts,
+								eligibleHosts: start?.eligibleHosts ?? placeOn,
 								// Kept to its pool as the host admits it, from a snapshot too (its host's pool, as recorded).
 								...pooled(sandbox.poolId),
 								fromSnapshot: from?.ref,
