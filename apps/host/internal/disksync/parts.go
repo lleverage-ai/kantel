@@ -139,6 +139,7 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 	}()
 	st := Stats{}
 	var left int64
+	inPlace := 0
 	for _, d := range digests {
 		base := "parts/" + d.Part + "/"
 		mapRaw, err := src.fetchMap(ctx, base+"map", d.Digest)
@@ -159,6 +160,10 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 		}
 		parts = append(parts, fetching{name: d.Part, raw: mapRaw, p: p})
 		st.Blocks += m.Blocks()
+		inPlace += p.inPlace()
+		// What is known so far, reported should a later part fail.
+		j.blocks.Store(int64(st.Blocks))
+		j.inPlace.Store(int64(inPlace))
 		st.Resumed = st.Resumed || p.resumed
 		left += p.left()
 	}
@@ -168,12 +173,6 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 		return st, err
 	}
 	defer release()
-	inPlace := 0
-	for _, part := range parts {
-		inPlace += part.p.inPlace()
-	}
-	j.blocks.Store(int64(st.Blocks))
-	j.inPlace.Store(int64(inPlace))
 	for _, part := range parts {
 		before := part.p.inPlace()
 		if err := part.p.clearZeros(); err != nil {

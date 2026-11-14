@@ -1,6 +1,7 @@
 package disksync
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"strings"
@@ -183,5 +184,64 @@ func TestFetchProgressOfFailures(t *testing.T) {
 	f.local.put(t, "v2", disk(t, 2, 0))
 	if got := fetcher.Progress(); len(got) != 0 {
 		t.Fatalf("a failure of a version held: %+v", got)
+	}
+}
+
+// A fetch that fails once its map is read and its partial opened (no room for the rest, after a restart) reports the
+// version's blocks and those its partial has in place.
+func TestFetchProgressOfAFetchWithNoRoom(t *testing.T) {
+	runBlocks = 1
+	retryWait = time.Millisecond
+	t.Cleanup(func() { runBlocks, retryWait = 16, time.Second })
+	f := newFixture(t, 1)
+	f.put("v2", disk(t, 12, 0))
+	h := f.holders[0]
+	var served atomic.Int32
+	h.fail = func(w http.ResponseWriter, r *http.Request) bool {
+		if served.Add(1) > 5 {
+			http.Error(w, "gone", http.StatusServiceUnavailable)
+			return true
+		}
+		return false
+	}
+	ref := Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}
+	if _, err := wait(t, f.fetcher().Start(Request{Ref: ref})); err == nil {
+		t.Fatal("a fetch from a holder that stopped serving succeeded")
+	}
+	// The host restarts with too little room for the rest.
+	f.local.room = 1
+	restarted := f.fetcher()
+	if _, err := wait(t, restarted.Start(Request{Ref: ref})); !isCapacity(err) {
+		t.Fatalf("with no room: %v", err)
+	}
+	p, ok := progressOf(restarted, "v2")
+	if !ok || p.State != proto.FetchFailed || p.Blocks != 12 || p.InPlace != 5 || p.Error == "" {
+		t.Fatalf("failed for room %+v (listed %v)", p, ok)
+	}
+}
+
+// A version the host holds, asked for while it waits its turn, isn't reported as a fetch.
+func TestFetchProgressLeavesOutAVersionHeld(t *testing.T) {
+	f := newFixture(t, 1)
+	f.put("v2", disk(t, 1, 0))
+	f.local.put(t, "v5", disk(t, 1, 0))
+	release := make(chan struct{})
+	fetcher := f.fetcher()
+	fetcher.Fetches = 1
+	fetcher.Locate = func(ctx context.Context, r Ref) (proto.DiskLocateResult, error) {
+		<-release
+		return f.location(), nil
+	}
+	a := fetcher.Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})
+	b := fetcher.Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v5"}})
+	eventually(t, fetcher, "v2", func(p proto.FetchProgress, _ bool) bool { return p.State == proto.FetchRunning })
+	if got := fetcher.Progress(); len(got) != 1 || got[0].Version != "v2" {
+		t.Fatalf("progress %+v", got)
+	}
+	close(release)
+	for _, j := range []*Job{a, b} {
+		if _, err := wait(t, j); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -293,8 +293,13 @@ func (f *Fetcher) Progress() []proto.FetchProgress {
 		failed[r] = fl
 	}
 	f.mu.Unlock()
+	// A version is reported fetching or held, never both: one queued may be of a version the host holds (asked for as
+	// the catalogue caught up), which it ends at once when its turn comes. The store is read without the lock.
+	out = slices.DeleteFunc(out, func(p proto.FetchProgress) bool {
+		return p.State == proto.FetchQueued && f.Store.Held(Ref{Kind: p.Kind, ObjectID: p.ObjectID, Version: p.Version})
+	})
 	if len(failed) > 0 {
-		// The store is read without the lock: it may be slow, and a fetch that starts meanwhile is reported next time.
+		// Without the lock: the store may be slow, and a fetch that starts meanwhile is reported next time.
 		partials := map[Ref]bool{}
 		for _, r := range f.Store.Partials() {
 			partials[r] = true
@@ -373,6 +378,8 @@ func (f *Fetcher) fetch(ctx context.Context, req Request, j *Job) (Stats, error)
 		return Stats{}, err
 	}
 	defer p.file.Close()
+	j.blocks.Store(int64(m.Blocks()))
+	j.inPlace.Store(int64(p.inPlace()))
 	// Room for everything the fetch writes from here, before it writes any of it: the blocks it fetches, and the blocks
 	// of zeros it clears, which take none when a hole is punched but may where one can't be.
 	release, err := f.Store.Reserve(req.Ref, p.left())
@@ -383,7 +390,6 @@ func (f *Fetcher) fetch(ctx context.Context, req Request, j *Job) (Stats, error)
 	if err := p.clearZeros(); err != nil {
 		return Stats{}, err
 	}
-	j.blocks.Store(int64(m.Blocks()))
 	j.inPlace.Store(int64(p.inPlace()))
 	st := Stats{Blocks: m.Blocks(), Resumed: p.resumed}
 	runs := p.runs()
@@ -571,6 +577,7 @@ func (h *holders) fetchMap(ctx context.Context, what, digest string) ([]byte, er
 			}
 			refused = refused || errors.Is(err, errGrant)
 			errs = append(errs, err)
+			h.job.noteError(err)
 		}
 		if !refused {
 			break
@@ -621,6 +628,7 @@ func (h *holders) fetchFile(ctx context.Context, name string) ([]byte, error) {
 			}
 			refused = refused || errors.Is(err, errGrant)
 			errs = append(errs, err)
+			h.job.noteError(err)
 		}
 		if missing == len(list) {
 			return nil, nil

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // partedStore is a host's versions of object sdk_1 of kind "snap" in a directory, each two parts (disk and mem:
@@ -211,11 +212,16 @@ func TestFetchPartsResumes(t *testing.T) {
 	}
 	retryWait = time.Millisecond
 	t.Cleanup(func() { retryWait = time.Second })
-	if _, err := wait(t, f.partedFetcher(local).Start(Request{Ref: snapRef})); err == nil {
+	fetcher := f.partedFetcher(local)
+	if _, err := wait(t, fetcher.Start(Request{Ref: snapRef})); err == nil {
 		t.Fatal("the fetch went through")
 	}
 	if local.Held(snapRef) {
 		t.Fatal("published without its memory")
+	}
+	// Reported failed with every part's blocks, the disk's in place.
+	if p := fetcher.Progress(); len(p) != 1 || p[0].State != proto.FetchFailed || p[0].Blocks != 5 || p[0].InPlace != 2 {
+		t.Fatalf("progress %+v", p)
 	}
 	refuse = false
 	st, err := wait(t, f.partedFetcher(local).Start(Request{Ref: snapRef}))
