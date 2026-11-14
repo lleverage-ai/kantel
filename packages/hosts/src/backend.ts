@@ -1021,18 +1021,30 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					: `None of the hosts its disk is on (${named}) can take it now`,
 			);
 		}
-		// The one the registry would place it on now, which fetches it; placed there once it has it. One that has no room
-		// by then (another create took it while it fetched) is passed over for the next, up to `SNAPSHOT_FETCH_TRIES`.
+		// The one the registry would place it on now, which fetches it; placed there once it has it. One whose fetch fails,
+		// or that has no room by then (another create took it while it fetched), is passed over for the next, up to
+		// `SNAPSHOT_FETCH_TRIES`; the last one's fetch failing fails the create with its host's error.
 		const started = now();
 		let left = fetchers;
 		for (let tries = 1; ; tries++) {
 			const hostId = await hosts.sandboxes.choose(input(left));
-			await fetchSnapshot(hostId, from.snapshotId);
+			left = left.filter((each) => each !== hostId);
+			const last = tries >= SNAPSHOT_FETCH_TRIES || left.length === 0;
+			const failed = await fetchSnapshot(hostId, from.snapshotId);
+			if (failed !== undefined) {
+				if (last) {
+					throw new KantelError(
+						"unavailable",
+						`The host ${hostId} couldn't fetch the snapshot's disk (${failed}): try again, or start it on a host that holds it`,
+					);
+				}
+				warn(`hosts: ${hostId} couldn't fetch snapshot ${from.snapshotId} (${failed}); fetching it on another host`);
+				continue;
+			}
 			try {
 				return await made([hostId], now() - started);
 			} catch (error) {
-				left = left.filter((each) => each !== hostId);
-				if (!isKantelError(error, "exhausted") || tries >= SNAPSHOT_FETCH_TRIES || left.length === 0) throw error;
+				if (!isKantelError(error, "exhausted") || last) throw error;
 			}
 		}
 	}
@@ -1065,17 +1077,27 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	/**
 	 * Has `hostId` fetch a saved snapshot's disk from the hosts in its pool that hold it (`disk.fetch`, which the host
 	 * answers once it has started, asking `disk.locate` where it is), and waits until the host reports holding it
-	 * (`HostCapacity.holdings`, each heartbeat), for `SNAPSHOT_FETCH_TIMEOUT_MS` at most. Its memory follows on its own
-	 * where the host restores it; a create before then boots on the disk.
+	 * (`HostCapacity.holdings`, each heartbeat), for `SNAPSHOT_FETCH_TIMEOUT_MS` at most. Answers the host's error instead
+	 * once a report received after the host answered lists the fetch as `failed` (`HostCapacity.fetches`): one received
+	 * before, however late it was kept, is of an earlier fetch, which this one goes on from. A host that doesn't report
+	 * its fetches is waited for until the timeout. Its memory follows on its own where the host restores it; a create
+	 * before then boots on the disk.
 	 */
-	async function fetchSnapshot(hostId: string, snapshotId: string): Promise<void> {
+	async function fetchSnapshot(hostId: string, snapshotId: string): Promise<string | undefined> {
 		const version = SNAPSHOT_VERSIONS.disk;
-		await hosts.diskFetch(hostId, { kind: "snapshot", objectId: snapshotId, version }).catch((error: unknown) => {
-			throw kantelErrorFromHost(error);
-		});
+		const answered = await hosts
+			.diskFetch(hostId, { kind: "snapshot", objectId: snapshotId, version })
+			.catch((error: unknown) => {
+				throw kantelErrorFromHost(error);
+			});
 		const timeout = options.snapshotFetchTimeoutMs ?? SNAPSHOT_FETCH_TIMEOUT_MS;
 		const until = now() + timeout;
-		while (!(await hosts.holdsObject(hostId, "snapshot", snapshotId, version))) {
+		for (;;) {
+			const state = await hosts.objectFetch(hostId, "snapshot", snapshotId, version);
+			if (state.held) return undefined;
+			if (state.fetch?.state === "failed" && state.at !== undefined && state.at > answered) {
+				return state.fetch.error ?? "its fetch failed";
+			}
 			if (now() >= until) {
 				throw new KantelError(
 					"unavailable",
