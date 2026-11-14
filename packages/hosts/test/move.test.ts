@@ -1493,6 +1493,46 @@ describe("pausing a sandbox keeps its commands running", () => {
 		expect(await root.getCommand(sandbox.id, "cmd_older")).toMatchObject({ state: "exited", exitCode: 0 });
 	}, 20_000);
 
+	it("keeps a kill made while a start that fails is killing its commands, and puts back the rest", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const ids: string[] = [];
+		for (const name of ["./a", "./b", "./c"]) {
+			ids.push((await root.runCommand(sandbox.id, { command: name, detached: true })).id);
+		}
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		// The start kills one, someone kills that one too, and the start's next kill can't be written.
+		const update = api.store.commands.update.bind(api.store.commands);
+		let updates = 0;
+		let first = "";
+		api.store.commands.update = async (...args) => {
+			updates += 1;
+			if (updates === 1) first = args[0];
+			if (updates === 2) {
+				expect(await root.killCommand(sandbox.id, first)).toMatchObject({ state: "killed" });
+				throw new Error("the store went away");
+			}
+			return update(...args);
+		};
+		expect((await failure(root.startSandbox(sandbox.id, { wait: true }))).code).toBe("unavailable");
+		api.store.commands.update = update;
+		expect((await root.getSandbox(sandbox.id)).state).toBe("paused");
+		expect(await api.store.commands.get(first)).toMatchObject({ state: "killed", killPending: true });
+		const rest = ids.filter((id) => id !== first);
+		for (const id of rest) expect(await api.store.commands.get(id)).toMatchObject({ state: "running", stderr: "" });
+		// Resumed: the kill reaches the one killed, and the rest run on, followed and killed by their IDs.
+		await root.resumeSandbox(sandbox.id, { wait: true });
+		expect(FakeHost.guestCommands.get(`${sandbox.id}/${first}`)?.result?.exitCode).toBe(137);
+		for (const id of rest) {
+			expect(await root.getCommand(sandbox.id, id)).toMatchObject({ state: "running", stdout: "so far\n" });
+			expect(FakeHost.guestCommands.get(`${sandbox.id}/${id}`)?.state).toBe("running");
+		}
+		expect(await root.killCommand(sandbox.id, rest[0] ?? "")).toMatchObject({ state: "killed" });
+		expect(FakeHost.guestCommands.get(`${sandbox.id}/${rest[0]}`)?.result?.exitCode).toBe(137);
+	}, 20_000);
+
 	it("sends a kill made while it was paused as it resumes, though its publishing fails", async () => {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_COMMANDS, undefined, fingerprints());

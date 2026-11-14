@@ -6467,6 +6467,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (stored.state === "killed" && stored.killPending === true) {
 			return reachRerun(sandboxId, await deliverKill(sandboxId, stored));
 		}
+		// Killed by a start from paused under way (`killPausedOrPutBack`), which may yet fail and put it back running in
+		// the memory it kept: this kill is kept on it, pending, so that putting back leaves it killed and its kill is sent
+		// as that memory resumes. A start that goes on has let the process go already.
+		if (
+			stored.state === "killed" &&
+			backend.killCommand !== undefined &&
+			(await store.sandboxes.get(sandboxId))?.state === "starting"
+		) {
+			const kept = await store.commands.update(stored.id, (latest) =>
+				latest.state === "killed" && latest.killPending !== true ? { ...latest, killPending: true } : undefined,
+			);
+			return reachRerun(sandboxId, kept ?? (await store.commands.get(stored.id)) ?? stored);
+		}
 		// One that ended where no gateway here saw it is answered with its end, not killed.
 		const command = await fetchedCommand(stored);
 		if (command.state !== "running") return reachRerun(sandboxId, command);
@@ -6719,7 +6732,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 		} catch (error) {
 			// Put back as they were, those this kill settled and nothing has changed since: their processes run on in the
-			// memory it is paused with again, followed and killed by their IDs once it resumes.
+			// memory it is paused with again, followed and killed by their IDs once it resumes. One killed meanwhile by
+			// someone else has changed (`killStored` keeps that kill pending), and stays killed, its kill sent as it resumes.
 			for (const { before, written } of settled) {
 				await store.commands
 					.update(before.id, (latest) => (JSON.stringify(latest) === JSON.stringify(written) ? before : undefined))
