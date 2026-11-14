@@ -951,6 +951,36 @@ describe("disk holders", () => {
 		).toEqual(["host_g"]);
 	});
 
+	it("keeps a host's fetching holder of a saved snapshot while it reports the fetch prepared, past the grace, and failed", async () => {
+		const tom = setUp({ fetchDisk: async () => undefined });
+		await tom.pool();
+		const snap = await tom.saved("hs1");
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		});
+		await tom.fetchHostSnapshot("host_b", { snapshotId: snap.id });
+		const holder = () => tom.api.store.diskHolders.get("snapshot:hs1:disk:host_b");
+		expect(await holder()).toMatchObject({ state: "fetching", ref: `${STUB_HOST_ID}/hs1` });
+		const since = (await holder())?.since;
+		// While its record is read and its root image fetched, the host reports it queued with no blocks, however long
+		// that takes: its holder stays as recordSnapshotFetch wrote it.
+		const preparing = { kind: "snapshot", objectId: "hs1", version: "disk", state: "queued", blocks: 0, inPlace: 0 };
+		for (let report = 0; report < 3; report++) {
+			tom.clock.now += 3 * 60_000;
+			await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [preparing] });
+			expect(await holder()).toMatchObject({ state: "fetching", since, ref: `${STUB_HOST_ID}/hs1` });
+		}
+		// A preparation that failed is reported failed: the holder stays while it is listed.
+		const failed = { ...preparing, state: "failed", error: "no root image for it" };
+		tom.clock.now += 3 * 60_000;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [failed] });
+		expect(await holder()).toMatchObject({ state: "fetching", since });
+		// Once the host no longer lists it, it is let go.
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [] });
+		expect(await holder()).toBeUndefined();
+	});
+
 	for (const [name, lose] of [
 		// The fetch was registered after the delete had listed the copies, so it was never told.
 		["a fetch registered after the delete listed the copies", "after"],

@@ -246,25 +246,21 @@ func (h *Host) fetchSnapshot(p proto.DiskFetchParams) (any, error) {
 		go h.fetchSnapshotMemory(p.ObjectID)
 		return map[string]any{}, nil
 	}
-	if h.fetcher.Running(req.Ref) {
-		return map[string]any{}, nil
-	}
-	go func() {
-		ctx := h.fetcher.Context
-		record, err := h.fetcher.ReadFile(ctx, req, microvm.SnapshotRecordFile)
+	// Its record is read and the host made ready as the fetch's preparation, so it is reported from now (queued, with
+	// no blocks), and a preparation that fails is reported failed. A fetch under way already is the one it joins.
+	located := req
+	req.Prepare = func(ctx context.Context) error {
+		// With the holders and grant the disk is fetched with, or asked anew when they came from disk.locate.
+		record, err := h.fetcher.ReadFile(ctx, located, microvm.SnapshotRecordFile)
 		if err == nil && record == nil {
 			err = errors.New("no holder has its record")
 		}
-		if err == nil {
-			err = t.PrepareSnapshotFetch(ctx, p.ObjectID, record)
-		}
 		if err != nil {
-			h.log.Warn("a snapshot's fetch couldn't start", "snapshot", p.ObjectID, "error", err)
-			return
+			return err
 		}
-		// With the holders and grant it read the record with, or asked anew when they came from disk.locate.
-		h.fetcher.Start(req)
-	}()
+		return t.PrepareSnapshotFetch(ctx, p.ObjectID, record)
+	}
+	h.fetcher.Start(req)
 	return map[string]any{}, nil
 }
 
