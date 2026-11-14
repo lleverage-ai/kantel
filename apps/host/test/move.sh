@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Moving a stopped sandbox to another host (docs/design/disk-store.md, "Moving a sandbox to another host"):
+# Moving a sandbox to another host (docs/design/disk-store.md, "Moving a sandbox to another host"):
 # local-stack.sh --hosts 2 starts the self-hosted control plane, with sticky disks on (so it signs fetch grants), and two
 # kantel-host processes from this branch, each in a container of its own on Docker's bridge, both in the deployment's
 # default pool, which gets sync on. Their peer sync is held to 40 Mbit/s, so a copy takes long enough to be cut. Then a
@@ -11,6 +11,17 @@
 #   2. it is stopped again and moved to B for real (POST /sandboxes/{id}/move): it runs on B with the same ID, its files
 #      and its sticky disk's file, the random bytes the same; A's copy is deleted; and its port, exposed again, has the
 #      same URL as on A and serves its files from B.
+#
+# Then peer sync is let run at full speed, the sandbox started on B again, and a writer in it appends 1 MiB and a line
+# with the count to its disk every 0.6 s (100 MiB a minute) as it moves while it runs (with a restart, keepMemory false):
+#
+#   3. a running move back to A whose final copy fails (A can't make the sandbox from it) after B has stopped it: B
+#      starts it again, with what it wrote before the stop, and neither host keeps a copy of the move;
+#   4. a running move to A for real: its phases are copying, stopping, final-copy and starting, everything it wrote
+#      before the stop is on A (every count, in order, up to the last it wrote, and the bytes with them), and the time it
+#      was unavailable (from its stop until a command runs on A) and the bytes of each copy are printed. The local
+#      stack's hosts are on overlayfs over this machine's file system, not XFS, so each copy is a full copy here and
+#      the final copy's map reads every block; what goes over the mesh is still only the blocks that changed.
 #
 # It stops and removes the stack at the end, whatever happened.
 #
@@ -152,5 +163,88 @@ run "$serve" >/dev/null
 wait=30 until_ok served disk-marker >/dev/null || fail "the port doesn't serve on B"
 [ "$(served disk-marker)" = on-disk ] || fail "the port on B served $(served disk-marker)"
 echo "moved: running on B with its files, sticky disk and bytes; A's copy deleted; its port at the same URL serves from B"
+
+# Peer sync at full speed for the running moves, the hosts restarted with the sandbox stopped.
+stop
+for h in h1 h2; do
+	jq '.syncRateMbit = -1' "$dir/$h/config.json" >"$dir/$h/config.new" && cat "$dir/$h/config.new" >"$dir/$h/config.json"
+	docker restart "kantel-stack-$name-$h" >/dev/null
+done
+until_ok online "$a_id" || fail "$a didn't come back"
+until_ok online "$b_id" || fail "$b didn't come back"
+until_ok mesh_up "$a" || fail "$a brought no mesh up"
+until_ok mesh_up "$b" || fail "$b brought no mesh up"
+for c in "$a" "$b"; do
+	docker exec "$c" curl -sS http://127.0.0.1:7070/facts | jq -e '.features | index("sandbox-move-running")' >/dev/null ||
+		fail "$c doesn't report sandbox-move-running"
+done
+api POST "/sandboxes/$sandbox/start" -d '{"wait":true}' | jq -e --arg h "$b_id" '.state == "running" and .hostId == $h' >/dev/null ||
+	fail "it didn't start on B: $(api GET "/sandboxes/$sandbox")"
+# 1 MiB and its count every 0.6 s: 100 MiB a minute.
+writer='cd /home/user && (setsid sh -c '"'"'i=0; while true; do i=$((i+1)); head -c 1048576 /dev/urandom >> stream; echo $i >> counts; date +%s.%N > tick; sleep 0.6; done'"'"' >/dev/null 2>&1 &) && sleep 1'
+# Its counts are 1 to the last, in order, with a MiB of the stream for each: what it wrote is whole.
+whole() {
+	run 'n=$(wc -l < /home/user/counts); [ "$(seq 1 $n | sha256sum)" = "$(sha256sum < /home/user/counts)" ] && [ $(stat -c %s /home/user/stream) -ge $(((n) * 1048576)) ] && echo $n'
+}
+running_on() { api GET "/sandboxes/$sandbox" | jq -e --arg h "$1" '.state == "running" and .hostId == $h' >/dev/null; }
+
+echo "== 3. A running move whose final copy fails after the stop: it starts again where it was, with what it wrote"
+rm -f "$dir/live-a"
+run "rm -f /home/user/stream /home/user/counts; $writer" >/dev/null
+sleep 5
+# A can't make the sandbox from its final copy: something is in the way where it goes.
+on "$a" "mkdir -p $root/sandboxes/$sandbox && touch $root/sandboxes/$sandbox/in-the-way"
+api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\",\"keepMemory\":false,\"wait\":false}" |
+	jq -e '.state == "moving" and .move.phase == "copying"' >/dev/null || fail "the running move didn't begin"
+seen=$(run 'tail -n 1 /home/user/counts')
+[ -n "$seen" ] || fail "nothing written as it moved"
+wait=300 until_ok running_on "$b_id" || fail "it didn't start again on B: $(api GET "/sandboxes/$sandbox")"
+api GET "/sandboxes/$sandbox" | jq -e '.move == null' >/dev/null || fail "its move is still on it"
+n=$(whole) || fail "what it wrote before the stop isn't whole on B"
+[ "$n" -ge "$seen" ] || fail "B has $n counts, and $seen were written before the stop"
+on "$a" "rm -rf $root/sandboxes/$sandbox"
+on "$a" "test ! -e $root/sandbox-imports/$sandbox" || fail "A kept its copies"
+on "$b" "test ! -e $root/sandbox-exports/$sandbox" || fail "B kept its exports"
+echo "rolled back after the stop: started again on B with its $n counts (at least the $seen seen before the stop); no copies left"
+
+echo "== 4. Moved while it runs: unavailable only for its stop, the final copy and its boot"
+run "rm -f /home/user/stream /home/user/counts; $writer" >/dev/null
+sleep 10
+began=$(date +%s.%N)
+api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\",\"keepMemory\":false,\"wait\":false}" |
+	jq -e '.state == "moving"' >/dev/null || fail "the running move didn't begin"
+# Its state every 0.2 s, with the time, until it runs on A.
+: >"$dir/move-states"
+deadline=$((SECONDS + 600))
+until running_on "$a_id"; do
+	[ $SECONDS -lt $deadline ] || fail "it never ran on A: $(api GET "/sandboxes/$sandbox")"
+	printf '%s %s\n' "$(date +%s.%N)" "$(api GET "/sandboxes/$sandbox" | jq -r '[.state, (.move.phase // "-"), .hostId] | join(" ")')" >>"$dir/move-states"
+	sleep 0.2
+done
+ran=$(date +%s.%N)
+run true >/dev/null
+answered=$(date +%s.%N)
+last_tick=$(run 'cat /home/user/tick')
+phases=$(awk '{print $3}' "$dir/move-states" | uniq | grep -v '^-$' | xargs)
+for want in copying final-copy starting; do
+	grep -qw "$want" <<<"$phases" || fail "its phases were $phases, without $want"
+done
+stopped_at=$(awk '$3 != "copying" && $3 != "-" {print $1; exit}' "$dir/move-states")
+n=$(whole) || fail "what it wrote before the stop isn't whole on A"
+on "$b" "test ! -e $root/sandboxes/$sandbox && test ! -e $root/sandbox-exports/$sandbox" || fail "B kept its copy"
+on "$a" "test ! -e $root/sandbox-imports/$sandbox" || fail "A kept its staged first copy"
+# What A fetched of each copy (its first, as it ran, and its final one), as its fetches logged them.
+copies=$(docker logs "$a" 2>&1 | grep 'disk version fetched' | grep "sandbox/$sandbox/" | tail -2)
+first=$(grep -- '-live ' <<<"$copies" | grep -o 'fetchedBytes=[0-9]*' | cut -d= -f2 | tail -1)
+final=$(grep -v -- '-live ' <<<"$copies" | grep -o 'fetchedBytes=[0-9]*' | cut -d= -f2 | tail -1)
+awk -v began="$began" -v stopped="$stopped_at" -v ran="$ran" -v answered="$answered" -v tick="$last_tick" \
+	-v first="${first:-?}" -v final="${final:-?}" -v n="$n" 'BEGIN {
+		printf "moved while it ran: %d counts whole on A; phases '"$phases"'\n", n
+		printf "  copying took %.1f s; from its stop to running on A %.1f s; its last write to a command answered on A %.1f s\n",
+			stopped - began, ran - stopped, answered - tick
+		printf "  first copy fetched %s bytes; final copy fetched %s bytes\n", first, final
+	}'
+unavailable=$(awk -v t="$last_tick" -v a="$answered" 'BEGIN { printf "%d", a - t }')
+[ "$unavailable" -lt 30 ] || echo "NOTE: unavailable for ${unavailable} s here (overlayfs, no reflinks: each export and the final map read the whole disk)"
 echo
 echo "PASS"

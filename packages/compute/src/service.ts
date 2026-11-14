@@ -12906,11 +12906,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (read.moving.from === "running") {
 			if (read.state === "starting") return startAfterMove(sandboxId, operationId);
 			// Its move cleared off it, as it is: a record moved to `starting` since is the stop's for this move, and started.
-			const cleared = await patchSandbox(sandboxId, (latest) =>
-				latest.moving?.operationId === operationId && latest.state !== "starting"
-					? { ...latest, moving: undefined }
-					: undefined,
-			).catch(() => undefined);
+			// Running still on a source revoked while it moved (`strandOn` kept it for this): `error`, as a revocation leaves it.
+			const cleared = await patchSandbox(sandboxId, (latest) => {
+				if (latest.moving?.operationId !== operationId || latest.state === "starting") return undefined;
+				const { moving: _done, ...rest } = latest;
+				return latest.state === "running" &&
+					latest.hostId !== undefined &&
+					latest.strandedOn?.includes(latest.hostId) === true
+					? withState(rest, "error", { reason: HOST_REVOKED_REASON, ports: [] })
+					: rest;
+			}).catch(() => undefined);
 			if (cleared === undefined && (await store.sandboxes.get(sandboxId))?.moving?.operationId === operationId) {
 				return startAfterMove(sandboxId, operationId);
 			}
