@@ -83,7 +83,7 @@ pi doesn't take MCP servers. It uses the `kantel` command through its shell inst
 | `sandbox_create` | Make a sandbox and wait until it runs. The agent chooses `type`, `isolate` or `microvm`, and the tool's description says when each fits; `from` starts it from a snapshot, whose type it takes |
 | `sandbox_list`, `sandbox_get` | The account's sandboxes, or one with its state, capabilities and cost |
 | `sandbox_stop`, `sandbox_resume` | Stop one, keeping its disk (`pause` keeps a microVM's memory too), and bring it back |
-| `sandbox_upgrade` | Turn an isolate into a microVM with the same ID, files (in `/home/user/workspace`, `/workspace` linked there), env and grants, and wait until it runs. The tool's description tells the agent to use it when a command needs a microVM, and `autoUpgrade` on `sandbox_create` has an isolate do it by itself |
+| `sandbox_upgrade` | Turn an isolate into a microVM with the same ID, files (in `/home/user/workspace`, `/workspace` linked there), env and grants, and wait until it runs. The tool's description tells the agent to use it when a command needs a microVM, and `autoUpgrade` on `sandbox_create` has an isolate do it by itself. `from` (and `autoUpgradeFrom` on `sandbox_create`) starts the microVM from a snapshot of one, such as the project's prepared one |
 | `sandbox_fork` | Copies of a sandbox, `count` at a time |
 | `sandbox_delete` | Delete one for good. An `agent` key isn't allowed to |
 | `sandbox_exec` | Run a command line and wait for it: its exit code, stdout and stderr, each cut to about 64 KiB. With `detached`, start it and answer its ID at once |

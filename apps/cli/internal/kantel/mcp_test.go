@@ -777,6 +777,14 @@ func TestMCPUpgradesAnIsolate(t *testing.T) {
 	eq(t, "isError", created.isError, false)
 	calls = f.fake.Calls()
 	eq(t, "create body", string(calls[1].Raw), `{"autoUpgrade":true,"type":"isolate","wait":true}`)
+
+	// Into a snapshot, by hand and by itself.
+	resultOf(t, f.handle(t, toolCall(3, "sandbox_upgrade", map[string]any{"sandboxId": "sbx_mcp1", "from": "monorepo-ci"}), nil))
+	resultOf(t, f.handle(t, toolCall(4, "sandbox_create", map[string]any{"type": "isolate", "autoUpgrade": true,
+		"autoUpgradeFrom": "monorepo-ci"}), nil))
+	calls = f.fake.Calls()
+	eq(t, "from body", string(calls[2].Raw), `{"from":"monorepo-ci","wait":true}`)
+	eq(t, "into body", string(calls[3].Raw), `{"autoUpgrade":true,"autoUpgradeFrom":"monorepo-ci","type":"isolate","wait":true}`)
 }
 
 func TestMCPSaysACommandNeedsAMicrovm(t *testing.T) {

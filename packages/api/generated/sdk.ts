@@ -631,6 +631,8 @@ export interface CreateSandboxBody {
 	readonly mounts?: readonly Mount[];
 	/** For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. */
 	readonly autoUpgrade?: boolean;
+	/** What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only. */
+	readonly autoUpgradeFrom?: string;
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
 }
@@ -1973,6 +1975,8 @@ export interface Sandbox {
 	readonly idleStopsAt?: number;
 	/** An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. */
 	readonly autoUpgrade?: boolean;
+	/** The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM. */
+	readonly autoUpgradeFrom?: string;
 	/** A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings. */
 	readonly upgradedFrom?: SandboxUpgrade;
 	/** The snapshot a resume or fork would use. */
@@ -2344,6 +2348,8 @@ export interface SandboxUpgrade {
 	readonly type: SandboxType;
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
+	/** The snapshot its microVM was started from (`upgradeSandbox`'s `from`). */
+	readonly snapshotId?: string;
 }
 
 export interface SandboxUsage {
@@ -2503,7 +2509,7 @@ export interface Snapshot {
 	readonly minMemoryMb?: number;
 	/** The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. */
 	readonly sizeBytes?: number;
-	/** How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. */
+	/** How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it. */
 	readonly uses?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -2957,6 +2963,8 @@ export interface UpdateSandboxBody {
 	};
 	/** Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade. */
 	readonly autoUpgrade?: boolean;
+	/** Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM. */
+	readonly autoUpgradeFrom?: string | null;
 }
 
 /** A `spec` that differs from the current one makes a new version. */
@@ -2975,7 +2983,7 @@ export interface UpdateWebhookBody {
 	readonly enabled?: boolean;
 }
 
-/** The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM. */
+/** The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM. */
 export interface UpgradeSandboxBody {
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
@@ -2983,6 +2991,8 @@ export interface UpgradeSandboxBody {
 	readonly resources?: SandboxShapeInput;
 	/** The microVM's base image. Default: the deployment's. */
 	readonly image?: string;
+	/** Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with `resources.diskGb`. Only a snapshot whose guest agent lays files into a real directory alone (saved from a sandbox on a current host) can be upgraded into; one older is refused, `not_supported`. Default: a new microVM of `image`. */
+	readonly from?: string;
 	/** Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was. */
 	readonly wait?: boolean;
 }

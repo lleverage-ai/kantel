@@ -631,6 +631,8 @@ type CreateSandboxBody struct {
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
 	// For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is.
 	AutoUpgrade *bool `json:"autoUpgrade,omitempty"`
+	// What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only.
+	AutoUpgradeFrom *string `json:"autoUpgradeFrom,omitempty"`
 	// Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.
 	Env map[string]string `json:"env,omitzero"`
 	// Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one.
@@ -2116,10 +2118,12 @@ type Sandbox struct {
 	// How long after a start or resume it stops by itself; `null` never.
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes"`
 	// An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false.
-	AutoUpgrade  *bool               `json:"autoUpgrade,omitempty"`
-	Base         *SandboxBase        `json:"base,omitempty"`
-	Capabilities SandboxCapabilities `json:"capabilities"`
-	Cost         Cost                `json:"cost"`
+	AutoUpgrade *bool `json:"autoUpgrade,omitempty"`
+	// The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM.
+	AutoUpgradeFrom *string             `json:"autoUpgradeFrom,omitempty"`
+	Base            *SandboxBase        `json:"base,omitempty"`
+	Capabilities    SandboxCapabilities `json:"capabilities"`
+	Cost            Cost                `json:"cost"`
 	// Epoch milliseconds, UTC.
 	CreatedAt int64     `json:"createdAt"`
 	CreatedBy CreatedBy `json:"createdBy"`
@@ -2528,8 +2532,10 @@ const (
 // A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings.
 type SandboxUpgrade struct {
 	// Epoch milliseconds, UTC.
-	At   int64       `json:"at"`
-	Type SandboxType `json:"type"`
+	At int64 `json:"at"`
+	// The snapshot its microVM was started from (`upgradeSandbox`'s `from`).
+	SnapshotID *string     `json:"snapshotId,omitempty"`
+	Type       SandboxType `json:"type"`
 }
 
 type SandboxUsage struct {
@@ -2703,7 +2709,7 @@ type Snapshot struct {
 	TakenAt *int64 `json:"takenAt,omitempty"`
 	// What took it.
 	Trigger *SnapshotTrigger `json:"trigger,omitempty"`
-	// How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it.
+	// How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it.
 	Uses *int64 `json:"uses,omitempty"`
 }
 
@@ -3163,6 +3169,8 @@ type UpdateSandboxBody struct {
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`
 	// Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade.
 	AutoUpgrade *bool `json:"autoUpgrade,omitempty"`
+	// Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM.
+	AutoUpgradeFrom Nullable[string] `json:"autoUpgradeFrom,omitzero"`
 	// Move `stopsAt` to this long from now.
 	ExtendMinutes *int64 `json:"extendMinutes,omitempty"`
 	// Its idle stop; `null` turns it off. A running sandbox's idle time counts from now.
@@ -3188,8 +3196,10 @@ type UpdateWebhookBody struct {
 	URL     *string     `json:"url,omitempty"`
 }
 
-// The microVM to make: `size` or `resources`, and `image`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM.
+// The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM.
 type UpgradeSandboxBody struct {
+	// Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with `resources.diskGb`. Only a snapshot whose guest agent lays files into a real directory alone (saved from a sandbox on a current host) can be upgraded into; one older is refused, `not_supported`. Default: a new microVM of `image`.
+	From *string `json:"from,omitempty"`
 	// The microVM's base image. Default: the deployment's.
 	Image     *string            `json:"image,omitempty"`
 	Resources *SandboxShapeInput `json:"resources,omitempty"`

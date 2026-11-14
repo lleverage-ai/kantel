@@ -609,6 +609,8 @@ var mcpTools = []mcpTool{
 			str("host", "Run it on this host, its name or ID. Only when the user asks for a host; default: Kantel picks."),
 			boolean("autoUpgrade", "For an isolate: when a command needs a microVM, Kantel upgrades it (as sandbox_upgrade does) and "+
 				"runs the command again there, once, answering that run. Use it when a task may turn out to need more than a shell."),
+			str("autoUpgradeFrom", "With autoUpgrade: the microVM's snapshot it upgrades into (its ID, or a saved snapshot's name), such "+
+				"as one with the project cloned and installed."),
 		}),
 		Annotations: toolAnnotations{Title: "Create a sandbox", ReadOnlyHint: boolp(false), DestructiveHint: boolp(false), IdempotentHint: boolp(false)},
 		call: func(ctx context.Context, t toolContext, a toolArgs) (toolResult, error) {
@@ -638,6 +640,7 @@ var mcpTools = []mcpTool{
 			if a.isTrue("autoUpgrade") {
 				body.AutoUpgrade = api.Ptr(true)
 			}
+			body.AutoUpgradeFrom = a.optText("autoUpgradeFrom")
 			var raw json.RawMessage
 			s, err := t.client.CreateSandbox(ctx, body, api.Raw(&raw))
 			if err != nil {
@@ -742,6 +745,8 @@ var mcpTools = []mcpTool{
 			sandboxIDProp,
 			enum("size", "The microVM's size; default the deployment's.", Sizes),
 			str("image", "The microVM's base image; default the deployment's."),
+			str("from", "Start the microVM from this snapshot of a microVM (its ID, or a saved snapshot's name), such as one with "+
+				"the project cloned and installed; the isolate's files are laid over its /home/user/workspace."),
 		}, "sandboxId"),
 		Annotations: toolAnnotations{Title: "Upgrade an isolate to a microVM", ReadOnlyHint: boolp(false), DestructiveHint: boolp(false), IdempotentHint: boolp(true)},
 		call: func(ctx context.Context, t toolContext, a toolArgs) (toolResult, error) {
@@ -749,7 +754,7 @@ var mcpTools = []mcpTool{
 			if err != nil {
 				return toolResult{}, err
 			}
-			body := api.UpgradeSandboxBody{Image: a.optText("image"), Wait: api.Ptr(true)}
+			body := api.UpgradeSandboxBody{Image: a.optText("image"), From: a.optText("from"), Wait: api.Ptr(true)}
 			if v := a.optChoice("size", Sizes); v != nil {
 				body.Size = api.Ptr(api.SandboxSizeName(*v))
 			}

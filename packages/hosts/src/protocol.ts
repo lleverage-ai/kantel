@@ -351,6 +351,19 @@ export const HOST_FEATURES = {
 	 */
 	isolateUpgrade: "isolate-upgrade",
 	/**
+	 * `sandbox.upgrade` takes a create's `from` (one of the host's microVM snapshots) or `template` too: the microVM
+	 * starts from it as `sandbox.create` would make it, the snapshot's memory restored, and the isolate's files are laid
+	 * over what it has at `/home/user/workspace`, only by a guest agent that reports `GUEST_FEATURES.extractRealTarget`.
+	 * Without it, an upgrade from a snapshot on the isolate's own host is refused.
+	 */
+	isolateUpgradeFrom: "isolate-upgrade-from",
+	/**
+	 * `sandbox.create` takes `guestFeatures`, refusing (`not_supported`, the microVM deleted) one whose guest agent
+	 * doesn't report each before anything is written into it. Reported by a host with the microVM tier; an upgrade from
+	 * a snapshot on another host moves its files only to a host that says it.
+	 */
+	guestFeatures: "guest-features",
+	/**
 	 * `sandbox.upgrade.freeze` and `sandbox.upgrade.thaw` (`{ sandboxId, operationId, waitMs? }`): one of the host's
 	 * isolates held still (what was under way ended, every later command and file write refused) while Kantel copies its
 	 * files to a microVM on another host, and let go if that upgrade rolls back.
@@ -377,6 +390,15 @@ export const HOST_FEATURES = {
 	 * mesh peers with their records, and takes `disk.fetch` for them. Reported with `diskSync`.
 	 */
 	rootfsSync: "rootfs-sync",
+} as const;
+
+/**
+ * What a microVM's guest agent can report it does (its health's `features`), for a create's `guestFeatures` to
+ * require: an agent from before one reports none.
+ */
+export const GUEST_FEATURES = {
+	/** It extracts with `realTarget` into a real directory only, refusing a link at the target or above it. */
+	extractRealTarget: "extract-real-target",
 } as const;
 
 /** The kinds of disk store object hosts report in `HostCapacity.holdings`: templates' root filesystems. */
@@ -1366,7 +1388,8 @@ export const HostMethods = {
 	fileOpen: "sandbox.files.open",
 	/**
 	 * `HOST_FEATURES.isolateUpgrade`: a create's params (`tier` `microvm`) for one of the host's isolates, which becomes
-	 * that microVM with its files. Answered with the microVM's `HostSandbox` and its `moved`.
+	 * that microVM with its files; with `HOST_FEATURES.isolateUpgradeFrom` its `from` too, one of the host's microVM
+	 * snapshots. Answered with the microVM's `HostSandbox` and its `moved`.
 	 */
 	upgrade: "sandbox.upgrade",
 	/** `HOST_FEATURES.isolateFreeze`: `{ sandboxId, operationId, waitMs? }`, answered `{ ok }`. */
@@ -1378,8 +1401,11 @@ export const HostMethods = {
 	 */
 	upgradeSettle: "sandbox.upgrade.settle",
 	/**
-	 * `{ sandboxId, archive, target }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into the directory
-	 * `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted. Answered `{}`.
+	 * `{ sandboxId, archive, target, realTarget? }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into
+	 * the directory `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted.
+	 * Answered `{}`. With `realTarget`, a link at `target` or above it is refused rather than followed, by guest agents
+	 * that report `GUEST_FEATURES.extractRealTarget`: an older one, or an older host, ignores it, so whoever needs it
+	 * requires that feature first (a create's `guestFeatures`, on a host with `HOST_FEATURES.guestFeatures`).
 	 */
 	fileExtract: "sandbox.files.extract",
 	/**

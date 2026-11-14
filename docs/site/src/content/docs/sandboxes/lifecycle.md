@@ -272,7 +272,7 @@ A running sandbox is recovered too, so a retry would restart it again and end wh
 
 ## Upgrade an isolate
 
-`POST /v1/sandboxes/{id}/upgrade` (`kantel upgrade <id>`) turns a running or stopped isolate into a microVM with the same ID, files and settings: see [Upgrade an isolate to a microVM](/sandboxes/types/#upgrade-an-isolate-to-a-microvm). `autoUpgrade` on a create or a `PATCH` has an isolate do it by itself when a command needs a microVM.
+`POST /v1/sandboxes/{id}/upgrade` (`kantel upgrade <id>`) turns a running or stopped isolate into a microVM with the same ID, files and settings: see [Upgrade an isolate to a microVM](/sandboxes/types/#upgrade-an-isolate-to-a-microvm). With `from` (`kantel upgrade <id> --from <snapshot>`) the microVM starts from a snapshot of a microVM, as a create from it would, with the isolate's files laid over it: see [Upgrade into a snapshot](/sandboxes/types/#upgrade-into-a-snapshot). `autoUpgrade` on a create or a `PATCH` has an isolate do it by itself when a command needs a microVM, into the snapshot `autoUpgradeFrom` names, if any.
 
 ## Delete permanently
 

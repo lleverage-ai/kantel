@@ -2891,7 +2891,7 @@ describe("upgrading an isolate", () => {
 		upgradedFrom: { type: "isolate", at: Date.now() },
 	};
 
-	it("kantel upgrade sends the size, shape, disk and image, and says where the files are", async () => {
+	it("kantel upgrade sends the size, shape, disk, image and snapshot, and says where the files are", async () => {
 		const routes = { "POST /v1/sandboxes/sbx_test1/upgrade": () => MICROVM };
 		const sized = await kantel(["upgrade", "sbx_test1", "--size", "large", "--image", "ubuntu-26.04"], { routes });
 		expect(sized.code).toBe(0);
@@ -2910,7 +2910,10 @@ describe("upgrading an isolate", () => {
 		expect(shaped.calls[0]?.body).toEqual({ resources: { vcpus: 8, memoryMb: 16384, diskGb: 60 }, wait: false });
 		const json = await kantel(["upgrade", "sbx_test1", "--json"], { routes });
 		expect(JSON.parse(json.stdout)).toMatchObject({ id: "sbx_test1", type: "microvm" });
+		const into = await kantel(["upgrade", "sbx_test1", "--from", "monorepo-ci"], { routes });
+		expect(into.calls[0]?.body).toEqual({ from: "monorepo-ci", wait: true });
 		for (const refused of [
+			["upgrade", "sbx_test1", "--from", "monorepo-ci", "--disk", "60"],
 			["upgrade", "sbx_test1", "--vcpus", "2"],
 			["upgrade", "sbx_test1", "--size", "large", "--vcpus", "2", "--memory", "4"],
 			["upgrade", "sbx_test1", "--wait", "--no-wait"],
@@ -2922,7 +2925,7 @@ describe("upgrading an isolate", () => {
 		}
 	});
 
-	it("kantel new --auto-upgrade makes an isolate that upgrades itself", async () => {
+	it("kantel new --auto-upgrade makes an isolate that upgrades itself, into a snapshot with --auto-upgrade-from", async () => {
 		const routes = { "POST /v1/sandboxes": () => ({ ...SANDBOX, autoUpgrade: true }) };
 		const made = await kantel(["new", "--auto-upgrade"], { routes });
 		expect(made.code).toBe(0);
@@ -2932,6 +2935,12 @@ describe("upgrading an isolate", () => {
 		const microvm = await kantel(["new", "--type", "microvm", "--auto-upgrade"], { routes });
 		expect(microvm.code).toBe(2);
 		expect(microvm.calls).toHaveLength(0);
+		// Naming what it upgrades into turns it on.
+		const into = await kantel(["new", "--auto-upgrade-from", "monorepo-ci"], { routes });
+		expect(into.calls[0]?.body).toMatchObject({ autoUpgrade: true, autoUpgradeFrom: "monorepo-ci" });
+		const microvmInto = await kantel(["new", "--type", "microvm", "--auto-upgrade-from", "monorepo-ci"], { routes });
+		expect(microvmInto.code).toBe(2);
+		expect(microvmInto.calls).toHaveLength(0);
 	});
 
 	it("kantel exec says a command needs a microVM, and how to get one", async () => {

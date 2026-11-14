@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
@@ -342,8 +343,14 @@ func (h *Host) makeFacts() proto.Facts {
 	if _, ok := h.tiers[microvm.Tier]; ok {
 		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps)
 	}
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(GuestReporter); ok {
+			features = append(features, proto.FeatureGuestFeatures)
+			break
+		}
+	}
 	if h.upgradesIsolates() {
-		features = append(features, proto.FeatureIsolateUpgrade)
+		features = append(features, proto.FeatureIsolateUpgrade, proto.FeatureIsolateUpgradeFrom)
 	}
 	if _, ok := h.tiers[isolate.Tier].(upgradeSource); ok {
 		features = append(features, proto.FeatureIsolateFreeze)
@@ -706,6 +713,18 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		p.Egress = e
 		info, err := t.Create(ctx, p)
 		if err != nil {
+			if fresh {
+				_ = h.cas.Forget(p.SandboxID)
+			}
+			return nil, err
+		}
+		if err := requireGuest(ctx, t, p); err != nil {
+			// Its own context: the call's may be what ended.
+			cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if derr := t.Delete(cleanup, p.SandboxID); derr != nil {
+				h.log.Warn("create: the sandbox its guest agent can't serve couldn't be deleted", "sandbox", p.SandboxID, "err", derr)
+			}
 			if fresh {
 				_ = h.cas.Forget(p.SandboxID)
 			}

@@ -11,9 +11,9 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	type SandboxBackend,
-	type SandboxSpec,
 	type UpgradedPlacement,
 	type UpgradeOutcome,
+	type UpgradeSpec,
 	upgradeOutcomeUnknown,
 } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
@@ -47,7 +47,7 @@ interface Options {
 	/** Stands in for the backend's upgrade: undefined lets the stub do it. */
 	readonly upgrade?: (
 		sandboxId: string,
-		spec: SandboxSpec,
+		spec: UpgradeSpec,
 		operationId: string,
 	) => Promise<UpgradedPlacement> | undefined;
 	/** Stands in for the backend's settling of an upgrade: undefined lets the stub do it. */
@@ -73,7 +73,7 @@ interface Options {
 
 function setup(options: Options = {}) {
 	const stub = options.stub ?? createStubBackend();
-	const upgrades: { readonly sandboxId: string; readonly spec: SandboxSpec; readonly operationId: string }[] = [];
+	const upgrades: { readonly sandboxId: string; readonly spec: UpgradeSpec; readonly operationId: string }[] = [];
 	const backend: SandboxBackend = {
 		...stub,
 		exec: async (sandboxId, request) => {
@@ -1444,5 +1444,313 @@ describe("an upgraded sandbox's snapshots from before", () => {
 		const stored = await api.store.sandboxes.get(sandbox.id);
 		expect(stored?.latestSnapshotId).toBeUndefined();
 		expect(stored?.latestSnapshotAt).toBeUndefined();
+	});
+});
+
+/** A microVM's saved snapshot, `name`, holding a project's checkout outside /home/user/workspace and a file in it. */
+async function projectSnapshot(tom: KantelClient, name = "project") {
+	const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+	const made = await tom.runCommand(vm.id, {
+		command:
+			"mkdir -p /home/user/repo /home/user/workspace/src && echo cloned > /home/user/repo/README && echo theirs > /home/user/workspace/src/a.txt && echo kept > /home/user/workspace/only-theirs",
+	});
+	expect(made.exitCode).toBe(0);
+	return tom.saveSnapshot({ name, sandboxId: vm.id });
+}
+
+describe("upgrading an isolate into a snapshot", () => {
+	it("starts the microVM from the snapshot, the isolate's files laid over its own", async () => {
+		const { tom, upgrades } = setup();
+		const saved = await projectSnapshot(tom);
+		const sandbox = await isolateWithFiles(tom);
+		const upgraded = await tom.upgradeSandbox(sandbox.id, { from: "project" });
+		expect(upgraded).toMatchObject({
+			id: sandbox.id,
+			name: "tickets",
+			labels: { ticket: "PROJ-12" },
+			type: "microvm",
+			state: "running",
+			// The snapshot's machine, as a create from it gets.
+			size: "large",
+			upgradedFrom: { type: "isolate", snapshotId: saved.id },
+		});
+		expect(upgrades[0]?.spec).toMatchObject({ intoSnapshot: expect.any(String), env: { REGION: "eu" } });
+		expect(upgrades[0]?.spec.fromSnapshot).toBeUndefined();
+		const run = await tom.runCommand(sandbox.id, {
+			command:
+				"cat /home/user/repo/README /workspace/src/a.txt /workspace/only-theirs; readlink /workspace; /workspace/run.sh",
+		});
+		// The snapshot's files outside it untouched, the isolate's winning a clash, nothing of the snapshot's deleted.
+		expect(run.stdout).toBe("cloned\nhello\nkept\n/home/user/workspace\nrun\n");
+		// Counted among the snapshot's uses, as a create from it is.
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(1);
+	});
+
+	it("lays the isolate's links and directories over the snapshot's files, and merges directories, as a host does", async () => {
+		const { tom } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		const made = await tom.runCommand(vm.id, {
+			command:
+				"mkdir -p /home/user/workspace/src && echo kept > /home/user/workspace/src/only-theirs && echo theirs > /home/user/workspace/link && echo theirs > /home/user/workspace/build",
+		});
+		expect(made.exitCode).toBe(0);
+		const saved = await tom.saveSnapshot({ name: "files", sandboxId: vm.id });
+		const sandbox = await isolateWithFiles(tom);
+		const built = await tom.runCommand(sandbox.id, { command: "mkdir build && echo built > build/out.js" });
+		expect(built.exitCode).toBe(0);
+		await tom.upgradeSandbox(sandbox.id, { from: saved.id });
+		const run = await tom.runCommand(sandbox.id, {
+			command:
+				"readlink /home/user/workspace/link; cat /workspace/src/a.txt /workspace/src/only-theirs /workspace/build/out.js",
+		});
+		expect(run.stdout).toBe("src/a.txt\nhello\nkept\nbuilt\n");
+	});
+
+	for (const [what, at] of [
+		["link", "link"],
+		["file", "run.sh"],
+	] as const) {
+		it(`fails, the isolate and the snapshot's directory as they were, when the isolate's ${what} meets a directory`, async () => {
+			const { tom, api } = setup();
+			const vm = await tom.createSandbox({ type: "microvm", wait: true });
+			const made = await tom.runCommand(vm.id, {
+				command: `mkdir -p /home/user/workspace/${at} && echo kept > /home/user/workspace/${at}/kept.txt`,
+			});
+			expect(made.exitCode).toBe(0);
+			const saved = await tom.saveSnapshot({ name: "a-directory", sandboxId: vm.id });
+			const sandbox = await isolateWithFiles(tom);
+			const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
+			expect(refused.status).toBe(400);
+			expect(refused.message).toContain(`can't be laid over the directory /home/user/workspace/${at}`);
+			const stored = await api.store.sandboxes.get(sandbox.id);
+			expect(stored).toMatchObject({ type: "isolate", state: "running" });
+			expect(stored?.upgrading).toBeUndefined();
+			const isolate = await tom.runCommand(sandbox.id, { command: "readlink link; cat src/a.txt; ./run.sh" });
+			expect(isolate.stdout).toBe("src/a.txt\nhello\nrun\n");
+			expect((await tom.getSnapshot(saved.id)).uses).toBe(0);
+			const fromIt = await tom.createSandbox({ from: saved.id, wait: true });
+			const kept = await tom.runCommand(fromIt.id, { command: `cat /home/user/workspace/${at}/kept.txt` });
+			expect(kept.stdout).toBe("kept\n");
+		});
+	}
+
+	// Only at the workspace: the stub's machines always have a real /home/user (`restore`), so a link above it is the
+	// hosts' tests'.
+	it("fails, the isolate and what the link points at as they were, when the snapshot has a link at /home/user/workspace", async () => {
+		const outside = "/opt/project";
+		const { tom, api } = setup();
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		const made = await tom.runCommand(vm.id, {
+			command: `mkdir -p ${outside} && (rmdir /home/user/workspace 2>/dev/null; ln -s ${outside} /home/user/workspace) && echo theirs > ${outside}/kept.txt`,
+		});
+		expect(made.exitCode).toBe(0);
+		const saved = await tom.saveSnapshot({ name: "linked", sandboxId: vm.id });
+		const sandbox = await isolateWithFiles(tom);
+		const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
+		expect(refused.status).toBe(400);
+		expect(refused.message).toContain("/home/user/workspace is a symbolic link; nothing is extracted through one");
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running" });
+		expect(stored?.upgrading).toBeUndefined();
+		const isolate = await tom.runCommand(sandbox.id, { command: "cat src/a.txt; ./run.sh" });
+		expect(isolate.stdout).toBe("hello\nrun\n");
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(0);
+		const fromIt = await tom.createSandbox({ from: saved.id, wait: true });
+		const kept = await tom.runCommand(fromIt.id, { command: `ls -A ${outside}; cat ${outside}/kept.txt` });
+		expect(kept.stdout).toBe("kept.txt\ntheirs\n");
+	});
+
+	it("refuses a snapshot saved with an older guest agent before anything is written, the isolate as it was", async () => {
+		const older = new Set<string>();
+		const { tom, api } = setup({ stub: createStubBackend({ olderGuestSnapshots: older }) });
+		const saved = await projectSnapshot(tom);
+		const ref = (await api.store.snapshots.get(saved.id))?.ref;
+		if (ref === undefined) throw new Error("no ref");
+		older.add(ref);
+		const sandbox = await isolateWithFiles(tom);
+		const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
+		expect(refused.status).toBe(501);
+		expect(refused.code).toBe("not_supported");
+		expect(refused.message).toContain(
+			"the snapshot was saved with an older Kantel guest agent, which can't lay an isolate's files into it safely: save it again from a sandbox started afresh on a current host to upgrade into it",
+		);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running" });
+		expect(stored?.upgrading).toBeUndefined();
+		const isolate = await tom.runCommand(sandbox.id, { command: "cat src/a.txt; ./run.sh" });
+		expect(isolate.stdout).toBe("hello\nrun\n");
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(0);
+		// Saved again from a sandbox on a current agent, it upgrades.
+		older.clear();
+		expect((await tom.upgradeSandbox(sandbox.id, { from: saved.id })).type).toBe("microvm");
+	});
+
+	it("takes the snapshot by its ID, and gives a saved name's newest", async () => {
+		const { tom } = setup();
+		const first = await projectSnapshot(tom);
+		const byId = await tom.createSandbox({ wait: true });
+		expect((await tom.upgradeSandbox(byId.id, { from: first.id })).upgradedFrom?.snapshotId).toBe(first.id);
+
+		const vm = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.runCommand(vm.id, { command: "mkdir -p /home/user/repo && echo newer > /home/user/repo/README" });
+		const second = await tom.saveSnapshot({ name: "project", sandboxId: vm.id, replace: true });
+		const byName = await tom.createSandbox({ wait: true });
+		const upgraded = await tom.upgradeSandbox(byName.id, { from: "project" });
+		expect(upgraded.upgradedFrom?.snapshotId).toBe(second.id);
+		expect((await tom.runCommand(byName.id, { command: "cat /home/user/repo/README" })).stdout).toBe("newer\n");
+	});
+
+	it("refuses as a create from it does, leaving the isolate as it was", async () => {
+		const { tom, client, upgrades } = setup();
+		const sandbox = await isolateWithFiles(tom);
+		const check = async (body: Parameters<KantelClient["upgradeSandbox"]>[1], status: number, text: string) => {
+			const refused = await failure(tom.upgradeSandbox(sandbox.id, body));
+			expect(refused.status).toBe(status);
+			expect(refused.message).toContain(text);
+			expect(await tom.getSandbox(sandbox.id)).toMatchObject({ type: "isolate", state: "running" });
+		};
+		await check({ from: "nothing-by-this-name" }, 404, "snapshot named nothing-by-this-name");
+
+		// An isolate's snapshot.
+		const other = await isolateWithFiles(tom);
+		const isolateSaved = await tom.saveSnapshot({ name: "isolate-files", sandboxId: other.id });
+		await check({ from: isolateSaved.id }, 400, "is of an isolate");
+
+		// One that keeps its disk, and one that holds memory, as a create from them.
+		const saved = await projectSnapshot(tom);
+		await check({ from: saved.id, resources: { diskGb: 40 } }, 400, "leave out diskGb");
+		const vm = await tom.createSandbox({ type: "microvm", size: "large", wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
+		const [paused] = (await tom.listSnapshots({ sandboxId: vm.id })).items;
+		await check({ from: paused?.id as string, size: "small" }, 400, "holds its sandbox's memory");
+		const least = await tom.saveSnapshot({ name: "big-checks", sandboxId: vm.id, minMemoryMb: 16_384 });
+		await check({ from: least.id }, 400, "needs at least 16 GB of memory");
+
+		// Another account's: not one it may use.
+		const ann = client("root-token");
+		const theirs = await ann.createSandbox({ type: "microvm", wait: true });
+		const theirSaved = await ann.saveSnapshot({ name: "theirs", sandboxId: theirs.id });
+		await check({ from: theirSaved.id }, 404, "snapshot");
+		expect(upgrades).toHaveLength(0);
+		expect((await tom.runCommand(sandbox.id, { command: "cat src/a.txt" })).stdout).toBe("hello\n");
+	});
+
+	it("puts the isolate back, its snapshot no longer used, when the microVM can't be made from it", async () => {
+		const { tom, api } = setup({
+			upgrade: () => Promise.reject(new KantelError("unavailable", "The snapshot's host is away")),
+		});
+		const saved = await projectSnapshot(tom);
+		const sandbox = await isolateWithFiles(tom);
+		const refused = await failure(tom.upgradeSandbox(sandbox.id, { from: saved.id }));
+		expect(refused.message).toContain("The snapshot's host is away");
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored).toMatchObject({ type: "isolate", state: "running" });
+		expect(stored?.upgrading).toBeUndefined();
+		expect(stored?.upgradedFrom).toBeUndefined();
+		expect((await tom.getSnapshot(saved.id)).uses).toBe(0);
+	});
+
+	it("depends on the snapshot while it is under way, and refuses one deleted before it began", async () => {
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let snapshotDeleted = false;
+		const { tom, api, stub } = setup({
+			upgrade: async (sandboxId, spec, operationId) => {
+				await held;
+				return stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>;
+			},
+		});
+		const saved = await projectSnapshot(tom);
+		const sandbox = await isolateWithFiles(tom);
+		const upgrading = tom.upgradeSandbox(sandbox.id, { from: saved.id });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect((await api.store.sandboxes.get(sandbox.id))?.upgrading?.snapshotId).toBe(saved.id);
+		release();
+		expect((await upgrading).upgradedFrom?.snapshotId).toBe(saved.id);
+		expect((await api.store.sandboxes.get(sandbox.id))?.upgrading).toBeUndefined();
+
+		// Deleted between its check and the record that depends on it: refused, the isolate as it was.
+		const other = await isolateWithFiles(tom);
+		const store = api.store;
+		const gone = await projectSnapshot(tom, "gone");
+		const get = store.snapshots.get.bind(store.snapshots);
+		let reads = 0;
+		store.snapshots.get = async (id) => {
+			if (id === gone.id && !snapshotDeleted && ++reads === 2) {
+				snapshotDeleted = true;
+				await tom.deleteSnapshot(gone.id);
+			}
+			return get(id);
+		};
+		const refused = await failure(tom.upgradeSandbox(other.id, { from: gone.id }));
+		store.snapshots.get = get;
+		expect(refused.status).toBe(409);
+		expect(refused.message).toContain("deleted while it was being used");
+		expect(await tom.getSandbox(other.id)).toMatchObject({ type: "isolate", state: "running" });
+	});
+});
+
+describe("autoUpgrade into a named snapshot", () => {
+	const needsTar = (upgraded: () => boolean) => (_id: string, request: ExecRequest) => {
+		if (!request.command.startsWith("tar ")) return undefined;
+		if (upgraded()) return undefined;
+		return { ...NEEDS_TAR, timedOut: false };
+	};
+
+	it("upgrades into what autoUpgradeFrom names and runs the command again there", async () => {
+		let upgraded = false;
+		const { tom, upgrades, stub } = setup({
+			exec: needsTar(() => upgraded),
+			upgrade: async (sandboxId, spec, operationId) => {
+				const placed = await (stub.upgrade?.(sandboxId, spec, operationId) as Promise<UpgradedPlacement>);
+				upgraded = true;
+				return placed;
+			},
+		});
+		const saved = await projectSnapshot(tom);
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, autoUpgradeFrom: "project", wait: true });
+		expect(sandbox).toMatchObject({ autoUpgrade: true, autoUpgradeFrom: "project" });
+		const answer = await tom.runCommand(sandbox.id, { command: "tar --version; cat /home/user/repo/README" });
+		expect(answer.rerunOf).toBeDefined();
+		expect(answer.stdout).toContain("cloned\n");
+		expect(upgrades).toHaveLength(1);
+		expect(upgrades[0]?.spec.intoSnapshot).toBeDefined();
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({
+			type: "microvm",
+			upgradedFrom: { snapshotId: saved.id },
+			autoUpgradeFrom: "project",
+		});
+	});
+
+	it("is checked when set, set or cleared later by PATCH, and read again at the upgrade", async () => {
+		const { tom } = setup({ exec: needsTar(() => false) });
+		expect((await failure(tom.createSandbox({ autoUpgradeFrom: "missing" }))).status).toBe(404);
+		expect((await failure(tom.createSandbox({ type: "microvm", autoUpgradeFrom: "missing" }))).status).toBe(400);
+		const other = await isolateWithFiles(tom);
+		await tom.saveSnapshot({ name: "isolate-files", sandboxId: other.id });
+		expect((await failure(tom.createSandbox({ autoUpgradeFrom: "isolate-files" }))).message).toContain(
+			"is of an isolate",
+		);
+
+		await projectSnapshot(tom);
+		const sandbox = await tom.createSandbox({ autoUpgrade: true, wait: true });
+		expect(sandbox.autoUpgradeFrom).toBeUndefined();
+		expect((await failure(tom.updateSandbox(sandbox.id, { autoUpgradeFrom: "missing" }))).status).toBe(404);
+		expect((await tom.updateSandbox(sandbox.id, { autoUpgradeFrom: "project" })).autoUpgradeFrom).toBe("project");
+		// Labels changed alone leave it.
+		expect((await tom.updateSandbox(sandbox.id, { labels: { a: "b" } })).autoUpgradeFrom).toBe("project");
+		expect((await tom.updateSandbox(sandbox.id, { autoUpgradeFrom: null })).autoUpgradeFrom).toBeUndefined();
+
+		// Gone by the upgrade: the command's answer stands, saying why.
+		await tom.updateSandbox(sandbox.id, { autoUpgradeFrom: "project" });
+		const saved = (await tom.listSnapshots({ kind: "saved" })).items.find((each) => each.name === "project");
+		await tom.deleteSnapshot(saved?.id as string);
+		const answer = await tom.runCommand(sandbox.id, { command: "tar -xf a.tar" });
+		expect(answer).toMatchObject({ exitCode: 127, needsMicrovm: { command: "tar" } });
+		expect(answer.rerunAs).toBeUndefined();
+		expect(answer.stderr).toContain("couldn't be upgraded to a microVM: No such snapshot named project");
+		expect((await tom.getSandbox(sandbox.id)).type).toBe("isolate");
 	});
 });

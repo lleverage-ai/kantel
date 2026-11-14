@@ -1050,6 +1050,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async upgrade(sandboxId, spec, operationId): Promise<UpgradedPlacement> {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "isolate") throw new KantelError("conflict", "The sandbox is a microVM already");
+			// From a snapshot, on its host only, as a create from it.
+			const from = spec.intoSnapshot === undefined ? undefined : parseRef(spec.intoSnapshot);
+			if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
 			const { sandbox, hostId, path, files, bytes, ...known } = await hosts.sandboxes.upgrade(sandboxId, {
 				...(spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
 				...(spec.shape === undefined
@@ -1063,7 +1066,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						}),
 				owner: spec.accountId,
 				env: spec.env,
-				hostIds: spec.eligibleHosts,
+				hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
+				...(from === undefined ? {} : { from: from.snapshotId }),
 				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...egressOf(spec.egress),
 				operationId,

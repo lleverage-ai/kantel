@@ -4304,7 +4304,7 @@ func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams)
 	if err != nil {
 		return err
 	}
-	err = client.ExtractArchive(ctx, p.Archive, p.Target)
+	err = client.ExtractArchive(ctx, p.Archive, p.Target, p.RealTarget)
 	switch {
 	case err == nil:
 		return nil
@@ -4314,6 +4314,20 @@ func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams)
 		return &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's image predates archive extraction; make it from a newer image"}
 	}
 	return err
+}
+
+// GuestFeatures is what a running sandbox's guest agent reports it can do (guest.Health.Features), asked now: after a
+// restore, the agent the snapshot's memory held. An agent too old to say reports none.
+func (m *Manager) GuestFeatures(ctx context.Context, id string) ([]string, error) {
+	client, err := m.running(id)
+	if err != nil {
+		return nil, err
+	}
+	h, err := client.Health(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return h.Features, nil
 }
 
 func (m *Manager) DeleteFile(ctx context.Context, p proto.FileParams) error {

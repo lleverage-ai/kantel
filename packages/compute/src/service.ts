@@ -530,6 +530,9 @@ export const UPGRADE_OUTCOME_UNKNOWN =
 export const UPGRADE_UNSUPPORTED =
 	"This deployment's hosts don't upgrade isolates to microVMs; make a microVM and copy the files across";
 
+/** What an upgrade into a snapshot whose pool can't be told is told to do instead (`poolOfSnapshot`). */
+const UPGRADE_IN_POOL = "upgrade into a snapshot saved in the sandbox's pool";
+
 export const SHARED_HOSTS_REFUSED =
 	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
 
@@ -3435,8 +3438,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * pools, or whose pool has since been deleted) the pool of the host holding it, among `hosts`. Refused,
 	 * `host_unavailable`, when that host is in another pool than the snapshot's now (moved since): a snapshot stays in its
 	 * pool, and nothing is made from it in another. Undefined where neither can be told.
+	 *
+	 * One that must go in a pool (`kept`: the pool a create named, or the one an upgrading isolate is in) is refused,
+	 * `host_unavailable`, when the snapshot is in another, or when its pool can't be told, which isn't guessed. `name`:
+	 * that pool as the caller knows it; `instead`: what to do then.
 	 */
-	async function poolOfSnapshot(snapshot: StoredSnapshot, hosts: readonly StoredHost[]): Promise<string | undefined> {
+	async function poolOfSnapshot(
+		snapshot: StoredSnapshot,
+		hosts: readonly StoredHost[],
+		kept?: { readonly id: string; readonly name: string; readonly instead: string },
+	): Promise<string | undefined> {
 		const holderId = await hostOfSnapshot(snapshot);
 		const holderPool = holderId === undefined ? undefined : hosts.find((host) => host.id === holderId)?.poolId;
 		const recorded = await livePool(snapshot.poolId);
@@ -3447,7 +3458,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				`The snapshot is in pool ${await poolName(recorded)}, and the host holding it is in pool ${await poolName(holderPool)} now: nothing is made from it outside its pool`,
 			);
 		}
-		return recorded ?? holderPool;
+		const pool = recorded ?? holderPool;
+		if (kept !== undefined && pool !== kept.id) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				pool === undefined
+					? `The snapshot's pool can't be told, so it can't be made in ${kept.name}: ${kept.instead}`
+					: `The snapshot is in pool ${await poolName(pool)}, not ${kept.name}: a sandbox made from it runs only in its pool`,
+			);
+		}
+		return pool;
+	}
+
+	/** The pool a sandbox is kept to (a `PoolChoice`), as `poolOfSnapshot` takes it: none for one kept to none. */
+	function keptPool(pool: PoolChoice | undefined, instead: string) {
+		const id = pool?.own ?? pool?.shared;
+		return id === undefined || pool?.name === undefined ? undefined : { id, name: pool.name, instead };
 	}
 
 	/**
@@ -3695,6 +3722,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			...idleView(sandbox),
 			...(sandbox.autoUpgrade === true ? { autoUpgrade: true } : {}),
+			...(sandbox.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: sandbox.autoUpgradeFrom }),
 			...(sandbox.upgradedFrom === undefined ? {} : { upgradedFrom: { ...sandbox.upgradedFrom } }),
 			latestSnapshotId: sandbox.latestSnapshotId,
 			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
@@ -3728,13 +3756,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * How many of an account's sandboxes were made from each snapshot (`source.snapshotId`: a create from it, or a fork
-	 * from it), deleted ones included, by the snapshot's ID: a snapshot's `uses`.
+	 * from it; `upgradedFrom.snapshotId`: an upgrade into it), deleted ones included, by the snapshot's ID: a snapshot's
+	 * `uses`.
 	 */
 	async function usesIn(accountId: string): Promise<Map<string, number>> {
 		const uses = new Map<string, number>();
 		for (const sandbox of await store.sandboxes.list({ accountId })) {
 			const from = sandbox.source?.snapshotId;
 			if (from !== undefined) uses.set(from, (uses.get(from) ?? 0) + 1);
+			// And what an upgrade started its microVM from.
+			const into = sandbox.upgradedFrom?.snapshotId;
+			if (into !== undefined) uses.set(into, (uses.get(into) ?? 0) + 1);
 		}
 		return uses;
 	}
@@ -5571,6 +5603,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				sandbox.latestSnapshotId,
 				sandbox.state === "paused" || sandbox.state === "starting" ? sandbox.pausedSnapshotId : undefined,
 				neverPlaced(sandbox) ? sandbox.source?.snapshotId : undefined,
+				// What an upgrade under way starts its microVM from.
+				sandbox.upgrading?.snapshotId,
 			]) {
 				if (id !== undefined && snapshotIds.has(id)) needed.add(id);
 			}
@@ -5670,6 +5704,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** The error a create or fork answers when the snapshot it is made from was deleted under it. */
 	const deletedMeanwhile = () => new KantelError("conflict", "The snapshot was deleted while it was being used");
+
+	/** An upgrade starts its microVM from a microVM's snapshot, never an isolate's (`invalid`). */
+	function requireMicrovmSnapshot(snapshot: StoredSnapshot): void {
+		if (snapshot.sandboxType === "isolate") {
+			throw new KantelError(
+				"invalid",
+				`Snapshot ${snapshot.id} is of an isolate: an isolate upgrades into a snapshot of a microVM`,
+			);
+		}
+	}
+
+	/**
+	 * What an isolate's automatic upgrade is to start from (`autoUpgradeFrom`), checked as its upgrade will take it: the
+	 * snapshot's pool too, by the caller, once the sandbox's is known (`poolOfSnapshot`).
+	 */
+	async function checkAutoUpgradeFrom(principal: Principal, accountId: string, from: string): Promise<StoredSnapshot> {
+		const snapshot = await snapshotFrom(principal, accountId, from);
+		requireMicrovmSnapshot(snapshot);
+		return snapshot;
+	}
 
 	/**
 	 * Expires automatic snapshots past their `expiresAt` (the model above), at most once each `SNAPSHOT_EXPIRY_EVERY_MS`,
@@ -8684,9 +8738,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					body.host === undefined ? undefined : pinnableHost(principal, account.id, await known, body.host).id;
 				// The pool it goes in, by name or the default (`placementPool`): one it named that the caller has none of is
 				// `not_found`. Made from a snapshot, or on a host it named, it goes there, in a pool it named only.
-				// From a snapshot, the snapshot's pool (`poolOfSnapshot`: refused where its host has since gone to another).
-				// With sticky disks that have a pool, theirs (`poolOfStickyDisks`), naming none.
-				const snapshotPool = from === undefined ? undefined : await poolOfSnapshot(from, await known);
+				// From a snapshot, the snapshot's pool (below). With sticky disks that have a pool, theirs (`poolOfStickyDisks`),
+				// naming none.
 				const stickyPool =
 					sandboxSticky === undefined ? undefined : await poolOfStickyDisks(sandboxSticky, await known);
 				const pool =
@@ -8700,6 +8753,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									? undefined
 									: await placementPool(account.id, undefined, await known, await mayShare(principal));
 				const named = body.pool === undefined ? undefined : (pool?.own ?? pool?.shared);
+				// From a snapshot, the snapshot's pool (`poolOfSnapshot`: refused where its host has since gone to another), which
+				// must be the pool it named: one whose pool can't be told (from before pools, its host's ref opaque and its
+				// sandbox gone) can't be, and isn't guessed.
+				const snapshotPool =
+					from === undefined
+						? undefined
+						: await poolOfSnapshot(
+								from,
+								await known,
+								named === undefined ? undefined : { id: named, name: body.pool ?? named, instead: "name no pool" },
+							);
 				if (stickyPool !== undefined && named !== undefined && named !== stickyPool.poolId) {
 					throw await stickyPoolRefusal(stickyPool.disk, stickyPool.poolId, named);
 				}
@@ -8735,6 +8799,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw placementError("unavailable", reason, `No host runs ${type} sandboxes`);
 				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
+				let autoUpgradeFrom: StoredSnapshot | undefined;
+				if (body.autoUpgradeFrom !== undefined) {
+					if (type !== "isolate")
+						throw new KantelError("invalid", "autoUpgradeFrom is an isolate's: a microVM isn't upgraded");
+					autoUpgradeFrom = await checkAutoUpgradeFrom(principal, account.id, body.autoUpgradeFrom);
+				}
 				// A size takes a disk beside it (`resources.diskGb` alone), but not vCPUs or memory.
 				if (
 					body.size !== undefined &&
@@ -8776,19 +8846,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					hostPin,
 					pool,
 				);
-				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the snapshot's, which
-				// must be the pool it named.
+				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the snapshot's.
 				const placedPool =
 					from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : snapshotPool;
-				// Naming a pool, the snapshot must be in it: one whose pool can't be told (from before pools, its host's ref
-				// opaque and its sandbox gone) can't be, and isn't guessed.
-				if (from !== undefined && named !== undefined && snapshotPool !== named) {
-					throw placementError(
-						"unavailable",
-						"host_unavailable",
-						snapshotPool === undefined
-							? `The snapshot's pool can't be told, so it can't be made in ${body.pool}: name no pool`
-							: `The snapshot is in pool ${await poolName(snapshotPool)}, not ${body.pool}: a sandbox made from it runs only in its pool`,
+				// What its automatic upgrade is to start from, in the pool it is placed in, as its upgrade will check it.
+				if (autoUpgradeFrom !== undefined) {
+					await poolOfSnapshot(
+						autoUpgradeFrom,
+						await known,
+						keptPool(placedPool === undefined ? undefined : await poolChoiceOf(placedPool), UPGRADE_IN_POOL),
 					);
 				}
 				// Its sticky disks are in its pool (those with none yet are given it just before it is stored).
@@ -8892,6 +8958,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					autoStopMinutes: body.autoStopMinutes === undefined ? DEFAULT_AUTO_STOP_MINUTES : body.autoStopMinutes,
 					idleStopMinutes: body.idleStopMinutes ?? null,
 					...(body.autoUpgrade === true ? { autoUpgrade: true } : {}),
+					...(body.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: body.autoUpgradeFrom }),
 					source: from === undefined ? undefined : { snapshotId: from.id },
 					createdBy: actorOf(principal),
 					createdAt: now(),
@@ -9013,6 +9080,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.visibility === "organisation" && account?.kind === "personal") {
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
+				if (typeof body.autoUpgradeFrom === "string") {
+					if (current.type !== "isolate") {
+						throw new KantelError("invalid", "autoUpgradeFrom is an isolate's: this sandbox is a microVM already");
+					}
+					await poolOfSnapshot(
+						await checkAutoUpgradeFrom(principal, current.accountId, body.autoUpgradeFrom),
+						await ensureHosts(),
+						keptPool(await poolOfSandbox(current), UPGRADE_IN_POOL),
+					);
+				}
 				const updated = await patchSandbox(current.id, (latest) => {
 					let stopsAt = latest.stopsAt;
 					if (body.autoStopMinutes !== undefined && latest.state === "running") {
@@ -9032,6 +9109,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						visibility: body.visibility ?? latest.visibility,
 						labels: body.labels === undefined ? latest.labels : { ...body.labels },
 						autoUpgrade: body.autoUpgrade === undefined ? latest.autoUpgrade : body.autoUpgrade || undefined,
+						autoUpgradeFrom:
+							body.autoUpgradeFrom === undefined ? latest.autoUpgradeFrom : (body.autoUpgradeFrom ?? undefined),
 						stopsAt,
 					};
 				});
@@ -9639,7 +9718,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					);
 					if (claimed === undefined) return undefined;
 					try {
-						await upgradeIsolate(principal, role, sandbox.id, {});
+						// Into what it names, read afresh: a saved snapshot saved again under the name gives its newest.
+						await upgradeIsolate(
+							principal,
+							role,
+							sandbox.id,
+							latest.autoUpgradeFrom === undefined ? {} : { from: latest.autoUpgradeFrom },
+						);
 					} catch (error) {
 						// Another command's upgrade began between the read above and this one's (`conflict` while it starts): its
 						// outcome is waited for, and its microVM, if it made one, runs this command again too, still opted in.
@@ -11543,12 +11628,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		const upgrade = backend.upgrade;
 		if (upgrade === undefined) throw new KantelError("not_supported", UPGRADE_UNSUPPORTED);
+		// A microVM's snapshot to start from, as a create from it takes one.
+		const from = body.from === undefined ? undefined : await snapshotFrom(principal, current.accountId, body.from);
+		if (from !== undefined) requireMicrovmSnapshot(from);
 		if (
 			body.size !== undefined &&
 			body.resources !== undefined &&
 			(body.resources.vcpus !== undefined || body.resources.memoryMb !== undefined)
 		) {
 			throw new KantelError("invalid", "Give resources or a size, not both");
+		}
+		if (from !== undefined && body.resources?.diskGb !== undefined) {
+			throw new KantelError("invalid", "A sandbox made from a snapshot keeps the snapshot's disk; leave out diskGb");
 		}
 		const read = backend.capabilities();
 		const known = ensureHosts(read);
@@ -11557,24 +11648,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (!capabilities.types.includes("microvm")) {
 			throw placementError("unavailable", "no_host_for_type", "No host runs microvm sandboxes");
 		}
-		if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
+		// A snapshot's own size is its machine, whatever the hosts name now, as for a create from it.
+		if (
+			body.size !== undefined &&
+			body.size !== from?.size &&
+			!capabilities.sizes.some((size) => size.name === body.size)
+		) {
 			throw placementError(
 				"not_supported",
 				"no_host_offers_size",
 				`This deployment doesn't offer the size ${body.size}`,
 			);
 		}
-		// The hosts its microVM may go on, as a create of one would choose: its labels, pin and pool kept.
+		// The hosts its microVM may go on, as a create of one would choose: its labels, pin and pool kept. From a snapshot,
+		// as a create from it: its host draining too, where only that host holds it.
+		const pool = await poolOfSandbox(current);
 		const hosts = requireHosts(
 			await known,
 			current.accountId,
 			"microvm",
 			{ ...current.hostLabels },
-			false,
+			from !== undefined,
 			await mayShare(principal),
 			current.hostPin,
-			await poolOfSandbox(current),
+			pool,
 		);
+		// From a snapshot, in the pool the sandbox is kept to, as a create naming that pool takes one (`poolOfSnapshot`).
+		if (from !== undefined) await poolOfSnapshot(from, await known, keptPool(pool, UPGRADE_IN_POOL));
+		// From a snapshot, the microVM goes only on the host that holds it: refused now, the isolate untouched, when that
+		// host isn't one the sandbox may use.
+		const holder = from?.ref === undefined ? undefined : refHost(from.ref);
+		if (holder !== undefined && !hosts.includes(holder)) {
+			const named = (await known).find((host) => host.id === holder);
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				`The snapshot is on a host this sandbox can't use now (${named !== undefined && mayKnowHost(principal, named, current.accountId) ? named.name : "not one you can name"}): it is offline, or outside the sandbox's host labels or pin`,
+			);
+		}
 		const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
 		const diskAlone =
 			body.resources !== undefined && body.resources.vcpus === undefined && body.resources.memoryMb === undefined
@@ -11585,15 +11696,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			diskAlone === undefined ? body.resources : undefined,
 			eligible,
 			capabilities.sizes,
+			from === undefined,
 		);
 		const presets = eligible.flatMap((host) => host.sizes ?? capabilities.sizes);
+		const wanted: AskedMachine = {
+			...(body.size === undefined ? {} : { size: body.size }),
+			...(shape === undefined ? {} : { shape }),
+			...(diskAlone === undefined ? {} : { diskGb: diskAlone }),
+		};
+		// Its machine as a create from the snapshot decides it: one that holds memory restores it, so it is that machine.
+		const fromOn =
+			from === undefined
+				? undefined
+				: copiedOn(
+						capabilities.hosts.find((host) => host.id === holder),
+						capabilities.sizes,
+					);
 		const machine = sandboxMachine(
-			undefined,
-			{
-				...(body.size === undefined ? {} : { size: body.size }),
-				...(shape === undefined ? {} : { shape }),
-				...(diskAlone === undefined ? {} : { diskGb: diskAlone }),
-			},
+			from === undefined ? undefined : { copies: from, on: fromOn },
+			from === undefined ? wanted : restoreAsked({ ...from, memory: await holdsMemory(from) }, wanted),
 			presets,
 		);
 		if (machine === undefined) {
@@ -11603,6 +11724,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				`No host this sandbox may use offers the size ${body.size ?? "default"}`,
 			);
 		}
+		if (from !== undefined) requireMinMemory(from, memoryOf(machine, fromOn?.presets ?? presets, from));
 		if (diskAlone !== undefined && machine.shape !== undefined)
 			requireMaker(eligible, capabilities.sizes, machine.shape);
 		// A stopped one comes back running, as a microVM: it counts against the account's sandboxes as a start does.
@@ -11646,6 +11768,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(machine.size === undefined ? {} : { size: machine.size }),
 						...(machine.shape === undefined ? {} : { shape: machine.shape }),
 						...(image === undefined ? {} : { image }),
+						...(from === undefined ? {} : { snapshotId: from.id }),
 						egressRevision,
 					},
 				};
@@ -11655,6 +11778,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (!("moved" in began)) {
 			if (began.lost.type === "microvm") return began.lost;
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}; try the upgrade again`);
+		}
+		// Depending on its snapshot from the record on (`dependents`), as a create does (`adopt`): one deleted or expired
+		// meanwhile puts the isolate back, nothing sent.
+		if (
+			from !== undefined &&
+			!(await adopt(
+				from.id,
+				async () => undefined,
+				() => restoreUpgrade(sandboxId, operationId),
+			))
+		) {
+			throw deletedMeanwhile();
 		}
 		const starting = began.moved;
 		const work = track([current.id], async (): Promise<StoredSandbox> => {
@@ -11692,6 +11827,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							// Its microVM in its pool: kept to it as its host admits it.
 							...pooled(current.poolId),
 							...(fromSnapshot === undefined ? {} : { fromSnapshot }),
+							...(from?.ref === undefined ? {} : { intoSnapshot: from.ref }),
 							...egress,
 						},
 						operationId,
@@ -11832,7 +11968,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			size: upgrading.size,
 			shape: upgrading.shape,
 			image: upgrading.image,
-			upgradedFrom: { type: "isolate" as const, at: upgrading.at },
+			upgradedFrom: {
+				type: "isolate" as const,
+				at: upgrading.at,
+				...(upgrading.snapshotId === undefined ? {} : { snapshotId: upgrading.snapshotId }),
+			},
 			upgrading: undefined,
 			// The isolate's snapshots stay theirs, an isolate's: the microVM's own come with its first stop.
 			latestSnapshotId: undefined,

@@ -34,6 +34,7 @@ import {
 	type TemplateRuntime,
 	UPGRADE_WORKSPACE,
 	type UpgradedPlacement,
+	type UpgradeSpec,
 	type UsageSample,
 } from "./backend.ts";
 import { needsMicrovmOf } from "./needs-microvm.ts";
@@ -59,7 +60,16 @@ export interface StubBackendOptions {
 	readonly sandboxDomain?: string;
 	/** For its usage readings' times. Default `Date.now`. */
 	readonly now?: () => number;
+	/**
+	 * Refs of snapshots saved with a guest agent from before it extracted into a real directory alone (`realTarget`):
+	 * an upgrade into one is refused, as kantel-host refuses it, before anything is written. It may change as it runs.
+	 */
+	readonly olderGuestSnapshots?: ReadonlySet<string>;
 }
+
+/** What kantel-host answers an upgrade into a snapshot whose guest agent predates `realTarget`. */
+const OLDER_GUEST_AGENT =
+	"the snapshot was saved with an older Kantel guest agent, which can't lay an isolate's files into it safely: save it again from a sandbox started afresh on a current host to upgrade into it";
 
 /** The stub host's memory and disk, as its usage reports them. */
 const STUB_HOST_MEMORY_BYTES = 256 * 1024 ** 3;
@@ -465,9 +475,10 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	/**
 	 * An isolate made a microVM, as kantel-host's `sandbox.upgrade` does: a new machine with the same ID whose disk has the
 	 * isolate's `/workspace` (its live files, or a stopped one's stop snapshot) under `UPGRADE_WORKSPACE`, and `/workspace`
-	 * a link to it. The isolate is replaced only once the microVM is made, so a failure leaves it as it was.
+	 * a link to it; one from a snapshot (`intoSnapshot`) starts with that snapshot's disk, the isolate's files laid over
+	 * it. The isolate is replaced only once the microVM is made, so a failure leaves it as it was.
 	 */
-	const upgrade = async (sandboxId: string, spec: SandboxSpec, operationId: string): Promise<UpgradedPlacement> => {
+	const upgrade = async (sandboxId: string, spec: UpgradeSpec, operationId: string): Promise<UpgradedPlacement> => {
 		// Sent again: the first's outcome, as a host keeps it.
 		const done = upgrades.get(sandboxId);
 		if (done?.operationId === operationId) {
@@ -488,35 +499,91 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 					: spec.fromSnapshot === undefined
 						? undefined
 						: snapshotTree(spec.fromSnapshot);
-			const fs = await restore(undefined);
-			await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
+			// From a microVM's snapshot, as a create from it, the isolate's files laid over what it has, only by a guest agent
+			// that extracts into a real directory alone: one older is refused once the machine is made, before anything is
+			// written into it.
+			const fs = await restore(spec.intoSnapshot === undefined ? undefined : snapshotTree(spec.intoSnapshot));
+			if (spec.intoSnapshot !== undefined && options.olderGuestSnapshots?.has(spec.intoSnapshot) === true) {
+				throw new KantelError("not_supported", OLDER_GUEST_AGENT);
+			}
 			const moved = (path: string) =>
 				path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)
 					? `${UPGRADE_WORKSPACE}${path.slice(WORKSPACE.length)}`
 					: undefined;
+			// Each entry is laid over what is there as the guest's extractor lays it: a directory replaces a file or link
+			// and merges with a directory; a file or link replaces a file or link, never written through; a file or link
+			// where a directory is, or anything under a link, fails the upgrade, so no directory's files are lost.
+			const clear = async (path: string, to: string, kind: "directory" | "file" | "link") => {
+				let at = UPGRADE_WORKSPACE;
+				const parts = to.slice(UPGRADE_WORKSPACE.length + 1).split("/");
+				for (const part of parts.slice(0, -1)) {
+					at = `${at}/${part}`;
+					const parent = await fs.lstat(at).catch(() => undefined);
+					if (parent === undefined) await fs.mkdir(at);
+					else if (parent.isSymbolicLink || !parent.isDirectory)
+						throw new KantelError("invalid", `${path} can't be laid over ${at}, which isn't a directory`);
+				}
+				const there = await fs.lstat(to).catch(() => undefined);
+				if (there === undefined) return true;
+				if (there.isDirectory && !there.isSymbolicLink) {
+					if (kind === "directory") return false;
+					throw new KantelError("invalid", `${path} can't be laid over the directory ${to}`);
+				}
+				await fs.rm(to);
+				return true;
+			};
 			let files = 0;
 			let bytes = 0;
-			for (const dir of [...(tree?.dirs.keys() ?? [])].sort()) {
-				const to = moved(dir);
-				if (to === undefined || to === UPGRADE_WORKSPACE) continue;
-				await fs.mkdir(to, { recursive: true });
-				files += 1;
+			try {
+				// A link at UPGRADE_WORKSPACE or above it (a snapshot's) is refused before anything goes in, as the guest agent's
+				// extraction into a real directory refuses it: the files would land wherever it points.
+				let at = "";
+				for (const part of UPGRADE_WORKSPACE.split("/").filter((each) => each !== "")) {
+					at = `${at}/${part}`;
+					const there = await fs.lstat(at).catch(() => undefined);
+					if (there === undefined) break;
+					if (there.isSymbolicLink) {
+						throw new KantelError("invalid", `${at} is a symbolic link; nothing is extracted through one`);
+					}
+					if (!there.isDirectory) throw new KantelError("invalid", `${at} isn't a directory`);
+				}
+				await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
+				for (const dir of [...(tree?.dirs.keys() ?? [])].sort()) {
+					const to = moved(dir);
+					if (to === undefined || to === UPGRADE_WORKSPACE) continue;
+					if (await clear(dir, to, "directory")) await fs.mkdir(to);
+					files += 1;
+				}
+				for (const [path, file] of tree?.files ?? []) {
+					const to = moved(path);
+					if (to === undefined) continue;
+					await clear(path, to, "file");
+					await fs.writeFile(to, new Uint8Array(file.bytes));
+					await fs.chmod(to, file.mode).catch(() => undefined);
+					await fs.utimes(to, new Date(file.mtime), new Date(file.mtime)).catch(() => undefined);
+					files += 1;
+					bytes += file.bytes.byteLength;
+				}
+				for (const [path, target] of tree?.links ?? []) {
+					const to = moved(path);
+					if (to === undefined) continue;
+					await clear(path, to, "link");
+					await fs.symlink(target, to);
+					files += 1;
+				}
+			} catch (error) {
+				fsError(error, UPGRADE_WORKSPACE);
 			}
-			for (const [path, file] of tree?.files ?? []) {
-				const to = moved(path);
-				if (to === undefined) continue;
-				await fs.mkdir(to.slice(0, to.lastIndexOf("/")), { recursive: true });
-				await fs.writeFile(to, new Uint8Array(file.bytes));
-				await fs.chmod(to, file.mode).catch(() => undefined);
-				await fs.utimes(to, new Date(file.mtime), new Date(file.mtime)).catch(() => undefined);
-				files += 1;
-				bytes += file.bytes.byteLength;
-			}
-			for (const [path, target] of tree?.links ?? []) {
-				const to = moved(path);
-				if (to === undefined) continue;
-				await fs.symlink(target, to).catch(() => undefined);
-				files += 1;
+			// A link or an empty directory there is replaced (a snapshot's own), anything else refused, as a host does.
+			const there = await fs.lstat(WORKSPACE).catch(() => undefined);
+			if (there !== undefined) {
+				if (there.isDirectory && (await fs.readdir(WORKSPACE)).length > 0) {
+					throw new KantelError(
+						"unavailable",
+						`${WORKSPACE} is a directory of files; it can't be linked to ${UPGRADE_WORKSPACE}`,
+					);
+				}
+				await fs.rm(WORKSPACE, { recursive: true, force: true });
 			}
 			await fs.symlink(UPGRADE_WORKSPACE, WORKSPACE);
 			const microvm: Machine = {

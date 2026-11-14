@@ -406,6 +406,23 @@ const FeatureStickyDisks = "sticky-disks"
 // SandboxInfo and Moved. Reported by a host that runs both tiers.
 const FeatureIsolateUpgrade = "isolate-upgrade"
 
+// FeatureIsolateUpgradeFrom (HOST_FEATURES.isolateUpgradeFrom): sandbox.upgrade also takes From, one of the host's
+// microVM snapshots, or Template, and starts the microVM from it as sandbox.create would (a snapshot's memory
+// restored), the isolate's files laid over what it has at UpgradeWorkspace, only by a guest agent that reports
+// GuestFeatureRealTarget. Reported with FeatureIsolateUpgrade.
+const FeatureIsolateUpgradeFrom = "isolate-upgrade-from"
+
+// FeatureGuestFeatures (HOST_FEATURES.guestFeatures): sandbox.create takes CreateParams.GuestFeatures, refusing
+// (ErrUnsupported, the sandbox deleted) one whose guest agent doesn't report each before anything is written into it,
+// so another host's upgrade can ask of the microVM it makes here what this host's own upgrade asks. Reported by a host
+// with the microVM tier.
+const FeatureGuestFeatures = "guest-features"
+
+// GuestFeatureRealTarget, in a guest agent's health (guest.Health.Features), says it extracts an archive with
+// FileExtractParams.RealTarget into a real directory only, refusing a link at the target or above it. An agent from
+// before it reports no features, and ignores RealTarget.
+const GuestFeatureRealTarget = "extract-real-target"
+
 // FeatureIsolateFreeze (HOST_FEATURES.isolateFreeze): the host takes sandbox.upgrade.freeze and sandbox.upgrade.thaw
 // (UpgradeRef) for its isolates, so Kantel can copy one version of an isolate's files to a microVM on another host
 // while nothing writes to them. Reported by a host with the isolate tier.
@@ -1056,6 +1073,10 @@ type CreateParams struct {
 	// StickyDisksMax. The sandbox keeps them for its life: its stops, starts, resumes and recoveries keep them, a fork
 	// gets clones of them, and its delete removes them.
 	StickyDisks []StickyDisk `json:"stickyDisks,omitempty"`
+	// GuestFeatures are what the new microVM's guest agent must report it can do (guest.Health.Features), asked once it
+	// runs and before anything is written into it: one that doesn't report each, as an agent too old to say any, has the
+	// create undone and refused as unsupported. An upgrade into a snapshot asks GuestFeatureRealTarget.
+	GuestFeatures []string `json:"guestFeatures,omitempty"`
 }
 
 // StickyDisksMax is the most sticky disks a sandbox may have: the sticky drives every microVM has.
@@ -1467,11 +1488,14 @@ type ProcessList struct {
 }
 
 // FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
-// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted.
+// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted. With
+// RealTarget, a link at Target or above it is refused rather than followed (an upgrade's), by guest agents that report
+// GuestFeatureRealTarget: an older one ignores it, so whoever needs it requires that feature first (GuestFeatures).
 type FileExtractParams struct {
-	SandboxID string `json:"sandboxId"`
-	Archive   string `json:"archive"`
-	Target    string `json:"target"`
+	SandboxID  string `json:"sandboxId"`
+	Archive    string `json:"archive"`
+	Target     string `json:"target"`
+	RealTarget bool   `json:"realTarget,omitempty"`
 }
 
 type FileEntry struct {
