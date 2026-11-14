@@ -84,7 +84,7 @@ export const Empty: Story = () => (
 	</Frame>
 );
 
-/** A long host name truncates, with the host's ID on hover. */
+/** A long host name truncates, whole on hover. */
 export const LongContent: Story = () => (
 	<Frame>
 		<SnapshotHosts

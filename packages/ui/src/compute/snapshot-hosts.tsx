@@ -43,7 +43,7 @@ export function SnapshotHosts({ hosts, memory = false }: SnapshotHostsProps) {
 					{host.hostName === undefined ? (
 						<span className="text-sm text-muted">Shared host</span>
 					) : (
-						<span className="min-w-0 max-w-full truncate text-sm font-medium text-fg" title={host.hostId}>
+						<span className="min-w-0 max-w-full truncate text-sm font-medium text-fg" title={host.hostName}>
 							{host.hostName}
 						</span>
 					)}
@@ -124,6 +124,13 @@ export function SnapshotCopiesSwitch({
 	const [on, setOn] = useState(saved);
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
+	// The setting as the page last read it: a later read (after a rename, say) that says otherwise wins, unless a change
+	// is on its way, whose answer does.
+	const [read, setRead] = useState(saved);
+	if (saved !== read && !busy) {
+		setRead(saved);
+		setOn(saved);
+	}
 	return (
 		<div className="flex min-w-0 flex-col gap-1 pt-2" data-snapshot-copies>
 			<Switch
@@ -151,7 +158,11 @@ export function SnapshotCopiesSwitch({
 					);
 				}}
 			/>
-			{failure === undefined ? null : <p className="m-0 text-sm text-status-error">{failure}</p>}
+			{failure === undefined ? null : (
+				<p className="m-0 text-sm text-status-error" role="alert">
+					{failure}
+				</p>
+			)}
 		</div>
 	);
 }
