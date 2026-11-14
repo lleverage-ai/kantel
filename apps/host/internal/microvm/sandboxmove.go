@@ -270,13 +270,12 @@ func exportDigest(dir string) (string, error) {
 }
 
 // DeleteSandboxExport deletes version of a sandbox's exports, or every one with no version (sandbox.export.delete). A
-// fetch reading one already has its files open, and ends with what it read.
+// fetch reading one already has its files open, and ends with what it read; an export being made fails, its
+// directory gone. It doesn't wait for exports being made (moves.turn): a delete never waits on another's map.
 func (m *Manager) DeleteSandboxExport(id, version string) error {
 	if !validID(id) || (version != "" && !validID(version)) {
 		return &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
 	}
-	m.moves.turn.Lock()
-	defer m.moves.turn.Unlock()
 	if version == "" {
 		return os.RemoveAll(filepath.Join(m.cfg.Root, sandboxExportsDir, id))
 	}
