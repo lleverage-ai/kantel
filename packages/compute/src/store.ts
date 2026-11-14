@@ -631,6 +631,11 @@ export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
 	 * shut from the check to the move.
 	 */
 	readonly drainEpoch?: number;
+	/**
+	 * When it was last moved to another pool (`moveHost`); absent for a host never moved. A template's root filesystem
+	 * it made before then is the old pool's, and isn't offered in this one (`DiskHolders.recordHoldings`).
+	 */
+	readonly poolSince?: number;
 };
 
 export interface StoredJoinToken {

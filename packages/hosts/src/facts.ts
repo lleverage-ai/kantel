@@ -403,7 +403,12 @@ function heldObjects(value: unknown): HostObjectHolding[] | undefined {
 			) {
 				return undefined;
 			}
-			versions.push({ version: version.version, mapDigest: version.mapDigest, allocatedBytes: version.allocatedBytes });
+			versions.push({
+				version: version.version,
+				mapDigest: version.mapDigest,
+				allocatedBytes: version.allocatedBytes,
+				...(typeof version.madeAt === "number" && Number.isFinite(version.madeAt) ? { madeAt: version.madeAt } : {}),
+			});
 		}
 		out.push({ objectId: entry.objectId, versions });
 	}

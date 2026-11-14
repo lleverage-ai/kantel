@@ -44,9 +44,11 @@ type rootfsMaps struct {
 	turn    sync.Mutex
 }
 
-func (b *rootfsBuilder) mapPath(key string) string     { return filepath.Join(b.dir, key+".map") }
-func (b *rootfsBuilder) recordPath(key string) string  { return filepath.Join(b.dir, key+".json") }
-func (b *rootfsBuilder) partialPath(key string) string { return filepath.Join(b.dir, key+rootfsPartialSuffix) }
+func (b *rootfsBuilder) mapPath(key string) string    { return filepath.Join(b.dir, key+".map") }
+func (b *rootfsBuilder) recordPath(key string) string { return filepath.Join(b.dir, key+".json") }
+func (b *rootfsBuilder) partialPath(key string) string {
+	return filepath.Join(b.dir, key+rootfsPartialSuffix)
+}
 
 // rootfsObject says whether key and version name a root filesystem as an object.
 func rootfsObject(key, version string) bool { return validKey(key) && version == RootfsVersion }
@@ -221,8 +223,13 @@ func (m *Manager) RootfsHoldings() []proto.ObjectHolding {
 		if digest == "" {
 			continue
 		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		// Made when it was last written: a build's or a fetch's file is renamed into place, which keeps that time.
 		out = append(out, proto.ObjectHolding{ObjectID: key, Versions: []proto.ObjectVersionHolding{{
-			Version: RootfsVersion, MapDigest: digest, AllocatedBytes: diskUsage(b.path(key)),
+			Version: RootfsVersion, MapDigest: digest, AllocatedBytes: diskUsage(b.path(key)), MadeAt: info.ModTime().UnixMilli(),
 		}}})
 	}
 	return out
@@ -287,11 +294,23 @@ func (m *Manager) mapRootfsLater(key string) {
 		if fileExists(b.mapPath(key)) {
 			return
 		}
-		if err := m.mapRootfs(m.background(), key); err != nil {
-			m.log.Warn("a template's root filesystem's block map couldn't be made", "key", key, "error", err)
+		// A file replaced while it was mapped (a build made it again) is mapped again: its build's own request found this
+		// one under way.
+		for tries := 0; ; tries++ {
+			err := m.mapRootfs(m.background(), key)
+			if errors.Is(err, errRootfsReplaced) && tries < 3 {
+				continue
+			}
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				m.log.Warn("a template's root filesystem's block map couldn't be made", "key", key, "error", err)
+			}
+			return
 		}
 	}()
 }
+
+// errRootfsReplaced is a map made of a file that was replaced or removed meanwhile, so not written.
+var errRootfsReplaced = errors.New("the file was replaced while its map was made")
 
 // mapRootfs makes a root filesystem's map and writes it beside the file, unless the file was replaced or removed
 // meanwhile.
@@ -310,7 +329,7 @@ func (m *Manager) mapRootfs(ctx context.Context, key string) error {
 	// Under the key's lock, so a build or a fetch of the key doesn't replace the file between the check and the write.
 	defer b.locks.lock(key)()
 	if info, err := f.Stat(); err != nil || !sameFileAt(info, b.path(key)) {
-		return errors.New("the file was replaced while its map was made")
+		return errRootfsReplaced
 	}
 	if _, err := blockmap.WriteFile(b.mapPath(key), bm); err != nil {
 		return err

@@ -1115,11 +1115,13 @@ type ObjectHolding struct {
 }
 
 // ObjectVersionHolding is one version a host holds, with its block map's digest (a version is listed only once it has
-// one), and the bytes it takes on the host's disk.
+// one), the bytes it takes on the host's disk, and when the host made it (built or fetched it; Unix milliseconds): a
+// copy made before the host moved to another pool stays the old pool's.
 type ObjectVersionHolding struct {
 	Version        string `json:"version"`
 	MapDigest      string `json:"mapDigest"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
+	MadeAt         int64  `json:"madeAt,omitempty"`
 }
 
 // DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is

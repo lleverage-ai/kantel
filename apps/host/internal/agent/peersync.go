@@ -253,7 +253,9 @@ func (s stickyObjects) Open(_, objectID, version string, withMap bool) (*os.File
 	return s.t.OpenStickyVersion(objectID, version, withMap)
 }
 
-func (s stickyObjects) ReadFile(string, string, string, string) ([]byte, error) { return nil, fs.ErrNotExist }
+func (s stickyObjects) ReadFile(string, string, string, string) ([]byte, error) {
+	return nil, fs.ErrNotExist
+}
 
 func (s stickyObjects) Held(r disksync.Ref) bool { return s.t.HoldsSticky(r.ObjectID, r.Version) }
 

@@ -10,7 +10,8 @@
  *   holds only versions the catalogue has, of an account whose data it may have.
  * - `rootfs`: a template's root filesystem (`images/templates/<key>.ext4` on a host), its ID the key and its one version
  *   `1`. No record of its own: each holder carries the map digest its host reported, as two hosts that each built one
- *   before they synced may hold different bytes under one key, and the pool its host was in when it first reported it.
+ *   before they synced may hold different bytes under one key, and the pool its host made it in: the host's pool when
+ *   it first reported it, unless the host has moved since it made it (`StoredHost.poolSince`), when it is offered nowhere.
  *   `disk.locate` answers the digest most of the asker's pool's holders of its architecture have, and only those
  *   holders.
  *
@@ -47,10 +48,13 @@ export type StickyHoldingsReport = readonly {
 	readonly versions: readonly { readonly version: string }[];
 }[];
 
-/** A host's report of the objects of one kind it holds (`HostCapacity.holdings`), each version with its map digest. */
+/**
+ * A host's report of the objects of one kind it holds (`HostCapacity.holdings`), each version with its map digest and
+ * when the host made it (fetched or built), by its clock.
+ */
 export type ObjectHoldingsReport = readonly {
 	readonly objectId: string;
-	readonly versions: readonly { readonly version: string; readonly mapDigest: string }[];
+	readonly versions: readonly { readonly version: string; readonly mapDigest: string; readonly madeAt?: number }[];
 }[];
 
 /** What one capacity report says a host holds: each absent says nothing of its kind, so nothing of it is forgotten. */
@@ -283,7 +287,10 @@ export function createDiskHolders(options: {
 			if (rootfs !== undefined) {
 				// Only what is shaped as a root filesystem: its key, its one version and a map digest. It is no account's
 				// record, so a host can't claim another pool's: holders are offered only to their own pool's hosts.
-				const reported = new Map<string, { readonly objectId: string; readonly mapDigest: string }>();
+				const reported = new Map<
+					string,
+					{ readonly objectId: string; readonly mapDigest: string; readonly madeAt?: number }
+				>();
 				for (const object of rootfs) {
 					if (!ROOTFS_KEY.test(object.objectId)) continue;
 					for (const held of object.versions) {
@@ -291,6 +298,7 @@ export function createDiskHolders(options: {
 						reported.set(versionKey(object.objectId, held.version), {
 							objectId: object.objectId,
 							mapDigest: held.mapDigest,
+							...(held.madeAt === undefined ? {} : { madeAt: held.madeAt }),
 						});
 					}
 				}
@@ -298,12 +306,16 @@ export function createDiskHolders(options: {
 				const known = new Map(mine.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
 				const reporter = (await options.hosts()).find((host) => host.id === hostId);
 				const poolId = reporter?.state === "revoked" ? undefined : reporter?.poolId;
-				for (const [key, { objectId, mapDigest }] of reported) {
+				const poolSince = reporter?.poolSince;
+				for (const [key, { objectId, mapDigest, madeAt }] of reported) {
 					const holder = known.get(key);
 					// Kept as it is, its pool too: a copy made in one pool stays that pool's after its host moves.
 					if (holder !== undefined && holder.state === "held" && holder.mapDigest === mapDigest) continue;
-					// A new copy (or the file made again) is the pool's its host is in now; none, while it is in none.
+					// A new copy (or the file made again) is the pool's its host is in now, if it was made there: one made
+					// before the host moved (reported only now, its map made late) is its old pool's, and offered nowhere.
+					// None, while the host is in no pool.
 					if (poolId === undefined) continue;
+					if (poolSince !== undefined && (madeAt === undefined || madeAt <= poolSince)) continue;
 					if (holder !== undefined) release.push(holder);
 					hold.push({
 						id: diskHolderId("rootfs", objectId, ROOTFS_VERSION, hostId),

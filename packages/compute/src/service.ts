@@ -2513,14 +2513,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Deletes deleted sticky disks' versions from every connected host again (a host away at the delete, or a commit
 	 * that finished after it), and their catalogue versions a delete stopped before, and forgets tombstones past
-	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then forgets the versions of
-	 * live disks their hosts no longer hold (`forgetDroppedStickyVersions`).
+	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then sweeps the holders of
+	 * every kind (`DiskHolders.sweep`), and forgets the versions of live disks their hosts no longer hold
+	 * (`forgetDroppedStickyVersions`). With sticky disks off and templates on, it sweeps the holders alone: templates'
+	 * root filesystems have holders too.
 	 */
 	async function sweepStickyDisks(): Promise<void> {
-		if (options.stickyDisks !== true) return;
+		if (options.stickyDisks !== true && options.templates !== true) return;
 		const t = now();
 		if (t - stickySweptAt < STICKY_SWEEP_EVERY_MS) return;
 		stickySweptAt = t;
+		if (options.stickyDisks !== true) {
+			await diskHolders.sweep(t);
+			return;
+		}
 		const disks = await store.stickyDisks.list();
 		if (backend.deleteStickyDisk !== undefined) {
 			for (const disk of disks) {
@@ -2958,7 +2964,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: current.poolId !== from
 							? "The host was moved meanwhile"
 							: undefined;
-			return refused === undefined ? { ...current, poolId: into.id } : undefined;
+			return refused === undefined ? { ...current, poolId: into.id, poolSince: now() } : undefined;
 		});
 		if (refused !== undefined) throw new KantelError("conflict", refused);
 		if (moved === undefined) throw new KantelError("not_found", "No such host");
@@ -4504,7 +4510,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, diskUsage, drainEpoch: _drain, ...rest } = host;
+		const { updating, diskUsage, drainEpoch: _drain, poolSince: _since, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
 			...rest,

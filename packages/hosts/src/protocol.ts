@@ -707,11 +707,16 @@ export interface HostObjectHolding {
 	readonly versions: readonly HostObjectVersionHolding[];
 }
 
-/** One version a host holds: its block map's digest (it is listed only once it has one), and the bytes it takes. */
+/**
+ * One version a host holds: its block map's digest (it is listed only once it has one), the bytes it takes, and when the
+ * host made it (built or fetched it; Unix ms, by its clock), so a copy made before the host moved to another pool stays
+ * the old pool's. `madeAt` is absent from a host that doesn't say.
+ */
 export interface HostObjectVersionHolding {
 	readonly version: string;
 	readonly mapDigest: string;
 	readonly allocatedBytes: number;
+	readonly madeAt?: number;
 }
 
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */

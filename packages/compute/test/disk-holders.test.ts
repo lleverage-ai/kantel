@@ -419,6 +419,70 @@ describe("disk holders", () => {
 		);
 	});
 
+	it("offers a root filesystem a host made before it moved pools nowhere, however late it reports it", async () => {
+		const tom = setUp({ templates: true });
+		await tom.pool();
+		const held = (hostId: string, objectId: string, madeAt?: number) => {
+			tom.clock.now += 1;
+			return tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: {
+					rootfs: [
+						{
+							objectId,
+							versions: [{ version: "1", mapDigest: DIGEST, ...(madeAt === undefined ? {} : { madeAt }) }],
+						},
+					],
+				},
+			});
+		};
+		// host_b reported one copy before it moved; it moves (only its record's move time is written here, so it stays in
+		// pool A); then it reports the copy it had, one it made before the move but mapped late, one with no time, and one
+		// made after the move.
+		await held("host_b", KEY, tom.clock.now - 1000);
+		const movedAt = tom.clock.now + 10;
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolSince: movedAt }));
+		tom.clock.now = movedAt + 3 * 60_000;
+		const late = "c".repeat(64);
+		const unknown = "d".repeat(64);
+		const fresh = "e".repeat(64);
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			objects: {
+				rootfs: [
+					{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST, madeAt: movedAt - 2000 }] },
+					{ objectId: late, versions: [{ version: "1", mapDigest: DIGEST, madeAt: movedAt - 1 }] },
+					{ objectId: unknown, versions: [{ version: "1", mapDigest: DIGEST }] },
+					{ objectId: fresh, versions: [{ version: "1", mapDigest: DIGEST, madeAt: movedAt + 1 }] },
+				],
+			},
+		});
+		const recorded = (await tom.api.store.diskHolders.list())
+			.filter((holder) => holder.hostId === "host_b")
+			.map((holder) => holder.objectId)
+			.sort();
+		// The copy recorded before the move is kept as it was; the late and timeless ones aren't recorded; the new one is.
+		expect(recorded).toEqual([KEY, fresh].sort());
+		const offered = async (objectId: string) =>
+			(await tom.api.service.locateDisk(STUB_HOST_ID, { kind: "rootfs", objectId, version: "1" })).holders;
+		expect(await offered(late)).toEqual([]);
+		expect(await offered(unknown)).toEqual([]);
+		expect(await offered(fresh)).toEqual([{ hostId: "host_b", address: "fd00:a::2" }]);
+	});
+
+	it("sweeps revoked hosts' root filesystem holders with templates on and sticky disks off", async () => {
+		const tom = setUp({ templates: true, stickyDisks: false });
+		await tom.pool();
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			objects: { rootfs: [{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST }] }] },
+		});
+		expect(await tom.api.store.diskHolders.list()).toHaveLength(1);
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, state: "revoked" }));
+		tom.clock.now += 11 * 60_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(await tom.api.store.diskHolders.list()).toEqual([]);
+	});
+
 	it("has a host fetch a version from its pool's holders, with a grant naming it", async () => {
 		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];
 		const tom = setUp({

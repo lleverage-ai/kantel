@@ -58,6 +58,9 @@ func TestRootfsServedOnceMapped(t *testing.T) {
 		got[0].Versions[0].MapDigest != digest {
 		t.Fatalf("holdings %+v", got)
 	}
+	if info, _ := os.Stat(b.path(key)); got[0].Versions[0].MadeAt != info.ModTime().UnixMilli() {
+		t.Fatalf("made at %d, not when the file was written", got[0].Versions[0].MadeAt)
+	}
 	if record, err := m.ReadRootfsFile(key, RootfsVersion, RootfsRecordFile); err != nil || !bytes.Contains(record, []byte("sha256:1")) {
 		t.Fatalf("record %q %v", record, err)
 	}
