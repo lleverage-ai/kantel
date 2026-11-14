@@ -54,6 +54,9 @@ describe("saved snapshot copies", () => {
 			host("d", { state: "revoked" }),
 			host("e", { poolId: "pool_b" }),
 			host("f", { state: "draining" }),
+			// Draining keeps its state when it disconnects: away for a day all the same.
+			host("g", { state: "draining", connected: false, lastSeenAt: AT - HOLDER_AWAY_MS }),
+			host("h", { state: "draining", connected: false, lastSeenAt: AT - HOLDER_AWAY_MS + 60_000 }),
 		);
 		const holders = [
 			holder("a"),
@@ -63,9 +66,11 @@ describe("saved snapshot copies", () => {
 			holder("e"),
 			holder("f"),
 			holder("g"),
+			holder("h"),
+			holder("i"),
 			holder("a", { id: "x", state: "deleting" }),
 		];
-		expect(keepingCopies(holders, hosts, "pool_a", AT).map((each) => each.hostId)).toEqual(["a", "b", "f"]);
+		expect(keepingCopies(holders, hosts, "pool_a", AT).map((each) => each.hostId)).toEqual(["a", "b", "f", "h"]);
 		const fetching = (since: number) => [holder("a"), holder("b", { state: "fetching", since, mapDigest: undefined })];
 		expect(keepingCopies(fetching(AT - COPY_FETCH_MS + 1), hostsOf(host("a"), host("b")), "pool_a", AT)).toHaveLength(
 			2,
@@ -102,6 +107,11 @@ describe("saved snapshot copies", () => {
 		// None to copy from: nothing held with its map, or only on a host that can't serve it.
 		expect(copyTarget(snapshot, [holder("a", { mapDigest: undefined })], hosts, "pool_a", AT)).toBe(undefined);
 		expect(copyTarget(snapshot, [holder("away")], hosts, "pool_a", AT)).toBe(undefined);
+		// A host whose fetch has gone on too long (failed, or one that doesn't report its fetches) is asked again.
+		const two = hostsOf(host("a"), host("b"));
+		const stale = holder("b", { state: "fetching", since: AT - COPY_FETCH_MS, mapDigest: undefined });
+		expect(copyTarget(snapshot, [holder("a"), stale], two, "pool_a", AT)).toBe("b");
+		expect(copyTarget(snapshot, [holder("a"), { ...stale, since: AT - 1 }], two, "pool_a", AT)).toBe(undefined);
 		// A pool of one host.
 		expect(copyTarget(snapshot, [holder("a")], hostsOf(host("a")), "pool_a", AT)).toBe(undefined);
 	});

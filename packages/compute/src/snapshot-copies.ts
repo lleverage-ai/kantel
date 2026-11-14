@@ -66,8 +66,8 @@ export type CopiedSnapshot = Pick<StoredSnapshot, "ref" | "accountId" | "memory"
 
 /**
  * The holders of a saved snapshot's disk (`disk` holders of its ref) that keep a copy at `at`: held, or fetching for
- * less than `COPY_FETCH_MS`, on a host in `poolId` that isn't revoked and hasn't been away for `HOLDER_AWAY_MS`. One
- * a host is to delete (`deleting`) keeps none.
+ * less than `COPY_FETCH_MS`, on a host in `poolId` that isn't revoked and hasn't been away (unreachable, or draining and
+ * disconnected) for `HOLDER_AWAY_MS`. One a host is to delete (`deleting`) keeps none.
  */
 export function keepingCopies(
 	holders: readonly StoredDiskHolder[],
@@ -80,7 +80,9 @@ export function keepingCopies(
 		if (holder.state === "fetching" && holder.since <= at - COPY_FETCH_MS) return false;
 		const host = hosts.get(holder.hostId);
 		if (host === undefined || host.state === "revoked" || host.poolId !== poolId) return false;
-		return !(host.state === "unreachable" && (host.lastSeenAt ?? 0) <= at - HOLDER_AWAY_MS);
+		// Away: unreachable, or draining and disconnected, which keeps its state.
+		const away = host.state === "unreachable" || host.connected === false;
+		return !(away && (host.lastSeenAt ?? 0) <= at - HOLDER_AWAY_MS);
 	});
 }
 
@@ -89,8 +91,8 @@ export function keepingCopies(
  * has `SNAPSHOT_COPIES` already, no holder serves it (held, with a map digest, on a connected host of the pool with a
  * mesh address), or no other host can take one. A host takes one when it is online and connected in the pool, takes
  * copies (`SNAPSHOT_COPY_FEATURES`, its mesh address), is of an architecture a serving holder is, may hold the account's
- * data, has the room the snapshot takes where it says what it has free, and has no holder of it (nor was asked for one
- * within `COPY_PASSED_OVER_MS` and didn't take it). Of those: one its memory restores on first (for a snapshot with
+ * data, has the room the snapshot takes where it says what it has free, and has no holder of it but a fetch older than
+ * `COPY_FETCH_MS` (nor was asked for one within `COPY_PASSED_OVER_MS` and didn't take it). Of those: one its memory restores on first (for a snapshot with
  * memory), then one on its runtime (the same host image, so it has its root image), then the most disk free.
  */
 export function copyTarget(
@@ -113,7 +115,13 @@ export function copyTarget(
 		.filter(live);
 	if (serving.length === 0) return undefined;
 	const architectures = new Set(serving.map((host) => host.arch));
-	const holding = new Set(holders.map((holder) => holder.hostId));
+	// A host whose fetch has gone on past `COPY_FETCH_MS` (failed, its partial kept, or a host that doesn't report its
+	// fetches) may be asked again: asked, its holder starts again.
+	const holding = new Set(
+		holders
+			.filter((holder) => holder.state !== "fetching" || holder.since > at - COPY_FETCH_MS)
+			.map((holder) => holder.hostId),
+	);
 	const passedOver =
 		snapshot.copying !== undefined && snapshot.copying.at > at - COPY_PASSED_OVER_MS
 			? snapshot.copying.hostId

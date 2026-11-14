@@ -80,7 +80,7 @@ held_by() { [ "$(holding)" = "$(printf '%s\n' "$@" | sort)" ]; }
 container_of() {
 	local h
 	for h in h1 h2 h3; do
-		[ "$(cat "$dir/$h/host-id")" = "$1" ] && echo "kantel-stack-$name-$h"
+		if [ "$(cat "$dir/$h/host-id")" = "$1" ]; then echo "kantel-stack-$name-$h"; fi
 	done
 }
 # Whether host container $1 has the saved snapshot $on_a published (its record and disk).
