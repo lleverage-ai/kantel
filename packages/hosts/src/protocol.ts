@@ -408,7 +408,58 @@ export const HOST_FEATURES = {
 	 * runtime fingerprints match the snapshot's (else its copy boots on its disk). Reported with `diskSync`.
 	 */
 	snapshotSync: "snapshot-sync",
+	/**
+	 * A stopped microVM sandbox moves to another host in its pool (docs/design/disk-store.md, "Moving a sandbox to another
+	 * host"). Its disk and sticky drives are a disk store object, kind `sandbox`, its ID the sandbox's, one version for
+	 * each export (the move's operation ID), whose parts are `SANDBOX_PARTS` and whose record goes whole:
+	 * `sandbox.export` (`HostSandboxExportParams`) on its host makes that version, clones of its files and their maps,
+	 * which the host then serves to its mesh peers; `sandbox.import` (`HostSandboxImportParams`) on the target fetches it,
+	 * its root image first, and makes the sandbox there, stopped, with the same ID; `sandbox.export.delete` drops a
+	 * version. A delete of the sandbox drops its exports too, and on the target an import under way. Reported with
+	 * `snapshotSync`.
+	 */
+	sandboxMove: "sandbox-move",
 } as const;
+
+/** A moved sandbox's parts (`HOST_FEATURES.sandboxMove`), in its manifest's order: its disk and its two sticky drives. */
+export const SANDBOX_PARTS = ["disk", "sticky0", "sticky1"] as const;
+
+/**
+ * Kantel to host, `sandbox.export` (`HOST_FEATURES.sandboxMove`): the stopped sandbox's disk and sticky drives cloned as
+ * `version` (a valid ID, Kantel's for the move) of the object `sandbox`/`sandboxId`, and mapped. Sent again, it answers
+ * the version it made; `conflict` unless the sandbox is stopped.
+ */
+export interface HostSandboxExportParams {
+	readonly sandboxId: string;
+	readonly version: string;
+}
+
+/** What `sandbox.export` made: the version's map digest (its manifest's) and the bytes its files take on the host. */
+export interface HostSandboxExportResult {
+	readonly mapDigest: string;
+	readonly allocatedBytes: number;
+}
+
+/** `sandbox.export.delete`: that version of the sandbox's exports, or every one without `version`, deleted. `{}`. */
+export interface HostSandboxExportDeleteParams {
+	readonly sandboxId: string;
+	readonly version?: string;
+}
+
+/**
+ * Kantel to host, `sandbox.import` (`HOST_FEATURES.sandboxMove`): version `version` of the object `sandbox`/`sandboxId`
+ * fetched from the hosts that hold it (what `disk.locate` would answer the host), its root image put in place first,
+ * and made a stopped sandbox there with the same ID. Answered with its `HostSandbox` once it is there; a call that ends
+ * first leaves the fetch going on, and the same call again waits for it. `conflict` when a sandbox of that ID is there,
+ * but the one this version made; a `sandbox.delete` of the ID ends it.
+ */
+export interface HostSandboxImportParams {
+	readonly sandboxId: string;
+	readonly version: string;
+	readonly mapDigest: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant: string;
+}
 
 /**
  * What a microVM's guest agent can report it does (its health's `features`), for a create's `guestFeatures` to
@@ -781,8 +832,8 @@ export interface HostObjectVersionHolding {
 export interface HostDiskLocateParams {
 	/**
 	 * `sticky`, `rootfs` (`HOST_FEATURES.rootfsSync`), `template` (`HOST_FEATURES.templateSync`), for which only holders
-	 * whose copy restores on the asking host's CPU and runtime are answered, or `snapshot` (`HOST_FEATURES.snapshotSync`);
-	 * `sandbox` later.
+	 * whose copy restores on the asking host's CPU and runtime are answered, `snapshot` (`HOST_FEATURES.snapshotSync`),
+	 * or `sandbox` (`HOST_FEATURES.sandboxMove`), a move's export, for the move's target alone.
 	 */
 	readonly kind: string;
 	readonly objectId: string;
@@ -1369,7 +1420,8 @@ export const HostMethods = {
 	egress: "sandbox.egress",
 	/**
 	 * `{ sandboxId, keepSnapshots? }`: the sandbox and its automatic snapshots go. With `keepSnapshots` (the isolate an
-	 * upgrade left once its microVM runs on another host) its snapshots stay, the sandbox's still.
+	 * upgrade left once its microVM runs on another host, or a microVM moved to another host, `HOST_FEATURES.sandboxMove`)
+	 * its snapshots stay, the sandbox's still.
 	 */
 	delete: "sandbox.delete",
 	get: "sandbox.get",
@@ -1465,6 +1517,12 @@ export const HostMethods = {
 	templateBuild: "template.build",
 	/** Deletes a template snapshot's directory, `{ snapshotId }`, and nothing else. Result `{ ok: true }`. */
 	templateDelete: "template.delete",
+	/** `HostSandboxExportParams` (`HOST_FEATURES.sandboxMove`), answered `HostSandboxExportResult`. */
+	sandboxExport: "sandbox.export",
+	/** `HostSandboxExportDeleteParams` (`HOST_FEATURES.sandboxMove`), answered `{}`. */
+	sandboxExportDelete: "sandbox.export.delete",
+	/** `HostSandboxImportParams` (`HOST_FEATURES.sandboxMove`), answered with the sandbox's `HostSandbox`. */
+	sandboxImport: "sandbox.import",
 } as const;
 
 /** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */

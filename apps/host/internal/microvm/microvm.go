@@ -316,6 +316,9 @@ type meta struct {
 	// Runtime is the portable runtime fingerprint of the machine it runs (fingerprint.go), as it was when it booted,
 	// or restored: its snapshots record it. Empty when it can't be told, such as a machine started before it was kept.
 	Runtime string `json:"runtime,omitempty"`
+	// Imported is the version of a move that made it here from another host (sandboxmove.go): a sandbox.import sent
+	// again finds it made, and a create of its ID isn't taken for it.
+	Imported string `json:"imported,omitempty"`
 }
 
 type sandbox struct {
@@ -460,6 +463,8 @@ type Manager struct {
 	// keeps a fetch of one deleted from publishing it (templatesync.go).
 	templateMaps    templateMaps
 	templateFetches templateFetches
+	// moves are sandboxes moved to and from this host (sandboxmove.go).
+	moves sandboxMoves
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -4105,10 +4110,30 @@ func (m *Manager) DeleteSnapshot(id string) error {
 }
 
 // Delete ends a sandbox and removes its disk and automatic snapshots. Saved snapshots stay, kept ones too
-// (KeepSnapshot): their links hold the files.
+// (KeepSnapshot): their links hold the files. Its exports for a move go too, and an import of it under way here ends
+// (sandboxmove.go): a delete of an ID the host has only an import of is done once that is gone.
 func (m *Manager) Delete(ctx context.Context, id string) error {
+	return m.deleteSandbox(id, false)
+}
+
+// DeleteMoved removes a sandbox moved to another host (sandbox.delete with KeepSnapshots): as Delete, but its
+// automatic snapshots stay here, as the history Kantel keeps for it.
+func (m *Manager) DeleteMoved(id string) error {
+	return m.deleteSandbox(id, true)
+}
+
+func (m *Manager) deleteSandbox(id string, keepSnapshots bool) error {
+	imported := validID(id) && m.dropSandboxImport(id)
+	if validID(id) {
+		if err := m.DeleteSandboxExport(id, ""); err != nil {
+			m.log.Warn("removing a sandbox's exports", "sandbox", id, "error", err)
+		}
+	}
 	s, err := m.get(id)
 	if err != nil {
+		if imported {
+			return nil
+		}
 		return err
 	}
 	s.mu.Lock()
@@ -4128,7 +4153,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	}
 	m.autoMu.Lock()
 	for _, snap := range m.snapshotsOf(id) {
-		if snap.Kind == "auto" {
+		if snap.Kind == "auto" && !keepSnapshots {
 			_ = os.RemoveAll(m.snapshotDir(snap.ID))
 		}
 	}

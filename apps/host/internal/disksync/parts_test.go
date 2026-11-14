@@ -193,6 +193,22 @@ func TestFetchParts(t *testing.T) {
 	}
 }
 
+// An empty part (a moved sandbox's sticky drive with no disk on it) is fetched as an empty file, beside the others.
+func TestFetchPartsWithAnEmptyPart(t *testing.T) {
+	f, local, remote := partedFixture(t, 1)
+	diskData := disk(t, 2, 7)
+	f.digest = remote[0].putParts(t, "v2", diskData, nil)
+	if _, err := wait(t, f.partedFetcher(local).Start(Request{Ref: snapRef})); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(local.part("v2", "disk")); err != nil || !bytes.Equal(got, diskData) {
+		t.Fatalf("the fetched disk differs (%v)", err)
+	}
+	if info, err := os.Stat(local.part("v2", "mem")); err != nil || info.Size() != 0 {
+		t.Fatalf("the empty part: %v, %v", info, err)
+	}
+}
+
 // A fetch cut short goes on where it stopped, part by part, fetching only what it hadn't.
 func TestFetchPartsResumes(t *testing.T) {
 	f, local, remote := partedFixture(t, 1)

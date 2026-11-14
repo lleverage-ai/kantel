@@ -1,0 +1,592 @@
+package microvm
+
+// A stopped sandbox moved to another host (docs/design/disk-store.md, "Moving a sandbox to another host"): its disk and
+// sticky drives are a disk store object of kind sandbox, its ID the sandbox's, one version for each export (the move's
+// operation ID). Its parts are its disk (disk.ext4) and its two sticky drives' files (sticky0.ext4, sticky1.ext4, an
+// empty file for a drive with no disk), each block-mapped (disksync.Parted), and its record (record.json: its host's
+// record of it, with the root image its disk is over) goes whole. Parts rather than a version per file, as saved
+// snapshots have: the target needs every file of the one export together, published at once, and the manifest vouches
+// for all of them; nothing of it goes to one host and not another.
+//
+// On the sandbox's host, ExportSandbox clones the files (reflinks, else full copies that reserve their room) into
+// sandbox-exports/<id>/<version>/ while the sandbox is stopped, then maps each, and the host serves them to its peers
+// from there: what the sandbox does after doesn't change them. A sticky drive's map starts from the map of the version
+// its disk was cloned from, where the host still has it, reading only the blocks the two don't share.
+//
+// On the target, PrepareSandboxImport stages the record in sandbox-imports/<id>/, with a VM directory whose root
+// filesystem is this host's file of the same image (a host image version from its release, a template's root
+// filesystem from a peer: localRootfs, as for a saved snapshot's copy), so a prune keeps that image while the fetch goes
+// on. The parts are fetched into that VM directory; published, the directory becomes sandboxes/<id>/ in one rename, a
+// stopped sandbox with no memory (it boots on its disk), its bundle drives empty (its bundles are mounted again from
+// this host's cache when it starts) and its egress without the other host's CA (its start sends its egress).
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
+	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
+)
+
+// SandboxParts are a moved sandbox's parts, in the order its manifest has them.
+var SandboxParts = []string{proto.SandboxPartDisk, proto.SandboxPartSticky0, proto.SandboxPartSticky1}
+
+// SandboxFiles are a moved sandbox's small files, which a fetch takes whole.
+var SandboxFiles = []string{proto.SandboxRecordFile}
+
+// sandboxPartFiles are the files each part is in a VM directory, and in an export's directory.
+var sandboxPartFiles = map[string]string{
+	proto.SandboxPartDisk:    fc.DiskFile,
+	proto.SandboxPartSticky0: stickyDriveFile(0),
+	proto.SandboxPartSticky1: stickyDriveFile(1),
+}
+
+const (
+	sandboxExportsDir = "sandbox-exports"
+	sandboxImportsDir = "sandbox-imports"
+	// sandboxRecordName is the record in an export's directory, and staged in an import's.
+	sandboxRecordName = "record.json"
+	// sandboxImportVersion, in an import's directory, is the version it fetches.
+	sandboxImportVersion = "version"
+)
+
+// sandboxRecord is what a moved sandbox's record says: the sandbox's record on its host, and the root filesystem its
+// disk is over there, with that file's map digest when it is a template's (two hosts may have built one under its key,
+// with other bytes).
+type sandboxRecord struct {
+	Meta         meta   `json:"meta"`
+	Rootfs       string `json:"rootfs"`
+	RootfsDigest string `json:"rootfsDigest,omitempty"`
+}
+
+// sandboxMoves keeps an import of a sandbox deleted here from publishing it after: the sandboxes deleted since their
+// import was made ready, and the lock a publish and a delete share. Exports are mapped one at a time.
+type sandboxMoves struct {
+	mu      sync.Mutex
+	retired map[string]bool
+	turn    sync.Mutex
+}
+
+func (m *Manager) sandboxExportDir(id, version string) string {
+	return filepath.Join(m.cfg.Root, sandboxExportsDir, id, version)
+}
+
+func (m *Manager) sandboxImportDir(id string) string {
+	return filepath.Join(m.cfg.Root, sandboxImportsDir, id)
+}
+
+// sandboxObject says whether id and version name a moved sandbox's version as an object.
+func sandboxObject(id, version string) bool { return validID(id) && validID(version) }
+
+// sandboxPartMap is a part's map in an export's directory.
+func sandboxPartMap(part string) string { return part + ".map" }
+
+// exportWhole says whether an export is whole: its record and every part's map are there (its maps are written last).
+func (m *Manager) exportWhole(id, version string) bool {
+	dir := m.sandboxExportDir(id, version)
+	if !fileExists(filepath.Join(dir, sandboxRecordName)) {
+		return false
+	}
+	for _, part := range SandboxParts {
+		if !fileExists(filepath.Join(dir, sandboxPartMap(part))) {
+			return false
+		}
+	}
+	return true
+}
+
+// ExportSandbox makes version of a stopped sandbox's object (sandbox.export): its disk and sticky drives cloned into
+// the export's directory while it is stopped, its record beside them, then each mapped. Asked again, it answers the
+// version it made. A conflict unless the sandbox is stopped; a running sandbox's export is a later step.
+func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams) (proto.SandboxExportResult, error) {
+	if !sandboxObject(p.SandboxID, p.Version) {
+		return proto.SandboxExportResult{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
+	}
+	s, err := m.get(p.SandboxID)
+	if err != nil {
+		return proto.SandboxExportResult{}, err
+	}
+	dir := m.sandboxExportDir(p.SandboxID, p.Version)
+	// One at a time: each reads whole files.
+	m.moves.turn.Lock()
+	defer m.moves.turn.Unlock()
+	if !m.exportWhole(p.SandboxID, p.Version) {
+		if err := m.cloneForExport(s, dir); err != nil {
+			_ = os.RemoveAll(dir)
+			return proto.SandboxExportResult{}, err
+		}
+		if err := m.mapExport(ctx, s, dir); err != nil {
+			_ = os.RemoveAll(dir)
+			return proto.SandboxExportResult{}, err
+		}
+	}
+	digest, err := exportDigest(dir)
+	if err != nil {
+		return proto.SandboxExportResult{}, err
+	}
+	var bytes int64
+	for _, part := range SandboxParts {
+		bytes += diskUsage(filepath.Join(dir, sandboxPartFiles[part]))
+	}
+	return proto.SandboxExportResult{MapDigest: digest, AllocatedBytes: bytes}, nil
+}
+
+// cloneForExport clones a stopped sandbox's files into dir, made afresh, and writes its record there last: under its
+// lock, so nothing starts it meanwhile, and what is cloned is one state of it.
+func (m *Manager) cloneForExport(s *sandbox, dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.State != proto.StateStopped {
+		return conflict("sandbox %s is %s: only a stopped sandbox is moved", s.meta.ID, s.meta.State)
+	}
+	_ = os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	vm := s.vmDir()
+	for _, part := range SandboxParts {
+		name := sandboxPartFiles[part]
+		src, dst := filepath.Join(vm, name), filepath.Join(dir, name)
+		if _, err := os.Stat(src); errors.Is(err, fs.ErrNotExist) && part != proto.SandboxPartDisk {
+			// A drive the VM hasn't (one made before sticky drives): an empty file, as a drive with no disk is.
+			if err := newStickyPlaceholder(dst); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := m.cloneExportFile(src, dst); err != nil {
+			return fmt.Errorf("its %s: %w", part, err)
+		}
+	}
+	rootfs := vmRootfs(vm)
+	if rootfs == "" {
+		return fmt.Errorf("sandbox %s has no root filesystem", s.meta.ID)
+	}
+	rec := sandboxRecord{Meta: s.meta, Rootfs: rootfs}
+	if key, ok := templateRootfsKey(rootfs); ok {
+		if rec.RootfsDigest = m.rootfsMapDigest(key); rec.RootfsDigest == "" {
+			return fmt.Errorf("its template root filesystem %s isn't mapped yet, so another host can't tell it has the same build", key)
+		}
+	}
+	raw, _ := json.MarshalIndent(rec, "", "  ")
+	return fsutil.WriteFileDurably(filepath.Join(dir, sandboxRecordName), raw, 0o600)
+}
+
+// cloneExportFile is cloneDisk for an export: a reflink takes no room; a full copy, on a file system without them,
+// first reserves the room it writes beside every other copy under way.
+func (m *Manager) cloneExportFile(src, dst string) error {
+	if fsutil.Reflink(src, dst) == nil {
+		return nil
+	}
+	_ = os.Remove(dst)
+	release, err := m.reserveRoom(diskUsage(src), func(free, size int64) error {
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
+			"This host has %s of disk free, and copying the sandbox's files to move it writes %s and must leave %s free.",
+			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
+	})
+	if err != nil {
+		return err
+	}
+	defer release()
+	out, err := exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("copy %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// mapExport makes each part's map in an export's directory. A sticky drive's starts from the map of the version its
+// disk was cloned from, where the host still holds it, so only the blocks they don't share are read.
+func (m *Manager) mapExport(ctx context.Context, s *sandbox, dir string) error {
+	s.mu.Lock()
+	disks := attachedSticky(s.meta.StickyDisks)
+	s.mu.Unlock()
+	for _, part := range SandboxParts {
+		f, err := os.Open(filepath.Join(dir, sandboxPartFiles[part]))
+		if err != nil {
+			return err
+		}
+		var base *blockmap.Base
+		for _, d := range disks {
+			if stickyDriveID(d.Slot) == part && d.Version != "" {
+				base = m.stickyBase(d.DiskID, d.Version)
+			}
+		}
+		start := time.Now()
+		bm, st, err := blockmap.Make(ctx, f, base)
+		f.Close()
+		if base != nil {
+			base.File.Close()
+		}
+		if err != nil {
+			return fmt.Errorf("mapping its %s: %w", part, err)
+		}
+		if _, err := blockmap.WriteFile(filepath.Join(dir, sandboxPartMap(part)), bm); err != nil {
+			return err
+		}
+		m.log.Info("moved sandbox's part mapped", "sandbox", s.meta.ID, "part", part, "blocks", st.Blocks,
+			"reused", st.Reused, "empty", st.Empty, "read", st.Read, "took", time.Since(start).Round(time.Millisecond))
+	}
+	return syncDir(dir)
+}
+
+// stickyBase is a sticky disk version the host holds, open, with its map, for a map of a clone of it to start from:
+// nil when it hasn't both.
+func (m *Manager) stickyBase(diskID, version string) *blockmap.Base {
+	bm, _, err := blockmap.ReadFile(m.stickyMapFile(diskID, version))
+	if err != nil {
+		return nil
+	}
+	f, err := os.Open(m.stickyVersionFile(diskID, version))
+	if err != nil {
+		return nil
+	}
+	return &blockmap.Base{File: f, Map: bm}
+}
+
+// exportDigest is the digest of an export's manifest, made from its parts' maps.
+func exportDigest(dir string) (string, error) {
+	digests := make([]disksync.PartDigest, 0, len(SandboxParts))
+	for _, part := range SandboxParts {
+		raw, err := os.ReadFile(filepath.Join(dir, sandboxPartMap(part)))
+		if err != nil {
+			return "", err
+		}
+		digests = append(digests, disksync.PartDigest{Part: part, Digest: blockmap.Digest(raw)})
+	}
+	return blockmap.Digest(disksync.Manifest(digests)), nil
+}
+
+// DeleteSandboxExport deletes version of a sandbox's exports, or every one with no version (sandbox.export.delete). A
+// fetch reading one already has its files open, and ends with what it read.
+func (m *Manager) DeleteSandboxExport(id, version string) error {
+	if !validID(id) || (version != "" && !validID(version)) {
+		return &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
+	}
+	m.moves.turn.Lock()
+	defer m.moves.turn.Unlock()
+	if version == "" {
+		return os.RemoveAll(filepath.Join(m.cfg.Root, sandboxExportsDir, id))
+	}
+	if err := os.RemoveAll(m.sandboxExportDir(id, version)); err != nil {
+		return err
+	}
+	// The sandbox's directory, once it has none left.
+	_ = os.Remove(filepath.Join(m.cfg.Root, sandboxExportsDir, id))
+	return nil
+}
+
+// HoldsSandbox says whether the host has a moved sandbox's version: an export of it whole, or the sandbox that version
+// made here.
+func (m *Manager) HoldsSandbox(id, version string) bool {
+	if !sandboxObject(id, version) {
+		return false
+	}
+	if m.exportWhole(id, version) {
+		return true
+	}
+	s, err := m.get(id)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.meta.Imported == version
+}
+
+// OpenSandboxPart opens one part of an export for a peer to fetch (disksync.Parted): its file, and with withMap its
+// map's file. fs.ErrNotExist when the export isn't whole here. Open, the file stays readable whatever is deleted after.
+func (m *Manager) OpenSandboxPart(id, version, part string, withMap bool) (*os.File, []byte, error) {
+	name, ok := sandboxPartFiles[part]
+	if !sandboxObject(id, version) || !ok || !m.exportWhole(id, version) {
+		return nil, nil, fs.ErrNotExist
+	}
+	dir := m.sandboxExportDir(id, version)
+	f, err := os.Open(filepath.Join(dir, name))
+	if err != nil {
+		return nil, nil, err
+	}
+	var raw []byte
+	if withMap {
+		raw, err = os.ReadFile(filepath.Join(dir, sandboxPartMap(part)))
+	} else {
+		_, err = os.Stat(filepath.Join(dir, sandboxPartMap(part)))
+	}
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return f, raw, nil
+}
+
+// ReadSandboxFile reads one of an export's small files for a peer: its record (proto.SandboxRecordFile).
+func (m *Manager) ReadSandboxFile(id, version, name string) ([]byte, error) {
+	if !sandboxObject(id, version) || name != proto.SandboxRecordFile || !m.exportWhole(id, version) {
+		return nil, fs.ErrNotExist
+	}
+	return os.ReadFile(filepath.Join(m.sandboxExportDir(id, version), sandboxRecordName))
+}
+
+// PrepareSandboxImport readies the host for a fetch of a moved sandbox's version, from its record as its holder has it:
+// its size one this host makes, the root image its disk is over in place (localRootfs), and a VM directory staged in
+// the import's directory, linked to that image, with the record beside it. A version staged already is left as it is,
+// so a fetch goes on where it stopped; another version's import is dropped first. ErrNoSnapshotImage, or why the
+// image couldn't be had, when the host can't have it; a conflict when a sandbox of that ID is here, but the one this
+// version made.
+func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, raw []byte) error {
+	if !sandboxObject(id, version) {
+		return &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
+	}
+	if m.HoldsSandbox(id, version) {
+		return nil
+	}
+	if _, err := m.get(id); err == nil {
+		return conflict("sandbox %s already exists on this host", id)
+	}
+	var rec sandboxRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return fmt.Errorf("the sandbox's record: %w", err)
+	}
+	if rec.Meta.ID != id {
+		return fmt.Errorf("the record isn't sandbox %s's", id)
+	}
+	if _, err := m.size(rec.Meta.Size); err != nil {
+		return err
+	}
+	if rec.Meta.StickyDrives != 0 && rec.Meta.StickyDrives != StickyDrives {
+		return fmt.Errorf("the sandbox has %d sticky drives, and a microVM here has %d", rec.Meta.StickyDrives, StickyDrives)
+	}
+	over := snapshotMeta{Rootfs: rec.Rootfs, RootfsDigest: rec.RootfsDigest}
+	over.Runtime = rec.Meta.Runtime
+	rootfs, err := m.localRootfs(ctx, over)
+	if err != nil {
+		return err
+	}
+	dir := m.sandboxImportDir(id)
+	// Its root filesystem linked under the base lock, so a prune finds the reference in the import's VM directory from
+	// then on (BasesUnder); not for a sandbox deleted meanwhile.
+	defer m.holdBases()()
+	m.moves.mu.Lock()
+	defer m.moves.mu.Unlock()
+	if have, err := os.ReadFile(filepath.Join(dir, sandboxImportVersion)); err == nil && string(have) == version {
+		return nil
+	}
+	_ = os.RemoveAll(dir)
+	delete(m.moves.retired, id)
+	if !fileExists(rootfs) {
+		return fmt.Errorf("%w: %s went while the import was made ready", ErrNoSnapshotImage, rootfs)
+	}
+	vm := filepath.Join(dir, "vm")
+	if err := os.MkdirAll(vm, 0o700); err != nil {
+		return err
+	}
+	fail := func(err error) error {
+		_ = os.RemoveAll(dir)
+		return err
+	}
+	if err := m.linkRootfs(vm, rootfs); err != nil {
+		return fail(err)
+	}
+	rec.Rootfs = rootfs
+	staged, _ := json.MarshalIndent(rec, "", "  ")
+	if err := fsutil.WriteFileDurably(filepath.Join(dir, sandboxRecordName), staged, 0o600); err != nil {
+		return fail(err)
+	}
+	// The version last: with it the import is made ready.
+	if err := fsutil.WriteFileDurably(filepath.Join(dir, sandboxImportVersion), []byte(version), 0o600); err != nil {
+		return fail(err)
+	}
+	return nil
+}
+
+// importing says whether the host has version of a sandbox's import made ready.
+func (m *Manager) importing(id, version string) bool {
+	have, err := os.ReadFile(filepath.Join(m.sandboxImportDir(id), sandboxImportVersion))
+	return err == nil && string(have) == version
+}
+
+// SandboxPartPartial is where a fetch of a moved sandbox's part writes: its file in the import's VM directory, once
+// the import is made ready (PrepareSandboxImport).
+func (m *Manager) SandboxPartPartial(id, version, part string) (string, error) {
+	name, ok := sandboxPartFiles[part]
+	if !sandboxObject(id, version) || !ok {
+		return "", fmt.Errorf("bad sandbox ID, version or part")
+	}
+	if !m.importing(id, version) {
+		return "", fmt.Errorf("sandbox %s's import of %s wasn't made ready: its root image may not be here", id, version)
+	}
+	return filepath.Join(m.sandboxImportDir(id), "vm", name), nil
+}
+
+// ReserveSandboxFetch holds room for the bytes a fetch of a moved sandbox is to write, beside every other copy the
+// host makes, until release: refused (ErrCapacity) when that would leave the host less than snapshotHeadroom free.
+func (m *Manager) ReserveSandboxFetch(bytes int64) (release func(), err error) {
+	return m.reserveRoom(bytes, func(free, size int64) error {
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
+			"This host has %s of disk free, and fetching the sandbox writes %s and must leave %s free.",
+			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
+	})
+}
+
+// PublishFetchedSandbox makes a fetched sandbox this host's (disksync.Parted): its record, staged, made this host's
+// (stopped, no memory, its bundle drives empty, its egress without the other host's CA, marked as made by this
+// version), its import's directory renamed to the sandbox's, and the sandbox registered, stopped. A sandbox deleted
+// here since its import was made ready isn't published, nor one whose partials were removed.
+func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]disksync.FetchedPart) error {
+	if !sandboxObject(id, version) {
+		return fmt.Errorf("bad sandbox ID or version")
+	}
+	if m.HoldsSandbox(id, version) {
+		return nil
+	}
+	dir := m.sandboxImportDir(id)
+	vm := filepath.Join(dir, "vm")
+	for _, part := range SandboxParts {
+		got, ok := parts[part]
+		if !ok {
+			return fmt.Errorf("the fetch has no %s", part)
+		}
+		mine, err := got.File.Stat()
+		if err != nil {
+			return err
+		}
+		if !sameFileAt(mine, filepath.Join(vm, sandboxPartFiles[part])) {
+			return fmt.Errorf("the fetch of sandbox %s was removed before it was published", id)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, sandboxRecordName))
+	if err != nil {
+		return fmt.Errorf("sandbox %s's staged record: %w", id, err)
+	}
+	var rec sandboxRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return fmt.Errorf("sandbox %s's staged record: %w", id, err)
+	}
+	s := &sandbox{dir: filepath.Join(m.cfg.Root, "sandboxes", id)}
+	s.meta = importedMeta(rec.Meta, version, m.pulledRootfs(rec.Rootfs), rec.Rootfs)
+	s.healthAt = s.meta.HealthAt
+	for _, name := range []string{fc.DiskFile + ".done", stickyDriveFile(0) + ".done", stickyDriveFile(1) + ".done"} {
+		_ = os.Remove(filepath.Join(vm, name))
+	}
+	if s.meta.StickyDrives == 0 {
+		// A VM from before sticky drives has none: the empty files fetched for them go.
+		for k := range StickyDrives {
+			_ = os.Remove(filepath.Join(vm, stickyDriveFile(k)))
+		}
+	}
+	for i := range s.meta.BundleDrives {
+		_ = os.Remove(filepath.Join(vm, bundleDriveFile(i)))
+	}
+	if err := emptyDrives(vm, s.meta.BundleDrives); err != nil {
+		return err
+	}
+	metaRaw, _ := json.MarshalIndent(s.meta, "", "  ")
+	if err := fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), metaRaw, 0o600); err != nil {
+		return err
+	}
+	m.moves.mu.Lock()
+	defer m.moves.mu.Unlock()
+	if m.moves.retired[id] || !m.importing(id, version) {
+		return fmt.Errorf("sandbox %s was deleted on this host while it was fetched", id)
+	}
+	if err := os.MkdirAll(filepath.Join(m.cfg.Root, "sandboxes"), 0o700); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sandboxes[id]; ok {
+		return conflict("sandbox %s already exists on this host", id)
+	}
+	for _, name := range []string{sandboxRecordName, sandboxImportVersion} {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
+	if err := os.Rename(dir, s.dir); err != nil {
+		return err
+	}
+	if err := syncDir(filepath.Join(m.cfg.Root, "sandboxes")); err != nil {
+		m.log.Warn("syncing the sandboxes directory after a moved sandbox was published", "sandbox", id, "error", err)
+	}
+	m.sandboxes[id] = s
+	m.log.Info("moved sandbox published", "sandbox", id, "version", version)
+	return nil
+}
+
+// importedMeta is a moved sandbox's record made this host's: stopped, with no machine, memory or error, its bundle
+// drives empty (its bundles are mounted again from this host's cache as it starts), its egress without the other
+// host's CA (its start sends its egress, and this host's CA with it), its root filesystem this host's file where it
+// is a template's, and marked as made by version.
+func importedMeta(src meta, version string, pulled bool, rootfs string) meta {
+	out := src
+	out.State, out.Pid, out.Slot, out.CID, out.Memory, out.Error = proto.StateStopped, 0, 0, 0, false, ""
+	out.BundleSlots = make([]string, out.BundleDrives)
+	if out.Egress != nil {
+		e := *out.Egress
+		e.CACert = ""
+		out.Egress = &e
+	}
+	out.Rootfs = ""
+	if pulled {
+		out.Rootfs = rootfs
+	}
+	out.Imported = version
+	return out
+}
+
+// ImportedSandbox is the sandbox version made here, as sandbox.import answers it.
+func (m *Manager) ImportedSandbox(id, version string) (proto.SandboxInfo, error) {
+	s, err := m.get(id)
+	if err != nil {
+		return proto.SandboxInfo{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.Imported != version {
+		return proto.SandboxInfo{}, conflict("sandbox %s on this host wasn't made by this move", id)
+	}
+	return m.info(s), nil
+}
+
+// SandboxImportPartials are none: an import is fetched only while its sandbox.import asks for it, which the control
+// plane sends again to go on with one cut short; never resumed by the host on its own.
+func (m *Manager) SandboxImportPartials() [][2]string { return nil }
+
+// DiscardSandboxImport drops a sandbox's import of version, if that is the one made ready, and everything it fetched.
+func (m *Manager) DiscardSandboxImport(id, version string) {
+	if !sandboxObject(id, version) {
+		return
+	}
+	m.moves.mu.Lock()
+	defer m.moves.mu.Unlock()
+	if m.importing(id, version) {
+		_ = os.RemoveAll(m.sandboxImportDir(id))
+	}
+}
+
+// dropSandboxImport ends any import of a sandbox here, as its delete does: its directory goes, and it is never
+// published (retired). Whether there was one.
+func (m *Manager) dropSandboxImport(id string) bool {
+	m.moves.mu.Lock()
+	defer m.moves.mu.Unlock()
+	if m.moves.retired == nil {
+		m.moves.retired = map[string]bool{}
+	}
+	m.moves.retired[id] = true
+	dir := m.sandboxImportDir(id)
+	if _, err := os.Lstat(dir); err != nil {
+		return false
+	}
+	_ = os.RemoveAll(dir)
+	return true
+}

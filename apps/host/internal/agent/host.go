@@ -392,6 +392,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.fetches(proto.DiskKindSnapshot) {
 		features = append(features, proto.FeatureSnapshotSync)
 	}
+	if h.movesSandboxes() {
+		features = append(features, proto.FeatureSandboxMove)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -938,11 +941,20 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		defer h.lifecycle.lock(p.SandboxID)()
 		t, err := h.tierOf(p.SandboxID)
 		if err != nil {
+			// Only an import of it from another host under way here (a move rolled back): that ends, and the delete is done.
+			if mover, ok := h.tiers[microvm.Tier].(SandboxMover); ok {
+				if mover.(Tier).Delete(ctx, p.SandboxID) == nil {
+					return map[string]bool{"ok": true}, nil
+				}
+			}
 			return nil, err
 		}
-		// The isolate an upgrade to another host left goes as one upgraded here does, its snapshots kept.
+		// The isolate an upgrade to another host left goes as one upgraded here does, its snapshots kept; so does a
+		// microVM moved to another host.
 		if source, ok := t.(upgradeSource); ok && p.KeepSnapshots {
 			err = source.Dispose(p.SandboxID)
+		} else if moved, ok := t.(SandboxMover); ok && p.KeepSnapshots {
+			err = moved.DeleteMoved(p.SandboxID)
 		} else {
 			err = t.Delete(ctx, p.SandboxID)
 		}
@@ -1189,6 +1201,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		return map[string]any{}, sticky.DeleteSticky(p)
 	case proto.MethodDiskFetch:
 		return h.diskFetch(params)
+	case proto.MethodSandboxExport:
+		return h.sandboxExport(ctx, params)
+	case proto.MethodSandboxExportDelete:
+		return h.sandboxExportDelete(params)
+	case proto.MethodSandboxImport:
+		return h.sandboxImport(ctx, params)
 	case proto.MethodHostImages:
 		return h.hostImages(params)
 	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:
