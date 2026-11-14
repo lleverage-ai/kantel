@@ -1602,6 +1602,20 @@ describe("pools", () => {
 		await expect(hosts.pools.remove(ci.id)).rejects.toMatchObject({ code: "conflict" });
 	});
 
+	it("reads a host with no evacuation as none, and shows why sandboxes can't be moved off", async () => {
+		const source = await open(setup().fetchApi);
+		const hosts = source.hosts;
+		if (hosts?.evacuate === undefined || hosts.evacuation === undefined) throw new Error("No evacuations");
+		expect(await hosts.evacuation(STUB_HOST_ID)).toBeUndefined();
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.evacuation).toBeUndefined();
+		// The stub's hosts don't move sandboxes: Kantel's reason, and the host not drained by it.
+		await expect(hosts.evacuate(STUB_HOST_ID)).rejects.toMatchObject({
+			code: "not_supported",
+			message: expect.stringContaining("move sandboxes"),
+		});
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
+	});
+
 	it("names the chosen pool in a join token", async () => {
 		const source = await open(setup().fetchApi);
 		const hosts = source.hosts;

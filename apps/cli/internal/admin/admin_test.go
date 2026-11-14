@@ -386,6 +386,48 @@ func TestPoolsAndHostMove(t *testing.T) {
 	eq(t, "add body", jsonOf(t, added.Calls[0].Body), `{"pool":"ci"}`)
 }
 
+func TestHostEvacuate(t *testing.T) {
+	tt := newTester(t)
+	evacuation := func(state string, moved, remaining int) map[string]any {
+		return map[string]any{
+			"hostId": "host_6t5r4e", "state": state, "startedAt": 1, "moved": moved, "remaining": remaining,
+			"skipped": 1, "failed": 0,
+			"sandboxes": []any{
+				map[string]any{"sandboxId": "sbx_1", "name": "web", "type": "microvm", "state": "moved", "hostId": "host_b",
+					"keptMemory": true},
+				map[string]any{"sandboxId": "sbx_2", "type": "microvm", "state": "skipped",
+					"reason": "It's kept to this host: its create named the host"},
+			},
+		}
+	}
+	reads := 0
+	r := routes{
+		"POST /v1/admin/hosts/host_6t5r4e/evacuation": func(call) any { return evacuation("running", 0, 1) },
+		"GET /v1/admin/hosts/host_6t5r4e/evacuation": func(call) any {
+			reads++
+			if reads < 2 {
+				return evacuation("running", 0, 1)
+			}
+			return evacuation("done", 1, 0)
+		},
+	}
+	started := tt.run([]string{"host", "evacuate", "host_6t5r4e"}, opts{routes: r})
+	eq(t, "start exit", started.Code, 0)
+	contains(t, "start", started.Out, "running: 0 moved, 1 to go, 1 skipped")
+	contains(t, "start row", started.Out, "kept to this host")
+	followed := tt.run([]string{"host", "evacuate", "host_6t5r4e", "--wait"}, opts{routes: r})
+	eq(t, "wait exit", followed.Code, 0)
+	contains(t, "wait progress", followed.Err, "kantel-admin: running: 0 moved, 1 to go, 1 skipped")
+	contains(t, "wait end", followed.Out, "done: 1 moved, 1 skipped")
+	contains(t, "wait row", followed.Out, "host_b, memory kept")
+	shown := tt.run([]string{"host", "evacuation", "host_6t5r4e"}, opts{routes: r})
+	contains(t, "show", shown.Out, "done: 1 moved, 1 skipped")
+	failing := routes{
+		"POST /v1/admin/hosts/host_6t5r4e/evacuation": func(call) any { return evacuation("failed", 0, 0) },
+	}
+	eq(t, "failed exit", tt.run([]string{"host", "evacuate", "host_6t5r4e", "--wait"}, opts{routes: failing}).Code, 1)
+}
+
 func TestGrantKey(t *testing.T) {
 	tt := newTester(t)
 	until := time.Now().Add(16 * time.Minute).UnixMilli()

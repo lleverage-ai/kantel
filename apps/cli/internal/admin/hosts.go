@@ -150,7 +150,7 @@ func hostState(c *cli.Context) func(api.Host) string {
 }
 
 func hosts(sys System) cli.Section {
-	return cli.Section{Title: "Hosts", Commands: []*cli.Command{
+	commands := []*cli.Command{
 		{
 			Name:    "host list",
 			Summary: "The machines that run sandboxes",
@@ -326,7 +326,16 @@ func hosts(sys System) cli.Section {
 				}, hostState(c))
 			},
 		},
-	}}
+	}
+	// Moving a host's sandboxes off, after its drain and move to a pool.
+	at := 0
+	for i, command := range commands {
+		if command.Name == "host move" {
+			at = i + 1
+		}
+	}
+	commands = append(commands[:at], append(evacuationCommands(), commands[at:]...)...)
+	return cli.Section{Title: "Hosts", Commands: commands}
 }
 
 func hostAdd(c *cli.Context, sys System) error {

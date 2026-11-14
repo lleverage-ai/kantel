@@ -81,6 +81,7 @@ import {
 	GithubRunnersWithSecret,
 	GrantKeys,
 	Host,
+	HostEvacuation,
 	HostJoinToken,
 	HostList,
 	HostPath,
@@ -2343,6 +2344,45 @@ export const updateHostAgent = defineRoute({
 	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
 });
 
+export const startHostEvacuation = defineRoute({
+	operationId: "startHostEvacuation",
+	method: "POST",
+	path: "/admin/hosts/{hostId}/evacuation",
+	tag: "hosts",
+	summary: "Move every sandbox off a host",
+	description: describe(
+		"It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it",
+		"to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory",
+		"kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved",
+		"one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in",
+		"its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason.",
+		"It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again",
+		"while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there.",
+		"`conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the",
+		"deployment's hosts don't move sandboxes.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation, under way.", schema: HostEvacuation },
+	errors: lifecycleErrors,
+});
+
+export const getHostEvacuation = defineRoute({
+	operationId: "getHostEvacuation",
+	method: "GET",
+	path: "/admin/hosts/{hostId}/evacuation",
+	tag: "hosts",
+	summary: "Get a host's evacuation",
+	description: describe(
+		"How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed.",
+		"`not_found` when it has had none.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation.", schema: HostEvacuation },
+	errors: readErrors,
+});
+
 export const fetchHostStickyDisk = defineRoute({
 	operationId: "fetchHostStickyDisk",
 	method: "POST",
@@ -2584,6 +2624,8 @@ export const hostRoutes = {
 	getHostUsage,
 	updateHost,
 	updateHostAgent,
+	startHostEvacuation,
+	getHostEvacuation,
 	fetchHostStickyDisk,
 	fetchHostSnapshot,
 	checkHostUpdates,
@@ -2729,6 +2771,47 @@ export const updateAccountHostAgent = defineRoute({
 	params: HostPath,
 	answer: { status: 200, description: "The host, updating.", schema: Host },
 	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
+});
+
+export const startAccountHostEvacuation = defineRoute({
+	operationId: "startAccountHostEvacuation",
+	method: "POST",
+	path: "/hosts/{hostId}/evacuation",
+	tag: "account-hosts",
+	summary: "Move every sandbox off one of an account's hosts",
+	description: describe(
+		"It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it",
+		"to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory",
+		"kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved",
+		"one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in",
+		"its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason.",
+		"It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again",
+		"while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there.",
+		"`conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the",
+		"deployment's hosts don't move sandboxes.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation, under way.", schema: HostEvacuation },
+	errors: lifecycleErrors,
+});
+
+export const getAccountHostEvacuation = defineRoute({
+	operationId: "getAccountHostEvacuation",
+	method: "GET",
+	path: "/hosts/{hostId}/evacuation",
+	tag: "account-hosts",
+	summary: "Get the evacuation of one of an account's hosts",
+	description: describe(
+		"How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed.",
+		"`not_found` when it has had none.",
+		scope("account:read"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation.", schema: HostEvacuation },
+	errors: [...readErrors, "not_supported"],
 });
 
 export const removeAccountHost = defineRoute({
@@ -2986,6 +3069,8 @@ export const accountHostRoutes = {
 	getAccountHostUsage,
 	updateAccountHost,
 	updateAccountHostAgent,
+	startAccountHostEvacuation,
+	getAccountHostEvacuation,
 	removeAccountHost,
 	listAccountPools,
 	createAccountPool,

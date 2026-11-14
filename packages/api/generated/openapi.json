@@ -11491,6 +11491,176 @@
 				}
 			}
 		},
+		"/admin/hosts/{hostId}/evacuation": {
+			"post": {
+				"operationId": "startHostEvacuation",
+				"summary": "Move every sandbox off a host",
+				"description": "It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation, under way.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "getHostEvacuation",
+				"summary": "Get a host's evacuation",
+				"description": "How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/hosts/{hostId}/sticky-disk-fetches": {
 			"post": {
 				"operationId": "fetchHostStickyDisk",
@@ -12884,6 +13054,186 @@
 					},
 					"503": {
 						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/hosts/{hostId}/evacuation": {
+			"post": {
+				"operationId": "startAccountHostEvacuation",
+				"summary": "Move every sandbox off one of an account's hosts",
+				"description": "It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation, under way.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "getAccountHostEvacuation",
+				"summary": "Get the evacuation of one of an account's hosts",
+				"description": "How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -17720,6 +18070,9 @@
 					"mesh": {
 						"$ref": "#/components/schemas/HostMesh"
 					},
+					"evacuation": {
+						"$ref": "#/components/schemas/HostEvacuationProgress"
+					},
 					"savedSnapshotBytesLimit": {
 						"type": "integer",
 						"minimum": 0,
@@ -17831,6 +18184,202 @@
 				},
 				"title": "HostDiskUsage",
 				"description": "What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host."
+			},
+			"HostEvacuation": {
+				"type": "object",
+				"required": ["hostId", "state", "startedAt", "moved", "remaining", "skipped", "failed", "sandboxes"],
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "The host's ID."
+					},
+					"state": {
+						"$ref": "#/components/schemas/HostEvacuationState"
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it failed or stopped, where that wasn't a sandbox's move (each says its own)."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"moved": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The sandboxes moved to another host."
+					},
+					"remaining": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those still to move, or moving now."
+					},
+					"skipped": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those that can't move, each with its reason."
+					},
+					"failed": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those whose move failed: each is where it was, as it was."
+					},
+					"sandboxes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/HostEvacuationSandbox"
+						},
+						"description": "Each sandbox that was on the host when it began, or came onto it since, in the order taken."
+					}
+				},
+				"title": "HostEvacuation",
+				"description": "Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting it otherwise). It carries on across a control plane restart."
+			},
+			"HostEvacuationProgress": {
+				"type": "object",
+				"required": ["state", "startedAt", "moved", "remaining", "skipped", "failed"],
+				"properties": {
+					"state": {
+						"$ref": "#/components/schemas/HostEvacuationState"
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it failed or stopped, where that wasn't a sandbox's move (each says its own)."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"moved": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The sandboxes moved to another host."
+					},
+					"remaining": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those still to move, or moving now."
+					},
+					"skipped": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those that can't move, each with its reason."
+					},
+					"failed": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those whose move failed: each is where it was, as it was."
+					}
+				},
+				"title": "HostEvacuationProgress",
+				"description": "How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got."
+			},
+			"HostEvacuationSandbox": {
+				"type": "object",
+				"required": ["sandboxId", "type", "state"],
+				"properties": {
+					"sandboxId": {
+						"type": "string",
+						"description": "The sandbox's ID."
+					},
+					"name": {
+						"type": "string",
+						"description": "Its name, where the caller may see the sandbox."
+					},
+					"type": {
+						"$ref": "#/components/schemas/SandboxType"
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "waiting"
+							},
+							{
+								"type": "string",
+								"const": "moving"
+							},
+							{
+								"type": "string",
+								"const": "moved"
+							},
+							{
+								"type": "string",
+								"const": "skipped"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							}
+						],
+						"description": "`waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was."
+					},
+					"phase": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "copying"
+							},
+							{
+								"type": "string",
+								"const": "stopping"
+							},
+							{
+								"type": "string",
+								"const": "final-copy"
+							},
+							{
+								"type": "string",
+								"const": "starting"
+							}
+						],
+						"description": "Where its move has got, while it moves: as its own `move.phase`."
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it moved to."
+					},
+					"keptMemory": {
+						"type": "boolean",
+						"description": "Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it was skipped, why its move failed, or why it restarted where it moved."
+					}
+				},
+				"title": "HostEvacuationSandbox",
+				"description": "One sandbox of a host's evacuation."
+			},
+			"HostEvacuationState": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "stopped"
+					}
+				],
+				"title": "HostEvacuationState",
+				"description": "`running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes."
 			},
 			"HostJoinToken": {
 				"type": "object",
