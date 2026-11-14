@@ -657,9 +657,9 @@ describe("disk holders", () => {
 		await tom.api.service.idle();
 		expect(fetches).toEqual([]);
 		// g has it already (fetched when a sandbox there asked for it), so isn't sent it.
-		await tom.api.service.recordStickyHoldings("host_g", tom.clock.now, [
-			{ diskId: disk.id, versions: [{ version: unmapped.id }] },
-		]);
+		await tom.api.service.recordHoldings("host_g", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: unmapped.id }] }],
+		});
 		tom.clock.now += 11 * 60_000;
 		reports = [
 			{
