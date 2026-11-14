@@ -378,6 +378,15 @@ describe("host backend templates", () => {
 			hostId: "host_a",
 			bootedFresh: true,
 		});
+		// The emptier one refusing for want of room itself (another replica's work): the other with the snapshot takes it.
+		built.refuse = undefined;
+		built.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { freeMemoryMiB: 3000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
+		});
+		await tick();
+		expect(await backend.create({ ...spec, sandboxId: "sbx_next" })).toMatchObject({ hostId: "host_b" });
+		expect(other.calls.some((call) => call.params.sandboxId === "sbx_next")).toBe(false);
 		// The snapshot's own host not one the create may use, a copy's host is: restored there.
 		copy.refuse = undefined;
 		expect(

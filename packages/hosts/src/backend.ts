@@ -861,15 +861,24 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			});
 		if (templateFrom !== undefined) {
 			const elsewhere = spec.eligibleHosts.filter((hostId) => !withSnapshot.includes(hostId));
-			try {
-				const { sandbox, hostId, ...known } = await create(withSnapshot, templateFrom.snapshotId);
-				const placement = await placed(spec.sandboxId, sandbox, hostId, known);
-				// Its host couldn't restore the snapshot (gone, broken, made for another machine) and booted the template
-				// fresh, running its setup.
-				return sandbox.source === "boot" ? { ...placement, bootedFresh: true } : placement;
-			} catch (error) {
-				if (!isKantelError(error, "exhausted") || elsewhere.length === 0) throw error;
+			// All the hosts with it at once (the registry picks the one with most room), then, should the one it picked refuse
+			// for want of room itself (another replica's work), each in turn.
+			const tries =
+				withSnapshot.length > 1 ? [withSnapshot, ...withSnapshot.map((hostId) => [hostId])] : [withSnapshot];
+			let refused: unknown;
+			for (const hostIds of tries) {
+				try {
+					const { sandbox, hostId, ...known } = await create(hostIds, templateFrom.snapshotId);
+					const placement = await placed(spec.sandboxId, sandbox, hostId, known);
+					// Its host couldn't restore the snapshot (gone, broken, made for another machine) and booted the template
+					// fresh, running its setup.
+					return sandbox.source === "boot" ? { ...placement, bootedFresh: true } : placement;
+				} catch (error) {
+					if (!isKantelError(error, "exhausted")) throw error;
+					refused = error;
+				}
 			}
+			if (elsewhere.length === 0) throw refused;
 			const { sandbox, hostId, ...known } = await create(elsewhere, undefined);
 			return { ...(await placed(spec.sandboxId, sandbox, hostId, known)), bootedFresh: true };
 		}

@@ -119,6 +119,10 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders ON compute_api_records (((data::jsonb ->> 'hostId')), seq) WHERE kind = 'diskHolders'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_host ON compute_api_records (kind, json_extract(data, '$.hostId'), seq)",
+		// An object's copies (`list({ objectId })`): a template snapshot's, read as a create from it is placed.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders_object ON compute_api_records (((data::jsonb ->> 'objectId')), seq) WHERE kind = 'diskHolders'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_object ON compute_api_records (kind, json_extract(data, '$.objectId'), seq)",
 	];
 }
 
