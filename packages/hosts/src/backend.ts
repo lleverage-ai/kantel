@@ -811,8 +811,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	/**
 	 * Places and makes one sandbox. A sandbox's own snapshot is on one host's disk: the sandbox goes there. A template
 	 * snapshot is on its host and the others with a copy of it (`snapshotHosts`): the sandbox goes on one of them. It only
-	 * speeds a create up, so when they have no room (`exhausted`) the template boots fresh on another eligible host
-	 * instead (`bootedFresh`); a sandbox's own snapshot has nowhere else to go.
+	 * speeds a create up, so when they have no room (`exhausted`), or would be much fuller than another eligible host
+	 * (`bootsFreshInstead`), the template boots fresh on another eligible host instead (`bootedFresh`); a sandbox's own
+	 * snapshot has nowhere else to go.
 	 */
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
@@ -829,7 +830,11 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		if (pinned !== undefined) mayUse(pinned.hostId, spec.eligibleHosts);
 		const mounts = mountsOf(spec.mounts);
 		// The service sends the mounts the host it chooses can do, and answers each one's status.
-		const create = (hostIds: readonly string[], templateSnapshot: string | undefined) =>
+		const create = (
+			hostIds: readonly string[],
+			templateSnapshot: string | undefined,
+			freshHosts: readonly string[] = [],
+		) =>
 			hosts.sandboxes.create({
 				sandboxId: spec.sandboxId,
 				tier: spec.type,
@@ -850,6 +855,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				owner: spec.accountId,
 				env: spec.env,
 				hostIds,
+				...(freshHosts.length === 0 ? {} : { freshHosts }),
 				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...(from === undefined ? {} : { from: from.snapshotId }),
 				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
@@ -861,18 +867,24 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			});
 		if (templateFrom !== undefined) {
 			const elsewhere = spec.eligibleHosts.filter((hostId) => !withSnapshot.includes(hostId));
-			// All the hosts with it at once (the registry picks the one with most room), then, should the one it picked refuse
-			// for want of room itself (another replica's work), each in turn.
-			const tries =
-				withSnapshot.length > 1 ? [withSnapshot, ...withSnapshot.map((hostId) => [hostId])] : [withSnapshot];
+			// All the hosts with it at once (the registry picks the one with most room), the others booting it fresh instead
+			// should those be much fuller. Then, should the one it picked refuse for want of room itself (another replica's
+			// work), each host with it in turn, restoring there: a refused fresh boot still leaves the restores to try.
+			const tries = withSnapshot.length > 1 ? withSnapshot.map((hostId) => [hostId]) : [withSnapshot];
 			let refused: unknown;
-			for (const hostIds of tries) {
+			for (const [index, hostIds] of [withSnapshot, ...tries].entries()) {
 				try {
-					const { sandbox, hostId, ...known } = await create(hostIds, templateFrom.snapshotId);
+					const { sandbox, hostId, ...known } = await create(
+						hostIds,
+						templateFrom.snapshotId,
+						index === 0 ? elsewhere : [],
+					);
 					const placement = await placed(spec.sandboxId, sandbox, hostId, known);
-					// Its host couldn't restore the snapshot (gone, broken, made for another machine) and booted the template
-					// fresh, running its setup.
-					return sandbox.source === "boot" ? { ...placement, bootedFresh: true } : placement;
+					// On a host without the snapshot, or its host couldn't restore it (gone, broken, made for another machine):
+					// booted fresh, running the template's setup.
+					return sandbox.source === "boot" || !withSnapshot.includes(hostId)
+						? { ...placement, bootedFresh: true }
+						: placement;
 				} catch (error) {
 					if (!isKantelError(error, "exhausted")) throw error;
 					refused = error;
