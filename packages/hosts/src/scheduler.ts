@@ -14,7 +14,8 @@
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
  * VM); then a host that holds the head of every sticky disk the sandbox attaches (`holdsHeads`), so it starts with a
  * warm cache rather than its host's older version or an empty disk (docs/design/disk-store.md, 2d). That is a preference
- * only: a host without the heads starts from what it has and fetches them in the background. Then the least full once
+ * only, and only while that host wouldn't be much fuller than the emptiest (`muchFuller`): a host without the heads
+ * starts from what it has and fetches them in the background. Then the least full once
  * it is placed (`fullness`): the larger of the share of its memory taken and the share of
  * its vCPUs booked, so sandboxes spread over hosts of different sizes in proportion, and a host whose CPUs are all booked
  * by a few large sandboxes isn't picked for having memory left; then the least loaded for its CPUs. vCPUs are only
@@ -358,10 +359,14 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		const why = reasons.size === 0 ? "no hosts have joined" : [...reasons].sort().join(", ");
 		return { reason: `No host can take ${asked(request)} (${why})`, code: STAGES[stage] ?? "no_host" };
 	}
+	// The heads are a warm cache, so they count only on a host not much fuller than the emptiest that fits (`muchFuller`):
+	// creates that attach the same disk spread over the hosts rather than fill the one holding its head first.
+	const emptiest = Math.min(...fits.map((fit) => fit.fullness));
+	const warm = (fit: (typeof fits)[number]) => fit.heads && !muchFuller(fit.fullness, emptiest);
 	fits.sort(
 		(a, b) =>
 			Number(b.owner) - Number(a.owner) ||
-			Number(b.heads) - Number(a.heads) ||
+			Number(warm(b)) - Number(warm(a)) ||
 			a.fullness - b.fullness ||
 			b.free - a.free ||
 			loadPerCpu(a.candidate.host) - loadPerCpu(b.candidate.host) ||
@@ -388,6 +393,17 @@ export const SPREAD_FULLNESS = 0.5;
 export const SPREAD_MARGIN = 0.25;
 
 /**
+ * Whether a host `fuller` full, once a create is placed on it, is so much fuller than one `emptier` full that a
+ * preference for it (a template snapshot it holds, the heads of the sticky disks the create attaches) gives way: when
+ * it would be at least `SPREAD_FULLNESS` full and at least `SPREAD_MARGIN` fuller. Below that, the preference decides
+ * between hosts about as full.
+ */
+export const muchFuller = (fuller: number, emptier: number): boolean =>
+	// In hundredths, as `fullness` is rounded, so 0.57 less 0.32 is a quarter.
+	Math.round(fuller * 100) >= Math.round(SPREAD_FULLNESS * 100) &&
+	Math.round((fuller - emptier) * 100) >= Math.round(SPREAD_MARGIN * 100);
+
+/**
  * Whether a create from a template snapshot boots fresh on the emptiest host without it (`fresh`) rather than restoring
  * on the host with it chosen (`restore`): only when the restore's host would be at least `SPREAD_FULLNESS` full, and
  * at least `SPREAD_MARGIN` fuller than the other, each counted with the create placed (`Placement.fullness`). A fresh
@@ -396,9 +412,7 @@ export const SPREAD_MARGIN = 0.25;
  * runtime building its own), this keeps the one host with it from filling while the others sit empty.
  */
 export const bootsFreshInstead = (restore: Placement, fresh: Placement): boolean =>
-	// In hundredths, as `fullness` is rounded, so 0.57 less 0.32 is a quarter.
-	Math.round(restore.fullness * 100) >= Math.round(SPREAD_FULLNESS * 100) &&
-	Math.round((restore.fullness - fresh.fullness) * 100) >= Math.round(SPREAD_MARGIN * 100);
+	muchFuller(restore.fullness, fresh.fullness);
 
 /**
  * How full a host would be with `size` placed on it, from 0 (more than 1 when over-booked): the larger of the share of
