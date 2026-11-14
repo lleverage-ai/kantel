@@ -902,11 +902,6 @@ const BASE_ROUTES = [
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** How often the sweep looks for automatic snapshots past their `expiresAt` to delete (`expireSnapshots`). */
 export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
-/**
- * How long after a save its details list the host it was taken on as holding it with no holder recorded there: the host
- * maps the snapshot's files after the save and reports them on a later heartbeat.
- */
-const SNAPSHOT_REPORT_WAIT_MS = 30 * 60_000;
 /** How often the sweep counts every saved snapshot's copies, and asks for those missing (`keepEverySnapshotsCopies`). */
 export const SNAPSHOT_COPIES_EVERY_MS = 5 * 60_000;
 /**
@@ -3855,10 +3850,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * The hosts a saved snapshot is on, for its details (`Snapshot.hosts`): the one it was taken on, as its holder says (or
-	 * held, when no host has reported it yet), then each with a copy of its disk, held or being fetched (the catalogue's `snapshot` holders of its ref), each with whether a sandbox made
-	 * from it there restores its memory (`snapshotCopiesOf`'s rule). A revoked host holds nothing. Each is named only to a
-	 * caller who may be told of it (`mayKnowHost`). Undefined for an automatic snapshot, or one not yet ready.
+	 * The hosts a saved snapshot is on, for its details (`Snapshot.hosts`), as their hosts report them: the catalogue's
+	 * holders of its disk under its ref (`snapshot` holders), held or being fetched, the host it was taken on first, each
+	 * with whether a sandbox made from it there restores its memory (its own host, or a copy whose memory is held there
+	 * too). One rule for every snapshot whose holdings are reported. Those that aren't, an isolate's (only the microVM
+	 * tier reports snapshots) and a ref naming its host with no holder (its host may be from before hosts reported them),
+	 * are listed on the host they were taken on, as their save said, the only word there is. A revoked host holds
+	 * nothing. Each is named only to a caller who may be told of it (`mayKnowHost`). Undefined for an automatic
+	 * snapshot, or one not yet ready.
 	 */
 	async function snapshotHostsView(
 		principal: Principal,
@@ -3869,39 +3868,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const origin = await hostOfSnapshot(snapshot);
 		const byVersion = await diskHolders.holdersOf("snapshot", refId(ref));
 		const of = (version: string) => (byVersion.get(version) ?? []).filter((holder) => holder.ref === ref);
-		const withMemory = new Set(
-			of("memory")
-				.filter((holder) => holder.state === "held")
-				.map((holder) => holder.hostId),
-		);
 		const disks = of("disk").filter((holder) => holder.state !== "deleting");
-		// The host it was taken on first, as its holder says.
-		const first = disks.find((holder) => holder.hostId === origin);
-		// Without a holder there, it is held there only while its host may not have reported it yet: a ref naming a host
-		// (one from before snapshot sync, whose host may report no snapshots), or a save made within
-		// `SNAPSHOT_REPORT_WAIT_MS`, as its map and the host's report may still be to come. Else its host has said it
-		// hasn't it.
-		const unreported =
-			disks.length === 0 &&
-			(refHost(ref) !== undefined || snapshot.createdAt > now() - SNAPSHOT_REPORT_WAIT_MS);
-		const entries: { hostId: string; state: "held" | "fetching"; memory: boolean }[] =
-			origin === undefined || (first === undefined && !unreported)
-				? []
-				: [
-						{
-							hostId: origin,
-							state: first?.state === "fetching" ? "fetching" : "held",
-							memory: snapshot.memory && first?.state !== "fetching",
-						},
-					];
-		for (const holder of disks) {
-			if (entries.some((entry) => entry.hostId === holder.hostId)) continue;
-			const held = holder.state === "held";
-			entries.push({
-				hostId: holder.hostId,
-				state: held ? "held" : "fetching",
-				memory: snapshot.memory && held && withMemory.has(holder.hostId),
-			});
+		const unreported = snapshot.sandboxType === "isolate" || (refHost(ref) !== undefined && disks.length === 0);
+		let entries: { hostId: string; state: "held" | "fetching"; memory: boolean }[];
+		if (unreported) {
+			entries = origin === undefined ? [] : [{ hostId: origin, state: "held", memory: snapshot.memory }];
+		} else {
+			const withMemory = new Set(
+				of("memory")
+					.filter((holder) => holder.state === "held")
+					.map((holder) => holder.hostId),
+			);
+			entries = disks
+				.map((holder) => {
+					const held = holder.state === "held";
+					const memory = snapshot.memory && held && (holder.hostId === origin || withMemory.has(holder.hostId));
+					return { hostId: holder.hostId, state: held ? ("held" as const) : ("fetching" as const), memory };
+				})
+				.sort((a, b) => Number(b.hostId === origin) - Number(a.hostId === origin));
 		}
 		const hosts = new Map((await store.hosts.list()).map((host) => [host.id, host]));
 		return entries.flatMap(({ hostId, state, memory }) => {

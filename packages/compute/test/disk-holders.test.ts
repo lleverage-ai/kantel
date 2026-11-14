@@ -1381,26 +1381,38 @@ describe("disk holders", () => {
 		expect((await tom.getSnapshot(records[1]?.id ?? "")).hosts?.map((host) => host.hostId)).toEqual([STUB_HOST_ID]);
 	});
 
-	it("lists the host a saved snapshot was taken on as holding it only until its report could have said otherwise", async () => {
+	it("lists the hosts a saved snapshot is on as they report it, and an isolate's or an old ref's on the host it was taken on", async () => {
 		const tom = setUp();
 		await tom.pool();
 		const id = "ssnap_0123456789abcdef0123456789abcdef";
 		const snap = await tom.savedAlone(id, true);
-		// Just saved, its host not yet reporting it: held there, with its memory.
-		expect((await tom.getSnapshot(snap.id)).hosts).toEqual([
+		const report = async (objects: readonly string[]) => {
+			tom.clock.now += 5 * 60_000;
+			await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+				objects: {
+					snapshot: objects.map((objectId) => ({ objectId, versions: [{ version: "disk", mapDigest: DIGEST }] })),
+				},
+			});
+		};
+		const hostsOf = async (snapshotId: string) => (await tom.getSnapshot(snapshotId)).hosts;
+		// Not yet reported by its host: on no host the catalogue knows of.
+		expect(await hostsOf(snap.id)).toEqual([]);
+		// Reported: held there, with its memory, as it was taken there.
+		await report([id]);
+		expect(await hostsOf(snap.id)).toEqual([
 			{ hostId: STUB_HOST_ID, hostName: STUB_HOST_ID, state: "held", memory: true },
 		]);
-		// Half an hour on with its host never having reported it: its host hasn't it.
-		tom.clock.now += 31 * 60_000;
-		expect((await tom.getSnapshot(snap.id)).hosts).toEqual([]);
-		// Reported, then dropped from a later report: not held anywhere.
-		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
-			objects: { snapshot: [{ objectId: id, versions: [{ version: "disk", mapDigest: DIGEST }] }] },
-		});
-		expect((await tom.getSnapshot(snap.id)).hosts?.map((host) => host.state)).toEqual(["held"]);
-		tom.clock.now += 5 * 60_000;
-		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, { objects: { snapshot: [] } });
-		expect((await tom.getSnapshot(snap.id)).hosts).toEqual([]);
+		// Dropped from a later report: on no host, however young.
+		await report([]);
+		expect(await hostsOf(snap.id)).toEqual([]);
+		// An isolate's, whose tier reports no snapshots, and an old ref naming its host that no host has reported: on the
+		// host they were taken on.
+		const isolate = await tom.savedAlone("ssnap_fedcba9876543210fedcba9876543210");
+		await tom.api.store.snapshots.update(isolate.id, (current) => ({ ...current, sandboxType: "isolate" }));
+		const old = await tom.saved("snap_old");
+		for (const each of [isolate, old]) {
+			expect((await hostsOf(each.id))?.map((host) => [host.hostId, host.state])).toEqual([[STUB_HOST_ID, "held"]]);
+		}
 	});
 
 	for (const [name, kind] of [

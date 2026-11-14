@@ -2234,7 +2234,7 @@ export const Snapshot = Type.Object(
 			Type.Array(SnapshotHost, {
 				description:
 					"Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then " +
-					"each with a copy, or fetching one, as they last reported. Kantel keeps a saved snapshot on two hosts of " +
+					"each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of " +
 					"its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it.",
 			}),
 		),
