@@ -53,9 +53,15 @@ func TestPeerSyncFollowsTheWelcome(t *testing.T) {
 		}
 		return err
 	}
-	h.applyWelcome(context.Background(), &proto.Welcome{HostID: "host_a", GrantKey: "key", Mesh: &proto.WelcomeMesh{Address: "::1", Prefix: "::/48"}}, nil)
+	if h.pool() != "" {
+		t.Fatalf("a pool before a welcome: %q", h.pool())
+	}
+	h.applyWelcome(context.Background(), &proto.Welcome{HostID: "host_a", PoolID: "pool_a", GrantKey: "key", Mesh: &proto.WelcomeMesh{Address: "::1", Prefix: "::/48"}}, nil)
 	if err := dial(); err != nil {
 		t.Fatalf("not listening with the mesh up: %v", err)
+	}
+	if h.pool() != "pool_a" {
+		t.Fatalf("the welcome's pool: %q", h.pool())
 	}
 	// A control plane from before rotation sends one key, with no ID.
 	if h.selfID() != "host_a" || keys() != ":key:0" || h.peers.Self() != "host_a" {
@@ -185,5 +191,77 @@ func TestDiskFetch(t *testing.T) {
 			t.Fatalf("discarded %v", got)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// rootfsFetchTier is a microVM tier whose templates' root filesystems sync too: it holds root filesystem k1.
+type rootfsFetchTier struct {
+	*fetchTier
+}
+
+func (r *rootfsFetchTier) Usage() (int64, int, int) { return 0, 0, 0 }
+
+func (r *rootfsFetchTier) HoldsRootfs(key, version string) bool { return key == "k1" && version == "1" }
+func (r *rootfsFetchTier) OpenRootfs(string, string, bool) (*os.File, []byte, error) {
+	return nil, nil, fs.ErrNotExist
+}
+func (r *rootfsFetchTier) ReadRootfsFile(string, string, string) ([]byte, error) {
+	return nil, fs.ErrNotExist
+}
+func (r *rootfsFetchTier) RootfsPartial(string, string) (string, error) {
+	return "", errors.New("no partials here")
+}
+func (r *rootfsFetchTier) PublishFetchedRootfs(string, string, *os.File, []byte, map[string][]byte) error {
+	return nil
+}
+func (r *rootfsFetchTier) RootfsPartials() []string                 { return nil }
+func (r *rootfsFetchTier) ReserveRootfsFetch(int64) (func(), error) { return func() {}, nil }
+func (r *rootfsFetchTier) DiscardRootfsPartial(key string)          { r.DiscardStickyPartial("rootfs", key) }
+func (r *rootfsFetchTier) RootfsHoldings() []proto.ObjectHolding {
+	return []proto.ObjectHolding{{ObjectID: "k1", Versions: []proto.ObjectVersionHolding{{Version: "1", MapDigest: "sha256:1"}}}}
+}
+
+// A host whose microVM tier has templates' root filesystems, with the mesh, reports rootfs-sync and the root
+// filesystems it holds, and takes disk.fetch for them; without the mesh it does neither.
+func TestRootfsSync(t *testing.T) {
+	tier := &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}
+	without := newLifecycleHost(t, tier.lifecycleTier)
+	without.tiers[microvm.Tier] = tier
+	if slices.Contains(without.makeFacts().Features, proto.FeatureRootfsSync) || without.Capacity().Holdings != nil {
+		t.Fatal("rootfs-sync, or holdings, without the mesh")
+	}
+
+	h := newLifecycleHost(t, tier.lifecycleTier)
+	h.tiers[microvm.Tier] = tier
+	h.mesh = &fakeMesh{}
+	h.cfg.SyncRateMbit = -1
+	located := make(chan proto.DiskLocateParams, 4)
+	h.callKantel = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		located <- params.(proto.DiskLocateParams)
+		return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no such version"}
+	}
+	h.startPeerSync()
+	defer h.syncStop()
+	features := h.makeFacts().Features
+	if !slices.Contains(features, proto.FeatureRootfsSync) || !slices.Contains(features, proto.FeatureDiskSync) {
+		t.Fatalf("features %v", features)
+	}
+	held := h.Capacity().Holdings[proto.DiskKindRootfs]
+	if len(held) != 1 || held[0].ObjectID != "k1" || held[0].Versions[0].MapDigest != "sha256:1" {
+		t.Fatalf("holdings %+v", held)
+	}
+	if err := call(t, h, proto.MethodDiskFetch, proto.DiskFetchParams{Kind: "rootfs", ObjectID: "k1", Version: "1"}); err != nil {
+		t.Fatalf("a root filesystem held: %v", err)
+	}
+	if err := call(t, h, proto.MethodDiskFetch, proto.DiskFetchParams{Kind: "rootfs", ObjectID: "k2", Version: "1"}); err != nil {
+		t.Fatalf("a root filesystem not held: %v", err)
+	}
+	select {
+	case p := <-located:
+		if p != (proto.DiskLocateParams{Kind: "rootfs", ObjectID: "k2", Version: "1"}) {
+			t.Fatalf("located %+v", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("disk.locate not asked")
 	}
 }

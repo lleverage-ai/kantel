@@ -631,6 +631,12 @@ export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
 	 * shut from the check to the move.
 	 */
 	readonly drainEpoch?: number;
+	/**
+	 * When it was last moved to another pool (`moveHost`); absent for a host never moved. A template's root filesystem it
+	 * reports with no pool stamp (made before hosts stamped them) is its pool's only while this is absent
+	 * (`DiskHolders.recordHoldings`).
+	 */
+	readonly poolSince?: number;
 };
 
 export interface StoredJoinToken {
@@ -1030,7 +1036,7 @@ export interface StoredStickyDiskVersion {
 export interface StoredDiskHolder {
 	readonly id: string;
 	readonly kind: DiskKind;
-	/** The object: a sticky disk's ID. */
+	/** The object: a sticky disk's ID, or a template root filesystem's key. */
 	readonly objectId: string;
 	readonly version: string;
 	readonly hostId: string;
@@ -1041,6 +1047,16 @@ export interface StoredDiskHolder {
 	readonly state: "fetching" | "held" | "deleting";
 	/** When it reached `state`. */
 	readonly since: number;
+	/**
+	 * The digest of its block map as its host reported it, for a kind whose versions have no record of their own (a
+	 * template's root filesystem); absent for a sticky disk's, whose version has it.
+	 */
+	readonly mapDigest?: string;
+	/**
+	 * The pool the copy was made in, as its host stamped it, for a kind with no record of its own (a template's root
+	 * filesystem): it is offered only there, so a host moved to another pool doesn't take the old pool's copies with it.
+	 */
+	readonly poolId?: string;
 }
 
 export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>
@@ -1056,8 +1072,8 @@ export interface StoredDiskReport {
  * Reconciling a host's holders from its reports, fenced so the newest report wins on every gateway:
  *
  * - `claim` makes a report the host's newest (`StoredDiskReport`), unless one as new or newer has been claimed.
- * - `reconcile` deletes the holders `release` names, each only as it was read, and inserts those `hold` names, each only
- *   while its sticky version's record is there; all of it only while `at` is still the host's newest report. So a report
+ * - `reconcile` deletes the holders `release` names, each only as it was read, and inserts those `hold` names, a sticky
+ *   disk's each only while its version's record is there; all of it only while `at` is still the host's newest report. So a report
  *   held up behind a newer one, here or on another gateway, changes nothing. Recording a holder changes its version's
  *   record (in SQL, its row's version), so a `StickyDiskWrites.forget` that read the holders before it reads them again.
  */
@@ -1323,7 +1339,8 @@ function memoryDiskHolderWrites(
 					holders.records.delete(holder.id);
 			}
 			for (const holder of hold) {
-				if (holders.records.has(holder.id) || !versions.records.has(holder.version)) continue;
+				if (holders.records.has(holder.id)) continue;
+				if (holder.kind === "sticky" && !versions.records.has(holder.version)) continue;
 				holders.records.set(holder.id, structuredClone(holder));
 			}
 		},

@@ -3,8 +3,18 @@
  * (`StoredDiskHolder`), and the answer to a host that wants a version (`disk.locate`): its block map's digest, the hosts
  * in its own pool that hold it, and a grant to fetch it from them, signed with the control plane's grant key.
  *
- * Holders are reconciled from each capacity report a host sends (`recordStickyHoldings`), so they are the copies hosts
- * say they have. Sticky disks are the only kind so far.
+ * Holders are reconciled from each capacity report a host sends (`recordHoldings`), so they are the copies hosts say
+ * they have. Two kinds so far:
+ *
+ * - `sticky`: a sticky disk's versions, each in the catalogue (`StoredStickyDiskVersion`) with its map digest; a host
+ *   holds only versions the catalogue has, of an account whose data it may have.
+ * - `rootfs`: a template's root filesystem (`images/templates/<key>.ext4` on a host), its ID the key and its one version
+ *   `1`. No record of its own: each holder carries the map digest its host reported, as two hosts that each built one
+ *   before they synced may hold different bytes under one key, and the pool its host made it in, as the host stamped it
+ *   (`HostWelcome.poolId` when it built it or began fetching it). It is offered only in that pool, and only while its
+ *   host is there too.
+ *   `disk.locate` answers the digest most of the asker's pool's holders of its architecture have, and only those
+ *   holders.
  *
  * The grant key is one Ed25519 key per control plane, made by the first gateway that needs it and kept sealed with the
  * deployment's secrets key (`StoredSetting` `grantKey`), so every gateway over one database signs with it. Without a
@@ -86,19 +96,46 @@ export type StickyHoldingsReport = readonly {
 	readonly versions: readonly { readonly version: string }[];
 }[];
 
+/**
+ * A host's report of the objects of one kind it holds (`HostCapacity.holdings`), each version with its map digest and
+ * the pool the host made it in (built it, or began fetching it), as its welcome named it then.
+ */
+export type ObjectHoldingsReport = readonly {
+	readonly objectId: string;
+	readonly versions: readonly { readonly version: string; readonly mapDigest: string; readonly pool?: string }[];
+}[];
+
+/** What one capacity report says a host holds: each absent says nothing of its kind, so nothing of it is forgotten. */
+export interface HoldingsReport {
+	readonly stickyDisks?: StickyHoldingsReport;
+	readonly objects?: { readonly rootfs?: ObjectHoldingsReport };
+}
+
+/** The one version of a template's root filesystem. */
+export const ROOTFS_VERSION = "1";
+
+/** A root filesystem's key: 64 hex digits, as a host names `images/templates/<key>.ext4`. */
+const ROOTFS_KEY = /^[0-9a-f]{64}$/;
+
+/** A map digest: `sha256:` and 64 hex digits. */
+const MAP_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
 export interface DiskHolders {
 	/**
-	 * Reconciles `hostId`'s sticky disk holders with what it reported holding at `at`: a version it holds that the
-	 * catalogue has becomes `held` there, and one it no longer reports is let go, unless it is being fetched or its holder
-	 * is newer than the report could know (`reportGraceMs`). Nothing with sticky disks off.
+	 * Reconciles `hostId`'s holders with what it reported holding at `at`, kind by kind, for each kind the report speaks
+	 * of: a version it holds becomes `held` there (a sticky disk's only when the catalogue has it; a root filesystem's
+	 * with the map digest reported, replacing one with another), and one it no longer reports is let go, unless it is
+	 * being fetched or its holder is newer than the report could know (`reportGraceMs`). Nothing of sticky disks with them
+	 * off, nor of root filesystems with templates off.
 	 */
-	recordStickyHoldings(hostId: string, at: number, disks: StickyHoldingsReport): Promise<void>;
+	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/** A version just committed on `hostId`: the host it was made on holds it. */
 	recordCommit(kind: DiskKind, objectId: string, version: string, hostId: string): Promise<void>;
 	/** Answers `disk.locate` from `hostId`. */
 	locate(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
-	 * The grant keys, made on first use; undefined while there can be none (sticky disks off, no secrets key). A key that
+	 * The grant keys, made on first use; undefined while there can be none (sticky disks and templates off, no secrets
+	 * key). A key that
 	 * can't be opened here is answered as it is, and replaced by the next grant signed.
 	 */
 	keys(): Promise<GrantKeyring | undefined>;
@@ -113,8 +150,8 @@ export interface DiskHolders {
 	/** Forgets every holder of an object, or of one of its versions. */
 	forget(kind: DiskKind, objectId: string, version?: string): Promise<void>;
 	/**
-	 * Forgets holders of sticky versions the catalogue no longer has (a forgotten version, a deleted disk's) and holders on
-	 * revoked hosts, each older than `reportGraceMs` at `at`.
+	 * Forgets holders of sticky versions the catalogue no longer has (a forgotten version, a deleted disk's) and holders,
+	 * of any kind, on revoked hosts, each older than `reportGraceMs` at `at`.
 	 */
 	sweep(at: number): Promise<void>;
 }
@@ -209,8 +246,10 @@ export const GRANT_KEY_UNAVAILABLE =
 export function createDiskHolders(options: {
 	readonly store: ComputeStore;
 	readonly now: () => number;
-	/** Sticky disks are on. */
-	readonly enabled: boolean;
+	/** Sticky disks are on: their versions are synced. */
+	readonly stickyDisks: boolean;
+	/** Templates are on: their root filesystems are synced. */
+	readonly templates: boolean;
 	/** Seals the grant key; absent when nothing can be sealed (a persistent store without a secrets key). */
 	readonly sealer: Sealer | undefined;
 	/** Every host the compute plane knows, revoked ones too, with its state and pool. */
@@ -358,55 +397,170 @@ export function createDiskHolders(options: {
 
 	const versionKey = (objectId: string, version: string) => `${objectId}/${version}`;
 
+	/**
+	 * `disk.locate` for a template's root filesystem: the holders in the asker's pool (which made or fetched their copy
+	 * there) of its architecture that hold the map digest most of them hold (of two as many, the one held longest), and
+	 * that digest, with a grant naming the pool's owner. None, and no digest, when no other such host holds it.
+	 */
+	async function locateRootfs(hostId: string, request: DiskLocateRequest): Promise<DiskLocation> {
+		if (!options.templates) throw new KantelError("not_supported", "Templates are off here");
+		if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+		if (!ROOTFS_KEY.test(request.objectId) || request.version !== ROOTFS_VERSION) {
+			throw new KantelError("not_found", "No such template root filesystem");
+		}
+		const hosts = new Map((await options.hosts()).map((host) => [host.id, host]));
+		const asker = hosts.get(hostId);
+		if (asker === undefined || asker.state === "revoked" || asker.poolId === undefined) {
+			throw new KantelError("not_found", "No such template root filesystem");
+		}
+		const byDigest = new Map<string, { hostId: string; address: string; since: number }[]>();
+		for (const holder of await store.diskHolders.list({ objectId: request.objectId })) {
+			if (holder.kind !== "rootfs" || holder.version !== ROOTFS_VERSION || holder.state !== "held") continue;
+			if (holder.hostId === hostId || holder.mapDigest === undefined) continue;
+			const host = hosts.get(holder.hostId);
+			// Online (a draining host still serves), and in the asker's pool, where it made or fetched the copy: pools never
+			// share data.
+			if (host === undefined || (host.state !== "online" && host.state !== "draining")) continue;
+			if (host.poolId !== asker.poolId || holder.poolId !== asker.poolId) continue;
+			// Of the asker's architecture: a base's digest, or an image reference, names one image for each.
+			if (host.arch !== asker.arch) continue;
+			const address = options.meshAddress(host.id);
+			if (address === undefined) continue;
+			byDigest.set(holder.mapDigest, [
+				...(byDigest.get(holder.mapDigest) ?? []),
+				{ hostId: host.id, address, since: holder.since },
+			]);
+		}
+		let best: { mapDigest: string; holders: { hostId: string; address: string; since: number }[] } | undefined;
+		const oldest = (list: readonly { readonly since: number }[]) => Math.min(...list.map((each) => each.since));
+		for (const [mapDigest, holders] of byDigest) {
+			if (
+				best === undefined ||
+				holders.length > best.holders.length ||
+				(holders.length === best.holders.length && oldest(holders) < oldest(best.holders))
+			) {
+				best = { mapDigest, holders };
+			}
+		}
+		if (best === undefined) return { holders: [] };
+		const signing = await signer(sealer);
+		const pool = await store.pools.get(asker.poolId);
+		const holders = best.holders.map(({ hostId, address }) => ({ hostId, address }));
+		const grant = await signing.sign({
+			kind: "rootfs",
+			objectId: request.objectId,
+			version: ROOTFS_VERSION,
+			accountId: asker.accountId ?? pool?.owner ?? "",
+			from: holders.map((holder) => holder.hostId),
+			to: hostId,
+			exp: now() + GRANT_TTL_MS,
+		});
+		return { mapDigest: best.mapDigest, holders, grant };
+	}
+
 	return {
-		async recordStickyHoldings(hostId, at, disks) {
-			if (!options.enabled) return;
+		async recordHoldings(hostId, at, report) {
+			const sticky = options.stickyDisks ? report.stickyDisks : undefined;
+			const rootfs = options.templates ? report.objects?.rootfs : undefined;
+			if (sticky === undefined && rootfs === undefined) return;
 			// The newest report wins: one older than a report already taken, here or on another gateway, changes nothing.
 			if (!(await store.diskHolderWrites.claim(hostId, at))) return;
-			const reported = new Map<string, { readonly diskId: string; readonly version: string }>();
-			for (const disk of disks) {
-				for (const held of disk.versions) {
-					reported.set(versionKey(disk.diskId, held.version), { diskId: disk.diskId, version: held.version });
-				}
-			}
-			const current = (await store.diskHolders.list({ hostId })).filter((holder) => holder.kind === "sticky");
-			const known = new Map(current.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
+			const current = await store.diskHolders.list({ hostId });
 			const hold: StoredDiskHolder[] = [];
 			const release: StoredDiskHolder[] = [];
-			// Whether the host may hold an account's data: a shared host any account's, an account's own host only its own.
-			let reporter: Promise<StoredHost | undefined> | undefined;
-			const mayHold = async (accountId: string) => {
-				reporter ??= options.hosts().then((hosts) => hosts.find((host) => host.id === hostId));
-				const host = await reporter;
-				return (
-					host !== undefined &&
-					host.state !== "revoked" &&
-					(host.accountId === undefined || host.accountId === accountId)
-				);
-			};
-			for (const [key, { diskId, version }] of reported) {
-				const holder = known.get(key);
-				if (holder !== undefined && holder.state !== "fetching") continue;
-				// Only a version the catalogue has (one it never recorded, or forgot, isn't a copy of anything), of an
-				// account whose data the host may have.
-				const recorded = await store.stickyDiskVersions.get(version);
-				if (recorded === undefined || recorded.diskId !== diskId || !(await mayHold(recorded.accountId))) continue;
-				if (holder !== undefined) release.push(holder);
-				hold.push({
-					id: diskHolderId("sticky", diskId, version, hostId),
-					kind: "sticky",
-					objectId: diskId,
-					version,
-					hostId,
-					state: "held",
-					since: at,
-				});
-			}
 			// Let go: what it no longer reports, unless it is still fetching it, or its holder may be newer than the report.
-			for (const holder of current) {
-				if (reported.has(versionKey(holder.objectId, holder.version))) continue;
-				if (holder.state === "fetching" || holder.since > at - options.reportGraceMs) continue;
-				release.push(holder);
+			const letGo = (holders: readonly StoredDiskHolder[], reported: ReadonlySet<string>) => {
+				for (const holder of holders) {
+					if (reported.has(versionKey(holder.objectId, holder.version))) continue;
+					if (holder.state === "fetching" || holder.since > at - options.reportGraceMs) continue;
+					release.push(holder);
+				}
+			};
+			if (sticky !== undefined) {
+				const reported = new Map<string, { readonly diskId: string; readonly version: string }>();
+				for (const disk of sticky) {
+					for (const held of disk.versions) {
+						reported.set(versionKey(disk.diskId, held.version), { diskId: disk.diskId, version: held.version });
+					}
+				}
+				const mine = current.filter((holder) => holder.kind === "sticky");
+				const known = new Map(mine.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
+				// Whether the host may hold an account's data: a shared host any account's, an account's own host only its own.
+				let reporter: Promise<StoredHost | undefined> | undefined;
+				const mayHold = async (accountId: string) => {
+					reporter ??= options.hosts().then((hosts) => hosts.find((host) => host.id === hostId));
+					const host = await reporter;
+					return (
+						host !== undefined &&
+						host.state !== "revoked" &&
+						(host.accountId === undefined || host.accountId === accountId)
+					);
+				};
+				for (const [key, { diskId, version }] of reported) {
+					const holder = known.get(key);
+					if (holder !== undefined && holder.state !== "fetching") continue;
+					// Only a version the catalogue has (one it never recorded, or forgot, isn't a copy of anything), of an
+					// account whose data the host may have.
+					const recorded = await store.stickyDiskVersions.get(version);
+					if (recorded === undefined || recorded.diskId !== diskId || !(await mayHold(recorded.accountId))) continue;
+					if (holder !== undefined) release.push(holder);
+					hold.push({
+						id: diskHolderId("sticky", diskId, version, hostId),
+						kind: "sticky",
+						objectId: diskId,
+						version,
+						hostId,
+						state: "held",
+						since: at,
+					});
+				}
+				letGo(mine, new Set(reported.keys()));
+			}
+			if (rootfs !== undefined) {
+				// Only what is shaped as a root filesystem: its key, its one version and a map digest. It is no account's
+				// record, so a host can't claim another pool's: holders are offered only to their own pool's hosts.
+				const reported = new Map<
+					string,
+					{ readonly objectId: string; readonly mapDigest: string; readonly pool?: string }
+				>();
+				for (const object of rootfs) {
+					if (!ROOTFS_KEY.test(object.objectId)) continue;
+					for (const held of object.versions) {
+						if (held.version !== ROOTFS_VERSION || !MAP_DIGEST.test(held.mapDigest)) continue;
+						reported.set(versionKey(object.objectId, held.version), {
+							objectId: object.objectId,
+							mapDigest: held.mapDigest,
+							...(held.pool === undefined ? {} : { pool: held.pool }),
+						});
+					}
+				}
+				const mine = current.filter((holder) => holder.kind === "rootfs");
+				const known = new Map(mine.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
+				const reporter = (await options.hosts()).find((host) => host.id === hostId);
+				const hostPool = reporter?.state === "revoked" ? undefined : reporter?.poolId;
+				for (const [key, { objectId, mapDigest, pool }] of reported) {
+					const holder = known.get(key);
+					// The pool the copy was made in, as its host stamped it when it built it or began fetching it, whenever
+					// it reports it (its map may be made long after). One with no stamp (made before stamps) is its host's
+					// pool's only while the host has never moved pools; else it is no pool's, and not recorded.
+					const poolId = pool ?? (reporter?.poolSince === undefined ? hostPool : undefined);
+					if (poolId === undefined) continue;
+					// Unchanged. A copy made again, or in another pool, even with the same bytes, replaces it.
+					if (holder?.state === "held" && holder.mapDigest === mapDigest && holder.poolId === poolId) continue;
+					if (holder !== undefined) release.push(holder);
+					hold.push({
+						id: diskHolderId("rootfs", objectId, ROOTFS_VERSION, hostId),
+						kind: "rootfs",
+						objectId,
+						version: ROOTFS_VERSION,
+						hostId,
+						state: "held",
+						since: at,
+						mapDigest,
+						poolId,
+					});
+				}
+				letGo(mine, new Set(reported.keys()));
 			}
 			if (hold.length > 0 || release.length > 0) await store.diskHolderWrites.reconcile(hostId, at, { hold, release });
 		},
@@ -427,10 +581,11 @@ export function createDiskHolders(options: {
 			if (!(DISK_KINDS as readonly string[]).includes(request.kind)) {
 				throw new KantelError("invalid", `There is no kind of disk ${JSON.stringify(request.kind)}`);
 			}
+			if (request.kind === "rootfs") return locateRootfs(hostId, request);
 			if (request.kind !== "sticky") {
 				throw new KantelError("not_supported", `Kantel keeps no copies of ${request.kind} objects yet`);
 			}
-			if (!options.enabled) throw new KantelError("not_supported", "Sticky disks are off here");
+			if (!options.stickyDisks) throw new KantelError("not_supported", "Sticky disks are off here");
 			if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 			const missing = () => new KantelError("not_found", "No such version of that sticky disk");
 			const version = await store.stickyDiskVersions.get(request.version);
@@ -478,14 +633,16 @@ export function createDiskHolders(options: {
 		},
 
 		async keys() {
-			if (!options.enabled || sealer === undefined) return undefined;
+			if ((!options.stickyDisks && !options.templates) || sealer === undefined) return undefined;
 			// Public keys only, so nothing is opened: a key that can't be opened here is replaced when a grant is signed, not
 			// on a welcome, so gateways whose secrets keys differ don't replace it for each other's welcomes.
 			return viewOf(await kept(sealer), now());
 		},
 
 		async rotate(by) {
-			if (!options.enabled) throw new KantelError("not_supported", "Sticky disks are off here");
+			if (!options.stickyDisks && !options.templates) {
+				throw new KantelError("not_supported", "Sticky disks and templates are off here");
+			}
 			if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 			// Made first if there is none, so there is one to rotate; a rotation then always writes.
 			await kept(sealer);
@@ -524,18 +681,18 @@ export function createDiskHolders(options: {
 		},
 
 		async sweep(at) {
-			const holders = (await store.diskHolders.list({ kind: "sticky" })).filter(
-				(holder) => holder.since <= at - options.reportGraceMs,
-			);
+			const holders = (await store.diskHolders.list()).filter((holder) => holder.since <= at - options.reportGraceMs);
 			if (holders.length === 0) return;
 			const revoked = new Set(
 				(await options.hosts()).filter((host) => host.state === "revoked").map((host) => host.id),
 			);
-			const versions = new Set(
-				(await store.stickyDiskVersions.list()).map((version) => versionKey(version.diskId, version.id)),
-			);
+			const versions = holders.some((holder) => holder.kind === "sticky")
+				? new Set((await store.stickyDiskVersions.list()).map((version) => versionKey(version.diskId, version.id)))
+				: new Set<string>();
 			for (const holder of holders) {
-				if (versions.has(versionKey(holder.objectId, holder.version)) && !revoked.has(holder.hostId)) continue;
+				// A sticky holder's version must still be in the catalogue; other kinds have no record of their own.
+				const recorded = holder.kind !== "sticky" || versions.has(versionKey(holder.objectId, holder.version));
+				if (recorded && !revoked.has(holder.hostId)) continue;
 				await store.diskHolders.delete(holder.id);
 			}
 		},

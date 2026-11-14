@@ -126,15 +126,41 @@ describe("the disk store on the host link", () => {
 	});
 
 	it("passes each report's sticky disk holdings on, and none from a report that doesn't say", async () => {
-		const recordStickyHoldings = vi.fn(async () => undefined);
-		const { host, hostId } = await setup({ recordStickyHoldings });
+		const recordHoldings = vi.fn(async () => undefined);
+		const { host, hostId } = await setup({ recordHoldings });
 		const holdings = [{ diskId: "sdk_1", versions: [{ version: "sdv_1", allocatedBytes: 10, at: 1 }] }];
 		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: holdings } } });
-		await vi.waitFor(() => expect(recordStickyHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), holdings));
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), { stickyDisks: holdings }),
+		);
 		host.send({ type: "heartbeat", heartbeat: { capacity } });
 		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: [] } } });
-		await vi.waitFor(() => expect(recordStickyHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), []));
-		expect(recordStickyHoldings).toHaveBeenCalledTimes(2);
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { stickyDisks: [] }),
+		);
+		expect(recordHoldings).toHaveBeenCalledTimes(2);
+	});
+
+	it("passes each report's root filesystems on, leaving out a kind it doesn't know or that isn't shaped as holdings", async () => {
+		const recordHoldings = vi.fn(async () => undefined);
+		const { host, hostId } = await setup({ recordHoldings });
+		const digest = `sha256:${"a".repeat(64)}`;
+		const rootfs = [{ objectId: "b".repeat(64), versions: [{ version: "1", mapDigest: digest, allocatedBytes: 10 }] }];
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { ...capacity, holdings: { rootfs, template: [{ objectId: "t", versions: [] }] } } },
+		});
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), { objects: { rootfs } }),
+		);
+		// A version without a map digest: the kind says nothing, so nothing is passed on.
+		const unmapped = [{ objectId: "b".repeat(64), versions: [{ version: "1", allocatedBytes: 10 }] }];
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { rootfs: unmapped } } } });
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { rootfs: [] } } } });
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs: [] } }),
+		);
+		expect(recordHoldings).toHaveBeenCalledTimes(2);
 	});
 
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {

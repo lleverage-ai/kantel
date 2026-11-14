@@ -44,6 +44,9 @@ function setUp(
 		store?: ComputeStore;
 		secretsKey?: string;
 		stickyDisks?: boolean;
+		templates?: boolean;
+		/** Hosts of an architecture other than the stub's. */
+		arch?: { readonly [hostId: string]: "x86_64" | "aarch64" };
 		/** What hosts last reported holding, for the sweep (`SandboxBackend.stickyHoldings`). */
 		holdings?: () => BackendStickyHoldings[];
 		/** The backend's `disk.fetch` (`SandboxBackend.fetchDisk`); absent, it has none. */
@@ -81,6 +84,7 @@ function setUp(
 				id,
 				name: id,
 				poolId,
+				...(options.arch?.[id] === undefined ? {} : { arch: options.arch[id] }),
 				...more,
 			});
 			return {
@@ -100,6 +104,7 @@ function setUp(
 	const api = createComputeApi({
 		backend: wrap(createStubBackend()),
 		stickyDisks: options.stickyDisks ?? true,
+		...(options.templates === undefined ? {} : { templates: options.templates }),
 		...(options.store === undefined ? {} : { store: options.store }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		now: () => clock.now,
@@ -173,6 +178,10 @@ const VERSION = {
 	seq: 1,
 	createdAt: 1,
 };
+const KEY = "a".repeat(64);
+const OTHER_KEY = "b".repeat(64);
+const DIGEST = `sha256:${"1".repeat(64)}`;
+const OTHER_DIGEST = `sha256:${"2".repeat(64)}`;
 const holder = (hostId: string, since: number) =>
 	({
 		id: `sticky:sdk_1:sdv_1:${hostId}`,
@@ -201,9 +210,9 @@ describe("disk holders", () => {
 			// Each report a moment after the last: a host's older report than one taken changes nothing.
 			const report = (hostId: string, versions: readonly string[]) => {
 				tom.clock.now += 1;
-				return tom.api.service.recordStickyHoldings(hostId, tom.clock.now, [
-					{ diskId: disk.id, versions: versions.map((each) => ({ version: each })) },
-				]);
+				return tom.api.service.recordHoldings(hostId, tom.clock.now, {
+					stickyDisks: [{ diskId: disk.id, versions: versions.map((each) => ({ version: each })) }],
+				});
 			};
 			// Another host reports it, and a version the catalogue doesn't have, which is no copy of anything.
 			await report("host_b", [version.id, "sdv_unknown"]);
@@ -247,9 +256,9 @@ describe("disk holders", () => {
 		const { disk, version } = await tom.committed();
 		await tom.pool();
 		for (const hostId of ["host_b", "host_c", "host_d", "host_e"]) {
-			await tom.api.service.recordStickyHoldings(hostId, tom.clock.now, [
-				{ diskId: disk.id, versions: [{ version: version.id }] },
-			]);
+			await tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+			});
 		}
 		const request = { kind: "sticky", objectId: disk.id, version: version.id };
 		const found = await tom.api.service.locateDisk(STUB_HOST_ID, request);
@@ -300,6 +309,207 @@ describe("disk holders", () => {
 		await expect(tom.api.service.locateDisk("host_b", { ...request, kind: "snapshot" })).rejects.toMatchObject({
 			code: "not_supported",
 		});
+	});
+
+	for (const [name, kind] of [
+		["memory", undefined],
+		["SQLite", nodeSqliteDatabase],
+		["Postgres", pgliteDatabase],
+	] as const) {
+		it(`keeps the root filesystems hosts report, each with its map digest, in ${name}`, {
+			timeout: kind?.testTimeoutMs,
+		}, async () => {
+			const tom = setUp({
+				...(kind === undefined ? {} : { store: await sqlStore(kind) }),
+				secretsKey: SECRETS_KEY,
+				templates: true,
+			});
+			await tom.pool();
+			const report = (hostId: string, held: readonly { objectId: string; mapDigest: string }[]) => {
+				tom.clock.now += 1;
+				return tom.api.service.recordHoldings(hostId, tom.clock.now, {
+					objects: {
+						rootfs: held.map(({ objectId, mapDigest }) => ({
+							objectId,
+							versions: [{ version: "1", mapDigest }],
+						})),
+					},
+				});
+			};
+			const rootfsHolders = async () =>
+				(await tom.api.store.diskHolders.list())
+					.filter((holder) => holder.kind === "rootfs")
+					.map((holder) => [holder.hostId, holder.objectId, holder.mapDigest])
+					.sort();
+			// What isn't shaped as a root filesystem (a key, the one version, a map digest) is no copy of one.
+			await report("host_b", [
+				{ objectId: KEY, mapDigest: DIGEST },
+				{ objectId: "../etc", mapDigest: DIGEST },
+				{ objectId: OTHER_KEY, mapDigest: "md5:1" },
+			]);
+			expect(await rootfsHolders()).toEqual([["host_b", KEY, DIGEST]]);
+			// A sticky disk report says nothing of root filesystems, nor one of root filesystems of sticky disks.
+			tom.clock.now += 3 * 60_000;
+			await tom.api.service.recordHoldings("host_b", tom.clock.now, { stickyDisks: [] });
+			expect(await rootfsHolders()).toEqual([["host_b", KEY, DIGEST]]);
+			// Made again, its bytes differ: the holder takes the new digest.
+			await report("host_b", [{ objectId: KEY, mapDigest: OTHER_DIGEST }]);
+			expect(await rootfsHolders()).toEqual([["host_b", KEY, OTHER_DIGEST]]);
+			// Let go once a report a while after it no longer has it.
+			await report("host_b", []);
+			expect(await rootfsHolders()).toEqual([["host_b", KEY, OTHER_DIGEST]]);
+			tom.clock.now += 3 * 60_000;
+			await report("host_b", []);
+			expect(await rootfsHolders()).toEqual([]);
+		});
+	}
+
+	it("locates a root filesystem on its pool's holders of the digest most of them hold, with a grant naming the pool's owner", async () => {
+		const tom = setUp({ templates: true });
+		await tom.pool();
+		const held = (hostId: string, mapDigest: string) =>
+			tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: { rootfs: [{ objectId: KEY, versions: [{ version: "1", mapDigest }] }] },
+			});
+		const request = { kind: "rootfs", objectId: KEY, version: "1" };
+		// Nobody holds it yet: no holders, no digest.
+		expect(await tom.api.service.locateDisk(STUB_HOST_ID, request)).toEqual({ holders: [] });
+		await held("host_b", DIGEST);
+		await held("host_c", DIGEST);
+		await held("host_d", DIGEST);
+		await held("host_e", DIGEST);
+		const found = await tom.api.service.locateDisk(STUB_HOST_ID, request);
+		// Not pool B's host, not the offline one, not the revoked one.
+		expect(found).toMatchObject({ mapDigest: DIGEST, holders: [{ hostId: "host_b", address: "fd00:a::2" }] });
+		const publicKey = await tom.api.service.grantPublicKey();
+		if (publicKey === undefined || found.grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(publicKey, found.grant, tom.clock.now)).toEqual({
+			kind: "rootfs",
+			objectId: KEY,
+			version: "1",
+			kid: (await tom.api.service.grantKeys())?.[0]?.id,
+			accountId: OPERATOR_POOLS,
+			from: ["host_b"],
+			to: STUB_HOST_ID,
+			exp: tom.clock.now + GRANT_TTL_MS,
+		});
+		// Two holders of another build of it outnumber the one: theirs is the digest, and they the holders.
+		await held(STUB_HOST_ID, OTHER_DIGEST);
+		await held("host_f", OTHER_DIGEST);
+		expect(await tom.api.service.locateDisk("host_d", request)).toMatchObject({
+			mapDigest: OTHER_DIGEST,
+			holders: [
+				{ hostId: STUB_HOST_ID, address: "fd00:a::1" },
+				{ hostId: "host_f", address: "fd00:a::5" },
+			],
+		});
+		// Pool B's host has no other holder in its pool.
+		expect(await tom.api.service.locateDisk("host_c", request)).toEqual({ holders: [] });
+		// A copy made in another pool (its host moved here since) isn't offered, and stays that pool's as its host goes on
+		// reporting it.
+		const madeElsewhere = (await tom.api.store.diskHolders.list()).find((holder) => holder.hostId === "host_f");
+		if (madeElsewhere === undefined) throw new Error("no holder on host_f");
+		await tom.api.store.diskHolders.put({ ...madeElsewhere, poolId: "pool_b" });
+		await held("host_f", OTHER_DIGEST);
+		const offered = (await tom.api.service.locateDisk("host_d", request)).holders.map((each) => each.hostId);
+		expect(offered).not.toContain("host_f");
+		expect(offered).toHaveLength(1);
+		expect((await tom.api.store.diskHolders.get(madeElsewhere.id))?.poolId).toBe("pool_b");
+		// A revoked host, a key or version that isn't one, are refused.
+		await expect(tom.api.service.locateDisk("host_e", request)).rejects.toMatchObject({ code: "not_found" });
+		await expect(tom.api.service.locateDisk("host_b", { ...request, objectId: "nope" })).rejects.toMatchObject({
+			code: "not_found",
+		});
+		await expect(tom.api.service.locateDisk("host_b", { ...request, version: "2" })).rejects.toMatchObject({
+			code: "not_found",
+		});
+		// A host of another architecture isn't offered one: the same image is other bytes there.
+		const mixed = setUp({ templates: true, arch: { host_b: "aarch64" } });
+		await mixed.pool();
+		await mixed.api.service.recordHoldings("host_b", mixed.clock.now, {
+			objects: { rootfs: [{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST }] }] },
+		});
+		expect(await mixed.api.service.locateDisk(STUB_HOST_ID, request)).toEqual({ holders: [] });
+		// Templates off: refused, and nothing recorded.
+		const off = setUp();
+		await off.pool();
+		await expect(off.api.service.locateDisk(STUB_HOST_ID, request)).rejects.toMatchObject({ code: "not_supported" });
+		await off.api.service.recordHoldings("host_b", off.clock.now, {
+			objects: { rootfs: [{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST }] }] },
+		});
+		expect(await off.api.store.diskHolders.list()).toEqual([]);
+		// Templates on with sticky disks off: there is a grant key.
+		expect(await setUp({ stickyDisks: false, templates: true }).api.service.grantPublicKey()).toMatch(
+			/^[A-Za-z0-9_-]{43}$/,
+		);
+	});
+
+	it("offers a root filesystem only in the pool its host stamped it with, however late it reports it", async () => {
+		const tom = setUp({ templates: true });
+		await tom.pool();
+		const report = (hostId: string, held: readonly { objectId: string; pool?: string }[]) => {
+			tom.clock.now += 1;
+			return tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: {
+					rootfs: held.map(({ objectId, pool }) => ({
+						objectId,
+						versions: [{ version: "1", mapDigest: DIGEST, ...(pool === undefined ? {} : { pool }) }],
+					})),
+				},
+			});
+		};
+		const offered = async (objectId: string) =>
+			(await tom.api.service.locateDisk(STUB_HOST_ID, { kind: "rootfs", objectId, version: "1" })).holders.map(
+				(each) => each.hostId,
+			);
+		const poolOf = async (hostId: string, objectId: string) =>
+			(await tom.api.store.diskHolders.list()).find(
+				(holder) => holder.hostId === hostId && holder.objectId === objectId,
+			)?.poolId;
+		const fromB = "c".repeat(64);
+		const unstamped = "d".repeat(64);
+		// host_b, in pool A, stamped one copy in A and has one it made in pool B before it moved here (its map made only
+		// now): each is its stamp's pool's, and only A's is offered to A.
+		await report("host_b", [
+			{ objectId: KEY, pool: "pool_a" },
+			{ objectId: fromB, pool: "pool_b" },
+		]);
+		expect(await poolOf("host_b", KEY)).toBe("pool_a");
+		expect(await poolOf("host_b", fromB)).toBe("pool_b");
+		expect(await offered(KEY)).toEqual(["host_b"]);
+		expect(await offered(fromB)).toEqual([]);
+		// A copy with no stamp (made before stamps) is its host's pool's while the host has never moved; once it has,
+		// it is no pool's.
+		await report("host_f", [{ objectId: unstamped }]);
+		expect(await offered(unstamped)).toEqual(["host_f"]);
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolSince: tom.clock.now }));
+		await report("host_b", [
+			{ objectId: KEY, pool: "pool_a" },
+			{ objectId: fromB, pool: "pool_b" },
+			{ objectId: unstamped },
+		]);
+		expect(await poolOf("host_b", unstamped)).toBeUndefined();
+		expect(await offered(unstamped)).toEqual(["host_f"]);
+		// The same bytes made again in another pool replace the copy, and back again.
+		await report("host_b", [{ objectId: KEY, pool: "pool_b" }]);
+		expect(await poolOf("host_b", KEY)).toBe("pool_b");
+		expect(await offered(KEY)).toEqual([]);
+		await report("host_b", [{ objectId: KEY, pool: "pool_a" }]);
+		expect(await offered(KEY)).toEqual(["host_b"]);
+	});
+
+	it("sweeps revoked hosts' root filesystem holders with templates on and sticky disks off", async () => {
+		const tom = setUp({ templates: true, stickyDisks: false });
+		await tom.pool();
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			objects: { rootfs: [{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST }] }] },
+		});
+		expect(await tom.api.store.diskHolders.list()).toHaveLength(1);
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, state: "revoked" }));
+		tom.clock.now += 11 * 60_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(await tom.api.store.diskHolders.list()).toEqual([]);
 	});
 
 	it("has a host fetch a version from its pool's holders, with a grant naming it", async () => {
@@ -461,9 +671,9 @@ describe("disk holders", () => {
 		await tom.api.service.idle();
 		expect(fetches).toEqual([]);
 		// g has it already (fetched when a sandbox there asked for it), so isn't sent it.
-		await tom.api.service.recordStickyHoldings("host_g", tom.clock.now, [
-			{ diskId: disk.id, versions: [{ version: unmapped.id }] },
-		]);
+		await tom.api.service.recordHoldings("host_g", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: unmapped.id }] }],
+		});
 		tom.clock.now += 11 * 60_000;
 		reports = [
 			{
@@ -488,7 +698,9 @@ describe("disk holders", () => {
 		const { disk, sandbox, version: old } = await tom.committed();
 		const head = await tom.commitStickyDisk(sandbox.id, disk.id);
 		await tom.pool();
-		await wrapped.recordStickyHoldings("host_b", tom.clock.now, [{ diskId: disk.id, versions: [{ version: old.id }] }]);
+		await wrapped.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: old.id }] }],
+		});
 		// The host it was made on no longer holds it; host_b does.
 		reports = [{ hostId: STUB_HOST_ID, reportedAt: tom.clock.now + 11 * 60_000, disks: [] }];
 		const sweep = async () => {
@@ -499,7 +711,7 @@ describe("disk holders", () => {
 		await sweep();
 		expect((await tom.getStickyDisk(disk.id)).versions?.map((each) => each.id)).toEqual([head.id, old.id]);
 		// host_b lets it go too: it is forgotten, with its holders.
-		await wrapped.recordStickyHoldings("host_b", tom.clock.now, [{ diskId: disk.id, versions: [] }]);
+		await wrapped.recordHoldings("host_b", tom.clock.now, { stickyDisks: [{ diskId: disk.id, versions: [] }] });
 		reports = [{ hostId: STUB_HOST_ID, reportedAt: tom.clock.now + 11 * 60_000, disks: [] }];
 		await sweep();
 		expect((await tom.getStickyDisk(disk.id)).versions?.map((each) => each.id)).toEqual([head.id]);
@@ -604,9 +816,9 @@ describe("disk holders", () => {
 		const tom = setUp({ store, secretsKey: SECRETS_KEY });
 		const { disk, version } = await tom.committed();
 		await tom.pool();
-		await tom.api.service.recordStickyHoldings("host_b", tom.clock.now, [
-			{ diskId: disk.id, versions: [{ version: version.id }] },
-		]);
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
 		// A key sealed with another secrets key: it can't be opened here.
 		const other = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
 		const old = await setUp({ store, secretsKey: other }).api.service.grantPublicKey();
@@ -653,9 +865,9 @@ describe("disk holders", () => {
 		});
 		const { disk, version } = await tom.committed();
 		await tom.pool();
-		await tom.api.service.recordStickyHoldings("host_b", tom.clock.now, [
-			{ diskId: disk.id, versions: [{ version: version.id }] },
-		]);
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
 		const request = { kind: "sticky", objectId: disk.id, version: version.id };
 		const sign = async () => {
 			const { grant } = await tom.api.service.locateDisk(STUB_HOST_ID, request);
@@ -745,9 +957,9 @@ describe("disk holders", () => {
 		const { disk, version } = await tom.committed();
 		await tom.pool();
 		await other.pool();
-		await tom.api.service.recordStickyHoldings("host_b", tom.clock.now, [
-			{ diskId: disk.id, versions: [{ version: version.id }] },
-		]);
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
 		const { next } = await tom.rotateGrantKey();
 		if (next === undefined) throw new Error("no next key");
 		// Its time comes: the other gateway signs with it, while this one, a moment behind, rotates again.
@@ -839,9 +1051,9 @@ describe.skipIf(postgresUrl === undefined || postgresUrl === "")("disk holders, 
 		if (tom === undefined) throw new Error("no gateway");
 		const { disk, version } = await tom.committed();
 		for (const each of gateways) await each.pool();
-		await tom.api.service.recordStickyHoldings("host_b", tom.clock.now, [
-			{ diskId: disk.id, versions: [{ version: version.id }] },
-		]);
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
 		const other = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
 		const elsewhere = await setUp({ store: createSqlComputeStore(database.driver), secretsKey: other }).getGrantKeys();
 		const request = { kind: "sticky", objectId: disk.id, version: version.id };

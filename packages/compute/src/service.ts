@@ -97,7 +97,7 @@ import {
 	GRANT_KEY_UNAVAILABLE,
 	type GrantKeyring,
 	type GrantKeyView,
-	type StickyHoldingsReport,
+	type HoldingsReport,
 } from "./disk-holders.ts";
 import {
 	composeEnv,
@@ -729,20 +729,21 @@ export interface ComputeService {
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
-	 * A host's capacity report's sticky disk holdings (`HostCapacity.stickyDisks`), received at `at`: its copies in the
-	 * catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordStickyHoldings`). Nothing with sticky
-	 * disks off.
+	 * A host's capacity report's holdings (`HostCapacity.stickyDisks` and `HostCapacity.holdings`), received at `at`: its
+	 * copies in the catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordHoldings`). Nothing of
+	 * sticky disks with them off, nor of templates' root filesystems with templates off.
 	 */
-	recordStickyHoldings(hostId: string, at: number, disks: StickyHoldingsReport): Promise<void>;
+	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/**
 	 * A host's `disk.locate`: the version's block map digest, the online hosts in the asker's pool holding it with their
 	 * mesh addresses, and a grant to fetch it from them (docs/design/disk-store.md, 2c). `not_found` for a version the
-	 * catalogue doesn't have or the host may not have; `not_supported` with sticky disks off or no grant key.
+	 * catalogue doesn't have or the host may not have; `not_supported` with its kind off (sticky disks, templates) or no
+	 * grant key.
 	 */
 	locateDisk(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
 	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with
-	 * sticky disks off, or with no secrets key over a persistent store.
+	 * sticky disks and templates off, or with no secrets key over a persistent store.
 	 */
 	grantPublicKey(): Promise<string | undefined>;
 	/**
@@ -2739,14 +2740,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Deletes deleted sticky disks' versions from every connected host again (a host away at the delete, or a commit
 	 * that finished after it), and their catalogue versions a delete stopped before, and forgets tombstones past
-	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then forgets the versions of
-	 * live disks their hosts no longer hold (`forgetDroppedStickyVersions`).
+	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then sweeps the holders of
+	 * every kind (`DiskHolders.sweep`), and forgets the versions of live disks their hosts no longer hold
+	 * (`forgetDroppedStickyVersions`). With sticky disks off and templates on, it sweeps the holders alone: templates'
+	 * root filesystems have holders too.
 	 */
 	async function sweepStickyDisks(): Promise<void> {
-		if (options.stickyDisks !== true) return;
+		if (options.stickyDisks !== true && options.templates !== true) return;
 		const t = now();
 		if (t - stickySweptAt < STICKY_SWEEP_EVERY_MS) return;
 		stickySweptAt = t;
+		if (options.stickyDisks !== true) {
+			await diskHolders.sweep(t);
+			return;
+		}
 		const disks = await store.stickyDisks.list();
 		if (backend.deleteStickyDisk !== undefined) {
 			for (const disk of disks) {
@@ -2923,7 +2930,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const diskHolders = createDiskHolders({
 		store,
 		now,
-		enabled: options.stickyDisks === true,
+		stickyDisks: options.stickyDisks === true,
+		templates: options.templates === true,
 		sealer,
 		hosts: () => ensureHosts(),
 		meshAddress: (hostId) => hostMeshAddress.get(hostId),
@@ -3247,7 +3255,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: current.poolId !== from
 							? "The host was moved meanwhile"
 							: undefined;
-			return refused === undefined ? { ...current, poolId: into.id } : undefined;
+			return refused === undefined ? { ...current, poolId: into.id, poolSince: now() } : undefined;
 		});
 		if (refused !== undefined) throw new KantelError("conflict", refused);
 		if (moved === undefined) throw new KantelError("not_found", "No such host");
@@ -4793,7 +4801,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, diskUsage, drainEpoch: _drain, ...rest } = host;
+		const { updating, diskUsage, drainEpoch: _drain, poolSince: _since, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
 			...rest,
@@ -10938,7 +10946,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
 				throw new KantelError("not_found", "The sticky disk was deleted");
 			}
-			// Its host holds it from now; its reports keep that so (`recordStickyHoldings`).
+			// Its host holds it from now; its reports keep that so (`recordHoldings`).
 			await diskHolders.recordCommit("sticky", disk.id, recorded.id, recorded.hostId);
 			// The hosts that use the disk fetch it now, not when their next sandbox asks.
 			keepGoing(prefetchStickyHead(disk.id, recorded.id));
@@ -12362,7 +12370,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return (await store.pools.get(poolId))?.sync === true;
 		},
 
-		recordStickyHoldings: (hostId, at, disks) => diskHolders.recordStickyHoldings(hostId, at, disks),
+		recordHoldings: (hostId, at, report) => diskHolders.recordHoldings(hostId, at, report),
 		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),
 		grantPublicKey: async () => (await diskHolders.keys())?.current.publicKey,
 		grantKeys: async () => {

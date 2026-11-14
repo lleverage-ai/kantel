@@ -35,6 +35,13 @@ func (f fakeSource) Open(kind, objectID, version string, withMap bool) (*os.File
 	return file, f.raw, err
 }
 
+func (f fakeSource) ReadFile(kind, objectID, version, name string) ([]byte, error) {
+	if kind != "sticky" || objectID != "sdk_1" || version != "sdv_1" || name != "record" {
+		return nil, fs.ErrNotExist
+	}
+	return []byte("the record"), nil
+}
+
 // testServer is a server for host_a, whose peer host_b is at fd4b::2 and host_c at fd4b::3.
 func testServer(t *testing.T, key testKey) (*Server, []byte) {
 	t.Helper()
@@ -87,6 +94,13 @@ func TestServerServesTheMapAndRangesOfTheVersionToTheGrantedPeer(t *testing.T) {
 	if got := w.Header().Get("Content-Range"); got != "bytes 4096-8191/1048576" {
 		t.Fatalf("content-range: %q", got)
 	}
+	w = get(h, "/v1/objects/sticky/sdk_1/sdv_1/files/record", "[fd4b::2]:40000", grant, "")
+	if w.Code != http.StatusOK || w.Body.String() != "the record" {
+		t.Fatalf("a small file: %d %q", w.Code, w.Body.String())
+	}
+	if w = get(h, "/v1/objects/sticky/sdk_1/sdv_1/files/other", "[fd4b::2]:40000", grant, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("a file the version hasn't: %d", w.Code)
+	}
 }
 
 func TestServerRefusesFetchesWithoutAGrantForThisHostAndPeer(t *testing.T) {
@@ -113,6 +127,9 @@ func TestServerRefusesFetchesWithoutAGrantForThisHostAndPeer(t *testing.T) {
 	} {
 		if w := get(h, path, c.remote, c.grant, "bytes=0-1"); w.Code != c.want {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+		if w := get(h, "/v1/objects/sticky/sdk_1/sdv_1/files/record", c.remote, c.grant, ""); w.Code != c.want {
+			t.Errorf("%s, a small file: %d %s", name, w.Code, w.Body.String())
 		}
 	}
 	g := grantFor("host_b", "host_a")

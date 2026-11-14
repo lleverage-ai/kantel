@@ -133,6 +133,9 @@ type Host struct {
 	// grantKeys are the control plane's grant keys from its last welcome that had any, and welcomeID the host ID it named.
 	grantKeys atomic.Pointer[[]proto.GrantKey]
 	welcomeID atomic.Pointer[string]
+	// welcomePool is the pool the last welcome named the host in ("" for none), which templates' root filesystems it
+	// makes are stamped with (microvm.Config.Pool).
+	welcomePool atomic.Pointer[string]
 	// welcomeMu is one welcome's mesh and peer sync server applied at a time (applyWelcome).
 	welcomeMu sync.Mutex
 }
@@ -207,8 +210,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
-			FetchSticky: h.fetchStickyLater,
-			Root:        cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
+			FetchSticky: h.fetchStickyLater, Pool: h.pool,
+			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events:         h.sandboxEvent,
@@ -372,6 +375,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.fetchesSticky() {
 		features = append(features, proto.FeatureDiskSync)
 	}
+	if h.fetches(proto.DiskKindRootfs) {
+		features = append(features, proto.FeatureRootfsSync)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -434,6 +440,13 @@ func (h *Host) Capacity() proto.Capacity {
 	c.Disk = h.diskUsage()
 	if t, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
 		c.StickyDisks = t.StickyHoldings()
+	}
+	// Templates' root filesystems, with FeatureRootfsSync: what the host holds of other kinds is reported only while it
+	// serves them.
+	if t, ok := h.tiers[microvm.Tier].(RootfsFetcher); ok && h.fetches(proto.DiskKindRootfs) {
+		if held := t.RootfsHoldings(); held != nil {
+			c.Holdings = map[string][]proto.ObjectHolding{proto.DiskKindRootfs: held}
+		}
 	}
 	if h.mesh != nil {
 		c.Mesh = h.mesh.Health()

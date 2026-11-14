@@ -233,6 +233,19 @@ type MeshPeerHealth struct {
 // starts on its newest and fetches that one in the background. It needs FeatureMesh and FeatureStickyDisks.
 const FeatureDiskSync = "disk-sync"
 
+// FeatureRootfsSync: templates' root filesystems are disk store objects on the host (docs/design/disk-store.md, "Phase
+// 3 notes"), kind DiskKindRootfs, each its key (TemplateBoot.RootfsKey) in one version, "1": the host makes each one's
+// block map, lists those with a map in Capacity.Holdings, serves them to its mesh peers with their records, and takes
+// disk.fetch for them. It comes with FeatureDiskSync, on the microVM tier.
+const FeatureRootfsSync = "rootfs-sync"
+
+// Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, and a template's
+// root filesystem.
+const (
+	DiskKindSticky = "sticky"
+	DiskKindRootfs = "rootfs"
+)
+
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
@@ -451,6 +464,10 @@ type Hello struct {
 type Welcome struct {
 	HostID           string `json:"hostId"`
 	HeartbeatSeconds int    `json:"heartbeatSeconds"`
+	// PoolID is the pool the host is in, as the control plane has it: the host stamps the templates' root filesystems it
+	// makes or fetches with it (ObjectVersionHolding.Pool). Absent from a control plane from before it said, or for a
+	// host in no pool yet.
+	PoolID string `json:"poolId,omitempty"`
 	// DesiredVersion, when set and different from the host's, is the version Kantel wants it on; a host with
 	// automatic updates on fetches it from UpdateURL (with {version}, {os} and {arch} filled in).
 	DesiredVersion string `json:"desiredVersion,omitempty"`
@@ -513,6 +530,10 @@ type Capacity struct {
 	// inventory couldn't be read in full. The control plane forgets versions missing from a report, never on an absent
 	// one, so the two must stay distinct.
 	StickyDisks []StickyDiskHolding `json:"stickyDisks,omitzero"`
+	// Holdings are the disk store objects of other kinds the host holds, by kind (DiskKindRootfs, FeatureRootfsSync):
+	// a kind's list is every object of that kind it holds, [] for none; a kind left out says nothing of it (a host without
+	// it, or an inventory that couldn't be read in full), so the control plane forgets nothing of that kind.
+	Holdings map[string][]ObjectHolding `json:"holdings,omitempty"`
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.
 	Memory *MemoryReport `json:"memory,omitempty"`
@@ -1110,8 +1131,25 @@ type StickyVersionHolding struct {
 	MapDigest      string `json:"mapDigest,omitempty"`
 }
 
-// DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants. Kind is
-// "sticky" for now.
+// ObjectHolding is the versions of one disk store object a host holds (Capacity.Holdings).
+type ObjectHolding struct {
+	ObjectID string                 `json:"objectId"`
+	Versions []ObjectVersionHolding `json:"versions"`
+}
+
+// ObjectVersionHolding is one version a host holds, with its block map's digest (a version is listed only once it has
+// one), the bytes it takes on the host's disk, and the pool the host made it in (built it, or began fetching it), as
+// Welcome.PoolID said then: a copy made in one pool is offered only there, wherever its host moves. Absent from a copy
+// made before the host kept it, or while no welcome had named a pool.
+type ObjectVersionHolding struct {
+	Version        string `json:"version"`
+	MapDigest      string `json:"mapDigest"`
+	AllocatedBytes int64  `json:"allocatedBytes"`
+	Pool           string `json:"pool,omitempty"`
+}
+
+// DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is
+// DiskKindSticky, or DiskKindRootfs (FeatureRootfsSync).
 type DiskLocateParams struct {
 	Kind     string `json:"kind"`
 	ObjectID string `json:"objectId"`

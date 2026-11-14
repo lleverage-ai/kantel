@@ -370,7 +370,18 @@ export const HOST_FEATURES = {
 	 * starts on its newest and fetches that one in the background. Reported with `mesh` and `stickyDisks`.
 	 */
 	diskSync: "disk-sync",
+	/**
+	 * Templates' root filesystems are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"): kind
+	 * `rootfs`, each its key (`images/templates/<key>.ext4`, `HostTemplateBuildResult.rootfsKey`) in one version, `1`.
+	 * The host makes each one's block map, lists those with a map in `HostCapacity.holdings.rootfs`, serves them to its
+	 * mesh peers with their records, and takes `disk.fetch` for them. Reported with `diskSync`.
+	 */
+	rootfsSync: "rootfs-sync",
 } as const;
+
+/** The kinds of disk store object hosts report in `HostCapacity.holdings`: templates' root filesystems. */
+export const HOST_OBJECT_KINDS = ["rootfs"] as const;
+export type HostObjectKind = (typeof HOST_OBJECT_KINDS)[number];
 
 /** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
 export interface HostEnvAnswer {
@@ -617,6 +628,12 @@ export interface HostCapacity {
 	 */
 	readonly stickyDisks?: readonly HostStickyHolding[];
 	/**
+	 * The disk store objects of other kinds it holds (`HOST_FEATURES.rootfsSync`), by kind: a kind's list is every object
+	 * of that kind it holds, [] for none. A kind left out says nothing of it (a host without it, or one whose inventory
+	 * couldn't be read in full), so nothing of that kind is forgotten on it.
+	 */
+	readonly holdings?: { readonly [kind in HostObjectKind]?: readonly HostObjectHolding[] };
+	/**
 	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up: the host's page shows it
 	 * (`Host.mesh`). Absent from a host without the feature, or whose mesh is down (its pool's sync off).
 	 */
@@ -684,9 +701,28 @@ export interface HostStickyHolding {
 	readonly versions: readonly HostStickyVersionHolding[];
 }
 
+/** The versions of one disk store object a host holds (`HostCapacity.holdings`). */
+export interface HostObjectHolding {
+	readonly objectId: string;
+	readonly versions: readonly HostObjectVersionHolding[];
+}
+
+/**
+ * One version a host holds: its block map's digest (it is listed only once it has one), the bytes it takes, and the pool
+ * the host made it in (built it, or began fetching it), as `HostWelcome.poolId` said then: a copy made in one pool is
+ * offered only there, wherever its host moves. `pool` is absent from a copy made before the host kept it, or while no
+ * welcome had named a pool.
+ */
+export interface HostObjectVersionHolding {
+	readonly version: string;
+	readonly mapDigest: string;
+	readonly allocatedBytes: number;
+	readonly pool?: string;
+}
+
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
 export interface HostDiskLocateParams {
-	/** `sticky` for now; `rootfs`, `template`, `snapshot` and `sandbox` later. */
+	/** `sticky`, or `rootfs` (`HOST_FEATURES.rootfsSync`); `template`, `snapshot` and `sandbox` later. */
 	readonly kind: string;
 	readonly objectId: string;
 	readonly version: string;
@@ -1129,6 +1165,11 @@ export interface HostHello {
 export interface HostWelcome {
 	readonly hostId: string;
 	readonly heartbeatSeconds: number;
+	/**
+	 * The pool the host is in (`HostRecord.poolId`): it stamps the templates' root filesystems it makes or fetches with it
+	 * (`HostObjectVersionHolding.pool`). Absent for a host in no pool yet.
+	 */
+	readonly poolId?: string;
 	readonly desiredVersion?: string;
 	/** With `{version}`, `{os}` and `{arch}` for the host to fill in. */
 	readonly updateUrl?: string;
