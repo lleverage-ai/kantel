@@ -503,7 +503,7 @@ describe("moving a stopped sandbox to another host", () => {
 	});
 
 	it("finishes a move whose source is revoked as it copies, never leaving it in error", async () => {
-		const { root, api, service, join } = await setup();
+		const { root, api, join } = await setup();
 		const a = await join();
 		const b = await join();
 		const sandbox = await stoppedOn(root, a, "disk");
