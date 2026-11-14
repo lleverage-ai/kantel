@@ -248,6 +248,10 @@ type Config struct {
 	// FetchSticky, when set, fetches a sticky disk version from the host's peers in the background: a create attaching
 	// a version the host doesn't hold starts on the host's newest, and asks for that one for the next.
 	FetchSticky func(diskID, version string)
+	// FetchRootfs, when set, fetches a template's root filesystem (images/templates/<key>.ext4) from a host in the pool
+	// that holds it, and answers once it is in place: ErrNoPeerRootfs when none holds it, or why the fetch failed. A
+	// template build asks it before it builds one.
+	FetchRootfs func(ctx context.Context, key string) error
 	// Pool, when set, is the pool the host is in now, as the last welcome said ("" while none has): a template's root
 	// filesystem built or fetched is stamped with it, so it is offered only in that pool (rootfssync.go).
 	Pool func() string

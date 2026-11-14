@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -243,5 +244,99 @@ func TestOldRootfsGetMapsInTurn(t *testing.T) {
 			t.Fatalf("holdings %+v", m.RootfsHoldings())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A build of a pulled base's template fetches the root filesystem from a peer first, and then pulls nothing; one no
+// peer holds, or whose fetch fails, is pulled and made as before.
+func TestATemplateBuildFetchesItsRootfsFromAPeerFirst(t *testing.T) {
+	img := templateImage{BaseImage: "kantel/sandbox", BaseDigest: testDigest}
+	p := proto.TemplateBuildParams{SnapshotID: "tsn_1", KeyHash: "k1", BaseImage: img.BaseImage, BaseDigest: img.BaseDigest, VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20}
+	for name, c := range map[string]struct {
+		fetch  func(m *Manager) error
+		pulled bool
+	}{
+		"held by a peer": {fetch: func(m *Manager) error {
+			return os.WriteFile(m.tpl.rootfs.path(img.key()), []byte("ext4"), 0o600)
+		}, pulled: false},
+		"held by none":    {fetch: func(*Manager) error { return ErrNoPeerRootfs }, pulled: true},
+		"a fetch failing": {fetch: func(*Manager) error { return errors.New("the peer went away") }, pulled: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, docker, _ := builderManager(t)
+			if err := os.MkdirAll(m.tpl.rootfs.dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			var asked []string
+			m.cfg.FetchRootfs = func(_ context.Context, key string) error {
+				asked = append(asked, key)
+				return c.fetch(m)
+			}
+			// The snapshot's boot needs Firecracker, which the tests haven't: the build fails there, after its root
+			// filesystem is in place.
+			_, _ = m.BuildTemplate(context.Background(), p)
+			if len(asked) != 1 || asked[0] != img.key() {
+				t.Fatalf("asked for %v", asked)
+			}
+			pulled := slices.ContainsFunc(docker.calls, func(call []string) bool { return len(call) > 1 && call[1] == "pull" })
+			if pulled != c.pulled {
+				t.Fatalf("pulled %v: %v", pulled, docker.calls)
+			}
+			if !fileExists(m.tpl.rootfs.path(img.key())) {
+				t.Fatal("no root filesystem")
+			}
+			// Held now: the next build asks no peer.
+			_, _ = m.BuildTemplate(context.Background(), p)
+			if len(asked) != 1 {
+				t.Fatalf("asked again: %v", asked)
+			}
+		})
+	}
+	// A build that ends while it waits for the fetch builds nothing, and gives its room back.
+	m, docker, _ := builderManager(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cfg.FetchRootfs = func(ctx context.Context, _ string) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if _, err := m.BuildTemplate(ctx, p); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a build cancelled during its fetch: %v", err)
+	}
+	if len(docker.calls) != 0 || fileExists(m.tpl.rootfs.path(img.key())) {
+		t.Fatalf("built after its cancellation: %v", docker.calls)
+	}
+	if ids, _, _ := m.TemplateBuilds(); len(ids) != 0 {
+		t.Fatalf("builds held after it ended: %v", ids)
+	}
+	// The host's own image is no object to fetch.
+	m, _, _ = builderManager(t)
+	m.cfg.FetchRootfs = func(context.Context, string) error { t.Fatal("asked for the host's own image"); return nil }
+	_, _ = m.BuildTemplate(context.Background(), proto.TemplateBuildParams{SnapshotID: "tsn_2", KeyHash: "k2", BaseImage: "kantel/sandbox", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20})
+}
+
+// A custom image's build fetches its root filesystem, with its record, from a peer first, and builds nothing then.
+func TestACustomImageBuildFetchesItsRootfsFromAPeerFirst(t *testing.T) {
+	m, docker, b := builderManager(t)
+	p := proto.TemplateBuildParams{SnapshotID: "tsn_1", KeyHash: "k1", BaseImage: "kantel/sandbox", Image: testDockerfile, VCPUs: 2, MemoryMiB: 4096, DiskGiB: 20, Owner: "acc_1"}
+	key := customImageKey("acc_1", testDockerfile, templateImage{BaseImage: "kantel/sandbox"})
+	m.cfg.FetchRootfs = func(_ context.Context, asked string) error {
+		if asked != key {
+			t.Fatalf("asked for %s", asked)
+		}
+		if err := os.MkdirAll(m.tpl.rootfs.dir, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(m.tpl.rootfs.path(key), []byte("ext4"), 0o600); err != nil {
+			return err
+		}
+		return os.WriteFile(m.tpl.rootfs.recordPath(key), []byte(`{"imageDigest":"`+otherDigest+`","builtFrom":"dockerfile x"}`), 0o600)
+	}
+	_, _ = m.BuildTemplate(context.Background(), p)
+	if len(b.jobs) != 0 || len(docker.calls) != 0 {
+		t.Fatalf("built %d images, ran %v", len(b.jobs), docker.calls)
+	}
+	if _, rec, ok := customCached(m.tpl.rootfs, key); !ok || rec.ImageDigest != otherDigest {
+		t.Fatalf("the fetched image %+v %v", rec, ok)
 	}
 }

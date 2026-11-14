@@ -210,7 +210,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
-			FetchSticky: h.fetchStickyLater, Pool: h.pool,
+			FetchSticky: h.fetchStickyLater, FetchRootfs: h.fetchRootfs, Pool: h.pool,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
