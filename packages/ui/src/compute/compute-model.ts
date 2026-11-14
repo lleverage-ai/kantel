@@ -455,6 +455,8 @@ export interface SandboxMove {
 	readonly hostName?: string;
 	/** Its memory moves too, so it carries on where it was; otherwise it boots on its disk there. */
 	readonly keepMemory: boolean;
+	/** Why it restarts there although it had memory that might have moved, as Kantel said once it chose the host. */
+	readonly restartReason?: string;
 	readonly startedAt: number;
 }
 
@@ -467,8 +469,13 @@ export interface MoveTarget {
 	 * there, and running programs and memory are lost. Absent: Kantel doesn't say (no dry run yet), so it restarts.
 	 */
 	readonly memory?: "kept" | "restarts";
-	/** How long it is expected to be unavailable while it moves there, in milliseconds, where Kantel estimates it. */
+	/**
+	 * How long it is expected to be unavailable while it moves there keeping its memory, in milliseconds, where Kantel
+	 * estimates it: its memory's copy.
+	 */
 	readonly pauseMs?: number;
+	/** Why it restarts there although it has memory that might have moved: the hosts' CPU or runtime differ, say. */
+	readonly restartReason?: string;
 }
 
 /** What a move asks for: the host, and whether to keep its memory where that host can (`MoveTarget.memory`). */

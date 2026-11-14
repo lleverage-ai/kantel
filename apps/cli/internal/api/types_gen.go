@@ -1837,7 +1837,7 @@ const (
 type MoveSandboxBody struct {
 	// The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox.
 	HostID *string `json:"hostId,omitempty"`
-	// Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused or running one is refused unless this is `false`. Then it boots on its disk on the new host and its memory is lost: a running one is copied as it runs, stopped, copied again (only what it wrote since), and started there, so it is unavailable only for that stop, the last copy and its boot.
+	// Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't (`hostId` names one, or there is no other), it restarts there instead, and its `move` says why (`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable only for that stop, the last copy and its boot. A stopped sandbox has no memory.
 	KeepMemory *bool `json:"keepMemory,omitempty"`
 	// Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was.
 	Wait *bool `json:"wait,omitempty"`
@@ -2176,6 +2176,7 @@ type Sandbox struct {
 	// Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 	Mounts          []SandboxMount   `json:"mounts,omitzero"`
 	Move            *SandboxMove     `json:"move,omitempty"`
+	Moved           *SandboxMoved    `json:"moved,omitempty"`
 	Name            string           `json:"name"`
 	PlacementReason *PlacementReason `json:"placementReason,omitempty"`
 	// The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools.
@@ -2332,10 +2333,12 @@ type SandboxMount struct {
 type SandboxMove struct {
 	// The host it is moving to, where the caller may know it, once chosen.
 	HostID *string `json:"hostId,omitempty"`
-	// Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host.
+	// Whether its memory moves too, so it carries on where it left off on the new host: asked for (the default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running programs ending (`restartReason` says why, where it had memory that might have moved). Said once its new host is chosen, before anything is copied.
 	KeepMemory bool `json:"keepMemory"`
 	// `copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are there, and it is starting on it.
 	Phase SandboxMovePhase `json:"phase"`
+	// Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from its host's, or a host can't move memory yet.
+	RestartReason *string `json:"restartReason,omitempty"`
 	// Epoch milliseconds, UTC.
 	StartedAt int64 `json:"startedAt"`
 }
@@ -2349,6 +2352,39 @@ const (
 	SandboxMovePhaseFinalCopy SandboxMovePhase = "final-copy"
 	SandboxMovePhaseStarting  SandboxMovePhase = "starting"
 )
+
+// A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory.
+type SandboxMovePlan struct {
+	// Each host it may move to now, as the scheduler would place it (room and all), with what a move there does with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host.
+	Targets []SandboxMoveTarget `json:"targets,omitzero"`
+}
+
+type SandboxMoveTarget struct {
+	// The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false).
+	BytesPerSecond *int64 `json:"bytesPerSecond,omitempty"`
+	// A host it may move to now.
+	HostID string `json:"hostId"`
+	// A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it restarts there, booting on its disk.
+	KeepsMemory bool `json:"keepsMemory"`
+	// Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its guest has touched; the rest is zero, and costs nothing), a paused one's memory file.
+	MemoryBytes *int64 `json:"memoryBytes,omitempty"`
+	// Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it wrote since its first copy and its boot.
+	PauseMs *int64 `json:"pauseMs,omitempty"`
+	// `bytesPerSecond` was measured by the hosts, rather than assumed.
+	RateMeasured *bool `json:"rateMeasured,omitempty"`
+	// Why a move there restarts it, where it has memory that might have moved.
+	RestartReason *string `json:"restartReason,omitempty"`
+}
+
+// Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it.
+type SandboxMoved struct {
+	// Epoch milliseconds, UTC.
+	At int64 `json:"at"`
+	// Its memory moved with it, so its programs carried on; `false`, it booted on its disk there.
+	KeptMemory bool `json:"keptMemory"`
+	// Why its memory didn't move with it although that was asked for, as its `move` said.
+	RestartReason *string `json:"restartReason,omitempty"`
+}
 
 // The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call.
 type SandboxNotRunning struct {

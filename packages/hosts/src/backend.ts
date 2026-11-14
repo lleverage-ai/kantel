@@ -1344,6 +1344,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						}
 					: {}),
 				...(spec.onFinalCopy === undefined ? {} : { onFinalCopy: spec.onFinalCopy }),
+				...(spec.keepMemory === true ? { keepMemory: true } : {}),
+				...(spec.onPlanned === undefined ? {} : { onPlanned: spec.onPlanned }),
 				start: (features) => {
 					const mounts = mountHandoff(wanted === undefined ? undefined : features, wanted);
 					return {
@@ -1357,6 +1359,16 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				},
 			});
 			return placed(sandboxId, sandbox, hostId, known);
+		},
+		async planMove(sandboxId, spec) {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("conflict", "Only a microVM moves to another host");
+			return hosts.sandboxes.planMove(sandboxId, {
+				owner: spec.accountId,
+				hostIds: spec.eligibleHosts,
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+				...(spec.running === true ? { running: true } : {}),
+			});
 		},
 		async settleMove(sandboxId, operationId) {
 			const outcome = await hosts.sandboxes.settleMove(sandboxId, operationId);

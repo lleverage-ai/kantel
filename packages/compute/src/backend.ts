@@ -103,6 +103,43 @@ export interface MoveSpec extends Omit<BootOptions, "fromSnapshot" | "rebase" | 
 	readonly onStopping?: (hostId: string) => Promise<void>;
 	/** Told, with its new host, once a running sandbox is stopped and its final copy is being made. */
 	readonly onFinalCopy?: (hostId: string) => void;
+	/**
+	 * Keep its memory where its new host's CPU and runtime match its own: a running sandbox is stopped keeping it, and
+	 * it carries on there. A host where it can be kept is chosen first; elsewhere it restarts.
+	 */
+	readonly keepMemory?: boolean;
+	/**
+	 * Awaited once its new host is chosen, before anything is copied: that host, and whether its memory goes too (and
+	 * why not, where it might have). A failure of it is ignored.
+	 */
+	readonly onPlanned?: (hostId: string, memory: MoveMemory) => Promise<void>;
+}
+
+/** What a move does with a sandbox's memory: keeps it, or restarts it, and why (where it might have been kept). */
+export interface MoveMemory {
+	readonly kept: boolean;
+	readonly reason?: string;
+}
+
+/** A move's dry run (`planMove`): the sandbox's account, the hosts it may go to, its pool, and whether it runs. */
+export interface MovePlanSpec {
+	readonly accountId: string;
+	readonly eligibleHosts: readonly string[];
+	readonly poolId?: string;
+	readonly running?: boolean;
+}
+
+/**
+ * One host a move may take a sandbox to now: what a move there that asks to keep its memory does with it, and where it
+ * keeps it, the pause it takes (its memory's bytes over the link's rate, measured by the hosts or assumed).
+ */
+export interface MoveOption {
+	readonly hostId: string;
+	readonly memory: MoveMemory;
+	readonly pauseMs?: number;
+	readonly memoryBytes?: number;
+	readonly bytesPerSecond?: number;
+	readonly rateMeasured?: boolean;
 }
 
 /** Where an upgraded isolate's `/workspace` files are in its microVM; `/workspace` there is a link to it. */
@@ -968,6 +1005,11 @@ export interface SandboxBackend {
 	 * it can't land later. Rejects `unavailable` while it can't be told. Absent with `move` absent.
 	 */
 	settleMove?(sandboxId: string, operationId: string): Promise<MoveOutcome>;
+	/**
+	 * A move's dry run: each host a move of the sandbox may take it to now, with what it does with its memory and the
+	 * pause it takes. Absent with `move` absent; absent, or answering undefined, from a backend that can't say.
+	 */
+	planMove?(sandboxId: string, spec: MovePlanSpec): Promise<readonly MoveOption[] | undefined>;
 	/**
 	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
 	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.

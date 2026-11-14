@@ -82,14 +82,17 @@ type sandboxRecord struct {
 	RootfsDigest string `json:"rootfsDigest,omitempty"`
 	Stage        bool   `json:"stage,omitempty"`
 	Base         string `json:"base,omitempty"`
+	Memory       bool   `json:"memory,omitempty"`
 }
 
 // ImportOptions are how a version of a moved sandbox is imported (FeatureSandboxMoveRunning): Stage keeps it staged
 // once fetched, a running sandbox's first copy, rather than making the sandbox; Base names such a version staged here,
-// which each part's fetch starts from, and which goes once this version is made the sandbox.
+// which each part's fetch starts from, and which goes once this version is made the sandbox. Memory
+// (FeatureSandboxMoveMemory) fetches the version's memory too (sandboxmemory.go), and makes the sandbox stopped with it.
 type ImportOptions struct {
-	Stage bool
-	Base  string
+	Stage  bool
+	Base   string
+	Memory bool
 }
 
 // sandboxMoves is the lock an import's preparation, its publish, and a delete or cancel of it share, with the
@@ -135,10 +138,14 @@ func (m *Manager) exportWhole(id, version string) bool {
 // ExportSandbox makes version of a stopped sandbox's object (sandbox.export): its disk and sticky drives cloned into
 // the export's directory while it is stopped, its record beside them, then each mapped. Asked again, it answers the
 // version it made. A conflict unless the sandbox is stopped, or with Live running. With Base, an export of the sandbox
-// here, each part's map is made from that version's.
+// here, each part's map is made from that version's. With Memory, a sandbox stopped with its memory has that exported
+// too, as the same version of its memory's object (sandboxmemory.go).
 func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams) (proto.SandboxExportResult, error) {
 	if !sandboxObject(p.SandboxID, p.Version) || (p.Base != "" && (!validID(p.Base) || p.Base == p.Version)) {
 		return proto.SandboxExportResult{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
+	}
+	if p.Memory && p.Live {
+		return proto.SandboxExportResult{}, &proto.Error{Code: proto.ErrInvalid, Message: "a running sandbox's memory isn't exported: it is stopped keeping it first"}
 	}
 	s, err := m.get(p.SandboxID)
 	if err != nil {
@@ -148,7 +155,7 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 	// One at a time: each reads whole files.
 	m.moves.turn.Lock()
 	defer m.moves.turn.Unlock()
-	if !m.exportWhole(p.SandboxID, p.Version) {
+	if !m.exportWhole(p.SandboxID, p.Version) || (p.Memory && !m.memoryExportWhole(p.SandboxID, p.Version)) {
 		if err := m.cloneForExport(s, dir, p); err != nil {
 			_ = os.RemoveAll(dir)
 			return proto.SandboxExportResult{}, err
@@ -156,6 +163,12 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 		if err := m.mapExport(ctx, s, dir, m.exportBase(p.SandboxID, p.Base)); err != nil {
 			_ = os.RemoveAll(dir)
 			return proto.SandboxExportResult{}, err
+		}
+		if p.Memory {
+			if err := m.mapMemoryExport(ctx, p.SandboxID, dir); err != nil {
+				_ = os.RemoveAll(dir)
+				return proto.SandboxExportResult{}, err
+			}
 		}
 	}
 	digest, err := exportDigest(dir)
@@ -166,7 +179,16 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 	for _, part := range SandboxParts {
 		bytes += diskUsage(filepath.Join(dir, sandboxPartFiles[part]))
 	}
-	return proto.SandboxExportResult{MapDigest: digest, AllocatedBytes: bytes}, nil
+	out := proto.SandboxExportResult{MapDigest: digest, AllocatedBytes: bytes}
+	if p.Memory {
+		if out.MemoryMapDigest, err = memoryExportDigest(dir); err != nil {
+			return proto.SandboxExportResult{}, err
+		}
+		for _, part := range SandboxMemoryParts {
+			out.MemoryAllocatedBytes += diskUsage(filepath.Join(dir, memoryPartFile(part)))
+		}
+	}
+	return out, nil
 }
 
 // cloneForExport clones a stopped sandbox's files into dir, made afresh, and writes its record there last: under its
@@ -211,6 +233,12 @@ func (m *Manager) cloneForExport(s *sandbox, dir string, p proto.SandboxExportPa
 		}
 		if err := m.cloneExportFile(src, dst); err != nil {
 			return fmt.Errorf("its %s: %w", part, err)
+		}
+	}
+	if p.Memory {
+		// Its memory beside its disk, under the same lock: the memory of the disk exported with it.
+		if err := m.cloneMemoryForExport(s, dir); err != nil {
+			return err
 		}
 	}
 	if !locked {
@@ -482,7 +510,7 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 		return fail(err)
 	}
 	rec.Rootfs = rootfs
-	rec.Stage, rec.Base = opts.Stage, ""
+	rec.Stage, rec.Base, rec.Memory = opts.Stage, "", opts.Memory && !opts.Stage
 	if opts.Base != "" && m.staged(id, opts.Base) {
 		// Only a base fetched whole here: without one each part is fetched from an empty file.
 		rec.Base = opts.Base
@@ -649,8 +677,11 @@ func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]dis
 	if !fileExists(rec.Rootfs) {
 		return fmt.Errorf("%w: %s is gone", ErrNoSnapshotImage, rec.Rootfs)
 	}
+	if rec.Memory && !m.memoryFetched(id, version) {
+		return fmt.Errorf("sandbox %s's memory wasn't fetched with its disk", id)
+	}
 	s := &sandbox{dir: filepath.Join(m.cfg.Root, "sandboxes", id)}
-	s.meta = importedMeta(rec.Meta, version, m.pulledRootfs(rec.Rootfs), rec.Rootfs)
+	s.meta = importedMeta(rec.Meta, version, m.pulledRootfs(rec.Rootfs), rec.Rootfs, rec.Memory)
 	s.healthAt = s.meta.HealthAt
 	for _, part := range SandboxParts {
 		_ = os.Remove(filepath.Join(vm, sandboxPartFiles[part]+".done"))
@@ -661,11 +692,18 @@ func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]dis
 			_ = os.Remove(filepath.Join(vm, stickyDriveFile(k)))
 		}
 	}
-	for i := range s.meta.BundleDrives {
-		_ = os.Remove(filepath.Join(vm, bundleDriveFile(i)))
-	}
-	if err := emptyDrives(vm, s.meta.BundleDrives); err != nil {
-		return err
+	if rec.Memory {
+		// Its memory, its machine's state and its bundle drives' files as its guest has them mounted.
+		if err := m.placeImportedMemory(id, version, vm, s.meta); err != nil {
+			return err
+		}
+	} else {
+		for i := range s.meta.BundleDrives {
+			_ = os.Remove(filepath.Join(vm, bundleDriveFile(i)))
+		}
+		if err := emptyDrives(vm, s.meta.BundleDrives); err != nil {
+			return err
+		}
 	}
 	metaRaw, _ := json.MarshalIndent(s.meta, "", "  ")
 	if err := fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), metaRaw, 0o600); err != nil {
@@ -716,11 +754,17 @@ func (m *Manager) keepStaged(id, version string, parts map[string]disksync.Fetch
 // importedMeta is a moved sandbox's record made this host's: stopped, with no machine, memory or error, its bundle
 // drives empty (its bundles are mounted again from this host's cache as it starts), its egress without the other
 // host's CA (its start sends its egress, and this host's CA with it), its root filesystem this host's file where it
-// is a template's, and marked as made by version.
-func importedMeta(src meta, version string, pulled bool, rootfs string) meta {
+// is a template's, and marked as made by version. With memory (a move that kept it), it keeps its memory, the runtime
+// that memory is of, its machine's vsock ID and its bundle drives as its guest has them mounted.
+func importedMeta(src meta, version string, pulled bool, rootfs string, memory bool) meta {
 	out := src
-	out.State, out.Pid, out.Slot, out.CID, out.Memory, out.Error = proto.StateStopped, 0, 0, 0, false, ""
+	out.State, out.Pid, out.Slot, out.Memory, out.Error = proto.StateStopped, 0, 0, memory, ""
 	out.BundleSlots = make([]string, out.BundleDrives)
+	if memory {
+		copy(out.BundleSlots, src.BundleSlots)
+	} else {
+		out.CID = 0
+	}
 	if out.Egress != nil {
 		e := *out.Egress
 		e.CACert = ""

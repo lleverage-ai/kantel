@@ -254,11 +254,29 @@ Turns a running or stopped isolate into a microVM with the same ID, name, labels
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Plan a sandbox's move
+
+`GET /v1/sandboxes/{sandboxId}/move` (SDK method `planSandboxMove`)
+
+A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused as a move would be when it can't move. A key needs `sandboxes:write`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Answers**
+
+- `200`: [SandboxMovePlan](/api/reference/types/#sandboxmoveplan) (`application/json`). Where it may move, and what each way does.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Move a sandbox to another host
 
 `POST /v1/sandboxes/{sandboxId}/move` (SDK method `moveSandbox`)
 
-Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a paused or running sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. A running one moves with a restart: it is copied as it runs, then stopped (its processes end), what it wrote since is copied, and it is started on the new host, so it is unavailable for seconds rather than for the whole copy. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again. Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.
+Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs, then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with `keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.
 
 **Path parameters**
 

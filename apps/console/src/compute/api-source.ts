@@ -605,6 +605,7 @@ function moveOf(sandbox: Sandbox, context: Context): { readonly move?: UiSandbox
 			...(move.hostId === undefined ? {} : { hostId: move.hostId }),
 			...(hostName === undefined ? {} : { hostName }),
 			keepMemory: move.keepMemory,
+			...(move.restartReason === undefined ? {} : { restartReason: move.restartReason }),
 			startedAt: move.startedAt,
 		},
 	};
@@ -1817,12 +1818,40 @@ async function hostChoices({ api, caller }: Context, accountId: string): Promise
 }
 
 /**
- * The hosts a microVM may move to, as far as the console can tell: the other online hosts that run microVMs in the pool
- * its own host is in (a move never leaves its pool), with the same architecture where both say. Kantel checks the rest
- * as it moves it (labels, a host pin, the pool's mesh, a host from before moves) and says why it refuses. None where
- * its host isn't one the viewer may see. Until Kantel answers a move's dry run, each restarts, with no estimate.
+ * The hosts a microVM may move to, as a move's dry run answers them (`planSandboxMove`): each with whether a move there keeps
+ * its memory (and why not) and the pause Kantel expects, by name where the console has read the host. A Kantel that
+ * can't say answers no `targets` (or, from before plans, no such route): then the hosts are as far as the console can tell, the other online hosts that
+ * run microVMs in the pool its own host is in (a move never leaves its pool), with the same architecture where both
+ * say, each with no estimate, and Kantel checks the rest as it moves it. None where its host isn't one the viewer may
+ * see.
  */
 async function moveTargets(context: Context, sandbox: UiSandbox): Promise<readonly UiMoveTarget[]> {
+	// Read first: the host names, and nothing to ask for where the viewer may see none of them.
+	const listed = await listedMoveTargets(context, sandbox);
+	if (listed.length === 0) return listed;
+	let plan: Awaited<ReturnType<typeof context.api.planSandboxMove>>;
+	try {
+		plan = await context.api.planSandboxMove(sandbox.id);
+	} catch (caught) {
+		// A Kantel from before moves were planned has no such route: the hosts as the console tells them.
+		if (caught instanceof KantelApiError && (caught.status === 404 || caught.status === 405)) return listed;
+		throw caught;
+	}
+	if (plan.targets === undefined) return listed;
+	const name = (hostId: string) => context.hostNames.get(hostId) ?? hostId;
+	return plan.targets
+		.map((target) => ({
+			hostId: target.hostId,
+			hostName: name(target.hostId),
+			memory: target.keepsMemory ? ("kept" as const) : ("restarts" as const),
+			...(target.pauseMs === undefined ? {} : { pauseMs: target.pauseMs }),
+			...(target.restartReason === undefined ? {} : { restartReason: target.restartReason }),
+		}))
+		.sort((a, b) => a.hostName.localeCompare(b.hostName));
+}
+
+/** The hosts a microVM may move to as far as the console can tell from the hosts it reads (`moveTargets`). */
+async function listedMoveTargets(context: Context, sandbox: UiSandbox): Promise<readonly UiMoveTarget[]> {
 	const { api, caller } = context;
 	let hosts: readonly Host[];
 	try {

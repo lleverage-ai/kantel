@@ -442,11 +442,50 @@ export const HOST_FEATURES = {
 	 * Reported with `sandboxMove`.
 	 */
 	sandboxMoveRunning: "sandbox-move-running",
+	/**
+	 * A microVM sandbox moves with its memory, between hosts whose CPU and runtime fingerprints match
+	 * (docs/design/disk-store.md, "Moving a sandbox to another host", keeping memory). `sandbox.memory`
+	 * (`HostSandboxMemoryParams`) says what a move of it would carry (`HostSandboxMemory`). A running sandbox's move stops
+	 * it keeping its memory (`{ sandboxId, memory: true, export }`); then `sandbox.export` with `memory` also makes the
+	 * same version of the object `sandbox-memory`/`sandboxId`, whose parts are `SANDBOX_MEMORY_PARTS` (its memory file and
+	 * its bundle drives' files, which its guest has mounted) and whose small file is the machine's state; and
+	 * `sandbox.import` with `memory` fetches that version first and makes the sandbox stopped with its memory, so its
+	 * start restores it. Each host reports the rate its last fetch from each peer ran at
+	 * (`HostMeshPeerHealth.fetchBytesPerSecond`). Reported with `sandboxMoveRunning`.
+	 */
+	sandboxMoveMemory: "sandbox-move-memory",
 } as const;
 
 /** A moved sandbox's parts (`HOST_FEATURES.sandboxMove`), in its manifest's order: its disk and its two sticky drives. */
 export const SANDBOX_PARTS = ["disk", "sticky0", "sticky1"] as const;
 
+/**
+ * A moved sandbox's memory's parts (`HOST_FEATURES.sandboxMoveMemory`), in its manifest's order: its memory file, then
+ * its eight bundle drives' files (an empty file for a drive with nothing on it).
+ */
+export const SANDBOX_MEMORY_PARTS = ["mem", ...Array.from({ length: 8 }, (_, i) => `bundle${i}`)] as const;
+
+/** The disk store object kind of a moved sandbox's memory (`HOST_FEATURES.sandboxMoveMemory`). */
+export const SANDBOX_MEMORY_KIND = "sandbox-memory";
+
+/** Kantel to host, `sandbox.memory` (`HOST_FEATURES.sandboxMoveMemory`): answered with `HostSandboxMemory`. */
+export interface HostSandboxMemoryParams {
+	readonly sandboxId: string;
+}
+
+/**
+ * What a move of a sandbox with its memory would carry (`sandbox.memory`): whether it has memory to move (it runs, or
+ * was stopped keeping it); the portable runtime that memory is of (only a host with that runtime among its own and the
+ * same CPU restores it; absent when it can't be told); the bytes a move would copy (a running machine's resident
+ * memory, else its memory file's allocated bytes; zero blocks cost nothing to fetch); and why its memory can't move even
+ * so (`refused`, absent when it can).
+ */
+export interface HostSandboxMemory {
+	readonly memory: boolean;
+	readonly runtime?: string;
+	readonly bytes: number;
+	readonly refused?: string;
+}
 /**
  * Kantel to host, `sandbox.export` (`HOST_FEATURES.sandboxMove`): the stopped sandbox's disk and sticky drives cloned as
  * `version` (a valid ID, Kantel's for the move) of the object `sandbox`/`sandboxId`, and mapped. Sent again, it answers
@@ -465,12 +504,22 @@ export interface HostSandboxExportParams {
 	 * made from that version's, so only the blocks written since it are read.
 	 */
 	readonly base?: string;
+	/**
+	 * A sandbox stopped with its memory exported with it (`HOST_FEATURES.sandboxMoveMemory`): the same version of the
+	 * object `sandbox-memory`/`sandboxId`. `conflict` for one stopped without memory.
+	 */
+	readonly memory?: boolean;
 }
 
-/** What `sandbox.export` made: the version's map digest (its manifest's) and the bytes its files take on the host. */
+/**
+ * What `sandbox.export` made: the version's map digest (its manifest's) and the bytes its files take on the host; with
+ * `memory`, its memory's map digest and the bytes those files take.
+ */
 export interface HostSandboxExportResult {
 	readonly mapDigest: string;
 	readonly allocatedBytes: number;
+	readonly memoryMapDigest?: string;
+	readonly memoryAllocatedBytes?: number;
 }
 
 /** `sandbox.export.delete`: that version of the sandbox's exports, or every one without `version`, deleted. `{}`. */
@@ -503,6 +552,16 @@ export interface HostSandboxImportParams {
 	 * the sandbox.
 	 */
 	readonly base?: string;
+	/**
+	 * Where the same version of the object `sandbox-memory`/`sandboxId` is (`HOST_FEATURES.sandboxMoveMemory`: what
+	 * `disk.locate` would answer the host for it): fetched first, the sandbox is made stopped with its memory, and its
+	 * start restores it.
+	 */
+	readonly memory?: {
+		readonly mapDigest: string;
+		readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+		readonly grant: string;
+	};
 }
 
 /**
@@ -808,6 +867,13 @@ export interface HostMeshPeerHealth {
 	readonly endpoint?: string;
 	readonly lastHandshake?: number;
 	readonly rttMs?: number;
+	/**
+	 * The rate the host's last fetch from this peer ran at (`HOST_FEATURES.sandboxMoveMemory`), in bytes a second: its
+	 * blocks' bytes over the time spent fetching them, on a fetch of at least 16 MiB from that peer alone, at
+	 * `fetchRateAt` (Unix ms). Absent before the host has made one since it started.
+	 */
+	readonly fetchBytesPerSecond?: number;
+	readonly fetchRateAt?: number;
 }
 
 /** A sticky disk to attach at a create: a copy of `version`, else of the host's newest, else a new disk of `sizeGiB`. */
@@ -1602,6 +1668,8 @@ export const HostMethods = {
 	 * it after. Answered `{}`.
 	 */
 	sandboxImportCancel: "sandbox.import.cancel",
+	/** `HostSandboxMemoryParams` (`HOST_FEATURES.sandboxMoveMemory`), answered `HostSandboxMemory`. */
+	sandboxMemory: "sandbox.memory",
 } as const;
 
 /** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */

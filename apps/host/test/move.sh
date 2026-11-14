@@ -23,6 +23,18 @@
 #      stack's hosts are on overlayfs over this machine's file system, not XFS, so each copy is a full copy here and
 #      the final copy's map reads every block; what goes over the mesh is still only the blocks that changed.
 #
+# Then it moves with its memory (keepMemory, the default), the hosts being the same machine (the same CPU) with the same
+# Firecracker, guest kernel and image (KANTEL_STACK_IMAGE_DIGEST), and memory snapshots written to disk (spoolMaxMiB -1):
+#
+#   5. a dry run (GET /sandboxes/{id}/move) answers B as a host that keeps its memory, with the pause expected and the rate it is
+#      estimated at, and moves nothing;
+#   6. a move to B: a process started before it (a ticker writing the time every 0.2 s) is still running after it, with
+#      the same PID, and carries on writing; its `moved` says its memory was kept, and the longest gap in its ticks (the
+#      pause) is printed beside the estimate;
+#   7. A's Firecracker made to report another version (a wrapper answering --version), so its runtime fingerprint
+#      differs: a dry run answers A as a host that restarts it, saying why, and a move to A restarts it (the ticker is
+#      gone there) and says why in its `moved`.
+#
 # It stops and removes the stack at the end, whatever happened.
 #
 #   apps/host/test/move.sh
@@ -167,7 +179,7 @@ echo "moved: running on B with its files, sticky disk and bytes; A's copy delete
 # Peer sync at full speed for the running moves, the hosts restarted with the sandbox stopped.
 stop
 for h in h1 h2; do
-	jq '.syncRateMbit = -1' "$dir/$h/config.json" >"$dir/$h/config.new" && cat "$dir/$h/config.new" >"$dir/$h/config.json"
+	jq '.syncRateMbit = -1 | .spoolMaxMiB = -1' "$dir/$h/config.json" >"$dir/$h/config.new" && cat "$dir/$h/config.new" >"$dir/$h/config.json"
 	docker restart "kantel-stack-$name-$h" >/dev/null
 done
 until_ok online "$a_id" || fail "$a didn't come back"
@@ -249,5 +261,66 @@ awk -v began="$began" -v stopped="$stopped_at" -v ran="$ran" -v answered="$answe
 [ "$final" -lt $((first / 2)) ] || fail "the final copy fetched $final bytes, and the first $first: not only what changed"
 unavailable=$(awk -v t="$last_tick" -v a="$answered" 'BEGIN { printf "%d", a - t }')
 [ "$unavailable" -lt 30 ] || echo "NOTE: unavailable for ${unavailable} s here (overlayfs, no reflinks: each export and the final map read the whole disk)"
+
+for c in "$a" "$b"; do
+	docker exec "$c" curl -sS http://127.0.0.1:7070/facts | jq -e '.features | index("sandbox-move-memory")' >/dev/null ||
+		fail "$c doesn't report sandbox-move-memory"
+done
+# The writer stopped (its own command line matched, never this one's) and what it wrote let go.
+run "pkill -f '[t]ick; sleep 0.6' || true; rm -f /home/user/stream /home/user/counts" >/dev/null
+# A ticker started before the move: its PID, and the time every 0.2 s.
+ticker='cd /home/user && rm -f ticks && (setsid sh -c '"'"'echo $$ > ticker.pid; while true; do date +%s.%N >> ticks; sleep 0.2; done'"'"' >/dev/null 2>&1 &) && sleep 1 && cat ticker.pid'
+alive() { run "kill -0 $1 2>/dev/null && echo yes || echo no"; }
+# Whether the ticker writes on: its ticks grow over two seconds.
+ticking() {
+	local before after
+	before=$(run 'wc -l < /home/user/ticks')
+	sleep 2
+	after=$(run 'wc -l < /home/user/ticks')
+	[ "$after" -gt "$before" ]
+}
+
+echo "== 5. A dry run answers each host's way and estimated pause, and moves nothing"
+plan=$(api GET "/sandboxes/$sandbox/move")
+jq -e --arg b "$b_id" '(.targets | length) == 1 and .targets[0].hostId == $b and
+	.targets[0].keepsMemory == true and .targets[0].pauseMs >= 0 and .targets[0].memoryBytes > 0 and
+	.targets[0].bytesPerSecond > 0' >/dev/null <<<"$plan" || fail "the dry run: $(jq -c . <<<"$plan")"
+running_on "$a_id" || fail "the dry run moved it"
+estimate=$(jq -r '.targets[0] | "\(.pauseMs) ms for \(.memoryBytes) bytes at \(.bytesPerSecond) B/s (measured: \(.rateMeasured))"' <<<"$plan")
+echo "dry run: B keeps its memory, about $estimate"
+
+echo "== 6. Moved with its memory: a process started before it still runs after it"
+pid=$(run "$ticker" | xargs)
+[ -n "$pid" ] || fail "no ticker"
+sleep 3
+moved=$(api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$b_id\"}")
+jq -e --arg h "$b_id" '.state == "running" and .hostId == $h and .moved.keptMemory == true' >/dev/null <<<"$moved" ||
+	fail "the move with its memory: $(jq -c '{state, hostId, moved}' <<<"$moved")"
+[ "$(alive "$pid")" = yes ] || fail "the ticker ($pid) isn't running on B"
+ticking || fail "the ticker stopped writing on B"
+pause=$(run "awk 'NR > 1 && \$1 - prev > gap { gap = \$1 - prev } { prev = \$1 } END { printf \"%.1f\", gap }' /home/user/ticks")
+on "$a" "test ! -e $root/sandboxes/$sandbox && test ! -e $root/sandbox-exports/$sandbox" || fail "A kept its copy"
+on "$b" "test ! -e $root/sandbox-imports/$sandbox" || fail "B kept its import"
+echo "moved with its memory: the ticker ($pid) runs on B and carries on; its longest gap $pause s (estimated: $estimate)"
+
+echo "== 7. A host whose runtime differs (another Firecracker): the move restarts it, and says why"
+cat >"$dir/bin/firecracker-other" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "Firecracker v0.0.0-other"; exit 0; fi
+exec /opt/kantel/firecracker "$@"
+EOF
+chmod +x "$dir/bin/firecracker-other"
+jq '.firecracker = "/opt/kantel/firecracker-other"' "$dir/h1/config.json" >"$dir/h1/config.new" && cat "$dir/h1/config.new" >"$dir/h1/config.json"
+docker restart "$a" >/dev/null
+until_ok online "$a_id" || fail "$a didn't come back"
+until_ok mesh_up "$a" || fail "$a brought no mesh up"
+plan=$(api GET "/sandboxes/$sandbox/move")
+jq -e --arg a "$a_id" '.targets[0].hostId == $a and .targets[0].keepsMemory == false and
+	(.targets[0].restartReason | test("runtime"))' >/dev/null <<<"$plan" || fail "the dry run: $(jq -c . <<<"$plan")"
+moved=$(api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\"}")
+jq -e --arg h "$a_id" '.state == "running" and .hostId == $h and .moved.keptMemory == false and (.moved.restartReason | test("runtime"))' \
+	>/dev/null <<<"$moved" || fail "the move to a host whose runtime differs: $(jq -c '{state, hostId, moved}' <<<"$moved")"
+ticking && fail "the ticker writes on, on A, after a restart"
+echo "restarted on A: $(jq -r .moved.restartReason <<<"$moved")"
 echo
 echo "PASS"

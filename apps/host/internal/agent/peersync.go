@@ -440,6 +440,42 @@ type SandboxMover interface {
 
 var _ SandboxMover = (*microvm.Manager)(nil)
 
+// MemoryMover is a SandboxMover that moves a sandbox's memory too (FeatureSandboxMoveMemory): an export's memory, kind
+// sandbox-memory, served to its peers, and an import's fetched before its disk.
+type MemoryMover interface {
+	SandboxMemory(id string) (proto.SandboxMemoryInfo, error)
+	HoldsSandboxMemory(id, version string) bool
+	OpenSandboxMemoryPart(id, version, part string, withMap bool) (*os.File, []byte, error)
+	ReadSandboxMemoryFile(id, version, name string) ([]byte, error)
+	SandboxMemoryPartPartial(id, version, part string) (string, error)
+	CloneSandboxMemoryPartNearest(id, version, part, dst string) (*blockmap.Map, error)
+	PublishFetchedSandboxMemory(id, version string, parts map[string]disksync.FetchedPart, files map[string][]byte) error
+	ReserveSandboxFetch(bytes int64) (release func(), err error)
+	DiscardSandboxMemoryImport(id, version string)
+}
+
+var _ MemoryMover = (*microvm.Manager)(nil)
+
+// movesMemory says whether the host moves sandboxes with their memory (FeatureSandboxMoveMemory): it moves sandboxes,
+// and its microVM tier fetches and serves their memory.
+func (h *Host) movesMemory() bool {
+	_, ok := h.tiers[microvm.Tier].(MemoryMover)
+	return ok && h.movesSandboxes() && h.fetches(proto.DiskKindSandboxMemory)
+}
+
+// sandboxMemory is sandbox.memory: what a move of the sandbox with its memory would carry.
+func (h *Host) sandboxMemory(params json.RawMessage) (any, error) {
+	p, err := decode[proto.SandboxMemoryParams](params)
+	if err != nil {
+		return nil, err
+	}
+	t, ok := h.tiers[microvm.Tier].(MemoryMover)
+	if !ok || !h.movesMemory() {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't move sandboxes' memory"}
+	}
+	return t.SandboxMemory(p.SandboxID)
+}
+
 // movesSandboxes says whether the host moves stopped sandboxes to and from its peers (FeatureSandboxMove): it fetches
 // saved snapshots (whose root images it gets the same way), and its microVM tier moves sandboxes.
 func (h *Host) movesSandboxes() bool {
@@ -457,6 +493,9 @@ func (h *Host) sandboxExport(ctx context.Context, params json.RawMessage) (any, 
 	t, ok := h.tiers[microvm.Tier].(SandboxMover)
 	if !ok || !h.movesSandboxes() {
 		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't move sandboxes"}
+	}
+	if p.Memory && !h.movesMemory() {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't move sandboxes' memory"}
 	}
 	// With the sandbox's other lifecycle calls, so a start waits for its files to be cloned.
 	defer h.lifecycle.lock(p.SandboxID)()
@@ -516,6 +555,12 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 	if p.SandboxID == "" || p.Version == "" {
 		return nil, invalid("sandbox.import names a sandbox and a version")
 	}
+	if p.Memory != nil && p.Stage {
+		return nil, invalid("a staged copy has no memory")
+	}
+	if p.Memory != nil && !h.movesMemory() {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't move sandboxes' memory"}
+	}
 	req := disksync.Request{
 		Ref:       disksync.Ref{Kind: proto.DiskKindSandbox, ObjectID: p.SandboxID, Version: p.Version},
 		MapDigest: p.MapDigest, Holders: p.Holders, Grant: p.Grant,
@@ -535,9 +580,24 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 		if err != nil {
 			return nil, fmt.Errorf("the sandbox's record: %w", err)
 		}
-		opts := microvm.ImportOptions{Stage: p.Stage, Base: p.Base}
+		opts := microvm.ImportOptions{Stage: p.Stage, Base: p.Base, Memory: p.Memory != nil}
 		if err := t.PrepareSandboxImport(ctx, p.SandboxID, p.Version, since, record, opts); err != nil {
 			return nil, err
+		}
+	}
+	if p.Memory != nil && !t.HoldsSandbox(p.SandboxID, p.Version) {
+		// Its memory first, into the import's memory directory: the disk's publish makes the sandbox with it.
+		memory := h.fetcher.Start(disksync.Request{
+			Ref:       disksync.Ref{Kind: proto.DiskKindSandboxMemory, ObjectID: p.SandboxID, Version: p.Version},
+			MapDigest: p.Memory.MapDigest, Holders: p.Memory.Holders, Grant: p.Memory.Grant,
+		})
+		select {
+		case <-memory.Done():
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if _, err := memory.Result(); err != nil {
+			return nil, fmt.Errorf("the sandbox's memory: %w", err)
 		}
 	}
 	job := h.fetcher.Start(req)
@@ -575,6 +635,9 @@ func (h *Host) syncKinds() disksync.Kinds {
 	}
 	if t, ok := h.tiers[microvm.Tier].(SandboxMover); ok {
 		k[proto.DiskKindSandbox] = sandboxObjects{t}
+	}
+	if t, ok := h.tiers[microvm.Tier].(MemoryMover); ok {
+		k[proto.DiskKindSandboxMemory] = sandboxMemoryObjects{t}
 	}
 	return k
 }
@@ -920,3 +983,69 @@ func (s sandboxObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
 }
 
 func (s sandboxObjects) Discard(r disksync.Ref) { s.t.DiscardSandboxImport(r.ObjectID, r.Version) }
+
+// sandboxMemoryObjects are a tier's moved sandboxes' memories: a version for each export that keeps it (the disk's
+// version), its memory file and bundle drives' files its parts and the machine's state whole. A bundle drive's fetch
+// starts from the image of its bundle in this host's cache; the memory's from an empty file, whose zero blocks cost
+// nothing.
+type sandboxMemoryObjects struct{ t MemoryMover }
+
+var (
+	_ disksync.Parted      = sandboxMemoryObjects{}
+	_ disksync.PartNearest = sandboxMemoryObjects{}
+)
+
+func (s sandboxMemoryObjects) Parts(string) []string { return microvm.SandboxMemoryParts }
+
+func (s sandboxMemoryObjects) Open(string, string, string, bool) (*os.File, []byte, error) {
+	return nil, nil, fs.ErrNotExist
+}
+
+func (s sandboxMemoryObjects) OpenPart(r disksync.Ref, part string, withMap bool) (*os.File, []byte, error) {
+	return s.t.OpenSandboxMemoryPart(r.ObjectID, r.Version, part, withMap)
+}
+
+func (s sandboxMemoryObjects) ReadFile(_, objectID, version, name string) ([]byte, error) {
+	return s.t.ReadSandboxMemoryFile(objectID, version, name)
+}
+
+func (s sandboxMemoryObjects) Held(r disksync.Ref) bool {
+	return s.t.HoldsSandboxMemory(r.ObjectID, r.Version)
+}
+
+func (s sandboxMemoryObjects) Partial(disksync.Ref) (string, error) {
+	return "", errors.New("a moved sandbox's memory is fetched by its parts")
+}
+
+func (s sandboxMemoryObjects) PartPartial(r disksync.Ref, part string) (string, error) {
+	return s.t.SandboxMemoryPartPartial(r.ObjectID, r.Version, part)
+}
+
+func (s sandboxMemoryObjects) CloneNearest(disksync.Ref, string) (*blockmap.Map, error) {
+	return nil, nil
+}
+
+func (s sandboxMemoryObjects) ClonePartNearest(r disksync.Ref, part, dst string) (*blockmap.Map, error) {
+	return s.t.CloneSandboxMemoryPartNearest(r.ObjectID, r.Version, part, dst)
+}
+
+func (s sandboxMemoryObjects) Files(disksync.Ref) []string { return microvm.SandboxMemoryFiles }
+
+func (s sandboxMemoryObjects) Publish(disksync.Ref, *os.File, []byte, map[string][]byte) error {
+	return errors.New("a moved sandbox's memory is published by its parts")
+}
+
+func (s sandboxMemoryObjects) PublishParts(r disksync.Ref, parts map[string]disksync.FetchedPart, files map[string][]byte) error {
+	return s.t.PublishFetchedSandboxMemory(r.ObjectID, r.Version, parts, files)
+}
+
+// Partials are none: a memory is fetched only while its sandbox.import asks for it, as its disk is.
+func (s sandboxMemoryObjects) Partials() []disksync.Ref { return nil }
+
+func (s sandboxMemoryObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
+	return s.t.ReserveSandboxFetch(bytes)
+}
+
+func (s sandboxMemoryObjects) Discard(r disksync.Ref) {
+	s.t.DiscardSandboxMemoryImport(r.ObjectID, r.Version)
+}

@@ -395,6 +395,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.movesSandboxes() {
 		features = append(features, proto.FeatureSandboxMove, proto.FeatureSandboxMoveRunning)
 	}
+	if h.movesMemory() {
+		features = append(features, proto.FeatureSandboxMoveMemory)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -494,8 +497,28 @@ func (h *Host) Capacity() proto.Capacity {
 	}
 	if h.mesh != nil {
 		c.Mesh = h.mesh.Health()
+		h.notePeerRates(c.Mesh)
 	}
 	return c
+}
+
+// notePeerRates puts on each peer of the mesh's health the rate the host's last fetch from it ran at
+// (disksync.Fetcher.Rates), for the control plane's estimate of a move's pause.
+func (h *Host) notePeerRates(health *proto.MeshHealth) {
+	if health == nil || h.fetcher == nil {
+		return
+	}
+	byHost := map[string]disksync.Rate{}
+	for addr, r := range h.fetcher.Rates() {
+		if id, ok := h.mesh.PeerAt(addr); ok {
+			byHost[id] = r
+		}
+	}
+	for i, p := range health.Peers {
+		if r, ok := byHost[p.HostID]; ok {
+			health.Peers[i].FetchBytesPerSecond, health.Peers[i].FetchRateAt = r.BytesPerSecond, r.At.UnixMilli()
+		}
+	}
 }
 
 // budgetBeside is what the tier named may use now (microvm.Config.Budget): the memory budget less what the other
@@ -1224,6 +1247,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		return h.sandboxImport(ctx, params)
 	case proto.MethodSandboxImportCancel:
 		return h.sandboxImportCancel(params)
+	case proto.MethodSandboxMemory:
+		return h.sandboxMemory(params)
 	case proto.MethodHostImages:
 		return h.hostImages(params)
 	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:

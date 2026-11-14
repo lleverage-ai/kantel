@@ -20,6 +20,7 @@ import { KantelError, placementError } from "@kantel/contracts";
 import type {
 	BackendCapabilities,
 	BackendSize,
+	MovePlanSpec,
 	MoveSpec,
 	Placement,
 	SandboxBackend,
@@ -254,6 +255,11 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						const backend = await on(id);
 						if (backend.settleMove === undefined) return { state: "failed" as const };
 						return backend.settleMove(id, operationId);
+					},
+					async planMove(id: string, spec: MovePlanSpec) {
+						const backend = await on(id);
+						if (backend.planMove === undefined) return undefined;
+						return backend.planMove(id, await affine(backend, spec));
 					},
 				}),
 		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.

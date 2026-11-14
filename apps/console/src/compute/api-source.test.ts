@@ -1464,6 +1464,50 @@ describe("moving a sandbox to another host", () => {
 		expect(await bob.sandboxes.moveTargets?.({ ...sandbox, hostId: "host_unseen" })).toEqual([]);
 	});
 
+	it("lists the hosts a move's dry run answers, with whether each keeps its memory and the pause expected", async () => {
+		const backend = movesBackend([await hostLike("host_b"), await hostLike("host_c")], Promise.resolve());
+		const plan: SandboxBackend = {
+			...backend,
+			planMove: async (_id, spec) =>
+				spec.eligibleHosts.map((hostId) =>
+					hostId === "host_b"
+						? {
+								hostId,
+								memory: { kept: true },
+								pauseMs: 4295,
+								memoryBytes: 536_870_912,
+								bytesPerSecond: 125_000_000,
+								rateMeasured: false,
+							}
+						: {
+								hostId,
+								memory: {
+									kept: false,
+									reason: "Host host_c has another CPU than stub, so its memory can't be restored there",
+								},
+							},
+				),
+		};
+		const { api, fetchApi } = setup({ backend: plan });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		const running = await source.sandboxes.get(made.id);
+		expect(running.state).toBe("running");
+		expect(await source.sandboxes.moveTargets?.(running)).toEqual([
+			{ hostId: "host_b", hostName: "host_b", memory: "kept", pauseMs: 4295 },
+			{
+				hostId: "host_c",
+				hostName: "host_c",
+				memory: "restarts",
+				restartReason: "Host host_c has another CPU than stub, so its memory can't be restored there",
+			},
+		]);
+		// Nothing moved.
+		expect((await source.sandboxes.get(made.id)).state).toBe("running");
+	});
+
 	it("shows it moving, by phase and to which host, and answers it running there", async () => {
 		let release = () => {};
 		const gate = new Promise<void>((resolve) => {
