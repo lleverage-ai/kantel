@@ -5,11 +5,13 @@
 import { createKantelClient } from "@kantel/api/sdk";
 import {
 	CREATE_SETTLE_GRACE_MS,
+	CREATE_SETTLE_LEASE_MS,
 	createComputeApi,
 	createRoutedBackend,
 	createStubBackend,
 	HELD_ELSEWHERE,
 	joinTokenSpender,
+	type SandboxBackend,
 	STUB_HOST_ID,
 } from "@kantel/compute";
 import { isKantelError, placementReasonOf } from "@kantel/contracts";
@@ -359,14 +361,19 @@ describe("a create whose answer was lost, in the compute plane", () => {
 		});
 		services.push(service);
 		/** A gateway: another over the same store is this one restarted, with none of its calls in flight. */
-		const gateway = (store?: ReturnType<typeof createComputeApi>["store"]) => {
+		const gateway = (
+			store?: ReturnType<typeof createComputeApi>["store"],
+			wrap: (backend: SandboxBackend) => SandboxBackend = (backend) => backend,
+		) => {
 			const made = createComputeApi({
 				...(store === undefined ? {} : { store }),
-				backend: createHostBackend({
-					hosts: service,
-					publicUrl: "https://kantel.test",
-					tickets: createTunnelTickets(createMemoryRelayStore()),
-				}),
+				backend: wrap(
+					createHostBackend({
+						hosts: service,
+						publicUrl: "https://kantel.test",
+						tickets: createTunnelTickets(createMemoryRelayStore()),
+					}),
+				),
 				authenticatePerson: async (request) =>
 					request.headers.get("authorization") === "Bearer root"
 						? { userId: "usr_root", name: "Root", superAdmin: true }
@@ -405,7 +412,19 @@ describe("a create whose answer was lost, in the compute plane", () => {
 			await sweeping.service.idle();
 			return back;
 		};
-		return { api, root, hostId, host, id, reconnect, restarted: () => gateway(api.store) };
+		return {
+			api,
+			root,
+			service,
+			hostId,
+			host,
+			id,
+			reconnect,
+			restarted: (wrap?: (backend: SandboxBackend) => SandboxBackend) => gateway(api.store, wrap),
+			skip: (ms: number) => {
+				skew += ms;
+			},
+		};
 	}
 
 	it("is settled running on its host once the host reconnects and reports it, by any gateway", async () => {
@@ -429,5 +448,115 @@ describe("a create whose answer was lost, in the compute plane", () => {
 		await api.service.idle();
 		expect((await root.getSandbox(id)).state).toBe("running");
 		expect(back.calls.filter((call) => call.method === "sandbox.create")).toHaveLength(1);
+	});
+	it("keeps the guest health its host reports for a create it settles running", async () => {
+		const { api, root, host, id, reconnect } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		await reconnect([
+			{
+				id,
+				tier: "microvm",
+				size: "default",
+				state: "running",
+				createdAt: 1,
+				health: "unresponsive",
+				healthReason: "its guest agent doesn't answer",
+				healthAt: 5,
+			},
+		]);
+		const settled = await root.getSandbox(id);
+		expect(settled).toMatchObject({ state: "running", health: "unresponsive" });
+		// Stamped as the host stamped it: an older report doesn't undo it, a newer one does.
+		const hostId = settled.hostId ?? "";
+		await api.service.reportHealth(hostId, id, undefined, undefined, 4);
+		expect((await root.getSandbox(id)).health).toBe("unresponsive");
+		await api.service.reportHealth(hostId, id, undefined, undefined, 6);
+		expect((await root.getSandbox(id)).health).toBe("ok");
+	});
+
+	it("lets only one gateway settle an attempt, so a stale one never touches a later attempt", async () => {
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		// The host made it, and it ended while the host was away.
+		const ended: HostSandbox = { id, tier: "microvm", size: "default", state: "stopped", createdAt: 1, error: "oom" };
+		const back = new FakeHost(service, hostId);
+		let gets = 0;
+		let answerGet: () => void = () => undefined;
+		let answerCreate: (() => void) | undefined;
+		back.hold = (method) => {
+			if (method === "sandbox.get" && gets++ === 0) {
+				return new Promise<void>((resolve) => {
+					answerGet = resolve;
+				});
+			}
+			if (method === "sandbox.create") {
+				return new Promise<void>((resolve) => {
+					answerCreate = resolve;
+				});
+			}
+			return undefined;
+		};
+		back.connect([ended]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		// One gateway claims it, and its host's answer is slow.
+		const slow = restarted();
+		void slow.service.sweep();
+		await vi.waitFor(() => expect(gets).toBe(1));
+		// Another, that claim gone quiet, takes it over: destroys the ended machine and fails it.
+		skip(CREATE_SETTLE_LEASE_MS);
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("error");
+		// Started again: its new create is under way when the slow gateway's answer lands, saying the old machine ended.
+		await root.startSandbox(id);
+		await vi.waitFor(() => expect(answerCreate).toBeDefined());
+		back.answer = (method) => (method === "sandbox.get" ? ended : undefined);
+		answerGet();
+		await slow.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("starting");
+		expect(back.calls.filter((call) => call.method === "sandbox.delete")).toHaveLength(1);
+		back.answer = undefined;
+		answerCreate?.();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("running");
+	});
+
+	it("keeps a failure before destroying the machine, so another gateway finishes it once the placement is gone", async () => {
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		// Another create, never placed: no word on it is no failure.
+		const record = await api.store.sandboxes.get(id);
+		if (record === undefined) throw new Error("no record");
+		await api.store.sandboxes.put({ ...record, id: "sbx_unplaced", name: "unplaced", subdomain: "unplaced" });
+		const back = new FakeHost(service, hostId);
+		back.connect([{ id, tier: "microvm", size: "default", state: "stopped", createdAt: 1, error: "oom" }]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		// A gateway that goes the moment it has destroyed the machine.
+		const dying = restarted((backend) => ({
+			...backend,
+			async destroy(sandboxId) {
+				await backend.destroy(sandboxId);
+				throw new Error("the gateway went");
+			},
+		}));
+		await dying.service.sweep();
+		await dying.service.idle();
+		expect(back.sandboxes.has(id)).toBe(false);
+		// Not startable meanwhile: it is still being settled.
+		expect((await root.getSandbox(id)).state).toBe("starting");
+		skip(CREATE_SETTLE_LEASE_MS);
+		const fresh = restarted();
+		await fresh.service.sweep();
+		await fresh.service.idle();
+		expect(await root.getSandbox(id)).toMatchObject({
+			state: "error",
+			reason: expect.stringMatching(/has ended since/),
+		});
+		expect((await root.getSandbox("sbx_unplaced")).state).toBe("starting");
 	});
 });

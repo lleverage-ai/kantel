@@ -72,6 +72,7 @@ import {
 	type BackendStickyDiskStatus,
 	type BootOptions,
 	type CommandProgress,
+	type CreateOutcome,
 	type ExecResult,
 	hostNotConnected,
 	isCommandProgress,
@@ -536,6 +537,8 @@ export const UPGRADE_STALE_MS = 2 * 60_000;
  * (`settleLostCreate`): time for a gateway still making it, which got the answer, to record it itself.
  */
 export const CREATE_SETTLE_GRACE_MS = 30_000;
+/** How long a gateway's claim to settle a create lasts (`createSettling`) before another may take it over. */
+export const CREATE_SETTLE_LEASE_MS = 2 * 60_000;
 /** How long a command's end that needs a microVM waits for its owner to record it with its run again. */
 export const RERUN_CLAIM_MS = 10 * 60_000;
 /** What an upgrade whose outcome can't be told yet answers. */
@@ -5470,6 +5473,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: {}),
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
+			// A create's settlement is its starting attempt's: any move ends it (`settleLostCreate`).
+			createSettling: undefined,
 		};
 	}
 
@@ -6546,6 +6551,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sent?: { readonly egressRevision: number | undefined },
 		/** What else changes as it is published (an upgrade's microVM: its type, size and image). */
 		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
+		/** Only while this holds is it published or its egress sent (a settlement's claim, `settleLostCreate`). */
+		fence: (sandbox: StoredSandbox) => boolean = () => true,
 	): Promise<StoredSandbox | undefined> {
 		let placement: Placement;
 		const calledAt = now();
@@ -6603,7 +6610,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? { image: templateBootImage(sandbox.templateBoot) }
 					: {}),
 				capabilities: placement.capabilities,
-				health: "ok",
+				// A fresh boot's agent answers; a machine that ran before this answer (a settled create) is as its host said.
+				...(placement.reportedHealth?.unresponsive === true
+					? { health: "unresponsive" as const, reason: unresponsiveReason(placement.reportedHealth.reason) }
+					: { health: "ok" as const }),
+				...(placement.reportedHealth?.healthAt === undefined ? {} : { healthAt: placement.reportedHealth.healthAt }),
 				startup,
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
 				...placedBase(placement),
@@ -6636,7 +6647,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			revokedUnder(sandbox)
 				? withState(published(sandbox), "error", { reason: HOST_REVOKED_REASON, ports: [] })
 				: toRunning(sandbox);
-		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
+		const ready = (sandbox: StoredSandbox) => fence(sandbox) && (revokedUnder(sandbox) || upToDate(sandbox));
 		// Its record deleted, or being deleted, while it booted (a delete, or its account's deletion, whose destroy may have
 		// come before this machine existed): what booted is destroyed, so no machine outlives its record.
 		const orphaned = async () => {
@@ -6650,7 +6661,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
 			// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
 			// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
-			for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
+			for (let round = 0; "lost" in result && result.lost.state === "starting" && fence(result.lost); round++) {
 				const lost = result.lost;
 				if (round >= BOOT_RECONCILE_ROUNDS) {
 					const reason = "Its egress couldn't be applied to it while it started";
@@ -6695,6 +6706,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sandbox: next,
 			data: { previousState: "starting", ...(startup === undefined ? {} : { startup }) },
 		});
+		// Running with an agent its host said doesn't answer (a settled create): said as `reportHealth` says it.
+		if (next.health === "unresponsive") {
+			await emit("sandbox.degraded", next.accountId, { sandbox: next, data: { reason: next.reason } });
+		}
 		return next;
 	}
 
@@ -6801,11 +6816,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Records `error` for work that failed, only while the sandbox is still in `from`, the passing state that work set: a
 	 * stale step that lost to another call (a second stop, a delete) never writes `error` over the state that call left.
 	 */
-	async function fail(sandboxId: string, error: unknown, from: SandboxState): Promise<StoredSandbox | undefined> {
+	async function fail(
+		sandboxId: string,
+		error: unknown,
+		from: SandboxState,
+		still?: (current: StoredSandbox) => boolean,
+	): Promise<StoredSandbox | undefined> {
 		const reason = messageOf(error);
 		const placementReason = placementReasonOf(error);
-		const result = await transition(sandboxId, from, (sandbox) =>
-			withState(sandbox, "error", { reason, ...(placementReason === undefined ? {} : { placementReason }) }),
+		const result = await transition(
+			sandboxId,
+			from,
+			(sandbox) =>
+				withState(sandbox, "error", { reason, ...(placementReason === undefined ? {} : { placementReason }) }),
+			still,
 		).catch(() => undefined);
 		if (result === undefined || !("moved" in result)) return undefined;
 		const next = result.moved;
@@ -12596,27 +12620,99 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * (`isCreateOutcomeUnknown`), or the gateway making it went (a stack object restarted, a replica gone), leaving it
 	 * `starting` with no host. Taken from what its host has reported since (`SandboxBackend.settleCreate`: its hello's
 	 * sandboxes once it reconnects, or an event): running there, it runs, published as its boot would have (`boot`: its
-	 * egress sent again, its `sandbox.running` event, its pending set-up); not made, it fails saying so, any machine the
-	 * host holds for it destroyed first, and a start makes it again (`bootAgain`). One whose host hasn't said is left
-	 * `starting`. A report under `CREATE_SETTLE_GRACE_MS` old is left to the gateway that may still be finishing it.
+	 * egress sent again, its guest's health as the host has it, its `sandbox.running` event, its pending set-up); not made,
+	 * it fails saying so, any machine the host holds for it destroyed first, and a start makes it again (`bootAgain`). One
+	 * whose host hasn't said is left `starting`. A report under `CREATE_SETTLE_GRACE_MS` old is left to the gateway that
+	 * may still be finishing it.
+	 *
+	 * One gateway settles each attempt: its claim (`createSettling`) is taken in the store every gateway shares, for the
+	 * record's lifecycle as read, before anything is destroyed or published, and every step after is fenced to it, live.
+	 * A failure is kept on the claim before the host's machine is destroyed, so a gateway that takes over a claim gone
+	 * quiet finishes it from the record, the placement gone. The claim stays until the failure is written, so the sandbox
+	 * isn't started again while its machine may still be there.
 	 */
 	async function settleLostCreate(sandboxId: string): Promise<void> {
 		const settleCreate = backend.settleCreate;
 		if (settleCreate === undefined) return;
 		await track([sandboxId], async () => {
-			const latest = await store.sandboxes.get(sandboxId);
-			if (latest === undefined || !unsettledCreate(latest)) return;
-			const outcome = await settleCreate.call(backend, sandboxId);
-			if (outcome.state === "pending" || outcome.reportedAt + CREATE_SETTLE_GRACE_MS > now()) return;
-			if (outcome.state === "failed") {
-				if (outcome.held) await backend.destroy(sandboxId);
-				await fail(sandboxId, new KantelError("unavailable", outcome.reason), "starting");
-				return;
+			const by = randomId("cst", 12);
+			const at = now();
+			const claimed = await patchSandbox(sandboxId, (current) => {
+				if (!unsettledCreate(current)) return undefined;
+				const lifecycle = current.lifecycle ?? 0;
+				const held = current.createSettling?.lifecycle === lifecycle ? current.createSettling : undefined;
+				if (held !== undefined && held.until > at) return undefined;
+				return {
+					...current,
+					createSettling: {
+						by,
+						until: at + CREATE_SETTLE_LEASE_MS,
+						lifecycle,
+						...(held?.failed === undefined ? {} : { failed: held.failed }),
+					},
+				};
+			});
+			const claim = claimed?.createSettling;
+			if (claimed === undefined || claim === undefined) return;
+			/** Still this attempt's, and this gateway's to settle. */
+			const ours = (current: StoredSandbox) =>
+				current.state === "starting" &&
+				current.createSettling?.by === by &&
+				current.createSettling.lifecycle === claim.lifecycle &&
+				(current.lifecycle ?? 0) === claim.lifecycle &&
+				current.createSettling.until > now();
+			const release = () =>
+				patchSandbox(sandboxId, (current) =>
+					current.createSettling?.by === by ? { ...current, createSettling: undefined } : undefined,
+				).catch(() => undefined);
+			let failed = claim.failed;
+			if (failed === undefined) {
+				let outcome: CreateOutcome;
+				try {
+					outcome = await settleCreate.call(backend, sandboxId);
+				} catch (error) {
+					await release();
+					throw error;
+				}
+				if (outcome.state === "pending" || outcome.reportedAt + CREATE_SETTLE_GRACE_MS > now()) {
+					await release();
+					return;
+				}
+				if (outcome.state === "running") {
+					// What egress the lost create sent isn't known: its boot sends what it has now before it runs.
+					const latest = await store.sandboxes.get(sandboxId);
+					if (latest === undefined || !ours(latest)) return;
+					const booted = await boot(
+						sandboxId,
+						async () => outcome.placement,
+						latest,
+						{ egressRevision: undefined },
+						undefined,
+						ours,
+					);
+					// Its environments' files now it runs; their repositories wait for a start by someone who may clone them.
+					if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+					else await release();
+					return;
+				}
+				failed = { reason: outcome.reason, destroy: outcome.held };
+				// Kept before the machine goes: then whoever finishes it needs no more word from the host.
+				if (failed.destroy) {
+					const decided = failed;
+					const kept = await patchSandbox(sandboxId, (current) =>
+						ours(current) && current.createSettling !== undefined
+							? { ...current, createSettling: { ...current.createSettling, failed: decided } }
+							: undefined,
+					);
+					if (kept === undefined) return;
+				}
 			}
-			// What egress the lost create sent isn't known: its boot sends what it has now before it runs.
-			const booted = await boot(sandboxId, async () => outcome.placement, latest, { egressRevision: undefined });
-			// Its environments' files now it runs; their repositories wait for a start by someone who may clone them.
-			if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+			if (failed.destroy) {
+				const latest = await store.sandboxes.get(sandboxId);
+				if (latest === undefined || !ours(latest)) return;
+				await backend.destroy(sandboxId);
+			}
+			await fail(sandboxId, new KantelError("unavailable", failed.reason), "starting", ours);
 		});
 	}
 

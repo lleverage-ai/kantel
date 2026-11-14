@@ -1220,12 +1220,29 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				};
 			}
 			const mounts = parseMountStatuses(sandbox.mounts);
+			// Its guest's health as the host has it (its hello's report was before the compute plane had it running): an
+			// unresponsive guest stays so, stamped, rather than taken for a fresh boot's.
+			const healthAt =
+				typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
+					? sandbox.healthAt
+					: undefined;
+			const reason =
+				typeof sandbox.healthReason === "string" && sandbox.healthReason !== ""
+					? sandbox.healthReason.slice(0, 1000)
+					: undefined;
 			return {
 				state: "running",
-				placement: await placed(sandboxId, sandbox, placement.hostId, {
-					placement,
-					...(mounts === undefined ? {} : { mounts }),
-				}),
+				placement: {
+					...(await placed(sandboxId, sandbox, placement.hostId, {
+						placement,
+						...(mounts === undefined ? {} : { mounts }),
+					})),
+					reportedHealth: {
+						unresponsive: sandbox.health === "unresponsive",
+						...(reason === undefined ? {} : { reason }),
+						...(healthAt === undefined ? {} : { healthAt }),
+					},
+				},
 				reportedAt,
 			};
 		},

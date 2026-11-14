@@ -641,6 +641,16 @@ export interface Placement {
 	 */
 	readonly machineAt?: number;
 	/**
+	 * Its guest agent's health as its host reported it, for a machine that ran before this answer (a create settled from
+	 * its host's report, `settleCreate`): `unresponsive` with why, and its stamp (`healthAt`), which orders later reports.
+	 * Absent: a fresh boot's, which answers.
+	 */
+	readonly reportedHealth?: {
+		readonly unresponsive: boolean;
+		readonly reason?: string;
+		readonly healthAt?: number;
+	};
+	/**
 	 * How its machine's start took its time on its host, by phase, without `totalMs` (the service measures that around
 	 * the call). Absent where the backend doesn't say (the stub, an older host, an isolate).
 	 */
