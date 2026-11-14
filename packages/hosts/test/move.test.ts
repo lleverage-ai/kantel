@@ -824,7 +824,7 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		expect(await root.runCommand(sandbox.id, { command: "echo hi" })).toMatchObject({ exitCode: 0 });
 	});
 
-	it("ends the move, never stopping it, when something else stops it while its first copy is made", async () => {
+	it("ends the move, never stopping it, when it exits while its first copy is made", async () => {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_RUNNING);
 		const b = await join(MOVES_RUNNING);
@@ -832,20 +832,43 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		const staging = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
 		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
 		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
-		// Stopped on another gateway meanwhile: its record moved on, as that gateway's stop would leave it.
+		// Its machine exited meanwhile: its record moved on, as its host's report of the exit leaves it.
 		await api.store.sandboxes.update(sandbox.id, (latest) => ({
 			...latest,
-			state: "stopped",
+			state: "error",
 			lifecycle: (latest.lifecycle ?? 0) + 1,
 		}));
 		staging();
 		expect((await moving).code).toBe("conflict");
 		const after = await api.store.sandboxes.get(sandbox.id);
-		expect(after).toMatchObject({ state: "stopped", hostId: a.hostId });
+		expect(after).toMatchObject({ state: "error", hostId: a.hostId });
 		expect(after?.moving).toBeUndefined();
 		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
 		expect(b.cancelled.size).toBe(2);
 		expect(a.exports.size).toBe(0);
+	});
+
+	it("refuses a stop, pause or recovery while it moves, as another gateway would find it", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		// A move another gateway is at: its record running, with the move on it.
+		const at = Date.now();
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			moving: { operationId: "mov_other", at, heartbeatAt: at, phase: "copying", from: "running", before: {} },
+		}));
+		for (const call of [
+			root.stopSandbox(sandbox.id, { wait: true }),
+			root.stopSandbox(sandbox.id, { keepMemory: true, wait: true }),
+			root.recoverSandbox(sandbox.id),
+		]) {
+			const refused = await failure(call);
+			expect(refused.code).toBe("conflict");
+			expect(refused.message).toContain("moving");
+		}
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "running" });
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
 	});
 
 	it("is refused unless its memory may go, or where a host can't move a running sandbox", async () => {
