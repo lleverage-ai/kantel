@@ -3636,7 +3636,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const retried = source.move === undefined ? undefined : listed.find((host) => host.id === source.move?.target);
 				const chosen =
 					retried !== undefined && source.move !== undefined
-						? { host: retried, size: source.move.size, custom: shape !== undefined }
+						? { host: retried, size: source.move.size, custom: shape !== undefined, fullness: 0 }
 						: place(request, able.map(candidateOf));
 				if (isRefusal(chosen)) {
 					throw placementError(

@@ -12235,9 +12235,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			);
 		}
 		if (current.hostPin !== undefined) {
-			throw new KantelError("conflict", "The sandbox is kept to its host (its create named the host), so it doesn't move");
+			throw new KantelError(
+				"conflict",
+				"The sandbox is kept to its host (its create named the host), so it doesn't move",
+			);
 		}
-		if (current.hostId === undefined) throw new KantelError("conflict", "The sandbox isn't on a host yet; start it instead");
+		if (current.hostId === undefined)
+			throw new KantelError("conflict", "The sandbox isn't on a host yet; start it instead");
 		// Comes back running, on its new host: it counts against the account's sandboxes as a start does.
 		await requireCapacity(current.accountId, 1);
 		// The hosts it may use, as a start would choose them: its labels and its pool kept (it never leaves its pool), its

@@ -328,7 +328,10 @@ export class FakeHost {
 			case "sandbox.export.delete": {
 				const { version } = message.params as { version?: string };
 				for (const key of this.exports.keys()) {
-					if (key === `${params.sandboxId}/${version}` || (version === undefined && key.startsWith(`${params.sandboxId}/`)))
+					if (
+						key === `${params.sandboxId}/${version}` ||
+						(version === undefined && key.startsWith(`${params.sandboxId}/`))
+					)
 						this.exports.delete(key);
 				}
 				return answer({});
@@ -347,7 +350,13 @@ export class FakeHost {
 				const from = FakeHost.byId.get(holders[0]?.hostId ?? "");
 				const disk = from?.exports.get(key);
 				if (disk === undefined || grant === "" || mapDigest === "") return fail("unavailable", "no holder has it");
-				const sandbox: HostSandbox = { id: params.sandboxId, tier: "microvm", size: "default", state: "stopped", createdAt: 1 };
+				const sandbox: HostSandbox = {
+					id: params.sandboxId,
+					tier: "microvm",
+					size: "default",
+					state: "stopped",
+					createdAt: 1,
+				};
 				this.sandboxes.set(params.sandboxId, sandbox);
 				this.disks.set(params.sandboxId, disk);
 				return answer(sandbox);

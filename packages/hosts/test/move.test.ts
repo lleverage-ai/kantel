@@ -115,8 +115,21 @@ async function unpinned(api: ComputeApi, sandboxId: string) {
 	await api.store.sandboxes.update(sandboxId, (latest) => ({ ...latest, hostPin: undefined }));
 }
 
+/** The lifecycle and move calls a host was sent for a sandbox, in order (not its egress, env or secrets). */
+const LIFECYCLE = new Set([
+	"sandbox.create",
+	"sandbox.stop",
+	"sandbox.start",
+	"sandbox.delete",
+	"sandbox.export",
+	"sandbox.export.delete",
+	"sandbox.import",
+	"sandbox.import.cancel",
+]);
 const methodsOf = (host: FakeHost, sandboxId: string) =>
-	host.calls.filter((call) => call.params.sandboxId === sandboxId).map((call) => call.method);
+	host.calls
+		.filter((call) => call.params.sandboxId === sandboxId && LIFECYCLE.has(call.method))
+		.map((call) => call.method);
 
 describe("moving a stopped sandbox to another host", () => {
 	it("copies it to the target, starts it there, switches its placement and deletes the source's copy", async () => {
@@ -188,7 +201,11 @@ describe("moving a stopped sandbox to another host", () => {
 			});
 		};
 		expect(await asked(b)).toMatchObject({
-			result: { mapDigest: expect.stringMatching(/^sha256:/), holders: [{ hostId: a.hostId }], grant: expect.any(String) },
+			result: {
+				mapDigest: expect.stringMatching(/^sha256:/),
+				holders: [{ hostId: a.hostId }],
+				grant: expect.any(String),
+			},
 		});
 		expect(await asked(c)).toMatchObject({ error: { code: "not_found" } });
 		expect(await asked(b, sandbox.id, "mov_other")).toMatchObject({ error: { code: "not_found" } });
@@ -231,7 +248,8 @@ describe("moving a stopped sandbox to another host", () => {
 		const b = await join();
 		const sandbox = await stoppedOn(root, a, "disk");
 		await unpinned(api, sandbox.id);
-		b.refuse = (method) => (method === "sandbox.start" ? { code: "unavailable", message: "it didn't boot" } : undefined);
+		b.refuse = (method) =>
+			method === "sandbox.start" ? { code: "unavailable", message: "it didn't boot" } : undefined;
 		const error = await failure(root.moveSandbox(sandbox.id, {}));
 		expect(error.message).toContain("it didn't boot");
 		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "stopped", hostId: a.hostId });
