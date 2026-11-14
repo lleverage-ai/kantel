@@ -574,7 +574,7 @@ func TestAReleasedReservationIsNeverAnEnd(t *testing.T) {
 		}
 		seen := runs.get(key)
 		release(key, reserved)
-		if status := runs.status("cmd_r", seen); status.State != proto.ExecRunning || status.Result != nil {
+		if status, _ := runs.status("cmd_r", seen); status.State != proto.ExecRunning || status.Result != nil {
 			t.Fatalf("a released reservation read as %+v", status)
 		}
 		runs.forget("sbx_1")
@@ -584,7 +584,7 @@ func TestAReleasedReservationIsNeverAnEnd(t *testing.T) {
 	run := &commandRun{cancel: func() {}, done: make(chan struct{}), detached: true}
 	runs.add(key, run)
 	runs.end(key, run, proto.ExecResult{ExitCode: 4, Stdout: "out"}, nil)
-	if status := runs.status("cmd_d", run); status.State != proto.ExecEnded || status.Result.ExitCode != 4 {
+	if status, _ := runs.status("cmd_d", run); status.State != proto.ExecEnded || status.Result.ExitCode != 4 {
 		t.Fatalf("an ended run read as %+v", status)
 	}
 }
@@ -611,5 +611,64 @@ func TestAKillThatOvertakesItsStartKeepsItFromRunning(t *testing.T) {
 	}
 	if len(held.execs) != 0 || len(guest.begun) != 0 || len(guest.execs) != 0 {
 		t.Fatalf("ran %d, started %d in the guest, ran %d there", len(held.execs), len(guest.begun), len(guest.execs))
+	}
+}
+
+// suspendingTier is a guest that keeps commands, whose foreground calls break once suspend is closed as a stop that
+// keeps the sandbox's memory breaks them (the microVM tier's Exec answers them suspended).
+type suspendingTier struct {
+	*runnerTier
+	suspend chan struct{}
+}
+
+func (s *suspendingTier) Exec(ctx context.Context, p proto.ExecParams, _ func(string, string)) (proto.ExecResult, error) {
+	s.started <- struct{}{}
+	<-s.suspend
+	return proto.ExecResult{}, &proto.Error{Code: proto.ErrSuspended, Message: "sandbox sbx_1 was stopped keeping its memory"}
+}
+
+// A foreground command whose call broke as its sandbox was stopped keeping its memory carries on there: its call is
+// answered suspended, and the host keeps no end of its own for it, so a get asks the sandbox (wherever it runs next).
+func TestAForegroundCommandSuspendedWithItsSandboxIsTheSandboxsToAnswer(t *testing.T) {
+	tier := &suspendingTier{runnerTier: &runnerTier{heldTier: newHeldTier(), soFar: proto.ExecStatus{Stdout: "so far\n"}}, suspend: make(chan struct{})}
+	h := hostWith(t, tier)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := callCmd[proto.ExecResult](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "make", CommandID: "cmd_s", TimeoutMs: 600_000})
+		answered <- err
+	}()
+	<-tier.started
+	// A get already waiting for it to end when it is let go asks the sandbox, and isn't answered an end.
+	waiting := make(chan proto.ExecStatus, 1)
+	go func() {
+		status, _ := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_s", WaitMs: 30_000})
+		waiting <- status
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(tier.suspend)
+	var pe *proto.Error
+	if err := <-answered; !errors.As(err, &pe) || pe.Code != proto.ErrSuspended {
+		t.Fatalf("its call: %v", err)
+	}
+	if status := <-waiting; status.State != proto.ExecRunning || status.Stdout != "so far\n" {
+		t.Fatalf("a get waiting as it was let go: %+v", status)
+	}
+	status, err := callCmd[proto.ExecStatus](t, h, context.Background(), proto.MethodExecGet, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_s"})
+	if err != nil || status.State != proto.ExecRunning || status.Stdout != "so far\n" {
+		t.Fatalf("after its call broke: %+v, %v", status, err)
+	}
+}
+
+// A foreground command its guest keeps past its call isn't stopped by cancelling that call: a kill the guest doesn't
+// take is answered as failed, even though the run here ended, so Kantel keeps the kill pending and sends it again.
+func TestAKillOfAKeptForegroundCommandTheGuestDidntTakeFails(t *testing.T) {
+	tier := &runnerTier{heldTier: newHeldTier(), killErr: errors.New("vsock: connection reset")}
+	h := hostWith(t, tier)
+	go func() {
+		_, _ = callCmd[proto.ExecResult](t, h, context.Background(), proto.MethodExec, proto.ExecParams{SandboxID: "sbx_1", Command: "make", CommandID: "cmd_k", TimeoutMs: 600_000})
+	}()
+	<-tier.started
+	if _, err := callCmd[proto.ExecKilled](t, h, context.Background(), proto.MethodExecKill, proto.ExecRef{SandboxID: "sbx_1", CommandID: "cmd_k"}); err == nil {
+		t.Fatal("a kill the guest didn't take was answered done")
 	}
 }

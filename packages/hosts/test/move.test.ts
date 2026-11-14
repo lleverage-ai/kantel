@@ -7,7 +7,7 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender, type PersonIdentity } from "@kantel/compute";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createHostBackend } from "../src/backend.ts";
+import { createHostBackend, SUSPENDED_COMMAND_LOST } from "../src/backend.ts";
 import { HOST_FEATURES, type HostFacts, type HostMeshFacts } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService } from "../src/service.ts";
@@ -1039,6 +1039,18 @@ describe("moving a running sandbox to another host, with a restart", () => {
 });
 
 const MOVES_MEMORY = [...MOVES_RUNNING, HOST_FEATURES.sandboxMoveMemory];
+const MOVES_COMMANDS = [...MOVES_MEMORY, HOST_FEATURES.execControl];
+/** The ID of the foreground command `host` was sent for the sandbox, once it has been. */
+async function foregroundId(host: FakeHost, sandboxId: string): Promise<string> {
+	let id: unknown;
+	await vi.waitFor(() => {
+		id = host.calls.findLast(
+			(call) => call.method === "sandbox.exec" && call.params.sandboxId === sandboxId && call.params.detached !== true,
+		)?.params.commandId;
+		expect(typeof id).toBe("string");
+	});
+	return id as string;
+}
 const RUNTIME = "firecracker=v1.17.0;kernel=6.1.155;sticky=2";
 const AX102 = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
 /** A host's CPU and runtime fingerprints: AX102's and `RUNTIME`, else as `more` says. */
@@ -1099,8 +1111,106 @@ describe("moving a sandbox with its memory", () => {
 		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
 		await api.store.commands.put(command("cmd_ended"));
 		await root.moveSandbox(sandbox.id, { keepMemory: false });
-		expect((await api.store.commands.get("cmd_ended"))?.state).toBe("killed");
+		expect(await api.store.commands.get("cmd_ended")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("moved to another host and restarted there (the move was asked to restart it)"),
+		});
 	});
+
+	it("carries a foreground and a detached command on by their IDs, their output, end and kill on the new host", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const detached = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const foreground = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const id = await foregroundId(a, sandbox.id);
+		const moved = await root.moveSandbox(sandbox.id, {});
+		expect(moved).toMatchObject({ hostId: b.hostId, moved: { keptMemory: true } });
+		// The foreground call broke with A's stop: followed by its ID, on B, to its end there.
+		await vi.waitFor(
+			() =>
+				expect(b.calls.some((call) => call.method === "sandbox.exec.get" && call.params.commandId === id)).toBe(true),
+			{ timeout: 10_000 },
+		);
+		FakeHost.endCommand(sandbox.id, id, { exitCode: 0, stdout: "so far\nbuilt\n", stderr: "", durationMs: 9 });
+		expect(await foreground).toMatchObject({ id, state: "exited", exitCode: 0, stdout: "so far\nbuilt\n" });
+		// The detached one runs on, on B: its output so far from there, and its kill goes there.
+		expect(await root.getCommand(sandbox.id, detached.id)).toMatchObject({ state: "running", stdout: "so far\n" });
+		expect(await root.killCommand(sandbox.id, detached.id)).toMatchObject({ state: "killed" });
+		expect(b.calls.some((call) => call.method === "sandbox.exec.kill" && call.params.commandId === detached.id)).toBe(
+			true,
+		);
+		expect(FakeHost.guestCommands.get(`${sandbox.id}/${detached.id}`)?.result?.exitCode).toBe(137);
+	}, 20_000);
+
+	it("ends a foreground command its guest didn't carry on (an image from before) saying so, and one a restart ended", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const lost = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const id = await foregroundId(a, sandbox.id);
+		// Its guest ended it as its connection was reset: B's doesn't know it.
+		b.hold = (method) => {
+			if (method === "sandbox.resume") FakeHost.guestCommands.delete(`${sandbox.id}/${id}`);
+			return undefined;
+		};
+		await root.moveSandbox(sandbox.id, {});
+		expect(await lost).toMatchObject({ id, state: "exited", exitCode: 1, stderr: `${SUSPENDED_COMMAND_LOST}\n` });
+		// Moved with a restart: its command ends, as its call broke or as the move ended its commands, saying why.
+		const ended = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const restarted = await foregroundId(b, sandbox.id);
+		await root.moveSandbox(sandbox.id, { keepMemory: false });
+		expect(await ended).toMatchObject({
+			id: restarted,
+			state: expect.stringMatching(/^(exited|killed)$/),
+			stderr: expect.stringMatching(/restart(ed| it) there \(the move was asked to restart it\)/),
+		});
+	}, 20_000);
+
+	it("asks again where it runs now when its old host, asked as it moved, no longer knows a command", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const detached = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		// A get A takes as the move begins is answered once the sandbox is B's, and A has deleted it.
+		let switched: () => void = () => undefined;
+		const done = new Promise<void>((resolve) => {
+			switched = resolve;
+		});
+		await vi.waitFor(() => expect(a.calls.some((call) => call.method === "sandbox.exec.get")).toBe(true));
+		a.hold = (method) => (method === "sandbox.exec.get" ? done : undefined);
+		a.refuse = (method) =>
+			method === "sandbox.exec.get" ? { code: "not_found", message: "no such sandbox" } : undefined;
+		await vi.waitFor(
+			() => expect(a.calls.filter((call) => call.method === "sandbox.exec.get").length).toBeGreaterThan(1),
+			{
+				timeout: 5_000,
+			},
+		);
+		await root.moveSandbox(sandbox.id, {});
+		switched();
+		await vi.waitFor(
+			() =>
+				expect(
+					b.calls.some((call) => call.method === "sandbox.exec.get" && call.params.commandId === detached.id),
+				).toBe(true),
+			{ timeout: 10_000 },
+		);
+		FakeHost.endCommand(sandbox.id, detached.id, { exitCode: 0, stdout: "served\n", stderr: "", durationMs: 9 });
+		await vi.waitFor(
+			async () =>
+				expect(await root.getCommand(sandbox.id, detached.id)).toMatchObject({ state: "exited", exitCode: 0 }),
+			{
+				timeout: 10_000,
+			},
+		);
+	}, 20_000);
 
 	it("is given up, nothing sent, when what it does with the memory can't be recorded; else left to settle", async () => {
 		const { root, api, join, service, store } = await setup();

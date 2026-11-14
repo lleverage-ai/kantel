@@ -714,9 +714,15 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		timeout = 120 * time.Second
 	}
 	// The rest of the body read, so the server notices the host closing the request (its context ends, and with it
-	// the command): a host stops a command of an older guest, which has no kill route, that way.
+	// the command): a host stops a command of an older guest, which has no kill route, that way. One kept past its
+	// connection (Keep, with an ID, not streamed) runs on instead, to its own limit or a kill.
 	_, _ = io.Copy(io.Discard, r.Body)
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	keep := req.Keep && req.ID != "" && !req.Stream
+	base := r.Context()
+	if keep {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 	cmd, err := s.buildCommand(ctx, &req)
 	if err != nil {
@@ -741,12 +747,12 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 			run.stdout, run.stderr = stdout, stderr
 		}
 		if !s.commands.add(req.ID, run) {
-			fail(w, 409, errors.New("a command with this id is already known"))
+			fail(w, 409, errors.New("a command with this id is already known, or was killed before it started"))
 			return
 		}
 		defer func() {
 			if run != nil {
-				s.commands.end(req.ID, run, ExecResult{})
+				s.commands.end(req.ID, run, ExecResult{}, false)
 			}
 		}()
 	}
@@ -770,12 +776,28 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	}
 	result := ExecResult{Stdout: string(stdout.buf), Stderr: string(stderr.buf), Truncated: stdout.truncated || stderr.truncated, DurationMs: time.Since(started).Milliseconds()}
 	result.ExitCode = exitCode(err)
+	failed := false
 	if killed() {
 		result.ExitCode = 137
 	} else if ctx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
 		result.ExitCode = 124
 	} else if err != nil && result.ExitCode == -1 {
+		failed = true
+	}
+	if run != nil {
+		// Its connection gone before it ended (the sandbox paused or moved with its memory): nobody is left to answer, so
+		// its result is kept for whichever host asks for it by its ID.
+		if orphaned := keep && r.Context().Err() != nil; orphaned {
+			kept := result
+			if failed {
+				kept.ExitCode, kept.Stderr = 1, kept.Stderr+err.Error()+"\n"
+			}
+			s.commands.end(req.ID, run, kept, true)
+			run = nil
+		}
+	}
+	if failed {
 		fail(w, 500, err)
 		return
 	}

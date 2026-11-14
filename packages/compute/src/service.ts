@@ -6520,9 +6520,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
-	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
+	 * (a pause keeps them, as it keeps the rest of the sandbox's memory). `note`, added to each one's stderr, says why
+	 * (a move that restarted it).
 	 */
-	async function killCommandsOf(sandboxId: string, listed?: readonly StoredCommand[]): Promise<void> {
+	async function killCommandsOf(sandboxId: string, listed?: readonly StoredCommand[], note?: string): Promise<void> {
 		const running = listed ?? (await store.commands.list({ sandboxId, state: "running" }));
 		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
 		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
@@ -6543,11 +6544,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				state: "killed",
 				endedAt: at,
 				durationMs: at - latest.startedAt,
+				...(note === undefined ? {} : noted(latest, note)),
 			}));
 			runningCommands.get(command.id)?.abort();
 			runningCommands.delete(command.id);
 		}
 	}
+
+	/** A command's stderr with `note` added, cut to what a command keeps. */
+	const noted = (command: StoredCommand, note: string): Pick<StoredCommand, "stderr" | "truncated"> => {
+		const stderr = truncate(`${command.stderr}${note}`);
+		return { stderr: stderr.text, truncated: command.truncated || stderr.truncated };
+	};
+
+	/**
+	 * What a running command's failure adds when its sandbox was being moved, from its stop on (`moving.phase` past
+	 * `copying`): its call may have broken with that stop, which a move that restarts the sandbox makes to end its
+	 * processes, and which a move that keeps its memory carries commands on through, except on a host or guest image from
+	 * before that. Undefined while it isn't being moved so. Said beside the failure, never instead of it: the failure
+	 * may be the command's own.
+	 */
+	async function moveNote(sandboxId: string): Promise<string | undefined> {
+		const moving = (await store.sandboxes.get(sandboxId).catch(() => undefined))?.moving;
+		if (moving === undefined || moving.from !== "running" || moving.phase === "copying") return undefined;
+		if (moving.keepMemory !== true) {
+			return `kantel: the sandbox's move to another host was stopping it to restart it there (${restartWhy(moving.restartReason)}) as this command ended\n`;
+		}
+		return "kantel: the sandbox's move to another host was stopping it, keeping its memory, as this command ended; a kantel-host or guest image from before commands carried on across a move ends a command so\n";
+	}
+
+	/** Why a command ended with its sandbox's move to another host that restarted it, `reason` its move's restartReason. */
+	const restartedByMove = (reason: string | undefined): string =>
+		`kantel: killed: the sandbox moved to another host and restarted there (${restartWhy(reason)}), which ended its processes\n`;
+
+	/** Why a move restarted a sandbox, as a clause: its restartReason, or that it was asked to. */
+	const restartWhy = (reason: string | undefined): string =>
+		reason === undefined ? "the move was asked to restart it" : `${reason.charAt(0).toLowerCase()}${reason.slice(1)}`;
 
 	/**
 	 * Boots a sandbox in `starting` with `run`, and records `running`, or `error` when it fails; either only while it is
@@ -12182,7 +12214,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				runningCommands.delete(command.id);
 				return (await store.commands.get(command.id)) ?? command;
 			}
-			return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
+			// Its call may have broken as its sandbox's move stopped it: said so, beside the failure.
+			const note = await moveNote(current.id);
+			return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n${note ?? ""}`, timedOut: false });
 		};
 		const run = backend.exec(current.id, {
 			command: body.command,
@@ -12921,8 +12955,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw error;
 				}
 				let placement: Placement;
-				// Whether its memory goes too, as its backend chose with the host (`onPlanned`).
+				// Whether its memory goes too, as its backend chose with the host (`onPlanned`), and why not.
 				let keptMemory = false;
+				let restartReason: string | undefined;
 				try {
 					placement = await move(
 						current.id,
@@ -12945,7 +12980,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 										: undefined,
 								).catch(() => undefined);
 								// Its processes ended with its stop, its commands with them; kept in its memory, they carry on.
-								if (!keptMemory) keepGoing(killCommandsOf(sandboxId));
+								if (!keptMemory) keepGoing(killCommandsOf(sandboxId, undefined, restartedByMove(restartReason)));
 							},
 							onStarting: (hostId) => {
 								patchSandbox(sandboxId, (latest) =>
@@ -12974,6 +13009,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								);
 								if (written === undefined) throw new KantelError("conflict", "The sandbox changed as its move began");
 								keptMemory = memory.kept;
+								restartReason = memory.reason;
 							},
 						},
 						operationId,

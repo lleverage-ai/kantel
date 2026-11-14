@@ -5,6 +5,9 @@ import {
 	decodeStreamFrame,
 	encodeStreamFrame,
 	FILE_STREAM_WINDOW_BYTES,
+	type HostError,
+	type HostExecResult,
+	type HostExecStatus,
 	type HostFacts,
 	type HostFileOpen,
 	type HostMessage,
@@ -117,6 +120,27 @@ export class FakeHost {
 	runtime = "firecracker=v1.17.0;kernel=6.1.155;sticky=2";
 	/** Every host made, by ID: a move's target reads its holder's export from it, as from a peer. */
 	static readonly byId = new Map<string, FakeHost>();
+	/**
+	 * Runs commands by Kantel's ID as kantel-host does with a guest that keeps them (`HOST_FEATURES.execControl`): each
+	 * kept in `FakeHost.guestCommands`, a foreground one answered only once a test ends it there, or with `suspended`
+	 * once its sandbox is stopped keeping its memory (and with its guest's broken call when it isn't). Off, a command is
+	 * answered at once, `hi`.
+	 */
+	keepsCommands = false;
+	/**
+	 * The commands each sandbox's guest keeps by ID (`<sandboxId>/<commandId>`), in its memory: every host's, as a
+	 * sandbox moved with its memory has the same guest. A test ends one by setting its result.
+	 */
+	static readonly guestCommands = new Map<string, HostExecStatus>();
+	/** Foreground calls waiting for their command to end, by `<sandboxId>/<commandId>`: answered with what ended it. */
+	private readonly foreground = new Map<string, (end: { result?: HostExecResult; error?: HostError }) => void>();
+
+	/** Ends a guest's command with `result`, answering its foreground call where one waits for it here. */
+	static endCommand(sandboxId: string, commandId: string, result: HostExecResult) {
+		const key = `${sandboxId}/${commandId}`;
+		FakeHost.guestCommands.set(key, { commandId, state: "exited", result });
+		for (const host of FakeHost.byId.values()) host.foreground.get(key)?.({ result });
+	}
 
 	constructor(
 		readonly service: HostsService,
@@ -298,6 +322,21 @@ export class FakeHost {
 				const sandbox = this.sandboxes.get(params.sandboxId);
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
 				const keeps = (message.params as { memory?: boolean }).memory !== false;
+				// Its commands' calls break with its machine: kept in its memory they carry on, else they end with it.
+				for (const [key, end] of this.foreground) {
+					if (!key.startsWith(`${sandbox.id}/`)) continue;
+					if (!keeps) FakeHost.guestCommands.delete(key);
+					end({
+						error: keeps
+							? { code: "suspended", message: `sandbox ${sandbox.id} was stopped keeping its memory` }
+							: { code: "internal", message: 'Post "http://guest/exec": EOF' },
+					});
+				}
+				if (!keeps) {
+					for (const key of FakeHost.guestCommands.keys()) {
+						if (key.startsWith(`${sandbox.id}/`)) FakeHost.guestCommands.delete(key);
+					}
+				}
 				const ran = this.processes.get(sandbox.id);
 				if (keeps && sandbox.state === "running") this.memories.set(sandbox.id, ran ?? "booted");
 				if (!keeps) this.memories.delete(sandbox.id);
@@ -343,8 +382,38 @@ export class FakeHost {
 				return answer({});
 			}
 			case "sandbox.exec": {
+				const exec = message.params as { commandId?: string; detached?: boolean };
+				if (this.keepsCommands && exec.commandId !== undefined) {
+					const key = `${params.sandboxId}/${exec.commandId}`;
+					FakeHost.guestCommands.set(key, { commandId: exec.commandId, state: "running", stdout: "so far\n" });
+					if (exec.detached === true) return answer({ commandId: exec.commandId, state: "running", pid: 7 });
+					this.foreground.set(key, (end) => {
+						this.foreground.delete(key);
+						if (end.error !== undefined) fail(end.error.code, end.error.message);
+						else answer(end.result);
+					});
+					return;
+				}
 				this.send({ type: "event", call: message.id, event: { kind: "exec.output", stdout: btoa("hi\n"), at: 1 } });
 				return answer({ exitCode: 0, stdout: "hi\n", stderr: "", durationMs: 3 });
+			}
+			case "sandbox.exec.get":
+			case "sandbox.exec.kill": {
+				if (!this.keepsCommands) return fail("unsupported", `unknown method ${message.method}`);
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				if (sandbox.state !== "running")
+					return fail("conflict", `sandbox ${sandbox.id} is ${sandbox.state}, not running`);
+				const { commandId } = message.params as { commandId: string };
+				const key = `${sandbox.id}/${commandId}`;
+				const known = FakeHost.guestCommands.get(key);
+				if (message.method === "sandbox.exec.get") {
+					return known === undefined ? fail("not_found", `no command ${commandId}`) : answer(known);
+				}
+				const running = known?.state === "running";
+				if (running)
+					FakeHost.endCommand(sandbox.id, commandId, { exitCode: 137, stdout: "so far\n", stderr: "", durationMs: 5 });
+				return answer({ killed: running });
 			}
 			case "sandbox.delete":
 				if (

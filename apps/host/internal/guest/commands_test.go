@@ -309,3 +309,73 @@ func TestClosingAForegroundRequestEndsItsCommand(t *testing.T) {
 	<-done
 	waitGone(t, child)
 }
+
+// A foreground command kept past its connection (Keep) runs on when its request's connection goes, as a pause or a move
+// of its sandbox with its memory resets the host's connections to the guest, and its result is kept for whichever host
+// asks for it by its ID.
+func TestAKeptForegroundCommandOutlivesItsConnection(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	gate := filepath.Join(t.TempDir(), "go")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_, _ = client.Exec(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_k", Keep: true, Command: "echo before; while [ ! -e " + gate + " ]; do sleep 0.05; done; echo after"})
+		close(done)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		status, err := client.CommandStatus(context.Background(), "cmd_k", 0)
+		if err == nil && status.Stdout == "before\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("it never ran: %+v, %v", status, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	status, err := client.CommandStatus(context.Background(), "cmd_k", 0)
+	if err != nil || status.State != ExecRunning {
+		t.Fatalf("once its connection went: %+v, %v", status, err)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := waitEnded(t, client, "cmd_k")
+	if result.ExitCode != 0 || result.Stdout != "before\nafter\n" {
+		t.Fatalf("its kept result: %+v", result)
+	}
+}
+
+// One kept past its connection whose answer is sent is forgotten once it ends, as any foreground command is.
+func TestAKeptForegroundCommandAnsweredIsForgotten(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	res, err := client.Exec(context.Background(), ExecRequest{Cwd: os.TempDir(), ID: "cmd_a", Keep: true, Command: "echo hi"})
+	if err != nil || res.Stdout != "hi\n" {
+		t.Fatalf("answer %+v, %v", res, err)
+	}
+	if _, err := client.CommandStatus(context.Background(), "cmd_a", 0); !IsNotFound(err) {
+		t.Fatalf("after its answer: %v", err)
+	}
+}
+
+// A kill that overtakes its command's start (the host cancels its call and sends the kill, which can reach the guest
+// first) makes the start refused: a command kept past its call is never left running by a kill that was answered.
+func TestAKillThatOvertakesItsStartKeepsItFromRunning(t *testing.T) {
+	client := clientFor(t, (&Server{}).Handler())
+	ctx := context.Background()
+	marker := filepath.Join(t.TempDir(), "ran")
+	if killed, err := client.KillCommand(ctx, "cmd_o"); killed || !IsNotFound(err) {
+		t.Fatalf("kill before its start: %v, %v", killed, err)
+	}
+	if _, err := client.Exec(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_o", Keep: true, Command: "touch " + marker}); !IsConflict(err) {
+		t.Fatalf("its start after the kill: %v", err)
+	}
+	if _, err := client.StartCommand(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_o", Command: "touch " + marker}); !IsConflict(err) {
+		t.Fatalf("a detached start after the kill: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the command ran: %v", err)
+	}
+}

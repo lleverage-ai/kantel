@@ -53,6 +53,11 @@ type ExecRequest struct {
 	// POST /exec/start needs one, and keeps its result for GET /exec/{id} once it ends. A guest from before IDs
 	// ignores it.
 	ID string `json:"id,omitempty"`
+	// Keep, for a foreground command with an ID that isn't streamed, runs it on when its request's connection goes
+	// (the sandbox paused or moved keeping its memory resets the host's connections to the guest): only its own limit
+	// or a kill ends it. When it ends with nobody left to answer, its result is kept for GET /exec/{id}, as a detached
+	// command's is. Without it, the connection going ends the command. A guest from before it ignores it.
+	Keep bool `json:"keep,omitempty"`
 	// ProxyUser, when set, replaces the user name in the proxy URLs of this command's environment, so the egress
 	// proxy can tell this command's requests from the rest of the sandbox's (advisory; see the proxy notes).
 	ProxyUser string `json:"proxyUser,omitempty"`

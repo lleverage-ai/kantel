@@ -1119,12 +1119,25 @@ export function hostWasAway(error: unknown): boolean {
 	return typeof error === "object" && error !== null && awayErrors.has(error);
 }
 
+/** Kantel's errors for commands whose host said their sandbox was stopped keeping its memory as they ran. */
+const suspendedErrors = new WeakSet<object>();
+
+/**
+ * Whether `error` is a host's answer that a command's call broke as its sandbox was stopped keeping its memory (a pause,
+ * or a move to another host that keeps it): the command carries on in that memory (`HostErrorCode` `suspended`). It is
+ * `unavailable` as Kantel's error, as it is to a control plane from before.
+ */
+export function suspendedOnHost(error: unknown): boolean {
+	return typeof error === "object" && error !== null && suspendedErrors.has(error);
+}
+
 /** A host's error as Kantel's: the codes line up where they can. */
 export function kantelErrorFromHost(error: unknown): unknown {
 	if (!(error instanceof HostCallError)) return error;
 	const mapped = kantelCodeError(error);
 	if (error.unanswered) unansweredErrors.add(mapped);
 	if (error.disconnected) awayErrors.add(mapped);
+	if (error.code === "suspended") suspendedErrors.add(mapped);
 	return mapped;
 }
 

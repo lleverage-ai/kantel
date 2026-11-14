@@ -14,8 +14,10 @@ import (
 
 // Commands run with an ID (ExecRequest.ID) are known to the agent by it while they run, so the host can stop one
 // (POST /exec/{id}/kill), and a detached one (POST /exec/start) keeps its exit code and output once it ends, for the
-// host to fetch (GET /exec/{id}). A guest from before them answers these routes 404 or 405 (IsUnknownRoute): the host
-// then runs a detached command itself, as a foreground one held open (agent's background runs).
+// host to fetch (GET /exec/{id}). So does a foreground one kept past its connection (ExecRequest.Keep) that ended
+// after its connection went: the host that fetches it may be another one, the sandbox having moved with its memory.
+// A guest from before them answers these routes 404 or 405 (IsUnknownRoute): the host then runs a detached command
+// itself, as a foreground one held open (agent's background runs).
 
 // ExecStatus is GET /exec/{id}'s answer: State is ExecRunning or ExecEnded, and an ended one has its Result. A running
 // one (detached, or a foreground one with an ID that isn't streamed) has its output so far (Stdout, Stderr and
@@ -65,7 +67,14 @@ type commands struct {
 	byID    map[string]*command
 	ended   []string
 	ensured bool
+	// early are kills that found no command, by ID, for earlyKillTTL: the host's kill of a command can overtake its
+	// start (a foreground one kept past its call isn't ended by that call's cancelling), and the start it overtook is
+	// then refused, never run.
+	early map[string]time.Time
 }
+
+// earlyKillTTL is how long a kill that found no command waits for the start it may have overtaken.
+const earlyKillTTL = time.Minute
 
 func (c *commands) init() {
 	if !c.ensured {
@@ -74,7 +83,7 @@ func (c *commands) init() {
 	}
 }
 
-// add records a command under id, or says no while one of that ID is known.
+// add records a command under id, or says no while one of that ID is known, or when a kill for it came first.
 func (c *commands) add(id string, cmd *command) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -82,13 +91,16 @@ func (c *commands) add(id string, cmd *command) bool {
 	if _, known := c.byID[id]; known {
 		return false
 	}
+	if at, killed := c.early[id]; killed && time.Since(at) <= earlyKillTTL {
+		return false
+	}
 	c.byID[id] = cmd
 	return true
 }
 
-// end records a command's result. A foreground one is forgotten; a detached one is kept, with the newest
-// maxEndedCommands of them.
-func (c *commands) end(id string, cmd *command, result ExecResult) {
+// end records a command's result. A foreground one is forgotten, unless orphaned (its connection gone before it
+// ended, with nobody to answer); a detached one, and an orphaned one, is kept, with the newest maxEndedCommands of them.
+func (c *commands) end(id string, cmd *command, result ExecResult, orphaned bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if cmd.killed {
@@ -96,7 +108,7 @@ func (c *commands) end(id string, cmd *command, result ExecResult) {
 	}
 	cmd.result = result
 	close(cmd.done)
-	if !cmd.detached {
+	if !cmd.detached && !orphaned {
 		if c.byID[id] == cmd {
 			delete(c.byID, id)
 		}
@@ -121,6 +133,17 @@ func (c *commands) kill(id string) bool {
 	c.mu.Lock()
 	cmd := c.byID[id]
 	if cmd == nil {
+		// Marked under the lock that found none, so a start can't be added in between unseen (add refuses it).
+		now := time.Now()
+		if c.early == nil {
+			c.early = map[string]time.Time{}
+		}
+		for k, at := range c.early {
+			if now.Sub(at) > earlyKillTTL {
+				delete(c.early, k)
+			}
+		}
+		c.early[id] = now
 		c.mu.Unlock()
 		return false
 	}
@@ -185,14 +208,14 @@ func (s *Server) startCommand(w http.ResponseWriter, r *http.Request) {
 	run := &command{cancel: cancel, done: make(chan struct{}), detached: true, stdout: stdout, stderr: stderr}
 	if !s.commands.add(req.ID, run) {
 		cancel()
-		fail(w, 409, errors.New("a command with this id is already known"))
+		fail(w, 409, errors.New("a command with this id is already known, or was killed before it started"))
 		return
 	}
 	started := time.Now()
 	oomBefore := OOMKills()
 	if err := cmd.Start(); err != nil {
 		cancel()
-		s.commands.end(req.ID, run, ExecResult{ExitCode: 127, Stderr: err.Error() + "\n"})
+		s.commands.end(req.ID, run, ExecResult{ExitCode: 127, Stderr: err.Error() + "\n"}, false)
 		fail(w, 500, err)
 		return
 	}
@@ -218,7 +241,7 @@ func (s *Server) startCommand(w http.ResponseWriter, r *http.Request) {
 			result.ExitCode = 1
 			result.Stderr += err.Error() + "\n"
 		}
-		s.commands.end(req.ID, run, result)
+		s.commands.end(req.ID, run, result, false)
 	}()
 	writeJSON(w, 200, ExecResult{Pid: pid})
 }
@@ -283,10 +306,12 @@ func (b *cappedBuffer) whole() []byte {
 }
 
 // killCommand is POST /exec/{id}/kill: SIGKILL to the command's whole process group. {"killed": false} for one that
-// has already ended, 404 for an ID the agent doesn't know.
+// has already ended, 404 for an ID the agent doesn't know, whose start, if it comes within earlyKillTTL, is refused.
 func (s *Server) killCommand(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.commands.get(id) == nil {
+		// Marked, so a start it overtook is refused.
+		s.commands.kill(id)
 		fail(w, 404, errors.New("no command with this id"))
 		return
 	}
