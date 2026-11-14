@@ -1056,6 +1056,11 @@ export interface SandboxBackend {
 	 * which pools have sync on). Absent, nothing to do.
 	 */
 	updatePool?(poolId: string, change: { readonly sync: boolean }): Promise<void>;
+	/**
+	 * The control plane's grant keys changed (`ComputeService.grantKeys`): a rotation, or a key that couldn't be opened
+	 * replaced. The backend's connected hosts are sent them. Absent, nothing to do.
+	 */
+	grantKeysChanged?(): Promise<void>;
 	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,

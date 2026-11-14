@@ -747,6 +747,24 @@ func (c *Client) GetAccountUsage(ctx context.Context, accountID string, query *G
 	return &out, nil
 }
 
+// GetGrantKeys GET /admin/grant-key: Get the grant keys. The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) GetGrantKeys(ctx context.Context, opts ...CallOption) (*GrantKeys, error) {
+	var out GrantKeys
+	if err := c.Do(ctx, Call{Method: "GET", Path: "/admin/grant-key", Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RotateGrantKey POST /admin/grant-key/rotate: Rotate the grant key. Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) RotateGrantKey(ctx context.Context, opts ...CallOption) (*GrantKeys, error) {
+	var out GrantKeys
+	if err := c.Do(ctx, Call{Method: "POST", Path: "/admin/grant-key/rotate", Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListHosts GET /admin/hosts: List hosts. Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`).
 func (c *Client) ListHosts(ctx context.Context, opts ...CallOption) (*HostList, error) {
 	var out HostList

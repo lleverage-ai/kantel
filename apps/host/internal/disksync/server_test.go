@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // fakeSource holds one version of sticky disk sdk_1, sdv_1.
@@ -52,7 +54,7 @@ func testServer(t *testing.T, key testKey) (*Server, []byte) {
 	return &Server{
 		Source: fakeSource{path: path, raw: []byte("the map")},
 		Self:   func() string { return "host_a" },
-		Key:    func() string { return key.public },
+		Keys:   func() []proto.GrantKey { return one(key.public) },
 		PeerAt: func(a netip.Addr) (string, bool) { id, ok := peers[a]; return id, ok },
 		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, data
@@ -135,7 +137,25 @@ func TestServerRefusesFetchesWithoutAGrantForThisHostAndPeer(t *testing.T) {
 	if w := get(h, "/v1/objects/sticky/sdk_1/sdv_2/map", "[fd4b::2]:1", key.sign(t, g), ""); w.Code != http.StatusNotFound {
 		t.Errorf("a version it doesn't hold: %d", w.Code)
 	}
-	s.Key = func() string { return "" }
+	// While the grant key is rotated: the old key's grants are served until its time is up, the new key's from the start.
+	rotated := grantFor("host_b", "host_a")
+	rotated.Kid = "k2"
+	retired := grantFor("host_b", "host_a")
+	retired.Kid = "k1"
+	until := time.Now().Add(time.Minute).UnixMilli()
+	s.Keys = func() []proto.GrantKey {
+		return []proto.GrantKey{{ID: "k2", PublicKey: other.public}, {ID: "k1", PublicKey: key.public, Until: until}}
+	}
+	for name, grant := range map[string]string{"the new key's": other.sign(t, rotated), "the old key's": key.sign(t, retired)} {
+		if w := get(h, path, "[fd4b::2]:1", grant, ""); w.Code != http.StatusOK {
+			t.Errorf("%s, mid-rotation: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	until = time.Now().UnixMilli()
+	if w := get(h, path, "[fd4b::2]:1", key.sign(t, retired), ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("the old key's, past its time: %d", w.Code)
+	}
+	s.Keys = func() []proto.GrantKey { return nil }
 	if w := get(h, path, "[fd4b::2]:1", key.sign(t, grantFor("host_b", "host_a")), ""); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("without a grant key: %d", w.Code)
 	}

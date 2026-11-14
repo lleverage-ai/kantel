@@ -78,6 +78,7 @@ import {
 	GithubRunnersList,
 	GithubRunnersPath,
 	GithubRunnersWithSecret,
+	GrantKeys,
 	Host,
 	HostJoinToken,
 	HostList,
@@ -2394,6 +2395,48 @@ export const setPublicUrl = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
+// The grant key: what the control plane signs fetch grants with (docs/design/disk-store.md, 2c).
+
+const GRANT_KEYS =
+	"`not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key " +
+	"(`KANTEL_SECRETS_KEY`) to keep one.";
+
+export const getGrantKeys = defineRoute({
+	operationId: "getGrantKeys",
+	method: "GET",
+	path: "/admin/grant-key",
+	tag: "hosts",
+	summary: "Get the grant keys",
+	description: describe(
+		"The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until",
+		"it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed",
+		"and never shown.",
+		GRANT_KEYS,
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The grant keys.", schema: GrantKeys },
+	errors: ["forbidden", "unavailable", "not_supported"],
+});
+
+export const rotateGrantKey = defineRoute({
+	operationId: "rotateGrantKey",
+	method: "POST",
+	path: "/admin/grant-key/rotate",
+	tag: "hosts",
+	summary: "Rotate the grant key",
+	description: describe(
+		"Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3",
+		"minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that,",
+		"a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new",
+		"one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a",
+		"key published and not yet signing is replaced.",
+		GRANT_KEYS,
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The grant keys after the rotation.", schema: GrantKeys },
+	errors: ["forbidden", "unavailable", "not_supported"],
+});
+
 // Pools: sets of hosts, each host in exactly one, where sandboxes are placed (docs/design/disk-store.md, "Pools").
 
 const POOL_MOVE =
@@ -2467,6 +2510,8 @@ export const hostRoutes = {
 	revokeHost,
 	getPublicUrl,
 	setPublicUrl,
+	getGrantKeys,
+	rotateGrantKey,
 	listPools,
 	createPool,
 	updatePool,

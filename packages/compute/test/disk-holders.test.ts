@@ -3,8 +3,9 @@
 import { createRequire } from "node:module";
 import { createKantelClient } from "@kantel/api/sdk";
 import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BackendDiskFetch, BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
+import { GRANT_KEY_OVERLAP_MS, GRANT_KEY_PUBLISH_MS, GRANT_KEY_REPLACE_AFTER_MS } from "../src/disk-holders.ts";
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
@@ -50,17 +51,24 @@ function setUp(
 		holdings?: () => BackendStickyHoldings[];
 		/** The backend's `disk.fetch` (`SandboxBackend.fetchDisk`); absent, it has none. */
 		fetchDisk?: SandboxBackend["fetchDisk"];
+		/** The backend's telling of hosts of new grant keys (`SandboxBackend.grantKeysChanged`). */
+		grantKeysChanged?: SandboxBackend["grantKeysChanged"];
+		/** Whether Tom is a super-admin (default true). */
+		superAdmin?: boolean;
+		/** The clock's start (default 13 Nov 2026). */
+		now?: number;
 		/** The block map digest each commit answers; absent, none (a host from before maps, or a map that took longer). */
 		mapDigest?: () => string | undefined;
 	} = {},
 ) {
-	const clock = { now: Date.UTC(2026, 10, 13) };
+	const clock = { now: options.now ?? Date.UTC(2026, 10, 13) };
 	const hosts = { pooled: false };
 	const holdings = options.holdings;
 	const wrap = (backend: SandboxBackend): SandboxBackend => ({
 		...backend,
 		...(holdings === undefined ? {} : { stickyHoldings: async () => holdings() }),
 		...(options.fetchDisk === undefined ? {} : { fetchDisk: options.fetchDisk }),
+		...(options.grantKeysChanged === undefined ? {} : { grantKeysChanged: options.grantKeysChanged }),
 		async commitStickyDisk(sandboxId, diskId, version) {
 			if (backend.commitStickyDisk === undefined) throw new Error("The stub commits sticky disks");
 			const committed = await backend.commitStickyDisk(sandboxId, diskId, version);
@@ -102,7 +110,7 @@ function setUp(
 		now: () => clock.now,
 		authenticatePerson: async (request) =>
 			request.headers.get("authorization") === "Bearer tom-token"
-				? { userId: "usr_tom", name: "Tom", email: "tom@example.com", superAdmin: true }
+				? { userId: "usr_tom", name: "Tom", email: "tom@example.com", superAdmin: options.superAdmin ?? true }
 				: undefined,
 	});
 	opened.push(api);
@@ -266,6 +274,7 @@ describe("disk holders", () => {
 			from: ["host_b"],
 			to: STUB_HOST_ID,
 			exp: tom.clock.now + GRANT_TTL_MS,
+			kid: (await tom.api.service.grantKeys())?.[0]?.id,
 		});
 		// Refused once it has expired, by another key, or changed.
 		expect(await verifyGrant(publicKey, found.grant, tom.clock.now + GRANT_TTL_MS)).toBeUndefined();
@@ -378,6 +387,7 @@ describe("disk holders", () => {
 			kind: "rootfs",
 			objectId: KEY,
 			version: "1",
+			kid: (await tom.api.service.grantKeys())?.[0]?.id,
 			accountId: OPERATOR_POOLS,
 			from: ["host_b"],
 			to: STUB_HOST_ID,
@@ -797,7 +807,7 @@ describe("disk holders", () => {
 		});
 	}
 
-	it("answers a locate whose grant key can't be read with the key's failure, and a missing version with not_found", async () => {
+	it("replaces a grant key that can't be opened here, keeping the old one accepted, and answers a missing version with not_found", async () => {
 		const store = await sqlStore(nodeSqliteDatabase);
 		const tom = setUp({ store, secretsKey: SECRETS_KEY });
 		const { disk, version } = await tom.committed();
@@ -807,18 +817,189 @@ describe("disk holders", () => {
 		});
 		// A key sealed with another secrets key: it can't be opened here.
 		const other = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
-		expect(await setUp({ store, secretsKey: other }).api.service.grantPublicKey()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		const old = await setUp({ store, secretsKey: other }).api.service.grantPublicKey();
+		expect(old).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		const request = { kind: "sticky", objectId: disk.id, version: version.id };
 		await expect(
 			tom.api.service.locateDisk(STUB_HOST_ID, { ...request, version: "sdv_missing" }),
-		).rejects.toMatchObject({
-			code: "not_found",
-		});
+		).rejects.toMatchObject({ code: "not_found" });
 		await expect(tom.api.service.locateDisk("host_c", request)).rejects.toMatchObject({ code: "not_found" });
+		// Made only just now, by a gateway whose secrets key differs: left, so gateways don't replace each other's in turn.
 		await expect(tom.api.service.locateDisk(STUB_HOST_ID, request)).rejects.toMatchObject({ code: "unavailable" });
-		// Read again after a failure: once it opens (the key is the one this gateway made), grants are signed.
-		await store.settings.delete("grantKey");
-		expect((await tom.api.service.locateDisk(STUB_HOST_ID, request)).grant).toEqual(expect.any(String));
+		// Older: replaced rather than answered unavailable. The new key signs at once (nothing else can), and the old one is
+		// accepted for a grant's lifetime and a minute.
+		tom.clock.now += GRANT_KEY_REPLACE_AFTER_MS;
+		const found = await tom.api.service.locateDisk(STUB_HOST_ID, request);
+		const keys = await tom.api.service.grantKeys();
+		if (keys === undefined || found.grant === undefined) throw new Error("no grant");
+		expect(keys[0]?.publicKey).not.toBe(old);
+		expect(keys.slice(1)).toEqual([
+			{ id: expect.any(String), publicKey: old, until: tom.clock.now + GRANT_KEY_OVERLAP_MS },
+		]);
+		expect(await verifyGrant(keys, found.grant, tom.clock.now)).toMatchObject({ kid: keys[0]?.id, to: STUB_HOST_ID });
+		// Kept: another gateway with this secrets key signs with the new key and doesn't replace it again.
+		expect(await setUp({ store, secretsKey: SECRETS_KEY }).api.service.grantKeys()).toEqual(keys);
+		// The gateway with the other secrets key can't sign with it, and leaves it: it is only just made.
+		const elsewhere = setUp({ store, secretsKey: other });
+		await elsewhere.pool();
+		elsewhere.clock.now = tom.clock.now;
+		await expect(elsewhere.api.service.locateDisk(STUB_HOST_ID, request)).rejects.toMatchObject({
+			code: "unavailable",
+		});
+		expect(await tom.api.service.grantKeys()).toEqual(keys);
+	});
+
+	it("rotates the grant key: hosts are given the new key first, it signs a few minutes on, and the old one is accepted for a grant's lifetime more", async () => {
+		const store = await sqlStore(nodeSqliteDatabase);
+		let told = 0;
+		const tom = setUp({
+			store,
+			secretsKey: SECRETS_KEY,
+			grantKeysChanged: async () => {
+				told++;
+			},
+		});
+		const { disk, version } = await tom.committed();
+		await tom.pool();
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
+		const request = { kind: "sticky", objectId: disk.id, version: version.id };
+		const sign = async () => {
+			const { grant } = await tom.api.service.locateDisk(STUB_HOST_ID, request);
+			if (grant === undefined) throw new Error("no grant");
+			return grant;
+		};
+		const before = await tom.getGrantKeys();
+		expect(before).toEqual({
+			current: {
+				id: expect.stringMatching(/^[A-Za-z0-9_-]{12}$/),
+				publicKey: expect.any(String),
+				since: tom.clock.now,
+			},
+			retired: [],
+		});
+		tom.clock.now += 1000;
+		const rotatedAt = tom.clock.now;
+		const rotated = await tom.rotateGrantKey();
+		const from = rotatedAt + GRANT_KEY_PUBLISH_MS;
+		expect(rotated).toEqual({
+			current: before.current,
+			next: { id: expect.any(String), publicKey: expect.any(String), from },
+			retired: [],
+		});
+		const next = rotated.next;
+		if (next === undefined) throw new Error("no next key");
+		await vi.waitFor(() => expect(told).toBe(1));
+		// Published: hosts accept it now, the key that signs first, with when they stop accepting that one, so a host told
+		// nothing more still stops then. Until its time, grants are still the old key's.
+		const published = await tom.api.service.grantKeys();
+		expect(published).toEqual([
+			{ id: before.current.id, publicKey: before.current.publicKey, until: from + GRANT_KEY_OVERLAP_MS },
+			{ id: next.id, publicKey: next.publicKey, from },
+		]);
+		const old = await sign();
+		expect(await verifyGrant(before.current.publicKey, old, tom.clock.now)).toMatchObject({ kid: before.current.id });
+		// A host that heard nothing after the rotation accepts it past the switch, for its life (the key's `until` is
+		// enforced as `verifyGrant` checks it).
+		expect(await verifyGrant(published ?? [], old, from + 1)).toMatchObject({ kid: before.current.id });
+		// From its time it signs, on every gateway, with no write; the old key is accepted for a grant's lifetime and a minute.
+		tom.clock.now = from;
+		const fresh = await sign();
+		expect(await verifyGrant(next.publicKey, fresh, tom.clock.now)).toMatchObject({ kid: next.id });
+		expect(await setUp({ store, secretsKey: SECRETS_KEY, now: from }).getGrantKeys()).toEqual({
+			current: { id: next.id, publicKey: next.publicKey, since: from },
+			retired: [{ id: before.current.id, publicKey: before.current.publicKey, until: from + GRANT_KEY_OVERLAP_MS }],
+		});
+		const keys = (await tom.api.service.grantKeys()) ?? [];
+		expect(await verifyGrant(keys, old, tom.clock.now)).toMatchObject({ kid: before.current.id });
+		// A rotation while one is published replaces it, and still accepts the one it replaced until a grant's lifetime after
+		// its time: it may have begun signing on another gateway just as this rotation was written.
+		const again = await tom.rotateGrantKey();
+		const twice = await tom.rotateGrantKey();
+		expect(twice.next?.id).not.toBe(again.next?.id);
+		expect(twice).toMatchObject({
+			current: { id: next.id },
+			retired: [
+				{ id: before.current.id },
+				{ id: again.next?.id, until: (again.next?.from ?? 0) + GRANT_KEY_OVERLAP_MS },
+			],
+		});
+		tom.clock.now = from + GRANT_KEY_OVERLAP_MS;
+		expect(await verifyGrant(keys, old, tom.clock.now - 1)).toBeUndefined();
+		// By then the last rotation's key signs too, and the key before it is retired, with the published one it replaced.
+		const until = (twice.next?.from ?? 0) + GRANT_KEY_OVERLAP_MS;
+		expect(await tom.getGrantKeys()).toEqual({
+			current: { id: twice.next?.id, publicKey: twice.next?.publicKey, since: twice.next?.from },
+			retired: [
+				{ id: again.next?.id, publicKey: again.next?.publicKey, until },
+				{ id: next.id, publicKey: next.publicKey, until },
+			],
+		});
+		// A super-admin's only.
+		const someone = setUp({ store, secretsKey: SECRETS_KEY, superAdmin: false });
+		await expect(someone.rotateGrantKey()).rejects.toMatchObject({ code: "forbidden" });
+		await expect(someone.getGrantKeys()).rejects.toMatchObject({ code: "forbidden" });
+		// With no grant key to have, refused.
+		await expect(setUp({ stickyDisks: false }).rotateGrantKey()).rejects.toMatchObject({ code: "not_supported" });
+		await expect(setUp({ store: await sqlStore(nodeSqliteDatabase) }).getGrantKeys()).rejects.toMatchObject({
+			code: "not_supported",
+		});
+	});
+
+	it("keeps a published key a rotation replaces just as it began signing on another gateway", async () => {
+		const store = await sqlStore(nodeSqliteDatabase);
+		const [tom, other] = [setUp({ store, secretsKey: SECRETS_KEY }), setUp({ store, secretsKey: SECRETS_KEY })];
+		const { disk, version } = await tom.committed();
+		await tom.pool();
+		await other.pool();
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
+		const { next } = await tom.rotateGrantKey();
+		if (next === undefined) throw new Error("no next key");
+		// Its time comes: the other gateway signs with it, while this one, a moment behind, rotates again.
+		other.clock.now = next.from;
+		const { grant } = await other.api.service.locateDisk(STUB_HOST_ID, {
+			kind: "sticky",
+			objectId: disk.id,
+			version: version.id,
+		});
+		if (grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(next.publicKey, grant, next.from)).toMatchObject({ kid: next.id });
+		tom.clock.now = next.from - 1;
+		await tom.rotateGrantKey();
+		// Hosts still accept that grant for its life, and the key no longer once a grant's lifetime has passed after its time.
+		const keys = (await other.api.service.grantKeys()) ?? [];
+		expect(keys).toContainEqual({ id: next.id, publicKey: next.publicKey, until: next.from + GRANT_KEY_OVERLAP_MS });
+		expect(await verifyGrant(keys, grant, next.from + GRANT_TTL_MS - 1)).toMatchObject({ kid: next.id });
+		expect(await verifyGrant(keys, grant, next.from + GRANT_KEY_OVERLAP_MS)).toBeUndefined();
+	});
+
+	it("checks a grant with the key its kid names, and one from before key IDs with any key", async () => {
+		const [one, two] = [await createGrantKey(), await createGrantKey()];
+		const grant = {
+			kind: "sticky",
+			objectId: "sdk_1",
+			version: "sdv_1",
+			accountId: "acc_1",
+			from: ["host_b"],
+			to: "host_a",
+			exp: 2000,
+		} as const;
+		const token = await two.key.sign(grant);
+		const keys = [
+			{ id: one.key.id, publicKey: one.key.publicKey },
+			{ id: two.key.id, publicKey: two.key.publicKey, until: 1500 },
+		];
+		expect(await verifyGrant(keys, token, 1000)).toEqual({ ...grant, kid: two.key.id });
+		// Past the key's time; a key of another ID; the key named but given under another ID.
+		expect(await verifyGrant(keys, token, 1500)).toBeUndefined();
+		expect(await verifyGrant(keys.slice(0, 1), token, 1000)).toBeUndefined();
+		expect(await verifyGrant([{ id: one.key.id, publicKey: two.key.publicKey }], token, 1000)).toBeUndefined();
+		// A key with no ID (a single key given) is tried for any grant.
+		expect(await verifyGrant([{ publicKey: two.key.publicKey }], token, 1000)).toMatchObject({ to: "host_a" });
+		expect(await verifyGrant(two.key.publicKey, token, 1000)).toMatchObject({ to: "host_a" });
 	});
 
 	it("signs with one key every gateway over a database shares, and with no secrets key has none", async () => {
@@ -844,6 +1025,46 @@ describe("disk holders", () => {
 // Two connections to a real Postgres (KANTEL_TEST_POSTGRES_URL): a reconcile's batch under way, and a newer report's claim.
 const postgresUrl = process.env.KANTEL_TEST_POSTGRES_URL;
 describe.skipIf(postgresUrl === undefined || postgresUrl === "")("disk holders, Postgres, two connections", () => {
+	it("lands one rotation of several at once, and replaces a key none can open only once", async () => {
+		const kind = testDatabaseKinds().find((candidate) => candidate.name === "Postgres");
+		if (kind === undefined) throw new Error("No Postgres kind");
+		const database = await kind.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		const gateway = () => setUp({ store: createSqlComputeStore(database.driver), secretsKey: SECRETS_KEY });
+		const gateways = [gateway(), gateway(), gateway()];
+		const first = await gateways[0]?.getGrantKeys();
+		// Six rotations at once over the pool's connections: each publishes its own key, the last write's is kept, and the
+		// key that signs is untouched.
+		const rotated = await Promise.all([...gateways, ...gateways].map((each) => each.rotateGrantKey()));
+		expect(new Set(rotated.map((keys) => keys.next?.id)).size).toBe(6);
+		const after = await gateways[0]?.getGrantKeys();
+		expect(after?.current).toEqual(first?.current);
+		expect(rotated.map((keys) => keys.next?.id)).toContain(after?.next?.id);
+		await database.driver.query("DELETE FROM compute_api_records WHERE kind = ? AND id = ?", ["settings", "grantKey"]);
+		// A key sealed with a secrets key these gateways don't have: of three replacing it at once as they sign, one write wins.
+		const tom = gateways[0];
+		if (tom === undefined) throw new Error("no gateway");
+		const { disk, version } = await tom.committed();
+		for (const each of gateways) await each.pool();
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
+		const other = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
+		const elsewhere = await setUp({ store: createSqlComputeStore(database.driver), secretsKey: other }).getGrantKeys();
+		const request = { kind: "sticky", objectId: disk.id, version: version.id };
+		for (const each of gateways) each.clock.now += GRANT_KEY_REPLACE_AFTER_MS;
+		const grants = await Promise.all(gateways.map((each) => each.api.service.locateDisk(STUB_HOST_ID, request)));
+		const replaced = await tom.getGrantKeys();
+		expect(replaced.retired.map((key) => key.id)).toEqual([elsewhere.current.id]);
+		for (const { grant } of grants) {
+			if (grant === undefined) throw new Error("no grant");
+			expect(await verifyGrant(replaced.current.publicKey, grant, tom.clock.now)).toMatchObject({
+				kid: replaced.current.id,
+			});
+		}
+	});
+
 	it("makes a newer report's claim wait for an older reconcile under way, then read what it wrote", async () => {
 		const kind = testDatabaseKinds().find((candidate) => candidate.name === "Postgres");
 		if (kind === undefined) throw new Error("No Postgres kind");

@@ -1213,6 +1213,36 @@ export interface GithubRunnersWithSecret {
 	readonly webhookSecret: string;
 }
 
+export interface GrantKeys {
+	/** The key that signs grants now. */
+	readonly current: {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When it was made, on first use or by a rotation: epoch milliseconds, UTC. */
+		readonly since: number;
+	};
+	/** The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the rotation, once every connected host has it. Absent between rotations. */
+	readonly next?: {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When it begins signing: epoch milliseconds, UTC. */
+		readonly from: number;
+	};
+	/** Keys rotated out that hosts still accept, oldest first. */
+	readonly retired: readonly {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began signing: epoch milliseconds, UTC. */
+		readonly until: number;
+	}[];
+}
+
 export interface GuestAgent {
 	readonly version: string;
 	/** Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it. */
@@ -3742,6 +3772,10 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
+	/** Get the grant keys. The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/grant-key` */
+	getGrantKeys(options?: CallOptions): Promise<GrantKeys>;
+	/** Rotate the grant key. Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/grant-key/rotate` */
+	rotateGrantKey(options?: CallOptions): Promise<GrantKeys>;
 	/** List the deployment's pools. The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/pools` */
 	listPools(options?: CallOptions): Promise<PoolList>;
 	/** Make a pool of shared hosts. An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`). Idempotent with `options.idempotencyKey`. `POST /admin/pools` */
@@ -4240,6 +4274,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
+		getGrantKeys: (callOptions) => send(options, { method: "GET", path: "/admin/grant-key" }, callOptions),
+		rotateGrantKey: (callOptions) => send(options, { method: "POST", path: "/admin/grant-key/rotate" }, callOptions),
 		listPools: (callOptions) => send(options, { method: "GET", path: "/admin/pools" }, callOptions),
 		createPool: (body, callOptions) =>
 			send(options, { method: "POST", path: "/admin/pools", body, idempotent: true }, callOptions),

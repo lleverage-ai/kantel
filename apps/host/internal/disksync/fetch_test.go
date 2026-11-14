@@ -207,7 +207,7 @@ func newFixture(t *testing.T, holders int) *fixture {
 	for i := range holders {
 		h := &holderFixture{id: "host_a" + string(rune('1'+i)), addr: netip.AddrFrom4([4]byte{127, 0, 0, byte(i + 1)}), store: &dirStore{dir: t.TempDir()}}
 		h.srv = &Server{
-			Source: h.store, Self: func() string { return h.id }, Key: func() string { return f.key.public },
+			Source: h.store, Self: func() string { return h.id }, Keys: func() []proto.GrantKey { return one(f.key.public) },
 			PeerAt: func(a netip.Addr) (string, bool) { return "host_b", a.IsLoopback() }, Log: log, Port: port,
 		}
 		inner := h.srv.Handler()

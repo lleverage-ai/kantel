@@ -130,8 +130,8 @@ type Host struct {
 	peers    *disksync.Server
 	fetcher  *disksync.Fetcher
 	syncStop context.CancelFunc
-	// grantKey is the control plane's grant key from its last welcome ("" none), and welcomeID the host ID it named.
-	grantKey  atomic.Pointer[string]
+	// grantKeys are the control plane's grant keys from its last welcome that had any, and welcomeID the host ID it named.
+	grantKeys atomic.Pointer[[]proto.GrantKey]
 	welcomeID atomic.Pointer[string]
 	// welcomeMu is one welcome's mesh and peer sync server applied at a time (applyWelcome).
 	welcomeMu sync.Mutex

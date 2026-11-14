@@ -53,6 +53,7 @@ func Program(sys System) *cli.Program {
 			{Name: "compute", Summary: "Run sandboxes on your own hosts"},
 			{Name: "host", Summary: "The machines that run sandboxes"},
 			{Name: "pool", Summary: "Sets of the shared hosts, each host in one"},
+			{Name: "grant-key", Summary: "The key hosts' fetch grants are signed with"},
 		},
 		ExitCodes: map[int]string{
 			cli.ExitOK:     "it worked (install, upgrade, host join, host run and host add --ssh exit with the code of what they ran)",
@@ -69,6 +70,7 @@ func Program(sys System) *cli.Program {
 		settings(sys),
 		hosts(sys),
 		pools(),
+		grantKey(),
 		{Title: "Help", Commands: []*cli.Command{
 			cli.HelpCommand(p),
 			version,
