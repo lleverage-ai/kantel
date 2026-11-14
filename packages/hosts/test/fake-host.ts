@@ -317,6 +317,10 @@ export class FakeHost {
 				this.disks.delete(params.sandboxId);
 				for (const key of this.exports.keys()) if (key.startsWith(`${params.sandboxId}/`)) this.exports.delete(key);
 				return answer({ ok: true });
+			case "sandbox.get": {
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer(sandbox);
+			}
 			case "sandbox.export": {
 				const { version } = message.params as { version: string };
 				const sandbox = this.sandboxes.get(params.sandboxId);

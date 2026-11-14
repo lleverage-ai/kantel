@@ -349,6 +349,77 @@ describe("moving a stopped sandbox to another host", () => {
 		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(b.hostId);
 	});
 
+	it("never switches once a rollback has claimed it, so the source's copy stays", async () => {
+		const { root, api, service, store, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		b.hold = (method) => (method === "sandbox.start" ? held : undefined);
+		const moving = failure(root.moveSandbox(sandbox.id, {}));
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true));
+		// Another gateway's rollback claims it as it starts on the target.
+		await store.updatePlacement(sandbox.id, (latest) =>
+			latest.move === undefined
+				? undefined
+				: { ...latest, move: { ...latest.move, settling: { by: "rbm_other", until: Date.now() + 60_000 } } },
+		);
+		release();
+		expect((await moving).code).toBe("unavailable");
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: a.hostId, move: { settling: { by: "rbm_other" } } });
+		expect(placement?.cleanup).toBeUndefined();
+		expect(a.sandboxes.has(sandbox.id)).toBe(true);
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.delete");
+	});
+
+	it("settles a move that switched as done, its source's copy deleted or not, and answers a retry with it", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		await root.moveSandbox(sandbox.id, {});
+		const version = String(b.calls.find((call) => call.method === "sandbox.import")?.params.version);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement?.cleanup).toBeUndefined();
+		expect(placement?.moved).toEqual({ operationId: version, from: a.hostId });
+		expect(await service.sandboxes.settleMove(sandbox.id, version)).toMatchObject({
+			state: "done",
+			moved: { hostId: b.hostId },
+		});
+		const again = await service.sandboxes.move(sandbox.id, { operationId: version, start: () => ({ params: {} }) });
+		expect(again.hostId).toBe(b.hostId);
+		expect(methodsOf(b, sandbox.id).filter((method) => method === "sandbox.import")).toHaveLength(1);
+	});
+
+	it("refuses a delete while the target of a move under way can't drop its copy, keeping the move", async () => {
+		const { root, api, service, store, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		const move = {
+			operationId: "mov_away",
+			target: b.hostId,
+			phase: "copy" as const,
+			size: { name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 },
+		};
+		await store.updatePlacement(sandbox.id, (latest) => ({ ...latest, move }));
+		b.refuse = (method) => (method === "sandbox.import.cancel" ? { code: "unavailable", message: "away" } : undefined);
+		await expect(service.sandboxes.delete(sandbox.id)).rejects.toThrow(/drop its copy/);
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ hostId: a.hostId, move });
+		expect(a.sandboxes.has(sandbox.id)).toBe(true);
+		b.refuse = undefined;
+		await service.sandboxes.delete(sandbox.id);
+		expect(b.cancelled.has(`${sandbox.id}/mov_away`)).toBe(true);
+		expect(await service.sandboxes.placement(sandbox.id)).toBeUndefined();
+	});
+
 	it("cancels the target's copy when the sandbox is deleted as it moves", async () => {
 		const { root, api, service, store, join } = await setup();
 		const a = await join();

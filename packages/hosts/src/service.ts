@@ -2646,10 +2646,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return (await clearMove(sandboxId, operationId, token)) ? "done" : "superseded";
 	};
 
+	/** Whether move `operationId` switched the placement (`moved`, kept until another move), its copy deleted or not. */
+	const switchedBy = (placement: PlacementRecord | undefined, operationId: string): boolean =>
+		placement?.moved !== undefined &&
+		placement.moved.operationId === operationId &&
+		placement.hostId !== placement.moved.from;
+
+	/** A switched move's sandbox, as its new host has it. */
+	const movedTo = async (placement: PlacementRecord): Promise<SandboxPlacement> => {
+		const sandbox = await onHost<HostSandbox>(placement.hostId, HostMethods.get, { sandboxId: placement.sandboxId });
+		const host = await store.getHost(placement.hostId);
+		return {
+			sandbox,
+			hostId: placement.hostId,
+			placement,
+			nestedVirtualisation: host?.facts?.nested ?? false,
+			...(host?.poolId === undefined ? {} : { poolId: host.poolId }),
+		};
+	};
+
 	/**
-	 * A move's outcome, settled: one switched (the placement on its target, owing its source its copy's removal under
-	 * the move's ID) is done; one not switched is rolled back, however far it got. Rejects while a host it needs can't be
-	 * reached, or another gateway is settling it.
+	 * A move's outcome, settled: one switched (`moved`) is done; one not switched is rolled back, however far it got.
+	 * Rejects while a host it needs can't be reached, or another gateway is settling it.
 	 */
 	const settleMoveWith = async (
 		sandboxId: string,
@@ -2660,26 +2678,21 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	> => {
 		const placement = await store.getPlacement(sandboxId);
 		if (placement === undefined) return { state: "failed", reason: "The sandbox is gone" };
-		if (placement.cleanup?.operationId === operationId && placement.hostId !== placement.cleanup.hostId) {
-			const sandbox = await onHost<HostSandbox>(placement.hostId, HostMethods.get, { sandboxId });
-			const host = await store.getHost(placement.hostId);
-			return {
-				state: "done",
-				moved: {
-					sandbox,
-					hostId: placement.hostId,
-					placement,
-					nestedVirtualisation: host?.facts?.nested ?? false,
-					...(host?.poolId === undefined ? {} : { poolId: host.poolId }),
-				},
-			};
-		}
+		if (switchedBy(placement, operationId)) return { state: "done", moved: await movedTo(placement) };
 		if (!movingBy(placement, operationId)) return { state: "failed", reason: "The move never began, or was undone" };
 		const rolled = await rollBackMove(sandboxId, operationId);
 		if (rolled === "unreachable") {
 			throw new KantelError("unavailable", "A host the move used can't be reached to roll it back yet");
 		}
 		if (rolled === "busy") throw new KantelError("unavailable", "The move is being settled by another gateway");
+		if (rolled === "superseded") {
+			// Not this rollback's to finish: switched meanwhile, or another gateway's. Read again.
+			const now = await store.getPlacement(sandboxId);
+			if (now !== undefined && switchedBy(now, operationId)) return { state: "done", moved: await movedTo(now) };
+			if (movingBy(now, operationId)) {
+				throw new KantelError("unavailable", "The move is being settled by another gateway");
+			}
+		}
 		return { state: "failed", reason: "The move didn't finish, and was rolled back" };
 	};
 
@@ -3552,6 +3565,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			async move(sandboxId, input) {
 				const { operationId } = input;
 				let source = await placementOf(sandboxId);
+				// Sent again once it has switched: done, as it is.
+				if (switchedBy(source, operationId)) return movedTo(source);
 				if (source.tier !== "microvm" || isLeftover(source)) {
 					throw new KantelError("conflict", "Only a microVM moves to another host");
 				}
@@ -3750,6 +3765,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// that never switched is rolled back.
 				const switched = (latest: PlacementRecord): PlacementRecord | undefined => {
 					if (!movingBy(latest, operationId) || latest.hostId !== source.hostId) return undefined;
+					// Never once a rollback has claimed it (whether or not its claim has lapsed): it may be cancelling the
+					// target's copy as this runs.
+					if (latest.move?.settling !== undefined) return undefined;
 					const { move: _done, ...rest } = latest;
 					return {
 						...asReported(
@@ -3766,6 +3784,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							clock.now(),
 						),
 						cleanup: { hostId: source.hostId, operationId, tier: "microvm" },
+						moved: { operationId, from: source.hostId },
 						updatedAt: clock.now(),
 					};
 				};
@@ -3774,13 +3793,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					const written = await store.updatePlacement(sandboxId, switched);
 					if (written === undefined) {
 						const read = await store.getPlacement(sandboxId);
-						if (read?.hostId === target.id && read.cleanup?.operationId === operationId) placement = read;
+						if (read?.hostId === target.id && read.moved?.operationId === operationId) placement = read;
 						// Undone meanwhile (a delete, or another gateway's rollback): what was started on the target goes too.
 						else return rollBack(new KantelError("conflict", "The sandbox changed while it moved"));
 					} else placement = written;
 				} catch (error) {
 					const read = await store.getPlacement(sandboxId).catch(() => undefined);
-					if (read?.hostId === target.id && read.cleanup?.operationId === operationId) placement = read;
+					if (read?.hostId === target.id && read.moved?.operationId === operationId) placement = read;
 					else if (movingBy(read, operationId)) return rollBack(error);
 					else {
 						throw upgradeOutcomeUnknown(
@@ -3836,6 +3855,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			},
 			async delete(sandboxId) {
 				const placement = await placementOf(sandboxId);
+				// A move under way leaves nothing on its target: its copy is cancelled there first (its gateway, if it is still
+				// at it, then finds the sandbox gone and rolls back the rest). While that host can't be told, the delete fails
+				// and the placement keeps the move, so a retry, or the move's own rollback, still knows where the copy is.
+				const moving = placement.move;
+				if (moving !== undefined) {
+					const target = await store.getHost(moving.target);
+					if (target !== undefined && !target.revoked) {
+						try {
+							await onHost(moving.target, HostMethods.sandboxImportCancel, {
+								sandboxId,
+								version: moving.operationId,
+							});
+						} catch (error) {
+							if (!(isKantelError(error) && error.code === "not_found")) {
+								throw new KantelError(
+									"unavailable",
+									`The sandbox is being moved to host ${target.name}, which can't be told to drop its copy yet (${error instanceof Error ? error.message : String(error)}); try the delete again`,
+								);
+							}
+						}
+					}
+				}
 				const host = await store.getHost(placement.hostId);
 				if (host === undefined || host.revoked) {
 					// Its host was revoked (or removed) by an operator: it never connects again to say, so deleting the sandbox
@@ -3849,20 +3890,6 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				} catch (error) {
 					// Gone on the host already is gone.
 					if (!(error instanceof KantelError && error.code === "not_found")) throw error;
-				}
-				// A move under way leaves nothing on its target: its gateway rolls it back when its switch finds the sandbox
-				// gone, and this does it now in case that gateway is gone too.
-				const moving = placement.move;
-				if (moving !== undefined) {
-					await onHost(moving.target, HostMethods.sandboxImportCancel, {
-						sandboxId,
-						version: moving.operationId,
-					}).catch((error: unknown) => {
-						const why = error instanceof Error ? error.message : String(error);
-						log(
-							`[hosts] the copy of deleted sandbox ${sandboxId} moving to ${moving.target} wasn't cancelled (${why})`,
-						);
-					});
 				}
 				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
 				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);

@@ -129,6 +129,12 @@ export interface PlacementRecord {
 		readonly settling?: { readonly by: string; readonly until: number };
 	};
 	/**
+	 * The last move that switched the sandbox here (its operation ID) and the host it came from: kept until another move
+	 * switches it, so a move whose gateway went after the switch (its source's copy deleted or not) is settled as done,
+	 * never taken for one rolled back.
+	 */
+	readonly moved?: { readonly operationId: string; readonly from: string };
+	/**
 	 * What is still to be deleted from another host (`hostId`), once that host can be reached: an upgraded microVM's
 	 * isolate, or a moved microVM's source copy (`tier` `microvm`; absent, an isolate).
 	 */
