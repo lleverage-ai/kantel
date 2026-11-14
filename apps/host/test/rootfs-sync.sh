@@ -8,7 +8,7 @@
 #   1. a template on a published Kantel base builds on one host (A), whose root filesystem for that base is put in place
 #      first (a copy of the sandbox image, as a pull would have made it), so it pulls nothing; A maps it and reports it;
 #   2. the template is rebuilt on the other host (B), A draining: B fetches the root filesystem from A, with no pull and
-#      no image build, and its file is byte-identical to A's;
+#      no image build, and its file is byte-identical to A's and stamped with the pool B fetched it in;
 #   3. a request to A's peer sync server for it without a grant is refused.
 #
 # It stops and removes the stack at the end, whatever happened.
@@ -126,6 +126,9 @@ sum_b=$(docker exec "$b" sha256sum "$file" | cut -d' ' -f1)
 calls=$(docker exec "$b" sh -c 'grep -v "^version" /var/lib/kantel-host/docker.log || true')
 [ -z "$calls" ] || fail "B ran docker: $calls"
 docker logs "$b" 2>&1 | grep -q 'template root filesystem fetched from a peer' || fail "B logged no fetch"
+# Stamped with the pool B fetched it in, which its reports carry.
+pool_id=$(api GET /admin/pools | jq -r '.items[] | select(.name == "default") | .id')
+[ "$(docker exec "$b" cat "$templates/$rootfs_key.pool")" = "$pool_id" ] || fail "B's copy isn't stamped with pool $pool_id"
 echo "B fetched it from A ($(docker logs "$b" 2>&1 | grep 'disk version fetched' | grep "$rootfs_key" | tail -1 | grep -oE 'fetchedBytes=[0-9]+')), byte-identical ($sum_b), and ran no docker pull or build"
 
 echo "== 3. A's peer sync server refuses it without a grant"
