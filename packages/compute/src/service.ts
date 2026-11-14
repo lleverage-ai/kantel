@@ -12669,15 +12669,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		role: MemberRole,
 		sandboxId: string,
 		body: computeSchema.MoveSandboxBody,
+		settled = false,
 	): Promise<StoredSandbox> {
 		const current = await settledFor(principal, sandboxId);
 		const move = backend.move;
 		if (move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
 		if (current.type !== "microvm") throw new KantelError("not_supported", "Only a microVM moves to another host");
 		if (current.moving !== undefined && current.moving.heartbeatAt + UPGRADE_STALE_MS <= now()) {
-			// A move gone quiet (its gateway gone), left on it in any state: settled first.
+			// A move gone quiet (its gateway gone), left on it in any state: settled first, once.
+			if (settled) {
+				throw new KantelError(
+					"unavailable",
+					"The sandbox's last move can't be settled yet (a host it used doesn't answer); try the move again once it has been",
+				);
+			}
 			await settleStuckMove(current).catch(() => undefined);
-			return moveToHost(principal, role, sandboxId, body);
+			return moveToHost(principal, role, sandboxId, body, true);
 		}
 		if (current.moving !== undefined || current.upgrading !== undefined) {
 			throw new KantelError("conflict", "The sandbox is being moved or upgraded already");

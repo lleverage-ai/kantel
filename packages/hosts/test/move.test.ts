@@ -921,4 +921,28 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		expect(b.cancelled.size).toBe(2);
 		expect(a.exports.size).toBe(0);
 	});
+
+	it("refuses a move again, after one try at settling it, while a quiet move can't be settled", async () => {
+		const clock = { at: Date.now() };
+		const { root, api, join, service } = await setup({ now: () => clock.at });
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.hold = (method, params) =>
+			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(2));
+		b.connection.closed(1006, "gone");
+		expect((await moving).code).toBe("unavailable");
+		// Its target still away and the move gone quiet: a move again tries to settle it once, and says why it can't.
+		clock.at += 3 * 60_000;
+		const settles = vi.spyOn(service.sandboxes, "settleMove");
+		const again = await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		expect(again.code).toBe("unavailable");
+		expect(again.message).toContain("can't be settled yet");
+		// Tried once by the move, and at most once more by the sweep a request may run: never again and again.
+		expect(settles.mock.calls.length).toBeGreaterThanOrEqual(1);
+		expect(settles.mock.calls.length).toBeLessThanOrEqual(2);
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "moving", hostId: a.hostId });
+	});
 });
