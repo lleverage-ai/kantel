@@ -5503,8 +5503,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Deletes a snapshot's bytes on the host its ref names, then the copies other hosts fetched of it (`disk-holders.ts`,
-	 * kind `snapshot`), whose holders go with them. A copy on a host that can't be reached now stays there. Bytes their
+	 * Deletes a snapshot's bytes on the host its ref names, then the copies other hosts fetched of it, or are fetching
+	 * (`disk-holders.ts`, kind `snapshot`: the holders recorded as copies of this ref, never of another ref that shares
+	 * its host's ID), whose holders go with them. A copy on a host that can't be reached now stays there. Bytes their
 	 * host no longer has count as deleted; any other failure there is thrown, and the copies are left for a retry.
 	 */
 	async function deleteSnapshotBytes(ref: string): Promise<void> {
@@ -5515,13 +5516,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		const [hostId, objectId] = ref.split("/");
 		if (hostId === undefined || objectId === undefined) return;
-		for (const [, holders] of await diskHolders.holdersOf("snapshot", objectId)) {
-			for (const holder of holders) {
-				if (holder.hostId === hostId) continue;
-				await backend.deleteSnapshot(`${holder.hostId}/${objectId}`).catch(() => undefined);
-			}
+		const copies = [...(await diskHolders.holdersOf("snapshot", objectId)).values()]
+			.flat()
+			.filter((holder) => holder.ref === ref);
+		for (const host of new Set(copies.map((holder) => holder.hostId))) {
+			if (host === hostId) continue;
+			await backend.deleteSnapshot(`${host}/${objectId}`).catch(() => undefined);
 		}
-		await diskHolders.forget("snapshot", objectId);
+		for (const holder of copies) await store.diskHolders.delete(holder.id);
 	}
 
 	/**
@@ -11373,8 +11375,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
 			}
 			const snapshot = await store.snapshots.get(body.snapshotId);
-			const objectId = snapshot?.ref?.split("/")[1];
-			if (snapshot === undefined || snapshot.kind !== "saved" || snapshot.state !== "ready" || objectId === undefined) {
+			const ref = snapshot?.ref;
+			const objectId = ref?.split("/")[1];
+			if (
+				snapshot === undefined ||
+				snapshot.kind !== "saved" ||
+				snapshot.state !== "ready" ||
+				ref === undefined ||
+				objectId === undefined
+			) {
 				throw notFound("saved snapshot");
 			}
 			// Its disk, where it is for this host, as the host's own disk.locate would get it: the host fetches its memory
@@ -11385,6 +11394,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 			}
 			await backend.fetchDisk(host.id, { ...request, ...location });
+			// Fetching there, so a delete of the snapshot reaches the host before its first report of the copy.
+			await diskHolders.recordSnapshotFetch(objectId, "disk", host.id, ref);
 			return undefined;
 		},
 

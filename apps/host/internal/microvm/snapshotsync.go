@@ -201,8 +201,13 @@ func (m *Manager) PrepareSnapshotFetch(ctx context.Context, id string, record []
 	staged.Memory = false
 	raw, _ := json.MarshalIndent(staged, "", "  ")
 	// Under the base lock, as a snapshot's save names its base: a prune sees the image in use from here (BasesUnder),
-	// and one that took it meanwhile is found here.
+	// and one that took it meanwhile is found here. Not for a snapshot deleted here meanwhile (autoMu).
 	defer m.holdBases()()
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
+	if m.snapshotRetired[id] {
+		return fmt.Errorf("snapshot %s was deleted on this host", id)
+	}
 	if !fileExists(rootfs) {
 		return fmt.Errorf("%w: %s went while the fetch was made ready", ErrNoSnapshotImage, rootfs)
 	}
@@ -238,7 +243,13 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 		}
 		return path, nil
 	}
+	// A host image, by its portable identity: a version's name and the digest it was downloaded with. A version's name
+	// alone isn't one: an image from before versions is named on its own host alone (images.Store's migration).
+	want := runtimePart(snap.Runtime, "image")
 	if version := images.VersionOf(rootfs); version != "" {
+		if want == "" {
+			return "", fmt.Errorf("%w: its host image %s has no recorded digest, so it can't be told to be this host's", ErrNoSnapshotImage, version)
+		}
 		if m.cfg.HostImage == nil {
 			return "", fmt.Errorf("%w: it is host image %s, and this host doesn't keep its images by version", ErrNoSnapshotImage, version)
 		}
@@ -246,9 +257,11 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 		if err != nil {
 			return "", fmt.Errorf("%w: host image %s: %w", ErrNoSnapshotImage, version, err)
 		}
+		if have, ok := m.runtimeImage(path); !ok || have != want {
+			return "", fmt.Errorf("%w: this host's %s is another image (%q, not %q)", ErrNoSnapshotImage, version, have, want)
+		}
 		return path, nil
 	}
-	want := runtimePart(snap.Runtime, "image")
 	if have, ok := m.runtimeImage(m.cfg.Rootfs); ok && want != "" && have == want {
 		return m.cfg.Rootfs, nil
 	}
@@ -356,6 +369,9 @@ func (m *Manager) PublishFetchedSnapshot(id, version string, partial *os.File, m
 	if err != nil {
 		return err
 	}
+	if m.snapshotRetired[id] {
+		return fmt.Errorf("snapshot %s was deleted on this host while it was fetched", id)
+	}
 	if version == SnapshotDisk {
 		if _, err := os.Lstat(m.snapshotDir(id)); err == nil {
 			m.discardSnapshotPartial(id, version)
@@ -449,6 +465,25 @@ func (m *Manager) publishSnapshotMemory(id, path string, mapFile, state []byte) 
 	snap.SizeBytes = snapshotBytes(dir)
 	raw, _ := json.MarshalIndent(snap, "", "  ")
 	return fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
+}
+
+// dropSnapshotFetch ends a fetch of a snapshot this host hasn't published yet, as a delete of it does: its fetch's
+// directory goes, and it is never published (snapshotRetired). False when there is none. Called with autoMu held.
+func (m *Manager) dropSnapshotFetch(id string) bool {
+	m.retireSnapshot(id)
+	if !fileExists(m.snapshotFetchDir(id)) {
+		return false
+	}
+	_ = os.RemoveAll(m.snapshotFetchDir(id))
+	return true
+}
+
+// retireSnapshot marks a snapshot deleted on this host, so no fetch of it publishes it again. Called with autoMu held.
+func (m *Manager) retireSnapshot(id string) {
+	if m.snapshotRetired == nil {
+		m.snapshotRetired = map[string]bool{}
+	}
+	m.snapshotRetired[id] = true
 }
 
 // SnapshotPartials are the fetches of snapshots' versions left unfinished, by ID and version: a disk's from when its

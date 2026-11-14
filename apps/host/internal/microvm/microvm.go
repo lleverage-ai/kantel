@@ -422,6 +422,9 @@ type Manager struct {
 	tpl *templateCache
 	// snapshotMaps is saved snapshots' block maps (snapshotsync.go).
 	snapshotMaps snapshotMaps
+	// snapshotRetired are the snapshots deleted on this host since it started, which no fetch from a peer publishes
+	// again (snapshotsync.go); under autoMu.
+	snapshotRetired map[string]bool
 	// builds are the template builds admitted and not yet ended, by snapshot ID, with their machines: guarded by mu,
 	// with sandboxes, so a create and a build are admitted one at a time against what both hold.
 	builds map[string]proto.Size
@@ -4080,17 +4083,26 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	return answer, nil
 }
 
-// DeleteSnapshot removes a snapshot.
+// DeleteSnapshot removes a snapshot. A copy being fetched from a peer (snapshotsync.go), published or not, goes too, and
+// its fetch never publishes it.
 func (m *Manager) DeleteSnapshot(id string) error {
 	if _, err := m.readSnapshot(id); err != nil {
+		if validID(id) {
+			m.autoMu.Lock()
+			dropped := m.dropSnapshotFetch(id)
+			m.autoMu.Unlock()
+			if dropped {
+				return nil
+			}
+		}
 		return err
 	}
 	defer m.evictBundles()
-	// Not while a keep links it (KeepSnapshot), or a fetch of its memory publishes it (snapshotsync.go).
+	// Not while a keep links it (KeepSnapshot), or a fetch of it publishes it (snapshotsync.go).
 	m.autoMu.Lock()
 	defer m.autoMu.Unlock()
 	// A fetch of its memory under way, if any, has nothing to go into.
-	_ = os.RemoveAll(m.snapshotFetchDir(id))
+	m.dropSnapshotFetch(id)
 	return os.RemoveAll(m.snapshotDir(id))
 }
 

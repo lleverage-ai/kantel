@@ -121,6 +121,12 @@ export interface HoldingsReport {
 /** The one version of a template's root filesystem. */
 export const ROOTFS_VERSION = "1";
 
+/**
+ * How long a host told to fetch a saved snapshot is counted as fetching it (`DiskHolders.recordSnapshotFetch`) while its
+ * reports don't list it.
+ */
+export const SNAPSHOT_FETCH_MS = 24 * 60 * 60_000;
+
 /** A saved snapshot's versions (the host's `SnapshotDiskVersion` and `SnapshotMemoryVersion`): its disk, and its memory. */
 export const SNAPSHOT_VERSIONS: readonly string[] = ["disk", "memory"];
 
@@ -145,6 +151,12 @@ export interface DiskHolders {
 	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/** A version just committed on `hostId`: the host it was made on holds it. */
 	recordCommit(kind: DiskKind, objectId: string, version: string, hostId: string): Promise<void>;
+	/**
+	 * `hostId` was told to fetch a saved snapshot's version, a copy of `ref`: it is `fetching` there until its reports
+	 * say it holds it (or for `SNAPSHOT_FETCH_MS` at most), so deleting the snapshot reaches it before its first report.
+	 * Nothing when it holds it already.
+	 */
+	recordSnapshotFetch(objectId: string, version: string, hostId: string, ref: string): Promise<void>;
 	/** Answers `disk.locate` from `hostId`. */
 	locate(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
@@ -484,18 +496,20 @@ export function createDiskHolders(options: {
 	}
 
 	/**
-	 * The saved snapshot a host's snapshot ID is: the one with the ref its holders were recorded with, or a ref naming
-	 * one of them or `hostId` (the host reporting or asking) and the ID. With the host its ref names, whose pool it is in
-	 * when it records none (taken before pools). Undefined when the catalogue has none ready.
+	 * The saved snapshot a host's snapshot ID is: the one with a ref naming `hostId` (the host reporting it, which saved
+	 * it) and the ID, else the ref its holders were recorded with, else a ref naming one of them. With the host its ref
+	 * names, whose pool it is in when it records none (taken before pools). Undefined when the catalogue has none ready.
+	 * A host's snapshot ID is its own choice, so two refs may share one: each copy is held as the ref it was recorded
+	 * with.
 	 */
 	async function savedSnapshot(
 		objectId: string,
 		holders: readonly StoredDiskHolder[],
 		hostId: string,
 	): Promise<{ readonly record: StoredSnapshot; readonly hostId: string; readonly ref: string } | undefined> {
-		const refs = new Set<string>();
+		const refs = new Set<string>([`${hostId}/${objectId}`]);
 		for (const holder of holders) if (holder.ref !== undefined) refs.add(holder.ref);
-		for (const each of [hostId, ...holders.map((holder) => holder.hostId)]) refs.add(`${each}/${objectId}`);
+		for (const holder of holders) refs.add(`${holder.hostId}/${objectId}`);
 		for (const ref of refs) {
 			const [refHost, refId] = ref.split("/");
 			if (refHost === undefined || refId !== objectId) continue;
@@ -536,6 +550,8 @@ export function createDiskHolders(options: {
 		const byDigest = new Map<string, { hostId: string; address: string; since: number }[]>();
 		for (const holder of held) {
 			if (holder.version !== request.version || holder.state !== "held" || holder.mapDigest === undefined) continue;
+			// A copy of this snapshot, not of another ref that shares its ID.
+			if (holder.ref !== found.ref) continue;
 			if (holder.hostId === hostId) continue;
 			const host = hosts.get(holder.hostId);
 			// Online (a draining host still serves), in the snapshot's pool, and of the asker's architecture.
@@ -579,7 +595,9 @@ export function createDiskHolders(options: {
 			const letGo = (holders: readonly StoredDiskHolder[], reported: ReadonlySet<string>) => {
 				for (const holder of holders) {
 					if (reported.has(versionKey(holder.objectId, holder.version))) continue;
-					if (holder.state === "fetching" || holder.since > at - options.reportGraceMs) continue;
+					// One being fetched is let go only once its fetch has had long enough (SNAPSHOT_FETCH_MS).
+					const fetching = holder.state === "fetching" && holder.since > at - SNAPSHOT_FETCH_MS;
+					if (fetching || holder.since > at - options.reportGraceMs) continue;
 					release.push(holder);
 				}
 			};
@@ -718,6 +736,20 @@ export function createDiskHolders(options: {
 				letGo(mine, new Set(reported.keys()));
 			}
 			if (hold.length > 0 || release.length > 0) await store.diskHolderWrites.reconcile(hostId, at, { hold, release });
+		},
+		async recordSnapshotFetch(objectId, version, hostId, ref) {
+			const id = diskHolderId("snapshot", objectId, version, hostId);
+			if ((await store.diskHolders.get(id))?.state === "held") return;
+			await store.diskHolders.put({
+				id,
+				kind: "snapshot",
+				objectId,
+				version,
+				hostId,
+				state: "fetching",
+				since: now(),
+				ref,
+			});
 		},
 		async recordCommit(kind, objectId, version, hostId) {
 			const holder: StoredDiskHolder = {

@@ -317,6 +317,20 @@ func TestSnapshotFetchNeedsItsRootImage(t *testing.T) {
 	if err := b.PrepareSnapshotFetch(ctx, "snap1", record(missing)); !errors.Is(err, ErrNoSnapshotImage) {
 		t.Fatalf("a version that can't be had: %v", err)
 	}
+	// A version is the same image only by the digest it was downloaded with: one under its name here that differs, and
+	// one whose digest its host never recorded (an image from before versions, named on that host alone), are refused.
+	sidecar := filepath.Join(filepath.Dir(versionFile(b, "old")), "sandbox.ext4.sha256-source")
+	good, _ := os.ReadFile(sidecar)
+	_ = os.WriteFile(sidecar, []byte(strings.Repeat("cd", 32)), 0o644)
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", record(snap)); !errors.Is(err, ErrNoSnapshotImage) {
+		t.Fatalf("another image under the version's name: %v", err)
+	}
+	_ = os.WriteFile(sidecar, good, 0o644)
+	unrecorded := snap
+	unrecorded.Runtime = ""
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", record(unrecorded)); !errors.Is(err, ErrNoSnapshotImage) {
+		t.Fatalf("a version without a recorded digest: %v", err)
+	}
 	b.cfg.HostImage = nil
 	if err := b.PrepareSnapshotFetch(ctx, "snap1", record(snap)); !errors.Is(err, ErrNoSnapshotImage) {
 		t.Fatalf("without versioned images: %v", err)
@@ -478,5 +492,49 @@ func TestKeptSnapshotLinksItsMaps(t *testing.T) {
 		if got := digestOf(held, "snap2", version); got == "" || got != digestOf(held, "snap1", version) {
 			t.Fatalf("snap2's %s: %q", version, got)
 		}
+	}
+}
+
+// A delete of a snapshot being fetched, before it is published, ends its fetch: its directory goes, and neither the fetch
+// nor a new one publishes it.
+func TestDeletingASnapshotBeingFetched(t *testing.T) {
+	ctx := context.Background()
+	a, _ := snapshotSyncHost(t)
+	b, _ := snapshotSyncHost(t)
+	saveTestSnapshot(t, a, "snap1", "old", false)
+	if err := a.mapSnapshot(ctx, "snap1"); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := a.ReadSnapshotFile("snap1", SnapshotDisk, SnapshotRecordFile)
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", record); err != nil {
+		t.Fatal(err)
+	}
+	path, err := b.SnapshotPartial("snap1", SnapshotDisk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("half"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	partial, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer partial.Close()
+	if err := b.DeleteSnapshot("snap1"); err != nil {
+		t.Fatalf("a delete of a fetch under way: %v", err)
+	}
+	if fileExists(b.snapshotFetchDir("snap1")) {
+		t.Fatal("its fetch's directory left")
+	}
+	if err := b.PublishFetchedSnapshot("snap1", SnapshotDisk, partial, nil, nil); err == nil || fileExists(b.snapshotDir("snap1")) {
+		t.Fatalf("published after its delete: %v", err)
+	}
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", record); err == nil {
+		t.Fatal("made ready again after its delete")
+	}
+	var pe *proto.Error
+	if err := b.DeleteSnapshot("snap2"); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+		t.Fatalf("a snapshot the host never had: %v", err)
 	}
 }

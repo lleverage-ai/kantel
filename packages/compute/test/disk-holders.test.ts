@@ -641,6 +641,7 @@ describe("disk holders", () => {
 		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
 			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST }] }] },
 		});
+		const disk = { kind: "snapshot", objectId: "hs1", version: "disk" };
 		await tom.fetchHostSnapshot("host_b", { snapshotId: snap.id });
 		expect(fetches).toEqual([
 			{
@@ -662,14 +663,31 @@ describe("disk holders", () => {
 		await expect(tom.fetchHostSnapshot("host_b", { snapshotId: "snap_missing" })).rejects.toMatchObject({
 			code: "not_found",
 		});
-		// host_b has its copy now: deleting the snapshot deletes its bytes on its host, then the copy, and forgets both.
-		tom.clock.now += 1;
-		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
-			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		// host_b is fetching it from now: a delete before its first report reaches it.
+		expect(await tom.api.store.diskHolders.get(`snapshot:hs1:disk:host_b`)).toMatchObject({
+			state: "fetching",
+			ref: `${STUB_HOST_ID}/hs1`,
 		});
+		// Another ref that shares the host's ID (a host may name its snapshots as it likes): its holders and bytes stay.
+		const other = await tom.saved("hs1-other");
+		await tom.api.store.snapshots.update(other.id, (current) => ({ ...current, ref: "host_g/hs1" }));
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings("host_g", tom.clock.now, {
+			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: OTHER_DIGEST }] }] },
+		});
+		expect(await tom.api.store.diskHolders.get(`snapshot:hs1:disk:host_g`)).toMatchObject({ ref: "host_g/hs1" });
+		// Nor is it offered as a copy of this one.
+		expect((await tom.api.service.locateDisk("host_d", disk)).holders.map((each) => each.hostId)).toEqual([
+			STUB_HOST_ID,
+		]);
+		// Deleting the snapshot deletes its bytes on its host, then host_b's copy, and forgets both, but not host_g's.
 		await tom.deleteSnapshot(snap.id);
 		expect(deleted).toEqual([`${STUB_HOST_ID}/hs1`, "host_b/hs1"]);
-		expect((await tom.api.store.diskHolders.list()).filter((holder) => holder.kind === "snapshot")).toEqual([]);
+		expect(
+			(await tom.api.store.diskHolders.list())
+				.filter((holder) => holder.kind === "snapshot")
+				.map((each) => each.hostId),
+		).toEqual(["host_g"]);
 	});
 
 	it("has a host fetch a version from its pool's holders, with a grant naming it", async () => {
