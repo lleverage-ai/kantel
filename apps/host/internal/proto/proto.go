@@ -239,11 +239,21 @@ const FeatureDiskSync = "disk-sync"
 // disk.fetch for them. It comes with FeatureDiskSync, on the microVM tier.
 const FeatureRootfsSync = "rootfs-sync"
 
-// Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, and a template's
-// root filesystem.
+// FeatureTemplateSync: template snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3
+// notes"), kind DiskKindTemplate, each its snapshot ID (TemplateBuildParams.SnapshotID) in one version, "1", whose
+// disk and memory are its parts (each block-mapped, its manifest the version's map) and whose state, meta and drive
+// counts go whole: the host maps each one's parts, lists those with maps in Capacity.Holdings with what each was made
+// on (ObjectVersionHolding.CPU and Runtime), serves them to its mesh peers, and a template.build first fetches the
+// snapshot from a peer whose copy restores on this host's CPU and runtime (disk.locate answers only those), booting it
+// only when none has one. It comes with FeatureRootfsSync, on the microVM tier.
+const FeatureTemplateSync = "template-sync"
+
+// Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
+// filesystem, and a template snapshot.
 const (
-	DiskKindSticky = "sticky"
-	DiskKindRootfs = "rootfs"
+	DiskKindSticky   = "sticky"
+	DiskKindRootfs   = "rootfs"
+	DiskKindTemplate = "template"
 )
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
@@ -547,7 +557,8 @@ type Capacity struct {
 	// inventory couldn't be read in full. The control plane forgets versions missing from a report, never on an absent
 	// one, so the two must stay distinct.
 	StickyDisks []StickyDiskHolding `json:"stickyDisks,omitzero"`
-	// Holdings are the disk store objects of other kinds the host holds, by kind (DiskKindRootfs, FeatureRootfsSync):
+	// Holdings are the disk store objects of other kinds the host holds, by kind (DiskKindRootfs, FeatureRootfsSync;
+	// DiskKindTemplate, FeatureTemplateSync):
 	// a kind's list is every object of that kind it holds, [] for none; a kind left out says nothing of it (a host without
 	// it, or an inventory that couldn't be read in full), so the control plane forgets nothing of that kind.
 	Holdings map[string][]ObjectHolding `json:"holdings,omitempty"`
@@ -1162,15 +1173,21 @@ type ObjectHolding struct {
 // one), the bytes it takes on the host's disk, and the pool the host made it in (built it, or began fetching it), as
 // Welcome.PoolID said then: a copy made in one pool is offered only there, wherever its host moves. Absent from a copy
 // made before the host kept it, or while no welcome had named a pool.
+//
+// A template snapshot's (DiskKindTemplate) also says what its memory was made on, as TemplateBuildResult does: its CPU
+// and its portable runtime. Only a host with the same CPU and that runtime among its own restores it.
 type ObjectVersionHolding struct {
-	Version        string `json:"version"`
-	MapDigest      string `json:"mapDigest"`
-	AllocatedBytes int64  `json:"allocatedBytes"`
-	Pool           string `json:"pool,omitempty"`
+	Version        string          `json:"version"`
+	MapDigest      string          `json:"mapDigest"`
+	AllocatedBytes int64           `json:"allocatedBytes"`
+	Pool           string          `json:"pool,omitempty"`
+	CPU            *CPUFingerprint `json:"cpu,omitempty"`
+	Runtime        string          `json:"runtime,omitempty"`
 }
 
 // DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is
-// DiskKindSticky, or DiskKindRootfs (FeatureRootfsSync).
+// DiskKindSticky, or DiskKindRootfs (FeatureRootfsSync), or DiskKindTemplate (FeatureTemplateSync), for which Kantel
+// answers only holders whose copy restores on the asking host's CPU and runtime.
 type DiskLocateParams struct {
 	Kind     string `json:"kind"`
 	ObjectID string `json:"objectId"`

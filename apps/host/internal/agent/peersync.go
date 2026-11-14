@@ -1,7 +1,7 @@
 package agent
 
 // Peer sync (docs/design/disk-store.md, "2c. Peer sync"): while the host is in its pool's mesh, it serves the disk
-// store objects it holds (sticky disks' versions, templates' root filesystems) to the pool's other hosts, on its mesh
+// store objects it holds (sticky disks' versions, templates' root filesystems, template snapshots) to the pool's other hosts, on its mesh
 // address, to those with a grant from the control plane; and it fetches versions from them (disk.fetch, or a create
 // attaching a sticky disk version it doesn't hold), moving only the blocks that differ from its nearest version. Both
 // directions are held to --sync-rate.
@@ -115,7 +115,8 @@ func (h *Host) followPeerSync(w *proto.Welcome) {
 func (h *Host) fetchesSticky() bool { return h.fetches(proto.DiskKindSticky) }
 
 // fetches says whether the host fetches objects of a kind from its peers: it runs the mesh, and a tier has the kind
-// (FeatureDiskSync for sticky disks, FeatureRootfsSync for templates' root filesystems).
+// (FeatureDiskSync for sticky disks, FeatureRootfsSync for templates' root filesystems, FeatureTemplateSync for
+// template snapshots).
 func (h *Host) fetches(kind string) bool {
 	_, ok := h.syncKinds()[kind]
 	return ok && h.fetcher != nil
@@ -166,6 +167,39 @@ func (h *Host) fetchRootfs(ctx context.Context, key string) error {
 	}
 	if len(at.Holders) == 0 || at.Grant == "" || at.MapDigest == "" {
 		return microvm.ErrNoPeerRootfs
+	}
+	job := h.fetcher.Start(disksync.Request{Ref: ref, MapDigest: at.MapDigest, Holders: at.Holders, Grant: at.Grant})
+	select {
+	case <-job.Done():
+		_, err := job.Result()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// fetchTemplate fetches a template snapshot from a host in the pool whose copy restores on this host's CPU and runtime,
+// for a build (microvm.Config.FetchTemplate), and waits for it: microvm.ErrNoPeerTemplate when the host doesn't fetch
+// them, or none holds one. A build that stops waiting leaves the fetch to go on, for the next.
+func (h *Host) fetchTemplate(ctx context.Context, snapshotID string) error {
+	if !h.fetches(proto.DiskKindTemplate) || !h.connected() {
+		return microvm.ErrNoPeerTemplate
+	}
+	if _, up := h.mesh.Address(); !up {
+		return microvm.ErrNoPeerTemplate
+	}
+	ref := disksync.Ref{Kind: proto.DiskKindTemplate, ObjectID: snapshotID, Version: microvm.TemplateVersion}
+	at, err := h.locateDisk(ctx, ref)
+	// A control plane that keeps no copies of template snapshots (one from before them, or with templates off), or no
+	// such snapshot: none to fetch.
+	if pe := (*proto.Error)(nil); errors.As(err, &pe) && (pe.Code == proto.ErrUnsupported || pe.Code == proto.ErrNotFound) {
+		return microvm.ErrNoPeerTemplate
+	}
+	if err != nil {
+		return fmt.Errorf("disk.locate: %w", err)
+	}
+	if len(at.Holders) == 0 || at.Grant == "" || at.MapDigest == "" {
+		return microvm.ErrNoPeerTemplate
 	}
 	job := h.fetcher.Start(disksync.Request{Ref: ref, MapDigest: at.MapDigest, Holders: at.Holders, Grant: at.Grant})
 	select {
@@ -242,9 +276,26 @@ type RootfsFetcher interface {
 
 var _ RootfsFetcher = (*microvm.Manager)(nil)
 
+// TemplateFetcher is a tier whose template snapshots the host serves to its peers and fetches from them
+// (FeatureTemplateSync): the microVM tier.
+type TemplateFetcher interface {
+	HoldsTemplate(id, version string) bool
+	OpenTemplatePart(id, version, part string, withMap bool) (*os.File, []byte, error)
+	ReadTemplateFile(id, version, name string) ([]byte, error)
+	TemplatePartPartial(id, version, part string) (string, error)
+	PublishFetchedTemplate(id, version string, parts map[string]disksync.FetchedPart, files map[string][]byte) error
+	TemplatePartials() []string
+	ReserveTemplateFetch(bytes int64) (release func(), err error)
+	DiscardTemplateFetch(id string)
+	// TemplateHoldings are the template snapshots it holds with maps (Capacity.Holdings): nil when they can't be read.
+	TemplateHoldings() []proto.ObjectHolding
+}
+
+var _ TemplateFetcher = (*microvm.Manager)(nil)
+
 // syncKinds are the kinds of object the host serves to its peers and fetches from them, each the microVM tier's: its
-// sticky disks' versions, and its templates' root filesystems. Looked up on each call: the tiers are made after peer
-// sync is.
+// sticky disks' versions, its templates' root filesystems, and its template snapshots. Looked up on each call: the
+// tiers are made after peer sync is.
 func (h *Host) syncKinds() disksync.Kinds {
 	k := disksync.Kinds{}
 	if t, ok := h.tiers[microvm.Tier].(StickyFetcher); ok {
@@ -252,6 +303,9 @@ func (h *Host) syncKinds() disksync.Kinds {
 	}
 	if t, ok := h.tiers[microvm.Tier].(RootfsFetcher); ok {
 		k[proto.DiskKindRootfs] = rootfsObjects{t}
+	}
+	if t, ok := h.tiers[microvm.Tier].(TemplateFetcher); ok {
+		k[proto.DiskKindTemplate] = templateObjects{t}
 	}
 	return k
 }
@@ -288,6 +342,20 @@ func (s peerStore) Reserve(r disksync.Ref, bytes int64) (func(), error) {
 }
 
 func (s peerStore) Discard(r disksync.Ref) { s.h.syncKinds().Discard(r) }
+
+func (s peerStore) Parts(kind string) []string { return s.h.syncKinds().Parts(kind) }
+
+func (s peerStore) OpenPart(r disksync.Ref, part string, withMap bool) (*os.File, []byte, error) {
+	return s.h.syncKinds().OpenPart(r, part, withMap)
+}
+
+func (s peerStore) PartPartial(r disksync.Ref, part string) (string, error) {
+	return s.h.syncKinds().PartPartial(r, part)
+}
+
+func (s peerStore) PublishParts(r disksync.Ref, parts map[string]disksync.FetchedPart, files map[string][]byte) error {
+	return s.h.syncKinds().PublishParts(r, parts, files)
+}
 
 // stickyObjects are a tier's sticky disks' versions: one file each, with no small files.
 type stickyObjects struct{ t StickyFetcher }
@@ -369,3 +437,59 @@ func (s rootfsObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
 }
 
 func (s rootfsObjects) Discard(r disksync.Ref) { s.t.DiscardRootfsPartial(r.ObjectID) }
+
+// templateObjects are a tier's template snapshots: one version each, its disk and memory its parts and its state, meta
+// and drive counts whole, with no nearest version to start a fetch from.
+type templateObjects struct{ t TemplateFetcher }
+
+var _ disksync.Parted = templateObjects{}
+
+func (s templateObjects) Parts(string) []string { return microvm.TemplateParts }
+
+func (s templateObjects) Open(string, string, string, bool) (*os.File, []byte, error) {
+	return nil, nil, fs.ErrNotExist
+}
+
+func (s templateObjects) OpenPart(r disksync.Ref, part string, withMap bool) (*os.File, []byte, error) {
+	return s.t.OpenTemplatePart(r.ObjectID, r.Version, part, withMap)
+}
+
+func (s templateObjects) ReadFile(_, objectID, version, name string) ([]byte, error) {
+	return s.t.ReadTemplateFile(objectID, version, name)
+}
+
+func (s templateObjects) Held(r disksync.Ref) bool { return s.t.HoldsTemplate(r.ObjectID, r.Version) }
+
+func (s templateObjects) Partial(disksync.Ref) (string, error) {
+	return "", errors.New("a template snapshot is fetched by its parts")
+}
+
+func (s templateObjects) PartPartial(r disksync.Ref, part string) (string, error) {
+	return s.t.TemplatePartPartial(r.ObjectID, r.Version, part)
+}
+
+func (s templateObjects) CloneNearest(disksync.Ref, string) (*blockmap.Map, error) { return nil, nil }
+
+func (s templateObjects) Files(disksync.Ref) []string { return microvm.TemplateFiles }
+
+func (s templateObjects) Publish(disksync.Ref, *os.File, []byte, map[string][]byte) error {
+	return errors.New("a template snapshot is published by its parts")
+}
+
+func (s templateObjects) PublishParts(r disksync.Ref, parts map[string]disksync.FetchedPart, files map[string][]byte) error {
+	return s.t.PublishFetchedTemplate(r.ObjectID, r.Version, parts, files)
+}
+
+func (s templateObjects) Partials() []disksync.Ref {
+	var out []disksync.Ref
+	for _, id := range s.t.TemplatePartials() {
+		out = append(out, disksync.Ref{Kind: proto.DiskKindTemplate, ObjectID: id, Version: microvm.TemplateVersion})
+	}
+	return out
+}
+
+func (s templateObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
+	return s.t.ReserveTemplateFetch(bytes)
+}
+
+func (s templateObjects) Discard(r disksync.Ref) { s.t.DiscardTemplateFetch(r.ObjectID) }

@@ -211,7 +211,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
-			FetchSticky: h.fetchStickyLater, FetchRootfs: h.fetchRootfs, Pool: h.pool,
+			FetchSticky: h.fetchStickyLater, FetchRootfs: h.fetchRootfs, FetchTemplate: h.fetchTemplate,
+			Pool: h.pool,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
@@ -385,6 +386,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.fetches(proto.DiskKindRootfs) {
 		features = append(features, proto.FeatureRootfsSync)
 	}
+	if h.fetches(proto.DiskKindTemplate) {
+		features = append(features, proto.FeatureTemplateSync)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -448,11 +452,19 @@ func (h *Host) Capacity() proto.Capacity {
 	if t, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
 		c.StickyDisks = t.StickyHoldings()
 	}
-	// Templates' root filesystems, with FeatureRootfsSync: what the host holds of other kinds is reported only while it
-	// serves them.
+	// Templates' root filesystems, with FeatureRootfsSync, and template snapshots, with FeatureTemplateSync: what the
+	// host holds of other kinds is reported only while it serves them.
 	if t, ok := h.tiers[microvm.Tier].(RootfsFetcher); ok && h.fetches(proto.DiskKindRootfs) {
 		if held := t.RootfsHoldings(); held != nil {
 			c.Holdings = map[string][]proto.ObjectHolding{proto.DiskKindRootfs: held}
+		}
+	}
+	if t, ok := h.tiers[microvm.Tier].(TemplateFetcher); ok && h.fetches(proto.DiskKindTemplate) {
+		if held := t.TemplateHoldings(); held != nil {
+			if c.Holdings == nil {
+				c.Holdings = map[string][]proto.ObjectHolding{}
+			}
+			c.Holdings[proto.DiskKindTemplate] = held
 		}
 	}
 	if h.mesh != nil {

@@ -36,7 +36,8 @@ func (m *Manager) DiskBreakdown(seen *fsutil.Seen) DiskBreakdown {
 	var out DiskBreakdown
 	out.Images = fsutil.Allocated(filepath.Join(m.cfg.Root, "images"), seen)
 	out.Templates = fsutil.Allocated(filepath.Join(m.cfg.Root, "templates"), seen) +
-		fsutil.Allocated(filepath.Join(m.cfg.Root, templateSnapshotsDir), seen)
+		fsutil.Allocated(filepath.Join(m.cfg.Root, templateSnapshotsDir), seen) +
+		fsutil.Allocated(filepath.Join(m.cfg.Root, templateFetchesDir), seen)
 	out.Sandboxes = fsutil.Allocated(filepath.Join(m.cfg.Root, "sandboxes"), seen)
 	type file struct {
 		bytes   int64

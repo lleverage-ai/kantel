@@ -9,7 +9,8 @@ package disksync
 //
 // A version is one block-mapped file (map and data), and, for some kinds, small files beside it that go whole (a
 // template's root filesystem has its record, which names the image it was made from). A kind whose versions have
-// several block-mapped files (a snapshot's disk and memory) is to name them the same way, under files/{name}.
+// several block-mapped files (a template snapshot's disk and memory) names them its parts (parts.go): its map is then
+// its manifest, and each part has its own map and data under parts/{part}.
 //
 // Each request carries a grant (Authorization: Bearer <grant>) the control plane signed, naming this host in from and
 // the asking peer as to. Which peer asks is the request's source address: WireGuard takes a packet from a peer only
@@ -141,6 +142,10 @@ func (s *Server) stopLocked() {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/map", func(w http.ResponseWriter, r *http.Request) {
+		if parted, names := partsOf(s.Source, r.PathValue("kind")); len(names) > 0 {
+			s.serveManifest(w, r, parted)
+			return
+		}
 		f, raw, ok := s.open(w, r, true)
 		if !ok {
 			return
@@ -158,6 +163,24 @@ func (s *Server) Handler() http.Handler {
 		defer f.Close()
 		w.Header().Set("Content-Type", "application/octet-stream")
 		// A version's file never changes once it is published: no validators, so a Range is always served.
+		http.ServeContent(limitedWriter{ResponseWriter: w, ctx: r.Context(), l: s.Limit}, r, "", time.Time{}, f)
+	})
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/parts/{part}/map", func(w http.ResponseWriter, r *http.Request) {
+		f, raw, ok := s.openPart(w, r, true)
+		if !ok {
+			return
+		}
+		f.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
+	})
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/parts/{part}/data", func(w http.ResponseWriter, r *http.Request) {
+		f, _, ok := s.openPart(w, r, false)
+		if !ok {
+			return
+		}
+		defer f.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
 		http.ServeContent(limitedWriter{ResponseWriter: w, ctx: r.Context(), l: s.Limit}, r, "", time.Time{}, f)
 	})
 	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/files/{name}", func(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +218,51 @@ func (s *Server) open(w http.ResponseWriter, r *http.Request, withMap bool) (*os
 	}
 	if err != nil {
 		s.Log.Warn("a version couldn't be opened for a peer", "kind", kind, "object", id, "version", version, "error", err)
+		http.Error(w, "the version couldn't be read", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return f, raw, true
+}
+
+// serveManifest answers a version with parts' map: its manifest, made from its parts' maps.
+func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, parted Parted) {
+	if !s.granted(w, r) {
+		return
+	}
+	ref := Ref{Kind: r.PathValue("kind"), ObjectID: r.PathValue("id"), Version: r.PathValue("version")}
+	raw, err := ManifestOf(parted, ref)
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "this host doesn't hold that version", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.Log.Warn("a version's manifest couldn't be made for a peer", "version", ref.String(), "error", err)
+		http.Error(w, "the version couldn't be read", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
+}
+
+// openPart is open for one part of a version with parts: 404 too for a part its kind hasn't.
+func (s *Server) openPart(w http.ResponseWriter, r *http.Request, withMap bool) (*os.File, []byte, bool) {
+	if !s.granted(w, r) {
+		return nil, nil, false
+	}
+	ref := Ref{Kind: r.PathValue("kind"), ObjectID: r.PathValue("id"), Version: r.PathValue("version")}
+	part := r.PathValue("part")
+	parted, ok := validPart(s.Source, ref.Kind, part)
+	if !ok {
+		http.Error(w, "that kind's versions have no such part", http.StatusNotFound)
+		return nil, nil, false
+	}
+	f, raw, err := parted.OpenPart(ref, part, withMap)
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "this host doesn't hold that version", http.StatusNotFound)
+		return nil, nil, false
+	}
+	if err != nil {
+		s.Log.Warn("a version's part couldn't be opened for a peer", "version", ref.String(), "part", part, "error", err)
 		http.Error(w, "the version couldn't be read", http.StatusInternalServerError)
 		return nil, nil, false
 	}

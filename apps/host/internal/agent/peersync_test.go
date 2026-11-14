@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
+	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -263,5 +264,93 @@ func TestRootfsSync(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("disk.locate not asked")
+	}
+}
+
+// templateFetchTier is a microVM tier whose template snapshots sync too: it holds template snapshot tsn_1.
+type templateFetchTier struct {
+	*rootfsFetchTier
+}
+
+func (r *templateFetchTier) HoldsTemplate(id, version string) bool {
+	return id == "tsn_1" && version == "1"
+}
+func (r *templateFetchTier) OpenTemplatePart(string, string, string, bool) (*os.File, []byte, error) {
+	return nil, nil, fs.ErrNotExist
+}
+func (r *templateFetchTier) ReadTemplateFile(string, string, string) ([]byte, error) {
+	return nil, fs.ErrNotExist
+}
+func (r *templateFetchTier) TemplatePartPartial(string, string, string) (string, error) {
+	return "", errors.New("no partials here")
+}
+func (r *templateFetchTier) PublishFetchedTemplate(string, string, map[string]disksync.FetchedPart, map[string][]byte) error {
+	return nil
+}
+func (r *templateFetchTier) TemplatePartials() []string                 { return nil }
+func (r *templateFetchTier) ReserveTemplateFetch(int64) (func(), error) { return func() {}, nil }
+func (r *templateFetchTier) DiscardTemplateFetch(string)                {}
+func (r *templateFetchTier) TemplateHoldings() []proto.ObjectHolding {
+	return []proto.ObjectHolding{{ObjectID: "tsn_1", Versions: []proto.ObjectVersionHolding{{Version: "1", MapDigest: "sha256:2", Runtime: "firecracker=v1"}}}}
+}
+
+// A host whose microVM tier has template snapshots, with the mesh, reports template-sync and the snapshots it holds
+// beside its root filesystems, and a build's fetch asks disk.locate for the snapshot's one version, answering that
+// none holds it when none does; without the mesh it does none of that.
+func TestTemplateSync(t *testing.T) {
+	tier := &templateFetchTier{&rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
+	without := newLifecycleHost(t, tier.lifecycleTier)
+	without.tiers[microvm.Tier] = tier
+	if slices.Contains(without.makeFacts().Features, proto.FeatureTemplateSync) || without.Capacity().Holdings != nil {
+		t.Fatal("template-sync, or holdings, without the mesh")
+	}
+	if err := without.fetchTemplate(context.Background(), "tsn_2"); !errors.Is(err, microvm.ErrNoPeerTemplate) {
+		t.Fatalf("a fetch without the mesh: %v", err)
+	}
+
+	h := newLifecycleHost(t, tier.lifecycleTier)
+	h.tiers[microvm.Tier] = tier
+	h.mesh = &fakeMesh{up: true}
+	h.cfg.SyncRateMbit = -1
+	located := make(chan proto.DiskLocateParams, 4)
+	h.callKantel = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		located <- params.(proto.DiskLocateParams)
+		return json.RawMessage(`{"holders":[]}`), nil
+	}
+	h.startPeerSync()
+	defer h.syncStop()
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureTemplateSync) {
+		t.Fatalf("features %v", h.makeFacts().Features)
+	}
+	holdings := h.Capacity().Holdings
+	if held := holdings[proto.DiskKindTemplate]; len(held) != 1 || held[0].ObjectID != "tsn_1" || held[0].Versions[0].Runtime != "firecracker=v1" {
+		t.Fatalf("holdings %+v", holdings)
+	}
+	if len(holdings[proto.DiskKindRootfs]) != 1 {
+		t.Fatalf("the root filesystems went: %+v", holdings)
+	}
+	h.mu.Lock()
+	h.link = &caller{}
+	h.mu.Unlock()
+	if err := h.fetchTemplate(context.Background(), "tsn_2"); !errors.Is(err, microvm.ErrNoPeerTemplate) {
+		t.Fatalf("a fetch none holds: %v", err)
+	}
+	select {
+	case p := <-located:
+		if p != (proto.DiskLocateParams{Kind: "template", ObjectID: "tsn_2", Version: "1"}) {
+			t.Fatalf("located %+v", p)
+		}
+	default:
+		t.Fatal("disk.locate not asked")
+	}
+	// A control plane from before template snapshots were objects refuses the kind: none to fetch, not a failure.
+	h.callKantel = func(context.Context, string, any) (json.RawMessage, error) {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "Kantel keeps no copies of template objects yet"}
+	}
+	if err := h.fetchTemplate(context.Background(), "tsn_2"); !errors.Is(err, microvm.ErrNoPeerTemplate) {
+		t.Fatalf("an older control plane: %v", err)
+	}
+	if got := (peerStore{h}).Parts(proto.DiskKindTemplate); !slices.Equal(got, microvm.TemplateParts) {
+		t.Fatalf("parts %v", got)
 	}
 }
