@@ -419,7 +419,10 @@ describe("a create whose answer was lost, in the compute plane", () => {
 			host,
 			id,
 			reconnect,
-			restarted: (wrap?: (backend: SandboxBackend) => SandboxBackend) => gateway(api.store, wrap),
+			restarted: (
+				wrap?: (backend: SandboxBackend) => SandboxBackend,
+				store: ReturnType<typeof createComputeApi>["store"] = api.store,
+			) => gateway(store, wrap),
 			skip: (ms: number) => {
 				skew += ms;
 			},
@@ -576,5 +579,55 @@ describe("a create whose answer was lost, in the compute plane", () => {
 		expect((await root.getSandbox(id)).state).toBe("running");
 		// The one stop is the caller's.
 		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+	});
+	it("stops a create it settles running whose egress its host refuses, at once", async () => {
+		const { api, root, service, hostId, host, id, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = new FakeHost(service, hostId);
+		back.refuse = (method) =>
+			method === "sandbox.egress" ? { code: "unsupported", message: "this host doesn't enforce egress" } : undefined;
+		back.connect([{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		await api.service.sweep();
+		await api.service.idle();
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+		expect((await root.getSandbox(id)).state).toBe("stopped");
+	});
+
+	it("still stops it once the stop's lease is past when its gateway went with the stop decided", async () => {
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = new FakeHost(service, hostId);
+		back.refuse = (method) =>
+			method === "sandbox.egress" ? { code: "unsupported", message: "this host doesn't enforce egress" } : undefined;
+		back.connect([{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		// A gateway that goes the moment it has made the stop due, before its move to stopping.
+		const sandboxes = api.store.sandboxes;
+		const update: typeof sandboxes.update = async (...args) => {
+			const written = await sandboxes.update(...args);
+			if (written?.state === "starting" && written.stopFor !== undefined) throw new Error("the gateway went");
+			return written;
+		};
+		const dying = restarted(undefined, {
+			...api.store,
+			sandboxes: new Proxy(sandboxes, {
+				get: (target, key) => (key === "update" ? update : Reflect.get(target, key)),
+			}),
+		});
+		await dying.service.sweep();
+		await dying.service.idle();
+		expect(back.calls.some((call) => call.method === "sandbox.stop")).toBe(false);
+		expect(await api.store.sandboxes.get(id)).toMatchObject({ state: "starting", stopFor: expect.any(String) });
+		// Another gateway's sweep takes the abandoned stop on once its lease is past.
+		skip(5 * 60_000 + 1);
+		await api.service.sweep();
+		await api.service.idle();
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+		expect((await root.getSandbox(id)).state).toBe("stopped");
 	});
 });

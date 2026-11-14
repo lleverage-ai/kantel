@@ -4385,8 +4385,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		placement?: Placement,
 		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
 		/**
-		 * Only while this holds (a settled create's attempt, `settleLostCreate`): in the write that makes it due and in its
-		 * move to `stopping`, which is what sends the stop, so it never stops a later attempt.
+		 * Only while this holds (a settled create's attempt, `settleLostCreate`) is it made due to stop. Its move to
+		 * `stopping`, which is what sends the stop, is then fenced to that intent and the lifecycle it was made in, which
+		 * making it due doesn't move on and any later attempt does: so it stops the attempt it was decided for, never a
+		 * later one.
 		 */
 		fence: (sandbox: StoredSandbox) => boolean = () => true,
 	): Promise<boolean> {
@@ -4414,7 +4416,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: undefined,
 		);
 		if (due === undefined) return false;
-		const still = (current: StoredSandbox) => current.stopFor === reason && fence(current);
+		const lifecycle = due.lifecycle ?? 0;
+		const still = (current: StoredSandbox) => current.stopFor === reason && (current.lifecycle ?? 0) === lifecycle;
 		const began = await beginStop(due, false, reason, undefined, still, true).catch(() => undefined);
 		if (began !== undefined) {
 			if (wait) await began.work.catch(() => undefined);
