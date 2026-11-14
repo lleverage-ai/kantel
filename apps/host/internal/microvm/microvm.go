@@ -2284,14 +2284,17 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 			unhold()
 			return sandboxOrigin{}, err
 		}
-		if snap.Size != size.Name && snap.Memory {
+		// A copy's memory only over every file its guest had on its drives (snapshotsync.go), which it gets before its
+		// memory: else it boots on its disk.
+		memory := snap.Memory && (!snap.Fetched || m.snapshotDrivesHere(snap))
+		if snap.Size != size.Name && memory {
 			unhold()
 			return sandboxOrigin{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s holds the memory of a %s sandbox, so a sandbox made from it has to be that machine too, not %s (%d vCPU, %d MiB)", p.From, snap.Size, size.Name, size.VCPUs, size.MemoryMiB)}
 		}
 		sdir := m.snapshotDir(p.From)
 		origin := sandboxOrigin{rootfs: m.snapshotRootfs(snap), disk: filepath.Join(sdir, fc.DiskFile), source: "snapshot", guest: snap.Guest, unhold: unhold}
 		origin.stickyDir, origin.stickyDisks = sdir, append([]stickyDisk(nil), snap.StickyDisks...)
-		if snap.Memory {
+		if memory {
 			origin.stickyDrives = snap.StickyDrives
 			origin.state, origin.mem = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			// Its memory holds the guest's mounts of the bundles on its drives then: the same images, on the same drives.
@@ -4066,6 +4069,11 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	}
 	if !kept.Memory {
 		kept.BundleDrives, kept.BundleSlots, kept.StickyDrives = 0, nil, 0
+	}
+	// Its drives' files are its source's, and so are their maps, where its source has them.
+	for _, version := range snapshotDriveVersions(kept) {
+		_, mapFile := snapshotFile(version)
+		_ = os.Link(filepath.Join(from, mapFile), filepath.Join(sdir, mapFile))
 	}
 	// Its own files in full: it shares them with its source, but it is the one kept (snapshotSizes counts them for it).
 	kept.SizeBytes = snapshotBytes(sdir)

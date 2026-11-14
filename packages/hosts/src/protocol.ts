@@ -413,7 +413,10 @@ export const HOST_FEATURES = {
 	 * record) and `memory` (`mem`, with the machine's state). The host maps each saved snapshot's files, lists those with
 	 * maps in `HostCapacity.holdings.snapshot`, serves them to its mesh peers, and takes `disk.fetch` for a snapshot's
 	 * `disk`: it makes sure it has the root image the disk is over first, and fetches the memory too only when its CPU and
-	 * runtime fingerprints match the snapshot's (else its copy boots on its disk). Reported with `diskSync`.
+	 * runtime fingerprints match the snapshot's (else its copy boots on its disk). The files on its machine's drives are
+	 * versions too (`sticky<k>`, its sticky disks' clones; `bundle<i>`, the bundle images on its drives when its memory
+	 * was taken), which a host with this feature serves when it has them and fetches for its copies, the memory only after
+	 * them. Reported with `diskSync`.
 	 */
 	snapshotSync: "snapshot-sync",
 	/**
@@ -485,7 +488,11 @@ export const GUEST_FEATURES = {
 export const HOST_OBJECT_KINDS = ["rootfs", "template", "snapshot"] as const;
 export type HostObjectKind = (typeof HOST_OBJECT_KINDS)[number];
 
-/** A saved snapshot's versions as a disk store object (`HOST_FEATURES.snapshotSync`): its disk, and its memory. */
+/**
+ * A saved snapshot's versions as a disk store object (`HOST_FEATURES.snapshotSync`): its disk, and its memory. The files
+ * on its machine's drives are versions too, `sticky<k>` and `bundle<i>` (the host's `SnapshotStickyVersion` and
+ * `SnapshotBundleVersion`), which hosts fetch from each other by themselves.
+ */
 export const SNAPSHOT_VERSIONS = { disk: "disk", memory: "memory" } as const;
 
 /** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
