@@ -308,6 +308,20 @@ func BasesUnder(root string) (map[string]bool, error) {
 		}
 		add(staged.Rootfs)
 	}
+	// A sandbox being moved here from another host links its image from its import's VM directory (sandboxmove.go).
+	imports, err := entriesOf(filepath.Join(root, sandboxImportsDir))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, sandboxDir := range imports {
+		versions, err := entriesOf(sandboxDir)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, dir := range versions {
+			addVM(filepath.Join(dir, "vm"))
+		}
+	}
 	templates, err := entriesOf(filepath.Join(root, "templates"))
 	if err != nil {
 		errs = append(errs, err)
