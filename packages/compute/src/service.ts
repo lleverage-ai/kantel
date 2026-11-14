@@ -75,6 +75,7 @@ import {
 	type ExecResult,
 	hostNotConnected,
 	isCommandProgress,
+	isCreateOutcomeUnknown,
 	isDetachedWaitEnded,
 	isUpgradeOutcomeUnknown,
 	type MoveOutcome,
@@ -530,6 +531,11 @@ export interface ReportedEgress {
 export const UPGRADE_HEARTBEAT_MS = 20_000;
 /** How long an upgrade may go without saying so before the sweep settles it with its backend. */
 export const UPGRADE_STALE_MS = 2 * 60_000;
+/**
+ * How long after its host reported a create whose answer was lost (made, or not) the sweep settles it
+ * (`settleLostCreate`): time for a gateway still making it, which got the answer, to record it itself.
+ */
+export const CREATE_SETTLE_GRACE_MS = 30_000;
 /** How long a command's end that needs a microVM waits for its owner to record it with its run again. */
 export const RERUN_CLAIM_MS = 10 * 60_000;
 /** What an upgrade whose outcome can't be told yet answers. */
@@ -6546,6 +6552,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		try {
 			placement = await run();
 		} catch (error) {
+			// Its host was sent it and didn't answer (its connection dropped): it may have made it, so it stays starting
+			// until the sweep settles it from what the host reports (`settleLostCreate`), never failed on a guess.
+			if (isCreateOutcomeUnknown(error)) return undefined;
 			return fail(sandboxId, error, "starting");
 		}
 		// Its machine's phases, from this start: none where its backend didn't say, not a previous start's.
@@ -12572,6 +12581,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * A create (or fork) the sweep may settle: `starting`, never placed (`neverPlaced`), and no move, upgrade or stop of
+	 * its own under way, so a backend's word on its create is the only word there is to wait for.
+	 */
+	const unsettledCreate = (sandbox: StoredSandbox): boolean =>
+		sandbox.state === "starting" &&
+		neverPlaced(sandbox) &&
+		sandbox.moving === undefined &&
+		sandbox.upgrading === undefined &&
+		sandbox.stopFor === undefined;
+
+	/**
+	 * The sweep's settling of a create (or fork) whose answer was lost: its host's connection dropped before it answered
+	 * (`isCreateOutcomeUnknown`), or the gateway making it went (a stack object restarted, a replica gone), leaving it
+	 * `starting` with no host. Taken from what its host has reported since (`SandboxBackend.settleCreate`: its hello's
+	 * sandboxes once it reconnects, or an event): running there, it runs, published as its boot would have (`boot`: its
+	 * egress sent again, its `sandbox.running` event, its pending set-up); not made, it fails saying so, any machine the
+	 * host holds for it destroyed first, and a start makes it again (`bootAgain`). One whose host hasn't said is left
+	 * `starting`. A report under `CREATE_SETTLE_GRACE_MS` old is left to the gateway that may still be finishing it.
+	 */
+	async function settleLostCreate(sandboxId: string): Promise<void> {
+		const settleCreate = backend.settleCreate;
+		if (settleCreate === undefined) return;
+		await track([sandboxId], async () => {
+			const latest = await store.sandboxes.get(sandboxId);
+			if (latest === undefined || !unsettledCreate(latest)) return;
+			const outcome = await settleCreate.call(backend, sandboxId);
+			if (outcome.state === "pending" || outcome.reportedAt + CREATE_SETTLE_GRACE_MS > now()) return;
+			if (outcome.state === "failed") {
+				if (outcome.held) await backend.destroy(sandboxId);
+				await fail(sandboxId, new KantelError("unavailable", outcome.reason), "starting");
+				return;
+			}
+			// What egress the lost create sent isn't known: its boot sends what it has now before it runs.
+			const booted = await boot(sandboxId, async () => outcome.placement, latest, { egressRevision: undefined });
+			// Its environments' files now it runs; their repositories wait for a start by someone who may clone them.
+			if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+		});
+	}
+
+	/**
 	 * The sweep's settling of an upgrade whose gateway has gone quiet (`upgrading.heartbeatAt`), or whose outcome its
 	 * backend couldn't tell: done, published; failed, put back. One its backend still can't tell is left for next time.
 	 *
@@ -13071,8 +13120,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}
 			// Upgrades whose gateway has gone quiet (gone mid-upgrade), or whose outcome wasn't known: settled with their
-			// backend, one under way on this gateway left to it.
+			// backend, one under way on this gateway left to it. Creates whose answer was lost likewise, in the background, as
+			// each may ask its host.
 			for (const sandbox of await store.sandboxes.list({ state: "starting" })) {
+				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) keepGoing(settleLostCreate(sandbox.id));
 				// Moves likewise.
 				const moving = sandbox.moving;
 				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {

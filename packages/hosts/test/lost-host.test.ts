@@ -1,10 +1,21 @@
 // A host lost in the middle of a call: Kantel claims no more than the host has said. A create or fork it never answered
 // stays placed on it, counted there, until it reconnects and says what it holds; one it refused, or that never left, is
-// gone. A sandbox on a revoked host is written off by its delete, without asking a host that never comes back.
-import { createRoutedBackend, createStubBackend, HELD_ELSEWHERE, STUB_HOST_ID } from "@kantel/compute";
+// gone. The compute plane's sandbox follows (#880): settled from what the host says, never waited on for the call's
+// timeout. A sandbox on a revoked host is written off by its delete, without asking a host that never comes back.
+import { createKantelClient } from "@kantel/api/sdk";
+import {
+	CREATE_SETTLE_GRACE_MS,
+	createComputeApi,
+	createRoutedBackend,
+	createStubBackend,
+	HELD_ELSEWHERE,
+	joinTokenSpender,
+	STUB_HOST_ID,
+} from "@kantel/compute";
 import { isKantelError, placementReasonOf } from "@kantel/contracts";
-import { afterEach, describe, expect, it } from "vitest";
-import { createHostBackend } from "../src/backend.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CREATE_LOST, createHostBackend } from "../src/backend.ts";
+import type { HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService, unanswered } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -12,7 +23,9 @@ import { createTunnelTickets } from "../src/tunnel.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
 const services: HostsService[] = [];
-afterEach(() => {
+const closers: (() => Promise<void>)[] = [];
+afterEach(async () => {
+	for (const close of closers.splice(0).reverse()) await close();
 	for (const service of services.splice(0)) service.close();
 });
 
@@ -332,5 +345,89 @@ describe("a create made again over two backends", () => {
 		await tick();
 		const error = await backend.create(spec("sbx-wait", [hostId, STUB_HOST_ID])).catch((caught: unknown) => caught);
 		expect(isKantelError(error, "conflict")).toBe(true);
+	});
+});
+
+describe("a create whose answer was lost, in the compute plane", () => {
+	/** The compute API over a host, on a clock the test moves on (its sweep's grace). */
+	async function computeSetup() {
+		let skew = 0;
+		const service = createHostsService({
+			store: createMemoryHostStore(),
+			publicUrl: "https://kantel.test",
+			log: () => undefined,
+		});
+		services.push(service);
+		/** A gateway: another over the same store is this one restarted, with none of its calls in flight. */
+		const gateway = (store?: ReturnType<typeof createComputeApi>["store"]) => {
+			const made = createComputeApi({
+				...(store === undefined ? {} : { store }),
+				backend: createHostBackend({
+					hosts: service,
+					publicUrl: "https://kantel.test",
+					tickets: createTunnelTickets(createMemoryRelayStore()),
+				}),
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer root"
+						? { userId: "usr_root", name: "Root", superAdmin: true }
+						: undefined,
+				fetch: async () => new Response(null, { status: 204 }),
+				publicUrl: "https://kantel.test",
+				now: () => Date.now() + skew,
+			});
+			closers.push(() => made.close());
+			return made;
+		};
+		const api = gateway();
+		service.useJoinTokens(joinTokenSpender(api.store));
+		service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
+		const root = createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const { hostId } = await service.register({ token: (await root.createHostJoinToken({ name: "box" })).token });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+		// The host takes the create and never answers it: its connection drops first.
+		host.hold = (method) => (method === "sandbox.create" ? never() : undefined);
+		const { id } = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.create")).toBe(true));
+		/** The host back, holding `held`; `sweeping`'s sweep run past its grace. */
+		const reconnect = async (held: HostSandbox[], sweeping = api) => {
+			const back = new FakeHost(service, hostId);
+			back.connect(held);
+			await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+			skew += CREATE_SETTLE_GRACE_MS;
+			await sweeping.service.sweep();
+			await sweeping.service.idle();
+			return back;
+		};
+		return { api, root, hostId, host, id, reconnect, restarted: () => gateway(api.store) };
+	}
+
+	it("is settled running on its host once the host reconnects and reports it, by any gateway", async () => {
+		const { api, root, hostId, host, id, reconnect, restarted } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		// Not failed on a guess, and not waited on for the call's timeout either.
+		expect((await root.getSandbox(id)).state).toBe("starting");
+		// Settled by a gateway that never made the call (the stack object restarted, as both hosts dropped together).
+		await reconnect([{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }], restarted());
+		expect(await root.getSandbox(id)).toMatchObject({ state: "running", hostId });
+	});
+
+	it("fails, saying why, when the host reconnects without it, and a start makes it again", async () => {
+		const { api, root, host, id, reconnect } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = await reconnect([]);
+		expect(await root.getSandbox(id)).toMatchObject({ state: "error", reason: CREATE_LOST });
+		await root.startSandbox(id);
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("running");
+		expect(back.calls.filter((call) => call.method === "sandbox.create")).toHaveLength(1);
 	});
 });

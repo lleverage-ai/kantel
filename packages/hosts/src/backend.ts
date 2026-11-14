@@ -30,6 +30,8 @@ import {
 	type BootOptions,
 	type BuiltTemplate,
 	type CommandProgress,
+	type CreateOutcome,
+	createOutcomeUnknown,
 	DetachedWaitEnded,
 	type ExecRequest,
 	type ExecResult,
@@ -52,6 +54,7 @@ import {
 	cpuFingerprint,
 	isMapDigest,
 	isolateRuntime,
+	parseMountStatuses,
 	parseMountsAt,
 	parseStartPhases,
 	withoutAdmission,
@@ -117,6 +120,13 @@ const BROWSER_SURFACE_CHECK = `[ "$(cat ${BROWSER_DISPLAY_RECORD} 2>/dev/null)" 
 const PUBLIC_KEY =
 	/^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$/;
 const FINGERPRINT_MARK = "--kantel-host-key--";
+
+/** What a create whose answer was lost is failed with once its host reconnects without it (`settleCreate`). */
+export const CREATE_LOST =
+	"Its host's connection dropped before it answered the create, and on reconnecting the host didn't have it: start it to make it again";
+/** What a create whose answer was lost is failed with when its host made it and it ended since (`settleCreate`). */
+const CREATE_ENDED =
+	"Its host's connection dropped before it answered the create, and the sandbox it made has ended since";
 
 /** How long each `sandbox.exec.get` of a detached command asks the host to hold its answer for the command to end. */
 export const EXEC_WAIT_MS = 30_000;
@@ -1183,7 +1193,42 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				? false
 				: undefined;
 		},
-		create: createOne,
+		async create(spec) {
+			try {
+				return await createOne(spec);
+			} catch (error) {
+				// Sent and never answered: its host may have made it, so it is settled from what the host says (`settleCreate`).
+				throw isKantelError(error) && unanswered(error) ? createOutcomeUnknown(error) : error;
+			}
+		},
+		async settleCreate(sandboxId): Promise<CreateOutcome> {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			// Not placed (refused, or not admitted yet), or placed and its host hasn't said yet: nothing to go by.
+			if (placement === undefined || placement.state === "starting") return { state: "pending" };
+			const reportedAt = placement.updatedAt;
+			// Its host's hello didn't name it: never made there, or gone with its create.
+			if (placement.state === "lost") return { state: "failed", reason: CREATE_LOST, held: false, reportedAt };
+			// Made there: as the host has it now.
+			const sandbox = await call<HostSandbox>(sandboxId, HostMethods.get);
+			if (sandbox.state !== "running") {
+				const error = typeof sandbox.error === "string" && sandbox.error !== "" ? `: ${sandbox.error}` : "";
+				return {
+					state: "failed",
+					reason: `${CREATE_ENDED} (${String(sandbox.state)}${error}): start it to make it again`,
+					held: true,
+					reportedAt,
+				};
+			}
+			const mounts = parseMountStatuses(sandbox.mounts);
+			return {
+				state: "running",
+				placement: await placed(sandboxId, sandbox, placement.hostId, {
+					placement,
+					...(mounts === undefined ? {} : { mounts }),
+				}),
+				reportedAt,
+			};
+		},
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		async prepareRebase(sandboxId, { eligibleHosts, rebaseTo }) {
 			const { hostId } = await tierOf(sandboxId);

@@ -20,6 +20,7 @@ import { KantelError, placementError } from "@kantel/contracts";
 import type {
 	BackendCapabilities,
 	BackendSize,
+	CreateOutcome,
 	MoveSpec,
 	Placement,
 	SandboxBackend,
@@ -237,6 +238,15 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						const backend = await on(id);
 						if (backend.settleUpgrade === undefined) return { state: "failed" as const };
 						return backend.settleUpgrade(id, operationId);
+					},
+				}),
+		// A create is settled by the backend that placed it; one neither holds isn't placed, so there's nothing to say yet.
+		...(primary.settleCreate === undefined && fallback.settleCreate === undefined
+			? {}
+			: {
+					async settleCreate(id: string): Promise<CreateOutcome> {
+						const backend = (await options.holds(id)) ? primary : fallback;
+						return (await backend.settleCreate?.(id)) ?? { state: "pending" };
 					},
 				}),
 		// A move stays on the backend that holds the sandbox, among its own hosts: its disk is there.
