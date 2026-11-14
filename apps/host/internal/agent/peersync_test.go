@@ -99,6 +99,8 @@ type fetchTier struct {
 	discarded []string
 }
 
+func (f *fetchTier) Usage() (int64, int, int) { return 0, 0, 0 }
+
 func (f *fetchTier) OpenStickyVersion(string, string, bool) (*os.File, []byte, error) {
 	return nil, nil, fs.ErrNotExist
 }
@@ -124,8 +126,8 @@ func (f *fetchTier) DiscardStickyPartial(diskID, version string) {
 // told where to find is asked of disk.locate. One without either refuses disk.fetch.
 func TestDiskFetch(t *testing.T) {
 	without := newLifecycleHost(t, newLifecycleTier())
-	if slices.Contains(without.makeFacts().Features, proto.FeatureDiskSync) {
-		t.Fatal("disk-sync reported without the mesh")
+	if slices.Contains(without.makeFacts().Features, proto.FeatureDiskSync) || without.fetcher != nil {
+		t.Fatal("disk-sync, or a fetcher, without the mesh")
 	}
 	var pe *proto.Error
 	if err := call(t, without, proto.MethodDiskFetch, proto.DiskFetchParams{Kind: "sticky", ObjectID: "ci", Version: "v2"}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
@@ -149,6 +151,10 @@ func TestDiskFetch(t *testing.T) {
 	defer h.syncStop()
 	if !slices.Contains(h.makeFacts().Features, proto.FeatureDiskSync) {
 		t.Fatal("disk-sync not reported")
+	}
+	// None under way: reported as none, not left out.
+	if raw, _ := json.Marshal(h.Capacity()); !strings.Contains(string(raw), `"fetches":[]`) {
+		t.Fatalf("capacity %s", raw)
 	}
 	for name, c := range map[string]struct {
 		p    proto.DiskFetchParams

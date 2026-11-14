@@ -13,6 +13,7 @@ import type {
 	HostDiskMade,
 	HostDiskUsage,
 	HostFacts,
+	HostFetchProgress,
 	HostImages,
 	HostIsolateRuntime,
 	HostMemoryAdmission,
@@ -302,6 +303,7 @@ function capacity(value: unknown): HostCapacity {
 		...memoryReport(value.memory),
 		...stickyHoldings(value.stickyDisks),
 		...objectHoldings(value.holdings),
+		...fetchProgress(value.fetches),
 		...meshHealth(value.mesh),
 	};
 }
@@ -423,6 +425,54 @@ function heldObjects(value: unknown): HostObjectHolding[] | undefined {
 		out.push({ objectId: entry.objectId, versions });
 	}
 	return out;
+}
+
+const FETCH_STATES: ReadonlySet<string> = new Set<HostFetchProgress["state"]>(["queued", "running", "failed"]);
+
+/** The most of a fetch's error a report keeps. */
+const MAX_FETCH_ERROR = 1024;
+
+/** Whether `value` names something: a string of 1 to `MAX_TEXT` characters. */
+const named = (value: unknown): value is string =>
+	typeof value === "string" && value !== "" && value.length <= MAX_TEXT;
+
+/** Whether `value` is a count of blocks: a whole number, 0 or more. */
+const blockCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/**
+ * A capacity's fetches (`HostCapacity.fetches`): left out, saying nothing of them so nothing is let go, when they aren't
+ * a list shaped as kantel-host sends it, or have more than `MAX_HELD_OBJECTS`. A fetch's error is cut to
+ * `MAX_FETCH_ERROR` characters.
+ */
+function fetchProgress(value: unknown): { fetches?: HostFetchProgress[] } {
+	if (!Array.isArray(value) || value.length > MAX_HELD_OBJECTS) return {};
+	const fetches: HostFetchProgress[] = [];
+	for (const entry of value) {
+		if (
+			!isObject(entry) ||
+			!named(entry.kind) ||
+			!named(entry.objectId) ||
+			!named(entry.version) ||
+			typeof entry.state !== "string" ||
+			!FETCH_STATES.has(entry.state) ||
+			!blockCount(entry.blocks) ||
+			!blockCount(entry.inPlace)
+		) {
+			return {};
+		}
+		fetches.push({
+			kind: entry.kind,
+			objectId: entry.objectId,
+			version: entry.version,
+			state: entry.state as HostFetchProgress["state"],
+			blocks: entry.blocks,
+			inPlace: Math.min(entry.inPlace, entry.blocks),
+			...(typeof entry.error === "string" && entry.error !== ""
+				? { error: entry.error.slice(0, MAX_FETCH_ERROR) }
+				: {}),
+		});
+	}
+	return { fetches };
 }
 
 const MEMORY_MODES: ReadonlySet<string> = new Set<HostMemoryMode>(["reserved", "used"]);

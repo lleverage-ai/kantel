@@ -467,6 +467,16 @@ func (h *Host) Capacity() proto.Capacity {
 			c.Holdings[proto.DiskKindTemplate] = held
 		}
 	}
+	// The fetches under way, waiting or failed (FeatureDiskSync), of the kinds the host fetches: [] for none, so the
+	// control plane lets go of those it no longer lists.
+	if kinds := h.syncKinds(); h.fetcher != nil && len(kinds) > 0 {
+		c.Fetches = []proto.FetchProgress{}
+		for _, p := range h.fetcher.Progress() {
+			if _, ok := kinds[p.Kind]; ok {
+				c.Fetches = append(c.Fetches, p)
+			}
+		}
+	}
 	if h.mesh != nil {
 		c.Mesh = h.mesh.Health()
 	}

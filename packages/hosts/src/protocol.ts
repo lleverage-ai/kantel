@@ -668,6 +668,12 @@ export interface HostCapacity {
 	 */
 	readonly holdings?: { readonly [kind in HostObjectKind]?: readonly HostObjectHolding[] };
 	/**
+	 * The disk store versions it is fetching from its peers (`HOST_FEATURES.diskSync`), of any kind: those under way or
+	 * waiting their turn, and those that failed and are left to go on. [] for none. Absent from a host that doesn't fetch,
+	 * and from one from before it said: nothing is let go on it. A version is listed here or as held, never both.
+	 */
+	readonly fetches?: readonly HostFetchProgress[];
+	/**
 	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up: the host's page shows it
 	 * (`Host.mesh`). Absent from a host without the feature, or whose mesh is down (its pool's sync off).
 	 */
@@ -758,6 +764,22 @@ export interface HostObjectVersionHolding {
 	 */
 	readonly cpu?: HostCpuFingerprint;
 	readonly runtime?: string;
+}
+
+/**
+ * One version a host is fetching (`HostCapacity.fetches`, `FetchProgress` in proto.go): waiting its turn behind the
+ * host's other fetches (`queued`), under way (`running`), or stopped by an error with its partial left to go on when it
+ * is asked for again (`failed`); its blocks (every part's, for a kind with parts), 0 until its map has been read; how
+ * many of them are in place; and the last error it met, while it is tried again or has failed.
+ */
+export interface HostFetchProgress {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly state: "queued" | "running" | "failed";
+	readonly blocks: number;
+	readonly inPlace: number;
+	readonly error?: string;
 }
 
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */

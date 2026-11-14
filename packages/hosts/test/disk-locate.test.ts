@@ -187,6 +187,38 @@ describe("the disk store on the host link", () => {
 		);
 	});
 
+	it("passes each report's fetches on, with their progress, and none from a report not shaped as kantel-host sends it", async () => {
+		const recordHoldings = vi.fn(async () => undefined);
+		const { host, hostId } = await setup({ recordHoldings });
+		const running = { kind: "sticky", objectId: "sdk_1", version: "sdv_1", state: "running", blocks: 10, inPlace: 4 };
+		const failed = {
+			kind: "template",
+			objectId: "tsn_1",
+			version: "1",
+			state: "failed",
+			blocks: 0,
+			inPlace: 0,
+			error: "x".repeat(5000),
+		};
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, fetches: [running, failed] } } });
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), {
+				fetches: [running, { ...failed, error: "x".repeat(1024) }],
+			}),
+		);
+		// One fetch in a state Kantel doesn't know, or with a count that isn't one: the report says nothing of fetches.
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { ...capacity, fetches: [running, { ...running, state: "paused" }] } },
+		});
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, fetches: [{ ...running, blocks: -1 }] } } });
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, fetches: [] } } });
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { fetches: [] }),
+		);
+		expect(recordHoldings).toHaveBeenCalledTimes(2);
+	});
+
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {
 		const answer = { mapDigest: "sha256:aa", holders: [{ hostId: "host_b", address: "fd00::2" }], grant: "p.s" };
 		const locateDisk = vi.fn(async (_hostId: string, params: { readonly version: string }) => {

@@ -116,6 +116,7 @@ func partsOf(v any, kind string) (Parted, []string) {
 // fetchParts is fetch for a version with parts: its manifest, then each part's map, then every part's blocks not yet
 // in place, then its small files, then the parts published together.
 func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *holders) (Stats, error) {
+	j := src.job
 	names := parted.Parts(r.Kind)
 	raw, err := src.fetchMap(ctx, "map", "")
 	if err != nil {
@@ -167,10 +168,18 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 		return st, err
 	}
 	defer release()
+	inPlace := 0
 	for _, part := range parts {
+		inPlace += part.p.inPlace()
+	}
+	j.blocks.Store(int64(st.Blocks))
+	j.inPlace.Store(int64(inPlace))
+	for _, part := range parts {
+		before := part.p.inPlace()
 		if err := part.p.clearZeros(); err != nil {
 			return st, err
 		}
+		j.inPlace.Add(int64(part.p.inPlace() - before))
 		runs := part.p.runs()
 		for _, run := range runs {
 			st.Fetched += run.last - run.first + 1

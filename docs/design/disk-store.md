@@ -186,6 +186,8 @@ As described under "On one host" above. A version's map is stored beside it as `
 
 Each host has a sync bandwidth limit (`--sync-rate`, both directions, default 50% of the link it detects) and a cap on concurrent fetches, so a sync can't starve the sandboxes' own network and disk.
 
+**Progress.** As built (LLE-19061): each capacity report from a host that fetches lists its fetches (`HostCapacity.fetches`): kind, object, version, `queued`, `running` or `failed`, the version's blocks (every part's) and how many are in place, and the last error it met. A failed fetch is listed while its partial is left for it to go on (and for 10 minutes after it failed, when it has none), and none is listed once its version is held. The catalogue records each as a `fetching` holder, by the same rules as a held one, and lets one go as soon as a report no longer lists it or lists it held; a report without `fetches` (a host from before them) lets none go. Progress itself stays in the host's last report, not in the catalogue. A `fetching` holder is never offered by `disk.locate`, and doesn't keep a sticky disk's version from being forgotten (a fetch needs a held copy to finish); prefetch and template copies skip a host already fetching.
+
 **Retention with replicas.** A host's budget still frees old versions oldest first, but it never frees a copy the control plane counts as one of an object's required copies (phase 3's second copy of a saved snapshot). The control plane moves that duty to another host before telling the first that it may let go.
 
 ### 2d. Placement and prefetch
@@ -201,7 +203,7 @@ As built (LLE-18993): a create sends each sticky disk's head as the version to a
 - Feature `mesh`: the host runs the mesh device and the peer sync server, and takes `Welcome.mesh` and `mesh.peers`.
 - Feature `disk-sync`: the host makes block maps, takes `disk.fetch` and `disk.delete` for any kind, and answers `disk.locate`'s grants.
 - Host to control plane: `disk.locate { kind, objectId, version }` returns `{ mapDigest, holders: [{ hostId, address }], grant }`.
-- Control plane to host: `disk.fetch { kind, objectId, version, mapDigest, holders, grant }` is answered when the fetch has started; progress and the result come in capacity reports.
+- Control plane to host: `disk.fetch { kind, objectId, version, mapDigest, holders, grant }` is answered when the fetch has started; progress and the result come in capacity reports (`fetches` while under way or failed, then the holdings once held).
 
 ### Order of work
 
