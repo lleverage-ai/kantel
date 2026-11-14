@@ -190,6 +190,15 @@ function settle(kept: StoredSetting, at: number): StoredSetting {
 	};
 }
 
+/**
+ * A published key a write replaces, as retired: it may have begun signing on another gateway just before the write
+ * landed, so it is accepted for a grant's lifetime after its time came.
+ */
+const publishedRetired = (settled: StoredSetting): { readonly publicKey: string; readonly until: number }[] =>
+	settled.next === undefined
+		? []
+		: [{ publicKey: settled.next.publicKey, until: settled.next.from + GRANT_KEY_OVERLAP_MS }];
+
 /** What a gateway that couldn't open the kept key saw of it, to replace it only if it is still that. */
 const keyOf = (kept: StoredSetting) => JSON.stringify([kept.value, kept.sealed, kept.next]);
 
@@ -285,7 +294,11 @@ export function createDiskHolders(options: {
 			const replacement = await made(seal);
 			const written = await write((current) => {
 				if (keyOf(current) !== keyOf(kept)) return undefined;
+				const at = now();
 				const settled = settle(current, at);
+				// The key that signed until now, and one published that may begin signing before this write lands, are each
+				// accepted for a grant's lifetime after they could last have signed.
+				const lastSigned = Math.max(at, settled.next?.from ?? at);
 				return {
 					id: GRANT_KEY,
 					value: replacement.key.publicKey,
@@ -295,7 +308,8 @@ export function createDiskHolders(options: {
 					updatedBy: "gateway",
 					retired: [
 						...(settled.retired ?? []).filter((key) => key.publicKey !== settled.value),
-						{ publicKey: settled.value, until: at + GRANT_KEY_OVERLAP_MS },
+						{ publicKey: settled.value, until: lastSigned + GRANT_KEY_OVERLAP_MS },
+						...publishedRetired(settled),
 					],
 				};
 			});
@@ -321,7 +335,13 @@ export function createDiskHolders(options: {
 	async function viewOf(record: StoredSetting, at: number): Promise<GrantKeyring> {
 		const { signing, next, retired } = keyringAt(record, at);
 		return {
-			current: { id: await grantKeyId(signing.publicKey), publicKey: signing.publicKey },
+			// While a key is published, the one that signs is accepted until a grant's lifetime after it stops, so a host
+			// told of the rotation stops accepting it then even if it hears nothing more.
+			current: {
+				id: await grantKeyId(signing.publicKey),
+				publicKey: signing.publicKey,
+				...(next === undefined ? {} : { until: next.from + GRANT_KEY_OVERLAP_MS }),
+			},
 			since: signing.since,
 			...(next === undefined
 				? {}
@@ -470,17 +490,21 @@ export function createDiskHolders(options: {
 			// Made first if there is none, so there is one to rotate; a rotation then always writes.
 			await kept(sealer);
 			const next = await made(sealer);
-			const at = now();
-			// The new key is published now and signs once hosts have had time to be told it; one published and not yet
-			// signing is replaced.
-			const written = await write((current) => ({
-				...settle(current, at),
-				next: { publicKey: next.key.publicKey, sealed: next.sealed, from: at + GRANT_KEY_PUBLISH_MS },
-				updatedAt: at,
-				updatedBy: by,
-			}));
+			// The new key is published now and signs once hosts have had time to be told it. One published and not yet
+			// signing is replaced, but still accepted as retired: it may begin signing on another gateway before this lands.
+			const written = await write((current) => {
+				const at = now();
+				const settled = settle(current, at);
+				return {
+					...settled,
+					next: { publicKey: next.key.publicKey, sealed: next.sealed, from: at + GRANT_KEY_PUBLISH_MS },
+					retired: [...(settled.retired ?? []), ...publishedRetired(settled)],
+					updatedAt: at,
+					updatedBy: by,
+				};
+			});
 			if (written === undefined) throw new KantelError("unavailable", "The grant key couldn't be rotated; try again");
-			return viewOf(written, at);
+			return viewOf(written, now());
 		},
 
 		async holdersOf(kind, objectId) {

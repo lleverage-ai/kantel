@@ -974,6 +974,69 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(sent("sticky.delete")).toEqual([{ diskId: disk.id }]);
 	});
 
+	it("places a sandbox on a host holding its sticky disk's head, and sends the head to attach", async () => {
+		const { service, root } = setup();
+		const disk = await root.createStickyDisk({ name: "ci-cache", sizeGb: 50 });
+		const sticky = { ...facts, features: ["sticky-disks"] };
+		const hostWith = async (name: string) => {
+			const token = (await root.createHostJoinToken({ name })).token;
+			const { hostId } = await service.register({ token, facts: sticky });
+			const host = new FakeHost(service, hostId);
+			host.facts = sticky;
+			host.connect();
+			while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+			return { host, hostId };
+		};
+		/** A heartbeat from a host with `freeMemoryMiB` free, holding these versions of the disk, once it has landed. */
+		const report = async (on: { host: FakeHost; hostId: string }, freeMemoryMiB: number, versions: string[]) => {
+			on.host.receive(
+				JSON.stringify({
+					type: "heartbeat",
+					heartbeat: {
+						capacity: {
+							freeMemoryMiB,
+							freeDiskGiB: 400,
+							running: 0,
+							stopped: 0,
+							load1: 0,
+							stickyDisks: [
+								{ diskId: disk.id, versions: versions.map((version) => ({ version, allocatedBytes: 7, at: 1 })) },
+							],
+						},
+					},
+				}),
+			);
+			const landed = async () =>
+				(await service.stickyReports())
+					.find((held) => held.hostId === on.hostId)
+					?.stickyDisks?.[0]?.versions.map((held) => held.version)
+					.join() === versions.join();
+			while (!(await landed())) await new Promise((resolve) => setTimeout(resolve, 1));
+		};
+		const created = (on: { host: FakeHost }) =>
+			on.host.params.filter((call) => call.method === "sandbox.create").map((call) => call.params.stickyDisks);
+		const attach = { type: "microvm", stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci" }], wait: true } as const;
+
+		const warm = await hostWith("warm");
+		const first = await root.createSandbox(attach);
+		const head = await root.commitStickyDisk(first.id, "ci-cache");
+		await root.deleteSandbox(first.id);
+		const cold = await hostWith("cold");
+		// The host holding the head wins, though the other has more memory free; the head goes with the create.
+		await report(warm, 8_000, [head.id]);
+		await report(cold, 30_000, []);
+		const placed = await root.createSandbox(attach);
+		expect(placed.hostId).toBe(warm.hostId);
+		expect(created(warm).at(-1)).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50, version: head.id }]);
+		// A host holding only an older version is no better than one holding none: the emptier wins, told the head, which
+		// it attaches if it has it and else fetches for the next sandbox.
+		await root.deleteSandbox(placed.id);
+		await report(warm, 8_000, ["sdv_older"]);
+		const elsewhere = await root.createSandbox(attach);
+		expect(elsewhere.hostId).toBe(cold.hostId);
+		expect(created(cold).at(-1)).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50, version: head.id }]);
+	});
+
 	it("revokes and drains a host through the API, and the registry follows", async () => {
 		const { service, root } = setup();
 		const token = await root.createHostJoinToken({});

@@ -9,7 +9,13 @@ import { GRANT_KEY_OVERLAP_MS, GRANT_KEY_PUBLISH_MS, GRANT_KEY_REPLACE_AFTER_MS 
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore, OPERATOR_POOLS } from "../src/store.ts";
+import {
+	type ComputeStore,
+	createMemoryStore,
+	fenceClosedAccounts,
+	OPERATOR_POOLS,
+	STICKY_PREFETCH_MS,
+} from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const opened: ComputeApi[] = [];
@@ -29,9 +35,9 @@ async function sqlStore(kind: TestDatabaseKind): Promise<ComputeStore> {
 }
 
 /**
- * A deployment over the stub backend whose shared hosts are, once `pool()` is called: the stub (`host_stub`) and `b` in
- * pool A, `c` in pool B, `d` in pool A but offline, and `e` in pool A (revoked by the test). Each but `e` has a mesh
- * address.
+ * A deployment over the stub backend whose shared hosts are, once `pool()` is called: the stub (`host_stub`), `b` and `g`
+ * in pool A, `c` in pool B, `d` in pool A but offline, `e` in pool A (revoked by the test), and `f` in pool A but another
+ * account's. Each has a mesh address.
  */
 function setUp(
 	options: {
@@ -48,6 +54,8 @@ function setUp(
 		superAdmin?: boolean;
 		/** The clock's start (default 13 Nov 2026). */
 		now?: number;
+		/** The block map digest each commit answers; absent, none (a host from before maps, or a map that took longer). */
+		mapDigest?: () => string | undefined;
 	} = {},
 ) {
 	const clock = { now: options.now ?? Date.UTC(2026, 10, 13) };
@@ -58,6 +66,12 @@ function setUp(
 		...(holdings === undefined ? {} : { stickyHoldings: async () => holdings() }),
 		...(options.fetchDisk === undefined ? {} : { fetchDisk: options.fetchDisk }),
 		...(options.grantKeysChanged === undefined ? {} : { grantKeysChanged: options.grantKeysChanged }),
+		async commitStickyDisk(sandboxId, diskId, version) {
+			if (backend.commitStickyDisk === undefined) throw new Error("The stub commits sticky disks");
+			const committed = await backend.commitStickyDisk(sandboxId, diskId, version);
+			const mapDigest = options.mapDigest?.();
+			return mapDigest === undefined ? committed : { ...committed, mapDigest };
+		},
 		async capabilities() {
 			const capabilities = await backend.capabilities();
 			const [stub] = capabilities.hosts;
@@ -78,6 +92,7 @@ function setUp(
 					host("host_d", "pool_a", { meshAddress: "fd00:a::3", connected: false }),
 					host("host_e", "pool_a", { meshAddress: "fd00:a::4" }),
 					host("host_f", "pool_a", { meshAddress: "fd00:a::5", accountId: "acc_other" }),
+					host("host_g", "pool_a", { meshAddress: "fd00:a::6" }),
 				],
 			};
 		},
@@ -339,6 +354,133 @@ describe("disk holders", () => {
 		).rejects.toMatchObject({ code: "not_supported" });
 	});
 
+	for (const [name, kind] of [
+		["memory", undefined],
+		["SQLite", nodeSqliteDatabase],
+		["Postgres", pgliteDatabase],
+	] as const) {
+		it(`notes a sandbox's start on a disk without the account fence taking the disk or its tombstone out, in ${name}`, {
+			timeout: kind?.testTimeoutMs,
+		}, async () => {
+			const store = kind === undefined ? createMemoryStore() : await sqlStore(kind);
+			const fenced = fenceClosedAccounts(store);
+			await store.accounts.put({
+				id: "acc_1",
+				kind: "personal",
+				name: "Tom",
+				defaultVisibility: "private",
+				createdAt: 0,
+			});
+			const day = 24 * 3_600_000;
+			await fenced.stickyDiskWrites.create({ ...DISK, ranOn: { host_old: 10 * day - STICKY_PREFETCH_MS } });
+			// Noted once an hour per host; an entry past 7 days goes as one is written; a commit meanwhile is kept.
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_a", 10 * day);
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_a", 10 * day + 30 * 60_000);
+			await fenced.stickyDiskWrites.commit({ ...VERSION, id: "sdv_2", diskId: DISK.id }, 10 * day);
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_b", 10 * day + 1);
+			expect(await store.stickyDisks.get(DISK.id)).toMatchObject({
+				head: "sdv_2",
+				ranOn: { host_a: 10 * day, host_b: 10 * day + 1 },
+			});
+			expect(Object.keys((await store.stickyDisks.get(DISK.id))?.ranOn ?? {}).sort()).toEqual(["host_a", "host_b"]);
+			// The account closes: a note landing then leaves the live disk there for the teardown to tombstone, and leaves its
+			// tombstone alone after, unchanged.
+			await store.accounts.update("acc_1", (account) => ({ ...account, closedAt: 11 * day }));
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_c", 11 * day);
+			expect((await store.stickyDisks.get(DISK.id))?.ranOn?.host_c).toBe(11 * day);
+			const tombstone = await fenced.stickyDiskWrites.tombstone(DISK.id, 11 * day);
+			await fenced.stickyDiskWrites.noteRun(DISK.id, "host_d", 12 * day);
+			expect(await store.stickyDisks.get(DISK.id)).toEqual(tombstone);
+		});
+	}
+
+	it("sends a new head to the hosts in its pool that started a sandbox with it in the last 7 days", async () => {
+		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];
+		let digest: string | undefined = `sha256:${"a".repeat(64)}`;
+		let reports: BackendStickyHoldings[] = [];
+		const tom = setUp({
+			fetchDisk: async (hostId, fetch) => {
+				fetches.push({ hostId, fetch });
+			},
+			mapDigest: () => digest,
+			holdings: () => reports,
+		});
+		const { disk, sandbox } = await tom.committed();
+		await tom.api.service.idle();
+		// Its sandbox's start on the stub's host was written down; another start within the hour writes nothing.
+		const started = tom.clock.now;
+		expect((await tom.api.store.stickyDisks.get(disk.id))?.ranOn).toEqual({ [STUB_HOST_ID]: started });
+		tom.clock.now += 30 * 60_000;
+		await tom.createSandbox({ type: "microvm", stickyDisks: [{ disk: "cache", path: "/cache" }], wait: true });
+		await tom.api.service.idle();
+		expect((await tom.api.store.stickyDisks.get(disk.id))?.ranOn).toEqual({ [STUB_HOST_ID]: started });
+		await tom.pool();
+		// Its sandbox moved with its host, so its commits are made in pool A.
+		await tom.api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, poolId: "pool_a" }));
+		const day = 24 * 3_600_000;
+		const ranOn = (hosts: { readonly [hostId: string]: number }) =>
+			tom.api.store.stickyDisks.update(disk.id, (current) => ({ ...current, ranOn: hosts }));
+		// b lately; g 8 days ago; c in another pool; d away; e revoked; f another account's, which may not hold it.
+		const at = tom.clock.now;
+		await ranOn({
+			[STUB_HOST_ID]: at,
+			host_b: at - day,
+			host_g: at - 8 * day,
+			host_c: at,
+			host_d: at,
+			host_e: at,
+			host_f: at,
+		});
+		const head = await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.api.service.idle();
+		expect(fetches.map((sent) => sent.hostId)).toEqual(["host_b"]);
+		expect(fetches[0]?.fetch).toMatchObject({
+			kind: "sticky",
+			objectId: disk.id,
+			version: head.id,
+			mapDigest: digest,
+			holders: [{ hostId: STUB_HOST_ID, address: "fd00:a::1" }],
+		});
+		const publicKey = await tom.api.service.grantPublicKey();
+		const grant = fetches[0]?.fetch.grant;
+		if (publicKey === undefined || grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(publicKey, grant, tom.clock.now)).toMatchObject({ to: "host_b", version: head.id });
+
+		// With its pool's sync off, nothing is sent.
+		fetches.length = 0;
+		await tom.api.store.pools.update("pool_a", ({ sync: _sync, ...pool }) => pool);
+		await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.api.service.idle();
+		expect(fetches).toEqual([]);
+
+		// A head committed before its map was made is sent once the sweep has its digest from its host.
+		await tom.api.store.pools.update("pool_a", (pool) => ({ ...pool, sync: true }));
+		digest = undefined;
+		await ranOn({ host_b: tom.clock.now, host_g: tom.clock.now });
+		const unmapped = await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.api.service.idle();
+		expect(fetches).toEqual([]);
+		// g has it already (fetched when a sandbox there asked for it), so isn't sent it.
+		await tom.api.service.recordStickyHoldings("host_g", tom.clock.now, [
+			{ diskId: disk.id, versions: [{ version: unmapped.id }] },
+		]);
+		tom.clock.now += 11 * 60_000;
+		reports = [
+			{
+				hostId: STUB_HOST_ID,
+				reportedAt: tom.clock.now,
+				disks: [
+					{ diskId: disk.id, versions: [unmapped.id], mapDigests: { [unmapped.id]: `sha256:${"b".repeat(64)}` } },
+				],
+			},
+		];
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches.map((sent) => [sent.hostId, sent.fetch.version, sent.fetch.mapDigest])).toEqual([
+			["host_b", unmapped.id, `sha256:${"b".repeat(64)}`],
+		]);
+	});
+
 	it("never forgets a version another host still holds", async () => {
 		let reports: BackendStickyHoldings[] = [];
 		const tom = setUp({ holdings: () => reports });
@@ -541,13 +683,18 @@ describe("disk holders", () => {
 		const next = rotated.next;
 		if (next === undefined) throw new Error("no next key");
 		await vi.waitFor(() => expect(told).toBe(1));
-		// Published: hosts accept it now, the key that signs first. Until its time, grants are still the old key's.
-		expect(await tom.api.service.grantKeys()).toEqual([
-			{ id: before.current.id, publicKey: before.current.publicKey },
+		// Published: hosts accept it now, the key that signs first, with when they stop accepting that one, so a host told
+		// nothing more still stops then. Until its time, grants are still the old key's.
+		const published = await tom.api.service.grantKeys();
+		expect(published).toEqual([
+			{ id: before.current.id, publicKey: before.current.publicKey, until: from + GRANT_KEY_OVERLAP_MS },
 			{ id: next.id, publicKey: next.publicKey, from },
 		]);
 		const old = await sign();
 		expect(await verifyGrant(before.current.publicKey, old, tom.clock.now)).toMatchObject({ kid: before.current.id });
+		// A host that heard nothing after the rotation accepts it past the switch, for its life (the key's `until` is
+		// enforced as `verifyGrant` checks it).
+		expect(await verifyGrant(published ?? [], old, from + 1)).toMatchObject({ kid: before.current.id });
 		// From its time it signs, on every gateway, with no write; the old key is accepted for a grant's lifetime and a minute.
 		tom.clock.now = from;
 		const fresh = await sign();
@@ -558,17 +705,28 @@ describe("disk holders", () => {
 		});
 		const keys = (await tom.api.service.grantKeys()) ?? [];
 		expect(await verifyGrant(keys, old, tom.clock.now)).toMatchObject({ kid: before.current.id });
-		// A rotation while one is published replaces it; the old key leaves once its time is up.
+		// A rotation while one is published replaces it, and still accepts the one it replaced until a grant's lifetime after
+		// its time: it may have begun signing on another gateway just as this rotation was written.
 		const again = await tom.rotateGrantKey();
 		const twice = await tom.rotateGrantKey();
 		expect(twice.next?.id).not.toBe(again.next?.id);
-		expect(twice).toMatchObject({ current: { id: next.id }, retired: [{ id: before.current.id }] });
+		expect(twice).toMatchObject({
+			current: { id: next.id },
+			retired: [
+				{ id: before.current.id },
+				{ id: again.next?.id, until: (again.next?.from ?? 0) + GRANT_KEY_OVERLAP_MS },
+			],
+		});
 		tom.clock.now = from + GRANT_KEY_OVERLAP_MS;
 		expect(await verifyGrant(keys, old, tom.clock.now - 1)).toBeUndefined();
-		// By then the last rotation's key signs too, and the key before it is the one retired.
+		// By then the last rotation's key signs too, and the key before it is retired, with the published one it replaced.
+		const until = (twice.next?.from ?? 0) + GRANT_KEY_OVERLAP_MS;
 		expect(await tom.getGrantKeys()).toEqual({
 			current: { id: twice.next?.id, publicKey: twice.next?.publicKey, since: twice.next?.from },
-			retired: [{ id: next.id, publicKey: next.publicKey, until: (twice.next?.from ?? 0) + GRANT_KEY_OVERLAP_MS }],
+			retired: [
+				{ id: again.next?.id, publicKey: again.next?.publicKey, until },
+				{ id: next.id, publicKey: next.publicKey, until },
+			],
 		});
 		// A super-admin's only.
 		const someone = setUp({ store, secretsKey: SECRETS_KEY, superAdmin: false });
@@ -579,6 +737,35 @@ describe("disk holders", () => {
 		await expect(setUp({ store: await sqlStore(nodeSqliteDatabase) }).getGrantKeys()).rejects.toMatchObject({
 			code: "not_supported",
 		});
+	});
+
+	it("keeps a published key a rotation replaces just as it began signing on another gateway", async () => {
+		const store = await sqlStore(nodeSqliteDatabase);
+		const [tom, other] = [setUp({ store, secretsKey: SECRETS_KEY }), setUp({ store, secretsKey: SECRETS_KEY })];
+		const { disk, version } = await tom.committed();
+		await tom.pool();
+		await other.pool();
+		await tom.api.service.recordStickyHoldings("host_b", tom.clock.now, [
+			{ diskId: disk.id, versions: [{ version: version.id }] },
+		]);
+		const { next } = await tom.rotateGrantKey();
+		if (next === undefined) throw new Error("no next key");
+		// Its time comes: the other gateway signs with it, while this one, a moment behind, rotates again.
+		other.clock.now = next.from;
+		const { grant } = await other.api.service.locateDisk(STUB_HOST_ID, {
+			kind: "sticky",
+			objectId: disk.id,
+			version: version.id,
+		});
+		if (grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(next.publicKey, grant, next.from)).toMatchObject({ kid: next.id });
+		tom.clock.now = next.from - 1;
+		await tom.rotateGrantKey();
+		// Hosts still accept that grant for its life, and the key no longer once a grant's lifetime has passed after its time.
+		const keys = (await other.api.service.grantKeys()) ?? [];
+		expect(keys).toContainEqual({ id: next.id, publicKey: next.publicKey, until: next.from + GRANT_KEY_OVERLAP_MS });
+		expect(await verifyGrant(keys, grant, next.from + GRANT_TTL_MS - 1)).toMatchObject({ kid: next.id });
+		expect(await verifyGrant(keys, grant, next.from + GRANT_KEY_OVERLAP_MS)).toBeUndefined();
 	});
 
 	it("checks a grant with the key its kid names, and one from before key IDs with any key", async () => {
