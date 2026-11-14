@@ -915,6 +915,9 @@ export const MAX_OUTPUT_CHARS = 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 /** How long after its start a detached command its backend doesn't know is taken as lost, not as not yet started. */
 const LOST_COMMAND_MS = 60_000;
+/** How often a foreground call whose follow can't say asks for its command's end: from the first to the second. */
+const EXEC_FOLLOW_MIN_MS = 1_000;
+const EXEC_FOLLOW_MAX_MS = 30_000;
 /** The longest a command's failed call waits for its sandbox's stop to settle before its failure is recorded. */
 const STOP_SETTLE_MS = 120_000;
 /** The longest a stop or delete waits to bring in the ends of a sandbox's detached commands no gateway here follows. */
@@ -6645,6 +6648,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * A foreground command's end, for a call whose follow of it can't say (its sandbox's paused restart move): its record
+	 * read until it ends there (the move's commit kills it), and once the move is over without it ending (rolled back),
+	 * asked of its backend as a detached one is (`fetchedCommand`), from 1 s doubling to 30 s apart.
+	 */
+	async function awaitedEnd(command: StoredCommand): Promise<StoredCommand> {
+		let wait = EXEC_FOLLOW_MIN_MS;
+		for (;;) {
+			const stored = await store.commands.get(command.id).catch(() => undefined);
+			if (stored !== undefined && stored.state !== "running") return stored;
+			if (stored !== undefined && !(await inPausedRestart(command.sandboxId))) {
+				const fetched = await fetchedCommand(stored).catch(() => stored);
+				if (fetched.state !== "running") return fetched;
+			}
+			await delay(wait).done;
+			wait = Math.min(wait * 2, EXEC_FOLLOW_MAX_MS);
+		}
+	}
+
+	/**
 	 * Whether a paused sandbox is being moved to another host without its memory (its move's `keepMemory` not `true`):
 	 * none of its commands can end in that memory meanwhile, and the new machine its move places it on doesn't know them.
 	 */
@@ -6676,9 +6698,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * still running.
 	 */
 	async function killPausedOrPutBack(paused: StoredSandbox, starting: StoredSandbox): Promise<void> {
+		const note = pausedMemoryGone("started afresh from its disk");
+		const at = now();
+		// Each one as it was before this kill, and as this kill wrote it, to put back if a later one fails.
+		const settled: { readonly before: StoredCommand; readonly written: StoredCommand }[] = [];
 		try {
-			await killCommandsOf(paused.id, { note: pausedMemoryGone("started afresh from its disk"), reconcile: false });
+			for (const command of await store.commands.list({ sandboxId: paused.id, state: "running" })) {
+				let before: StoredCommand | undefined;
+				const written = await settleCommand(command.id, (latest) => {
+					before = latest;
+					return {
+						...latest,
+						state: "killed",
+						endedAt: at,
+						durationMs: at - latest.startedAt,
+						...noted(latest, note),
+					};
+				});
+				if (written !== undefined && before !== undefined) settled.push({ before, written });
+			}
 		} catch (error) {
+			// Put back as they were, those this kill settled and nothing has changed since: their processes run on in the
+			// memory it is paused with again, followed and killed by their IDs once it resumes.
+			for (const { before, written } of settled) {
+				await store.commands
+					.update(before.id, (latest) => (JSON.stringify(latest) === JSON.stringify(written) ? before : undefined))
+					.catch(() => undefined);
+			}
 			await transition(
 				paused.id,
 				"starting",
@@ -6700,6 +6746,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				"unavailable",
 				`The sandbox wasn't started: the commands its memory kept running couldn't be recorded as ended (${messageOf(error)}); try again`,
 			);
+		}
+		// All of them killed: their waits are over.
+		for (const { before } of settled) {
+			runningCommands.get(before.id)?.abort();
+			runningCommands.delete(before.id);
 		}
 	}
 
@@ -12363,11 +12414,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const finish = async (result: ExecResult): Promise<StoredCommand> => {
 			stopUsing();
 			// Its sandbox paused, and being moved now without its memory: nothing ends in that memory, so an end read now is
-			// its new machine not knowing it (once the move has placed it there). Left running, its wait over: the move's
-			// commit kills it, saying why, and a move rolled back leaves it running in that memory.
+			// its new machine not knowing it (once the move has placed it there). Not recorded: the move's commit kills it,
+			// saying why, and a move rolled back leaves it running in that memory. A detached one's follow lets it go; a
+			// foreground call waits on for its end, as recorded, or as its backend says once the move is over.
 			if (await inPausedRestart(current.id)) {
 				runningCommands.delete(command.id);
-				return (await store.commands.get(command.id)) ?? command;
+				if (detached) return (await store.commands.get(command.id)) ?? command;
+				return awaitedEnd(command);
 			}
 			const more = await how.beforeEnd?.(command, result).catch(() => undefined);
 			runningCommands.delete(command.id);
@@ -13901,23 +13954,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sandboxId,
 			async () => {
 				if (hostId === undefined) throw new KantelError("unavailable", "The sandbox has no host to start on again");
-				return (resumes ? backend.resume : backend.start).call(backend, sandboxId, {
+				const placement = await (resumes ? backend.resume : backend.start).call(backend, sandboxId, {
 					...sizingOf(again),
 					env: again.env,
 					eligibleHosts: [hostId],
 					...(await egressFor(again.accountId, again)),
 					...(again.mounts === undefined ? {} : { mounts: backendMounts(again.mounts) }),
 				});
+				// Resumed from its memory: a kill made while it was stopped for the move reaches its command now.
+				if (resumes) await sendPendingKills(sandboxId).catch(() => undefined);
+				return placement;
 			},
 			undefined,
 			{ egressRevision: again.egressRevision },
 			(latest) => ({ moving: undefined, ...owedStop(latest) }),
-		)
-			.then((booted) => {
-				// Resumed from its memory: a kill made while it was stopped for the move reaches its command now.
-				if (resumes && booted?.state === "running") keepGoing(sendPendingKills(sandboxId));
-			})
-			.catch(() => undefined);
+		).catch(() => undefined);
 		// A boot that failed leaves it `error` with its move, which is undone: cleared, as the error leaves it.
 		await patchSandbox(sandboxId, (latest) =>
 			latest.moving?.operationId === operationId && latest.state === "error"
@@ -13953,6 +14004,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await killCommandsOf(sandboxId, { listed, note: restartedByMove(moving.restartReason), reconcile: false });
 			}
 		}
+		// Its memory kept: a kill made while it was stopped for the move (or paused before it) reaches its command, which
+		// runs on its new machine already, before it is published (whatever happens to its publishing).
+		if (moving.from !== "stopped" && moving.keepMemory === true)
+			await sendPendingKills(sandboxId).catch(() => undefined);
 		const committed = await boot(
 			sandboxId,
 			async () => placement,
@@ -13972,10 +14027,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...owedStop(latest),
 			}),
 		);
-		// Its memory kept: a kill made while it was stopped for the move (or paused before it) reaches its command now.
-		if (moving.from !== "stopped" && moving.keepMemory === true && committed?.state === "running") {
-			keepGoing(sendPendingKills(sandboxId));
-		}
 		return committed;
 	}
 
@@ -14083,20 +14134,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 		};
 		const work = track([current.id], async () => {
-			const booted = await bootProvisioned(
+			const resumes = how === "resume" && current.state === "paused";
+			return bootProvisioned(
 				current.id,
-				() =>
-					bootAgain(starting, bootOptions, (options) =>
+				async () => {
+					const placement = await bootAgain(starting, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
-					),
+					);
+					// Resumed from its memory: a kill made while it was paused reaches the command it kept, as soon as it runs
+					// there, before it is published (whatever happens to its publishing).
+					if (resumes) await sendPendingKills(current.id).catch(() => undefined);
+					return placement;
+				},
 				provisioning,
 				{ egressRevision: starting.egressRevision },
 			);
-			// Resumed from its memory: a kill made while it was paused reaches the command it kept.
-			if (booted?.state === "running" && how === "resume" && current.state === "paused") {
-				keepGoing(sendPendingKills(current.id));
-			}
-			return booted;
 		});
 		if (body.wait === true) await work;
 		else keepGoing(work);

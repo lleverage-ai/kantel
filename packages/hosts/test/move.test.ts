@@ -1493,6 +1493,65 @@ describe("pausing a sandbox keeps its commands running", () => {
 		expect(await root.getCommand(sandbox.id, "cmd_older")).toMatchObject({ state: "exited", exitCode: 0 });
 	}, 20_000);
 
+	it("sends a kill made while it was paused as it resumes, though its publishing fails", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const doomed = await root.runCommand(sandbox.id, { command: "./watch", detached: true });
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		expect(await root.killCommand(sandbox.id, doomed.id)).toMatchObject({ state: "killed" });
+		// Its running event can't be stored: the resume fails once it is running.
+		const put = api.store.events.put.bind(api.store.events);
+		api.store.events.put = async (event) => {
+			if (event.type === "sandbox.running") throw new Error("the store went away");
+			return put(event);
+		};
+		await root.resumeSandbox(sandbox.id, { wait: true }).catch(() => undefined);
+		api.store.events.put = put;
+		expect(FakeHost.guestCommands.get(`${sandbox.id}/${doomed.id}`)?.result?.exitCode).toBe(137);
+		expect((await api.store.commands.get(doomed.id))?.killPending).toBeUndefined();
+	}, 20_000);
+
+	it("keeps a foreground call waiting through a paused restart move, to its kill", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const foreground = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const id = await foregroundId(a, sandbox.id);
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		// Its commit is slow once its new machine runs: meanwhile the call's follow asks that machine, which doesn't know it.
+		let started = false;
+		b.hold = (method) => {
+			if (method === "sandbox.start") started = true;
+			return undefined;
+		};
+		const list = api.store.commands.list.bind(api.store.commands);
+		let slowed = false;
+		api.store.commands.list = async (filter) => {
+			if (started && !slowed && filter?.sandboxId === sandbox.id && filter.state === "running") {
+				slowed = true;
+				await vi.waitFor(
+					() =>
+						expect(b.calls.some((call) => call.method === "sandbox.exec.get" && call.params.commandId === id)).toBe(
+							true,
+						),
+					{ timeout: 10_000 },
+				);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+			return list(filter);
+		};
+		await root.moveSandbox(sandbox.id, { keepMemory: false });
+		expect(await foreground).toMatchObject({
+			id,
+			state: "killed",
+			stderr: expect.stringContaining("restarted there (the move was asked to restart it)"),
+		});
+	}, 30_000);
+
 	it("kills them, saying why, when a start, a stop or a delete lets its memory go, old ones too", async () => {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
@@ -1506,15 +1565,20 @@ describe("pausing a sandbox keeps its commands running", () => {
 		// Started afresh from its disk rather than resumed: none is asked of its new machine, which doesn't know them.
 		const fresh = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
 		await paused("cmd_started");
-		// Their kill can't be written: not started, paused still with its memory and its commands.
+		// The second of their kills can't be written: not started, paused still with its memory, and both its commands
+		// running, the first's kill put back.
 		const update = api.store.commands.update.bind(api.store.commands);
-		api.store.commands.update = async () => {
-			throw new Error("the store went away");
+		let updates = 0;
+		api.store.commands.update = async (...args) => {
+			updates += 1;
+			if (updates === 2) throw new Error("the store went away");
+			return update(...args);
 		};
 		expect((await failure(root.startSandbox(sandbox.id, { wait: true }))).code).toBe("unavailable");
 		api.store.commands.update = update;
 		expect((await root.getSandbox(sandbox.id)).state).toBe("paused");
-		expect((await api.store.commands.get("cmd_started"))?.state).toBe("running");
+		for (const id of [fresh.id, "cmd_started"])
+			expect(await api.store.commands.get(id)).toMatchObject({ state: "running", stderr: "" });
 		await root.startSandbox(sandbox.id, { wait: true });
 		for (const id of [fresh.id, "cmd_started"]) {
 			expect(await api.store.commands.get(id)).toMatchObject({
