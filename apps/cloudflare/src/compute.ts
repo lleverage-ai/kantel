@@ -95,6 +95,7 @@ import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@k
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import { createHostReleases, createSqlHostReleasesStore } from "@kantel/hosts/releases";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
+import { isSavedSnapshotRef } from "@kantel/hosts/snapshot-refs";
 import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
 import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
@@ -1191,8 +1192,12 @@ export function whileBusy(
 	};
 }
 
-/** An account's host's snapshot reference is `{hostId}/{snapshotId}`; the stub's are `ref_…`. */
-export const isHostSnapshotRef = (ref: string): boolean => ref.startsWith("host_") && ref.includes("/");
+/**
+ * An account's host's snapshot reference is `{hostId}/{snapshotId}`, or a saved snapshot's ID alone
+ * (`isSavedSnapshotRef`); the stub's are `ref_…`.
+ */
+export const isHostSnapshotRef = (ref: string): boolean =>
+	(ref.startsWith("host_") && ref.includes("/")) || isSavedSnapshotRef(ref);
 
 const lost = (error: unknown, prefix: string): error is KantelError =>
 	isKantelError(error) && error.code === "not_found" && error.message.startsWith(prefix);
