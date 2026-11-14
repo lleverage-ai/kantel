@@ -75,6 +75,7 @@ export type {
 	SandboxSshKey,
 	SaveSnapshotOptions,
 	ShapePreset,
+	SnapshotHost,
 	SnapshotsSource,
 	SshTarget,
 	TelemetrySource,

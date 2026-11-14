@@ -31,6 +31,7 @@ import type {
 } from "./compute-model.ts";
 import { computePage, messageOf, SectionHeading } from "./parts.tsx";
 import { SettingsPageHeader } from "./settings-nav.tsx";
+import { SnapshotCopiesSwitch } from "./snapshot-hosts.tsx";
 
 export interface OrganisationPageProps {
 	readonly source: AccountsSource;
@@ -344,6 +345,21 @@ function General({
 							}
 							onRenamed?.(changed);
 							return changed.personalTokens;
+						}}
+					/>
+				)}
+				{account.snapshotCopies === undefined || source.setSnapshotCopies === undefined ? null : (
+					<SnapshotCopiesSwitch
+						on={account.snapshotCopies}
+						manager={manager}
+						onChange={async (on) => {
+							const changed = await source.setSnapshotCopies?.(account.id, on);
+							// Only what Kantel says it saved, as for personal tokens.
+							if (changed?.snapshotCopies === undefined) {
+								throw new Error("Kantel didn't confirm the change. Try again.");
+							}
+							onRenamed?.(changed);
+							return changed.snapshotCopies;
 						}}
 					/>
 				)}

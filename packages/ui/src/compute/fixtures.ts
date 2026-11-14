@@ -56,6 +56,7 @@ import type {
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
+	SnapshotHost,
 	TelemetrySettings,
 	UsageRange,
 	UsageSeries,
@@ -104,6 +105,7 @@ export const PERSONAL: ComputeAccount = {
 	role: "owner",
 	members: 1,
 	planId: "plan_starter",
+	snapshotCopies: true,
 };
 
 export const LLEVERAGE: ComputeAccount = {
@@ -114,6 +116,7 @@ export const LLEVERAGE: ComputeAccount = {
 	role: "admin",
 	members: 6,
 	planId: "plan_team",
+	snapshotCopies: true,
 };
 
 export const EVALS: ComputeAccount = {
@@ -124,6 +127,7 @@ export const EVALS: ComputeAccount = {
 	role: "member",
 	members: 3,
 	planId: "plan_team",
+	snapshotCopies: true,
 };
 
 /** A day of CPU use, shaped by `seed`: a few busy stretches on a quiet line. */
@@ -645,6 +649,30 @@ export const SAVED: readonly SavedSnapshot[] = [
 		uses: 2,
 	},
 ];
+
+/**
+ * The hosts each saved snapshot is on, as a super-admin sees them: most on two, the one saved with memory restoring it
+ * on both, one with its copy still on its way, and an isolate on its own host.
+ */
+export const SAVED_HOSTS: Readonly<Record<string, readonly SnapshotHost[]>> = {
+	ssn_node22_base: [
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: false },
+		{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "held", memory: false },
+	],
+	ssn_dev_stack_warm: [
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: true },
+		{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "held", memory: true },
+	],
+	ssn_playwright: [
+		{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "held", memory: false },
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "fetching", memory: false },
+	],
+	ssn_py_tools: [{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: false }],
+	ssn_wine: [
+		{ hostId: "hst_home", hostName: "home-server", state: "held", memory: false },
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: false },
+	],
+};
 
 /**
  * Lleverage's bundles, newest first: skills its agents read, the attachments a host couldn't mount, and model weights no
@@ -2327,6 +2355,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					accounts[at] = changed;
 					return changed;
 				}),
+			setSnapshotCopies: (accountId, on) =>
+				gate(() => {
+					const at = accounts.findIndex((account) => account.id === accountId);
+					const account = accounts[at];
+					if (account === undefined) throw new Error(`No account ${accountId}.`);
+					const changed = { ...account, snapshotCopies: on };
+					accounts[at] = changed;
+					return changed;
+				}),
 			setRole: (accountId, memberId, role) =>
 				gate(() => {
 					const list = members.get(accountId) ?? [];
@@ -2765,6 +2802,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			list: (snapshotId, path) =>
 				gate(() => sampleFolder(snapshotKind(snapshotId), path).map((entry) => moved(entry, ["modifiedAt"]))),
 			kindOf: (snapshotId) => gate(() => snapshotKind(snapshotId) ?? "microvm"),
+			// One saved here is on the sandbox's host alone until a copy is asked for.
+			hosts: (snapshotId) =>
+				gate(() => {
+					const entry = saved.get(snapshotId);
+					if (entry === undefined) throw new Error(`No saved snapshot ${snapshotId}.`);
+					return (
+						SAVED_HOSTS[snapshotId] ?? [
+							{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: entry.memory === true },
+						]
+					);
+				}),
 			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,

@@ -8,7 +8,15 @@ import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
 export default { title: "Compute/Snapshots page" } satisfies StoryDefault;
 
 // Each story keeps its own source, so Delete takes a snapshot out of its list.
-function Scenario({ options, initialView }: { options?: ComputeFixtureOptions; initialView?: SnapshotsView }) {
+function Scenario({
+	options,
+	initialView,
+	hostsOf,
+}: {
+	options?: ComputeFixtureOptions;
+	initialView?: SnapshotsView;
+	hostsOf?: string;
+}) {
 	const [source] = useState(() => createComputeFixtures(options));
 	return (
 		<SnapshotsPage
@@ -17,6 +25,7 @@ function Scenario({ options, initialView }: { options?: ComputeFixtureOptions; i
 			account={LLEVERAGE}
 			now={FIXTURE_NOW}
 			{...(initialView === undefined ? {} : { initialView })}
+			{...(hostsOf === undefined ? {} : { hostsOf })}
 			// The console opens New sandbox with the snapshot chosen; here the menu item is only shown.
 			onStartFrom={() => {}}
 		/>
@@ -125,3 +134,10 @@ MobileFolder.meta = { width: 390 };
 /** A file open on a phone: it takes the folder's place, with Back to it. */
 export const MobileFile: Story = () => <FileOpen />;
 MobileFile.meta = { width: 390 };
+
+/** A saved snapshot's hosts, from its menu: on two hosts, its second copy still on its way. */
+export const Hosts: Story = () => <Scenario hostsOf="ssn_playwright" />;
+
+/** Its hosts on a phone. */
+export const MobileHosts: Story = () => <Scenario hostsOf="ssn_dev_stack_warm" />;
+MobileHosts.meta = { width: 420 };
