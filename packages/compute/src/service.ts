@@ -902,6 +902,11 @@ const BASE_ROUTES = [
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** How often the sweep looks for automatic snapshots past their `expiresAt` to delete (`expireSnapshots`). */
 export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
+/**
+ * How long after a save its details list the host it was taken on as holding it with no holder recorded there: the host
+ * maps the snapshot's files after the save and reports them on a later heartbeat.
+ */
+const SNAPSHOT_REPORT_WAIT_MS = 30 * 60_000;
 /** How often the sweep counts every saved snapshot's copies, and asks for those missing (`keepEverySnapshotsCopies`). */
 export const SNAPSHOT_COPIES_EVERY_MS = 5 * 60_000;
 /**
@@ -3064,7 +3069,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * `hosts` with what `snapshot`'s account may still keep in saved snapshots on each that limits it
 	 * (`CopyHost.savedBytesLeft`): its limit less the full size of each of the account's saved snapshots there, by ref,
 	 * once each, whether the host saved it or holds or is fetching a copy (`savedBytesOver` counts its own saves alone,
-	 * so a copy never keeps an account from saving). A host without a limit is as it was.
+	 * so a copy never keeps an account from saving), all but `snapshot` itself, which `copyTarget` adds. A host without a
+	 * limit is as it was.
 	 */
 	async function withAllowances(
 		snapshot: StoredSnapshot,
@@ -3084,6 +3090,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const used = new Map<string, Map<string, number>>();
 		for (const record of saved) {
 			const ref = record.ref ?? "";
+			// This one's own charge, where a host holds or is fetching it already, is the copy's: asked again (a fetch that
+			// ran too long), it costs nothing more there.
+			if (ref === snapshot.ref) continue;
 			const copies =
 				read?.holders.get(ref) ??
 				((await diskHolders.holdersOf("snapshot", refId(ref))).get("disk") ?? []).filter(
@@ -3866,11 +3875,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				.map((holder) => holder.hostId),
 		);
 		const disks = of("disk").filter((holder) => holder.state !== "deleting");
-		// The host it was taken on first, as its holder says; with no holders at all (its host hasn't reported it yet, or
-		// reports no snapshots), held there, as its save said. One whose holder is gone while others hold it has lost it.
+		// The host it was taken on first, as its holder says.
 		const first = disks.find((holder) => holder.hostId === origin);
+		// Without a holder there, it is held there only while its host may not have reported it yet: a ref naming a host
+		// (one from before snapshot sync, whose host may report no snapshots), or a save made within
+		// `SNAPSHOT_REPORT_WAIT_MS`, as its map and the host's report may still be to come. Else its host has said it
+		// hasn't it.
+		const unreported =
+			disks.length === 0 &&
+			(refHost(ref) !== undefined || snapshot.createdAt > now() - SNAPSHOT_REPORT_WAIT_MS);
 		const entries: { hostId: string; state: "held" | "fetching"; memory: boolean }[] =
-			origin === undefined || (first === undefined && disks.length > 0)
+			origin === undefined || (first === undefined && !unreported)
 				? []
 				: [
 						{

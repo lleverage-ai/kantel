@@ -1330,6 +1330,79 @@ describe("disk holders", () => {
 		expect((await tom.getSnapshot(two.id)).hosts?.map((host) => host.hostId)).toEqual([STUB_HOST_ID, "host_g"]);
 	});
 
+	it("asks a host again for a copy whose fetch ran too long without charging the account's allowance for it twice, in SQLite", {
+		timeout: nodeSqliteDatabase.testTimeoutMs,
+	}, async () => {
+		const fetches: string[] = [];
+		const tom = setUp({
+			store: await sqlStore(nodeSqliteDatabase),
+			secretsKey: SECRETS_KEY,
+			fetchDisk: async (hostId, fetch) => {
+				if (fetch.kind === "snapshot") fetches.push(`${hostId} ${fetch.objectId}`);
+			},
+			facts: { host_b: { features: ["disk-sync", "snapshot-sync"], freeDiskGb: 900 } },
+		});
+		await tom.pool();
+		const GB = 1024 ** 3;
+		const [x, y] = ["ssnap_0123456789abcdef0123456789abcdef", "ssnap_fedcba9876543210fedcba9876543210"];
+		const account = (await tom.listAccounts()).items[0]?.id ?? "";
+		// Copies off while the two are saved and reported, so the test sets what host_b has.
+		await tom.updateAccount(account, { snapshotCopies: false });
+		const records = [];
+		for (const id of [x, y]) {
+			const snap = await tom.savedAlone(id);
+			records.push(await tom.api.store.snapshots.update(snap.id, (current) => ({ ...current, fullSizeBytes: 3 * GB })));
+		}
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+			objects: {
+				snapshot: [x, y].map((objectId) => ({ objectId, versions: [{ version: "disk", mapDigest: DIGEST }] })),
+			},
+		});
+		// host_b, which lets the account keep 5 GB, was asked for x's copy 4 hours ago and has been fetching it since.
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, savedSnapshotBytesLimit: 5 * GB }));
+		await tom.api.store.diskHolders.put({
+			id: `snapshot:${x}:disk:host_b`,
+			kind: "snapshot",
+			objectId: x,
+			version: "disk",
+			hostId: "host_b",
+			state: "fetching",
+			since: tom.clock.now - 4 * 3_600_000,
+			ref: x,
+		});
+		await tom.api.store.accounts.update(account, (current) => ({ ...current, snapshotCopies: true }));
+		tom.clock.now += 5 * 60_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		// x is asked of host_b again, its charge there already counted; y, 3 GB more, would take the account past 5 GB.
+		expect(fetches).toEqual([`host_b ${x}`]);
+		// y's details: only the host it was taken on. Its record says nothing of host_b.
+		expect((await tom.getSnapshot(records[1]?.id ?? "")).hosts?.map((host) => host.hostId)).toEqual([STUB_HOST_ID]);
+	});
+
+	it("lists the host a saved snapshot was taken on as holding it only until its report could have said otherwise", async () => {
+		const tom = setUp();
+		await tom.pool();
+		const id = "ssnap_0123456789abcdef0123456789abcdef";
+		const snap = await tom.savedAlone(id, true);
+		// Just saved, its host not yet reporting it: held there, with its memory.
+		expect((await tom.getSnapshot(snap.id)).hosts).toEqual([
+			{ hostId: STUB_HOST_ID, hostName: STUB_HOST_ID, state: "held", memory: true },
+		]);
+		// Half an hour on with its host never having reported it: its host hasn't it.
+		tom.clock.now += 31 * 60_000;
+		expect((await tom.getSnapshot(snap.id)).hosts).toEqual([]);
+		// Reported, then dropped from a later report: not held anywhere.
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+			objects: { snapshot: [{ objectId: id, versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		});
+		expect((await tom.getSnapshot(snap.id)).hosts?.map((host) => host.state)).toEqual(["held"]);
+		tom.clock.now += 5 * 60_000;
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, { objects: { snapshot: [] } });
+		expect((await tom.getSnapshot(snap.id)).hosts).toEqual([]);
+	});
+
 	for (const [name, kind] of [
 		["SQLite", nodeSqliteDatabase],
 		["Postgres", pgliteDatabase],
