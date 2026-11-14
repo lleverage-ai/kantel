@@ -13,10 +13,11 @@ package microvm
 // from there: what the sandbox does after doesn't change them. A sticky drive's map starts from the map of the version
 // its disk was cloned from, where the host still has it, reading only the blocks the two don't share.
 //
-// On the target, PrepareSandboxImport stages the record in sandbox-imports/<id>/, with a VM directory whose root
+// On the target, PrepareSandboxImport stages the record in sandbox-imports/<id>/<version>/, with a VM directory whose root
 // filesystem is this host's file of the same image (a host image version from its release, a template's root
 // filesystem from a peer: localRootfs, as for a saved snapshot's copy), so a prune keeps that image while the fetch goes
-// on. The parts are fetched into that VM directory; published, the directory becomes sandboxes/<id>/ in one rename, a
+// on. Each version has its own directory, so a fetch of an older one never writes into a newer one's. The parts are
+// fetched into that VM directory; published, the directory becomes sandboxes/<id>/ in one rename, a
 // stopped sandbox with no memory (it boots on its disk), its bundle drives empty (its bundles are mounted again from
 // this host's cache when it starts) and its egress without the other host's CA (its start sends its egress).
 
@@ -58,8 +59,6 @@ const (
 	sandboxImportsDir = "sandbox-imports"
 	// sandboxRecordName is the record in an export's directory, and staged in an import's.
 	sandboxRecordName = "record.json"
-	// sandboxImportVersion, in an import's directory, is the version it fetches.
-	sandboxImportVersion = "version"
 )
 
 // sandboxRecord is what a moved sandbox's record says: the sandbox's record on its host, and the root filesystem its
@@ -71,20 +70,21 @@ type sandboxRecord struct {
 	RootfsDigest string `json:"rootfsDigest,omitempty"`
 }
 
-// sandboxMoves keeps an import of a sandbox deleted here from publishing it after: the sandboxes deleted since their
-// import was made ready, and the lock a publish and a delete share. Exports are mapped one at a time.
+// sandboxMoves is the lock an import's preparation, its publish, and a delete or cancel of it share, with the
+// versions of each sandbox whose import was cancelled here (CancelSandboxImport), which are never made after; and the
+// turn exports are made in, one at a time.
 type sandboxMoves struct {
-	mu      sync.Mutex
-	retired map[string]bool
-	turn    sync.Mutex
+	mu        sync.Mutex
+	cancelled map[string]map[string]bool
+	turn      sync.Mutex
 }
 
 func (m *Manager) sandboxExportDir(id, version string) string {
 	return filepath.Join(m.cfg.Root, sandboxExportsDir, id, version)
 }
 
-func (m *Manager) sandboxImportDir(id string) string {
-	return filepath.Join(m.cfg.Root, sandboxImportsDir, id)
+func (m *Manager) sandboxImportDir(id, version string) string {
+	return filepath.Join(m.cfg.Root, sandboxImportsDir, id, version)
 }
 
 // sandboxObject says whether id and version name a moved sandbox's version as an object.
@@ -297,12 +297,7 @@ func (m *Manager) HoldsSandbox(id, version string) bool {
 		return true
 	}
 	s, err := m.get(id)
-	if err != nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.meta.Imported == version
+	return err == nil && madeBy(s, version)
 }
 
 // OpenSandboxPart opens one part of an export for a peer to fetch (disksync.Parted): its file, and with withMap its
@@ -340,10 +335,11 @@ func (m *Manager) ReadSandboxFile(id, version, name string) ([]byte, error) {
 
 // PrepareSandboxImport readies the host for a fetch of a moved sandbox's version, from its record as its holder has it:
 // its size one this host makes, the root image its disk is over in place (localRootfs), and a VM directory staged in
-// the import's directory, linked to that image, with the record beside it. A version staged already is left as it is,
-// so a fetch goes on where it stopped; another version's import is dropped first. ErrNoSnapshotImage, or why the
-// image couldn't be had, when the host can't have it; a conflict when a sandbox of that ID is here, but the one this
-// version made.
+// the version's own import directory (sandbox-imports/<id>/<version>/), linked to that image, with the record beside
+// it, written last. A version staged already is left as it is, so a fetch goes on where it stopped; any other version's
+// import of the sandbox is dropped. ErrNoSnapshotImage, or why the image couldn't be had, when the host can't have it;
+// a conflict when a sandbox of that ID is here, but the one this version made, or when the version's import was
+// cancelled (CancelSandboxImport).
 func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, raw []byte) error {
 	if !sandboxObject(id, version) {
 		return &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
@@ -353,6 +349,9 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 	}
 	if _, err := m.get(id); err == nil {
 		return conflict("sandbox %s already exists on this host", id)
+	}
+	if m.importCancelled(id, version) {
+		return conflict("the move %s of sandbox %s here was cancelled", version, id)
 	}
 	var rec sandboxRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
@@ -373,20 +372,24 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 	if err != nil {
 		return err
 	}
-	dir := m.sandboxImportDir(id)
 	// Its root filesystem linked under the base lock, so a prune finds the reference in the import's VM directory from
-	// then on (BasesUnder); not for a sandbox deleted meanwhile.
+	// then on (BasesUnder); and under the moves lock, so a cancel while the image was had is seen.
 	defer m.holdBases()()
 	m.moves.mu.Lock()
 	defer m.moves.mu.Unlock()
-	if have, err := os.ReadFile(filepath.Join(dir, sandboxImportVersion)); err == nil && string(have) == version {
+	if m.moves.cancelled[id][version] {
+		return conflict("the move %s of sandbox %s here was cancelled", version, id)
+	}
+	if m.importing(id, version) {
 		return nil
 	}
-	_ = os.RemoveAll(dir)
-	delete(m.moves.retired, id)
+	if err := os.RemoveAll(filepath.Join(m.cfg.Root, sandboxImportsDir, id)); err != nil {
+		return err
+	}
 	if !fileExists(rootfs) {
 		return fmt.Errorf("%w: %s went while the import was made ready", ErrNoSnapshotImage, rootfs)
 	}
+	dir := m.sandboxImportDir(id, version)
 	vm := filepath.Join(dir, "vm")
 	if err := os.MkdirAll(vm, 0o700); err != nil {
 		return err
@@ -400,24 +403,28 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 	}
 	rec.Rootfs = rootfs
 	staged, _ := json.MarshalIndent(rec, "", "  ")
+	// The record last: with it the import is made ready.
 	if err := fsutil.WriteFileDurably(filepath.Join(dir, sandboxRecordName), staged, 0o600); err != nil {
-		return fail(err)
-	}
-	// The version last: with it the import is made ready.
-	if err := fsutil.WriteFileDurably(filepath.Join(dir, sandboxImportVersion), []byte(version), 0o600); err != nil {
 		return fail(err)
 	}
 	return nil
 }
 
-// importing says whether the host has version of a sandbox's import made ready.
+// importing says whether the host has version of a sandbox's import made ready: its record staged.
 func (m *Manager) importing(id, version string) bool {
-	have, err := os.ReadFile(filepath.Join(m.sandboxImportDir(id), sandboxImportVersion))
-	return err == nil && string(have) == version
+	return fileExists(filepath.Join(m.sandboxImportDir(id, version), sandboxRecordName))
 }
 
-// SandboxPartPartial is where a fetch of a moved sandbox's part writes: its file in the import's VM directory, once
-// the import is made ready (PrepareSandboxImport).
+// importCancelled says whether version's import of a sandbox was cancelled here (CancelSandboxImport).
+func (m *Manager) importCancelled(id, version string) bool {
+	m.moves.mu.Lock()
+	defer m.moves.mu.Unlock()
+	return m.moves.cancelled[id][version]
+}
+
+// SandboxPartPartial is where a fetch of a moved sandbox's part writes: its file in the version's import's VM
+// directory, once that is made ready (PrepareSandboxImport). Each version has its own, which is never made again
+// once it goes: a fetch of a version no longer made ready finds nowhere to write.
 func (m *Manager) SandboxPartPartial(id, version, part string) (string, error) {
 	name, ok := sandboxPartFiles[part]
 	if !sandboxObject(id, version) || !ok {
@@ -426,7 +433,7 @@ func (m *Manager) SandboxPartPartial(id, version, part string) (string, error) {
 	if !m.importing(id, version) {
 		return "", fmt.Errorf("sandbox %s's import of %s wasn't made ready: its root image may not be here", id, version)
 	}
-	return filepath.Join(m.sandboxImportDir(id), "vm", name), nil
+	return filepath.Join(m.sandboxImportDir(id, version), "vm", name), nil
 }
 
 // ReserveSandboxFetch holds room for the bytes a fetch of a moved sandbox is to write, beside every other copy the
@@ -441,8 +448,9 @@ func (m *Manager) ReserveSandboxFetch(bytes int64) (release func(), err error) {
 
 // PublishFetchedSandbox makes a fetched sandbox this host's (disksync.Parted): its record, staged, made this host's
 // (stopped, no memory, its bundle drives empty, its egress without the other host's CA, marked as made by this
-// version), its import's directory renamed to the sandbox's, and the sandbox registered, stopped. A sandbox deleted
-// here since its import was made ready isn't published, nor one whose partials were removed.
+// version), its version's import directory renamed to the sandbox's, and the sandbox registered, stopped. All of it
+// under the base lock, so a prune sees the image it is over in the import or in the sandbox, never in neither, and the
+// moves lock, so an import deleted or cancelled meanwhile, or whose partials were removed, isn't published.
 func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]disksync.FetchedPart) error {
 	if !sandboxObject(id, version) {
 		return fmt.Errorf("bad sandbox ID or version")
@@ -450,7 +458,13 @@ func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]dis
 	if m.HoldsSandbox(id, version) {
 		return nil
 	}
-	dir := m.sandboxImportDir(id)
+	defer m.holdBases()()
+	m.moves.mu.Lock()
+	defer m.moves.mu.Unlock()
+	if m.moves.cancelled[id][version] || !m.importing(id, version) {
+		return fmt.Errorf("sandbox %s's import was deleted on this host while it was fetched", id)
+	}
+	dir := m.sandboxImportDir(id, version)
 	vm := filepath.Join(dir, "vm")
 	for _, part := range SandboxParts {
 		got, ok := parts[part]
@@ -473,11 +487,14 @@ func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]dis
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return fmt.Errorf("sandbox %s's staged record: %w", id, err)
 	}
+	if !fileExists(rec.Rootfs) {
+		return fmt.Errorf("%w: %s is gone", ErrNoSnapshotImage, rec.Rootfs)
+	}
 	s := &sandbox{dir: filepath.Join(m.cfg.Root, "sandboxes", id)}
 	s.meta = importedMeta(rec.Meta, version, m.pulledRootfs(rec.Rootfs), rec.Rootfs)
 	s.healthAt = s.meta.HealthAt
-	for _, name := range []string{fc.DiskFile + ".done", stickyDriveFile(0) + ".done", stickyDriveFile(1) + ".done"} {
-		_ = os.Remove(filepath.Join(vm, name))
+	for _, part := range SandboxParts {
+		_ = os.Remove(filepath.Join(vm, sandboxPartFiles[part]+".done"))
 	}
 	if s.meta.StickyDrives == 0 {
 		// A VM from before sticky drives has none: the empty files fetched for them go.
@@ -495,11 +512,6 @@ func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]dis
 	if err := fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), metaRaw, 0o600); err != nil {
 		return err
 	}
-	m.moves.mu.Lock()
-	defer m.moves.mu.Unlock()
-	if m.moves.retired[id] || !m.importing(id, version) {
-		return fmt.Errorf("sandbox %s was deleted on this host while it was fetched", id)
-	}
 	if err := os.MkdirAll(filepath.Join(m.cfg.Root, "sandboxes"), 0o700); err != nil {
 		return err
 	}
@@ -508,12 +520,14 @@ func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]dis
 	if _, ok := m.sandboxes[id]; ok {
 		return conflict("sandbox %s already exists on this host", id)
 	}
-	for _, name := range []string{sandboxRecordName, sandboxImportVersion} {
-		_ = os.Remove(filepath.Join(dir, name))
+	// The record goes before the rename: in sandboxes/ the directory is the sandbox's alone.
+	if err := os.Remove(filepath.Join(dir, sandboxRecordName)); err != nil {
+		return err
 	}
 	if err := os.Rename(dir, s.dir); err != nil {
 		return err
 	}
+	_ = os.Remove(filepath.Join(m.cfg.Root, sandboxImportsDir, id))
 	if err := syncDir(filepath.Join(m.cfg.Root, "sandboxes")); err != nil {
 		m.log.Warn("syncing the sandboxes directory after a moved sandbox was published", "sandbox", id, "error", err)
 	}
@@ -561,28 +575,57 @@ func (m *Manager) ImportedSandbox(id, version string) (proto.SandboxInfo, error)
 // plane sends again to go on with one cut short; never resumed by the host on its own.
 func (m *Manager) SandboxImportPartials() [][2]string { return nil }
 
-// DiscardSandboxImport drops a sandbox's import of version, if that is the one made ready, and everything it fetched.
+// DiscardSandboxImport drops version's import of a sandbox, if it is made ready, and everything it fetched.
 func (m *Manager) DiscardSandboxImport(id, version string) {
 	if !sandboxObject(id, version) {
 		return
 	}
 	m.moves.mu.Lock()
 	defer m.moves.mu.Unlock()
-	if m.importing(id, version) {
-		_ = os.RemoveAll(m.sandboxImportDir(id))
-	}
+	_ = os.RemoveAll(m.sandboxImportDir(id, version))
+	_ = os.Remove(filepath.Join(m.cfg.Root, sandboxImportsDir, id))
 }
 
-// dropSandboxImport ends any import of a sandbox here, as its delete does: its directory goes, and it is never
-// published (retired). Whether there was one.
+// CancelSandboxImport ends version's import of a sandbox here for good (sandbox.import.cancel, a move rolled back):
+// whatever it staged or fetched goes, a sandbox it made here is deleted, and it is never made ready or published after,
+// even by a sandbox.import still under way.
+func (m *Manager) CancelSandboxImport(id, version string) error {
+	if !sandboxObject(id, version) {
+		return &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
+	}
+	m.moves.mu.Lock()
+	if m.moves.cancelled == nil {
+		m.moves.cancelled = map[string]map[string]bool{}
+	}
+	if m.moves.cancelled[id] == nil {
+		m.moves.cancelled[id] = map[string]bool{}
+	}
+	m.moves.cancelled[id][version] = true
+	err := os.RemoveAll(m.sandboxImportDir(id, version))
+	_ = os.Remove(filepath.Join(m.cfg.Root, sandboxImportsDir, id))
+	m.moves.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if s, err := m.get(id); err != nil || !madeBy(s, version) {
+		return nil
+	}
+	return m.deleteSandbox(id, false)
+}
+
+// madeBy says whether a sandbox here was made by version's import.
+func madeBy(s *sandbox, version string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.meta.Imported == version
+}
+
+// dropSandboxImport ends any import of a sandbox here, as its delete does: every version's import directory goes, and
+// a fetch of one finds nowhere to write or publish. Whether there was one.
 func (m *Manager) dropSandboxImport(id string) bool {
 	m.moves.mu.Lock()
 	defer m.moves.mu.Unlock()
-	if m.moves.retired == nil {
-		m.moves.retired = map[string]bool{}
-	}
-	m.moves.retired[id] = true
-	dir := m.sandboxImportDir(id)
+	dir := filepath.Join(m.cfg.Root, sandboxImportsDir, id)
 	if _, err := os.Lstat(dir); err != nil {
 		return false
 	}

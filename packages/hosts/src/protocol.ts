@@ -415,8 +415,8 @@ export const HOST_FEATURES = {
 	 * `sandbox.export` (`HostSandboxExportParams`) on its host makes that version, clones of its files and their maps,
 	 * which the host then serves to its mesh peers; `sandbox.import` (`HostSandboxImportParams`) on the target fetches it,
 	 * its root image first, and makes the sandbox there, stopped, with the same ID; `sandbox.export.delete` drops a
-	 * version. A delete of the sandbox drops its exports too, and on the target an import under way. Reported with
-	 * `snapshotSync`.
+	 * version; `sandbox.import.cancel` ends a version's import on the target for good. A delete of the sandbox drops its
+	 * exports too, and on the target an import under way. Reported with `snapshotSync`.
 	 */
 	sandboxMove: "sandbox-move",
 } as const;
@@ -1523,6 +1523,12 @@ export const HostMethods = {
 	sandboxExportDelete: "sandbox.export.delete",
 	/** `HostSandboxImportParams` (`HOST_FEATURES.sandboxMove`), answered with the sandbox's `HostSandbox`. */
 	sandboxImport: "sandbox.import",
+	/**
+	 * `HostSandboxExportParams` (`HOST_FEATURES.sandboxMove`), a move rolled back: that version's import of the sandbox
+	 * ends on the target for good, a sandbox it made there is deleted, and no `sandbox.import` of it still under way makes
+	 * it after. Answered `{}`.
+	 */
+	sandboxImportCancel: "sandbox.import.cancel",
 } as const;
 
 /** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */

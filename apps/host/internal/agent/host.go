@@ -1207,6 +1207,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		return h.sandboxExportDelete(params)
 	case proto.MethodSandboxImport:
 		return h.sandboxImport(ctx, params)
+	case proto.MethodSandboxImportCancel:
+		return h.sandboxImportCancel(params)
 	case proto.MethodHostImages:
 		return h.hostImages(params)
 	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:

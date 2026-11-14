@@ -262,8 +262,10 @@ const FeatureSnapshotSync = "snapshot-sync"
 // sandbox's, one version for each export (the move's operation ID): sandbox.export (SandboxExportParams) on its host
 // makes that version, clones of its files under sandbox-exports/<id>/<version>/ and their maps, which the host then
 // serves to its mesh peers; sandbox.import (SandboxImportParams) on the target fetches it and makes the sandbox there,
-// stopped, with the same ID, to start as any other; sandbox.export.delete drops a version. A delete of the sandbox
-// drops its exports too, and on the target an import under way. It comes with FeatureSnapshotSync, on the microVM tier.
+// stopped, with the same ID, to start as any other; sandbox.export.delete drops a version; sandbox.import.cancel
+// (SandboxExportParams, a move rolled back) ends a version's import on the target for good, deleting a sandbox it made
+// there, and no sandbox.import of that version still under way makes it after. A delete of the sandbox drops its
+// exports too, and on the target an import under way. It comes with FeatureSnapshotSync, on the microVM tier.
 const FeatureSandboxMove = "sandbox-move"
 
 // Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
@@ -1827,4 +1829,6 @@ const (
 	MethodSandboxExportDelete = "sandbox.export.delete"
 	// MethodSandboxImport (Kantel → host, SandboxImportParams; FeatureSandboxMove) answers the sandbox's SandboxInfo.
 	MethodSandboxImport = "sandbox.import"
+	// MethodSandboxImportCancel (Kantel → host, SandboxExportParams; FeatureSandboxMove) answers {}.
+	MethodSandboxImportCancel = "sandbox.import.cancel"
 )

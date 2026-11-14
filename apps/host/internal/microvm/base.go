@@ -313,8 +313,14 @@ func BasesUnder(root string) (map[string]bool, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
-	for _, dir := range imports {
-		addVM(filepath.Join(dir, "vm"))
+	for _, sandboxDir := range imports {
+		versions, err := entriesOf(sandboxDir)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, dir := range versions {
+			addVM(filepath.Join(dir, "vm"))
+		}
 	}
 	templates, err := entriesOf(filepath.Join(root, "templates"))
 	if err != nil {

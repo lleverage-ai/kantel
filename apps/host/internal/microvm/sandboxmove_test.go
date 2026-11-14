@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
@@ -224,7 +225,7 @@ func TestSandboxMoveRefusals(t *testing.T) {
 	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", record); !errors.Is(err, ErrNoSnapshotImage) {
 		t.Fatalf("made ready without its image: %v", err)
 	}
-	if fileExists(b.sandboxImportDir("sb1")) {
+	if fileExists(filepath.Join(b.cfg.Root, sandboxImportsDir, "sb1")) {
 		t.Fatal("a refused import left its directory")
 	}
 	// A sandbox of that ID there already.
@@ -263,7 +264,7 @@ func TestDeletingASandboxBeingImported(t *testing.T) {
 	if err := b.Delete(context.Background(), "sb1"); err != nil {
 		t.Fatalf("a delete of an import: %v", err)
 	}
-	if fileExists(b.sandboxImportDir("sb1")) {
+	if fileExists(filepath.Join(b.cfg.Root, sandboxImportsDir, "sb1")) {
 		t.Fatal("the import's directory is still there")
 	}
 	if err := b.PublishFetchedSandbox("sb1", "mov_1", parts); err == nil {
@@ -328,5 +329,151 @@ func TestSandboxImportKeepsItsImage(t *testing.T) {
 	in, err := BasesUnder(b.cfg.Root)
 	if err != nil || !in["old"] {
 		t.Fatalf("bases in use %v, %v", in, err)
+	}
+}
+
+// stageTestImport makes version's import of a sandbox ready on to, with every part's partial written, and answers the
+// parts as a fetch would publish them.
+func stageTestImport(t *testing.T, from, to *Manager, id, version string) map[string]disksync.FetchedPart {
+	t.Helper()
+	record, _ := from.ReadSandboxFile(id, version, proto.SandboxRecordFile)
+	if err := to.PrepareSandboxImport(context.Background(), id, version, record); err != nil {
+		t.Fatal(err)
+	}
+	parts := map[string]disksync.FetchedPart{}
+	for _, part := range SandboxParts {
+		path, err := to.SandboxPartPartial(id, version, part)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f, _ := os.Open(path)
+		t.Cleanup(func() { f.Close() })
+		parts[part] = disksync.FetchedPart{File: f}
+	}
+	return parts
+}
+
+// A newer move's import replaces an older one's: the older finds nowhere to write and isn't published, and the newer's
+// files are untouched by it.
+func TestAnOlderImportNeverWritesANewerOne(t *testing.T) {
+	a, b := moveHost(t), moveHost(t)
+	stoppedTestSandbox(t, a, "sb1", "old")
+	for _, v := range []string{"mov_1", "mov_2"} {
+		if _, err := a.ExportSandbox(context.Background(), proto.SandboxExportParams{SandboxID: "sb1", Version: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	older := stageTestImport(t, a, b, "sb1", "mov_1")
+	newer := stageTestImport(t, a, b, "sb1", "mov_2")
+	if _, err := b.SandboxPartPartial("sb1", "mov_1", proto.SandboxPartDisk); err == nil {
+		t.Fatal("the older import still has somewhere to write")
+	}
+	if err := b.PublishFetchedSandbox("sb1", "mov_1", older); err == nil {
+		t.Fatal("the older import was published")
+	}
+	if err := b.PublishFetchedSandbox("sb1", "mov_2", newer); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := b.ImportedSandbox("sb1", "mov_2"); err != nil || info.State != proto.StateStopped {
+		t.Fatalf("the newer import: %+v, %v", info, err)
+	}
+}
+
+// A cancelled import (a move rolled back) is never made ready or published after, even by a call still under way that
+// had made it ready; a sandbox it made is deleted, and one another move made is left.
+func TestCancelledImport(t *testing.T) {
+	a, b := moveHost(t), moveHost(t)
+	stoppedTestSandbox(t, a, "sb1", "old")
+	for _, v := range []string{"mov_1", "mov_2"} {
+		if _, err := a.ExportSandbox(context.Background(), proto.SandboxExportParams{SandboxID: "sb1", Version: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parts := stageTestImport(t, a, b, "sb1", "mov_1")
+	if err := b.CancelSandboxImport("sb1", "mov_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PublishFetchedSandbox("sb1", "mov_1", parts); err == nil {
+		t.Fatal("published after its cancel")
+	}
+	record, _ := a.ReadSandboxFile("sb1", "mov_1", proto.SandboxRecordFile)
+	var pe *proto.Error
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", record); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+		t.Fatalf("made ready after its cancel: %v", err)
+	}
+	if fileExists(filepath.Join(b.cfg.Root, sandboxImportsDir, "sb1")) {
+		t.Fatal("the cancelled import left its directory")
+	}
+	// Another move's sandbox isn't the cancelled one's to delete; its own is.
+	if err := importTestSandbox(t, a, b, "sb1", "mov_2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.CancelSandboxImport("sb1", "mov_1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.get("sb1"); err != nil {
+		t.Fatal("a cancel of another move deleted the sandbox")
+	}
+	if err := b.CancelSandboxImport("sb1", "mov_2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.get("sb1"); err == nil || fileExists(filepath.Join(b.cfg.Root, "sandboxes", "sb1")) {
+		t.Fatal("the cancelled move's sandbox is still there")
+	}
+}
+
+// A publish waits for a prune's walk of what is in use (the base lock), so the image a sandbox being imported is over
+// is seen in its import or in the sandbox, never in neither.
+func TestPublishWaitsForAPrune(t *testing.T) {
+	a, b := moveHost(t), moveHost(t)
+	stoppedTestSandbox(t, a, "sb1", "old")
+	if _, err := a.ExportSandbox(context.Background(), proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1"}); err != nil {
+		t.Fatal(err)
+	}
+	parts := stageTestImport(t, a, b, "sb1", "mov_1")
+	unlock := b.LockBases()
+	done := make(chan error, 1)
+	go func() { done <- b.PublishFetchedSandbox("sb1", "mov_1", parts) }()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("published during a prune's walk (%v)", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	in, err := BasesUnder(b.cfg.Root)
+	unlock()
+	if err != nil || !in["old"] {
+		t.Fatalf("bases in use %v, %v", in, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A sandbox made before sticky drives has none on the target either: the empty files fetched for them go.
+func TestMovedSandboxWithoutStickyDrives(t *testing.T) {
+	a, b := moveHost(t), moveHost(t)
+	s := stoppedTestSandbox(t, a, "sb1", "old")
+	s.meta.StickyDrives, s.meta.StickyDisks = 0, nil
+	for k := range StickyDrives {
+		_ = os.Remove(filepath.Join(s.vmDir(), stickyDriveFile(k)))
+	}
+	if _, err := a.ExportSandbox(context.Background(), proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := importTestSandbox(t, a, b, "sb1", "mov_1"); err != nil {
+		t.Fatal(err)
+	}
+	moved, _ := b.get("sb1")
+	for k := range StickyDrives {
+		if fileExists(filepath.Join(moved.vmDir(), stickyDriveFile(k))) {
+			t.Fatalf("sticky drive %d's file came with it", k)
+		}
+	}
+	if moved.meta.StickyDrives != 0 {
+		t.Fatalf("its sticky drives: %d", moved.meta.StickyDrives)
 	}
 }

@@ -54,6 +54,7 @@ func (s *moveTier) ImportedSandbox(id, _ string) (proto.SandboxInfo, error) {
 func (s *moveTier) SandboxImportPartials() [][2]string        { return nil }
 func (s *moveTier) ReserveSandboxFetch(int64) (func(), error) { return func() {}, nil }
 func (s *moveTier) DiscardSandboxImport(string, string)       {}
+func (s *moveTier) CancelSandboxImport(string, string) error  { return nil }
 func (s *moveTier) DeleteMoved(id string) error {
 	s.mu.Lock()
 	s.moved = append(s.moved, id)
