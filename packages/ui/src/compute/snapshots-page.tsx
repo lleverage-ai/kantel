@@ -12,7 +12,7 @@ import { PageHeader } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { FolderIcon, PlusIcon } from "../primitives/icons.tsx";
 import { useLoad, useReloadOn } from "../primitives/load.ts";
-import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { EllipsisIcon, ServerIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -31,6 +31,7 @@ import {
 } from "./compute-model.ts";
 import { cellSub, computePage, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
+import { SavedSnapshotHosts } from "./snapshot-hosts.tsx";
 
 /** The files view at another place in the same snapshot. */
 const filesView = (view: FilesView, at: FilesAt): SnapshotsView => {
@@ -84,6 +85,8 @@ export interface SnapshotsPageProps {
 	readonly onStartFrom?: (saved: SavedSnapshot) => void;
 	/** The address of a view, so a snapshot's folders and files are links. */
 	readonly viewHref?: (view: SnapshotsView) => string;
+	/** A saved snapshot whose hosts show when the page opens: for a story. */
+	readonly hostsOf?: string;
 }
 
 /**
@@ -146,6 +149,7 @@ export function SnapshotsPage({
 	initialView = { name: "saved" },
 	onStartFrom,
 	viewHref,
+	hostsOf,
 }: SnapshotsPageProps) {
 	const [own, setOwn] = useState<SnapshotsView>(initialView);
 	const view = controlled ?? own;
@@ -229,6 +233,7 @@ export function SnapshotsPage({
 					account={account}
 					now={now}
 					{...(onStartFrom === undefined ? {} : { onStartFrom })}
+					{...(hostsOf === undefined ? {} : { hostsOf })}
 					onBrowse={(saved) => browse(saved.id, saved.name, saved.kind)}
 					onNotice={setNotice}
 				/>
@@ -280,6 +285,7 @@ function SavedList({
 	account,
 	now,
 	onStartFrom,
+	hostsOf,
 	onBrowse,
 	onNotice,
 }: {
@@ -287,6 +293,7 @@ function SavedList({
 	account: ComputeAccount;
 	now: number;
 	onStartFrom?: (saved: SavedSnapshot) => void;
+	hostsOf?: string;
 	onBrowse: (saved: SavedSnapshot) => void;
 	onNotice: NoticeSetter;
 }) {
@@ -294,12 +301,15 @@ function SavedList({
 	// Deleted here, ahead of the next read.
 	const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
 	const [deleting, setDeleting] = useState<SavedSnapshot>();
+	// The one whose hosts show, by ID: the dialog reads them when it opens.
+	const [showingHosts, setShowingHosts] = useState(hostsOf);
 
 	if (state.status === "error") {
 		return <ReadFailed error={state.error} fallback="Kantel couldn't read the saved snapshots." onRetry={reload} />;
 	}
 	if (state.status === "loading") return <TableSkeleton />;
 	const saved = state.value.filter((entry) => !removed.has(entry.id));
+	const hostsShown = saved.find((entry) => entry.id === showingHosts);
 	if (saved.length === 0) {
 		return (
 			<EmptyState title="No saved snapshots yet">
@@ -358,6 +368,17 @@ function SavedList({
 									icon: <FolderIcon size="sm" />,
 									onSelect: () => onBrowse(entry),
 								},
+								...(source.hosts === undefined
+									? []
+									: [
+											{
+												kind: "item" as const,
+												id: "hosts",
+												label: "Hosts",
+												icon: <ServerIcon />,
+												onSelect: () => setShowingHosts(entry.id),
+											},
+										]),
 								{ kind: "separator", id: "sep-delete" },
 								{
 									kind: "item",
@@ -439,6 +460,16 @@ function SavedList({
 					</tbody>
 				</table>
 			</TableFrame>
+			{/* Its hosts in a dialog of their own: the list's columns are what each snapshot is, not where it is. */}
+			<Dialog
+				open={hostsShown !== undefined}
+				title={hostsShown === undefined ? "Hosts" : `${hostsShown.name}'s hosts`}
+				onClose={() => setShowingHosts(undefined)}
+			>
+				{hostsShown === undefined ? null : (
+					<SavedSnapshotHosts key={hostsShown.id} source={source} snapshot={hostsShown} />
+				)}
+			</Dialog>
 			<DeleteDialog
 				open={deleting !== undefined}
 				title="Delete saved snapshot?"

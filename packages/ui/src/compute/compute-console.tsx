@@ -1008,18 +1008,38 @@ function PageFor({
 					{...timing}
 				/>
 			);
-		case "profile":
+		case "profile": {
+			// The personal account's own settings are on Profile, as an organisation's are on General.
+			const personal = accounts.find((each) => each.kind === "personal");
+			const setCopies = source.accounts.setSnapshotCopies;
+			const snapshotCopies =
+				personal?.snapshotCopies === undefined || setCopies === undefined
+					? undefined
+					: {
+							on: personal.snapshotCopies,
+							onChange: async (on: boolean) => {
+								const changed = await setCopies(personal.id, on);
+								// Only what Kantel says it saved: an answer without the setting hasn't saved it.
+								if (changed.snapshotCopies === undefined) {
+									throw new Error("Kantel didn't confirm the change. Try again.");
+								}
+								onRenamed();
+								return changed.snapshotCopies;
+							},
+						};
 			return (
 				<ProfilePage
 					name={you.name}
 					narrow={narrow}
 					accounts={accounts}
+					{...(snapshotCopies === undefined ? {} : { snapshotCopies })}
 					{...(source.personalTokens === undefined ? {} : { tokens: source.personalTokens })}
 					{...(you.email === undefined ? {} : { email: you.email })}
 					{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 					{...(onDeleteAccount === undefined ? {} : { onDeleteAccount })}
 				/>
 			);
+		}
 		case "billing":
 			return source.billing === undefined ? null : (
 				<BillingPage source={source.billing} account={account} narrow={narrow} {...timing} />

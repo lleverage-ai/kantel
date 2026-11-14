@@ -319,6 +319,9 @@ type meta struct {
 	// Imported is the version of a move that made it here from another host (sandboxmove.go): a sandbox.import sent
 	// again finds it made, and a create of its ID isn't taken for it.
 	Imported string `json:"imported,omitempty"`
+	// Exported is the version of the last move that exported it from here (sandboxmove.go): only a delete of that
+	// export's copy (DeleteExported) removes it once moved.
+	Exported string `json:"exported,omitempty"`
 }
 
 type sandbox struct {

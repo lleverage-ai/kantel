@@ -77,6 +77,7 @@ import {
 	isCommandProgress,
 	isDetachedWaitEnded,
 	isUpgradeOutcomeUnknown,
+	type MoveOutcome,
 	type Placement,
 	refusedBeforeTheMachine,
 	type SandboxBackend,
@@ -540,6 +541,14 @@ export const UPGRADE_OUTCOME_UNKNOWN =
 export const UPGRADE_UNSUPPORTED =
 	"This deployment's hosts don't upgrade isolates to microVMs; make a microVM and copy the files across";
 
+/** What a move whose outcome can't be told yet answers. */
+const MOVE_OUTCOME_UNKNOWN =
+	"The move's outcome can't be told yet: a host it used doesn't answer. The sandbox stays moving until Kantel " +
+	"settles the move with its hosts, and is then on its new host, running, or stopped where it was";
+
+/** What a move is refused with where no backend moves sandboxes. */
+const MOVE_UNSUPPORTED = "This deployment's hosts don't move sandboxes between them";
+
 /** What an upgrade into a snapshot whose pool can't be told is told to do instead (`poolOfSnapshot`). */
 const UPGRADE_IN_POOL = "upgrade into a snapshot saved in the sandbox's pool";
 
@@ -756,8 +765,20 @@ export interface ComputeService {
 	 */
 	locateDisk(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
-	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with
-	 * sticky disks and templates off, or with no secrets key over a persistent store.
+	 * A grant for host `to` to fetch a version of an object of `accountId`'s from the hosts `from`, whose holders the
+	 * host registry knows rather than the catalogue: a move's export (kind `sandbox`). `not_supported` with no grant key.
+	 */
+	grantFetch(grant: {
+		readonly kind: "sandbox";
+		readonly objectId: string;
+		readonly version: string;
+		readonly accountId: string;
+		readonly from: readonly string[];
+		readonly to: string;
+	}): Promise<string>;
+	/**
+	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with no
+	 * secrets key over a persistent store.
 	 */
 	grantPublicKey(): Promise<string | undefined>;
 	/**
@@ -4030,6 +4051,27 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if ((await backend.hostConnected(hostId).catch(() => undefined)) === false) throw hostNotConnected();
 	}
 
+	/** Its state as the API answers it: a move under way is `starting` here, as a boot is, and answered `moving`. */
+	function publicState(sandbox: StoredSandbox): SandboxState {
+		return sandbox.moving !== undefined && sandbox.state === "starting" ? "moving" : sandbox.state;
+	}
+
+	/** A move under way, as the API answers it: its target only where the caller may know the host. */
+	function moveView(sandbox: StoredSandbox, host: { readonly hostId?: string }): { readonly move?: Sandbox["move"] } {
+		const moving = sandbox.moving;
+		if (moving === undefined || sandbox.state !== "starting") return {};
+		// Its new host only for a caller who may know its host.
+		const to = moving.to !== undefined && host.hostId !== undefined ? moving.to : undefined;
+		return {
+			move: {
+				phase: moving.phase,
+				keepMemory: false,
+				startedAt: moving.at,
+				...(to === undefined ? {} : { hostId: to }),
+			},
+		};
+	}
+
 	async function sandboxView(
 		sandbox: StoredSandbox,
 		principal: Principal,
@@ -4054,7 +4096,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			shape: sandbox.shape === undefined ? undefined : { ...sandbox.shape },
 			resources: sandbox.resources,
 			image: sandbox.image,
-			state: sandbox.state,
+			state: publicState(sandbox),
+			...moveView(sandbox, host),
 			health: sandbox.health,
 			reason: sandbox.reason,
 			placementReason: sandbox.placementReason,
@@ -7627,6 +7670,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			let previous: SandboxState | undefined;
 			await store.sandboxes.update(sandbox.id, (current) => {
 				previous = undefined;
+				// A move under way stays as it is, for its gateway or the sweep to settle: its outcome (a copy running on
+				// another host, perhaps) is known only from its hosts, and settlement allows for its source being revoked.
+				if (current.moving !== undefined && current.state === "starting") {
+					// Its source revoked: kept, so a rollback that puts it back there publishes the revocation (`restoreMove`).
+					if (current.hostId !== hostId || current.strandedOn?.includes(hostId) === true) return undefined;
+					return { ...current, strandedOn: [...(current.strandedOn ?? []), hostId] };
+				}
 				if (current.hostId === hostId && STRANDABLE.includes(current.state)) {
 					previous = current.state;
 					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
@@ -9003,7 +9053,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (onHost !== undefined && sandbox.hostId !== onHost) continue;
 				const wanted =
 					query.state !== undefined
-						? sandbox.state === query.state
+						? publicState(sandbox) === query.state
 						: query.all === true || active.includes(sandbox.state);
 				if (!wanted) continue;
 				const labels = query.label ?? {};
@@ -9809,6 +9859,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			);
 		},
 
+		moveSandbox: async (principal, { params, body, idempotencyKey }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			return once(principal, "moveSandbox", { params, body, idempotencyKey }, async () =>
+				sandboxView(await moveStopped(principal, role, sandbox.id, body), principal),
+			);
+		},
+
 		recoverSandbox: async (principal, { params, idempotencyKey }) => {
 			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			// A running sandbox is recovered too, so a retry would restart it again: with the key it answers the first.
@@ -9991,13 +10048,40 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteSandbox: async (principal, { params, idempotencyKey }) =>
 			once(principal, "deleteSandbox", { params, idempotencyKey }, async () => {
 				const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
-				const current = await settledFor(principal, sandbox.id);
+				let current = await settledFor(principal, sandbox.id);
 				if (current.state === "deleted") return sandboxView(current, principal);
+				// A move under way is settled first, so a delete never leaves one unsettled (its copy on another host unknown):
+				// one another gateway is at is waited for by the caller; one gone quiet is settled here, and one that can't be
+				// settled yet (a host it used away) is refused as it is, still moving.
+				if (current.moving !== undefined && current.state === "starting") {
+					if (current.moving.heartbeatAt + UPGRADE_STALE_MS > now()) {
+						throw new KantelError("conflict", "The sandbox is moving to another host; delete it once the move ends");
+					}
+					await settleStuckMove(current).catch(() => undefined);
+					current = await mustGetSandbox(sandbox.id);
+					if (current.moving !== undefined) {
+						throw new KantelError(
+							"unavailable",
+							"The sandbox's move can't be settled yet (a host it used doesn't answer); delete it once it has been",
+						);
+					}
+				}
 				// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
 				// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
 				// of them writes `deleted`.
-				const began = await transition(current.id, NOT_DELETED, (latest) => withState(latest, "deleting"));
-				if (!("moved" in began)) return sandboxView(began.lost, principal);
+				// Never over a move begun since the read above (on another gateway): that is refused as one seen would be.
+				const began = await transition(
+					current.id,
+					NOT_DELETED,
+					(latest) => withState(latest, "deleting"),
+					(latest) => latest.moving === undefined,
+				);
+				if (!("moved" in began)) {
+					if (began.lost.moving !== undefined && began.lost.state !== "deleted") {
+						throw new KantelError("conflict", "The sandbox is moving to another host; delete it once the move ends");
+					}
+					return sandboxView(began.lost, principal);
+				}
 				await track([current.id], async () => {
 					try {
 						await killCommandsOf(current.id);
@@ -11734,12 +11818,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getGrantKeys: async (principal) => {
 			requireScope(principal, "hosts:admin");
 			const keys = await diskHolders.keys();
-			if (keys === undefined) {
-				throw new KantelError(
-					"not_supported",
-					options.stickyDisks === true ? GRANT_KEY_UNAVAILABLE : "Sticky disks are off here",
-				);
-			}
+			if (keys === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 			return grantKeysView(keys);
 		},
 
@@ -12538,6 +12617,290 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	/**
+	 * `POST /sandboxes/{id}/move`: a stopped microVM moved to another host in its pool, with its ID, settings and URLs,
+	 * and started there on its disk.
+	 *
+	 * The record goes `starting` with its move (`moving`: an operation ID its backend does at most once, and what the
+	 * record was), so its commands and file calls wait for it as for a start, every other lifecycle call queues behind it
+	 * (`track`), and a gateway that dies meanwhile leaves it for the sweep to settle (`settleStuckMove`). Its backend
+	 * copies it, starts it on the new host and only then places it there (`SandboxBackend.move`); it is published as a
+	 * boot's is (`commitMove`, through `boot`), its egress reconciled first. A failure the backend is sure of puts the
+	 * record back exactly as it was, stopped (or paused) where it was. An outcome the backend can't tell is settled with
+	 * it at once where it can say, else left for the sweep. Memory doesn't move yet: a paused sandbox moves only with
+	 * `keepMemory: false`, booting on its disk. Answers once it runs on its new host, or with `wait: false` as soon as it
+	 * is moving.
+	 */
+	async function moveStopped(
+		principal: Principal,
+		role: MemberRole,
+		sandboxId: string,
+		body: computeSchema.MoveSandboxBody,
+	): Promise<StoredSandbox> {
+		const current = await settledFor(principal, sandboxId);
+		const move = backend.move;
+		if (move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
+		if (current.type !== "microvm") throw new KantelError("not_supported", "Only a microVM moves to another host");
+		if (current.state === "paused" && body.keepMemory !== false) {
+			throw new KantelError(
+				"conflict",
+				"The sandbox is paused, and its memory can't be moved to another host yet: move it with keepMemory false to boot it on its disk there (its memory is lost), or stop it first",
+			);
+		}
+		if (current.state !== "stopped" && current.state !== "paused") {
+			throw new KantelError(
+				"conflict",
+				`The sandbox is ${current.state}: only a stopped sandbox moves to another host for now; stop it first`,
+			);
+		}
+		if (current.hostPin !== undefined) {
+			throw new KantelError(
+				"conflict",
+				"The sandbox is kept to its host (its create named the host), so it doesn't move",
+			);
+		}
+		if (current.hostId === undefined)
+			throw new KantelError("conflict", "The sandbox isn't on a host yet; start it instead");
+		// Comes back running, on its new host: it counts against the account's sandboxes as a start does.
+		await requireCapacity(current.accountId, 1);
+		// The hosts it may use, as a start would choose them: its labels and its pool kept (it never leaves its pool), its
+		// own host among them, which its backend leaves out.
+		const hosts = requireHosts(
+			await ensureHosts(),
+			current.accountId,
+			"microvm",
+			{ ...current.hostLabels },
+			true,
+			await mayShare(principal),
+			undefined,
+			await poolOfSandbox(current),
+		);
+		if (body.hostId !== undefined && !hosts.includes(body.hostId)) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				"The host asked for isn't one this sandbox may use: an online host in its pool, within its host labels and pin",
+			);
+		}
+		if (body.hostId !== undefined && body.hostId === current.hostId) {
+			throw new KantelError("invalid", "The sandbox is on that host already");
+		}
+		requireSetupScope(principal, role, current);
+		await provisionedAgain(principal, role, current);
+		const operationId = randomId("mov");
+		const began = await transition(
+			current.id,
+			current.state,
+			(latest) =>
+				withState(latest, "starting", {
+					ports: [],
+					pausedSnapshotId: undefined,
+					...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+					// Its egress is read afresh for its start on the new host: an update read before is older, and loses.
+					egressRevision: later(latest.egressRevision),
+					moving: {
+						operationId,
+						at: now(),
+						heartbeatAt: now(),
+						phase: "copying",
+						from: latest.state === "paused" ? "paused" : "stopped",
+						...(body.hostId === undefined ? {} : { to: body.hostId }),
+						before: {
+							...(latest.stoppedAt === undefined ? {} : { stoppedAt: latest.stoppedAt }),
+							...(latest.reason === undefined ? {} : { reason: latest.reason }),
+							...(latest.pausedSnapshotId === undefined ? {} : { pausedSnapshotId: latest.pausedSnapshotId }),
+							...(latest.mounts === undefined ? {} : { mounts: latest.mounts }),
+							...(latest.mountsAt === undefined ? {} : { mountsAt: latest.mountsAt }),
+						},
+						egressRevision: later(latest.egressRevision),
+					},
+				}),
+			(latest) => latest.type === "microvm" && latest.lifecycle === current.lifecycle,
+		);
+		if (!("moved" in began))
+			throw new KantelError("conflict", `The sandbox is ${began.lost.state}; try the move again`);
+		const starting = began.moved;
+		const provisioning = await provisionedAgain(principal, role, starting, true);
+		const work = track([current.id], async (): Promise<StoredSandbox> => {
+			// Said every so often while this gateway is at it: a record gone quiet is a gateway gone, settled by the sweep.
+			const heartbeat = setInterval(() => {
+				patchSandbox(sandboxId, (latest) =>
+					latest.moving?.operationId === operationId
+						? { ...latest, moving: { ...latest.moving, heartbeatAt: now() } }
+						: undefined,
+				).catch(() => undefined);
+			}, UPGRADE_HEARTBEAT_MS);
+			(heartbeat as { unref?: () => void }).unref?.();
+			try {
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					await restoreMove(sandboxId, operationId);
+					throw error;
+				}
+				let placement: Placement;
+				try {
+					placement = await move(
+						current.id,
+						{
+							accountId: current.accountId,
+							env: starting.env,
+							eligibleHosts: hosts.filter((hostId) => hostId !== current.hostId),
+							...(body.hostId === undefined ? {} : { to: body.hostId }),
+							...pooled(current.poolId),
+							...egress,
+							egressRevision: starting.egressRevision,
+							...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+							onStarting: (hostId) => {
+								patchSandbox(sandboxId, (latest) =>
+									latest.moving?.operationId === operationId
+										? { ...latest, moving: { ...latest.moving, phase: "starting", to: hostId } }
+										: undefined,
+								).catch(() => undefined);
+							},
+						},
+						operationId,
+					);
+				} catch (error) {
+					if (!isUpgradeOutcomeUnknown(error)) {
+						await restoreMove(sandboxId, operationId);
+						throw error;
+					}
+					// Sent, and not answered: asked what became of it, never guessed. One that can't be told yet stays moving, for
+					// the sweep to settle once its hosts answer.
+					let outcome: MoveOutcome | undefined;
+					try {
+						outcome = await backend.settleMove?.(sandboxId, operationId);
+					} catch {
+						throw new KantelError("unavailable", MOVE_OUTCOME_UNKNOWN);
+					}
+					if (outcome?.state !== "done") {
+						await restoreMove(sandboxId, operationId);
+						throw new KantelError("unavailable", `The move didn't happen: ${outcome?.reason ?? messageOf(error)}`);
+					}
+					placement = outcome.placement;
+				}
+				const committed = await commitMove(sandboxId, operationId, placement);
+				if (committed?.state === "running" && provisioning !== undefined) {
+					await provision(committed.id, provisioning.environments).catch(() => undefined);
+				}
+				return committed ?? (await mustGetSandbox(sandboxId));
+			} finally {
+				clearInterval(heartbeat);
+			}
+		});
+		if (body.wait === false) {
+			keepGoing(work);
+			return starting;
+		}
+		return work;
+	}
+
+	/**
+	 * Puts a moving record back as it was before move `operationId` (stopped or paused, with its stop's time, reason and
+	 * mounts), once its backend has said it didn't happen: it never left its host. Nothing happens to one no longer
+	 * moving by that operation.
+	 */
+	async function restoreMove(sandboxId: string, operationId: string): Promise<void> {
+		await transition(
+			sandboxId,
+			"starting",
+			(latest) => {
+				const moving = latest.moving;
+				if (moving === undefined) return latest;
+				const { before } = moving;
+				// Back on a source revoked while it moved: that is its state, as a revocation would have left it.
+				if (latest.hostId !== undefined && latest.strandedOn?.includes(latest.hostId) === true) {
+					return {
+						...withState(latest, "error", { reason: HOST_REVOKED_REASON, ports: [] }),
+						mounts: before.mounts,
+						mountsAt: before.mountsAt,
+						moving: undefined,
+					};
+				}
+				return {
+					...latest,
+					state: moving.from,
+					lifecycle: (latest.lifecycle ?? 0) + 1,
+					stoppedAt: before.stoppedAt,
+					reason: before.reason,
+					pausedSnapshotId: before.pausedSnapshotId,
+					mounts: before.mounts,
+					mountsAt: before.mountsAt,
+					moving: undefined,
+				};
+			},
+			(latest) => latest.moving?.operationId === operationId,
+		).catch(() => undefined);
+	}
+
+	/**
+	 * Publishes move `operationId`'s sandbox, running on its new host, as a boot publishes one (`boot`): its egress
+	 * reconciled before it runs, a delete meanwhile destroying it. Its snapshots from before stay on its old host, its
+	 * history: none is what a later start or fork there takes, so its newest snapshot is let go.
+	 */
+	async function commitMove(
+		sandboxId: string,
+		operationId: string,
+		placement: Placement,
+	): Promise<StoredSandbox | undefined> {
+		const latest = await store.sandboxes.get(sandboxId);
+		const moving = latest?.moving;
+		if (latest === undefined || moving?.operationId !== operationId) return latest;
+		return boot(
+			sandboxId,
+			async () => placement,
+			undefined,
+			{ egressRevision: moving.egressRevision },
+			() => ({
+				moving: undefined,
+				latestSnapshotId: undefined,
+				latestSnapshotAt: undefined,
+				pausedSnapshotId: undefined,
+			}),
+		);
+	}
+
+	/**
+	 * The sweep's settling of a move whose gateway has gone quiet (`moving.heartbeatAt`), or whose outcome its backend
+	 * couldn't tell, as `settleStuckUpgrade` settles an upgrade: done, published; failed, put back; one its backend still
+	 * can't tell left for next time. Taken on by moving its heartbeat on from the quiet one read, so one gateway settles it.
+	 */
+	async function settleStuckMove(sandbox: StoredSandbox): Promise<void> {
+		const moving = sandbox.moving;
+		if (moving === undefined) return;
+		const { operationId } = moving;
+		let mine = moving.heartbeatAt;
+		const beat = async (to: number) => {
+			const from = mine;
+			const written = await patchSandbox(sandbox.id, (latest) =>
+				latest.moving?.operationId === operationId && latest.moving.heartbeatAt === from
+					? { ...latest, moving: { ...latest.moving, heartbeatAt: to } }
+					: undefined,
+			);
+			if (written !== undefined) mine = to;
+			return written !== undefined;
+		};
+		if (!(await beat(now()))) return;
+		const heartbeat = setInterval(() => beat(now()).catch(() => undefined), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		try {
+			await track([sandbox.id], async () => {
+				const outcome: MoveOutcome =
+					backend.settleMove === undefined ? { state: "failed" } : await backend.settleMove(sandbox.id, operationId);
+				if (outcome.state === "done") await commitMove(sandbox.id, operationId, outcome.placement);
+				else await restoreMove(sandbox.id, operationId);
+			});
+		} catch (error) {
+			clearInterval(heartbeat);
+			await beat(moving.heartbeatAt).catch(() => undefined);
+			throw error;
+		} finally {
+			clearInterval(heartbeat);
+		}
+	}
+
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
 	async function restart(
 		principal: Principal,
@@ -12548,6 +12911,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const { sandbox, role } = await sandboxFor(principal, sandboxId, "sandboxes:write");
 		const current = await settledFor(principal, sandbox.id);
 		if (current.state === "running") return sandboxView(current, principal);
+		// A move not yet settled may have a copy running on another host: settled first (the sweep), never booted over.
+		if (current.moving !== undefined) {
+			throw new KantelError("conflict", "The sandbox's move to another host isn't settled yet; try again shortly");
+		}
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
 			throw new KantelError("conflict", `The sandbox is ${current.state}`);
 		}
@@ -12706,6 +13073,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Upgrades whose gateway has gone quiet (gone mid-upgrade), or whose outcome wasn't known: settled with their
 			// backend, one under way on this gateway left to it.
 			for (const sandbox of await store.sandboxes.list({ state: "starting" })) {
+				// Moves likewise.
+				const moving = sandbox.moving;
+				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
+					await settleStuckMove(sandbox).catch(() => undefined);
+				}
 				const upgrading = sandbox.upgrading;
 				if (upgrading === undefined || pending.has(sandbox.id) || upgrading.heartbeatAt + UPGRADE_STALE_MS > at)
 					continue;
@@ -12975,6 +13347,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		recordHoldings: (hostId, at, report) => diskHolders.recordHoldings(hostId, at, report),
 		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),
+		grantFetch: (grant) => diskHolders.grant({ ...grant, from: [...grant.from] }),
 		grantPublicKey: async () => (await diskHolders.keys())?.current.publicKey,
 		grantKeys: async () => {
 			const keys = await diskHolders.keys();

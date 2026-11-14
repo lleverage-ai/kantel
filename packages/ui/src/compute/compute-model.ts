@@ -40,6 +40,11 @@ export interface ComputeAccount {
 	readonly planId?: string;
 	/** An organisation's: `blocked` when members' personal access tokens can't act in it. Absent is allowed. */
 	readonly personalTokens?: "allowed" | "blocked";
+	/**
+	 * Whether Kantel keeps each saved snapshot on two hosts of its pool, so losing one host loses none of them. Absent
+	 * where the source doesn't say (a gateway from before it): the setting isn't offered then.
+	 */
+	readonly snapshotCopies?: boolean;
 }
 
 /** The person signed in. */
@@ -92,6 +97,8 @@ export interface AccountsSource {
 	rename?(accountId: string, name: string): Promise<ComputeAccount>;
 	/** Allows or blocks members' personal access tokens in an organisation; needs admin. Absent where it can't. */
 	setPersonalTokens?(accountId: string, policy: "allowed" | "blocked"): Promise<ComputeAccount>;
+	/** Turns keeping saved snapshots on two hosts on or off; needs admin. Absent where it can't. */
+	setSnapshotCopies?(accountId: string, on: boolean): Promise<ComputeAccount>;
 	/** Changes a member's role; needs admin, and only an owner makes or unmakes an owner. Absent where it can't. */
 	setRole?(accountId: string, memberId: string, role: AccountRole): Promise<OrganisationMember>;
 }
@@ -1081,6 +1088,21 @@ export interface SavedSnapshot {
 	readonly machine?: { readonly vcpus: number; readonly memoryMb: number };
 }
 
+/**
+ * A host a saved snapshot is on, as its hosts last reported: the one it was saved on first, then each with a copy or
+ * fetching one. Kantel names only the hosts the viewer may know of: a shared host, for anyone but a super-admin, has
+ * no ID or name.
+ */
+export interface SnapshotHost {
+	readonly hostId?: string;
+	/** Its name, where `hostId` is given. */
+	readonly hostName?: string;
+	/** `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host. */
+	readonly state: "held" | "fetching";
+	/** Whether a sandbox made from it there restores its memory. Always false for a snapshot without memory. */
+	readonly memory: boolean;
+}
+
 /** A file or folder in a snapshot. */
 export interface SnapshotEntry {
 	readonly name: string;
@@ -1149,6 +1171,11 @@ export interface SnapshotsSource {
 	 * its files that doesn't say. Absent: such a link shows the whole of the snapshot from its root.
 	 */
 	kindOf?(snapshotId: string): Promise<SandboxKind>;
+	/**
+	 * The hosts a saved snapshot is on, or undefined where the source doesn't list them (a gateway from before it).
+	 * Absent: a saved snapshot's menu doesn't offer Hosts.
+	 */
+	hosts?(snapshotId: string): Promise<readonly SnapshotHost[] | undefined>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

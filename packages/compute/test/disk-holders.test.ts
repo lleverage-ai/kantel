@@ -2015,8 +2015,12 @@ describe("disk holders", () => {
 		const someone = setUp({ store, secretsKey: SECRETS_KEY, superAdmin: false });
 		await expect(someone.rotateGrantKey()).rejects.toMatchObject({ code: "forbidden" });
 		await expect(someone.getGrantKeys()).rejects.toMatchObject({ code: "forbidden" });
-		// With no grant key to have, refused.
-		await expect(setUp({ stickyDisks: false }).rotateGrantKey()).rejects.toMatchObject({ code: "not_supported" });
+		// With no grant key to have (a persistent store with no secrets key), refused; with sticky disks off, a key all the
+		// same, as moves sign with it.
+		await expect(setUp({ store: await sqlStore(nodeSqliteDatabase) }).rotateGrantKey()).rejects.toMatchObject({
+			code: "not_supported",
+		});
+		await expect(setUp({ stickyDisks: false }).rotateGrantKey()).resolves.toMatchObject({ next: expect.anything() });
 		await expect(setUp({ store: await sqlStore(nodeSqliteDatabase) }).getGrantKeys()).rejects.toMatchObject({
 			code: "not_supported",
 		});
@@ -2091,8 +2095,8 @@ describe("disk holders", () => {
 		await expect(
 			bare.api.service.locateDisk(STUB_HOST_ID, { kind: "sticky", objectId: "sd_1", version: "sdv_1" }),
 		).rejects.toMatchObject({ code: "not_supported" });
-		// Sticky disks off: none either.
-		expect(await setUp({ stickyDisks: false }).api.service.grantPublicKey()).toBeUndefined();
+		// Sticky disks off: a key all the same, as a move between hosts signs its grant with it.
+		expect(await setUp({ stickyDisks: false }).api.service.grantPublicKey()).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect(await setUp().api.service.grantPublicKey()).toMatch(/^[A-Za-z0-9_-]{43}$/);
 	});
 });

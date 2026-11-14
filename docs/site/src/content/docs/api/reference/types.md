@@ -1450,6 +1450,16 @@ One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketM
 
 One of: `"pending"` or `"ready"` or `"failed"`.
 
+### MoveSandboxBody
+
+Where to move it, and whether its memory goes with it. Every field is optional.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | no | The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox. |
+| `keepMemory` | boolean | no | Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new host and its memory is lost. |
+| `wait` | boolean | no | Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was. |
+
 ### PersonalToken
 
 A personal access token (`kpt_…`). Its secret is never stored or shown after it is made.
@@ -1670,6 +1680,7 @@ A bucket mount as the sandbox shows it after a refresh.
 | `autoUpgrade` | boolean | no | An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. |
 | `autoUpgradeFrom` | string | no | The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM. |
 | `upgradedFrom` | [SandboxUpgrade](/api/reference/types/#sandboxupgrade) | no |  |
+| `move` | [SandboxMove](/api/reference/types/#sandboxmove) | no |  |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
@@ -1822,6 +1833,17 @@ A mount of a sandbox's, and whether its files are in place.
 | `status` | [MountStatus](/api/reference/types/#mountstatus) | yes |  |
 | `error` | string | no | Why it is `failed`, in words. |
 
+### SandboxMove
+
+A move to another host under way (its `state` is `moving`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `phase` | `"copying"` or `"starting"` | yes | `copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it is starting on it. |
+| `hostId` | string | no | The host it is moving to, where the caller may know it, once chosen. |
+| `keepMemory` | boolean | yes | Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host. |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### SandboxNotRunning
 
 The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call.
@@ -1957,9 +1979,9 @@ How its machine's latest start (a create, fork, start or resume) took its time, 
 
 ### SandboxState
 
-`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
 
-One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"error"` or `"deleting"` or `"deleted"`.
+One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"moving"` or `"error"` or `"deleting"` or `"deleted"`.
 
 ### SandboxStickyDisk
 

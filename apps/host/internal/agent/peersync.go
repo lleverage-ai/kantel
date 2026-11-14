@@ -417,7 +417,10 @@ type SandboxMover interface {
 	HoldsSandbox(id, version string) bool
 	OpenSandboxPart(id, version, part string, withMap bool) (*os.File, []byte, error)
 	ReadSandboxFile(id, version, name string) ([]byte, error)
-	PrepareSandboxImport(ctx context.Context, id, version string, record []byte) error
+	// ImportGeneration is how many deletes of the sandbox the host has had, which PrepareSandboxImport is given as read
+	// before its record: a delete since refuses it.
+	ImportGeneration(id string) uint64
+	PrepareSandboxImport(ctx context.Context, id, version string, since uint64, record []byte) error
 	SandboxPartPartial(id, version, part string) (string, error)
 	PublishFetchedSandbox(id, version string, parts map[string]disksync.FetchedPart) error
 	ImportedSandbox(id, version string) (proto.SandboxInfo, error)
@@ -428,6 +431,8 @@ type SandboxMover interface {
 	CancelSandboxImport(id, version string) (deleted bool, err error)
 	// DeleteMoved removes a sandbox moved to another host, its automatic snapshots kept.
 	DeleteMoved(id string) error
+	// DeleteExported is DeleteMoved, only while the sandbox is the copy that move exported.
+	DeleteExported(id, version string) error
 }
 
 var _ SandboxMover = (*microvm.Manager)(nil)
@@ -512,6 +517,8 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 		MapDigest: p.MapDigest, Holders: p.Holders, Grant: p.Grant,
 	}
 	if !t.HoldsSandbox(p.SandboxID, p.Version) && !h.fetcher.Running(req.Ref) {
+		// Read first: a delete of the sandbox while the record is read, or its image had, refuses the import.
+		since := t.ImportGeneration(p.SandboxID)
 		record, err := h.fetcher.ReadFile(ctx, req, proto.SandboxRecordFile)
 		if err == nil && record == nil {
 			err = errors.New("no holder has its record")
@@ -519,7 +526,7 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 		if err != nil {
 			return nil, fmt.Errorf("the sandbox's record: %w", err)
 		}
-		if err := t.PrepareSandboxImport(ctx, p.SandboxID, p.Version, record); err != nil {
+		if err := t.PrepareSandboxImport(ctx, p.SandboxID, p.Version, since, record); err != nil {
 			return nil, err
 		}
 	}

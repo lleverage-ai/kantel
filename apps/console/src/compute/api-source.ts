@@ -311,6 +311,8 @@ function accountOf(account: Account): ComputeAccount {
 		...(account.kind === "organisation" && account.personalTokens !== undefined
 			? { personalTokens: account.personalTokens }
 			: {}),
+		// A gateway from before it doesn't say: the console doesn't offer the setting then.
+		...(account.snapshotCopies === undefined ? {} : { snapshotCopies: account.snapshotCopies }),
 	};
 }
 
@@ -374,6 +376,14 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			}
 			return accountOf(updated);
 		},
+		setSnapshotCopies: async (accountId, on) => {
+			const updated = await api.updateAccount(accountId, { snapshotCopies: on });
+			// As for personal tokens: a gateway from before it drops the field and changes nothing.
+			if (updated.snapshotCopies !== on) {
+				throw new Error("This Kantel doesn't support keeping saved snapshots on two hosts yet.");
+			}
+			return accountOf(updated);
+		},
 		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }
@@ -394,6 +404,8 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	stopping: "stopping",
 	stopped: "stopped",
 	paused: "paused",
+	// The UI has no moving yet: one moving to another host is starting there.
+	moving: "starting",
 	error: "error",
 	// The UI has no deleting or deleted: one being erased is on its way out, and a deleted one is gone.
 	deleting: "stopping",
@@ -1091,6 +1103,14 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 		downloadUrl: () => undefined,
 		// Where a link to a snapshot's files doesn't say, the API does: an isolate's start at /workspace.
 		kindOf: async (snapshotId) => (await api.getSnapshot(snapshotId)).sandboxType,
+		// Only a saved snapshot's details list them; a gateway from before them doesn't.
+		hosts: async (snapshotId) =>
+			(await api.getSnapshot(snapshotId)).hosts?.map((host) => ({
+				...(host.hostId === undefined ? {} : { hostId: host.hostId }),
+				...(host.hostName === undefined ? {} : { hostName: host.hostName }),
+				state: host.state,
+				memory: host.memory,
+			})),
 	};
 }
 

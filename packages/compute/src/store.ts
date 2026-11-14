@@ -192,7 +192,10 @@ export interface ProvisionWork {
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
-export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base" | "hostReachable"> & {
+export type StoredSandbox = Omit<
+	computeSchema.Sandbox,
+	"cost" | "usage" | "grants" | "base" | "hostReachable" | "move"
+> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
 	/** What every command sees: its environments' plain variables and placeholders, in order, then the create's own. */
@@ -360,6 +363,29 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 		readonly image?: string;
 		/** The snapshot its microVM starts from (`upgradeSandbox`'s `from`), which it depends on while it is under way. */
 		readonly snapshotId?: string;
+		readonly egressRevision?: number;
+	};
+	/**
+	 * A move to another host under way (it is `starting`; the API answers it `moving`): its operation ID, which its
+	 * backend does at most once and can settle (`SandboxBackend.settleMove`), when it began and when its gateway last said
+	 * it was at it (`heartbeatAt`: one gone quiet is settled by the sweep), how far it got (`phase`), the host asked for,
+	 * what it was before (`from`, `before`: what a rollback puts back), and the egress revision its start sends.
+	 */
+	readonly moving?: {
+		readonly operationId: string;
+		readonly at: number;
+		readonly heartbeatAt: number;
+		readonly phase: "copying" | "starting";
+		readonly from: "stopped" | "paused";
+		/** The host asked for, or once it starts there, the one it is moving to. */
+		readonly to?: string;
+		readonly before: {
+			readonly stoppedAt?: number;
+			readonly reason?: string;
+			readonly pausedSnapshotId?: string;
+			readonly mounts?: StoredSandbox["mounts"];
+			readonly mountsAt?: number;
+		};
 		readonly egressRevision?: number;
 	};
 };

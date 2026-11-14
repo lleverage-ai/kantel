@@ -76,7 +76,10 @@ type sandboxRecord struct {
 type sandboxMoves struct {
 	mu        sync.Mutex
 	cancelled map[string]map[string]bool
-	turn      sync.Mutex
+	// deletes counts each sandbox's deletes here (dropSandboxImport): an import whose preparation began before one is
+	// never made ready after it (ImportGeneration).
+	deletes map[string]uint64
+	turn    sync.Mutex
 }
 
 func (m *Manager) sandboxExportDir(id, version string) string {
@@ -123,7 +126,7 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 	m.moves.turn.Lock()
 	defer m.moves.turn.Unlock()
 	if !m.exportWhole(p.SandboxID, p.Version) {
-		if err := m.cloneForExport(s, dir); err != nil {
+		if err := m.cloneForExport(s, dir, p); err != nil {
 			_ = os.RemoveAll(dir)
 			return proto.SandboxExportResult{}, err
 		}
@@ -145,7 +148,7 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 
 // cloneForExport clones a stopped sandbox's files into dir, made afresh, and writes its record there last: under its
 // lock, so nothing starts it meanwhile, and what is cloned is one state of it.
-func (m *Manager) cloneForExport(s *sandbox, dir string) error {
+func (m *Manager) cloneForExport(s *sandbox, dir string, p proto.SandboxExportParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State != proto.StateStopped {
@@ -175,13 +178,21 @@ func (m *Manager) cloneForExport(s *sandbox, dir string) error {
 		return fmt.Errorf("sandbox %s has no root filesystem", s.meta.ID)
 	}
 	rec := sandboxRecord{Meta: s.meta, Rootfs: rootfs}
+	// What its image has, as this host knows it: its template's report, or its image version's, which the target may
+	// not have (it hasn't booted that version), so it keeps it as the sandbox's own. Nil where none is known.
+	rec.Meta.Guest = m.sandboxGuest(s)
 	if key, ok := templateRootfsKey(rootfs); ok {
 		if rec.RootfsDigest = m.rootfsMapDigest(key); rec.RootfsDigest == "" {
 			return fmt.Errorf("its template root filesystem %s isn't mapped yet, so another host can't tell it has the same build", key)
 		}
 	}
 	raw, _ := json.MarshalIndent(rec, "", "  ")
-	return fsutil.WriteFileDurably(filepath.Join(dir, sandboxRecordName), raw, 0o600)
+	if err := fsutil.WriteFileDurably(filepath.Join(dir, sandboxRecordName), raw, 0o600); err != nil {
+		return err
+	}
+	// The copy this version exported, which its source cleanup deletes (DeleteExported).
+	s.meta.Exported = p.Version
+	return m.writeMeta(s)
 }
 
 // cloneExportFile is cloneDisk for an export: a reflink takes no room; a full copy, on a file system without them,
@@ -340,7 +351,7 @@ func (m *Manager) ReadSandboxFile(id, version, name string) ([]byte, error) {
 // import of the sandbox is dropped. ErrNoSnapshotImage, or why the image couldn't be had, when the host can't have it;
 // a conflict when a sandbox of that ID is here, but the one this version made, or when the version's import was
 // cancelled (CancelSandboxImport).
-func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, raw []byte) error {
+func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, since uint64, raw []byte) error {
 	if !sandboxObject(id, version) {
 		return &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
 	}
@@ -380,6 +391,9 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 	if m.moves.cancelled[id][version] {
 		return conflict("the move %s of sandbox %s here was cancelled", version, id)
 	}
+	if m.moves.deletes[id] != since {
+		return conflict("sandbox %s was deleted on this host while its import was made ready", id)
+	}
 	if m.importing(id, version) {
 		return nil
 	}
@@ -413,6 +427,14 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 // importing says whether the host has version of a sandbox's import made ready: its record staged.
 func (m *Manager) importing(id, version string) bool {
 	return fileExists(filepath.Join(m.sandboxImportDir(id, version), sandboxRecordName))
+}
+
+// ImportGeneration is how many deletes of a sandbox this host has had: an import read before its preparation, which a
+// delete since then refuses (PrepareSandboxImport's since).
+func (m *Manager) ImportGeneration(id string) uint64 {
+	m.moves.mu.Lock()
+	defer m.moves.mu.Unlock()
+	return m.moves.deletes[id]
 }
 
 // importCancelled says whether version's import of a sandbox was cancelled here (CancelSandboxImport).
@@ -553,7 +575,7 @@ func importedMeta(src meta, version string, pulled bool, rootfs string) meta {
 	if pulled {
 		out.Rootfs = rootfs
 	}
-	out.Imported = version
+	out.Imported, out.Exported = version, ""
 	return out
 }
 
@@ -616,6 +638,22 @@ func (m *Manager) CancelSandboxImport(id, version string) (bool, error) {
 	return true, nil
 }
 
+// DeleteExported removes a sandbox moved to another host (sandbox.delete with Exported), its automatic snapshots kept,
+// only while it is the copy move version exported: ErrNotFound for one a later move made here since.
+func (m *Manager) DeleteExported(id, version string) error {
+	s, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	exported := s.meta.Exported
+	s.mu.Unlock()
+	if exported != version {
+		return &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s here isn't the copy move %s exported", id, version)}
+	}
+	return m.deleteSandbox(id, true)
+}
+
 // madeBy says whether a sandbox here was made by version's import.
 func madeBy(s *sandbox, version string) bool {
 	s.mu.Lock()
@@ -623,11 +661,16 @@ func madeBy(s *sandbox, version string) bool {
 	return s.meta.Imported == version
 }
 
-// dropSandboxImport ends any import of a sandbox here, as its delete does: every version's import directory goes, and
-// a fetch of one finds nowhere to write or publish. Whether there was one.
+// dropSandboxImport ends any import of a sandbox here, as its delete does: every version's import directory goes, a
+// fetch of one finds nowhere to write or publish, and an import whose preparation began before it is never made ready
+// (deletes). Whether there was one.
 func (m *Manager) dropSandboxImport(id string) bool {
 	m.moves.mu.Lock()
 	defer m.moves.mu.Unlock()
+	if m.moves.deletes == nil {
+		m.moves.deletes = map[string]uint64{}
+	}
+	m.moves.deletes[id]++
 	dir := filepath.Join(m.cfg.Root, sandboxImportsDir, id)
 	if _, err := os.Lstat(dir); err != nil {
 		return false

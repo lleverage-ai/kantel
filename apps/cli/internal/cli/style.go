@@ -69,7 +69,7 @@ func (s Styler) State(state string) string {
 var (
 	greenStates  = regexp.MustCompile(`^(running|online|ready|active|exited 0|healthy)\b`)
 	redStates    = regexp.MustCompile(`^(error|failed|killed|timed_out|revoked|degraded|offline|unhealthy)\b`)
-	yellowStates = regexp.MustCompile(`^(starting|stopping|pausing|resuming|pending|draining|saving|creating)\b`)
+	yellowStates = regexp.MustCompile(`^(starting|stopping|pausing|resuming|pending|draining|saving|creating|moving)\b`)
 	dimStates    = regexp.MustCompile(`^(stopped|paused|deleted|expired)\b`)
 	colourCode   = regexp.MustCompile("\x1b\\[\\d+m")
 )

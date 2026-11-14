@@ -180,6 +180,37 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await on("host_a")).toEqual(["s1", "s2"]);
 	});
 
+	it("holds a move's target while it moves, and its switch and a rollback's claim never both land", async () => {
+		const store = await open();
+		const size = { name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 };
+		const move = { operationId: "mov1", target: "host_m2", phase: "copy" as const, size };
+		await store.putPlacement({ ...placement("s1", "host_m1", 1), state: "stopped", move });
+		await store.putPlacement({ ...placement("s2", "host_m3", 2), move: { ...move, target: "host_m22" } });
+		const on = async (hostId: string) => (await store.occupying(hostId)).map((p) => p.sandboxId).sort();
+		expect(await on("host_m2")).toEqual(["s1"]);
+		expect(await on("host_m1")).toEqual(["s1"]);
+		// The switch (only while the move is on it) and a rollback's claim (likewise), at once, many times over: one wins,
+		// the other finds the placement changed.
+		for (let round = 0; round < 10; round += 1) {
+			await store.putPlacement({ ...placement("s1", "host_m1", 1), state: "stopped", move });
+			const switched = store.updatePlacement("s1", (latest) => {
+				if (latest.move?.operationId !== "mov1" || latest.move.settling !== undefined) return undefined;
+				const { move: _done, ...rest } = latest;
+				return { ...rest, hostId: "host_m2", cleanup: { hostId: "host_m1", operationId: "mov1", tier: "microvm" } };
+			});
+			const claimed = store.updatePlacement("s1", (latest) =>
+				latest.move?.operationId === "mov1" && latest.move.settling === undefined
+					? { ...latest, move: { ...latest.move, settling: { by: "rbm", until: 9 } } }
+					: undefined,
+			);
+			const [won, claim] = await Promise.all([switched, claimed]);
+			expect([won, claim].filter((each) => each !== undefined)).toHaveLength(1);
+			const now = await store.getPlacement("s1");
+			if (won !== undefined) expect(now).toMatchObject({ hostId: "host_m2", cleanup: { hostId: "host_m1" } });
+			else expect(now).toMatchObject({ hostId: "host_m1", move: { settling: { by: "rbm" } } });
+		}
+	});
+
 	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {
 		const store = await open();
 		await store.putPlacement(placement("s1", "host_a", 1));

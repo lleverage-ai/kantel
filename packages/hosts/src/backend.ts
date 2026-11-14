@@ -1318,6 +1318,41 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { sandbox, hostId, path, files, bytes, ...known } = outcome.upgraded;
 			return { state: "done", placement: { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes } };
 		},
+		// Started on its new host as a boot starts it there: its egress, its revision, the mounts that host takes.
+		async move(sandboxId, spec, operationId): Promise<Placement> {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("conflict", "Only a microVM moves to another host");
+			// Its ports' exposures end as it boots again, as at any boot.
+			await options.ports?.forget(sandboxId);
+			const revision = spec.egressRevision ?? spec.egress?.revision;
+			const wanted = mountsOf(spec.mounts);
+			const { sandbox, hostId, ...known } = await hosts.sandboxes.move(sandboxId, {
+				operationId,
+				owner: spec.accountId,
+				hostIds: spec.eligibleHosts,
+				...(spec.to === undefined ? {} : { to: spec.to }),
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+				...(spec.onStarting === undefined ? {} : { onStarting: spec.onStarting }),
+				start: (features) => {
+					const mounts = mountHandoff(wanted === undefined ? undefined : features, wanted);
+					return {
+						params: {
+							...egressOf(spec.egress),
+							...(revision === undefined ? {} : { revision }),
+							...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
+						},
+						mounts: (started) => mounts.status(started),
+					};
+				},
+			});
+			return placed(sandboxId, sandbox, hostId, known);
+		},
+		async settleMove(sandboxId, operationId) {
+			const outcome = await hosts.sandboxes.settleMove(sandboxId, operationId);
+			if (outcome.state === "failed") return outcome;
+			const { sandbox, hostId, ...known } = outcome.moved;
+			return { state: "done", placement: await placed(sandboxId, sandbox, hostId, known) };
+		},
 		async destroy(sandboxId) {
 			await options.ports?.forget(sandboxId);
 			try {
@@ -1548,9 +1583,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async placedOn(sandboxId) {
 			const placement = await hosts.sandboxes.placement(sandboxId);
 			// A lost one is an earlier attempt its host said it doesn't have: not where it is placed now.
-			return placement === undefined || placement.state === "deleted" || placement.state === "lost"
-				? undefined
-				: placement.hostId;
+			if (placement === undefined || placement.state === "deleted" || placement.state === "lost") return undefined;
+			// A move starting it on its target (its files there, its rollback not begun): it boots there, so that host
+			// fetches its mounts' sources, though it is placed on its source until it runs.
+			const move = placement.move;
+			if (move?.phase === "start" && move.rollingBack !== true && move.settling === undefined) return move.target;
+			return placement.hostId;
 		},
 		async writeFileStream(sandboxId, path, body, mode) {
 			await streamingHost(sandboxId);

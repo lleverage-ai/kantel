@@ -468,6 +468,27 @@ brings the peers.
 
 **Cost:** none: the host sends it with every heartbeat.
 
+### SnapshotHosts and SnapshotCopiesSwitch
+
+A saved snapshot's hosts (`src/compute/snapshot-hosts.tsx`), in a dialog from Hosts in its menu on the Snapshots page:
+the host it was saved on first, then each with a copy or fetching one, as they last reported. Each row is the host's
+name, Held or Fetching, and for a snapshot saved with memory, whether a sandbox made from it there restores it (With
+memory) or starts from the disk (Disk only). A shared host, for anyone but a super-admin, is listed as Shared host,
+since the API doesn't name it. `SavedSnapshotHosts` reads them from `SnapshotsSource.hosts`: a skeleton while it does,
+the reason with Try again where it can't, and a line where the gateway is from before it.
+
+`SnapshotCopiesSwitch` is the account's Keep saved snapshots on two hosts (`snapshotCopies`): on an organisation's
+General page and, for the personal account, on Profile. It applies at once, keeps what Kantel answers as saved, and
+is read only for a member. Neither shows where the account doesn't say (a gateway from before it).
+
+**Don't use it for** a host's own disk (use `HostDiskUsage`) or an automatic snapshot, which is on its sandbox's host
+alone.
+
+**States:** loading, one host, two hosts, fetching, with memory, shared hosts, not on a host yet, long names, a failed
+read, an older gateway and a phone; the switch on, off, read only and refused. All in its stories.
+
+**Cost:** one read of the snapshot (`getSnapshot`) each time its hosts open.
+
 ### SandboxStateLabel
 
 A sandbox's state in words with its status dot (`src/compute/parts.tsx`), as the Sandboxes list and a sandbox's page
