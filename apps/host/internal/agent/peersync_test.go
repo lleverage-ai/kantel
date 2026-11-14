@@ -53,9 +53,15 @@ func TestPeerSyncFollowsTheWelcome(t *testing.T) {
 		}
 		return err
 	}
-	h.applyWelcome(context.Background(), &proto.Welcome{HostID: "host_a", GrantKey: "key", Mesh: &proto.WelcomeMesh{Address: "::1", Prefix: "::/48"}}, nil)
+	if h.pool() != "" {
+		t.Fatalf("a pool before a welcome: %q", h.pool())
+	}
+	h.applyWelcome(context.Background(), &proto.Welcome{HostID: "host_a", PoolID: "pool_a", GrantKey: "key", Mesh: &proto.WelcomeMesh{Address: "::1", Prefix: "::/48"}}, nil)
 	if err := dial(); err != nil {
 		t.Fatalf("not listening with the mesh up: %v", err)
+	}
+	if h.pool() != "pool_a" {
+		t.Fatalf("the welcome's pool: %q", h.pool())
 	}
 	// A control plane from before rotation sends one key, with no ID.
 	if h.selfID() != "host_a" || keys() != ":key:0" || h.peers.Self() != "host_a" {

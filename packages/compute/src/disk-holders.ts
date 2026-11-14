@@ -10,8 +10,9 @@
  *   holds only versions the catalogue has, of an account whose data it may have.
  * - `rootfs`: a template's root filesystem (`images/templates/<key>.ext4` on a host), its ID the key and its one version
  *   `1`. No record of its own: each holder carries the map digest its host reported, as two hosts that each built one
- *   before they synced may hold different bytes under one key, and the pool its host made it in: the host's pool when
- *   it first reported it, unless the host has moved since it made it (`StoredHost.poolSince`), when it is offered nowhere.
+ *   before they synced may hold different bytes under one key, and the pool its host made it in, as the host stamped it
+ *   (`HostWelcome.poolId` when it built it or began fetching it). It is offered only in that pool, and only while its
+ *   host is there too.
  *   `disk.locate` answers the digest most of the asker's pool's holders of its architecture have, and only those
  *   holders.
  *
@@ -97,11 +98,11 @@ export type StickyHoldingsReport = readonly {
 
 /**
  * A host's report of the objects of one kind it holds (`HostCapacity.holdings`), each version with its map digest and
- * when the host made it (fetched or built), by its clock.
+ * the pool the host made it in (built it, or began fetching it), as its welcome named it then.
  */
 export type ObjectHoldingsReport = readonly {
 	readonly objectId: string;
-	readonly versions: readonly { readonly version: string; readonly mapDigest: string; readonly madeAt?: number }[];
+	readonly versions: readonly { readonly version: string; readonly mapDigest: string; readonly pool?: string }[];
 }[];
 
 /** What one capacity report says a host holds: each absent says nothing of its kind, so nothing of it is forgotten. */
@@ -520,7 +521,7 @@ export function createDiskHolders(options: {
 				// record, so a host can't claim another pool's: holders are offered only to their own pool's hosts.
 				const reported = new Map<
 					string,
-					{ readonly objectId: string; readonly mapDigest: string; readonly madeAt?: number }
+					{ readonly objectId: string; readonly mapDigest: string; readonly pool?: string }
 				>();
 				for (const object of rootfs) {
 					if (!ROOTFS_KEY.test(object.objectId)) continue;
@@ -529,24 +530,23 @@ export function createDiskHolders(options: {
 						reported.set(versionKey(object.objectId, held.version), {
 							objectId: object.objectId,
 							mapDigest: held.mapDigest,
-							...(held.madeAt === undefined ? {} : { madeAt: held.madeAt }),
+							...(held.pool === undefined ? {} : { pool: held.pool }),
 						});
 					}
 				}
 				const mine = current.filter((holder) => holder.kind === "rootfs");
 				const known = new Map(mine.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
 				const reporter = (await options.hosts()).find((host) => host.id === hostId);
-				const poolId = reporter?.state === "revoked" ? undefined : reporter?.poolId;
-				const poolSince = reporter?.poolSince;
-				for (const [key, { objectId, mapDigest, madeAt }] of reported) {
+				const hostPool = reporter?.state === "revoked" ? undefined : reporter?.poolId;
+				for (const [key, { objectId, mapDigest, pool }] of reported) {
 					const holder = known.get(key);
-					// Kept as it is, its pool too: a copy made in one pool stays that pool's after its host moves.
-					if (holder !== undefined && holder.state === "held" && holder.mapDigest === mapDigest) continue;
-					// A new copy (or the file made again) is the pool's its host is in now, if it was made there: one made
-					// before the host moved (reported only now, its map made late) is its old pool's, and offered nowhere.
-					// None, while the host is in no pool.
+					// The pool the copy was made in, as its host stamped it when it built it or began fetching it, whenever
+					// it reports it (its map may be made long after). One with no stamp (made before stamps) is its host's
+					// pool's only while the host has never moved pools; else it is no pool's, and not recorded.
+					const poolId = pool ?? (reporter?.poolSince === undefined ? hostPool : undefined);
 					if (poolId === undefined) continue;
-					if (poolSince !== undefined && (madeAt === undefined || madeAt <= poolSince)) continue;
+					// Unchanged. A copy made again, or in another pool, even with the same bytes, replaces it.
+					if (holder?.state === "held" && holder.mapDigest === mapDigest && holder.poolId === poolId) continue;
 					if (holder !== undefined) release.push(holder);
 					hold.push({
 						id: diskHolderId("rootfs", objectId, ROOTFS_VERSION, hostId),

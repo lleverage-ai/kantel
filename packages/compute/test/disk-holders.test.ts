@@ -444,54 +444,58 @@ describe("disk holders", () => {
 		);
 	});
 
-	it("offers a root filesystem a host made before it moved pools nowhere, however late it reports it", async () => {
+	it("offers a root filesystem only in the pool its host stamped it with, however late it reports it", async () => {
 		const tom = setUp({ templates: true });
 		await tom.pool();
-		const held = (hostId: string, objectId: string, madeAt?: number) => {
+		const report = (hostId: string, held: readonly { objectId: string; pool?: string }[]) => {
 			tom.clock.now += 1;
 			return tom.api.service.recordHoldings(hostId, tom.clock.now, {
 				objects: {
-					rootfs: [
-						{
-							objectId,
-							versions: [{ version: "1", mapDigest: DIGEST, ...(madeAt === undefined ? {} : { madeAt }) }],
-						},
-					],
+					rootfs: held.map(({ objectId, pool }) => ({
+						objectId,
+						versions: [{ version: "1", mapDigest: DIGEST, ...(pool === undefined ? {} : { pool }) }],
+					})),
 				},
 			});
 		};
-		// host_b reported one copy before it moved; it moves (only its record's move time is written here, so it stays in
-		// pool A); then it reports the copy it had, one it made before the move but mapped late, one with no time, and one
-		// made after the move.
-		await held("host_b", KEY, tom.clock.now - 1000);
-		const movedAt = tom.clock.now + 10;
-		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolSince: movedAt }));
-		tom.clock.now = movedAt + 3 * 60_000;
-		const late = "c".repeat(64);
-		const unknown = "d".repeat(64);
-		const fresh = "e".repeat(64);
-		tom.clock.now += 1;
-		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
-			objects: {
-				rootfs: [
-					{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST, madeAt: movedAt - 2000 }] },
-					{ objectId: late, versions: [{ version: "1", mapDigest: DIGEST, madeAt: movedAt - 1 }] },
-					{ objectId: unknown, versions: [{ version: "1", mapDigest: DIGEST }] },
-					{ objectId: fresh, versions: [{ version: "1", mapDigest: DIGEST, madeAt: movedAt + 1 }] },
-				],
-			},
-		});
-		const recorded = (await tom.api.store.diskHolders.list())
-			.filter((holder) => holder.hostId === "host_b")
-			.map((holder) => holder.objectId)
-			.sort();
-		// The copy recorded before the move is kept as it was; the late and timeless ones aren't recorded; the new one is.
-		expect(recorded).toEqual([KEY, fresh].sort());
 		const offered = async (objectId: string) =>
-			(await tom.api.service.locateDisk(STUB_HOST_ID, { kind: "rootfs", objectId, version: "1" })).holders;
-		expect(await offered(late)).toEqual([]);
-		expect(await offered(unknown)).toEqual([]);
-		expect(await offered(fresh)).toEqual([{ hostId: "host_b", address: "fd00:a::2" }]);
+			(await tom.api.service.locateDisk(STUB_HOST_ID, { kind: "rootfs", objectId, version: "1" })).holders.map(
+				(each) => each.hostId,
+			);
+		const poolOf = async (hostId: string, objectId: string) =>
+			(await tom.api.store.diskHolders.list()).find(
+				(holder) => holder.hostId === hostId && holder.objectId === objectId,
+			)?.poolId;
+		const fromB = "c".repeat(64);
+		const unstamped = "d".repeat(64);
+		// host_b, in pool A, stamped one copy in A and has one it made in pool B before it moved here (its map made only
+		// now): each is its stamp's pool's, and only A's is offered to A.
+		await report("host_b", [
+			{ objectId: KEY, pool: "pool_a" },
+			{ objectId: fromB, pool: "pool_b" },
+		]);
+		expect(await poolOf("host_b", KEY)).toBe("pool_a");
+		expect(await poolOf("host_b", fromB)).toBe("pool_b");
+		expect(await offered(KEY)).toEqual(["host_b"]);
+		expect(await offered(fromB)).toEqual([]);
+		// A copy with no stamp (made before stamps) is its host's pool's while the host has never moved; once it has,
+		// it is no pool's.
+		await report("host_f", [{ objectId: unstamped }]);
+		expect(await offered(unstamped)).toEqual(["host_f"]);
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, poolSince: tom.clock.now }));
+		await report("host_b", [
+			{ objectId: KEY, pool: "pool_a" },
+			{ objectId: fromB, pool: "pool_b" },
+			{ objectId: unstamped },
+		]);
+		expect(await poolOf("host_b", unstamped)).toBeUndefined();
+		expect(await offered(unstamped)).toEqual(["host_f"]);
+		// The same bytes made again in another pool replace the copy, and back again.
+		await report("host_b", [{ objectId: KEY, pool: "pool_b" }]);
+		expect(await poolOf("host_b", KEY)).toBe("pool_b");
+		expect(await offered(KEY)).toEqual([]);
+		await report("host_b", [{ objectId: KEY, pool: "pool_a" }]);
+		expect(await offered(KEY)).toEqual(["host_b"]);
 	});
 
 	it("sweeps revoked hosts' root filesystem holders with templates on and sticky disks off", async () => {

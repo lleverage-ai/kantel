@@ -70,6 +70,14 @@ func (h *Host) selfID() string {
 	return h.cfg.HostID
 }
 
+// pool is the pool the last welcome named the host in: "" before one, or with a control plane that doesn't say.
+func (h *Host) pool() string {
+	if p := h.welcomePool.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // followPeerSync takes a welcome's grant keys and host ID, and has the peer sync server listen on the mesh address while
 // the mesh is up, and stop while it is down. A welcome with GrantKeys replaces the keys (a rotation adds a key and,
 // once its time is up, drops the old one); one from a control plane from before rotation has GrantKey alone. A welcome
@@ -84,6 +92,8 @@ func (h *Host) followPeerSync(w *proto.Welcome) {
 	if id := w.HostID; id != "" {
 		h.welcomeID.Store(&id)
 	}
+	pool := w.PoolID
+	h.welcomePool.Store(&pool)
 	if h.peers == nil {
 		return
 	}

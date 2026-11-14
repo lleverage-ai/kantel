@@ -1046,6 +1046,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const baseWelcome = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
+		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		// Hosts keep no warm pools; an older one that keeps some makes no more on this (see `endLegacyPools`).
 		pools: {},
 		...(host.draining ? { draining: true } : {}),

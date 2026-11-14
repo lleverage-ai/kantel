@@ -58,8 +58,13 @@ func TestRootfsServedOnceMapped(t *testing.T) {
 		got[0].Versions[0].MapDigest != digest {
 		t.Fatalf("holdings %+v", got)
 	}
-	if info, _ := os.Stat(b.path(key)); got[0].Versions[0].MadeAt != info.ModTime().UnixMilli() {
-		t.Fatalf("made at %d, not when the file was written", got[0].Versions[0].MadeAt)
+	// Made before stamps: no pool; stamped, its pool.
+	if got[0].Versions[0].Pool != "" {
+		t.Fatalf("an unstamped copy's pool %q", got[0].Versions[0].Pool)
+	}
+	b.stampPool(key, "pool_a")
+	if got := m.RootfsHoldings(); got[0].Versions[0].Pool != "pool_a" {
+		t.Fatalf("a stamped copy's pool %q", got[0].Versions[0].Pool)
 	}
 	if record, err := m.ReadRootfsFile(key, RootfsVersion, RootfsRecordFile); err != nil || !bytes.Contains(record, []byte("sha256:1")) {
 		t.Fatalf("record %q %v", record, err)
@@ -82,6 +87,8 @@ func TestRootfsFetchStore(t *testing.T) {
 	m, _ := testManager(t)
 	key := templateImage{BaseImage: "kantel/sandbox", BaseDigest: testDigest}.key()
 	b := m.tpl.rootfs
+	pool := "pool_a"
+	b.pool = func() string { return pool }
 	if _, err := m.RootfsPartial("nope", RootfsVersion); err == nil {
 		t.Fatal("a partial of a bad key")
 	}
@@ -94,6 +101,11 @@ func TestRootfsFetchStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(partial+rootfsDoneSuffix, []byte("bits"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Gone on after the host moved: the copy is still the pool the fetch began in.
+	pool = "pool_b"
+	if _, err := m.RootfsPartial(key, RootfsVersion); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.RootfsPartials(); len(got) != 1 || got[0] != key {
@@ -125,7 +137,7 @@ func TestRootfsFetchStore(t *testing.T) {
 	if fileExists(partial) || fileExists(partial+rootfsDoneSuffix) || len(m.RootfsPartials()) != 0 {
 		t.Fatal("its partial left behind")
 	}
-	if got := m.RootfsHoldings(); len(got) != 1 || got[0].Versions[0].MapDigest != blockmap.Digest(raw) {
+	if got := m.RootfsHoldings(); len(got) != 1 || got[0].Versions[0].MapDigest != blockmap.Digest(raw) || got[0].Versions[0].Pool != "pool_a" {
 		t.Fatalf("holdings %+v", got)
 	}
 
@@ -175,9 +187,11 @@ func TestRootfsFetchReservesRoom(t *testing.T) {
 	}
 }
 
-// A map a fetch cut short left behind (its file never published) is no map of the file a build makes then.
+// A map a fetch cut short left behind (its file never published) is no map of the file a build makes then, which is
+// stamped with the pool it was built in.
 func TestABuildDropsAMapLeftWithoutItsFile(t *testing.T) {
 	b, _ := testBuilder(t)
+	b.pool = func() string { return "pool_a" }
 	img := templateImage{BaseImage: "kantel/sandbox", BaseDigest: testDigest}
 	if err := os.MkdirAll(b.dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -190,6 +204,10 @@ func TestABuildDropsAMapLeftWithoutItsFile(t *testing.T) {
 	}
 	if fileExists(b.mapPath(img.key())) {
 		t.Fatal("the stale map was kept")
+	}
+	// Stamped with the pool it was built in.
+	if got := b.stampedPool(img.key()); got != "pool_a" {
+		t.Fatalf("stamped %q", got)
 	}
 }
 

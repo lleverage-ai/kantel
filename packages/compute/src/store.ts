@@ -632,8 +632,9 @@ export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
 	 */
 	readonly drainEpoch?: number;
 	/**
-	 * When it was last moved to another pool (`moveHost`); absent for a host never moved. A template's root filesystem
-	 * it made before then is the old pool's, and isn't offered in this one (`DiskHolders.recordHoldings`).
+	 * When it was last moved to another pool (`moveHost`); absent for a host never moved. A template's root filesystem it
+	 * reports with no pool stamp (made before hosts stamped them) is its pool's only while this is absent
+	 * (`DiskHolders.recordHoldings`).
 	 */
 	readonly poolSince?: number;
 };
@@ -1052,7 +1053,7 @@ export interface StoredDiskHolder {
 	 */
 	readonly mapDigest?: string;
 	/**
-	 * The pool its host was in when the host first reported it, for a kind with no record of its own (a template's root
+	 * The pool the copy was made in, as its host stamped it, for a kind with no record of its own (a template's root
 	 * filesystem): it is offered only there, so a host moved to another pool doesn't take the old pool's copies with it.
 	 */
 	readonly poolId?: string;

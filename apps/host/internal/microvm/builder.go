@@ -216,6 +216,8 @@ func (m *Manager) customRootfs(ctx context.Context, build, owner string, img *pr
 		m.mapRootfsLater(key)
 		return path, rec.ImageDigest, key, nil
 	}
+	// The pool it is made in, as the build starts.
+	pool := b.currentPool()
 	if err := os.MkdirAll(b.dir, 0o700); err != nil {
 		return "", "", "", err
 	}
@@ -250,6 +252,7 @@ func (m *Manager) customRootfs(ctx context.Context, build, owner string, img *pr
 	if err != nil {
 		return "", "", "", err
 	}
+	b.stampPool(key, pool)
 	// Made once the key's lock is let go, for peers to fetch it.
 	m.mapRootfsLater(key)
 	return path, out.imageDigest, key, nil
@@ -273,6 +276,7 @@ func customCached(b *rootfsBuilder, key string) (string, builtRootfs, bool) {
 	}
 	// Its map first: a peer is served a file only with its map (OpenRootfs).
 	_ = os.Remove(b.mapPath(key))
+	_ = os.Remove(b.poolPath(key))
 	_ = os.Remove(filepath.Join(b.dir, key+".json"))
 	_ = os.Remove(path)
 	return "", builtRootfs{}, false

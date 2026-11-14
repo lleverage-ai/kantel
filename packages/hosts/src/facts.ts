@@ -407,7 +407,9 @@ function heldObjects(value: unknown): HostObjectHolding[] | undefined {
 				version: version.version,
 				mapDigest: version.mapDigest,
 				allocatedBytes: version.allocatedBytes,
-				...(typeof version.madeAt === "number" && Number.isFinite(version.madeAt) ? { madeAt: version.madeAt } : {}),
+				...(typeof version.pool === "string" && version.pool !== "" && version.pool.length <= MAX_TEXT
+					? { pool: version.pool }
+					: {}),
 			});
 		}
 		out.push({ objectId: entry.objectId, versions });

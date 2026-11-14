@@ -708,15 +708,16 @@ export interface HostObjectHolding {
 }
 
 /**
- * One version a host holds: its block map's digest (it is listed only once it has one), the bytes it takes, and when the
- * host made it (built or fetched it; Unix ms, by its clock), so a copy made before the host moved to another pool stays
- * the old pool's. `madeAt` is absent from a host that doesn't say.
+ * One version a host holds: its block map's digest (it is listed only once it has one), the bytes it takes, and the pool
+ * the host made it in (built it, or began fetching it), as `HostWelcome.poolId` said then: a copy made in one pool is
+ * offered only there, wherever its host moves. `pool` is absent from a copy made before the host kept it, or while no
+ * welcome had named a pool.
  */
 export interface HostObjectVersionHolding {
 	readonly version: string;
 	readonly mapDigest: string;
 	readonly allocatedBytes: number;
-	readonly madeAt?: number;
+	readonly pool?: string;
 }
 
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
@@ -1164,6 +1165,11 @@ export interface HostHello {
 export interface HostWelcome {
 	readonly hostId: string;
 	readonly heartbeatSeconds: number;
+	/**
+	 * The pool the host is in (`HostRecord.poolId`): it stamps the templates' root filesystems it makes or fetches with it
+	 * (`HostObjectVersionHolding.pool`). Absent for a host in no pool yet.
+	 */
+	readonly poolId?: string;
 	readonly desiredVersion?: string;
 	/** With `{version}`, `{os}` and `{arch}` for the host to fill in. */
 	readonly updateUrl?: string;

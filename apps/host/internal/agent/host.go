@@ -133,6 +133,9 @@ type Host struct {
 	// grantKeys are the control plane's grant keys from its last welcome that had any, and welcomeID the host ID it named.
 	grantKeys atomic.Pointer[[]proto.GrantKey]
 	welcomeID atomic.Pointer[string]
+	// welcomePool is the pool the last welcome named the host in ("" for none), which templates' root filesystems it
+	// makes are stamped with (microvm.Config.Pool).
+	welcomePool atomic.Pointer[string]
 	// welcomeMu is one welcome's mesh and peer sync server applied at a time (applyWelcome).
 	welcomeMu sync.Mutex
 }
@@ -207,8 +210,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
-			FetchSticky: h.fetchStickyLater,
-			Root:        cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
+			FetchSticky: h.fetchStickyLater, Pool: h.pool,
+			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events:         h.sandboxEvent,

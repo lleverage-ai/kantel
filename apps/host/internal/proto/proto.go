@@ -464,6 +464,10 @@ type Hello struct {
 type Welcome struct {
 	HostID           string `json:"hostId"`
 	HeartbeatSeconds int    `json:"heartbeatSeconds"`
+	// PoolID is the pool the host is in, as the control plane has it: the host stamps the templates' root filesystems it
+	// makes or fetches with it (ObjectVersionHolding.Pool). Absent from a control plane from before it said, or for a
+	// host in no pool yet.
+	PoolID string `json:"poolId,omitempty"`
 	// DesiredVersion, when set and different from the host's, is the version Kantel wants it on; a host with
 	// automatic updates on fetches it from UpdateURL (with {version}, {os} and {arch} filled in).
 	DesiredVersion string `json:"desiredVersion,omitempty"`
@@ -1134,13 +1138,14 @@ type ObjectHolding struct {
 }
 
 // ObjectVersionHolding is one version a host holds, with its block map's digest (a version is listed only once it has
-// one), the bytes it takes on the host's disk, and when the host made it (built or fetched it; Unix milliseconds): a
-// copy made before the host moved to another pool stays the old pool's.
+// one), the bytes it takes on the host's disk, and the pool the host made it in (built it, or began fetching it), as
+// Welcome.PoolID said then: a copy made in one pool is offered only there, wherever its host moves. Absent from a copy
+// made before the host kept it, or while no welcome had named a pool.
 type ObjectVersionHolding struct {
 	Version        string `json:"version"`
 	MapDigest      string `json:"mapDigest"`
 	AllocatedBytes int64  `json:"allocatedBytes"`
-	MadeAt         int64  `json:"madeAt,omitempty"`
+	Pool           string `json:"pool,omitempty"`
 }
 
 // DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is

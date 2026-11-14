@@ -6,7 +6,8 @@ package microvm
 // and every capacity report lists those with a map, so the control plane knows which hosts hold each. A peer fetches
 // one (internal/disksync) into <key>.partial, with a bitmap of the blocks in place beside it (<key>.partial.done), and
 // takes its record (<key>.json, which names the image it was made from) whole; published, the partial becomes
-// <key>.ext4 and the record is written after it, as a build writes them.
+// <key>.ext4 and the record is written after it, as a build writes them. Each is stamped with the pool it was made in
+// (<key>.pool: a build's pool as it began, a fetch's as it began), which reports carry, so it is offered only there.
 
 import (
 	"context"
@@ -45,9 +46,37 @@ type rootfsMaps struct {
 }
 
 func (b *rootfsBuilder) mapPath(key string) string    { return filepath.Join(b.dir, key+".map") }
+func (b *rootfsBuilder) poolPath(key string) string   { return filepath.Join(b.dir, key+".pool") }
 func (b *rootfsBuilder) recordPath(key string) string { return filepath.Join(b.dir, key+".json") }
 func (b *rootfsBuilder) partialPath(key string) string {
 	return filepath.Join(b.dir, key+rootfsPartialSuffix)
+}
+
+// currentPool is the pool the host is in now: "" while no welcome has said.
+func (b *rootfsBuilder) currentPool() string {
+	if b.pool == nil {
+		return ""
+	}
+	return b.pool()
+}
+
+// stampPool records the pool a root filesystem was made in (<key>.pool), written before its map is made, so before any
+// report lists it; with no pool, any stamp an older file of the key left goes.
+func (b *rootfsBuilder) stampPool(key, pool string) {
+	if pool == "" {
+		_ = os.Remove(b.poolPath(key))
+		return
+	}
+	_ = fsutil.WriteFileDurably(b.poolPath(key), []byte(pool), 0o600)
+}
+
+// stampedPool is the pool a root filesystem was made in, "" when it has no stamp.
+func (b *rootfsBuilder) stampedPool(key string) string {
+	raw, err := os.ReadFile(b.poolPath(key))
+	if err != nil || len(raw) > 200 {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // rootfsObject says whether key and version name a root filesystem as an object.
@@ -110,6 +139,15 @@ func (m *Manager) RootfsPartial(key, version string) (string, error) {
 	if err := os.MkdirAll(b.dir, 0o700); err != nil {
 		return "", err
 	}
+	// The pool the fetch began in, kept as it goes on (after a restart too): the copy is that pool's.
+	stamp := b.partialPath(key) + ".pool"
+	if !fileExists(b.partialPath(key)) {
+		if pool := b.currentPool(); pool != "" {
+			_ = fsutil.WriteFileDurably(stamp, []byte(pool), 0o600)
+		} else {
+			_ = os.Remove(stamp)
+		}
+	}
 	return b.partialPath(key), nil
 }
 
@@ -148,6 +186,10 @@ func (m *Manager) PublishFetchedRootfs(key, version string, partial *os.File, ma
 	// The file first, then its map: a map is never left without the file it describes (a stop between the two leaves
 	// a file without one, which the host maps itself when it starts).
 	_ = os.Remove(b.mapPath(key))
+	// The pool the fetch began in goes with it (none, without a stamp).
+	if err := os.Rename(path+".pool", b.poolPath(key)); err != nil {
+		_ = os.Remove(b.poolPath(key))
+	}
 	if err := os.Rename(path, b.path(key)); err != nil {
 		return err
 	}
@@ -194,7 +236,7 @@ func (m *Manager) DiscardRootfsPartial(key string) {
 
 func (m *Manager) discardRootfsPartial(key string) {
 	partial := m.tpl.rootfs.partialPath(key)
-	for _, path := range []string{partial, partial + rootfsDoneSuffix} {
+	for _, path := range []string{partial, partial + rootfsDoneSuffix, partial + ".pool"} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			m.log.Warn("removing a root filesystem's partial fetch", "path", path, "error", err)
 		}
@@ -223,13 +265,8 @@ func (m *Manager) RootfsHoldings() []proto.ObjectHolding {
 		if digest == "" {
 			continue
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		// Made when it was last written: a build's or a fetch's file is renamed into place, which keeps that time.
 		out = append(out, proto.ObjectHolding{ObjectID: key, Versions: []proto.ObjectVersionHolding{{
-			Version: RootfsVersion, MapDigest: digest, AllocatedBytes: diskUsage(b.path(key)), MadeAt: info.ModTime().UnixMilli(),
+			Version: RootfsVersion, MapDigest: digest, AllocatedBytes: diskUsage(b.path(key)), Pool: b.stampedPool(key),
 		}}})
 	}
 	return out
