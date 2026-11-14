@@ -154,9 +154,9 @@ export interface DiskHolders {
 	/**
 	 * `hostId` was told to fetch a saved snapshot's version, a copy of `ref`: it is `fetching` there until its reports
 	 * say it holds it (or for `SNAPSHOT_FETCH_MS` at most), so deleting the snapshot reaches it before its first report.
-	 * Nothing when it holds it already.
+	 * Nothing when it holds it already. Answers the holder's ID when it wrote one.
 	 */
-	recordSnapshotFetch(objectId: string, version: string, hostId: string, ref: string): Promise<void>;
+	recordSnapshotFetch(objectId: string, version: string, hostId: string, ref: string): Promise<string | undefined>;
 	/** Answers `disk.locate` from `hostId`. */
 	locate(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
@@ -739,7 +739,7 @@ export function createDiskHolders(options: {
 		},
 		async recordSnapshotFetch(objectId, version, hostId, ref) {
 			const id = diskHolderId("snapshot", objectId, version, hostId);
-			if ((await store.diskHolders.get(id))?.state === "held") return;
+			if ((await store.diskHolders.get(id))?.state === "held") return undefined;
 			await store.diskHolders.put({
 				id,
 				kind: "snapshot",
@@ -750,6 +750,7 @@ export function createDiskHolders(options: {
 				since: now(),
 				ref,
 			});
+			return id;
 		},
 		async recordCommit(kind, objectId, version, hostId) {
 			const holder: StoredDiskHolder = {

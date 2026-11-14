@@ -11393,9 +11393,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (location.holders.length === 0) {
 				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 			}
-			await backend.fetchDisk(host.id, { ...request, ...location });
-			// Fetching there, so a delete of the snapshot reaches the host before its first report of the copy.
-			await diskHolders.recordSnapshotFetch(objectId, "disk", host.id, ref);
+			// Fetching there before it is told, so a delete of the snapshot meanwhile reaches the host, as one before its
+			// first report of the copy does. Told nothing (away, or refused), it isn't.
+			const fetching = await diskHolders.recordSnapshotFetch(objectId, "disk", host.id, ref);
+			try {
+				await backend.fetchDisk(host.id, { ...request, ...location });
+			} catch (error) {
+				if (fetching !== undefined) await store.diskHolders.deleteIf(fetching, (held) => held.state === "fetching");
+				throw error;
+			}
 			return undefined;
 		},
 

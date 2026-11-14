@@ -4086,21 +4086,17 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 // DeleteSnapshot removes a snapshot. A copy being fetched from a peer (snapshotsync.go), published or not, goes too, and
 // its fetch never publishes it.
 func (m *Manager) DeleteSnapshot(id string) error {
+	// Not while a keep links it (KeepSnapshot), or a fetch of it publishes it (snapshotsync.go): read under the same
+	// lock, so a fetch that publishes it just now is either seen or never publishes.
+	m.autoMu.Lock()
+	defer m.autoMu.Unlock()
 	if _, err := m.readSnapshot(id); err != nil {
-		if validID(id) {
-			m.autoMu.Lock()
-			dropped := m.dropSnapshotFetch(id)
-			m.autoMu.Unlock()
-			if dropped {
-				return nil
-			}
+		if validID(id) && m.dropSnapshotFetch(id) {
+			return nil
 		}
 		return err
 	}
 	defer m.evictBundles()
-	// Not while a keep links it (KeepSnapshot), or a fetch of it publishes it (snapshotsync.go).
-	m.autoMu.Lock()
-	defer m.autoMu.Unlock()
 	// A fetch of its memory under way, if any, has nothing to go into.
 	m.dropSnapshotFetch(id)
 	return os.RemoveAll(m.snapshotDir(id))

@@ -2,6 +2,7 @@
 // `disk.locate`'s answers within a pool, signed fetch grants, and the sweep keeping a version another host holds.
 import { createRequire } from "node:module";
 import { createKantelClient } from "@kantel/api/sdk";
+import { KantelError } from "@kantel/contracts";
 import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BackendDiskFetch, BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
@@ -630,6 +631,7 @@ describe("disk holders", () => {
 		const deleted: string[] = [];
 		const tom = setUp({
 			fetchDisk: async (hostId, fetch) => {
+				if (hostId === "host_g") throw new KantelError("unavailable", "away");
 				fetches.push({ hostId, fetch });
 			},
 			deletedSnapshot: (ref) => deleted.push(ref),
@@ -663,6 +665,11 @@ describe("disk holders", () => {
 		await expect(tom.fetchHostSnapshot("host_b", { snapshotId: "snap_missing" })).rejects.toMatchObject({
 			code: "not_found",
 		});
+		// A host that couldn't be told isn't counted as fetching it.
+		await expect(tom.fetchHostSnapshot("host_g", { snapshotId: snap.id })).rejects.toMatchObject({
+			code: "unavailable",
+		});
+		expect(await tom.api.store.diskHolders.get("snapshot:hs1:disk:host_g")).toBeUndefined();
 		// host_b is fetching it from now: a delete before its first report reaches it.
 		expect(await tom.api.store.diskHolders.get(`snapshot:hs1:disk:host_b`)).toMatchObject({
 			state: "fetching",
