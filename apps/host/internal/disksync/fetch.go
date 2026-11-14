@@ -244,8 +244,9 @@ func (f *Fetcher) Start(req Request) *Job {
 			again := j.again && j.err != nil && f.Context.Err() == nil
 			f.mu.Unlock()
 			if again {
-				// A resume came while it was failing (the control plane back, say): what it left goes on.
-				f.Start(Request{Ref: req.Ref, Prepare: req.Prepare})
+				// A resume came while it was failing (the control plane back, say): what it left goes on, asked of the
+				// control plane afresh and without its preparation, as ResumeAll starts one.
+				f.Start(Request{Ref: req.Ref})
 			}
 		}()
 		if req.Prepare != nil {
