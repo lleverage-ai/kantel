@@ -737,6 +737,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						stderr:
 							"The sandbox's host no longer knows this command (it or the sandbox restarted), so its result is lost\n",
 						timedOut: false,
+						unknown: true,
 					};
 				}
 				// Asked again only while the host is out of reach (`unavailable`), or busy with the sandbox (`conflict`),

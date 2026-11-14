@@ -214,10 +214,16 @@ export type StoredSandbox = Omit<
 	/**
 	 * The last time a boot let go of the memory its commands ran in, so they were ended though it runs again (a start or
 	 * a restart on the latest base from paused, a move that restarted it): `generation` counts these (absent: 0), and
-	 * `why` is what each command killed so says (`StoredCommand.memoryGeneration`). Written in the same write that
-	 * moves it to `starting` (a move's, as it is published on its new host).
+	 * `why` is what each command killed so says (`StoredCommand.memoryGeneration`). Written as its new machine is
+	 * published (`boot`), once the host has booted it fresh.
 	 */
 	readonly memoryDropped?: { readonly at: number; readonly generation: number; readonly why: string };
+	/**
+	 * A boot from its disk under way that lets go of the memory it was paused with once it has booted fresh: `why`, as
+	 * `memoryDropped.why` becomes when it is published. Only while it is `starting`: a boot that fails leaves the memory
+	 * where it was, and its commands running.
+	 */
+	readonly memoryDropping?: string;
 	/**
 	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
 	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).

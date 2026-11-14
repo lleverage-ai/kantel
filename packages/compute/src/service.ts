@@ -2201,6 +2201,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const retireOwner = crypto.randomUUID();
 	/** Set by `close`: a claim sweep under way stops. */
 	let closing = false;
+	/** Aborted by `close`: a wait on a command's end here (`awaitedEnd`, `finish`'s retries) is let go. */
+	const closed = new AbortController();
+	/** Waits `ms`, or until `close`. */
+	const pauseUnlessClosed = (ms: number): Promise<void> =>
+		new Promise<void>((resolve) => {
+			if (closed.signal.aborted) return resolve();
+			const done = () => {
+				clearTimeout(timer);
+				closed.signal.removeEventListener("abort", done);
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			closed.signal.addEventListener("abort", done, { once: true });
+		});
 
 	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
 	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
@@ -5509,6 +5523,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: {}),
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
+			// A drop of its memory pending only while it starts: its boot's publishing makes it `memoryDropped`, and any
+			// other way out of `starting` (its boot failed, so its host may hold that memory still) lets it go.
+			...(state === "starting" ? {} : { memoryDropping: undefined }),
 		};
 	}
 
@@ -6392,6 +6409,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// is asked for as a detached one is.
 		if (command.detached !== true && followed) return progressOf(command);
 		let result: ExecResult | CommandProgress | undefined;
+		// Made up here (its backend no longer knows it), not its backend's answer.
+		let lost = false;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
 		} catch (error) {
@@ -6406,6 +6425,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			) {
 				return command;
 			}
+			lost = true;
 			result = {
 				exitCode: 1,
 				stdout: "",
@@ -6417,7 +6437,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (result === undefined) return command;
 		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
 		// Checked again now it has been read: a boot may have let go of its memory meanwhile.
-		const may = await endable(command);
+		const may = await endable(command, !lost);
 		if (may === "hold" || may === "unknown") return command;
 		if (may !== "end") return may.gone;
 		// Its owner runs it again in the microVM its sandbox upgrades to, and records its end with that: seen, and left.
@@ -6678,7 +6698,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const fetched = await fetchedCommand(stored).catch(() => stored);
 				if (fetched.state !== "running") return fetched;
 			}
-			await delay(wait).done;
+			// This gateway closing: the wait is let go, the command left running for the next read, as a closing gateway
+			// leaves any it follows.
+			if (closed.signal.aborted) return stored ?? command;
+			await pauseUnlessClosed(wait);
 			wait = Math.min(wait * 2, EXEC_FOLLOW_MAX_MS);
 		}
 	}
@@ -6687,8 +6710,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * What may be recorded of a running command once an end of it has been read (its backend's answer, or that its
 	 * backend doesn't know it), checked after the read, against its sandbox as it is now:
 	 * - `gone`: a boot has let go of its memory since it started, and it is killed, saying why (`endedWithMemory`);
-	 * - `hold`: nothing, for now: its sandbox is being moved without its memory, past where anything ends in it (paused,
-	 *   or stopped for the move), and the move's commit kills it, or a rollback leaves it running;
+	 * - `hold`: nothing, for now: its sandbox is booting fresh from paused, or being moved without its memory past where
+	 *   anything ends in it (paused, or its source being stopped for the move, where only an answer from the source is
+	 *   still a real end), and its publishing kills it, or a failed boot or a rollback leaves it running;
 	 * - `unknown`: its sandbox or that kill couldn't be read or written, so whether its memory went isn't known: asked
 	 *   again;
 	 * - `end`: the end is its own, read from the memory it runs in (a boot that lets that memory go writes so before
@@ -6696,6 +6720,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function endable(
 		command: StoredCommand,
+		/** The end is the backend's answer from where it ran, not a failure of its call (which its machine's stop makes). */
+		answered = false,
 	): Promise<{ readonly gone: StoredCommand } | "hold" | "unknown" | "end"> {
 		let sandbox: StoredSandbox | undefined;
 		try {
@@ -6705,13 +6731,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		} catch {
 			return "unknown";
 		}
+		// A boot from its disk under way that lets its paused memory go once it has booted fresh.
+		if (sandbox?.memoryDropping !== undefined) return "hold";
+		// A move that lets its memory go: from paused, or from running once its source is being stopped. From then on a
+		// failed call is its machine's stop, and its kill is the move's. While it is `stopping`, an answer its source gave
+		// is still its real end (the source may not have stopped yet); from `final-copy` on, nothing ends there.
 		const moving = sandbox?.moving;
-		if (
-			moving !== undefined &&
-			moving.keepMemory !== true &&
-			(moving.from === "paused" || (moving.from === "running" && moving.phase !== "copying"))
-		) {
-			return "hold";
+		if (moving !== undefined && moving.keepMemory !== true) {
+			if (moving.from === "paused") return "hold";
+			if (moving.from === "running" && moving.phase !== "copying" && !(answered && moving.phase === "stopping")) {
+				return "hold";
+			}
 		}
 		return "end";
 	}
@@ -6822,8 +6852,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 		// What its publishing changes goes with every outcome once its machine exists: running, stopped for its egress, or
 		// `error` with its host revoked. An upgrade's isolate is gone by then, so none of them may say it is one.
-		const published = (stored: StoredSandbox): StoredSandbox =>
-			publishing === undefined ? stored : { ...stored, ...publishing(stored) };
+		// A drop of its memory pending (`memoryDropping`): its machine booted fresh, so that memory is gone, written as it
+		// is published (`memoryDropped`), whatever the outcome. `drops`: whether its publishing let go of its memory
+		// (pending, or as a move's publishing says), so its commands go.
+		let drops = false;
+		const published = (stored: StoredSandbox): StoredSandbox => {
+			const dropped =
+				stored.memoryDropping === undefined
+					? stored
+					: { ...stored, ...droppedMemory(stored, stored.memoryDropping), memoryDropping: undefined };
+			const out = publishing === undefined ? dropped : { ...dropped, ...publishing(dropped) };
+			drops = (out.memoryDropped?.generation ?? 0) > (stored.memoryDropped?.generation ?? 0);
+			return out;
+		};
 		const toRunning = (stored: StoredSandbox) => {
 			const sandbox = published(stored);
 			return withState(sandbox, "running", {
@@ -6905,7 +6946,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const lost = result.lost;
 				if (round >= BOOT_RECONCILE_ROUNDS) {
 					const reason = "Its egress couldn't be applied to it while it started";
-					if (await enforceStop(sandboxId, reason, false, lost, placement, publishing)) return undefined;
+					if (await enforceStop(sandboxId, reason, false, lost, placement, published)) return undefined;
 					result = await transition(sandboxId, "starting", publish, ready);
 					continue;
 				}
@@ -6914,7 +6955,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					applied = lost.egressRevision;
 				} catch (error) {
 					// Refused for the egress it has still: stopped. One changed since is sent next round.
-					if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement, publishing))) {
+					if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement, published))) {
 						return undefined;
 					}
 					// A call that didn't get through: tried again, a moment on.
@@ -6940,6 +6981,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
+		// Its memory let go as it was published: the commands it ran killed, saying why (and by any later read or sweep,
+		// if not now).
+		if (drops) await killDroppedOf(next).catch(() => undefined);
 		// Its host uses its sticky disks: sent their new heads from now on.
 		if (next.stickyDisks !== undefined && next.stickyDisks.length > 0) keepGoing(noteStickyRuns(next));
 		await emit("sandbox.running", next.accountId, {
@@ -10317,9 +10361,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							egressRevision: later(latest.egressRevision),
 							// Its mounts go with it, as a start's do, each pending until the boot says.
 							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
-							// Paused: the commands its memory kept running go with that memory.
+							// Paused: the commands its memory kept running go with that memory, once it has booted fresh
+							// (`memoryDropping`, made `memoryDropped` as it is published).
 							...(latest.state === "paused"
-								? droppedMemory(latest, pausedMemoryGone("started afresh from its disk"))
+								? { memoryDropping: pausedMemoryGone("started afresh from its disk") }
 								: {}),
 						}),
 					unmoved(current),
@@ -10328,9 +10373,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
-				// Its memory let go: the commands it kept running killed, saying why (and by any later read or sweep, if not now).
-				if ((starting.memoryDropped?.generation ?? 0) > (stopped.memoryDropped?.generation ?? 0))
-					await killDroppedOf(starting).catch(() => undefined);
 				// An environment attached while it was stopped: its files and repositories, once it runs.
 				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
@@ -12460,17 +12502,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const stopUsing = (): void => {
 			if (using !== undefined) clearInterval(using);
 		};
-		const finish = async (result: ExecResult): Promise<StoredCommand> => {
+		const finish = async (
+			result: ExecResult,
+			/** Its backend's answer from where it ran: not a failure of its call made into an end (`failed`), nor one its
+			 * backend made up as it no longer knows it (`ExecResult.unknown`). */
+			answered = result.unknown !== true,
+		): Promise<StoredCommand> => {
 			stopUsing();
 			// What of its end may be recorded (`endable`): its memory let go by a boot since it started (the end read is its
 			// new machine not knowing it), it is killed, saying why; a move that lets its memory go under way, or what
 			// became of its memory not known, nothing yet: a detached one's follow lets it go, and a foreground call waits
 			// on for its end, as recorded or as its backend says.
-			const read = async () => endable((await store.commands.get(command.id).catch(() => undefined)) ?? command);
+			const read = async () =>
+				endable((await store.commands.get(command.id).catch(() => undefined)) ?? command, answered);
 			let may = await read();
-			// Not known (its store not answering): asked again, the end it read kept, from 1 s doubling to 30 s apart.
+			// Not known (its store not answering): asked again, the end it read kept, from 1 s doubling to 30 s apart, until
+			// this gateway closes, which lets it go, left running for the next read.
 			for (let wait = EXEC_FOLLOW_MIN_MS; may === "unknown"; wait = Math.min(wait * 2, EXEC_FOLLOW_MAX_MS)) {
-				await delay(wait).done;
+				if (closed.signal.aborted) {
+					runningCommands.delete(command.id);
+					return (await store.commands.get(command.id).catch(() => undefined)) ?? command;
+				}
+				await pauseUnlessClosed(wait);
 				may = await read();
 			}
 			if (may !== "end") {
@@ -12500,7 +12553,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			// Its call may have broken as its sandbox's move stopped it: said so, beside the failure.
 			const note = await moveNote(current.id);
-			return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n${note ?? ""}`, timedOut: false });
+			return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n${note ?? ""}`, timedOut: false }, false);
 		};
 		const run = backend.exec(current.id, {
 			command: body.command,
@@ -14049,8 +14102,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (latest === undefined || moving?.operationId !== operationId) return latest;
 		// Restarted there: the memory its commands ran in (a paused one's, a running one's its move stopped) is let go as
 		// it is published on its new host, in that write (`memoryDropped`): a command another gateway starts there once it
-		// runs is of the new generation, and the commands of the old one are killed, saying why, straight after, and by
-		// any later read or sweep. Whichever gateway commits the move (its own, or the sweep's for one whose gateway went)
+		// runs is of the new generation, and the commands of the old one are killed, saying why, straight after (`boot`),
+		// and by any later read or sweep. Whichever gateway commits the move (its own, or the sweep's for one whose gateway went)
 		// does it, and nothing is put back.
 		const drops = moving.from !== "stopped" && moving.keepMemory !== true;
 		// Its memory kept: a kill made while it was stopped for the move (or paused before it) reaches its command, which
@@ -14077,7 +14130,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...owedStop(latest),
 			}),
 		);
-		if (drops && committed !== undefined) await killDroppedOf(committed).catch(() => undefined);
 		return committed;
 	}
 
@@ -14162,7 +14214,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// memory. (One in `error` is left as it is: its machine may still be running, as a pause whose snapshot failed
 				// resumes it, and a start finds it running.)
 				...(how === "start" && latest.state === "paused"
-					? droppedMemory(latest, pausedMemoryGone("started afresh from its disk"))
+					? { memoryDropping: pausedMemoryGone("started afresh from its disk") }
 					: {}),
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
@@ -14175,9 +14227,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
-		// Its memory let go: the commands it kept running killed, saying why (and by any later read or sweep, if not now).
-		if ((starting.memoryDropped?.generation ?? 0) > (current.memoryDropped?.generation ?? 0))
-			await killDroppedOf(starting).catch(() => undefined);
 		const provisioning = await provisionedAgain(principal, role, starting, true);
 		const bootOptions = {
 			fromSnapshot,
@@ -14591,6 +14640,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async close() {
 			closing = true;
+			closed.abort();
 			for (const controller of runningCommands.values()) controller.abort();
 			await live.close();
 			await idle();
