@@ -2,6 +2,7 @@ package disksync
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -258,5 +259,102 @@ func TestFetchProgressOfAPartialNotMade(t *testing.T) {
 	}
 	if p, ok := progressOf(fetcher, "v2"); !ok || p.State != proto.FetchFailed || p.Blocks != 3 || p.InPlace != 0 {
 		t.Fatalf("failed %+v (listed %v)", p, ok)
+	}
+}
+
+// A fetch with a preparation is reported queued, with no blocks, from when it is started, while its preparation runs:
+// one that waits for another fetch through the same fetcher, with one turn, which runs meanwhile. A preparation that
+// fails is reported as a failed fetch, with its error; not one the control plane's not_found or the host's stop ended.
+func TestFetchProgressOfPreparation(t *testing.T) {
+	f := newFixture(t, 1)
+	data := disk(t, 3, 0)
+	f.put("v2", data)
+	loc2 := f.location()
+	digest2 := f.digest
+	h := f.holders[0]
+	f.put("v3", disk(t, 2, 0))
+	loc3 := f.location()
+	loc3.MapDigest = blockmap.Digest(must(os.ReadFile(h.store.mapPath("v3"))))
+	loc3.Grant = f.key.sign(t, Grant{Kind: "sticky", ObjectID: "sdk_1", Version: "v3", From: []string{h.id}, To: "host_b", Exp: time.Now().Add(15 * time.Minute).UnixMilli()})
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	fetcher := f.fetcher()
+	fetcher.Fetches = 1
+	fetcher.Context = ctx
+
+	ref2 := Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}
+	ref3 := Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v3"}
+	started, gate := make(chan struct{}), make(chan struct{})
+	a := fetcher.Start(Request{Ref: ref2, MapDigest: loc2.MapDigest, Holders: loc2.Holders, Grant: loc2.Grant,
+		Prepare: func(ctx context.Context) error {
+			close(started)
+			<-gate
+			dep := fetcher.Start(Request{Ref: ref3, MapDigest: loc3.MapDigest, Holders: loc3.Holders, Grant: loc3.Grant})
+			select {
+			case <-dep.Done():
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			_, err := dep.Result()
+			return err
+		}})
+	<-started
+	if p, ok := progressOf(fetcher, "v2"); !ok || p.State != proto.FetchQueued || p.Blocks != 0 || p.InPlace != 0 || p.Error != "" {
+		t.Fatalf("preparing %+v (listed %v)", p, ok)
+	}
+	if !fetcher.Running(ref2) {
+		t.Fatal("a fetch being prepared isn't running")
+	}
+	close(gate)
+	if _, err := wait(t, a); err != nil {
+		t.Fatal(err)
+	}
+	f.digest = digest2
+	f.checkHeld("v2", data)
+	if !f.local.Held(ref3) {
+		t.Fatal("the fetch the preparation waited for wasn't done")
+	}
+	if got := fetcher.Progress(); len(got) != 0 {
+		t.Fatalf("after the fetches have done: %+v", got)
+	}
+
+	// A preparation that fails: reported failed, with its error and no blocks.
+	ref4 := Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v4"}
+	if _, err := wait(t, fetcher.Start(Request{Ref: ref4, Prepare: func(context.Context) error {
+		return errors.New("no root image for it")
+	}})); err == nil {
+		t.Fatal("a fetch whose preparation failed succeeded")
+	}
+	if p, ok := progressOf(fetcher, "v4"); !ok || p.State != proto.FetchFailed || p.Blocks != 0 || p.Error != "no root image for it" {
+		t.Fatalf("failed preparation %+v (listed %v)", p, ok)
+	}
+	if f.locates.Load() != 0 {
+		t.Fatal("disk.locate asked for a fetch whose preparation failed")
+	}
+
+	// The control plane's not_found: not reported.
+	if _, err := wait(t, fetcher.Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v5"}, Prepare: func(context.Context) error {
+		return &proto.Error{Code: proto.ErrNotFound, Message: "no such version"}
+	}})); !IsNotFound(err) {
+		t.Fatalf("not_found preparation: %v", err)
+	}
+	if _, ok := progressOf(fetcher, "v5"); ok {
+		t.Fatal("a preparation the control plane's not_found ended is reported")
+	}
+
+	// The host's stop: not reported.
+	preparing := make(chan struct{})
+	stopped := fetcher.Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v6"}, Prepare: func(ctx context.Context) error {
+		close(preparing)
+		<-ctx.Done()
+		return ctx.Err()
+	}})
+	<-preparing
+	stop()
+	if _, err := wait(t, stopped); err == nil {
+		t.Fatal("a preparation the host's stop ended succeeded")
+	}
+	if _, ok := progressOf(fetcher, "v6"); ok {
+		t.Fatal("a preparation the host's stop ended is reported")
 	}
 }

@@ -1216,8 +1216,9 @@ type ObjectVersionHolding struct {
 	Copy bool `json:"copy,omitempty"`
 }
 
-// Fetch states (FetchProgress.State): waiting its turn behind the host's other fetches, under way, or stopped by an
-// error, its partial left to go on when it is asked for again.
+// Fetch states (FetchProgress.State): waiting its turn behind the host's other fetches, or being prepared for (a saved
+// snapshot's disk, while its record is read and its root image got); under way; or stopped by an error, its partial
+// left to go on when it is asked for again.
 const (
 	FetchQueued  = "queued"
 	FetchRunning = "running"

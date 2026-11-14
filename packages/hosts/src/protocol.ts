@@ -793,9 +793,10 @@ export interface HostObjectVersionHolding {
 
 /**
  * One version a host is fetching (`HostCapacity.fetches`, `FetchProgress` in proto.go): waiting its turn behind the
- * host's other fetches (`queued`), under way (`running`), or stopped by an error with its partial left to go on when it
- * is asked for again (`failed`); its blocks (every part's, for a kind with parts), 0 until its map has been read; how
- * many of them are in place; and the last error it met, while it is tried again or has failed.
+ * host's other fetches, or being prepared for (a saved snapshot's disk, while its record is read and its root image got)
+ * (`queued`), under way (`running`), or stopped by an error with its partial left to go on when it is asked for again
+ * (`failed`); its blocks (every part's, for a kind with parts), 0 until its map has been read; how many of them are in
+ * place; and the last error it met, while it is tried again or has failed.
  */
 export interface HostFetchProgress {
 	readonly kind: string;
