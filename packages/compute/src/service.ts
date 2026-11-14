@@ -9000,12 +9000,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// wherever its move leaves it: its stop is owed on its move (`stopAfter`), which becomes its `stopFor` as it runs
 			// again, for the sweep to carry out.
 			const left = "Its person left the organisation";
+			// As the record is when written: on its move while it has one, else, a move ended meanwhile, on the sandbox
+			// itself while it runs (`stopFor`); one stopped already is left.
 			const oweStop = (sandboxId: string) =>
-				patchSandbox(sandboxId, (latest) =>
-					latest.moving === undefined || latest.moving.stopAfter !== undefined
-						? undefined
-						: { ...latest, moving: { ...latest.moving, stopAfter: left } },
-				);
+				patchSandbox(sandboxId, (latest) => {
+					if (latest.moving !== undefined) {
+						return latest.moving.stopAfter !== undefined
+							? undefined
+							: { ...latest, moving: { ...latest.moving, stopAfter: left } };
+					}
+					return latest.state === "running" && latest.stopFor === undefined ? { ...latest, stopFor: left } : undefined;
+				});
 			for (const sandbox of await store.sandboxes.list({ accountId: params.accountId, ownerUserId: params.userId })) {
 				if (sandbox.visibility !== "private") continue;
 				if (sandbox.moving !== undefined) {
@@ -12792,6 +12797,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(body.hostId === undefined ? {} : { to: body.hostId }),
 								before: {},
 								egressRevision,
+								// A stop it owes already (its stop's `stopFor`, which the move's own stop clears): owed still once it ends.
+								...(latest.stopFor === undefined ? {} : { stopAfter: latest.stopFor }),
 							},
 						};
 					},

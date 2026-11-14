@@ -1024,4 +1024,17 @@ describe("moving a running sandbox to another host, with a restart", () => {
 			stopFor: "Its person left the organisation",
 		});
 	});
+
+	it("still owes a stop the sandbox owed as its move began, once it runs where it went", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			stopFor: "Its person left the organisation",
+		}));
+		expect(await root.moveSandbox(sandbox.id, { keepMemory: false })).toMatchObject({ hostId: b.hostId });
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ stopFor: "Its person left the organisation" });
+	});
 });
