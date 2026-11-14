@@ -733,9 +733,10 @@ export interface ComputeService {
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
-	 * A host's capacity report's holdings (`HostCapacity.stickyDisks` and `HostCapacity.holdings`), received at `at`: its
-	 * copies in the catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordHoldings`). Nothing of
-	 * sticky disks with them off, nor of templates' root filesystems with templates off.
+	 * A host's capacity report's holdings (`HostCapacity.stickyDisks` and `HostCapacity.holdings`) and fetches
+	 * (`HostCapacity.fetches`), received at `at`: its copies in the catalogue (`StoredDiskHolder`), held and being
+	 * fetched, are made what it reports (`DiskHolders.recordHoldings`). Nothing of sticky disks with them off, nor of
+	 * templates' root filesystems with templates off.
 	 */
 	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/**
@@ -2852,10 +2853,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
 				if (report.held.has(`${disk.id}/${version.id}`)) continue;
+				// A copy elsewhere keeps it: one held, not one being fetched (which needs a copy held to finish) or deleted.
 				const elsewhere = (holder: StoredDiskHolder) =>
-					holder.hostId !== version.hostId &&
-					holder.state !== "deleting" &&
-					hosts.get(holder.hostId)?.state !== "revoked";
+					holder.hostId !== version.hostId && holder.state === "held" && hosts.get(holder.hostId)?.state !== "revoked";
 				if ((holders.get(version.id) ?? []).some(elsewhere)) continue;
 				// Checked again as it is forgotten: a host that records holding it meanwhile keeps it.
 				if (!(await store.stickyDiskWrites.forget(version.id, (latest) => latest.some(elsewhere)))) continue;

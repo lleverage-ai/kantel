@@ -99,6 +99,8 @@ type fetchTier struct {
 	discarded []string
 }
 
+func (f *fetchTier) Usage() (int64, int, int) { return 0, 0, 0 }
+
 func (f *fetchTier) OpenStickyVersion(string, string, bool) (*os.File, []byte, error) {
 	return nil, nil, fs.ErrNotExist
 }
@@ -124,8 +126,8 @@ func (f *fetchTier) DiscardStickyPartial(diskID, version string) {
 // told where to find is asked of disk.locate. One without either refuses disk.fetch.
 func TestDiskFetch(t *testing.T) {
 	without := newLifecycleHost(t, newLifecycleTier())
-	if slices.Contains(without.makeFacts().Features, proto.FeatureDiskSync) {
-		t.Fatal("disk-sync reported without the mesh")
+	if slices.Contains(without.makeFacts().Features, proto.FeatureDiskSync) || without.fetcher != nil {
+		t.Fatal("disk-sync, or a fetcher, without the mesh")
 	}
 	var pe *proto.Error
 	if err := call(t, without, proto.MethodDiskFetch, proto.DiskFetchParams{Kind: "sticky", ObjectID: "ci", Version: "v2"}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
@@ -149,6 +151,10 @@ func TestDiskFetch(t *testing.T) {
 	defer h.syncStop()
 	if !slices.Contains(h.makeFacts().Features, proto.FeatureDiskSync) {
 		t.Fatal("disk-sync not reported")
+	}
+	// None under way: reported as none, not left out.
+	if raw, _ := json.Marshal(h.Capacity()); !strings.Contains(string(raw), `"fetches":[]`) {
+		t.Fatalf("capacity %s", raw)
 	}
 	for name, c := range map[string]struct {
 		p    proto.DiskFetchParams
@@ -301,7 +307,8 @@ func TestTemplateSync(t *testing.T) {
 	tier := &templateFetchTier{&rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
 	without := newLifecycleHost(t, tier.lifecycleTier)
 	without.tiers[microvm.Tier] = tier
-	if slices.Contains(without.makeFacts().Features, proto.FeatureTemplateSync) || without.Capacity().Holdings != nil {
+	if slices.Contains(without.makeFacts().Features, proto.FeatureTemplateSync) ||
+		slices.Contains(without.makeFacts().Features, proto.FeatureTemplateImageCopies) || without.Capacity().Holdings != nil {
 		t.Fatal("template-sync, or holdings, without the mesh")
 	}
 	if err := without.fetchTemplate(context.Background(), "tsn_2"); !errors.Is(err, microvm.ErrNoPeerTemplate) {
@@ -319,7 +326,8 @@ func TestTemplateSync(t *testing.T) {
 	}
 	h.startPeerSync()
 	defer h.syncStop()
-	if !slices.Contains(h.makeFacts().Features, proto.FeatureTemplateSync) {
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureTemplateSync) ||
+		!slices.Contains(h.makeFacts().Features, proto.FeatureTemplateImageCopies) {
 		t.Fatalf("features %v", h.makeFacts().Features)
 	}
 	holdings := h.Capacity().Holdings

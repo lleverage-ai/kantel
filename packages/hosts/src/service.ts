@@ -687,12 +687,14 @@ export interface SandboxPlacement {
 }
 
 /**
- * What a capacity report says a host holds: its sticky disks' versions (`HostCapacity.stickyDisks`) and its objects of
- * other kinds (`HostCapacity.holdings`). Each absent says nothing.
+ * What a capacity report says a host holds: its sticky disks' versions (`HostCapacity.stickyDisks`), its objects of
+ * other kinds (`HostCapacity.holdings`), and the versions it is fetching (`HostCapacity.fetches`). Each absent says
+ * nothing.
  */
 export interface HostHoldingsReport {
 	readonly stickyDisks?: readonly HostStickyHolding[];
 	readonly objects?: HostCapacity["holdings"];
+	readonly fetches?: HostCapacity["fetches"];
 }
 
 /** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
@@ -1430,19 +1432,24 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * Keeps a report's holdings (sticky disks' versions, and objects of other kinds) in the catalogue, received at `at`,
-	 * in its own time and one at a time per host. The catalogue takes only a host's newest report, on any gateway
+	 * Keeps a report's holdings (sticky disks' versions, objects of other kinds, and fetches) in the catalogue, received
+	 * at `at`, in its own time and one at a time per host. The catalogue takes only a host's newest report, on any gateway
 	 * (`DiskHolderWrites`), so one held up here never undoes a newer. Nothing from a report that doesn't say what it
 	 * holds: absent isn't none.
 	 */
 	const holdingsRecorded = new Map<string, Promise<void>>();
 	const recordHoldings = (hostId: string, at: number, capacity: HostCapacity) => {
 		const link = compute;
-		const { stickyDisks, holdings: objects } = capacity;
-		if (link?.recordHoldings === undefined || (stickyDisks === undefined && objects === undefined)) return;
+		const { stickyDisks, holdings: objects, fetches } = capacity;
+		if (
+			link?.recordHoldings === undefined ||
+			(stickyDisks === undefined && objects === undefined && fetches === undefined)
+		)
+			return;
 		const held: HostHoldingsReport = {
 			...(stickyDisks === undefined ? {} : { stickyDisks }),
 			...(objects === undefined ? {} : { objects }),
+			...(fetches === undefined ? {} : { fetches }),
 		};
 		const previous = holdingsRecorded.get(hostId) ?? Promise.resolve();
 		const next = previous.then(() => link.recordHoldings?.(hostId, at, held));
@@ -3460,6 +3467,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					throw new KantelError(
 						"not_supported",
 						`The host ${host.name} doesn't build templates' custom images; switch its templateBuilder on`,
+					);
+				}
+				// A copy only to a host that keeps it to the entry's image: an older one would drop `copy`, and might build or
+				// pull another image under the entry's ID.
+				if (
+					input.copy !== undefined &&
+					storedFacts(host.facts)?.features?.includes(HOST_FEATURES.templateImageCopies) !== true
+				) {
+					throw new KantelError(
+						"not_supported",
+						`The host ${host.name} doesn't copy templates' custom images; upgrade its kantel-host`,
 					);
 				}
 				const shape = buildShape(host, input);

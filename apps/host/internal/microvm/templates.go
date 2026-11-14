@@ -252,6 +252,8 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		if err := validateTemplateImage(p.Image); err != nil {
 			return proto.TemplateBuildResult{}, err
 		}
+	} else if p.Copy != nil {
+		return proto.TemplateBuildResult{}, &proto.Error{Code: proto.ErrInvalid, Message: "only a custom image's build is a copy of its image"}
 	}
 	defer m.tpl.snapshots.lock(p.SnapshotID)()
 	m.buildingTemplate(p.SnapshotID)
@@ -277,19 +279,33 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	builtFrom := templateBuiltFrom{Image: templateImageKind, BaseImage: p.BaseImage, BaseDigest: p.BaseDigest}
 	var rootfs, imageDigest string
 	if p.Image != nil {
-		// Fetched from a host in the pool that holds it (its record with it, which names its digest), else built or pulled
-		// in a build microVM, under the template's egress with the operator's registries: never on the host's Docker.
-		fetched, err := m.fetchRootfsFirst(ctx, customImageKey(p.Owner, p.Image, img))
-		if err != nil {
-			return proto.TemplateBuildResult{}, err
-		}
-		if fetched {
-			t.step("fetch", &start)
-		}
 		var key string
-		rootfs, imageDigest, key, err = m.customRootfs(ctx, p.SnapshotID, p.Owner, p.Image, img, size, p.Egress, p.Env)
-		if err != nil {
-			return proto.TemplateBuildResult{}, err
+		if p.Copy != nil {
+			// A copy of an entry another host built: only that entry's image, here or fetched from a peer, never built.
+			var fetched bool
+			rootfs, fetched, err = m.copiedRootfs(ctx, p.Owner, p.Image, img, *p.Copy)
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
+			if fetched {
+				t.step("fetch", &start)
+			}
+			imageDigest, key = p.Copy.ImageDigest, p.Copy.RootfsKey
+		} else {
+			// Fetched from a host in the pool that holds it (its record with it, which names its digest), else built or
+			// pulled in a build microVM, under the template's egress with the operator's registries: never on the host's
+			// Docker.
+			fetched, err := m.fetchRootfsFirst(ctx, customImageKey(p.Owner, p.Image, img), buildingHere)
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
+			if fetched {
+				t.step("fetch", &start)
+			}
+			rootfs, imageDigest, key, err = m.customRootfs(ctx, p.SnapshotID, p.Owner, p.Image, img, size, p.Egress, p.Env)
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
 		}
 		builtFrom.Image, builtFrom.RootfsKey = p.Image.Kind, key
 		if p.Image.Kind == proto.TemplateImageDockerfile {
@@ -301,7 +317,7 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	} else {
 		// A pulled base's, fetched from a host in the pool that holds it, else pulled and made here.
 		if img.BaseDigest != "" {
-			fetched, err := m.fetchRootfsFirst(ctx, img.key())
+			fetched, err := m.fetchRootfsFirst(ctx, img.key(), buildingHere)
 			if err != nil {
 				return proto.TemplateBuildResult{}, err
 			}
