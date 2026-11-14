@@ -44,6 +44,7 @@ import {
 	type ExposedPort,
 	type FileEntry,
 	type Host,
+	type HostEvacuation,
 	type Invite,
 	KantelApiError,
 	type KantelClient,
@@ -138,6 +139,8 @@ type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
 type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
+type UiHostEvacuation = Awaited<ReturnType<NonNullable<HostsSource["evacuate"]>>>;
+type UiHostEvacuationProgress = NonNullable<UiHost["evacuation"]>;
 type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get"]>>;
 type UiPool = Awaited<ReturnType<NonNullable<HostsSource["pools"]>["list"]>>[number];
 type UiEnvironmentFile = UiEnvironment["files"][number];
@@ -1965,6 +1968,7 @@ function hostOf(host: Host): UiHost {
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+		...(host.evacuation === undefined ? {} : { evacuation: evacuationProgressOf(host.evacuation) }),
 		...(host.mesh === undefined
 			? {}
 			: {
@@ -1980,6 +1984,46 @@ function hostOf(host: Host): UiHost {
 					},
 				}),
 	};
+}
+
+/** An evacuation's counts and state, as a host's summary and the evacuation itself both have them. */
+function evacuationProgressOf(evacuation: Omit<HostEvacuation, "hostId" | "sandboxes">): UiHostEvacuationProgress {
+	return {
+		state: evacuation.state,
+		...(evacuation.reason === undefined ? {} : { reason: evacuation.reason }),
+		startedAt: evacuation.startedAt,
+		...(evacuation.endedAt === undefined ? {} : { endedAt: evacuation.endedAt }),
+		moved: evacuation.moved,
+		remaining: evacuation.remaining,
+		skipped: evacuation.skipped,
+		failed: evacuation.failed,
+	};
+}
+
+function evacuationOf(evacuation: HostEvacuation): UiHostEvacuation {
+	return {
+		...evacuationProgressOf(evacuation),
+		sandboxes: evacuation.sandboxes.map((item) => ({
+			id: item.sandboxId,
+			...(item.name === undefined ? {} : { name: item.name }),
+			kind: item.type,
+			state: item.state,
+			...(item.phase === undefined ? {} : { phase: item.phase }),
+			...(item.hostId === undefined ? {} : { hostId: item.hostId }),
+			...(item.keptMemory === undefined ? {} : { keptMemory: item.keptMemory }),
+			...(item.reason === undefined ? {} : { reason: item.reason }),
+		})),
+	};
+}
+
+/** A host's last evacuation, read with `read`: undefined when it has had none. */
+async function lastEvacuation(read: () => Promise<HostEvacuation>): Promise<UiHostEvacuation | undefined> {
+	try {
+		return evacuationOf(await read());
+	} catch (error) {
+		if (isCode(error, "not_found")) return undefined;
+		throw error;
+	}
 }
 
 function poolOf(pool: Pool): UiPool {
@@ -2015,6 +2059,8 @@ function hostsSource({ api }: Context): HostsSource {
 			remove: (id) => api.deletePool(id),
 		},
 		move: async (id, poolId) => hostOf(await api.updateHost(id, { pool: poolId })),
+		evacuate: async (id) => evacuationOf(await api.startHostEvacuation(id)),
+		evacuation: (id) => lastEvacuation(() => api.getHostEvacuation(id)),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
 			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
@@ -2122,6 +2168,8 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 			remove: (id) => api.deleteAccountPool(id),
 		},
 		move: async (id, poolId) => hostOf(await api.updateAccountHost(id, { pool: poolId })),
+		evacuate: async (id) => evacuationOf(await api.startAccountHostEvacuation(id)),
+		evacuation: (id) => lastEvacuation(() => api.getAccountHostEvacuation(id)),
 	};
 }
 

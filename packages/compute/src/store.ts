@@ -871,6 +871,53 @@ export interface StoredDeletion {
 	readonly lease?: { readonly token: string; readonly until: number };
 }
 
+/** One sandbox of a host's evacuation (`StoredEvacuation`), as the API's `HostEvacuationSandbox` and what it was. */
+export interface StoredEvacuationSandbox {
+	readonly sandboxId: string;
+	readonly accountId: string;
+	readonly name?: string;
+	readonly type: computeSchema.SandboxType;
+	/** Who may see it, as its record said when taken: the view names it only to them. */
+	readonly visibility?: StoredSandbox["visibility"];
+	readonly ownerUserId?: string;
+	readonly state: computeSchema.HostEvacuationSandbox["state"];
+	readonly reason?: string;
+	readonly hostId?: string;
+	readonly keptMemory?: boolean;
+	/** The moves of it begun and ended without an answer (a gateway gone): it is tried again up to a few times. */
+	readonly attempts?: number;
+	/** Its claim while `moving`, this evacuation's: a move's outcome lands only on the claim that began it. */
+	readonly claim?: string;
+}
+
+/**
+ * Moving every sandbox off a draining host (`POST /hosts/{hostId}/evacuation`): its ID is the host's, one at a time,
+ * the last kept once it ends. Carried on by one gateway at a time (`lease`), by the call that began it and then by the
+ * sweep, so it outlives a control plane restart: each move is the sandbox's own (`StoredSandbox.moving`), settled as
+ * any is, and read back from the sandbox's record.
+ */
+export interface StoredEvacuation {
+	readonly id: string;
+	/** This evacuation, of those the host has had: a later one's writes never land on an earlier one's record. */
+	readonly run: string;
+	readonly state: computeSchema.HostEvacuationState;
+	readonly reason?: string;
+	readonly startedAt: number;
+	readonly endedAt?: number;
+	/**
+	 * Who began it, whose moves it makes: a super-admin (the deployment's hosts) or the account's admin, and the scopes
+	 * their key or personal access token was held to (`scopes`), which its moves are held to as well.
+	 */
+	readonly by: {
+		readonly userId: string;
+		readonly superAdmin: boolean;
+		readonly scopes?: readonly computeSchema.ApiKeyScope[];
+	};
+	readonly sandboxes: readonly StoredEvacuationSandbox[];
+	/** Who is carrying it on, until when: one gateway at a time. */
+	readonly lease?: { readonly token: string; readonly until: number };
+}
+
 /**
  * A gateway replica's claim to export one numbered usage tick: its ID is `usageClaimId` of the host, the tick's `run`
  * and its `seq`. A replica taking a tick straight from its host claims it (`insert`) once nothing can stop the tick
@@ -987,6 +1034,8 @@ export interface ComputeStore {
 	readonly usageClaims: Collection<StoredUsageClaim>;
 	/** Account deletions under way (`StoredDeletion`). */
 	readonly deletions: Collection<StoredDeletion>;
+	/** Each host's last evacuation (`StoredEvacuation`), by the host's ID. */
+	readonly evacuations: Collection<StoredEvacuation>;
 	/** GitHub Actions runners (`github-runners.ts`): the integrations, the jobs their webhooks told of, and their runners. */
 	readonly githubRunners: Collection<StoredGithubRunners>;
 	readonly githubRunnerJobs: Collection<StoredGithubRunnerJob>;
@@ -1477,6 +1526,7 @@ export function createMemoryStore(): ComputeStore {
 		settings: memoryCollection(),
 		usageClaims: memoryCollection(),
 		deletions: memoryCollection(),
+		evacuations: memoryCollection(),
 		templates: templates.collection,
 		templateVersions: templateVersions.collection,
 		templateWrites: memoryTemplateWrites(templates, templateVersions),

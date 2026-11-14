@@ -3929,6 +3929,93 @@ export const HostMesh = Type.Object(
 	},
 );
 
+export const HostEvacuationState = Type.Union(
+	[Type.Literal("running"), Type.Literal("done"), Type.Literal("failed"), Type.Literal("stopped")],
+	{
+		title: "HostEvacuationState",
+		description:
+			"`running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped " +
+			"with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the " +
+			"host was undrained, which ends it; a move under way then finishes.",
+	},
+);
+
+/** What a host's evacuation and its summary on the host both have. */
+const evacuationProgress = {
+	state: HostEvacuationState,
+	reason: Type.Optional(
+		Type.String({ description: "Why it failed or stopped, where that wasn't a sandbox's move (each says its own)." }),
+	),
+	startedAt: Timestamp,
+	endedAt: Type.Optional(Timestamp),
+	moved: Type.Integer({ minimum: 0, description: "The sandboxes moved to another host." }),
+	remaining: Type.Integer({ minimum: 0, description: "Those still to move, or moving now." }),
+	skipped: Type.Integer({ minimum: 0, description: "Those that can't move, each with its reason." }),
+	failed: Type.Integer({ minimum: 0, description: "Those whose move failed: each is where it was, as it was." }),
+};
+
+export const HostEvacuationProgress = Type.Object(evacuationProgress, {
+	title: "HostEvacuationProgress",
+	description: "How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got.",
+});
+
+export const HostEvacuationSandbox = Type.Object(
+	{
+		sandboxId: id("The sandbox's ID."),
+		name: Type.Optional(Type.String({ description: "Its name, where the caller may see the sandbox." })),
+		type: SandboxType,
+		state: Type.Union(
+			[
+				Type.Literal("waiting"),
+				Type.Literal("moving"),
+				Type.Literal("moved"),
+				Type.Literal("skipped"),
+				Type.Literal("failed"),
+			],
+			{
+				description:
+					"`waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its " +
+					"move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an " +
+					"isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its " +
+					"move failed (`reason`), and it is where it was.",
+			},
+		),
+		phase: Type.Optional(
+			Type.Union(
+				[Type.Literal("copying"), Type.Literal("stopping"), Type.Literal("final-copy"), Type.Literal("starting")],
+				{ description: "Where its move has got, while it moves: as its own `move.phase`." },
+			),
+		),
+		hostId: Type.Optional(Type.String({ description: "The host it moved to." })),
+		keptMemory: Type.Optional(
+			Type.Boolean({
+				description: "Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there.",
+			}),
+		),
+		reason: Type.Optional(
+			Type.String({ description: "Why it was skipped, why its move failed, or why it restarted where it moved." }),
+		),
+	},
+	{ title: "HostEvacuationSandbox", description: "One sandbox of a host's evacuation." },
+);
+
+export const HostEvacuation = Type.Object(
+	{
+		hostId: id("The host's ID."),
+		...evacuationProgress,
+		sandboxes: Type.Array(HostEvacuationSandbox, {
+			description: "Each sandbox that was on the host when it began, or came onto it since, in the order taken.",
+		}),
+	},
+	{
+		title: "HostEvacuation",
+		description:
+			"Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or " +
+			"retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting " +
+			"it otherwise). It carries on across a control plane restart.",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -4023,6 +4110,7 @@ export const Host = Type.Object(
 		diskUsage: Type.Optional(HostDiskUsage),
 		memory: Type.Optional(HostMemory),
 		mesh: Type.Optional(HostMesh),
+		evacuation: Type.Optional(HostEvacuationProgress),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Integer({
 				minimum: 0,
@@ -4845,6 +4933,10 @@ export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostMesh = Static<typeof HostMesh>;
+export type HostEvacuation = Static<typeof HostEvacuation>;
+export type HostEvacuationProgress = Static<typeof HostEvacuationProgress>;
+export type HostEvacuationSandbox = Static<typeof HostEvacuationSandbox>;
+export type HostEvacuationState = Static<typeof HostEvacuationState>;
 export type HostMeshPeer = Static<typeof HostMeshPeer>;
 export type HostDiskUsage = Static<typeof HostDiskUsage>;
 export type HostMemory = Static<typeof HostMemory>;

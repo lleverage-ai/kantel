@@ -1183,6 +1183,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
 | `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
 | `mesh` | [HostMesh](/api/reference/types/#hostmesh) | no |  |
+| `evacuation` | [HostEvacuationProgress](/api/reference/types/#hostevacuationprogress) | no |  |
 | `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
@@ -1218,6 +1219,59 @@ What takes the space on a host's disk, as the host measured it last (every few m
 | `bundlesBytes` | integer | yes | The cache of bundle images that sandboxes mount. (minimum 0) |
 | `otherBytes` | integer | yes | The rest of the used space: the operating system, logs and other programs. (minimum 0) |
 | `measuredAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### HostEvacuation
+
+Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting it otherwise). It carries on across a control plane restart.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+| `state` | [HostEvacuationState](/api/reference/types/#hostevacuationstate) | yes |  |
+| `reason` | string | no | Why it failed or stopped, where that wasn't a sandbox's move (each says its own). |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `moved` | integer | yes | The sandboxes moved to another host. (minimum 0) |
+| `remaining` | integer | yes | Those still to move, or moving now. (minimum 0) |
+| `skipped` | integer | yes | Those that can't move, each with its reason. (minimum 0) |
+| `failed` | integer | yes | Those whose move failed: each is where it was, as it was. (minimum 0) |
+| `sandboxes` | [HostEvacuationSandbox](/api/reference/types/#hostevacuationsandbox)[] | yes | Each sandbox that was on the host when it began, or came onto it since, in the order taken. |
+
+### HostEvacuationProgress
+
+How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | [HostEvacuationState](/api/reference/types/#hostevacuationstate) | yes |  |
+| `reason` | string | no | Why it failed or stopped, where that wasn't a sandbox's move (each says its own). |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `moved` | integer | yes | The sandboxes moved to another host. (minimum 0) |
+| `remaining` | integer | yes | Those still to move, or moving now. (minimum 0) |
+| `skipped` | integer | yes | Those that can't move, each with its reason. (minimum 0) |
+| `failed` | integer | yes | Those whose move failed: each is where it was, as it was. (minimum 0) |
+
+### HostEvacuationSandbox
+
+One sandbox of a host's evacuation.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+| `name` | string | no | Its name, where the caller may see the sandbox. |
+| `type` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
+| `state` | `"waiting"` or `"moving"` or `"moved"` or `"skipped"` or `"failed"` | yes | `waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was. |
+| `phase` | `"copying"` or `"stopping"` or `"final-copy"` or `"starting"` | no | Where its move has got, while it moves: as its own `move.phase`. |
+| `hostId` | string | no | The host it moved to. |
+| `keptMemory` | boolean | no | Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there. |
+| `reason` | string | no | Why it was skipped, why its move failed, or why it restarted where it moved. |
+
+### HostEvacuationState
+
+`running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes.
+
+One of: `"running"` or `"done"` or `"failed"` or `"stopped"`.
 
 ### HostJoinToken
 
