@@ -38,7 +38,8 @@ func (s *moveTier) OpenSandboxPart(string, string, string, bool) (*os.File, []by
 func (s *moveTier) ReadSandboxFile(string, string, string) ([]byte, error) {
 	return nil, os.ErrNotExist
 }
-func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ []byte) error {
+func (s *moveTier) ImportGeneration(string) uint64 { return 0 }
+func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ uint64, _ []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prepared = append(s.prepared, id+"/"+version)
