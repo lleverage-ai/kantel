@@ -568,6 +568,8 @@ func (h *Host) syncKinds() disksync.Kinds {
 // peerStore is the objects the host holds and fetches, for peer sync: its syncKinds', as they are at each call.
 type peerStore struct{ h *Host }
 
+var _ disksync.PartNearest = peerStore{}
+
 func (s peerStore) Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error) {
 	return s.h.syncKinds().Open(kind, objectID, version, withMap)
 }
@@ -606,6 +608,10 @@ func (s peerStore) OpenPart(r disksync.Ref, part string, withMap bool) (*os.File
 
 func (s peerStore) PartPartial(r disksync.Ref, part string) (string, error) {
 	return s.h.syncKinds().PartPartial(r, part)
+}
+
+func (s peerStore) ClonePartNearest(r disksync.Ref, part, dst string) (*blockmap.Map, error) {
+	return s.h.syncKinds().ClonePartNearest(r, part, dst)
 }
 
 func (s peerStore) PublishParts(r disksync.Ref, parts map[string]disksync.FetchedPart, files map[string][]byte) error {

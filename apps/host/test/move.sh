@@ -209,7 +209,7 @@ echo "rolled back after the stop: started again on B with its $n counts (at leas
 
 echo "== 4. Moved while it runs: unavailable only for its stop, the final copy and its boot"
 run "rm -f /home/user/stream /home/user/counts; $writer" >/dev/null
-sleep 10
+sleep 30
 began=$(date +%s.%N)
 api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\",\"keepMemory\":false,\"wait\":false}" |
 	jq -e '.state == "moving"' >/dev/null || fail "the running move didn't begin"
@@ -244,6 +244,9 @@ awk -v began="$began" -v stopped="$stopped_at" -v ran="$ran" -v answered="$answe
 			stopped - began, ran - stopped, answered - tick
 		printf "  first copy fetched %s bytes; final copy fetched %s bytes\n", first, final
 	}'
+# The final copy fetched only what changed since the first: far less than the first.
+[ -n "$first" ] && [ -n "$final" ] || fail "A's fetches of the copies weren't logged: $copies"
+[ "$final" -lt $((first / 2)) ] || fail "the final copy fetched $final bytes, and the first $first: not only what changed"
 unavailable=$(awk -v t="$last_tick" -v a="$answered" 'BEGIN { printf "%d", a - t }')
 [ "$unavailable" -lt 30 ] || echo "NOTE: unavailable for ${unavailable} s here (overlayfs, no reflinks: each export and the final map read the whole disk)"
 echo
