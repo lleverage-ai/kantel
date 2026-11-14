@@ -403,12 +403,19 @@ function heldObjects(value: unknown): HostObjectHolding[] | undefined {
 			) {
 				return undefined;
 			}
+			// What a template snapshot was made on: dropped, not refused, when it isn't shaped as kantel-host sends it, as
+			// such a copy then restores nowhere else.
+			const cpu = cpuFingerprint(version.cpu);
 			versions.push({
 				version: version.version,
 				mapDigest: version.mapDigest,
 				allocatedBytes: version.allocatedBytes,
 				...(typeof version.pool === "string" && version.pool !== "" && version.pool.length <= MAX_TEXT
 					? { pool: version.pool }
+					: {}),
+				...(cpu === undefined ? {} : { cpu }),
+				...(typeof version.runtime === "string" && version.runtime !== "" && version.runtime.length <= MAX_RUNTIME
+					? { runtime: version.runtime }
 					: {}),
 			});
 		}

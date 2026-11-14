@@ -343,6 +343,13 @@ func TestTemplateSync(t *testing.T) {
 	default:
 		t.Fatal("disk.locate not asked")
 	}
+	// A control plane from before template snapshots were objects refuses the kind: none to fetch, not a failure.
+	h.callKantel = func(context.Context, string, any) (json.RawMessage, error) {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "Kantel keeps no copies of template objects yet"}
+	}
+	if err := h.fetchTemplate(context.Background(), "tsn_2"); !errors.Is(err, microvm.ErrNoPeerTemplate) {
+		t.Fatalf("an older control plane: %v", err)
+	}
 	if got := (peerStore{h}).Parts(proto.DiskKindTemplate); !slices.Equal(got, microvm.TemplateParts) {
 		t.Fatalf("parts %v", got)
 	}

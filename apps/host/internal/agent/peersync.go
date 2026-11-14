@@ -190,6 +190,11 @@ func (h *Host) fetchTemplate(ctx context.Context, snapshotID string) error {
 	}
 	ref := disksync.Ref{Kind: proto.DiskKindTemplate, ObjectID: snapshotID, Version: microvm.TemplateVersion}
 	at, err := h.locateDisk(ctx, ref)
+	// A control plane that keeps no copies of template snapshots (one from before them, or with templates off), or no
+	// such snapshot: none to fetch.
+	if pe := (*proto.Error)(nil); errors.As(err, &pe) && (pe.Code == proto.ErrUnsupported || pe.Code == proto.ErrNotFound) {
+		return microvm.ErrNoPeerTemplate
+	}
 	if err != nil {
 		return fmt.Errorf("disk.locate: %w", err)
 	}

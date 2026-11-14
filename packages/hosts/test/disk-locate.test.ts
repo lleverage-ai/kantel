@@ -148,7 +148,7 @@ describe("the disk store on the host link", () => {
 		const rootfs = [{ objectId: "b".repeat(64), versions: [{ version: "1", mapDigest: digest, allocatedBytes: 10 }] }];
 		host.send({
 			type: "heartbeat",
-			heartbeat: { capacity: { ...capacity, holdings: { rootfs, template: [{ objectId: "t", versions: [] }] } } },
+			heartbeat: { capacity: { ...capacity, holdings: { rootfs, snapshot: [{ objectId: "t", versions: [] }] } } },
 		});
 		await vi.waitFor(() =>
 			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), { objects: { rootfs } }),
@@ -161,6 +161,30 @@ describe("the disk store on the host link", () => {
 			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs: [] } }),
 		);
 		expect(recordHoldings).toHaveBeenCalledTimes(2);
+	});
+
+	it("passes each report's template snapshots on with what each was made on, dropping a fingerprint not shaped as one", async () => {
+		const recordHoldings = vi.fn(async () => undefined);
+		const { host, hostId } = await setup({ recordHoldings });
+		const digest = `sha256:${"a".repeat(64)}`;
+		const cpu = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+		const runtime = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=2";
+		const held = { version: "1", mapDigest: digest, allocatedBytes: 10, pool: "pool_a" };
+		const template = [
+			{ objectId: "tsn_1", versions: [{ ...held, cpu, runtime }] },
+			{ objectId: "tsn_2", versions: [{ ...held, cpu: { vendor: "AuthenticAMD" }, runtime: 7 }] },
+		];
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { template } } } });
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), {
+				objects: {
+					template: [
+						{ objectId: "tsn_1", versions: [{ ...held, cpu, runtime }] },
+						{ objectId: "tsn_2", versions: [held] },
+					],
+				},
+			}),
+		);
 	});
 
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {
