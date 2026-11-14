@@ -254,6 +254,7 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		}
 	}
 	defer m.tpl.snapshots.lock(p.SnapshotID)()
+	m.buildingTemplate(p.SnapshotID)
 	dir := m.templateSnapshotDir(p.SnapshotID)
 	if kept, err := m.readTemplateSnapshot(p.SnapshotID); err == nil && kept.KeyHash == p.KeyHash {
 		return kept.result(), nil
@@ -381,9 +382,8 @@ func (m *Manager) DeleteTemplate(id string) error {
 		return badTemplateSnapshot()
 	}
 	defer m.tpl.snapshots.lock(id)()
-	// A fetch of it under way finds its partials gone, and publishes nothing.
-	m.discardTemplateFetch(id)
-	return os.RemoveAll(m.templateSnapshotDir(id))
+	// A fetch of it under way publishes nothing from now on.
+	return m.forgetTemplate(id)
 }
 
 // templateOrigin is where a sandbox made from a template starts as a machine of size: its template snapshot when t

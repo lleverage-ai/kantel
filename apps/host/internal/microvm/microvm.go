@@ -447,8 +447,10 @@ type Manager struct {
 	holdMaps *mapHold
 	// fingerprints is the CPU and the runtime's files, as fingerprint.go reads them.
 	fingerprints fingerprints
-	// templateMaps are the template snapshots' block maps being made, and their manifests' digests (templatesync.go).
-	templateMaps templateMaps
+	// templateMaps are the template snapshots' block maps being made, and their manifests' digests; templateFetches
+	// keeps a fetch of one deleted from publishing it (templatesync.go).
+	templateMaps    templateMaps
+	templateFetches templateFetches
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),

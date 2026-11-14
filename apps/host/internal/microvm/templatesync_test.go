@@ -253,6 +253,28 @@ func TestATemplateSnapshotIsPublishedOnlyWhereItRestores(t *testing.T) {
 			}
 		})
 	}
+	// Deleted while it was fetched, and its partials made again by the fetch going on: nothing is published.
+	{
+		a, b := syncHost(t, "pool_a"), syncHost(t, "pool_a")
+		builtTemplate(t, a, "tsn_1")
+		if err := a.mapTemplate(context.Background(), "tsn_1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.DeleteTemplate("tsn_1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := fetchTemplateInto(t, a, b, "tsn_1"); err == nil || !strings.Contains(err.Error(), "deleted") {
+			t.Fatalf("published a deleted snapshot's fetch: %v", err)
+		}
+		if fileExists(b.templateSnapshotDir("tsn_1")) || fileExists(b.templateFetchDir("tsn_1")) {
+			t.Fatal("left it in place")
+		}
+		// Built again (asked for once more): its fetch publishes it.
+		b.buildingTemplate("tsn_1")
+		if err := fetchTemplateInto(t, a, b, "tsn_1"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// Deleted while it was fetched: its partials are gone, and nothing is published.
 	a, b := syncHost(t, "pool_a"), syncHost(t, "pool_a")
 	builtTemplate(t, a, "tsn_1")
@@ -354,5 +376,87 @@ func TestTemplateHoldingsJSON(t *testing.T) {
 	raw, _ = json.Marshal(proto.ObjectVersionHolding{Version: "1", MapDigest: "sha256:x"})
 	if strings.Contains(string(raw), "cpu") || strings.Contains(string(raw), "runtime") {
 		t.Fatalf("a root filesystem's holding: %s", raw)
+	}
+}
+
+// A template snapshot over a template's own root filesystem says that file's map digest, and is published only onto a
+// host whose copy of it has the same bytes: two hosts that each made the root filesystem of one key hold different
+// bytes under it.
+func TestATemplateSnapshotIsPublishedOnlyOverTheSameRootfs(t *testing.T) {
+	img := templateImage{BaseImage: "kantel/sandbox", BaseDigest: testDigest}
+	key := img.key()
+	put := func(t *testing.T, m *Manager, data []byte) {
+		t.Helper()
+		if err := os.MkdirAll(m.tpl.rootfs.dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(m.tpl.rootfs.path(key), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	over := func(t *testing.T, m *Manager) {
+		t.Helper()
+		kept := builtTemplate(t, m, "tsn_1")
+		rootfs := m.tpl.rootfs.path(key)
+		kept.Rootfs, kept.Runtime, kept.PortableRuntime = rootfs, m.runtimeFingerprint(rootfs), m.portableRuntime(rootfs)
+		kept.BuiltFrom = templateBuiltFrom{Image: templateImageKind, BaseImage: img.BaseImage, BaseDigest: img.BaseDigest, RootfsKey: key}
+		if err := keepTemplateSnapshot(m.templateSnapshotDir("tsn_1"), &kept); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := syncHost(t, "pool_a")
+	put(t, a, bytes.Repeat([]byte("A"), blockmap.BlockSize+1))
+	over(t, a)
+	if err := a.mapTemplate(context.Background(), "tsn_1"); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := a.ReadTemplateFile("tsn_1", TemplateVersion, templateRootfsDigestFile)
+	if err != nil || string(recorded) != a.rootfsMapDigest(key) {
+		t.Fatalf("its root filesystem's digest %q %v, the file's %q", recorded, err, a.rootfsMapDigest(key))
+	}
+	if len(a.TemplateHoldings()) != 1 {
+		t.Fatal("not listed")
+	}
+	for name, c := range map[string]struct {
+		data []byte
+		want string
+	}{
+		"other bytes under the key": {data: bytes.Repeat([]byte("B"), blockmap.BlockSize+1), want: "not the"},
+		"the same bytes":            {data: bytes.Repeat([]byte("A"), blockmap.BlockSize+1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := syncHost(t, "pool_a")
+			put(t, b, c.data)
+			err := fetchTemplateInto(t, a, b, "tsn_1")
+			if c.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, _ := b.readTemplateSnapshot("tsn_1"); got.Rootfs != b.tpl.rootfs.path(key) {
+					t.Fatalf("over %q", got.Rootfs)
+				}
+				// It says the digest on, for its own peers.
+				if raw, _ := b.ReadTemplateFile("tsn_1", TemplateVersion, templateRootfsDigestFile); string(raw) != string(recorded) {
+					t.Fatalf("passed on %q", raw)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.want) || fileExists(b.templateSnapshotDir("tsn_1")) {
+				t.Fatalf("want %q, got %v", c.want, err)
+			}
+		})
+	}
+	// One without the digest isn't published over a template's root filesystem.
+	b := syncHost(t, "pool_a")
+	put(t, b, bytes.Repeat([]byte("A"), blockmap.BlockSize+1))
+	if err := os.Remove(filepath.Join(a.templateSnapshotDir("tsn_1"), templateRootfsDigestFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchTemplateInto(t, a, b, "tsn_1"); err == nil || !strings.Contains(err.Error(), "doesn't say") {
+		t.Fatalf("published without its root filesystem's digest: %v", err)
+	}
+	// Nor listed by its holder then.
+	if len(a.TemplateHoldings()) != 0 {
+		t.Fatal("listed without its root filesystem's digest")
 	}
 }

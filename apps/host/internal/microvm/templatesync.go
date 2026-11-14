@@ -49,10 +49,20 @@ var TemplateParts = []string{TemplatePartDisk, TemplatePartMem}
 var templatePartFiles = map[string]string{TemplatePartDisk: fc.DiskFile, TemplatePartMem: "mem"}
 
 // TemplateFiles are a template snapshot's small files, which a fetch takes whole, by the names peers ask for them by,
-// and the files they are in its directory. Each but its drive counts is required.
-var TemplateFiles = []string{"state", "meta", driveCountFile, stickyCountFile}
+// and the files they are in its directory. Each but its drive counts is required, and its root filesystem's map
+// digest (templateRootfsDigestFile) for one over a template's own root filesystem.
+var TemplateFiles = []string{"state", "meta", driveCountFile, stickyCountFile, templateRootfsDigestFile}
 
-var templateSmallFiles = map[string]string{"state": "state", "meta": "meta.json", driveCountFile: driveCountFile, stickyCountFile: stickyCountFile}
+var templateSmallFiles = map[string]string{
+	"state": "state", "meta": "meta.json", driveCountFile: driveCountFile, stickyCountFile: stickyCountFile,
+	templateRootfsDigestFile: templateRootfsDigestFile,
+}
+
+// templateRootfsDigestFile, in the directory of a template snapshot over a template's own root filesystem
+// (images/templates/<key>.ext4), is that file's map digest, written before its parts are mapped: two hosts that each
+// made the root filesystem of a key hold different bytes under it, so a snapshot is published only over a copy with
+// that digest, whose bytes its memory was made over.
+const templateRootfsDigestFile = "rootfs-map"
 
 const (
 	templateFetchesDir   = "template-fetches"
@@ -151,7 +161,8 @@ func (m *Manager) OpenTemplatePart(id, version, part string, withMap bool) (*os.
 }
 
 // ReadTemplateFile reads one of a template snapshot's small files (TemplateFiles) for a peer: fs.ErrNotExist when the
-// host doesn't have it whole, or it has no such file (a snapshot without bundle drives has no count of them).
+// host doesn't have it whole, or it has no such file (a snapshot without bundle drives has no count of them, one over
+// the host's image no root filesystem digest).
 func (m *Manager) ReadTemplateFile(id, version, name string) ([]byte, error) {
 	file, ok := templateSmallFiles[name]
 	if !templateObject(id, version) || !ok || !m.templateWhole(id) {
@@ -217,6 +228,9 @@ func (m *Manager) PublishFetchedTemplate(id, version string, parts map[string]di
 	if cpu := m.CPU(); !kept.CPU.Same(cpu) {
 		return fmt.Errorf("the template snapshot was made on another CPU (%v, this host's %v)", kept.CPU, cpu)
 	}
+	if err := m.sameTemplateRootfs(kept, files[templateRootfsDigestFile]); err != nil {
+		return err
+	}
 	dir := m.templateFetchDir(id)
 	for _, part := range TemplateParts {
 		got, ok := parts[part]
@@ -266,6 +280,13 @@ func (m *Manager) PublishFetchedTemplate(id, version string, parts map[string]di
 	if err := os.MkdirAll(filepath.Join(m.cfg.Root, templateSnapshotsDir), 0o700); err != nil {
 		return err
 	}
+	// Not once it has been deleted: a fetch under way as its delete ran may have made its partials again since.
+	m.templateFetches.mu.Lock()
+	defer m.templateFetches.mu.Unlock()
+	if m.templateFetches.deleted[id] {
+		m.discardTemplateFetch(id)
+		return fmt.Errorf("template snapshot %s was deleted while it was fetched", id)
+	}
 	if err := os.Rename(dir, m.templateSnapshotDir(id)); err != nil {
 		// Built or fetched meanwhile: that one stays.
 		m.discardTemplateFetch(id)
@@ -275,6 +296,78 @@ func (m *Manager) PublishFetchedTemplate(id, version string, parts map[string]di
 		return err
 	}
 	return syncDir(filepath.Join(m.cfg.Root, templateSnapshotsDir))
+}
+
+// templateFetches is what keeps a template snapshot's fetch from publishing it once it has been deleted: the snapshots
+// this run of the host deleted, until one is built again, and the lock a publish's rename and a delete share. A fetch
+// can't be stopped from here, and one already past its partials' checks makes them again as it goes on; its publish
+// finds the snapshot deleted.
+type templateFetches struct {
+	mu      sync.Mutex
+	deleted map[string]bool
+}
+
+// forgetTemplate marks a template snapshot deleted, then removes its fetch and its directory: a publish either renamed
+// it into place before, and it is removed here, or finds it deleted.
+func (m *Manager) forgetTemplate(id string) error {
+	f := &m.templateFetches
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleted == nil {
+		f.deleted = map[string]bool{}
+	}
+	f.deleted[id] = true
+	m.discardTemplateFetch(id)
+	return os.RemoveAll(m.templateSnapshotDir(id))
+}
+
+// buildingTemplate lets a template snapshot deleted before be fetched and published again: a build of it was asked
+// for.
+func (m *Manager) buildingTemplate(id string) {
+	f := &m.templateFetches
+	f.mu.Lock()
+	delete(f.deleted, id)
+	f.mu.Unlock()
+}
+
+// sameTemplateRootfs checks that a fetched template snapshot over a template's own root filesystem (its RootfsKey) has
+// that root filesystem's bytes here, as its holder's map digest of it (digest, templateRootfsDigestFile) says: this
+// host's copy is mapped first when it has no map yet. One over a host image needs no such check: its portable runtime
+// names the image's version and digest.
+func (m *Manager) sameTemplateRootfs(k templateSnapshotMeta, digest []byte) error {
+	key := k.BuiltFrom.RootfsKey
+	if key == "" {
+		return nil
+	}
+	want := strings.TrimSpace(string(digest))
+	if !validKey(key) || !strings.HasPrefix(want, "sha256:") {
+		return errors.New("the template snapshot doesn't say which root filesystem it was made over")
+	}
+	if !fileExists(m.tpl.rootfs.path(key)) {
+		return fmt.Errorf("the template's root filesystem %s isn't on this host", key)
+	}
+	have, err := m.templateRootfsDigest(m.background(), key)
+	if err != nil {
+		return fmt.Errorf("the template's root filesystem %s couldn't be mapped: %w", key, err)
+	}
+	if have != want {
+		return fmt.Errorf("the template's root filesystem %s here is %s, not the %s the snapshot was made over", key, have, want)
+	}
+	return nil
+}
+
+// templateRootfsDigest is a template root filesystem's map digest, mapping it first when it has no map yet.
+func (m *Manager) templateRootfsDigest(ctx context.Context, key string) (string, error) {
+	if digest := m.rootfsMapDigest(key); digest != "" {
+		return digest, nil
+	}
+	if err := m.mapRootfs(ctx, key); err != nil {
+		return "", err
+	}
+	if digest := m.rootfsMapDigest(key); digest != "" {
+		return digest, nil
+	}
+	return "", errors.New("it has no map")
 }
 
 // localTemplateRootfs is the root filesystem on this host that a fetched template snapshot restores over: the
@@ -414,11 +507,14 @@ func (m *Manager) TemplateHoldings() []proto.ObjectHolding {
 		if err != nil || kept.CPU == nil || kept.PortableRuntime == "" {
 			continue
 		}
+		dir := m.templateSnapshotDir(id)
+		if kept.BuiltFrom.RootfsKey != "" && !fileExists(filepath.Join(dir, templateRootfsDigestFile)) {
+			continue
+		}
 		digest := m.templateManifestDigest(id)
 		if digest == "" {
 			continue
 		}
-		dir := m.templateSnapshotDir(id)
 		out = append(out, proto.ObjectHolding{ObjectID: id, Versions: []proto.ObjectVersionHolding{{
 			Version: TemplateVersion, MapDigest: digest, Pool: stampedPoolIn(dir),
 			AllocatedBytes: diskUsage(filepath.Join(dir, fc.DiskFile)) + diskUsage(filepath.Join(dir, "mem")),
@@ -490,6 +586,25 @@ func (m *Manager) mapTemplate(ctx context.Context, id string) error {
 		return nil
 	}
 	dir := m.templateSnapshotDir(id)
+	// The digest of the root filesystem it was made over first, which its peers check theirs against: it is listed in
+	// the host's holdings only once its parts are mapped too.
+	if key := kept.BuiltFrom.RootfsKey; key != "" && !fileExists(filepath.Join(dir, templateRootfsDigestFile)) {
+		digest, err := m.templateRootfsDigest(ctx, key)
+		if err != nil {
+			return fmt.Errorf("its root filesystem %s: %w", key, err)
+		}
+		lock := m.tpl.snapshots.of(id)
+		lock.RLock()
+		if !m.templateWhole(id) {
+			lock.RUnlock()
+			return fs.ErrNotExist
+		}
+		err = fsutil.WriteFileDurably(filepath.Join(dir, templateRootfsDigestFile), []byte(digest), 0o600)
+		lock.RUnlock()
+		if err != nil {
+			return err
+		}
+	}
 	for _, part := range TemplateParts {
 		mapPath := filepath.Join(dir, part+".map")
 		if fileExists(mapPath) {
