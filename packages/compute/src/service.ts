@@ -158,6 +158,7 @@ import {
 } from "./not-running.ts";
 import { createPoolService, defaultPoolOf, type PoolRunners, poolOwnerOf } from "./pools.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
+import { COPY_RETRY_MS, type CopyHost, copyTarget, keepingCopies, SNAPSHOT_COPIES } from "./snapshot-copies.ts";
 import type {
 	ComputeStore,
 	OOMPending,
@@ -894,6 +895,8 @@ const BASE_ROUTES = [
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** How often the sweep looks for automatic snapshots past their `expiresAt` to delete (`expireSnapshots`). */
 export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
+/** How often the sweep counts every saved snapshot's copies, and asks for those missing (`keepEverySnapshotsCopies`). */
+export const SNAPSHOT_COPIES_EVERY_MS = 5 * 60_000;
 /**
  * How long after it starts a process first expires snapshots (`snapshotExpiry`): longer than any create or fork an older
  * version's process, replaced by this one, could still have had in flight.
@@ -2137,6 +2140,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	let claimsSweptAt = Number.NEGATIVE_INFINITY;
 	/** When `expireSnapshots` last began a pass. */
 	let snapshotsExpiredAt = Number.NEGATIVE_INFINITY;
+	/** When `keepEverySnapshotsCopies` last began a pass. */
+	let copiesKeptAt = Number.NEGATIVE_INFINITY;
 	/** When this process may first expire snapshots (`snapshotExpiryDelayMs` after it started). */
 	const expiryStartsAt = now() + (options.snapshotExpiryDelayMs ?? SNAPSHOT_EXPIRY_START_DELAY_MS);
 	/** This process, as the owner of the expiry marks it makes (`markExpiring`). */
@@ -2921,6 +2926,143 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 	}
 
+	/**
+	 * Has `hostId` fetch a saved snapshot's disk (`ref`) from the hosts in its pool that hold it, as its own `disk.locate`
+	 * would find them; its memory follows where it restores there. The host is recorded fetching it first, so a delete of
+	 * the snapshot meanwhile reaches it at once, as one before its first report of the copy does; kept when the call fails,
+	 * as the host may have started it anyway. A fast path only: whatever it misses, the host's report of a copy of a
+	 * snapshot the catalogue no longer has gets it deleted (`DiskHolders.recordHoldings`), and the host asks before it
+	 * publishes one. `conflict` when no other host there holds it.
+	 */
+	async function sendSnapshotFetch(hostId: string, ref: string): Promise<void> {
+		if (backend.fetchDisk === undefined) {
+			throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
+		}
+		const objectId = refId(ref);
+		const request = { kind: "snapshot", objectId, version: "disk" };
+		const location = await diskHolders.locate(hostId, request);
+		if (location.holders.length === 0) {
+			throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
+		}
+		await diskHolders.recordSnapshotFetch(objectId, "disk", hostId, ref);
+		await backend.fetchDisk(hostId, { ...request, ...location });
+	}
+
+	/**
+	 * Every host as saved snapshots' copies are counted and placed (`CopyHost`): its record's state, pool, owner and
+	 * fingerprints, and what the backend says of its features, connection and free disk; its mesh address only while its
+	 * pool syncs (`hostMeshAddress`).
+	 */
+	async function copyHosts(): Promise<Map<string, CopyHost>> {
+		const [records, capabilities] = await Promise.all([ensureHosts(), backend.capabilities()]);
+		const reported = new Map(capabilities.hosts.map((host) => [host.id, host]));
+		const hosts = new Map<string, CopyHost>();
+		for (const record of records) {
+			const host = reported.get(record.id);
+			const meshAddress = hostMeshAddress.get(record.id);
+			hosts.set(record.id, {
+				id: record.id,
+				state: record.state,
+				...(record.poolId === undefined ? {} : { poolId: record.poolId }),
+				...(record.accountId === undefined ? {} : { accountId: record.accountId }),
+				...(record.arch === undefined ? {} : { arch: record.arch }),
+				...(record.lastSeenAt === undefined ? {} : { lastSeenAt: record.lastSeenAt }),
+				...(record.cpuFingerprint === undefined ? {} : { cpuFingerprint: record.cpuFingerprint }),
+				...(record.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: record.runtimeFingerprints }),
+				...(meshAddress === undefined ? {} : { meshAddress }),
+				// One the backend no longer has isn't connected, whatever its record says.
+				connected: host !== undefined && host.connected !== false,
+				...(host?.features === undefined ? {} : { features: host.features }),
+				...(host?.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
+			});
+		}
+		return hosts;
+	}
+
+	/**
+	 * Keeps a saved snapshot on `SNAPSHOT_COPIES` hosts of its pool (`snapshot-copies.ts`): where it has fewer, the host
+	 * `copyTarget` picks is told to fetch it (`sendSnapshotFetch`). Only a saved snapshot named by its ID alone (an older
+	 * ref's host-local ID may name another snapshot on the host that would fetch it), where snapshots are synced, in an
+	 * account with `snapshotCopies` on. One ask for each snapshot every `COPY_RETRY_MS`, of every gateway, unless the last
+	 * was answered (its host holds the copy): written over its record as it was read (`StoredSnapshot.copying`), which the
+	 * next pick passes that host over by while it hasn't it.
+	 * `read` is a pass's one read of what it needs for every snapshot; absent, it is read for this one.
+	 */
+	async function keepSnapshotCopies(
+		snapshot: StoredSnapshot,
+		read?: {
+			readonly hosts: ReadonlyMap<string, CopyHost>;
+			readonly holders: ReadonlyMap<string, readonly StoredDiskHolder[]>;
+			readonly accounts: Map<string, Promise<StoredAccount | undefined>>;
+		},
+	): Promise<void> {
+		const { ref } = snapshot;
+		if (backend.fetchDisk === undefined || !diskHolders.syncsSnapshots) return;
+		if (snapshot.kind !== "saved" || snapshot.state !== "ready" || ref === undefined || refHost(ref) !== undefined)
+			return;
+		let account = read?.accounts.get(snapshot.accountId);
+		if (account === undefined) {
+			account = store.accounts.get(snapshot.accountId);
+			read?.accounts.set(snapshot.accountId, account);
+		}
+		const owner = await account;
+		if (owner === undefined || owner.closedAt !== undefined || owner.snapshotCopies === false) return;
+		const holders = (
+			read === undefined
+				? ((await diskHolders.holdersOf("snapshot", ref)).get("disk") ?? [])
+				: (read.holders.get(ref) ?? [])
+		).filter((holder) => holder.ref === ref && holder.version === "disk");
+		// Nothing to copy from until its host has reported it.
+		if (!holders.some((holder) => holder.state === "held")) return;
+		const hosts = read?.hosts ?? (await copyHosts());
+		const taken = await hostOfSnapshot(snapshot);
+		const poolId = snapshot.poolId ?? (taken === undefined ? undefined : hosts.get(taken)?.poolId);
+		if (poolId === undefined) return;
+		const at = now();
+		if (keepingCopies(holders, hosts, poolId, at).length >= SNAPSHOT_COPIES) return;
+		const target = copyTarget(snapshot, holders, hosts, poolId, at);
+		if (target === undefined) return;
+		// An ask the host it named has answered (it holds the copy) holds back no other.
+		const held = new Set(holders.filter((holder) => holder.state === "held").map((holder) => holder.hostId));
+		const claimed = await store.snapshots.update(snapshot.id, (latest) =>
+			latest.state !== "ready" ||
+			(latest.copying !== undefined && latest.copying.at > at - COPY_RETRY_MS && !held.has(latest.copying.hostId))
+				? undefined
+				: { ...latest, copying: { hostId: target, at } },
+		);
+		if (claimed === undefined) return;
+		// One that fails is asked of another host on a later pass: this one is passed over meanwhile.
+		await sendSnapshotFetch(target, ref).catch(() => undefined);
+	}
+
+	/** Keeps the copies of each saved snapshot with `ref` (`keepSnapshotCopies`): a host holds its disk now. */
+	async function keepCopiesOf(ref: string): Promise<void> {
+		for (const snapshot of await store.snapshots.list({ ref })) await keepSnapshotCopies(snapshot);
+	}
+
+	/**
+	 * Keeps every saved snapshot's copies (`keepSnapshotCopies`), each in turn, over one read of the hosts, the holders of
+	 * saved snapshots' disks and the accounts: run by the sweep every `SNAPSHOT_COPIES_EVERY_MS`, and on a host's
+	 * revocation, so a copy lost with a host revoked or away is made again from the one left.
+	 */
+	async function keepEverySnapshotsCopies(): Promise<void> {
+		if (backend.fetchDisk === undefined || !diskHolders.syncsSnapshots) return;
+		const saved = (await store.snapshots.list({ kind: "saved", state: "ready" })).filter(
+			(snapshot) => snapshot.ref !== undefined && refHost(snapshot.ref) === undefined,
+		);
+		if (saved.length === 0) return;
+		const holders = new Map<string, StoredDiskHolder[]>();
+		for (const holder of await store.diskHolders.list()) {
+			if (holder.kind !== "snapshot" || holder.version !== "disk" || holder.ref === undefined) continue;
+			holders.set(holder.ref, [...(holders.get(holder.ref) ?? []), holder]);
+		}
+		const read = { hosts: await copyHosts(), holders, accounts: new Map<string, Promise<StoredAccount | undefined>>() };
+		for (const snapshot of saved) {
+			if (closing) return;
+			await keepSnapshotCopies(snapshot, read).catch(() => undefined);
+		}
+	}
+
 	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
 	const templates = createTemplateService({
 		store,
@@ -2979,6 +3121,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 		// A copy of a saved snapshot the catalogue no longer has, whatever became of its record: deleted from its host.
 		deleteSnapshotCopy: (hostId, objectId) => backend.deleteSnapshot(`${hostId}/${objectId}`),
+		// A save its host has mapped, or a copy one has fetched: its copies are counted now, so a second is asked for at once.
+		snapshotHeld: (ref) => keepGoing(keepCopiesOf(ref)),
 	});
 
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
@@ -3622,6 +3766,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const fetch =
 			diskHolders.syncsSnapshots && poolId !== undefined && refHost(ref) === undefined && serving.length > 0;
 		return { holders, memory, fetch, ...(fetch && architectures.length > 0 ? { architectures } : {}) };
+	}
+
+	/**
+	 * The hosts a saved snapshot is on, for its details (`Snapshot.hosts`): the one it was taken on, then each with a copy
+	 * of its disk, held or being fetched (the catalogue's `snapshot` holders of its ref), each with whether a sandbox made
+	 * from it there restores its memory (`snapshotCopiesOf`'s rule). A revoked host holds nothing. Each is named only to a
+	 * caller who may be told of it (`mayKnowHost`). Undefined for an automatic snapshot, or one not yet ready.
+	 */
+	async function snapshotHostsView(
+		principal: Principal,
+		snapshot: StoredSnapshot,
+	): Promise<computeSchema.SnapshotHost[] | undefined> {
+		const { ref } = snapshot;
+		if (snapshot.kind !== "saved" || ref === undefined) return undefined;
+		const origin = await hostOfSnapshot(snapshot);
+		const byVersion = await diskHolders.holdersOf("snapshot", refId(ref));
+		const of = (version: string) => (byVersion.get(version) ?? []).filter((holder) => holder.ref === ref);
+		const withMemory = new Set(
+			of("memory")
+				.filter((holder) => holder.state === "held")
+				.map((holder) => holder.hostId),
+		);
+		const entries: { hostId: string; state: "held" | "fetching"; memory: boolean }[] =
+			origin === undefined ? [] : [{ hostId: origin, state: "held", memory: snapshot.memory }];
+		for (const holder of of("disk")) {
+			if (holder.state === "deleting" || entries.some((entry) => entry.hostId === holder.hostId)) continue;
+			const held = holder.state === "held";
+			entries.push({
+				hostId: holder.hostId,
+				state: holder.state,
+				memory: snapshot.memory && held && withMemory.has(holder.hostId),
+			});
+		}
+		const hosts = new Map((await store.hosts.list()).map((host) => [host.id, host]));
+		return entries.flatMap(({ hostId, state, memory }) => {
+			const host = hosts.get(hostId);
+			if (host?.state === "revoked") return [];
+			const named = host !== undefined && mayKnowHost(principal, host, snapshot.accountId);
+			return [{ ...(named ? { hostId: host.id, hostName: host.name } : {}), state, memory }];
+		});
 	}
 
 	/**
@@ -4800,6 +4984,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		role,
 		defaultVisibility: account.defaultVisibility,
 		personalTokens: account.personalTokens ?? "allowed",
+		snapshotCopies: account.snapshotCopies !== false,
 		createdAt: account.createdAt,
 	});
 
@@ -7324,6 +7509,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
 		await strandOn(host.id);
+		// Its copies of saved snapshots no longer count: each is made again on another host from the one left.
+		keepGoing(keepEverySnapshotsCopies());
 		return hostView(revoked ?? { ...host, state: "revoked" });
 	}
 
@@ -8549,8 +8736,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(body.personalTokens === undefined && current.personalTokens === undefined
 					? {}
 					: { personalTokens: body.personalTokens ?? current.personalTokens }),
+				...(body.snapshotCopies === undefined && current.snapshotCopies === undefined
+					? {}
+					: { snapshotCopies: body.snapshotCopies ?? current.snapshotCopies }),
 			}));
 			if (updated === undefined) throw notFound("account");
+			// Turned on: its saved snapshots get their second copies now, not on the sweep's next pass.
+			if (body.snapshotCopies === true && account.snapshotCopies === false) keepGoing(keepEverySnapshotsCopies());
 			return accountView(updated, role);
 		},
 
@@ -10344,7 +10536,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getSnapshot: async (principal, { params }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
 			const uses = (await usesIn(snapshot.accountId)).get(snapshot.id) ?? 0;
-			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) }, uses);
+			const memory = await holdsMemory(snapshot);
+			const hosts = await snapshotHostsView(principal, { ...snapshot, memory });
+			return { ...snapshotView({ ...snapshot, memory }, uses), ...(hosts === undefined ? {} : { hosts }) };
 		},
 
 		listSnapshotFiles: async (principal, { params, query }) => {
@@ -11516,19 +11710,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!held.some((holder) => holder.ref === ref && holder.state === "held" && holder.hostId !== host.id)) {
 				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 			}
-			// Its disk, where it is for this host, as the host's own disk.locate would get it: the host fetches its memory
-			// after, if it restores it.
-			const request = { kind: "snapshot", objectId, version: "disk" };
-			const location = await diskHolders.locate(host.id, request);
-			if (location.holders.length === 0) {
-				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
-			}
-			// Fetching there before it is told, so a delete of the snapshot meanwhile reaches the host at once, as one
-			// before its first report of the copy does; kept when the call fails, as the host may have started it anyway.
-			// A fast path only: whatever it misses, the host's report of a copy of a snapshot the catalogue no longer has
-			// gets it deleted (`DiskHolders.recordHoldings`), and the host asks before it publishes one.
-			await diskHolders.recordSnapshotFetch(objectId, "disk", host.id, ref);
-			await backend.fetchDisk(host.id, { ...request, ...location });
+			await sendSnapshotFetch(host.id, ref);
 			return undefined;
 		},
 
@@ -12380,6 +12562,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async sweep() {
 			const at = now();
 			keepGoing(sweepStickyDisks().catch(() => undefined));
+			if (at - copiesKeptAt >= SNAPSHOT_COPIES_EVERY_MS) {
+				copiesKeptAt = at;
+				keepGoing(keepEverySnapshotsCopies());
+			}
 			// The GitHub runner broker's pass, when one is due: in the background, as it calls hosts and GitHub.
 			if (runnerSettings !== undefined && at >= runnersDueAt) {
 				runnersDueAt = at + IDLE_RUNNER_PASS_MS;

@@ -331,6 +331,11 @@ export function createDiskHolders(options: {
 	 * that still lists it asks again a grace later.
 	 */
 	readonly deleteSnapshotCopy?: (hostId: string, objectId: string) => Promise<void>;
+	/**
+	 * A host's report has it hold a saved snapshot's disk it didn't (its save mapped, or a copy fetched), by the ref the
+	 * holder was recorded with: told once the report is recorded, so its copies can be counted (`snapshot-copies.ts`).
+	 */
+	readonly snapshotHeld?: (ref: string) => void;
 }): DiskHolders {
 	const { store, now, sealer } = options;
 	/** Saved snapshots are synced where there is a grant key: sticky disks or templates on. */
@@ -800,6 +805,8 @@ export function createDiskHolders(options: {
 			const release: StoredDiskHolder[] = [];
 			/** Saved snapshots the host holds that the catalogue has no record of, to delete from it. */
 			const orphans = new Set<string>();
+			/** The refs of saved snapshots whose disk the host holds now and didn't. */
+			const nowHeld = new Set<string>();
 			// Let go: what it no longer reports, unless it is still fetching it, or its holder may be newer than the report.
 			const letGo = (holders: readonly StoredDiskHolder[], reported: ReadonlySet<string>) => {
 				for (const holder of holders) {
@@ -1016,6 +1023,7 @@ export function createDiskHolders(options: {
 						continue;
 					}
 					if (reporter.accountId !== undefined && reporter.accountId !== found.record.accountId) continue;
+					if (version === "disk" && holder?.state !== "held") nowHeld.add(found.ref);
 					if (holder !== undefined) release.push(holder);
 					hold.push({
 						id: diskHolderId("snapshot", objectId, version, hostId),
@@ -1036,6 +1044,7 @@ export function createDiskHolders(options: {
 			}
 			if (hold.length > 0 || release.length > 0) await store.diskHolderWrites.reconcile(hostId, at, { hold, release });
 			for (const objectId of orphans) await options.deleteSnapshotCopy?.(hostId, objectId).catch(() => undefined);
+			for (const ref of nowHeld) options.snapshotHeld?.(ref);
 		},
 		async recordSnapshotFetch(objectId, version, hostId, ref) {
 			const id = diskHolderId("snapshot", objectId, version, hostId);

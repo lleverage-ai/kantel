@@ -338,6 +338,10 @@ function choice<T extends string>(value: string | undefined, allowed: readonly T
 	return found;
 }
 
+/** `on` or `off` as a flag gives it, as true or false; undefined when it isn't given. */
+const onOff = (value: "on" | "off" | undefined): boolean | undefined =>
+	value === undefined ? undefined : value === "on";
+
 /** `--size`: one of the API's size names, which the hosts may offer fewer of (`kantel sizes`). */
 function sizeOf(value: string | undefined): SandboxSizeName | undefined {
 	if (value === undefined) return undefined;
@@ -539,6 +543,14 @@ function describeAccount(account: Account): string {
 		["your role", account.role],
 		["new sandboxes", account.defaultVisibility === "organisation" ? "shared with the organisation" : "private"],
 		["personal tokens", account.kind === "organisation" ? (account.personalTokens ?? "allowed") : undefined],
+		[
+			"snapshot copies",
+			account.snapshotCopies === undefined
+				? undefined
+				: account.snapshotCopies
+					? "on, two hosts of the pool each"
+					: "off",
+		],
 		["created", timestamp(account.createdAt)],
 	]);
 }
@@ -795,6 +807,19 @@ function issuedKey(issued: IssuedApiKey): string {
 }
 
 /** A snapshot, for `kantel snapshot info`: what it holds, and when its state was taken and saved. */
+/**
+ * The hosts a saved snapshot is on, by name, each being fetched or restoring its memory said so: "a shared host" for one
+ * the caller may not be told of.
+ */
+function snapshotHostsText(hosts: NonNullable<Snapshot["hosts"]>): string {
+	return hosts
+		.map((host) => {
+			const name = host.hostName ?? host.hostId ?? "a shared host";
+			return host.state === "fetching" ? `${name} (fetching)` : host.memory ? `${name} (with memory)` : name;
+		})
+		.join(", ");
+}
+
 function describeSnapshot(snapshot: Snapshot): string {
 	const labels = Object.entries(snapshot.labels ?? {}).map(([key, value]) => `${key}=${value}`);
 	const resources = snapshot.resources;
@@ -817,6 +842,7 @@ function describeSnapshot(snapshot: Snapshot): string {
 		["base", base === undefined ? undefined : `${base.version ?? base.image}${base.outdated ? " (outdated)" : ""}`],
 		["size", snapshot.sizeBytes === undefined ? undefined : bytes(snapshot.sizeBytes)],
 		["uses", snapshot.uses === undefined ? undefined : String(snapshot.uses)],
+		["hosts", snapshot.hosts === undefined ? undefined : snapshotHostsText(snapshot.hosts)],
 		// The state's own time, where a save copied an older snapshot; else it is the save's.
 		[
 			"taken",
@@ -3859,6 +3885,11 @@ const SECTIONS: readonly Section[] = [
 						value: "<allowed|blocked>",
 						description: "blocked: members' personal tokens can't act in it (an organisation's)",
 					},
+					"snapshot-copies": {
+						type: "string",
+						value: "<on|off>",
+						description: "on: keep each saved snapshot on two hosts of its pool (the default)",
+					},
 				},
 				details: "It changes the account commands act in (--account or kantel org use); it needs admin or owner.",
 				async run(ctx) {
@@ -3867,9 +3898,10 @@ const SECTIONS: readonly Section[] = [
 						name: ctx.string("name"),
 						defaultVisibility: choice(ctx.string("visibility"), VISIBILITIES, "--visibility"),
 						personalTokens: choice(ctx.string("personal-tokens"), ["allowed", "blocked"] as const, "--personal-tokens"),
+						snapshotCopies: onOff(choice(ctx.string("snapshot-copies"), ["on", "off"] as const, "--snapshot-copies")),
 					};
 					if (Object.values(body).every((value) => value === undefined)) {
-						throw new UsageError("say what to change: --name, --visibility or --personal-tokens");
+						throw new UsageError("say what to change: --name, --visibility, --personal-tokens or --snapshot-copies");
 					}
 					const account = await client.updateAccount(await accountIdOf(ctx, client), body);
 					ctx.emit(account, () => describeAccount(account));

@@ -1166,6 +1166,150 @@ describe("disk holders", () => {
 		expect(deleted).toEqual([`${STUB_HOST_ID}/${id}`, `host_b/${id}`, `host_g/${id}`]);
 	});
 
+	it("keeps a saved snapshot on a second host of its pool, again from the one left when a holder is revoked or away a day", async () => {
+		const fetches: string[] = [];
+		const deleted: string[] = [];
+		const copies = { features: ["disk-sync", "snapshot-sync"] };
+		const DAY = 24 * 3_600_000;
+		// What the hosts say of themselves, changed as the test goes: the roomiest takes the first copy; d is offline and e
+		// revoked, so neither is asked, nor c in another pool, nor f, another account's.
+		const facts: { [hostId: string]: Partial<BackendHost> } = {
+			host_b: { ...copies, freeDiskGb: 500 },
+			host_g: { ...copies, freeDiskGb: 300 },
+			host_d: { ...copies, freeDiskGb: 900 },
+			host_e: { ...copies, freeDiskGb: 900 },
+			host_c: { ...copies, freeDiskGb: 900 },
+			host_f: { ...copies, freeDiskGb: 900 },
+		};
+		const tom = setUp({
+			fetchDisk: async (hostId, fetch) => {
+				if (fetch.kind === "snapshot") fetches.push(`${hostId} ${fetch.objectId}`);
+			},
+			deletedSnapshot: (ref) => deleted.push(ref),
+			facts,
+		});
+		await tom.pool();
+		const id = "ssnap_0123456789abcdef0123456789abcdef";
+		const snap = await tom.savedAlone(id);
+		const report = async (hostId: string, objectId = id, copy = false) => {
+			tom.clock.now += 1;
+			await tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: { snapshot: [{ objectId, versions: [{ version: "disk", mapDigest: DIGEST, copy }] }] },
+			});
+			await tom.api.service.idle();
+		};
+		/** The sweep's pass over every saved snapshot's copies, once its time has come. */
+		const pass = async () => {
+			tom.clock.now += 5 * 60_000;
+			await tom.api.service.sweep();
+			await tom.api.service.idle();
+		};
+		const hostsOf = async () => (await tom.getSnapshot(snap.id)).hosts?.map((host) => [host.hostId, host.state]);
+		// Nothing is asked before its host reports it: there is nothing to copy from.
+		await pass();
+		expect(fetches).toEqual([]);
+		// Its host reports it: host_b is asked for a copy at once, and is fetching it.
+		await report(STUB_HOST_ID);
+		expect(fetches).toEqual([`host_b ${id}`]);
+		expect(await tom.api.store.diskHolders.get(`snapshot:${id}:disk:host_b`)).toMatchObject({ state: "fetching" });
+		expect((await tom.getSnapshot(snap.id)).hosts).toEqual([
+			{ hostId: STUB_HOST_ID, hostName: STUB_HOST_ID, state: "held", memory: false },
+			{ hostId: "host_b", hostName: "host_b", state: "fetching", memory: false },
+		]);
+		// A pass while it fetches asks nothing more.
+		await pass();
+		expect(fetches).toEqual([`host_b ${id}`]);
+		// Held there: two copies, so a pass asks nothing more, and the copy, which has a record, is never deleted.
+		await report("host_b", id, true);
+		await pass();
+		expect(fetches).toEqual([`host_b ${id}`]);
+		expect(deleted).toEqual([]);
+		expect(await hostsOf()).toEqual([
+			[STUB_HOST_ID, "held"],
+			["host_b", "held"],
+		]);
+		// host_b revoked: copied again from the stub's host, onto host_g, at once.
+		await tom.revokeHost("host_b");
+		await tom.api.service.idle();
+		expect(fetches).toEqual([`host_b ${id}`, `host_g ${id}`]);
+		await report("host_g", id, true);
+		expect(await hostsOf()).toEqual([
+			[STUB_HOST_ID, "held"],
+			["host_g", "held"],
+		]);
+		// host_g away for less than a day still keeps its copy.
+		facts.host_g = { ...copies, connected: false, lastSeenAt: tom.clock.now };
+		await pass();
+		tom.clock.now += DAY - 20 * 60_000;
+		await pass();
+		expect(fetches).toEqual([`host_b ${id}`, `host_g ${id}`]);
+		// Away for a day: copied again, once a host that can take it is back (d), with nowhere to put it until then.
+		tom.clock.now += 30 * 60_000;
+		await pass();
+		expect(fetches).toEqual([`host_b ${id}`, `host_g ${id}`]);
+		facts.host_d = { ...copies, freeDiskGb: 900, connected: true };
+		await pass();
+		expect(fetches).toEqual([`host_b ${id}`, `host_g ${id}`, `host_d ${id}`]);
+		// With the account's setting off, a new save is kept on its own host alone.
+		const account = (await tom.listAccounts()).items[0]?.id ?? "";
+		expect((await tom.getAccount(account)).snapshotCopies).toBe(true);
+		expect((await tom.updateAccount(account, { snapshotCopies: false })).snapshotCopies).toBe(false);
+		const other = "ssnap_fedcba9876543210fedcba9876543210";
+		const second = await tom.savedAlone(other);
+		await report(STUB_HOST_ID, other);
+		await pass();
+		expect(fetches).toHaveLength(3);
+		// Turned on again: it gets its copy.
+		await tom.updateAccount(account, { snapshotCopies: true });
+		await tom.api.service.idle();
+		expect(fetches.at(-1)).toBe(`host_d ${other}`);
+		// Deleted: its bytes and each copy there is go with it.
+		await tom.deleteSnapshot(second.id);
+		expect(deleted).toEqual([`${STUB_HOST_ID}/${other}`, `host_d/${other}`]);
+	});
+
+	for (const [name, kind] of [
+		["SQLite", nodeSqliteDatabase],
+		["Postgres", pgliteDatabase],
+	] as const) {
+		it(`asks one host for a missing copy however many gateways find it missing at once, in ${name}`, {
+			timeout: kind.testTimeoutMs,
+		}, async () => {
+			const store = await sqlStore(kind);
+			const fetches: string[] = [];
+			const copies = { features: ["disk-sync", "snapshot-sync"] };
+			const gateway = () =>
+				setUp({
+					store,
+					secretsKey: SECRETS_KEY,
+					fetchDisk: async (hostId, fetch) => {
+						if (fetch.kind === "snapshot") fetches.push(hostId);
+					},
+					facts: { host_b: { ...copies, freeDiskGb: 500 }, host_g: { ...copies, freeDiskGb: 300 } },
+				});
+			const [one, two] = [gateway(), gateway()];
+			await one.pool();
+			await two.pool();
+			const id = "ssnap_0123456789abcdef0123456789abcdef";
+			await one.savedAlone(id);
+			// Reported with the account's copies off, so no gateway asks for one yet; then on, as another gateway wrote it.
+			const account = (await one.listAccounts()).items[0]?.id ?? "";
+			await store.accounts.update(account, (current) => ({ ...current, snapshotCopies: false }));
+			await one.api.service.recordHoldings(STUB_HOST_ID, one.clock.now, {
+				objects: { snapshot: [{ objectId: id, versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+			});
+			await one.api.service.idle();
+			await store.accounts.update(account, (current) => ({ ...current, snapshotCopies: true }));
+			// Both gateways' sweeps, their passes over copies due, find it with one copy at once: one asks, and the other's
+			// claim finds it asked.
+			for (const each of [one, two]) each.clock.now += 5 * 60_000;
+			await Promise.all([one.api.service.sweep(), two.api.service.sweep()]);
+			await Promise.all([one.api.service.idle(), two.api.service.idle()]);
+			expect(fetches).toEqual(["host_b"]);
+			expect((await store.snapshots.list({ ref: id }))[0]?.copying).toEqual({ hostId: "host_b", at: one.clock.now });
+		});
+	}
+
 	it("makes a failed create from a saved snapshot again on its copies, and keeps it to its pool when its first host moves", async () => {
 		const specs: SandboxSpec[] = [];
 		let refuse = false;

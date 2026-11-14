@@ -141,6 +141,18 @@ func forgetAccount(c *cli.Context, accountID string) error {
 	return nil
 }
 
+// snapshotCopiesText is whether an account keeps each saved snapshot on two hosts: empty from a gateway before it.
+func snapshotCopiesText(on *bool) string {
+	switch {
+	case on == nil:
+		return ""
+	case *on:
+		return "on, two hosts of the pool each"
+	default:
+		return "off"
+	}
+}
+
 func describeAccount(c *cli.Context, a api.Account) string {
 	shared := "private"
 	if a.DefaultVisibility == "organisation" {
@@ -160,6 +172,7 @@ func describeAccount(c *cli.Context, a api.Account) string {
 		{"your role", string(a.Role)},
 		{"new sandboxes", shared},
 		{"personal tokens", tokens},
+		{"snapshot copies", snapshotCopiesText(a.SnapshotCopies)},
 		{"created", cli.Timestamp(a.CreatedAt)},
 	})
 }
@@ -361,12 +374,14 @@ func accounts() cli.Section {
 			},
 		},
 		{
-			Name: "org set", Summary: "Change the account's name, default visibility, or whether personal tokens work in it",
+			Name: "org set", Summary: "Change the account's name, default visibility, whether personal tokens work in it, or its snapshot copies",
 			Flags: []cli.Flag{
 				{Name: "name", Type: cli.String, Value: "<name>", Description: "Rename it"},
 				{Name: "visibility", Type: cli.String, Value: "<organisation|private>", Choices: Visibilities, Description: "Who sees new sandboxes by default"},
 				{Name: "personal-tokens", Type: cli.String, Value: "<allowed|blocked>",
 					Description: "blocked: members' personal tokens can't act in it (an organisation's)"},
+				{Name: "snapshot-copies", Type: cli.String, Value: "<on|off>", Choices: []string{"on", "off"},
+					Description: "on: keep each saved snapshot on two hosts of its pool (the default)"},
 			},
 			Details: "It changes the account commands act in (--account or kantel org use); it needs admin or owner.",
 			Run: func(c *cli.Context) error {
@@ -387,8 +402,16 @@ func accounts() cli.Section {
 					policy := api.PersonalTokenPolicy(*tokens)
 					body.PersonalTokens = &policy
 				}
-				if body.Name == nil && body.DefaultVisibility == nil && body.PersonalTokens == nil {
-					return cli.Usage("say what to change: --name, --visibility or --personal-tokens")
+				copies, err := choiceOf(c, "snapshot-copies", []string{"on", "off"})
+				if err != nil {
+					return err
+				}
+				if copies != nil {
+					on := *copies == "on"
+					body.SnapshotCopies = &on
+				}
+				if body.Name == nil && body.DefaultVisibility == nil && body.PersonalTokens == nil && body.SnapshotCopies == nil {
+					return cli.Usage("say what to change: --name, --visibility, --personal-tokens or --snapshot-copies")
 				}
 				id, err := currentAccountID(c, client)
 				if err != nil {

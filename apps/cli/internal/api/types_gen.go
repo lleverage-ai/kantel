@@ -70,6 +70,8 @@ type Account struct {
 	Name           string               `json:"name"`
 	PersonalTokens *PersonalTokenPolicy `json:"personalTokens,omitempty"`
 	Role           MemberRole           `json:"role"`
+	// Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it.
+	SnapshotCopies *bool `json:"snapshotCopies,omitempty"`
 }
 
 type AccountJoinToken struct {
@@ -2693,6 +2695,8 @@ type Snapshot struct {
 	Description *string    `json:"description,omitempty"`
 	// Epoch milliseconds, UTC.
 	ExpiresAt *int64 `json:"expiresAt,omitempty"`
+	// Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then each with a copy, or fetching one, as they last reported. Kantel keeps a saved snapshot on two hosts of its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it.
+	Hosts []SnapshotHost `json:"hosts,omitzero"`
 	// The snapshot's ID, such as `snap_2h8d6f`.
 	ID   string       `json:"id"`
 	Kind SnapshotKind `json:"kind"`
@@ -2721,6 +2725,26 @@ type Snapshot struct {
 	// How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it.
 	Uses *int64 `json:"uses,omitempty"`
 }
+
+// A host a saved snapshot is on (`Snapshot.hosts`).
+type SnapshotHost struct {
+	// The host; absent where the caller may not be told it (a shared host).
+	HostID *string `json:"hostId,omitempty"`
+	// Its name, where `hostId` is given.
+	HostName *string `json:"hostName,omitempty"`
+	// Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose memory came too, which a host fetches only where it restores. Always false for a snapshot without memory.
+	Memory bool `json:"memory"`
+	// `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host.
+	State SnapshotHostState `json:"state"`
+}
+
+// `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host.
+type SnapshotHostState string
+
+const (
+	SnapshotHostStateHeld     SnapshotHostState = "held"
+	SnapshotHostStateFetching SnapshotHostState = "fetching"
+)
 
 // `automatic`: one of a sandbox's own history, taken as it runs and at each stop; the newest is what a resume or fork uses, and older ones expire. `saved`: kept under a name until deleted, and usable as a template for new sandboxes, even after its sandbox is deleted.
 type SnapshotKind string
@@ -3119,6 +3143,8 @@ type UpdateAccountBody struct {
 	DefaultVisibility *SandboxVisibility   `json:"defaultVisibility,omitempty"`
 	Name              *string              `json:"name,omitempty"`
 	PersonalTokens    *PersonalTokenPolicy `json:"personalTokens,omitempty"`
+	// Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; those there are stay until their snapshots are deleted.
+	SnapshotCopies *bool `json:"snapshotCopies,omitempty"`
 }
 
 type UpdateEnvironmentBody struct {

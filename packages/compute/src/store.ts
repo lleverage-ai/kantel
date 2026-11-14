@@ -95,6 +95,8 @@ export interface StoredAccount {
 	readonly defaultVisibility: computeSchema.SandboxVisibility;
 	/** An organisation's members' personal tokens may act in it unless `blocked`; absent is `allowed`. */
 	readonly personalTokens?: computeSchema.PersonalTokenPolicy;
+	/** Each saved snapshot is kept on two hosts of its pool (`snapshot-copies.ts`) unless this is false; absent is on. */
+	readonly snapshotCopies?: boolean;
 	readonly createdAt: number;
 	/**
 	 * When its person's account deletion closed it (`deleteCaller`), for good: from then on nothing new is stored in it,
@@ -388,7 +390,7 @@ export type StoredCommand = computeSchema.Command & {
  * file system is (`TakenSnapshot.base`), answered as the API's `base`, and what a microVM's was made on where its host
  * said (`SnapshotMadeOn`), which the API doesn't answer.
  */
-export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base" | "hosts"> & {
 	readonly ref?: string;
 	/**
 	 * The host it was taken on, as its backend said (`TakenSnapshot.hostId`): its first holder where `ref` names none (a
@@ -413,6 +415,11 @@ export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 		readonly at: number;
 		readonly settling?: boolean;
 	};
+	/**
+	 * A saved snapshot's last ask of a host to keep a copy of it (`snapshot-copies.ts`): the host told to fetch it, and
+	 * when. Written over the record as it was read, so of the gateways that find a copy missing at once, one asks.
+	 */
+	readonly copying?: { readonly hostId: string; readonly at: number };
 } & SnapshotMadeOn;
 
 export type StoredApiKey = computeSchema.ApiKey & {
