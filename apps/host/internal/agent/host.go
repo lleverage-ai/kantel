@@ -949,8 +949,16 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		defer h.lifecycle.lock(p.SandboxID)()
-		t, err := h.tierOf(p.SandboxID)
+		t, name, err := h.tierOfNamed(p.SandboxID)
+		if err == nil && p.Tier != "" && name != p.Tier {
+			return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no %s sandbox %s on this host", p.Tier, p.SandboxID)}
+		}
 		if err != nil {
+			// A source's cleanup (exported, or of a tier) finds nothing of its own: an import under way here is a later
+			// move's, left as it is.
+			if p.Exported != "" || p.Tier != "" {
+				return nil, err
+			}
 			// Only an import of it from another host under way here (a move rolled back): that ends, and the delete is done.
 			if mover, ok := h.tiers[microvm.Tier].(SandboxMover); ok {
 				if mover.(Tier).Delete(ctx, p.SandboxID) == nil {

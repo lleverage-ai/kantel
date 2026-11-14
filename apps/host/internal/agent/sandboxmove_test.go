@@ -135,6 +135,23 @@ func TestSandboxMove(t *testing.T) {
 	if kept4 || !kept5 {
 		t.Fatalf("after the cancels, sb4's floor kept %v, sb5's %v", kept4, kept5)
 	}
+	// A source's late cleanup (by its move's export, or of a tier) finds nothing of its own where the host has only a
+	// later move's import under way, or a sandbox of another tier: refused, nothing deleted.
+	for name, p := range map[string]proto.DeleteParams{
+		"an exported copy not here": {SandboxID: "sb6", KeepSnapshots: true, Exported: "mov_1"},
+		"an isolate not here":       {SandboxID: "sb6", KeepSnapshots: true, Tier: "isolate"},
+	} {
+		if err := call(t, h, proto.MethodDelete, p); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	tier.lifecycleTier.stopped["sb7"] = true
+	if err := call(t, h, proto.MethodDelete, proto.DeleteParams{SandboxID: "sb7", KeepSnapshots: true, Tier: "isolate"}); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+		t.Fatalf("an isolate's cleanup of a microVM: %v", err)
+	}
+	if _, err := tier.lifecycleTier.Get("sb7"); err != nil {
+		t.Fatal("an isolate's cleanup deleted a microVM")
+	}
 	tier.mu.Lock()
 	defer tier.mu.Unlock()
 	if !slices.Equal(tier.exported, []string{"sb1/mov_1"}) || len(tier.prepared) != 0 || !slices.Equal(tier.moved, []string{"sb3"}) {

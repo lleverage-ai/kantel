@@ -1450,7 +1450,8 @@ export const HostMethods = {
 	/** Replaces a sandbox's egress: `{ sandboxId, egress }` (null for the host's default). */
 	egress: "sandbox.egress",
 	/**
-	 * `{ sandboxId, keepSnapshots?, exported? }`: the sandbox and its automatic snapshots go. With `keepSnapshots` (the
+	 * `{ sandboxId, keepSnapshots?, exported?, tier? }`: the sandbox and its automatic snapshots go; with `tier`, only a
+	 * sandbox of that tier (`not_found` otherwise, a host from before `sandboxMove` ignoring it). With `keepSnapshots` (the
 	 * isolate an upgrade left once its microVM runs on another host, or a microVM moved to another host,
 	 * `HOST_FEATURES.sandboxMove`) its snapshots stay, the sandbox's still. With `exported` (a move's operation ID) only
 	 * the copy that move exported goes: `not_found` for one another move made since.

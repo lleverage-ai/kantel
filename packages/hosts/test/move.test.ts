@@ -515,11 +515,37 @@ describe("moving a stopped sandbox to another host", () => {
 		b.hold = (method) => (method === "sandbox.start" ? held : undefined);
 		const moving = root.moveSandbox(sandbox.id, {});
 		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true));
-		await service.revoke(a.hostId);
+		// Revoked through the API, as an operator does it (its sandboxes stranded there).
+		await root.revokeHost(a.hostId);
 		await api.service.sweep();
 		expect((await root.getSandbox(sandbox.id)).state).toBe("moving");
 		release();
 		expect(await moving).toMatchObject({ state: "running", hostId: b.hostId });
+	});
+
+	it("rolls a move back onto a source revoked as it copied as that revocation leaves it: in error", async () => {
+		const { root, api, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		b.hold = (method) => (method === "sandbox.start" ? held : undefined);
+		b.refuse = (method) =>
+			method === "sandbox.start" ? { code: "unavailable", message: "it didn't boot" } : undefined;
+		const moving = failure(root.moveSandbox(sandbox.id, {}));
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true));
+		await root.revokeHost(a.hostId);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("moving");
+		release();
+		await moving;
+		const after = await root.getSandbox(sandbox.id);
+		expect(after).toMatchObject({ state: "error", hostId: a.hostId });
+		expect(after.reason).toMatch(/revoked/);
+		expect(after.move).toBeUndefined();
 	});
 
 	it("never leaves a copy or a placement when a delete meets a move about to switch", async () => {

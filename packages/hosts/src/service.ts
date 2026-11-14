@@ -2677,6 +2677,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			await onHost(hostId, HostMethods.delete, {
 				sandboxId,
 				keepSnapshots: true,
+				// Only of the tier it left: an upgrade's isolate, never a microVM moved back to that host since.
+				tier: owed.tier ?? "isolate",
 				...(owed.tier === "microvm" ? { exported: owed.operationId } : {}),
 			});
 		} catch (error) {
@@ -2692,7 +2694,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// The isolate is gone: what was left of a sandbox deleted since (`forgetPlacement`) goes with it, and a live
 		// sandbox's placement no longer owes it. A delete that leaves the placement here meanwhile is caught by the second
 		// removal.
-		const leftoverHere = (latest: PlacementRecord) => isLeftover(latest) && latest.hostId === hostId;
+		// Only what this operation left: a later one's (a move away again) is its own debt.
+		const leftoverHere = (latest: PlacementRecord) =>
+			isLeftover(latest) && latest.hostId === hostId && latest.cleanup?.operationId === owed.operationId;
 		if (await store.removePlacementIf(sandboxId, leftoverHere)) return undefined;
 		const cleaned = await store.updatePlacement(sandboxId, (latest) => {
 			// Only the debt this deleted: a later one to the same host (a move away again) stays owed.

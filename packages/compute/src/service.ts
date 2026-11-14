@@ -7397,7 +7397,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				previous = undefined;
 				// A move under way stays as it is, for its gateway or the sweep to settle: its outcome (a copy running on
 				// another host, perhaps) is known only from its hosts, and settlement allows for its source being revoked.
-				if (current.moving !== undefined && current.state === "starting") return undefined;
+				if (current.moving !== undefined && current.state === "starting") {
+					// Its source revoked: kept, so a rollback that puts it back there publishes the revocation (`restoreMove`).
+					if (current.hostId !== hostId || current.strandedOn?.includes(hostId) === true) return undefined;
+					return { ...current, strandedOn: [...(current.strandedOn ?? []), hostId] };
+				}
 				if (current.hostId === hostId && STRANDABLE.includes(current.state)) {
 					previous = current.state;
 					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
@@ -12536,6 +12540,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const moving = latest.moving;
 				if (moving === undefined) return latest;
 				const { before } = moving;
+				// Back on a source revoked while it moved: that is its state, as a revocation would have left it.
+				if (latest.hostId !== undefined && latest.strandedOn?.includes(latest.hostId) === true) {
+					return {
+						...withState(latest, "error", { reason: HOST_REVOKED_REASON, ports: [] }),
+						mounts: before.mounts,
+						mountsAt: before.mountsAt,
+						moving: undefined,
+					};
+				}
 				return {
 					...latest,
 					state: moving.from,
