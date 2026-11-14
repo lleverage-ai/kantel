@@ -48,6 +48,8 @@ function setUp(
 		templates?: boolean;
 		/** Hosts of an architecture other than the stub's. */
 		arch?: { readonly [hostId: string]: "x86_64" | "aarch64" };
+		/** More of what hosts say of themselves (their CPU and runtime fingerprints). */
+		facts?: { readonly [hostId: string]: Partial<BackendHost> };
 		/** What hosts last reported holding, for the sweep (`SandboxBackend.stickyHoldings`). */
 		holdings?: () => BackendStickyHoldings[];
 		/** The backend's `disk.fetch` (`SandboxBackend.fetchDisk`); absent, it has none. */
@@ -93,6 +95,7 @@ function setUp(
 				poolId,
 				...(options.arch?.[id] === undefined ? {} : { arch: options.arch[id] }),
 				...more,
+				...options.facts?.[id],
 			});
 			return {
 				...capabilities,
@@ -464,6 +467,99 @@ describe("disk holders", () => {
 		expect(await setUp({ stickyDisks: false, templates: true }).api.service.grantPublicKey()).toMatch(
 			/^[A-Za-z0-9_-]{43}$/,
 		);
+	});
+
+	it("locates a template snapshot only on its pool's holders whose copy restores on the asker, for its account", async () => {
+		const cpu = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+		const cpuText = "AuthenticAMD family 25 model 97, features sha256:0123456789abcdef";
+		const runtime = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=2";
+		const like = { cpuFingerprint: cpuText, runtimeFingerprints: [runtime, "firecracker=v1.17.0;kernel=6.1.155"] };
+		const tom = setUp({
+			templates: true,
+			facts: {
+				[STUB_HOST_ID]: like,
+				host_b: like,
+				host_c: like,
+				host_g: { ...like, cpuFingerprint: "AuthenticAMD family 25 model 68, features sha256:0123456789abcdef" },
+			},
+		});
+		await tom.pool();
+		const id = "tsn_0123456789abcdef01234567_1";
+		const entry = {
+			id,
+			accountId: "acc_1",
+			templateId: "tpl_1",
+			version: 1,
+			key: {
+				templateVersion: "tpl_1@1",
+				baseDigest: "",
+				kernel: "k",
+				firecracker: "f",
+				vcpus: 2,
+				memoryMb: 4096,
+				poolId: "pool_a",
+			},
+			keyHash: "h",
+			state: "ready",
+			hostId: STUB_HOST_ID,
+			ref: `${STUB_HOST_ID}/${id}`,
+			builtFrom: { baseImage: "kantel/sandbox", baseDigest: "", pinned: false, kernel: "k", firecracker: "f" },
+			startedAt: 1,
+		} as const;
+		await tom.api.store.templateSnapshots.put(entry);
+		// Each report a moment after the last, so it is the host's newest.
+		const held = (hostId: string, mapDigest: string, made: { cpu?: typeof cpu; runtime?: string } = { cpu, runtime }) =>
+			tom.api.service.recordHoldings(hostId, ++tom.clock.now, {
+				objects: { template: [{ objectId: id, versions: [{ version: "1", mapDigest, pool: "pool_a", ...made }] }] },
+			});
+		const request = { kind: "template", objectId: id, version: "1" };
+		expect(await tom.api.service.locateDisk("host_b", request)).toEqual({ holders: [] });
+		await held(STUB_HOST_ID, DIGEST);
+		await held("host_g", OTHER_DIGEST, { cpu: { ...cpu, model: 68 }, runtime });
+		// Another account's host holds no copy of it.
+		await held("host_f", DIGEST);
+		expect((await tom.api.store.diskHolders.list()).map((holder) => holder.hostId).sort()).toEqual([
+			"host_g",
+			STUB_HOST_ID,
+		]);
+		expect(await tom.api.store.diskHolders.get(`template:${id}:1:${STUB_HOST_ID}`)).toMatchObject({
+			mapDigest: DIGEST,
+			poolId: "pool_a",
+			cpu,
+			runtime,
+		});
+		// b is on the stub's CPU and runtime: only the stub's copy is offered, not g's on another CPU.
+		const found = await tom.api.service.locateDisk("host_b", request);
+		expect(found).toMatchObject({ mapDigest: DIGEST, holders: [{ hostId: STUB_HOST_ID, address: "fd00:a::1" }] });
+		const publicKey = await tom.api.service.grantPublicKey();
+		if (publicKey === undefined || found.grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(publicKey, found.grant, tom.clock.now)).toMatchObject({
+			kind: "template",
+			objectId: id,
+			version: "1",
+			accountId: "acc_1",
+			from: [STUB_HOST_ID],
+			to: "host_b",
+		});
+		// g, on its own CPU, has no copy that restores there: it builds its own.
+		expect(await tom.api.service.locateDisk("host_g", request)).toEqual({ holders: [] });
+		// A host that doesn't say its CPU matches nothing.
+		expect(await tom.api.service.locateDisk("host_d", request)).toEqual({ holders: [] });
+		// Nor does a copy that doesn't say what it was made on.
+		await held(STUB_HOST_ID, DIGEST, {});
+		expect(await tom.api.service.locateDisk("host_b", request)).toEqual({ holders: [] });
+		await held(STUB_HOST_ID, DIGEST);
+		// Pool B's host, another account's, a version or ID that isn't one, and a snapshot thrown away are refused.
+		for (const [hostId, asked] of [
+			["host_c", request],
+			["host_f", request],
+			["host_b", { ...request, version: "2" }],
+			["host_b", { ...request, objectId: "tsn_nope" }],
+		] as const) {
+			await expect(tom.api.service.locateDisk(hostId, asked)).rejects.toMatchObject({ code: "not_found" });
+		}
+		await tom.api.store.templateSnapshots.put({ ...entry, state: "discarded" });
+		await expect(tom.api.service.locateDisk("host_b", request)).rejects.toMatchObject({ code: "not_found" });
 	});
 
 	it("offers a root filesystem only in the pool its host stamped it with, however late it reports it", async () => {

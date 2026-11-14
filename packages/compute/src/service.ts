@@ -2908,6 +2908,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return [];
 			}
 		},
+		// In its pool's mesh, with the pool's sync on, as the latest read of the hosts says.
+		takesCopies: (hostId) => hostMeshAddress.has(hostId),
 		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants, env: {} })).egress,
 		normaliseGrants,
 		checkVariableName,
@@ -5359,7 +5361,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<Placement> {
 		if (!neverPlaced(sandbox)) return booted(boot);
 		const stored = sandbox.source === undefined ? sandbox.templateBoot : undefined;
-		let template: Omit<SandboxTemplateBoot, "snapshot"> | undefined;
+		let template: Omit<SandboxTemplateBoot, "snapshot" | "snapshotHosts"> | undefined;
 		let eligibleHosts = boot.eligibleHosts;
 		if (stored !== undefined) {
 			const { holders, ...fresh } = stored;
@@ -5397,8 +5399,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** A template's boot as a sandbox keeps it for a retry of its create (`templateBoot`): its base and setup, no snapshot. */
-	const freshBoot = ({ snapshot: _cached, ...fresh }: SandboxTemplateBoot): Omit<SandboxTemplateBoot, "snapshot"> =>
-		fresh;
+	const freshBoot = ({
+		snapshot: _cached,
+		snapshotHosts: _copies,
+		...fresh
+	}: SandboxTemplateBoot): Omit<SandboxTemplateBoot, "snapshot" | "snapshotHosts"> => fresh;
 
 	/** A boot's sizing from the record as it moved: its named size and, where it has one, its shape. */
 	const sizingOf = (sandbox: StoredSandbox): Pick<BootOptions, "size" | "shape"> => ({
@@ -8957,6 +8962,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								shape: machine.shape,
 								eligibleHosts: hosts,
 								hostPools: new Map((await known).map((host) => [host.id, host.poolId])),
+								// A copy of its snapshot on another host is restored only where its memory restores.
+								hostFingerprints: new Map((await known).map((host) => [host.id, host])),
 								// A disk asked for is given from a template snapshot only by hosts that say their disk limits (this
 								// kantel-host and later), which grow the snapshot's disk to it or boot fresh where it is bigger.
 								restoreOn: eligible.filter((host) => host.disk !== undefined).map((host) => host.id),

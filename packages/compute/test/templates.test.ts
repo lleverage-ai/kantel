@@ -11,6 +11,7 @@ import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kant
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import {
+	type BackendHost,
 	type BackendSize,
 	type BuiltTemplate,
 	CUSTOM_SHAPES_FEATURE,
@@ -24,13 +25,20 @@ import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts"
 import {
 	type ComputeStore,
 	createMemoryStore,
+	OPERATOR_POOLS,
 	type StoredTemplate,
 	type StoredTemplateVersion,
 	type TemplateChange,
 	UniqueViolation,
 } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
-import { TEMPLATE_BUILD_LEASE_MS, TEMPLATE_BUILD_RETRY_MS, templateCacheKey } from "../src/templates.ts";
+import {
+	TEMPLATE_BUILD_LEASE_MS,
+	TEMPLATE_BUILD_RETRY_MS,
+	TEMPLATE_COPY_RETRY_MS,
+	TEMPLATE_SYNC_FEATURE,
+	templateCacheKey,
+} from "../src/templates.ts";
 import { INDEX } from "./base-index-fixture.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -93,6 +101,8 @@ function controllableBackend(
 		readonly sizes?: readonly BackendSize[];
 		readonly moreHosts?: readonly string[];
 		readonly bytesOnHosts?: BytesOnHosts;
+		/** Each host as the backend says it is, changed (its pool, mesh address, features and fingerprints). */
+		readonly hostAs?: (host: BackendHost) => BackendHost;
 	} = {},
 ) {
 	const stub = createStubBackend();
@@ -128,7 +138,8 @@ function controllableBackend(
 				if (only !== undefined) {
 					return { ...each, sizes: only, features: each.features?.filter((name) => name !== CUSTOM_SHAPES_FEATURE) };
 				}
-				return sizes === undefined ? each : { ...each, sizes };
+				const sized = sizes === undefined ? each : { ...each, sizes };
+				return options.hostAs === undefined ? sized : options.hostAs(sized);
 			}),
 		};
 	};
@@ -250,9 +261,11 @@ function setup(
 		readonly bytesOnHosts?: BytesOnHosts;
 		/** Image patching on, with this index. */
 		readonly baseImages?: BaseImages;
+		readonly hostAs?: (host: BackendHost) => BackendHost;
 	} = {},
 ) {
 	const fake = controllableBackend({
+		...(options.hostAs === undefined ? {} : { hostAs: options.hostAs }),
 		...(options.backendTemplates === false ? { templates: false } : {}),
 		...(options.sizes === undefined ? {} : { sizes: options.sizes }),
 		...(options.moreHosts === undefined ? {} : { moreHosts: options.moreHosts }),
@@ -670,6 +683,158 @@ describe("a template's setup", () => {
 		await api.service.idle();
 		expect((await writer.createSandbox({ template: "bare", wait: true })).state).toBe("running");
 		expect((await writer.createSandbox({ template: "bare", size: "large", wait: true })).state).toBe("running");
+	});
+});
+
+describe("a template snapshot's copies", () => {
+	const CPU = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+	const CPU_TEXT = "AuthenticAMD family 25 model 97, features sha256:0123456789abcdef";
+	const OTHER_CPU = { ...CPU, model: 68 };
+	const RUNTIME = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=2";
+	const MAP = digest("a");
+	/**
+	 * A pool (pool_a, sync on) of the stub's host and b, c, d and e: b like the stub, c on another CPU, d without
+	 * template-sync, e without a mesh address (not in the pool's mesh).
+	 */
+	async function pooled() {
+		const differs: { [hostId: string]: Partial<BackendHost> } = {
+			host_c: { cpuFingerprint: "AuthenticAMD family 25 model 68, features sha256:0123456789abcdef" },
+			host_d: { features: [] },
+			host_e: { meshAddress: undefined },
+		};
+		const t = setup({
+			moreHosts: ["host_b", "host_c", "host_d", "host_e"],
+			hostAs: (host) => ({
+				...host,
+				poolId: "pool_a",
+				meshAddress: `fd00:a::${host.id.slice(-1)}`,
+				features: [...(host.features ?? []), TEMPLATE_SYNC_FEATURE],
+				cpuFingerprint: CPU_TEXT,
+				runtimeFingerprints: [RUNTIME],
+				...differs[host.id],
+			}),
+		});
+		await t.api.store.pools.put({ id: "pool_a", owner: OPERATOR_POOLS, name: "a", createdAt: Date.now(), sync: true });
+		await t.root.listHosts();
+		for (const host of await t.api.store.hosts.list()) {
+			await t.api.store.hosts.update(host.id, (current) => ({ ...current, poolId: "pool_a" }));
+		}
+		await t.root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		return t;
+	}
+	/** A host reporting the template snapshots it holds, each made on `cpu`. */
+	const holds = (
+		t: Awaited<ReturnType<typeof pooled>>,
+		hostId: string,
+		ids: readonly string[],
+		cpu: typeof CPU = CPU,
+	) =>
+		t.api.service.recordHoldings(hostId, Date.now() + t.clock.skip, {
+			objects: {
+				template: ids.map((objectId) => ({
+					objectId,
+					versions: [{ version: "1", mapDigest: MAP, allocatedBytes: 1, pool: "pool_a", cpu, runtime: RUNTIME }],
+				})),
+			},
+		});
+
+	it("are asked of the pool's other hosts on its runtime once a host holds it, under its ID and the hash it was built under", async () => {
+		const t = await pooled();
+		const template = await t.tom.createTemplate({ name: "web", spec: SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const ready = (await t.tom.getTemplate(template.id)).build.ready;
+		const entry = await t.api.store.templateSnapshots.get(ready?.id ?? "");
+		expect(entry?.hostId).toBe(STUB_HOST_ID);
+		// Not until a host holds it, mapped: none could fetch it.
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(1);
+
+		await holds(t, STUB_HOST_ID, [entry?.id ?? ""]);
+		await t.api.service.sweep();
+		const asked = [await t.build(1), await t.build(2)];
+		expect(asked.map((held) => held.spec.hostId).sort()).toEqual(["host_b", "host_c"]);
+		for (const held of asked) {
+			expect(held.spec).toMatchObject({
+				snapshotId: entry?.id,
+				keyHash: entry?.keyHash,
+				templateId: template.id,
+				baseImage: "kantel/sandbox",
+				baseDigest: D1,
+			});
+			held.release();
+		}
+		await t.api.service.idle();
+		// Asked once: not again while their reports bring their copies, nor after.
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(3);
+		t.clock.skip += TEMPLATE_COPY_RETRY_MS + 1;
+		await holds(t, "host_b", [entry?.id ?? ""]);
+		await holds(t, "host_c", [entry?.id ?? ""], OTHER_CPU);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(3);
+	});
+
+	it("are where a create starts from the snapshot, on any host whose copy restores there, and go with it", async () => {
+		const t = await pooled();
+		const template = await t.tom.createTemplate({ name: "web", spec: SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		const entry = await t.api.store.templateSnapshots.get(id);
+		await holds(t, STUB_HOST_ID, [id]);
+		await holds(t, "host_b", [id]);
+		// c built its own on its CPU, which restores there; e's copy was made on another CPU than its own.
+		await holds(t, "host_c", [id], OTHER_CPU);
+		await holds(t, "host_e", [id], OTHER_CPU);
+		const sandbox = await t.tom.createSandbox({ template: template.id, wait: true });
+		expect(sandbox.template).toMatchObject({ snapshotId: id, start: "snapshot" });
+		const spec = specOf(t.created, sandbox.id);
+		expect(spec.template?.snapshot).toBe(entry?.ref);
+		expect(spec.template?.snapshotHosts).toEqual([STUB_HOST_ID, "host_b", "host_c"]);
+		expect(spec.eligibleHosts.slice(0, 3)).toEqual([STUB_HOST_ID, "host_b", "host_c"]);
+		// A retry of the create, kept on the record, boots fresh: no snapshot, nor its hosts.
+		const record = await t.api.store.sandboxes.get(sandbox.id);
+		expect(record?.templateBoot).not.toHaveProperty("snapshotHosts");
+
+		// Rebuilt: the new entry replaces it, which goes with its copies' bytes and holders.
+		await t.tom.rebuildTemplate(template.id);
+		(await t.build(t.builds.length - 1)).release();
+		await t.api.service.idle();
+		expect((await t.api.store.templateSnapshots.get(id))?.state).toBe("discarded");
+		expect(t.deletedTemplateSnapshots).toEqual(expect.arrayContaining([entry?.ref, id]));
+		for (const hostId of ["host_b", "host_c", "host_e"]) expect(t.bytesOnHosts.has(`${hostId} ${id}`)).toBe(false);
+		expect((await t.api.store.diskHolders.list()).filter((holder) => holder.objectId === id)).toEqual([]);
+	});
+
+	it("aren't asked of a custom image's: a copy says nothing of the image it was made of", async () => {
+		const t = await pooled();
+		const template = await t.tom.createTemplate({
+			name: "rg",
+			spec: { ...SPEC, image: { kind: "dockerfile", dockerfile: "ARG KANTEL_BASE\nFROM $KANTEL_BASE\n" } },
+		});
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		await holds(t, STUB_HOST_ID, [id]);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(1);
+	});
+
+	it("are deleted by the sweep when their entry is gone or thrown away", async () => {
+		const t = await pooled();
+		t.bytesOnHosts.add("host_b tsn_000000000000000000000000_9");
+		await holds(t, "host_b", ["tsn_000000000000000000000000_9"]);
+		expect(await t.api.store.diskHolders.list()).toHaveLength(1);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.deletedTemplateSnapshots).toContain("tsn_000000000000000000000000_9");
+		expect(t.bytesOnHosts.size).toBe(0);
+		expect(await t.api.store.diskHolders.list()).toEqual([]);
 	});
 });
 

@@ -4,7 +4,7 @@
  * listing, which read every host's facts. So registration and hello refuse a report that isn't shaped as kantel-host
  * sends it, and reading a stored one that isn't (kept before this check) treats it as no report at all.
  */
-import type { Placement } from "@kantel/compute";
+import { cpuFingerprintText as computeCpuFingerprintText, type Placement } from "@kantel/compute";
 import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
@@ -234,10 +234,11 @@ export function memoryRestoresOn(
 	return sameCpu(facts.cpu, made.cpu) && (facts.runtimes ?? []).some((each) => each.runtime === made.runtime);
 }
 
-/** A CPU fingerprint as a host's details show it: `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. */
-export function cpuFingerprintText(cpu: HostCpuFingerprint): string {
-	return `${cpu.vendor} family ${cpu.family} model ${cpu.model}, features ${cpu.featuresHash}`;
-}
+/**
+ * A CPU fingerprint as a host's details show it: `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`.
+ * The compute plane's, which compares a snapshot's CPU with a host's by it (`memoryRestoresOn`).
+ */
+export const cpuFingerprintText: (cpu: HostCpuFingerprint) => string = computeCpuFingerprintText;
 
 /** A string a host may leave out (Go's `omitempty`): absent when it does, or when it is empty. */
 function optionalText<K extends string>(value: Record<string, unknown>, field: K): { [key in K]?: string } {
