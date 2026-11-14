@@ -199,7 +199,7 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/resume" \
   -d '{"size": "large", "wait": true}'
 ```
 
-Give `size` to come back bigger or smaller. A start (`POST /v1/sandboxes/{sandboxId}/start`, `startSandbox`) takes the same body but always boots fresh from the newest disk snapshot: a paused sandbox's memory is let go, and its programs start again. Use it when a paused sandbox's programs are in a state you don't want back. Starting a sandbox that's already running answers it as it is.
+Give `size` to come back bigger or smaller. A start (`POST /v1/sandboxes/{sandboxId}/start`, `startSandbox`) takes the same body but always boots fresh from the newest disk snapshot: a paused sandbox's memory is let go, and its programs start again (the commands it was running are killed, saying so). Use it when a paused sandbox's programs are in a state you don't want back. Starting a sandbox that's already running answers it as it is.
 
 ## Auto-stop and extending
 

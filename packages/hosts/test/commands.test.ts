@@ -42,6 +42,8 @@ interface Running {
 	output?: { stdout: string; stderr: string };
 	/** Answers waiting for its end: a foreground call's, or held gets. */
 	readonly waiting: ((ended: NonNullable<Running["ended"]>) => void)[];
+	/** A foreground call's answer with an error instead (its sandbox paused under it): undefined once answered. */
+	refuseCall?: (code: string, message: string) => void;
 }
 
 /** kantel-host as the backend sees it for commands: with `controls`, one with `exec-control`. */
@@ -107,6 +109,25 @@ class CommandHost {
 		this.commands.delete(commandId);
 	}
 
+	/**
+	 * Its sandbox paused, keeping its memory: each foreground call waiting is answered `suspended`, its command carrying
+	 * on in that memory, and every get is refused (`conflict`) until it resumes.
+	 */
+	pause() {
+		this.refuseGets = { code: "conflict", message: "the sandbox is stopped, not running" };
+		for (const command of this.commands.values()) {
+			if (command.refuseCall === undefined) continue;
+			const refuse = command.refuseCall;
+			command.refuseCall = undefined;
+			command.waiting.splice(0);
+			refuse("suspended", "the sandbox was stopped keeping its memory");
+		}
+	}
+
+	resume() {
+		this.refuseGets = undefined;
+	}
+
 	/** A running command's output so far. */
 	output(commandId: string, stdout: string, stderr = "") {
 		const command = this.commands.get(commandId);
@@ -159,7 +180,11 @@ class CommandHost {
 				if (this.controls && p.detached === true) {
 					return answer({ commandId: id, state: "running", pid: 4242 });
 				}
-				command.waiting.push((ended) => answer(ended));
+				command.waiting.push((ended) => {
+					command.refuseCall = undefined;
+					answer(ended);
+				});
+				if (this.controls) command.refuseCall = fail;
 				if (!this.controls && p.timeoutMs === undefined) {
 					setTimeout(() => this.end(id, { exitCode: 124, stdout: "", stderr: "", timedOut: true }), OLD_GUEST_LIMIT_MS);
 				}
@@ -456,6 +481,22 @@ describe("commands on kantel-host hosts", () => {
 		const ended = await running;
 		expect(ended).toMatchObject({ state: "exited", exitCode: 1 });
 		expect(ended.stderr).toMatch(/disconnected.*didn't come back/s);
+	});
+
+	it("waits on a foreground command through a pause longer than its limit, and answers with its real end", async () => {
+		const { root, host, sandbox } = await setup(true);
+		vi.useFakeTimers();
+		const running = root.runCommand(sandbox.id, { command: "make", timeoutMs: 30_000 });
+		await vi.waitFor(() => expect(callsOf(host, "sandbox.exec")).toHaveLength(1));
+		const commandId = String(callsOf(host, "sandbox.exec")[0]?.params.commandId);
+		host.pause();
+		// Paused for an hour, far past its limit and the grace after it: the command is held in the paused memory.
+		await vi.advanceTimersByTimeAsync(3_600_000);
+		expect((await root.getCommand(sandbox.id, commandId)).state).toBe("running");
+		host.resume();
+		host.end(commandId, { exitCode: 0, stdout: "built\n", stderr: "" });
+		await vi.advanceTimersByTimeAsync(31_000);
+		expect(await running).toMatchObject({ id: commandId, state: "exited", exitCode: 0, stdout: "built\n" });
 	});
 
 	it("says why a host from before exec-control loses a command when a newer connection takes over", async () => {

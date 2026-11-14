@@ -353,6 +353,12 @@ export class FakeHost {
 					const kept = message.method === "sandbox.resume" ? this.memories.get(sandbox.id) : undefined;
 					this.processes.set(sandbox.id, kept ?? "booted");
 					this.memories.delete(sandbox.id);
+					// Booted afresh, its guest knows none of the commands its memory ran.
+					if (kept === undefined) {
+						for (const key of FakeHost.guestCommands.keys()) {
+							if (key.startsWith(`${sandbox.id}/`)) FakeHost.guestCommands.delete(key);
+						}
+					}
 				}
 				const running = { ...sandbox, state: "running" as const };
 				this.sandboxes.set(sandbox.id, running);
