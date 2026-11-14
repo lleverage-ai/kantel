@@ -3912,11 +3912,21 @@ type fileID struct{ dev, ino uint64 }
 
 // snapshotFiles calls each with every file a snapshot's directory has on the disk now, and the blocks it has allocated
 // (a sparse disk's holes take none), each file once. Left out: a memory file still in RAM, a symlink into the spool
-// until it is flushed to the disk; and its bundle drives, links to the bundle cache's images, which are the cache's.
+// until it is flushed to the disk; and its bundle drives, links to the bundle cache's images, which are the cache's,
+// except in a copy fetched from a peer (snapshotsync.go), whose bundle images are its own files, the holder's bytes.
 func snapshotFiles(dir string, each func(id fileID, bytes int64)) {
 	seen := map[fileID]bool{}
+	var rec struct {
+		Fetched bool `json:"fetched"`
+	}
+	if raw, err := os.ReadFile(filepath.Join(dir, "meta.json")); err == nil {
+		_ = json.Unmarshal(raw, &rec)
+	}
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() || strings.HasPrefix(d.Name(), "bundle") {
+		if err != nil || !d.Type().IsRegular() {
+			return nil
+		}
+		if name := d.Name(); !rec.Fetched && strings.HasPrefix(name, "bundle") && strings.HasSuffix(name, ".erofs") {
 			return nil
 		}
 		var st syscall.Stat_t

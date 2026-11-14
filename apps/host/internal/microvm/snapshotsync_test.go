@@ -772,6 +772,23 @@ func TestSnapshotMemoryWithItsDrives(t *testing.T) {
 			t.Fatalf("the copy's %s differs", name)
 		}
 	}
+	// The copy's bundle image is its own file, not a link to B's cache: its size counts it; the original's is the cache's.
+	var all int64
+	entries, _ := os.ReadDir(b.snapshotDir("snap1"))
+	for _, e := range entries {
+		all += diskUsage(filepath.Join(b.snapshotDir("snap1"), e.Name()))
+	}
+	if got := snapshotBytes(b.snapshotDir("snap1")); got != all || copied.SizeBytes != all {
+		t.Fatalf("the copy's size %d (recorded %d), its files %d", got, copied.SizeBytes, all)
+	}
+	var allA int64
+	entries, _ = os.ReadDir(a.snapshotDir("snap1"))
+	for _, e := range entries {
+		allA += diskUsage(filepath.Join(a.snapshotDir("snap1"), e.Name()))
+	}
+	if got := snapshotBytes(a.snapshotDir("snap1")); got != allA-diskUsage(filepath.Join(a.snapshotDir("snap1"), bundleDriveFile(1))) {
+		t.Fatalf("the original's size %d, its files %d", got, allA)
+	}
 	bHeld := b.SnapshotHoldings()
 	for _, version := range []string{SnapshotDisk, SnapshotMemory, "sticky0", "bundle1"} {
 		if got := digestOf(bHeld, "snap1", version); got == "" || got != digestOf(held, "snap1", version) {
