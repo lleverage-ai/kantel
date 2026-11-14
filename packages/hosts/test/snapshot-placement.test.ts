@@ -81,8 +81,8 @@ async function addHost(
 	return host;
 }
 
-/** A host's heartbeat saying it holds the snapshot's disk, as one does once its fetch has arrived. */
-function reportsHolding(host: FakeHost, snapshotId = SNAPSHOT) {
+/** A host's heartbeat, its capacity with `reported` (what it holds, its fetches). */
+function reports(host: FakeHost, reported: object = {}) {
 	host.send({
 		type: "heartbeat",
 		heartbeat: {
@@ -92,13 +92,50 @@ function reportsHolding(host: FakeHost, snapshotId = SNAPSHOT) {
 				running: 0,
 				stopped: 0,
 				load1: 0.1,
-				holdings: {
-					snapshot: [{ objectId: snapshotId, versions: [{ version: "disk", mapDigest: MAP, allocatedBytes: 1 }] }],
-				},
+				...reported,
 			},
 		},
 	});
 }
+
+/** A host's heartbeat saying it holds the snapshot's disk, as one does once its fetch has arrived. */
+function reportsHolding(host: FakeHost, snapshotId = SNAPSHOT) {
+	reports(host, {
+		holdings: {
+			snapshot: [{ objectId: snapshotId, versions: [{ version: "disk", mapDigest: MAP, allocatedBytes: 1 }] }],
+		},
+	});
+}
+
+/** A host's heartbeat listing the snapshot's disk's fetch as `state`, with `error` where it failed. */
+function reportsFetch(host: FakeHost, state: "queued" | "running" | "failed", error?: string) {
+	reports(host, {
+		holdings: { snapshot: [] },
+		fetches: [
+			{
+				kind: "snapshot",
+				objectId: SNAPSHOT,
+				version: "disk",
+				state,
+				blocks: 0,
+				inPlace: 0,
+				...(error === undefined ? {} : { error }),
+			},
+		],
+	});
+}
+
+/** A host that answers `disk.fetch`, then does `then` with itself a moment later. */
+function fetchesThen(host: FakeHost, then: (host: FakeHost) => void) {
+	host.answer = ((answered) => (method: string) => {
+		if (method !== "disk.fetch") return answered?.(method);
+		setTimeout(() => then(host), 10);
+		return {};
+	})(host.answer);
+}
+
+/** Well under the 15 seconds between a host's heartbeats: one report, not the fetch's timeout. */
+const ONE_REPORT_MS = 5_000;
 
 async function setup(options: { readonly snapshotFetchTimeoutMs?: number } = {}) {
 	const store = createMemoryHostStore();
@@ -382,6 +419,120 @@ describe("a create from a saved snapshot", () => {
 				}),
 			),
 		).rejects.toMatchObject({ code: "unavailable" });
+		expect(creates(c)).toEqual([]);
+	});
+
+	it("is fetched on the next host when the one fetching it reports the fetch failed, within one report", async () => {
+		const { store, service, backend } = await setup();
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		const b = await addHost(store, service, "host_b", { freeMemoryMiB: 30_000 });
+		const c = await addHost(store, service, "host_c", { freeMemoryMiB: 10_000 });
+		fetchesThen(b, (host) => reportsFetch(host, "failed", "no room for the snapshot's disk"));
+		fetchesThen(c, (host) => reportsHolding(host));
+		const started = Date.now();
+		const placed = await backend.create(
+			spec(["host_a", "host_b", "host_c"], SNAPSHOT, {
+				holders: [{ hostId: "host_a", memory: false }],
+				memory: false,
+				fetch: true,
+			}),
+		);
+		expect(Date.now() - started).toBeLessThan(ONE_REPORT_MS);
+		expect(placed.hostId).toBe("host_c");
+		expect(b.calls.map((call) => call.method)).toEqual(["disk.fetch"]);
+		expect(c.calls.map((call) => call.method)).toEqual(["disk.fetch", "sandbox.create"]);
+	});
+
+	it("fails at once with its host's error when the last host fetching it reports the fetch failed", async () => {
+		const { store, service, backend } = await setup();
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		const c = await addHost(store, service, "host_c");
+		// Under way, then failed.
+		fetchesThen(c, (host) => {
+			reportsFetch(host, "running");
+			setTimeout(() => reportsFetch(host, "failed", "the root image isn't in the pool"), 10);
+		});
+		const started = Date.now();
+		const failed = await backend
+			.create(
+				spec(["host_a", "host_c"], SNAPSHOT, {
+					holders: [{ hostId: "host_a", memory: false }],
+					memory: false,
+					fetch: true,
+				}),
+			)
+			.catch((error: unknown) => error);
+		expect(Date.now() - started).toBeLessThan(ONE_REPORT_MS);
+		expect(failed).toMatchObject({ code: "unavailable" });
+		expect((failed as Error).message).toBe(
+			"The host host_c couldn't fetch the snapshot's disk (the root image isn't in the pool): try again, or start it on a host that holds it",
+		);
+		expect(creates(c)).toEqual([]);
+	});
+
+	it("tries three hosts at most whose fetches fail", async () => {
+		const { store, service, backend } = await setup();
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		const fetchers = [];
+		for (const [id, free] of [
+			["host_b", 40_000],
+			["host_c", 30_000],
+			["host_d", 20_000],
+			["host_e", 10_000],
+		] as const) {
+			const host = await addHost(store, service, id, { freeMemoryMiB: free });
+			fetchesThen(host, (each) => reportsFetch(each, "failed", `${id} is out of disk`));
+			fetchers.push(host);
+		}
+		const failed = await backend
+			.create(
+				spec(["host_a", "host_b", "host_c", "host_d", "host_e"], SNAPSHOT, {
+					holders: [{ hostId: "host_a", memory: false }],
+					memory: false,
+					fetch: true,
+				}),
+			)
+			.catch((error: unknown) => error);
+		expect((failed as Error).message).toContain("host_d is out of disk");
+		expect(fetchers.map((host) => host.calls.length)).toEqual([1, 1, 1, 0]);
+	});
+
+	it("doesn't take a failure reported before it was asked for this fetch's", async () => {
+		const { store, service, backend } = await setup();
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		const c = await addHost(store, service, "host_c");
+		// An earlier fetch failed; asked again, it goes on from its partial and arrives.
+		reportsFetch(c, "failed", "a holder went away");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		fetchesThen(c, (host) => setTimeout(() => reportsHolding(host), 1_500));
+		const placed = await backend.create(
+			spec(["host_a", "host_c"], SNAPSHOT, {
+				holders: [{ hostId: "host_a", memory: false }],
+				memory: false,
+				fetch: true,
+			}),
+		);
+		expect(placed.hostId).toBe("host_c");
+	});
+
+	it("waits out the timeout on a host that doesn't report its fetches", async () => {
+		const { store, service, backend } = await setup({ snapshotFetchTimeoutMs: 1_500 });
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		const c = await addHost(store, service, "host_c");
+		// It reports, without saying how its fetches go.
+		fetchesThen(c, (host) => reports(host, { holdings: { snapshot: [] } }));
+		const started = Date.now();
+		const failed = await backend
+			.create(
+				spec(["host_a", "host_c"], SNAPSHOT, {
+					holders: [{ hostId: "host_a", memory: false }],
+					memory: false,
+					fetch: true,
+				}),
+			)
+			.catch((error: unknown) => error);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(1_500);
+		expect((failed as Error).message).toContain("didn't fetch the snapshot's disk within");
 		expect(creates(c)).toEqual([]);
 	});
 
