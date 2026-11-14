@@ -37,6 +37,12 @@ export const COPY_RETRY_MS = 5 * 60_000;
 /** How long a host asked for a copy that it doesn't hold is passed over for another. */
 export const COPY_PASSED_OVER_MS = 60 * 60_000;
 
+/**
+ * The disk a host must still have free once it has fetched a snapshot (the host's `snapshotHeadroom`, which
+ * `ReserveSnapshotFetch` holds it to): a host with less is refused before it is asked.
+ */
+export const SNAPSHOT_FETCH_HEADROOM_BYTES = 10 * 1024 ** 3;
+
 /** The host features a host takes a saved snapshot's copy with (`HOST_FEATURES.diskSync`, `snapshotSync`). */
 export const SNAPSHOT_COPY_FEATURES: readonly string[] = ["disk-sync", "snapshot-sync"];
 
@@ -57,6 +63,13 @@ export interface CopyHost {
 	readonly freeDiskGb?: number;
 	readonly cpuFingerprint?: string;
 	readonly runtimeFingerprints?: readonly string[];
+	/** The bytes of saved snapshots each account may keep on it (`Host.savedSnapshotBytesLimit`); absent: no limit. */
+	readonly savedSnapshotBytesLimit?: number;
+	/**
+	 * What the snapshot's account may still keep in saved snapshots on it, in bytes, under its `savedSnapshotBytesLimit`,
+	 * counting the account's own saves there and the copies it holds or is fetching. Absent: no limit.
+	 */
+	readonly savedBytesLeft?: number;
 }
 
 /** A saved snapshot as its copies are counted and placed. */
@@ -91,7 +104,8 @@ export function keepingCopies(
  * has `SNAPSHOT_COPIES` already, no holder serves it (held, with a map digest, on a connected host of the pool with a
  * mesh address), or no other host can take one. A host takes one when it is online and connected in the pool, takes
  * copies (`SNAPSHOT_COPY_FEATURES`, its mesh address), is of an architecture a serving holder is, may hold the account's
- * data, has the room the snapshot takes where it says what it has free, and has no holder of it but a fetch older than
+ * data, has the room the snapshot takes and `SNAPSHOT_FETCH_HEADROOM_BYTES` more where it says what it has free, has the
+ * account's saved snapshot allowance for it where it has a limit (`savedBytesLeft`), and has no holder of it but a fetch older than
  * `COPY_FETCH_MS` (nor was asked for one within `COPY_PASSED_OVER_MS` and didn't take it). Of those: one its memory restores on first (for a snapshot with
  * memory), then one on its runtime (the same host image, so it has its root image), then the most disk free.
  */
@@ -136,7 +150,8 @@ export function copyTarget(
 			architectures.has(host.arch) &&
 			(host.accountId === undefined || host.accountId === snapshot.accountId) &&
 			(host.features === undefined || SNAPSHOT_COPY_FEATURES.every((feature) => host.features?.includes(feature))) &&
-			(host.freeDiskGb === undefined || host.freeDiskGb * 1024 ** 3 > bytes),
+			(host.freeDiskGb === undefined || host.freeDiskGb * 1024 ** 3 >= bytes + SNAPSHOT_FETCH_HEADROOM_BYTES) &&
+			(host.savedBytesLeft === undefined || host.savedBytesLeft >= bytes),
 	);
 	const rank = (host: CopyHost): readonly number[] => [
 		snapshot.memory && memoryRestoresOn(host, snapshot) ? 1 : 0,

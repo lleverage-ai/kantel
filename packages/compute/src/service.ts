@@ -192,7 +192,14 @@ import type {
 	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
-import { OPERATOR_POOLS, STICKY_PREFETCH_MS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
+import {
+	diskHolderId,
+	OPERATOR_POOLS,
+	STICKY_PREFETCH_MS,
+	stickyDiskNameId,
+	UniqueViolation,
+	usageClaimId,
+} from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
@@ -2969,6 +2976,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(record.lastSeenAt === undefined ? {} : { lastSeenAt: record.lastSeenAt }),
 				...(record.cpuFingerprint === undefined ? {} : { cpuFingerprint: record.cpuFingerprint }),
 				...(record.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: record.runtimeFingerprints }),
+				...(record.savedSnapshotBytesLimit === undefined
+					? {}
+					: { savedSnapshotBytesLimit: record.savedSnapshotBytesLimit }),
 				...(meshAddress === undefined ? {} : { meshAddress }),
 				// One the backend no longer has isn't connected, whatever its record says.
 				connected: host !== undefined && host.connected !== false,
@@ -2992,8 +3002,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		snapshot: StoredSnapshot,
 		read?: {
 			readonly hosts: ReadonlyMap<string, CopyHost>;
-			readonly holders: ReadonlyMap<string, readonly StoredDiskHolder[]>;
+			readonly holders: Map<string, StoredDiskHolder[]>;
 			readonly accounts: Map<string, Promise<StoredAccount | undefined>>;
+			readonly saved: readonly StoredSnapshot[];
 		},
 	): Promise<void> {
 		const { ref } = snapshot;
@@ -3020,7 +3031,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (poolId === undefined) return;
 		const at = now();
 		if (keepingCopies(holders, hosts, poolId, at).length >= SNAPSHOT_COPIES) return;
-		const target = copyTarget(snapshot, holders, hosts, poolId, at);
+		const target = copyTarget(snapshot, holders, await withAllowances(snapshot, hosts, read), poolId, at);
 		if (target === undefined) return;
 		// An ask the host it named has answered (it holds the copy) holds back no other.
 		const held = new Set(holders.filter((holder) => holder.state === "held").map((holder) => holder.hostId));
@@ -3031,8 +3042,69 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: { ...latest, copying: { hostId: target, at } },
 		);
 		if (claimed === undefined) return;
+		// Counted as fetching it for the rest of the pass, so a host's allowance isn't spent twice.
+		read?.holders.set(ref, [
+			...(read.holders.get(ref) ?? []),
+			{
+				id: diskHolderId("snapshot", refId(ref), "disk", target),
+				kind: "snapshot",
+				objectId: refId(ref),
+				version: "disk",
+				hostId: target,
+				state: "fetching",
+				since: at,
+				ref,
+			},
+		]);
 		// One that fails is asked of another host on a later pass: this one is passed over meanwhile.
 		await sendSnapshotFetch(target, ref).catch(() => undefined);
+	}
+
+	/**
+	 * `hosts` with what `snapshot`'s account may still keep in saved snapshots on each that limits it
+	 * (`CopyHost.savedBytesLeft`): its limit less the full size of each of the account's saved snapshots there, by ref,
+	 * once each, whether the host saved it or holds or is fetching a copy (`savedBytesOver` counts its own saves alone,
+	 * so a copy never keeps an account from saving). A host without a limit is as it was.
+	 */
+	async function withAllowances(
+		snapshot: StoredSnapshot,
+		hosts: ReadonlyMap<string, CopyHost>,
+		read?: {
+			readonly holders: ReadonlyMap<string, readonly StoredDiskHolder[]>;
+			readonly saved: readonly StoredSnapshot[];
+		},
+	): Promise<ReadonlyMap<string, CopyHost>> {
+		const limited = [...hosts.values()].filter((host) => host.savedSnapshotBytesLimit !== undefined);
+		if (limited.length === 0) return hosts;
+		const saved = (
+			read?.saved ?? (await store.snapshots.list({ accountId: snapshot.accountId, kind: "saved" }))
+		).filter(
+			(record) => record.accountId === snapshot.accountId && record.state !== "deleting" && record.ref !== undefined,
+		);
+		const used = new Map<string, Map<string, number>>();
+		for (const record of saved) {
+			const ref = record.ref ?? "";
+			const copies =
+				read?.holders.get(ref) ??
+				((await diskHolders.holdersOf("snapshot", refId(ref))).get("disk") ?? []).filter(
+					(holder) => holder.ref === ref,
+				);
+			const on = new Set(copies.filter((holder) => holder.state !== "deleting").map((holder) => holder.hostId));
+			const taken = await hostOfSnapshot(record);
+			if (taken !== undefined) on.add(taken);
+			for (const hostId of on) {
+				const refs = used.get(hostId) ?? new Map<string, number>();
+				refs.set(ref, Math.max(refs.get(ref) ?? 0, fullSize(record)));
+				used.set(hostId, refs);
+			}
+		}
+		const out = new Map(hosts);
+		for (const host of limited) {
+			let total = 0;
+			for (const size of used.get(host.id)?.values() ?? []) total += size;
+			out.set(host.id, { ...host, savedBytesLeft: (host.savedSnapshotBytesLimit ?? 0) - total });
+		}
+		return out;
 	}
 
 	/** Keeps the copies of each saved snapshot with `ref` (`keepSnapshotCopies`): a host holds its disk now. */
@@ -3056,7 +3128,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (holder.kind !== "snapshot" || holder.version !== "disk" || holder.ref === undefined) continue;
 			holders.set(holder.ref, [...(holders.get(holder.ref) ?? []), holder]);
 		}
-		const read = { hosts: await copyHosts(), holders, accounts: new Map<string, Promise<StoredAccount | undefined>>() };
+		const read = {
+			hosts: await copyHosts(),
+			holders,
+			accounts: new Map<string, Promise<StoredAccount | undefined>>(),
+			saved: await store.snapshots.list({ kind: "saved" }),
+		};
 		for (const snapshot of saved) {
 			if (closing) return;
 			await keepSnapshotCopies(snapshot, read).catch(() => undefined);
@@ -3769,8 +3846,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * The hosts a saved snapshot is on, for its details (`Snapshot.hosts`): the one it was taken on, then each with a copy
-	 * of its disk, held or being fetched (the catalogue's `snapshot` holders of its ref), each with whether a sandbox made
+	 * The hosts a saved snapshot is on, for its details (`Snapshot.hosts`): the one it was taken on, as its holder says (or
+	 * held, when no host has reported it yet), then each with a copy of its disk, held or being fetched (the catalogue's `snapshot` holders of its ref), each with whether a sandbox made
 	 * from it there restores its memory (`snapshotCopiesOf`'s rule). A revoked host holds nothing. Each is named only to a
 	 * caller who may be told of it (`mayKnowHost`). Undefined for an automatic snapshot, or one not yet ready.
 	 */
@@ -3788,14 +3865,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				.filter((holder) => holder.state === "held")
 				.map((holder) => holder.hostId),
 		);
+		const disks = of("disk").filter((holder) => holder.state !== "deleting");
+		// The host it was taken on first, as its holder says; with no holders at all (its host hasn't reported it yet, or
+		// reports no snapshots), held there, as its save said. One whose holder is gone while others hold it has lost it.
+		const first = disks.find((holder) => holder.hostId === origin);
 		const entries: { hostId: string; state: "held" | "fetching"; memory: boolean }[] =
-			origin === undefined ? [] : [{ hostId: origin, state: "held", memory: snapshot.memory }];
-		for (const holder of of("disk")) {
-			if (holder.state === "deleting" || entries.some((entry) => entry.hostId === holder.hostId)) continue;
+			origin === undefined || (first === undefined && disks.length > 0)
+				? []
+				: [
+						{
+							hostId: origin,
+							state: first?.state === "fetching" ? "fetching" : "held",
+							memory: snapshot.memory && first?.state !== "fetching",
+						},
+					];
+		for (const holder of disks) {
+			if (entries.some((entry) => entry.hostId === holder.hostId)) continue;
 			const held = holder.state === "held";
 			entries.push({
 				hostId: holder.hostId,
-				state: holder.state,
+				state: held ? "held" : "fetching",
 				memory: snapshot.memory && held && withMemory.has(holder.hostId),
 			});
 		}

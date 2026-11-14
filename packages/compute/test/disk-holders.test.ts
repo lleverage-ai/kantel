@@ -1268,6 +1268,68 @@ describe("disk holders", () => {
 		expect(deleted).toEqual([`${STUB_HOST_ID}/${other}`, `host_d/${other}`]);
 	});
 
+	it("copies a saved snapshot only where the account's saved snapshot allowance has room, and lists the hosts it is on as they report", async () => {
+		const fetches: string[] = [];
+		const copies = { features: ["disk-sync", "snapshot-sync"] };
+		const tom = setUp({
+			fetchDisk: async (hostId, fetch) => {
+				if (fetch.kind === "snapshot") fetches.push(`${hostId} ${fetch.objectId}`);
+			},
+			facts: { host_b: { ...copies, freeDiskGb: 900 }, host_g: { ...copies, freeDiskGb: 300 } },
+		});
+		await tom.pool();
+		const GB = 1024 ** 3;
+		const first = "ssnap_0123456789abcdef0123456789abcdef";
+		const second = "ssnap_fedcba9876543210fedcba9876543210";
+		const sized = async (id: string) => {
+			const snap = await tom.savedAlone(id);
+			const stored = await tom.api.store.snapshots.update(snap.id, (current) => ({
+				...current,
+				fullSizeBytes: 3 * GB,
+			}));
+			if (stored === undefined) throw new Error("no snapshot");
+			return stored;
+		};
+		const report = async (hostId: string, objects: readonly string[]) => {
+			tom.clock.now += 1;
+			await tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: {
+					snapshot: objects.map((objectId) => ({
+						objectId,
+						versions: [{ version: "disk", mapDigest: DIGEST, copy: hostId !== STUB_HOST_ID }],
+					})),
+				},
+			});
+			await tom.api.service.idle();
+		};
+		// host_b, the roomiest, lets the account keep 5 GB of saved snapshots: room for one copy of 3 GB, not two.
+		await tom.api.store.hosts.update("host_b", (host) => ({ ...host, savedSnapshotBytesLimit: 5 * GB }));
+		const one = await sized(first);
+		await report(STUB_HOST_ID, [first]);
+		expect(fetches).toEqual([`host_b ${first}`]);
+		await report("host_b", [first]);
+		const two = await sized(second);
+		await report(STUB_HOST_ID, [first, second]);
+		expect(fetches).toEqual([`host_b ${first}`, `host_g ${second}`]);
+		await report("host_g", [second]);
+		// The host it was taken on drops the first (its report, past the grace, no longer lists it): it isn't listed as
+		// held there, only on host_b, whose copy is now the only one, so the sweep's next pass asks a third host.
+		tom.clock.now += 5 * 60_000;
+		await report(STUB_HOST_ID, [second]);
+		expect((await tom.getSnapshot(one.id)).hosts?.map((host) => [host.hostId, host.state])).toEqual([
+			["host_b", "held"],
+		]);
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches.at(-1)).toBe(`host_g ${first}`);
+		expect((await tom.getSnapshot(one.id)).hosts?.map((host) => [host.hostId, host.state])).toEqual([
+			["host_b", "held"],
+			["host_g", "fetching"],
+		]);
+		// The second, held on its own host and host_g, lists both, its own first.
+		expect((await tom.getSnapshot(two.id)).hosts?.map((host) => host.hostId)).toEqual([STUB_HOST_ID, "host_g"]);
+	});
+
 	for (const [name, kind] of [
 		["SQLite", nodeSqliteDatabase],
 		["Postgres", pgliteDatabase],

@@ -91,11 +91,18 @@ describe("saved snapshot copies", () => {
 			host("arm", { arch: "aarch64", freeDiskGb: 999 }),
 			host("theirs", { accountId: "acc_other", freeDiskGb: 999 }),
 			host("full", { freeDiskGb: 4 }),
+			// Room for the snapshot, but not with the 10 GiB a host keeps free past a fetch.
+			host("tight", { freeDiskGb: 14 }),
+			// The account's allowance here has no room for it.
+			host("allowance", { savedSnapshotBytesLimit: 1, savedBytesLeft: 4 * 1024 ** 3, freeDiskGb: 999 }),
 		);
 		expect(copyTarget(snapshot, [holder("a")], hosts, "pool_a", AT)).toBe("c");
 		// An account's own host takes its own account's.
 		const own = hostsOf(...hosts.values(), host("mine", { accountId: "acc_1", freeDiskGb: 500 }));
 		expect(copyTarget(snapshot, [holder("a")], own, "pool_a", AT)).toBe("mine");
+		// With room under its allowance, the roomiest is picked.
+		const allowed = hostsOf(...hosts.values(), host("allowance", { savedBytesLeft: 5 * 1024 ** 3, freeDiskGb: 999 }));
+		expect(copyTarget(snapshot, [holder("a")], allowed, "pool_a", AT)).toBe("allowance");
 		// Fetching one already counts; held twice, there is nothing to do.
 		expect(copyTarget(snapshot, [holder("a"), holder("c", { state: "fetching" })], hosts, "pool_a", AT)).toBe(
 			undefined,
