@@ -519,3 +519,45 @@ func TestUpdaterPruneRemovesSupersededStaging(t *testing.T) {
 		}
 	}
 }
+
+// Install installs a version beside current without activating it, as a check would install it; one installed already
+// is left as it is, without a download. SandboxImage is its root filesystem once it is whole.
+func TestUpdaterInstallsWithoutActivating(t *testing.T) {
+	ctx := context.Background()
+	src, store := t.TempDir(), Store{Dir: t.TempDir()}
+	release(t, src, "kernel", "rootfs")
+	current := release(t, t.TempDir(), "current kernel", "current rootfs")
+	current.Version = "host-images-20261110"
+	if _, err := store.Install(ctx, t.TempDir(), current, "amd64", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Activate(current.Version); err != nil {
+		t.Fatal(err)
+	}
+	var activated []string
+	u := &Updater{
+		Store: store, Arch: "amd64", KVM: true, Log: quiet(), OnActivate: func(v string) { activated = append(activated, v) },
+		Verifier: Verifier{Policy: PolicyOff, Log: quiet()},
+	}
+	ch := proto.ImageChannel{Channel: "stable", Version: "host-images-20261001", URL: src}
+	if store.SandboxImage(ch.Version) != "" {
+		t.Fatal("a root filesystem before the install")
+	}
+	if err := u.Install(ctx, proto.ImageChannel{Version: "../x", URL: src}); err == nil {
+		t.Fatal("a version that can't name a directory")
+	}
+	if err := u.Install(ctx, ch); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := store.Current(); v != current.Version || len(activated) != 0 {
+		t.Fatalf("current %s, activated %v", v, activated)
+	}
+	p := store.SandboxImage(ch.Version)
+	if raw, _ := os.ReadFile(p); string(raw) != "rootfs" {
+		t.Fatalf("%s: %q", p, raw)
+	}
+	// Installed: nothing fetched, even from nowhere.
+	if err := u.Install(ctx, proto.ImageChannel{Version: ch.Version}); err != nil {
+		t.Fatal(err)
+	}
+}

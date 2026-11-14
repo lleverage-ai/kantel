@@ -1040,7 +1040,10 @@ export interface StoredStickyDiskVersion {
 export interface StoredDiskHolder {
 	readonly id: string;
 	readonly kind: DiskKind;
-	/** The object: a sticky disk's ID, a template root filesystem's key, or a template snapshot's ID. */
+	/**
+	 * The object: a sticky disk's ID, a template root filesystem's key, a template snapshot's ID, or a saved snapshot's ID
+	 * on its host.
+	 */
 	readonly objectId: string;
 	readonly version: string;
 	readonly hostId: string;
@@ -1052,9 +1055,9 @@ export interface StoredDiskHolder {
 	/** When it reached `state`. */
 	readonly since: number;
 	/**
-	 * The digest of its block map as its host reported it, for a kind whose copies may differ (a template's root
-	 * filesystem, a template snapshot: a host that built its own holds other bytes than one that fetched it); absent for
-	 * a sticky disk's, whose version has it.
+	 * The digest of its block map as its host reported it, for a kind whose copies may differ or whose versions have no
+	 * record with one (a template's root filesystem, a template snapshot: a host that built its own holds other bytes
+	 * than one that fetched it; a saved snapshot's disk or memory); absent for a sticky disk's, whose version has it.
 	 */
 	readonly mapDigest?: string;
 	/**
@@ -1068,6 +1071,11 @@ export interface StoredDiskHolder {
 	 */
 	readonly cpu?: CpuFingerprint;
 	readonly runtime?: string;
+	/**
+	 * For a saved snapshot's holder, the ref of the snapshot it is a copy of (`{hostId}/{id}`, the host that saved it):
+	 * the snapshot is found by it once that host holds it no longer.
+	 */
+	readonly ref?: string;
 }
 
 export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>

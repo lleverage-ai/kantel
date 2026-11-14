@@ -171,6 +171,26 @@ Has the host fetch a version of a sticky disk from the hosts in its pool that ho
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Fetch a saved snapshot onto a host
+
+`POST /v1/admin/hosts/{hostId}/snapshot-fetches` (SDK method `fetchHostSnapshot`)
+
+Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started. `not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Body**: [FetchHostSnapshotBody](/api/reference/types/#fetchhostsnapshotbody)
+
+**Answers**
+
+- `204`: no body. The fetch has started.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Check for host updates
 
 `POST /v1/admin/hosts/check-for-updates` (SDK method `checkHostUpdates`)

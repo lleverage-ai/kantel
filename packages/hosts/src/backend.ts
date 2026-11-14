@@ -1687,11 +1687,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return hosts.updateAgent(hostId);
 		},
 		async fetchDisk(hostId, fetch) {
-			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.diskSync)) {
+			const features = await featuresOf(hostId);
+			if (!features.includes(HOST_FEATURES.diskSync)) {
 				throw new KantelError(
 					"not_supported",
 					"This host doesn't fetch disk versions from its peers; upgrade kantel-host, and turn on sync in its pool",
 				);
+			}
+			if (fetch.kind === "snapshot" && !features.includes(HOST_FEATURES.snapshotSync)) {
+				throw new KantelError("not_supported", "This host doesn't fetch snapshots from its peers; upgrade kantel-host");
 			}
 			await hosts.diskFetch(hostId, {
 				kind: fetch.kind,
