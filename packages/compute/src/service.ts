@@ -551,6 +551,8 @@ const MOVE_OUTCOME_UNKNOWN =
 /** What a move is refused with where no backend moves sandboxes. */
 const MOVE_UNSUPPORTED = "This deployment's hosts don't move sandboxes between them";
 
+/** What an evacuation's move is refused with when its sandbox has left the host meanwhile: reconciled as moved. */
+const MOVED_ELSEWHERE = "The sandbox has left the host being evacuated";
 /** How many sandboxes a host's evacuation moves at once (docs/design/disk-store.md, "Draining a host"). */
 const EVACUATION_MOVES = 2;
 /** How long an evacuation's gateway holds it without saying so before another (the sweep) takes it on. */
@@ -12834,6 +12836,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		body: computeSchema.MoveSandboxBody,
 		settled = false,
+		from?: string,
 	): Promise<StoredSandbox> {
 		const current = await settledFor(principal, sandboxId);
 		const move = backend.move;
@@ -12848,8 +12851,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 			}
 			await settleStuckMove(current).catch(() => undefined);
-			return moveToHost(principal, role, sandboxId, body, true);
+			return moveToHost(principal, role, sandboxId, body, true, from);
 		}
+		// An evacuation's move, only off the host it evacuates: one moved elsewhere meanwhile (another call) is left there.
+		if (from !== undefined && current.hostId !== from) throw new KantelError("conflict", MOVED_ELSEWHERE);
 		requireMovable(current);
 		const running = current.state === "running";
 		// Its memory too, unless asked not to: a running or paused one's, where its new host matches its own.
@@ -12900,7 +12905,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						latest.type === "microvm" &&
 						latest.lifecycle === current.lifecycle &&
 						latest.moving === undefined &&
-						latest.upgrading === undefined,
+						latest.upgrading === undefined &&
+						(from === undefined || latest.hostId === from),
 				)
 			: await transition(
 					current.id,
@@ -12929,7 +12935,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								egressRevision: later(latest.egressRevision),
 							},
 						}),
-					(latest) => latest.type === "microvm" && latest.lifecycle === current.lifecycle,
+					(latest) =>
+						latest.type === "microvm" &&
+						latest.lifecycle === current.lifecycle &&
+						(from === undefined || latest.hostId === from),
 				);
 		if (!("moved" in began))
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}; try the move again`);
@@ -13085,11 +13094,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			evacuation.sandboxes.map(async (item): Promise<computeSchema.HostEvacuationSandbox> => {
 				const record = item.state === "moving" || !everyName ? await store.sandboxes.get(item.sandboxId) : undefined;
 				const phase = item.state === "moving" ? record?.moving?.phase : undefined;
+				// Its record as it is now, deleted or not; only one gone altogether is judged as it was, and never to a key
+				// held to some sandboxes.
 				const named =
 					everyName ||
-					(record !== undefined && record.state !== "deleted"
+					(record !== undefined
 						? role !== undefined && (await canSee(principal, record, role))
-						: item.visibility !== "private" || item.ownerUserId === principal.userId);
+						: !(principal.kind === "key" && principal.limits.sandboxIds !== undefined) &&
+							(item.visibility !== "private" || item.ownerUserId === principal.userId));
 				return {
 					sandboxId: item.sandboxId,
 					...(named && item.name !== undefined ? { name: item.name } : {}),
@@ -13112,8 +13124,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		everyName: boolean,
 		role?: MemberRole,
 	): Promise<computeSchema.HostEvacuation> {
-		const evacuation = await store.evacuations.get(hostId);
-		if (evacuation === undefined) throw new KantelError("not_found", "The host has had no evacuation");
+		const read = await store.evacuations.get(hostId);
+		if (read === undefined) throw new KantelError("not_found", "The host has had no evacuation");
+		const evacuation = (await settleEndedEvacuation(read)) ?? read;
 		return evacuationView(principal, evacuation, everyName, role);
 	}
 
@@ -13147,7 +13160,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			run: randomId("evac"),
 			state: "running",
 			startedAt: now(),
-			by: { userId: principal.userId, superAdmin: everyName },
+			by: {
+				userId: principal.userId,
+				superAdmin: everyName,
+				...(principal.kind === "key"
+					? { scopes: [...principal.scopes] }
+					: principal.token?.scopes === undefined
+						? {}
+						: { scopes: [...principal.token.scopes] }),
+			},
 			sandboxes,
 		};
 		// One at a time: of two calls at once, one begins it and the other answers it.
@@ -13241,7 +13262,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					reason: `Its move was cut short ${attempts} times; it's where it was`,
 				};
 			}
-			return waiting({ ...base, attempts });
+			const { claim: _claim, ...unclaimed } = base;
+			return waiting({ ...unclaimed, attempts });
 		}
 		return waiting(base);
 	}
@@ -13292,25 +13314,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function endEvacuation(
 		hostId: string,
 		run: string,
+		token: string,
 		state: "done" | "failed" | "stopped",
 		reason?: string,
 	): Promise<void> {
 		await store.evacuations.update(hostId, (current) => {
+			// Only by the gateway holding it: one that lost it never ends another's.
 			if (current.run !== run || current.state !== "running") return undefined;
+			if (current.lease?.token !== token || current.lease.until <= now()) return undefined;
 			const { lease: _lease, ...rest } = current;
 			return { ...rest, state, ...(reason === undefined ? {} : { reason }), endedAt: now() };
 		});
 	}
 
-	/** The person an evacuation's moves are made as: who began it, with the rights they began it with. */
+	/**
+	 * The person an evacuation's moves are made as: who began it, with the rights they began it with, held to the scopes
+	 * of the key or personal access token they began it with (a move that would set up repositories needs `exec`).
+	 */
 	async function evacuatorOf(evacuation: StoredEvacuation): Promise<PersonPrincipal> {
 		const user = await store.users.get(evacuation.by.userId);
+		const { scopes } = evacuation.by;
 		return {
 			kind: "person",
 			userId: evacuation.by.userId,
 			name: user?.name ?? "",
 			superAdmin: evacuation.by.superAdmin,
 			personalAccountId: user?.personalAccountId ?? "",
+			...(scopes === undefined
+				? {}
+				: {
+						token: {
+							id: `evacuation-${evacuation.run}`,
+							name: "Host evacuation",
+							scopes: [...scopes],
+							expiresAt: Number.MAX_SAFE_INTEGER,
+						},
+					}),
 		};
 	}
 
@@ -13326,7 +13365,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Pick<StoredEvacuationSandbox, "state" | "reason" | "attempts"> | undefined {
 		const reason = messageOf(error);
 		if (!(error instanceof KantelError)) return { state: "failed", reason };
-		if (error.message === MOVE_OUTCOME_UNKNOWN) return undefined;
+		// Not known yet, or moved by another call: looked at again, from its record.
+		if (error.message === MOVE_OUTCOME_UNKNOWN || error.message === MOVED_ELSEWHERE) return undefined;
 		if (
 			placementReasonOf(error) !== undefined ||
 			error.code === "exhausted" ||
@@ -13343,12 +13383,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return { state: "failed", reason };
 	}
 
-	/** Moves one sandbox off an evacuation's host as a move does by default, and writes what became of it. */
-	async function moveOff(hostId: string, run: string, sandboxId: string, evacuator: PersonPrincipal): Promise<void> {
-		let outcome: Partial<StoredEvacuationSandbox> | undefined;
+	/**
+	 * Moves one sandbox off an evacuation's host as a move does by default, only while it is still there, and writes what
+	 * became of it on its claim (`claim`): never on a later claim of it, whoever holds the evacuation then.
+	 */
+	async function moveOff(
+		hostId: string,
+		run: string,
+		claim: string,
+		sandboxId: string,
+		evacuator: PersonPrincipal,
+	): Promise<void> {
+		const ours = (item: StoredEvacuationSandbox) =>
+			item.sandboxId === sandboxId && item.state === "moving" && item.claim === claim;
+		let ended: (item: StoredEvacuationSandbox) => Partial<StoredEvacuationSandbox> | undefined;
 		try {
-			const moved = await moveToHost(evacuator, "admin", sandboxId, {});
-			outcome =
+			const moved = await moveToHost(evacuator, "admin", sandboxId, {}, false, hostId);
+			const outcome: Partial<StoredEvacuationSandbox> =
 				moved.hostId !== undefined && moved.hostId !== hostId
 					? {
 							state: "moved",
@@ -13357,29 +13408,62 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							...(moved.moved?.restartReason === undefined ? {} : { reason: moved.moved.restartReason }),
 						}
 					: { state: "failed", reason: "It's still on this host" };
+			ended = () => outcome;
 		} catch (error) {
-			outcome = undefined;
-			await changeEvacuation(hostId, run, (sandboxes) =>
-				sandboxes.map((item) => {
-					if (item.sandboxId !== sandboxId || item.state !== "moving") return item;
-					const failed = evacuationOutcome(item, error);
-					return failed === undefined ? item : { ...item, ...failed };
-				}),
-			);
+			ended = (item) => evacuationOutcome(item, error);
 		}
-		if (outcome === undefined) return;
-		const ended = outcome;
 		await changeEvacuation(hostId, run, (sandboxes) =>
-			sandboxes.map((item) => (item.sandboxId === sandboxId && item.state === "moving" ? { ...item, ...ended } : item)),
+			sandboxes.map((item) => {
+				if (!ours(item)) return item;
+				const outcome = ended(item);
+				if (outcome === undefined) return item;
+				const { claim: _claim, ...rest } = item;
+				return { ...rest, ...outcome };
+			}),
 		);
+	}
+
+	/**
+	 * Settles the sandboxes an evacuation that has ended left `moving` (its moves inherited from a gateway gone, or under
+	 * way as its host was revoked), from their records: one moving still is left for later, one elsewhere has moved,
+	 * and one still on the host failed. Answers what was written, if anything.
+	 */
+	async function settleEndedEvacuation(evacuation: StoredEvacuation): Promise<StoredEvacuation | undefined> {
+		if (evacuation.state === "running") return undefined;
+		const moving = evacuation.sandboxes.filter((item) => item.state === "moving");
+		if (moving.length === 0) return undefined;
+		const records = new Map<string, StoredSandbox | undefined>();
+		for (const item of moving) records.set(item.sandboxId, await store.sandboxes.get(item.sandboxId));
+		return changeEvacuation(evacuation.id, evacuation.run, (sandboxes) => {
+			let changed = false;
+			const next = sandboxes.map((item): StoredEvacuationSandbox => {
+				if (item.state !== "moving") return item;
+				const sandbox = records.get(item.sandboxId);
+				if (sandbox?.moving !== undefined) return item;
+				changed = true;
+				const { claim: _claim, ...rest } = item;
+				if (sandbox !== undefined && sandbox.hostId !== evacuation.id && sandbox.state !== "deleted") {
+					return {
+						...rest,
+						state: "moved",
+						...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
+						keptMemory: sandbox.moved?.keptMemory ?? false,
+						...(sandbox.moved?.restartReason === undefined ? {} : { reason: sandbox.moved.restartReason }),
+					};
+				}
+				return { ...rest, state: "failed", reason: "Its move didn't finish; it's where it was" };
+			});
+			return changed ? next : undefined;
+		});
 	}
 
 	/**
 	 * Carries on a host's evacuation, holding it (`lease`, said every `EVACUATION_HEARTBEAT_MS`) so one gateway at a
 	 * time does. Each look at the host (`lookAtEvacuation`) takes in what changed, then up to `EVACUATION_MOVES` moves
 	 * are under way at once, counting those it finds moving that it didn't begin (a gateway gone, settled by the sweep).
-	 * It ends once each sandbox has moved, been skipped or failed, or as the host is undrained (`stopped`) or revoked.
-	 * While the host isn't connected, it waits. A gateway that dies leaves it held until its lease runs out, and the
+	 * It ends once each sandbox has moved, been skipped or failed, or as the host is undrained (`stopped`, once every move
+	 * under way has ended, those taken on included) or revoked (`failed`, once its own have; the rest are settled after,
+	 * `settleEndedEvacuation`). While the host isn't connected, it waits. A gateway that dies leaves it held until its lease runs out, and the
 	 * sweep then carries it on.
 	 */
 	async function carryOnEvacuation(hostId: string): Promise<void> {
@@ -13410,31 +13494,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const moves = new Map<string, Promise<void>>();
 		try {
 			const evacuator = await evacuatorOf(claimed);
+			// Why it is ending (undrained, revoked): no move begins after, and it ends once those under way have.
+			let stopping: { readonly state: "stopped" | "failed"; readonly reason: string } | undefined;
 			while (!closing && held) {
 				const host = (await ensureHosts()).find((known) => known.id === hostId);
-				// Ended, its moves under way here finished first (their outcomes written), none begun after.
 				if (host === undefined || host.state === "revoked") {
-					await Promise.allSettled(moves.values());
-					await endEvacuation(hostId, run, "failed", "The host was revoked");
-					return;
-				}
-				if (host.state !== "draining") {
-					await Promise.allSettled(moves.values());
-					await endEvacuation(hostId, run, "stopped", "The host was undrained");
-					return;
+					stopping = { state: "failed", reason: "The host was revoked" };
+				} else if (host.state !== "draining") {
+					stopping ??= { state: "stopped", reason: "The host was undrained" };
 				}
 				const looked = await lookAtEvacuation(hostId, run, token, new Set(moves.keys()));
 				if (looked === undefined || looked.lease?.token !== token) return;
-				if (moves.size === 0 && looked.sandboxes.every(evacuationDone)) {
+				// Under way: those its record has moving (this gateway's, and any it took on from one gone), and this one's.
+				const underWay = new Set([
+					...looked.sandboxes.filter((item) => item.state === "moving").map((item) => item.sandboxId),
+					...moves.keys(),
+				]);
+				if (stopping !== undefined) {
+					// A revoked host's moves may never settle: they are settled after it ends (`settleEndedEvacuation`).
+					if (moves.size === 0 && (underWay.size === 0 || stopping.state === "failed")) {
+						await endEvacuation(hostId, run, token, stopping.state, stopping.reason);
+						return;
+					}
+				} else if (underWay.size === 0 && looked.sandboxes.every(evacuationDone)) {
 					await endEvacuation(
 						hostId,
 						run,
+						token,
 						looked.sandboxes.some((item) => item.state === "failed") ? "failed" : "done",
 					);
 					return;
-				}
-				if ((await connectedHosts()).has(hostId)) {
-					let free = EVACUATION_MOVES - looked.sandboxes.filter((item) => item.state === "moving").length;
+				} else if ((await connectedHosts()).has(hostId)) {
+					let free = EVACUATION_MOVES - underWay.size;
 					for (const item of looked.sandboxes) {
 						if (free <= 0 || !held || closing) break;
 						if (item.state !== "waiting") continue;
@@ -13449,6 +13540,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							continue;
 						}
 						// Claimed under the lease, and only while fewer than two are moving as the record is now.
+						const claim = randomSlug(10);
 						const marked = await changeEvacuation(
 							hostId,
 							run,
@@ -13456,14 +13548,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								sandboxes.some((other) => other.sandboxId === item.sandboxId && other.state === "waiting") &&
 								sandboxes.filter((other) => other.state === "moving").length < EVACUATION_MOVES
 									? sandboxes.map((other) =>
-											other.sandboxId === item.sandboxId ? { ...other, state: "moving" as const } : other,
+											other.sandboxId === item.sandboxId ? { ...other, state: "moving" as const, claim } : other,
 										)
 									: undefined,
 							token,
 						);
 						if (marked === undefined) continue;
 						free--;
-						const move = moveOff(hostId, run, item.sandboxId, evacuator)
+						const move = moveOff(hostId, run, claim, item.sandboxId, evacuator)
 							.catch(() => undefined)
 							.finally(() => moves.delete(item.sandboxId));
 						moves.set(item.sandboxId, move);
@@ -13848,6 +13940,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const evacuation of await store.evacuations.list({ state: "running" })) {
 				if (evacuating.has(evacuation.id) || (evacuation.lease !== undefined && evacuation.lease.until > at)) continue;
 				keepGoing(carryOnEvacuation(evacuation.id));
+			}
+			// Those that ended with sandboxes still moving: settled from their records once the moves have.
+			for (const state of ["stopped", "failed"] as const) {
+				for (const evacuation of await store.evacuations.list({ state })) {
+					if (evacuation.sandboxes.some((item) => item.state === "moving")) {
+						keepGoing(settleEndedEvacuation(evacuation));
+					}
+				}
 			}
 			// The sweep alone stops a sandbox past its time, and only where its host is connected: one on a host that is
 			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's

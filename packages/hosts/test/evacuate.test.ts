@@ -271,10 +271,84 @@ describe("moving every sandbox off a draining host", () => {
 		await new Promise((resolve) => setTimeout(resolve, 2_500));
 		expect(importsOn([b])).toBe(2);
 		expect((await store.evacuations.get(a.hostId))?.lease?.token).toBe("another");
+		expect((await store.evacuations.get(a.hostId))?.state).toBe("running");
 		// That gateway gone too: the sweep here carries it on.
 		clock.at += EVACUATION_LEASE_MS + 1;
 		await api.service.sweep();
 		expect(await ended(root, a.hostId)).toMatchObject({ state: "done", moved: 4 });
+	});
+
+	it("records a sandbox moved elsewhere as it waited as moved, and never moves it again", async () => {
+		const { root, api, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const c = await join();
+		const ids: string[] = [];
+		for (let index = 0; index < 3; index++) ids.push(await sandboxOn(root, api, a, "stopped"));
+		const release = holdImports([b]);
+		// Every move of the evacuation goes to b, held, so the third waits its turn.
+		await root.updateHost(c.hostId, { draining: true });
+		await root.startHostEvacuation(a.hostId);
+		await vi.waitFor(() => expect(importsOn([b])).toBe(2));
+		const waiting = (await root.getHostEvacuation(a.hostId)).sandboxes.find((item) => item.state === "waiting");
+		if (waiting === undefined) throw new Error("none waiting");
+		await root.updateHost(c.hostId, { draining: false });
+		const own = await root.moveSandbox(waiting.sandboxId, { hostId: c.hostId });
+		expect(own.hostId).toBe(c.hostId);
+		release();
+		const done = await ended(root, a.hostId);
+		expect(done).toMatchObject({ state: "done", moved: 3 });
+		expect(done.sandboxes.find((item) => item.sandboxId === waiting.sandboxId)).toMatchObject({
+			state: "moved",
+			hostId: c.hostId,
+		});
+		const movesOf = (host: FakeHost) =>
+			host.calls.filter((call) => call.method === "sandbox.import" && call.params.sandboxId === waiting.sandboxId);
+		expect(movesOf(b)).toHaveLength(0);
+		expect(movesOf(c)).toHaveLength(1);
+	});
+
+	it("holds its moves to the scopes of the key that began it", async () => {
+		const { root, api, store, join } = await setup();
+		const a = await join();
+		await join();
+		await sandboxOn(root, api, a, "stopped");
+		const issued = await root.createApiKey({ name: "hosts", scopes: ["hosts:admin"] });
+		const key = createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: issued.secret,
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		await key.startHostEvacuation(a.hostId);
+		expect((await store.evacuations.get(a.hostId))?.by).toMatchObject({ superAdmin: true, scopes: ["hosts:admin"] });
+		expect((await ended(root, a.hostId)).moved).toBe(1);
+	});
+
+	it("settles the moves an ended evacuation left moving, from their sandboxes' records", async () => {
+		const { root, api, store, join } = await setup();
+		const a = await join();
+		await join();
+		const moved = await sandboxOn(root, api, a, "stopped");
+		const stayed = await sandboxOn(root, api, a, "pinned");
+		await root.startHostEvacuation(a.hostId);
+		await ended(root, a.hostId);
+		// As one undrained (or its host revoked) with two moves it took on from a gateway gone, still under way then.
+		await store.evacuations.update(a.hostId, (current) => ({
+			...current,
+			state: "stopped",
+			sandboxes: current.sandboxes.map((item) => ({ ...item, state: "moving" as const, claim: "gone" })),
+		}));
+		await api.service.sweep();
+		await vi.waitFor(async () => {
+			const settled = await store.evacuations.get(a.hostId);
+			expect(settled?.sandboxes.find((item) => item.sandboxId === moved)?.state).toBe("moved");
+			expect(settled?.sandboxes.find((item) => item.sandboxId === stayed)).toMatchObject({
+				state: "failed",
+				reason: expect.stringContaining("didn't finish"),
+			});
+		});
+		expect((await root.getHostEvacuation(a.hostId)).state).toBe("stopped");
 	});
 
 	it("is carried on by the next control plane's sweep once the one carrying it on has gone", async () => {

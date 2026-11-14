@@ -886,6 +886,8 @@ export interface StoredEvacuationSandbox {
 	readonly keptMemory?: boolean;
 	/** The moves of it begun and ended without an answer (a gateway gone): it is tried again up to a few times. */
 	readonly attempts?: number;
+	/** Its claim while `moving`, this evacuation's: a move's outcome lands only on the claim that began it. */
+	readonly claim?: string;
 }
 
 /**
@@ -902,8 +904,15 @@ export interface StoredEvacuation {
 	readonly reason?: string;
 	readonly startedAt: number;
 	readonly endedAt?: number;
-	/** Who began it, whose moves it makes: a super-admin (the deployment's hosts) or the account's admin. */
-	readonly by: { readonly userId: string; readonly superAdmin: boolean };
+	/**
+	 * Who began it, whose moves it makes: a super-admin (the deployment's hosts) or the account's admin, and the scopes
+	 * their key or personal access token was held to (`scopes`), which its moves are held to as well.
+	 */
+	readonly by: {
+		readonly userId: string;
+		readonly superAdmin: boolean;
+		readonly scopes?: readonly computeSchema.ApiKeyScope[];
+	};
 	readonly sandboxes: readonly StoredEvacuationSandbox[];
 	/** Who is carrying it on, until when: one gateway at a time. */
 	readonly lease?: { readonly token: string; readonly until: number };
