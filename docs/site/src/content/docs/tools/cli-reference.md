@@ -1171,7 +1171,7 @@ kantel org join <code> [flags]
 
 ### kantel org set
 
-Change the account's name, default visibility, or whether personal tokens work in it.
+Change the account's name, default visibility, whether personal tokens work in it, or its snapshot copies.
 
 ```sh
 kantel org set [flags]
@@ -1184,6 +1184,7 @@ It changes the account commands act in (--account or kantel org use); it needs a
 | `--name <name>` | Rename it |
 | `--visibility <organisation\|private>` | Who sees new sandboxes by default |
 | `--personal-tokens <allowed\|blocked>` | blocked: members' personal tokens can't act in it (an organisation's) |
+| `--snapshot-copies <on\|off>` | on: keep each saved snapshot on two hosts of its pool (the default) |
 
 ### kantel org usage
 
