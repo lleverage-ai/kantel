@@ -9670,8 +9670,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
 				// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
 				// of them writes `deleted`.
-				const began = await transition(current.id, NOT_DELETED, (latest) => withState(latest, "deleting"));
-				if (!("moved" in began)) return sandboxView(began.lost, principal);
+				// Never over a move begun since the read above (on another gateway): that is refused as one seen would be.
+				const began = await transition(
+					current.id,
+					NOT_DELETED,
+					(latest) => withState(latest, "deleting"),
+					(latest) => latest.moving === undefined,
+				);
+				if (!("moved" in began)) {
+					if (began.lost.moving !== undefined && began.lost.state !== "deleted") {
+						throw new KantelError("conflict", "The sandbox is moving to another host; delete it once the move ends");
+					}
+					return sandboxView(began.lost, principal);
+				}
 				await track([current.id], async () => {
 					try {
 						await killCommandsOf(current.id);

@@ -378,7 +378,7 @@ describe("moving a stopped sandbox to another host", () => {
 	});
 
 	it("never switches once a rollback has begun, even one let go when a host didn't answer", async () => {
-		const { root, api, service, join } = await setup();
+		const { root, api, service, store, join } = await setup();
 		const a = await join();
 		const b = await join();
 		const sandbox = await stoppedOn(root, a, "disk");
@@ -387,9 +387,23 @@ describe("moving a stopped sandbox to another host", () => {
 		const held = new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		b.hold = (method) => (method === "sandbox.start" ? held : undefined);
+		// The mover is held just before its switch, the sandbox running on its target.
+		const update = store.updatePlacement.bind(store);
+		let atSwitch: () => void = () => undefined;
+		const reached = new Promise<void>((resolve) => {
+			atSwitch = resolve;
+		});
+		store.updatePlacement = async (id, change) => {
+			const latest = await store.getPlacement(id);
+			if (latest !== undefined && change(latest)?.moved !== undefined) {
+				atSwitch();
+				await held;
+			}
+			return update(id, change);
+		};
 		const moving = failure(root.moveSandbox(sandbox.id, {}));
-		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true));
+		await reached;
+		expect(b.sandboxes.get(sandbox.id)?.state).toBe("running");
 		const version = String(b.calls.find((call) => call.method === "sandbox.import")?.params.version);
 		// Another gateway settles it as it starts: the target's copy is cancelled, but the source doesn't answer the
 		// export's delete, so that rollback lets its claim go.
