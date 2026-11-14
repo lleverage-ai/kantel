@@ -1837,7 +1837,7 @@ const (
 type MoveSandboxBody struct {
 	// The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox.
 	HostID *string `json:"hostId,omitempty"`
-	// Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new host and its memory is lost.
+	// Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused or running one is refused unless this is `false`. Then it boots on its disk on the new host and its memory is lost: a running one is copied as it runs, stopped, copied again (only what it wrote since), and started there, so it is unavailable only for that stop, the last copy and its boot.
 	KeepMemory *bool `json:"keepMemory,omitempty"`
 	// Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was.
 	Wait *bool `json:"wait,omitempty"`
@@ -2334,18 +2334,20 @@ type SandboxMove struct {
 	HostID *string `json:"hostId,omitempty"`
 	// Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host.
 	KeepMemory bool `json:"keepMemory"`
-	// `copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it is starting on it.
+	// `copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are there, and it is starting on it.
 	Phase SandboxMovePhase `json:"phase"`
 	// Epoch milliseconds, UTC.
 	StartedAt int64 `json:"startedAt"`
 }
 
-// `copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it is starting on it.
+// `copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are there, and it is starting on it.
 type SandboxMovePhase string
 
 const (
-	SandboxMovePhaseCopying  SandboxMovePhase = "copying"
-	SandboxMovePhaseStarting SandboxMovePhase = "starting"
+	SandboxMovePhaseCopying   SandboxMovePhase = "copying"
+	SandboxMovePhaseStopping  SandboxMovePhase = "stopping"
+	SandboxMovePhaseFinalCopy SandboxMovePhase = "final-copy"
+	SandboxMovePhaseStarting  SandboxMovePhase = "starting"
 )
 
 // The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call.
@@ -2503,7 +2505,7 @@ const (
 	SandboxStartupDiskNew     SandboxStartupDisk = "new"
 )
 
-// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
 type SandboxState string
 
 const (

@@ -239,6 +239,12 @@ export function MoveDialog({ sandbox, targets, onClose, onMove, onFailed }: Move
 				{restarts && sandbox?.state === "paused" ? (
 					<p className="m-0 text-sm text-muted">It's paused, so its memory is lost: it boots on its disk there.</p>
 				) : null}
+				{restarts && sandbox?.state === "running" ? (
+					<p className="m-0 text-sm text-muted">
+						It keeps running while its disk is copied, then stops for a last copy and starts there: running programs
+						end.
+					</p>
+				) : null}
 				{failure === undefined ? null : <Notice level="error">{failure}</Notice>}
 			</div>
 		</Dialog>

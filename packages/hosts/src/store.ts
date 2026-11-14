@@ -108,17 +108,22 @@ export interface PlacementRecord {
 		readonly settling?: { readonly by: string; readonly until: number };
 	};
 	/**
-	 * A stopped microVM's move to another host under way (docs/design/disk-store.md, "Moving a sandbox to another host"),
-	 * kept before anything is sent: its operation ID (the version its source exports, `sandbox.export`), the host it is
-	 * (or may be) copied to and at what size, how far it got (`copy`: its files being exported and fetched; `start`:
-	 * started on the target), and the export's map digest once its source has made it, which the target's
-	 * `disk.locate` is answered from. Until the placement switches, a failure rolls it back (`settling`, as an
-	 * upgrade's): the target's copy cancelled, the source's export deleted, the sandbox stopped where it was.
+	 * A microVM's move to another host under way (docs/design/disk-store.md, "Moving a sandbox to another host"), kept
+	 * before anything is sent: its operation ID (the version its source exports, `sandbox.export`), the host it is (or
+	 * may be) copied to and at what size, how far it got (`copy`: its files being exported and fetched; for a running
+	 * sandbox's, `stop`: being stopped, then `final-copy`: copied again over the first copy; `start`: started on the
+	 * target), and the export's map digest once its source has made it, which the target's `disk.locate` is answered
+	 * from. A running sandbox's move (`live`) first exports it as it runs, as the version `moveLiveVersion` names, whose
+	 * map digest is `liveDigest`. Until the placement switches, a failure rolls it back (`settling`, as an upgrade's):
+	 * the target's copies cancelled, the source's exports deleted, the sandbox left where it was (stopped, once its move
+	 * has stopped it: the compute plane starts it again).
 	 */
 	readonly move?: {
 		readonly operationId: string;
 		readonly target: string;
-		readonly phase: "copy" | "start";
+		readonly phase: "copy" | "stop" | "final-copy" | "start";
+		readonly live?: true;
+		readonly liveDigest?: string;
 		readonly size: {
 			readonly name: string;
 			readonly vcpus: number;

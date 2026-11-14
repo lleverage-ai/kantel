@@ -1457,7 +1457,7 @@ Where to move it, and whether its memory goes with it. Every field is optional.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `hostId` | string | no | The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox. |
-| `keepMemory` | boolean | no | Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new host and its memory is lost. |
+| `keepMemory` | boolean | no | Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused or running one is refused unless this is `false`. Then it boots on its disk on the new host and its memory is lost: a running one is copied as it runs, stopped, copied again (only what it wrote since), and started there, so it is unavailable only for that stop, the last copy and its boot. |
 | `wait` | boolean | no | Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was. |
 
 ### PersonalToken
@@ -1839,7 +1839,7 @@ A move to another host under way (its `state` is `moving`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `phase` | `"copying"` or `"starting"` | yes | `copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it is starting on it. |
+| `phase` | `"copying"` or `"stopping"` or `"final-copy"` or `"starting"` | yes | `copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are there, and it is starting on it. |
 | `hostId` | string | no | The host it is moving to, where the caller may know it, once chosen. |
 | `keepMemory` | boolean | yes | Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host. |
 | `startedAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -1979,7 +1979,7 @@ How its machine's latest start (a create, fork, start or resume) took its time, 
 
 ### SandboxState
 
-`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
 
 One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"moving"` or `"error"` or `"deleting"` or `"deleted"`.
 

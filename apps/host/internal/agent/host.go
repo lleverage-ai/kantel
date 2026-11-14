@@ -393,7 +393,7 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureSnapshotSync)
 	}
 	if h.movesSandboxes() {
-		features = append(features, proto.FeatureSandboxMove)
+		features = append(features, proto.FeatureSandboxMove, proto.FeatureSandboxMoveRunning)
 	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),

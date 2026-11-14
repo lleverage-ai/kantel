@@ -1322,8 +1322,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async move(sandboxId, spec, operationId): Promise<Placement> {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("conflict", "Only a microVM moves to another host");
-			// Its ports' exposures end as it boots again, as at any boot.
-			await options.ports?.forget(sandboxId);
+			// Its ports' exposures end as it boots again, as at any boot: a running sandbox's once it is stopped, as it
+			// serves them until then.
+			if (spec.running !== true) await options.ports?.forget(sandboxId);
 			const revision = spec.egressRevision ?? spec.egress?.revision;
 			const wanted = mountsOf(spec.mounts);
 			const { sandbox, hostId, ...known } = await hosts.sandboxes.move(sandboxId, {
@@ -1333,6 +1334,16 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(spec.to === undefined ? {} : { to: spec.to }),
 				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...(spec.onStarting === undefined ? {} : { onStarting: spec.onStarting }),
+				...(spec.running === true
+					? {
+							running: true,
+							onStopping: async (target: string) => {
+								await spec.onStopping?.(target);
+								await options.ports?.forget(sandboxId);
+							},
+						}
+					: {}),
+				...(spec.onFinalCopy === undefined ? {} : { onFinalCopy: spec.onFinalCopy }),
 				start: (features) => {
 					const mounts = mountHandoff(wanted === undefined ? undefined : features, wanted);
 					return {

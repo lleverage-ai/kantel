@@ -60,10 +60,11 @@ describe("a move's phase", () => {
 });
 
 describe("moving", () => {
-	it("is offered for a stopped or paused microVM on a host the viewer knows, connected", () => {
+	it("is offered for a running, stopped or paused microVM on a host the viewer knows, connected", () => {
 		expect(canMove(RENDER)).toBe(true);
 		expect(canMove({ ...RENDER, state: "paused" })).toBe(true);
-		expect(canMove({ ...RENDER, state: "running" })).toBe(false);
+		expect(canMove({ ...RENDER, state: "running" })).toBe(true);
+		expect(canMove({ ...RENDER, state: "starting" })).toBe(false);
 		expect(canMove(moving("copying"))).toBe(false);
 		expect(canMove({ ...RENDER, kind: "isolate" })).toBe(false);
 		expect(canMove({ ...RENDER, hostUnreachable: true })).toBe(false);

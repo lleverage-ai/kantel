@@ -3356,6 +3356,27 @@ describe("organisations", () => {
 		expect((await failure(ann.listSandboxes({ account: org.id }))).code).toBe("forbidden");
 	});
 
+	it("revokes a leaving member's keys while their private sandbox moves, and owes the sandbox its stop", async () => {
+		const { api, client, tom, ann } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "admin" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		const key = client((await ann.createApiKey({ name: "theirs", preset: "read-only", account: org.id })).secret);
+		const theirs = await ann.createSandbox({ account: org.id, visibility: "private", wait: true });
+		// A running sandbox's move under way (on any gateway): its stop is its move's.
+		const at = Date.now();
+		await api.store.sandboxes.update(theirs.id, (latest) => ({
+			...latest,
+			moving: { operationId: "mov_1", at, heartbeatAt: at, phase: "copying", from: "running", before: {} },
+		}));
+		await tom.removeMember(org.id, "usr_ann");
+		expect((await failure(key.listSandboxes({ account: org.id }))).code).toBe("unauthenticated");
+		expect(await api.store.sandboxes.get(theirs.id)).toMatchObject({
+			state: "running",
+			moving: { operationId: "mov_1", stopAfter: "Its person left the organisation" },
+		});
+	});
+
 	it("lets only the person an emailed invite is for join, whatever case either email is in, and says who it's for (#657)", async () => {
 		const { tom, ann, root } = setup();
 		const org = await tom.createOrganisation({ name: "Acme" });

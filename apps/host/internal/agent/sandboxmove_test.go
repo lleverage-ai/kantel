@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -39,7 +40,7 @@ func (s *moveTier) ReadSandboxFile(string, string, string) ([]byte, error) {
 	return nil, os.ErrNotExist
 }
 func (s *moveTier) ImportGeneration(string) uint64 { return 0 }
-func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ uint64, _ []byte) error {
+func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ uint64, _ []byte, _ microvm.ImportOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prepared = append(s.prepared, id+"/"+version)
@@ -47,6 +48,9 @@ func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _
 }
 func (s *moveTier) SandboxPartPartial(string, string, string) (string, error) {
 	return "", errors.New("no partials here")
+}
+func (s *moveTier) CloneSandboxPartBase(string, string, string, string) (*blockmap.Map, error) {
+	return nil, nil
 }
 func (s *moveTier) PublishFetchedSandbox(string, string, map[string]disksync.FetchedPart) error {
 	return nil
