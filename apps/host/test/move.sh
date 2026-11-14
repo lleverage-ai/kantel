@@ -77,8 +77,8 @@ stop() {
 }
 on() { docker exec "$1" sh -c "$2"; }
 # What its disk's and its sticky disk's files hold (its sticky disk is mounted again as it boots, a moment after).
-files() { run 'cat /home/user/disk-marker; cat /mnt/cache/sticky-marker 2>&1 || true' | tr '\n' ' '; }
-files_there() { [ "$(files)" = "on-disk on-sticky " ]; }
+files() { run 'cat /home/user/disk-marker; cat /mnt/cache/sticky-marker 2>&1 || true' | xargs; }
+files_there() { [ "$(files)" = "on-disk on-sticky" ]; }
 # The sandbox's port 8080, exposed publicly, by its URL: what it serves of `$1`, asked of the gateway by the URL's name
 # (the ports' domain, kantel-ports.test, has no DNS here).
 served() { curl -sS -f --max-time 20 "$url/$1" -H "host: $(sed -E 's|^[a-z]+://([^/:]+).*|\1|' <<<"$port_url")"; }
