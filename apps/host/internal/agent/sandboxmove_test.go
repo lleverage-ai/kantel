@@ -20,6 +20,8 @@ type moveTier struct {
 	exported []string
 	prepared []string
 	moved    []string
+	// made are the sandboxes each version made here, which its cancel deletes.
+	made map[string]string
 }
 
 func (s *moveTier) ExportSandbox(_ context.Context, p proto.SandboxExportParams) (proto.SandboxExportResult, error) {
@@ -54,7 +56,11 @@ func (s *moveTier) ImportedSandbox(id, _ string) (proto.SandboxInfo, error) {
 func (s *moveTier) SandboxImportPartials() [][2]string        { return nil }
 func (s *moveTier) ReserveSandboxFetch(int64) (func(), error) { return func() {}, nil }
 func (s *moveTier) DiscardSandboxImport(string, string)       {}
-func (s *moveTier) CancelSandboxImport(string, string) error  { return nil }
+func (s *moveTier) CancelSandboxImport(id, version string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.made[id] == version, nil
+}
 func (s *moveTier) DeleteMoved(id string) error {
 	s.mu.Lock()
 	s.moved = append(s.moved, id)
@@ -71,6 +77,7 @@ func TestSandboxMove(t *testing.T) {
 		return &moveTier{snapshotFetchTier: &snapshotFetchTier{rootfsFetchTier: &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}}
 	}
 	tier := newTier()
+	tier.made = map[string]string{"sb4": "mov_4"}
 	without := newLifecycleHost(t, tier.lifecycleTier)
 	without.tiers[microvm.Tier] = tier
 	if slices.Contains(without.makeFacts().Features, proto.FeatureSandboxMove) {
@@ -105,6 +112,26 @@ func TestSandboxMove(t *testing.T) {
 	tier.lifecycleTier.stopped["sb3"] = true
 	if err := call(t, h, proto.MethodDelete, proto.DeleteParams{SandboxID: "sb3", KeepSnapshots: true}); err != nil {
 		t.Fatal(err)
+	}
+	// A cancel that deleted the sandbox its move made here lets go of what the host kept of it; one of another move's
+	// sandbox leaves that.
+	for _, id := range []string{"sb4", "sb5"} {
+		h.floorMu.Lock()
+		if h.floors == nil {
+			h.floors = map[string]int64{}
+		}
+		h.floors[id] = 7
+		h.floorMu.Unlock()
+		if err := call(t, h, proto.MethodSandboxImportCancel, proto.SandboxExportParams{SandboxID: id, Version: "mov_4"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.floorMu.Lock()
+	_, kept4 := h.floors["sb4"]
+	_, kept5 := h.floors["sb5"]
+	h.floorMu.Unlock()
+	if kept4 || !kept5 {
+		t.Fatalf("after the cancels, sb4's floor kept %v, sb5's %v", kept4, kept5)
 	}
 	tier.mu.Lock()
 	defer tier.mu.Unlock()

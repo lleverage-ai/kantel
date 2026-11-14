@@ -961,12 +961,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		h.forgetSecrets(p.SandboxID)
-		if h.cas != nil {
-			_ = h.cas.Forget(p.SandboxID)
-		}
-		h.forgetFloor(p.SandboxID)
-		h.runs.forget(p.SandboxID)
+		h.forgetSandbox(p.SandboxID)
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)
@@ -1215,6 +1210,17 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		return h.templateCall(ctx, method, params)
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
+}
+
+// forgetSandbox lets go of what the host keeps of a sandbox it has deleted: its protected values, its egress CA, its
+// egress revision floor and its commands.
+func (h *Host) forgetSandbox(id string) {
+	h.forgetSecrets(id)
+	if h.cas != nil {
+		_ = h.cas.Forget(id)
+	}
+	h.forgetFloor(id)
+	h.runs.forget(id)
 }
 
 // List is every sandbox on the host.

@@ -419,7 +419,8 @@ type SandboxMover interface {
 	SandboxImportPartials() [][2]string
 	ReserveSandboxFetch(bytes int64) (release func(), err error)
 	DiscardSandboxImport(id, version string)
-	CancelSandboxImport(id, version string) error
+	// CancelSandboxImport ends version's import for good, and says whether it deleted a sandbox that version made.
+	CancelSandboxImport(id, version string) (deleted bool, err error)
 	// DeleteMoved removes a sandbox moved to another host, its automatic snapshots kept.
 	DeleteMoved(id string) error
 }
@@ -473,8 +474,14 @@ func (h *Host) sandboxImportCancel(params json.RawMessage) (any, error) {
 		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't move sandboxes"}
 	}
 	defer h.lifecycle.lock(p.SandboxID)()
-	if err := t.CancelSandboxImport(p.SandboxID, p.Version); err != nil {
+	deleted, err := t.CancelSandboxImport(p.SandboxID, p.Version)
+	if err != nil {
 		return nil, err
+	}
+	// A sandbox it made here (started, perhaps, before the move was rolled back) goes as a delete does: what the host
+	// keeps of it goes too. One another move made is left, with what the host keeps of it.
+	if deleted {
+		h.forgetSandbox(p.SandboxID)
 	}
 	return map[string]any{}, nil
 }

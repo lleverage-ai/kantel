@@ -393,8 +393,8 @@ func TestCancelledImport(t *testing.T) {
 		}
 	}
 	parts := stageTestImport(t, a, b, "sb1", "mov_1")
-	if err := b.CancelSandboxImport("sb1", "mov_1"); err != nil {
-		t.Fatal(err)
+	if deleted, err := b.CancelSandboxImport("sb1", "mov_1"); err != nil || deleted {
+		t.Fatalf("cancelled: deleted %v, %v", deleted, err)
 	}
 	if err := b.PublishFetchedSandbox("sb1", "mov_1", parts); err == nil {
 		t.Fatal("published after its cancel")
@@ -411,14 +411,14 @@ func TestCancelledImport(t *testing.T) {
 	if err := importTestSandbox(t, a, b, "sb1", "mov_2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.CancelSandboxImport("sb1", "mov_1"); err != nil {
-		t.Fatal(err)
+	if deleted, err := b.CancelSandboxImport("sb1", "mov_1"); err != nil || deleted {
+		t.Fatalf("a cancel of another move: deleted %v, %v", deleted, err)
 	}
 	if _, err := b.get("sb1"); err != nil {
 		t.Fatal("a cancel of another move deleted the sandbox")
 	}
-	if err := b.CancelSandboxImport("sb1", "mov_2"); err != nil {
-		t.Fatal(err)
+	if deleted, err := b.CancelSandboxImport("sb1", "mov_2"); err != nil || !deleted {
+		t.Fatalf("its own cancel: deleted %v, %v", deleted, err)
 	}
 	if _, err := b.get("sb1"); err == nil || fileExists(filepath.Join(b.cfg.Root, "sandboxes", "sb1")) {
 		t.Fatal("the cancelled move's sandbox is still there")

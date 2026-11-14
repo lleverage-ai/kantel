@@ -588,10 +588,10 @@ func (m *Manager) DiscardSandboxImport(id, version string) {
 
 // CancelSandboxImport ends version's import of a sandbox here for good (sandbox.import.cancel, a move rolled back):
 // whatever it staged or fetched goes, a sandbox it made here is deleted, and it is never made ready or published after,
-// even by a sandbox.import still under way.
-func (m *Manager) CancelSandboxImport(id, version string) error {
+// even by a sandbox.import still under way. Says whether it deleted a sandbox.
+func (m *Manager) CancelSandboxImport(id, version string) (bool, error) {
 	if !sandboxObject(id, version) {
-		return &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
+		return false, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID or version"}
 	}
 	m.moves.mu.Lock()
 	if m.moves.cancelled == nil {
@@ -605,12 +605,15 @@ func (m *Manager) CancelSandboxImport(id, version string) error {
 	_ = os.Remove(filepath.Join(m.cfg.Root, sandboxImportsDir, id))
 	m.moves.mu.Unlock()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if s, err := m.get(id); err != nil || !madeBy(s, version) {
-		return nil
+		return false, nil
 	}
-	return m.deleteSandbox(id, false)
+	if err := m.deleteSandbox(id, false); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // madeBy says whether a sandbox here was made by version's import.
