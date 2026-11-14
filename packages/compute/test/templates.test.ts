@@ -810,6 +810,21 @@ describe("a template snapshot's copies", () => {
 		expect((await t.api.store.diskHolders.list()).filter((holder) => holder.objectId === id)).toEqual([]);
 	});
 
+	it("aren't asked of a custom image's: a copy says nothing of the image it was made of", async () => {
+		const t = await pooled();
+		const template = await t.tom.createTemplate({
+			name: "rg",
+			spec: { ...SPEC, image: { kind: "dockerfile", dockerfile: "ARG KANTEL_BASE\nFROM $KANTEL_BASE\n" } },
+		});
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		await holds(t, STUB_HOST_ID, [id]);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(1);
+	});
+
 	it("are deleted by the sweep when their entry is gone or thrown away", async () => {
 		const t = await pooled();
 		t.bytesOnHosts.add("host_b tsn_000000000000000000000000_9");

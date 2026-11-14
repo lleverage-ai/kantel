@@ -41,7 +41,8 @@
  * Template snapshots are not user snapshots: they are kept in `store.templateSnapshots` and their bytes are deleted
  * with `backend.deleteTemplateSnapshot`. Nothing here reads or writes `store.snapshots` or calls `backend.deleteSnapshot`.
  *
- * A pool's hosts share its build (docs/design/disk-store.md, "Phase 3 notes"): once an entry is ready and a host holds
+ * A pool's hosts share a Kantel base's build (docs/design/disk-store.md, "Phase 3 notes"; a custom image's isn't copied,
+ * as a copy says nothing of the image it was made of): once an entry is ready and a host holds
  * it (the catalogue's `template` holders, from hosts' reports), each other host in its pool on its runtime that takes
  * copies (`takesCopies`: it syncs templates, in a pool with sync on) is asked to build it too, under the same ID. A host
  * fetches it from a peer whose copy restores on its CPU and runtime rather than booting it, and builds its own when none
@@ -668,13 +669,14 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	 */
 	async function retryDeletions(): Promise<void> {
 		for (const entry of await store.templateSnapshots.list({ state: "deleting" })) await cleanUp(entry);
-		const orphans = new Set<string>();
-		for (const holder of await store.diskHolders.list()) {
-			if (holder.kind !== "template" || orphans.has(holder.objectId)) continue;
-			const entry = await store.templateSnapshots.get(holder.objectId);
-			if (entry === undefined || entry.state === "discarded") orphans.add(holder.objectId);
+		// Each template snapshot with a copy looked up once, however many hosts hold it.
+		const copied = new Set(
+			(await store.diskHolders.list()).filter((holder) => holder.kind === "template").map((holder) => holder.objectId),
+		);
+		for (const snapshotId of copied) {
+			const entry = await store.templateSnapshots.get(snapshotId);
+			if (entry === undefined || entry.state === "discarded") await deleteCopies(snapshotId, undefined);
 		}
-		for (const snapshotId of orphans) await deleteCopies(snapshotId, undefined);
 	}
 
 	/** A template that is there to callers: not retired (`retiredAt`), its retirement finished or not. */
@@ -842,6 +844,9 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		custom: CustomSource | undefined,
 	): Promise<void> {
 		const takesCopies = options.takesCopies;
+		// Not of a custom image: a host that can't fetch its root filesystem builds or pulls the image again, which may give
+		// another digest than the one the entry's key covers, and a copy says nothing of its image.
+		if (custom !== undefined) return;
 		if (takesCopies === undefined || entry.state !== "ready" || entry.ref === undefined) return;
 		const { poolId } = entry.key;
 		if (poolId === undefined || entry.hostId === undefined) return;
@@ -1351,7 +1356,11 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		 * The hosts among `among` that would restore an entry: its own host, built in its pool on its runtime, then each
 		 * host in its pool now with a copy (a `template` holder made there) whose memory restores on it.
 		 */
-		const restoringHosts = async (entry: StoredTemplateSnapshot, among: readonly string[]): Promise<string[]> => {
+		const restoringHosts = async (
+			entry: StoredTemplateSnapshot,
+			among: readonly string[],
+			withCopies = true,
+		): Promise<string[]> => {
 			const out: string[] = [];
 			if (
 				entry.hostId !== undefined &&
@@ -1369,7 +1378,8 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			}
 			const { poolId } = entry.key;
 			const fingerprints = start.hostFingerprints;
-			if (poolId === undefined || fingerprints === undefined || start.hostPools === undefined) return out;
+			if (!withCopies || poolId === undefined || fingerprints === undefined || start.hostPools === undefined)
+				return out;
 			for (const copy of await copiesOf(entry.id)) {
 				const hostId = copy.hostId;
 				if (copy.state !== "held" || out.includes(hostId) || !among.includes(hostId) || !restores(hostId)) continue;
@@ -1386,7 +1396,8 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				hostRuntimes,
 				entries.filter(inItsPool),
 				eligible,
-				restoringHosts,
+				// A custom image's entry is only on its own host: none is copied (`spread`).
+				(entry, among) => restoringHosts(entry, among, false),
 			);
 		}
 		// A snapshot is the machine it was built as: only one built as this sandbox's shape will do, so a restore and a
