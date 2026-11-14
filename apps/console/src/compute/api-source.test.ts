@@ -697,6 +697,39 @@ describe("snapshots", () => {
 	});
 });
 
+describe("a saved snapshot's hosts", () => {
+	it("lists them from its details, and none from a gateway from before them", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate" });
+		await api.service.idle();
+		const saved = await source.snapshots.save(sandbox.id, "golden");
+		await api.service.idle();
+		// An isolate's is on the host it was taken on.
+		const hosts = await source.snapshots.hosts?.(saved.id);
+		expect(hosts).toHaveLength(1);
+		expect(hosts?.[0]).toMatchObject({ state: "held", memory: false });
+
+		// A gateway from before them answers the snapshot without its hosts.
+		const legacy: typeof fetch = async (input, init) => {
+			const request =
+				typeof input === "string" || input instanceof URL
+					? new Request(new URL(input, ORIGIN), init)
+					: new Request(input, init);
+			const answer = await fetchApi(request);
+			if (request.method !== "GET" || !new URL(request.url).pathname.startsWith("/v1/snapshots/")) return answer;
+			const snapshot = (await answer.json()) as Record<string, unknown>;
+			delete snapshot.hosts;
+			return new Response(JSON.stringify(snapshot), {
+				status: answer.status,
+				headers: { "content-type": "application/json" },
+			});
+		};
+		expect(await (await open(legacy)).snapshots.hosts?.(saved.id)).toBeUndefined();
+	});
+});
+
 describe("keys", () => {
 	it("creates a key, showing its secret once, lists it and revokes it", async () => {
 		const { fetchApi } = setup();
@@ -1672,5 +1705,50 @@ describe("an organisation's personal tokens", () => {
 		// And nothing was blocked.
 		const listed = await (await open(fetchApi)).accounts.list();
 		expect(listed.find((account) => account.id === org.id)?.personalTokens).toBe("allowed");
+	});
+});
+
+describe("an account's snapshot copies", () => {
+	it("turns them off and on, taking only the setting Kantel answers as saved", async () => {
+		const { fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		// On by default.
+		expect((await source.accounts.list())[0]?.snapshotCopies).toBe(true);
+		expect((await source.accounts.setSnapshotCopies?.(accountId, false))?.snapshotCopies).toBe(false);
+		expect((await source.accounts.list())[0]?.snapshotCopies).toBe(false);
+		expect((await source.accounts.setSnapshotCopies?.(accountId, true))?.snapshotCopies).toBe(true);
+
+		// A gateway from before them drops the field from the request and the answer, and changes nothing.
+		const legacy: typeof fetch = async (input, init) => {
+			const request =
+				typeof input === "string" || input instanceof URL
+					? new Request(new URL(input, ORIGIN), init)
+					: new Request(input, init);
+			if (!new URL(request.url).pathname.startsWith("/v1/accounts")) return fetchApi(request);
+			const body = request.method === "PATCH" ? ((await request.json()) as Record<string, unknown>) : undefined;
+			if (body !== undefined) delete body.snapshotCopies;
+			const answer = await fetchApi(
+				body === undefined
+					? request
+					: new Request(request.url, { method: "PATCH", headers: request.headers, body: JSON.stringify(body) }),
+			);
+			const read = (await answer.json()) as Record<string, unknown>;
+			const drop = (account: Record<string, unknown>) => {
+				delete account.snapshotCopies;
+			};
+			if (Array.isArray(read.items)) for (const account of read.items as Record<string, unknown>[]) drop(account);
+			else drop(read);
+			return new Response(JSON.stringify(read), {
+				status: answer.status,
+				headers: { "content-type": "application/json" },
+			});
+		};
+		const old = await open(legacy);
+		// The console doesn't offer it there.
+		expect((await old.accounts.list())[0]?.snapshotCopies).toBeUndefined();
+		await expect(old.accounts.setSnapshotCopies?.(accountId, false)).rejects.toThrow("doesn't support keeping");
+		// And nothing was turned off.
+		expect((await source.accounts.list())[0]?.snapshotCopies).toBe(true);
 	});
 });
