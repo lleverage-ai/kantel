@@ -5840,6 +5840,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const placement = await backend.create({
 			...boot,
 			...fromCopies,
+			// This attempt, as the boot moved it to starting.
+			attempt: sandbox.lifecycle ?? 0,
 			eligibleHosts,
 			// Placed afresh (from its source's snapshot too): in its pool, kept to it as the host admits it.
 			...pooled(sandbox.poolId),
@@ -9639,6 +9641,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						async () =>
 							backend.create({
 								sandboxId: sandbox.id,
+								attempt: sandbox.lifecycle ?? 0,
 								accountId: account.id,
 								type,
 								subdomain: sandbox.subdomain,
@@ -12775,11 +12778,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * One whose host hasn't said is left `starting`. A report under `CREATE_SETTLE_GRACE_MS` old is left to the gateway
 	 * that may still be finishing it.
 	 *
-	 * Fenced to the attempt it read (`lifecycle`, which every move of its state moves on): each outcome is one conditional
-	 * write over that attempt, and the only call to the host that can follow (a stop for egress it can't take,
-	 * `enforceStop`) is sent once a write so fenced has moved it to `stopping`. So any number of gateways may settle the
-	 * same attempt at once, and one wins; a late one, or one whose gateway went, changes nothing, and never reaches a
-	 * later attempt.
+	 * Everything is keyed on the attempt it read (`lifecycle`, which every move of its state moves on, and which its create
+	 * sent as `SandboxSpec.attempt`). Its evidence is the host's word on that attempt alone: its placement, stamped with
+	 * the attempt it was admitted for, and nothing from another attempt or with no stamp (`settleCreate` answers
+	 * `pending`). Each outcome is one conditional write over that attempt, and the only call to the host that can follow
+	 * (a stop for egress it can't take, `enforceStop`) is sent once a write so fenced has moved it to `stopping`. So any
+	 * number of gateways may settle the same attempt at once and one wins, and a late one, or one whose gateway went,
+	 * neither reads another attempt's word nor writes over another attempt.
 	 */
 	async function settleLostCreate(sandboxId: string): Promise<void> {
 		const settleCreate = backend.settleCreate;
@@ -12789,7 +12794,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (read === undefined || !unsettledCreate(read)) return;
 			const lifecycle = read.lifecycle ?? 0;
 			const attempt = (current: StoredSandbox) => unsettledCreate(current) && (current.lifecycle ?? 0) === lifecycle;
-			const outcome = await settleCreate.call(backend, sandboxId);
+			const outcome = await settleCreate.call(backend, sandboxId, lifecycle);
 			if (outcome.state === "pending" || outcome.reportedAt + CREATE_SETTLE_GRACE_MS > now()) return;
 			if (outcome.state === "running") {
 				// What egress the lost create sent isn't known: its boot sends what it has now before it runs.

@@ -287,6 +287,11 @@ export interface BackendCapabilities {
 /** A machine to make. */
 export interface SandboxSpec {
 	readonly sandboxId: string;
+	/**
+	 * Which attempt at making it this is (its record's `lifecycle` as the create was sent): kept with its placement, so
+	 * that `settleCreate` takes word on this attempt only. Absent: none (a fork), which is never settled that way.
+	 */
+	readonly attempt?: number;
 	readonly accountId: string;
 	readonly type: computeSchema.SandboxType;
 	/** Its name under the sandbox domain, which its port URLs start with. */
@@ -977,11 +982,12 @@ export interface SandboxBackend {
 	 */
 	create(spec: SandboxSpec): Promise<Placement>;
 	/**
-	 * The outcome of a create (or fork) whose answer, or whose gateway, was lost, from what its host has reported since
-	 * (its hello's sandboxes once it reconnects, or an event): never guessed. Rejects while the host it is on can't be
-	 * asked. Absent: a backend whose creates are always answered (the stub).
+	 * The outcome of create attempt `attempt` (`SandboxSpec.attempt`) whose answer, or whose gateway, was lost, from what
+	 * its host has reported since about that attempt (its hello's sandboxes once it reconnects, or an event): never
+	 * guessed, and never from word on another attempt (`pending`). Rejects while the host it is on can't be asked.
+	 * Absent: a backend whose creates are always answered (the stub).
 	 */
-	settleCreate?(sandboxId: string): Promise<CreateOutcome>;
+	settleCreate?(sandboxId: string, attempt: number): Promise<CreateOutcome>;
 	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/**

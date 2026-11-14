@@ -937,6 +937,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			freshHosts: readonly string[] = [],
 		): CreateSandboxInput => ({
 			sandboxId: spec.sandboxId,
+			...(spec.attempt === undefined ? {} : { attempt: spec.attempt }),
 			tier: spec.type,
 			...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
 			// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
@@ -1241,10 +1242,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				throw isKantelError(error) && unanswered(error) ? createOutcomeUnknown(error) : error;
 			}
 		},
-		async settleCreate(sandboxId): Promise<CreateOutcome> {
+		async settleCreate(sandboxId, attempt): Promise<CreateOutcome> {
 			const placement = await hosts.sandboxes.placement(sandboxId);
-			// Not placed (refused, or not admitted yet), or placed and its host hasn't said yet: nothing to go by.
-			if (placement === undefined || placement.state === "starting") return { state: "pending" };
+			// Word on this attempt only: its placement, admitted for it, once its host has said. Not placed yet, another
+			// attempt's (a previous one, lost or ended), one that names none (from before attempts were kept), or one whose
+			// host hasn't said: nothing to go by.
+			if (placement === undefined || placement.attempt !== attempt || placement.state === "starting") {
+				return { state: "pending" };
+			}
 			const reportedAt = placement.updatedAt;
 			// Its host's hello didn't name it: never made there, or gone with its create.
 			if (placement.state === "lost") return { state: "lost", reason: CREATE_LOST, reportedAt };

@@ -351,7 +351,7 @@ describe("a create made again over two backends", () => {
 
 describe("a create whose answer was lost, in the compute plane", () => {
 	/** The compute API over a host, on a clock the test moves on (its sweep's grace). */
-	async function computeSetup() {
+	async function computeSetup(wrap?: (backend: SandboxBackend) => SandboxBackend) {
 		let skew = 0;
 		const service = createHostsService({
 			store: createMemoryHostStore(),
@@ -384,7 +384,7 @@ describe("a create whose answer was lost, in the compute plane", () => {
 			closers.push(() => made.close());
 			return made;
 		};
-		const api = gateway();
+		const api = gateway(undefined, wrap);
 		service.useJoinTokens(joinTokenSpender(api.store));
 		service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
 		const root = createKantelClient({
@@ -477,7 +477,7 @@ describe("a create whose answer was lost, in the compute plane", () => {
 		expect((await root.getSandbox(id)).health).toBe("ok");
 	});
 
-	it("keeps a machine that ended on its host, and a stale gateway's late answer never touches a later attempt", async () => {
+	it("never settles a later attempt from a previous attempt's report (a stale gateway's late answer)", async () => {
 		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
 		host.connection.closed(1006, "gone");
 		await api.service.idle();
@@ -629,5 +629,86 @@ describe("a create whose answer was lost, in the compute plane", () => {
 		await api.service.idle();
 		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
 		expect((await root.getSandbox(id)).state).toBe("stopped");
+	});
+	it("never lets a stale settlement remove or fail the replacement a retry made", async () => {
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = new FakeHost(service, hostId);
+		back.connect([]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		// One gateway has its outcome (the host doesn't have it) and stalls before acting on it.
+		let resume: () => void = () => undefined;
+		const stalled = new Promise<void>((resolve) => {
+			resume = resolve;
+		});
+		let decided = false;
+		const slow = restarted((backend) => ({
+			...backend,
+			async settleCreate(sandboxId, attempt) {
+				const outcome = (await backend.settleCreate?.(sandboxId, attempt)) ?? { state: "pending" as const };
+				decided = true;
+				await stalled;
+				return outcome;
+			},
+		}));
+		void slow.service.sweep();
+		await vi.waitFor(() => expect(decided).toBe(true));
+		// Another fails it meanwhile, and a retry makes the replacement: under way on the host when the stale one goes on.
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await root.getSandbox(id)).toMatchObject({ state: "error", reason: CREATE_LOST });
+		let made: (() => void) | undefined;
+		back.hold = (method) =>
+			method === "sandbox.create"
+				? new Promise<void>((resolve) => {
+						made = resolve;
+					})
+				: undefined;
+		await root.startSandbox(id);
+		await vi.waitFor(() => expect(made).toBeDefined());
+		resume();
+		await slow.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("starting");
+		made?.();
+		await api.service.idle();
+		// The replacement runs, on the host as in the record.
+		expect((await root.getSandbox(id)).state).toBe("running");
+		expect(back.sandboxes.get(id)?.state).toBe("running");
+		expect(back.calls.some((call) => call.method === "sandbox.delete" || call.method === "sandbox.stop")).toBe(false);
+	});
+
+	it("never fails a retry from the previous attempt's lost placement before the retry is placed", async () => {
+		let admit: Promise<void> = Promise.resolve();
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup((backend) => ({
+			...backend,
+			async create(spec) {
+				await admit;
+				return backend.create(spec);
+			},
+		}));
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = new FakeHost(service, hostId);
+		back.connect([]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await root.getSandbox(id)).toMatchObject({ state: "error", reason: CREATE_LOST });
+		// The retry, not placed yet: its placement is still the previous attempt's, lost.
+		let place: () => void = () => undefined;
+		admit = new Promise<void>((resolve) => {
+			place = resolve;
+		});
+		await root.startSandbox(id);
+		const other = restarted();
+		await other.service.sweep();
+		await other.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("starting");
+		place();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("running");
 	});
 });

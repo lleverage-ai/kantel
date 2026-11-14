@@ -245,9 +245,9 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		...(primary.settleCreate === undefined && fallback.settleCreate === undefined
 			? {}
 			: {
-					async settleCreate(id: string): Promise<CreateOutcome> {
+					async settleCreate(id: string, attempt: number): Promise<CreateOutcome> {
 						const backend = (await options.holds(id)) ? primary : fallback;
-						return (await backend.settleCreate?.(id)) ?? { state: "pending" };
+						return (await backend.settleCreate?.(id, attempt)) ?? { state: "pending" };
 					},
 				}),
 		// A move stays on the backend that holds the sandbox, among its own hosts: its disk is there.
