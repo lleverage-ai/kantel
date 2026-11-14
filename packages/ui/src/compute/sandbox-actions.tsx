@@ -1,6 +1,6 @@
 // What a sandbox's ⋯ menu does, on its page and on its row in the list: Fork, Save snapshot, Auto-stop, Idle stop,
-// Upgrade to microVM (for an isolate), Restart on latest base (for one on an outdated base) and Delete, and the dialogs
-// they open. The ways in (Browser, Desktop,
+// Upgrade to microVM (for an isolate), Move to host (for a microVM), Restart on latest base (for one on an outdated
+// base) and Delete, and the dialogs they open. The ways in (Browser, Desktop,
 // SSH), its logs, egress and snapshots are on its page, not here.
 
 import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
@@ -8,9 +8,10 @@ import { Button } from "../primitives/button.tsx";
 import { CheckboxField, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { ClockIcon, ForkIcon } from "../primitives/icons.tsx";
-import { ReplayIcon, ServerIcon, SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { MoveHostIcon, ReplayIcon, ServerIcon, SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
 import type { MenuEntry } from "../primitives/menu.tsx";
 import {
+	canMove,
 	type Sandbox,
 	type SandboxesSource,
 	type SavedSnapshot,
@@ -19,6 +20,7 @@ import {
 } from "./compute-model.ts";
 import { autoStopChanges, idleStopChanges } from "./one-change.ts";
 import { messageOf } from "./parts.tsx";
+import { MoveDialog } from "./sandbox-move.tsx";
 
 export type SandboxNotice = { readonly level: "info" | "error"; readonly text: string };
 
@@ -114,7 +116,7 @@ export function useSandboxMenu(
 	calls: SandboxMenuCalls,
 ): { entries: readonly MenuEntry[]; dialogs: ReactNode; restartOnLatest?: () => void } {
 	const { source, save, onChange, asked, onNotice } = calls;
-	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "idle-stop" | "restart" | "upgrade">();
+	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "idle-stop" | "restart" | "upgrade" | "move">();
 	const close = () => setOpen(undefined);
 	const can = sandboxActions(
 		sandbox?.state ?? "stopped",
@@ -122,7 +124,8 @@ export function useSandboxMenu(
 		sandbox?.hostUnreachable === true,
 	);
 	const running = sandbox?.state === "running" || sandbox?.state === "starting";
-	const { restartOnLatest } = source;
+	const { restartOnLatest, move, moveTargets } = source;
+	const movable = move !== undefined && moveTargets !== undefined;
 	const restartable = sandbox !== undefined && restartOnLatest !== undefined && canRestartOnLatest(sandbox);
 
 	const entries: MenuEntry[] =
@@ -194,6 +197,18 @@ export function useSandboxMenu(
 									icon: <ServerIcon size="sm" />,
 									disabled: !canUpgrade(sandbox),
 									onSelect: () => setOpen("upgrade"),
+								},
+							]
+						: []),
+					...(movable && sandbox.kind === "microvm"
+						? [
+								{
+									kind: "item" as const,
+									id: "move",
+									label: "Move to host",
+									icon: <MoveHostIcon size="sm" />,
+									disabled: !canMove(sandbox),
+									onSelect: () => setOpen("move"),
 								},
 							]
 						: []),
@@ -269,6 +284,24 @@ export function useSandboxMenu(
 							text: `${box.name} is a microVM now. Its files are in /home/user/workspace, and /workspace links there.`,
 						});
 					}}
+				/>
+			)}
+			{move === undefined || moveTargets === undefined ? null : (
+				<MoveDialog
+					sandbox={open === "move" ? sandbox : undefined}
+					targets={(box) => moveTargets(box)}
+					onClose={close}
+					onMove={async (box, choice) => {
+						// As an upgrade's: an answer overtaken by a later change to it (a Delete) is dropped.
+						const since = asked?.(box.id);
+						const moved = await move(box.id, choice);
+						onChange(moved, moved.id, since);
+						onNotice({
+							level: "info",
+							text: `Moved ${box.name}${moved.hostName === undefined ? "" : ` to ${moved.hostName}`}.`,
+						});
+					}}
+					onFailed={(_box, reason) => onNotice({ level: "error", text: reason })}
 				/>
 			)}
 			{restartOnLatest === undefined ? null : (
