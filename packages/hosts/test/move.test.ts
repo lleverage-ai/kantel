@@ -945,4 +945,42 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		expect(settles.mock.calls.length).toBeLessThanOrEqual(2);
 		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "moving", hostId: a.hostId });
 	});
+
+	it("settles a quiet move left on a running sandbox before a start answers it", async () => {
+		const clock = { at: Date.now() };
+		const { root, api, join } = await setup({ now: () => clock.at });
+		const a = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		// A move whose gateway went during its first copy: nothing of it on the hosts' side.
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			moving: {
+				operationId: "mov_gone",
+				at: clock.at,
+				heartbeatAt: clock.at,
+				phase: "copying",
+				from: "running",
+				before: {},
+			},
+		}));
+		clock.at += 3 * 60_000;
+		const started = await root.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ state: "running", hostId: a.hostId });
+		expect(started.move).toBeUndefined();
+		expect((await api.store.sandboxes.get(sandbox.id))?.moving).toBeUndefined();
+	});
+
+	it("is error, its move cleared, when starting it again on its source fails too", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.refuse = (method) =>
+			method === "sandbox.start" ? { code: "unavailable", message: "it didn't boot" } : undefined;
+		a.refuse = (method) => (method === "sandbox.start" ? { code: "unavailable", message: "nor here" } : undefined);
+		await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		const after = await api.store.sandboxes.get(sandbox.id);
+		expect(after).toMatchObject({ state: "error", hostId: a.hostId });
+		expect(after?.moving).toBeUndefined();
+	});
 });

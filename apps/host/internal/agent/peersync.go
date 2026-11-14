@@ -520,6 +520,11 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 		Ref:       disksync.Ref{Kind: proto.DiskKindSandbox, ObjectID: p.SandboxID, Version: p.Version},
 		MapDigest: p.MapDigest, Holders: p.Holders, Grant: p.Grant,
 	}
+	if p.Stage && t.HoldsSandbox(p.SandboxID, p.Version) {
+		// Staged already (asked again, its answer lost): kept as it is, for the final copy to start from. Never through
+		// the fetcher, which drops what is left of a version it finds held.
+		return map[string]any{}, nil
+	}
 	if !t.HoldsSandbox(p.SandboxID, p.Version) && !h.fetcher.Running(req.Ref) {
 		// Read first: a delete of the sandbox while the record is read, or its image had, refuses the import.
 		since := t.ImportGeneration(p.SandboxID)

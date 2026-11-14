@@ -8986,14 +8986,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("conflict", "The last owner can't leave");
 			}
 			await store.members.delete(target.id);
-			// Their private sandboxes stay, stopped; their keys in the organisation stop working.
-			for (const sandbox of await store.sandboxes.list({ accountId: params.accountId, ownerUserId: params.userId })) {
-				if (sandbox.visibility === "private" && sandbox.state === "running") {
-					keepGoing((await beginStop(sandbox, false, "Its person left the organisation", principal)).work);
-				}
-			}
+			// Their keys in the organisation stop working, first: nothing below keeps them working.
 			for (const key of await store.apiKeys.list({ accountId: params.accountId, ownerUserId: params.userId })) {
 				if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+			}
+			// Their private sandboxes stay, stopped. One moving (a running sandbox's move, whose stop is its move's) is
+			// stopped once it runs where it went: its stop is owed (`stopFor`), which the sweep carries out.
+			for (const sandbox of await store.sandboxes.list({ accountId: params.accountId, ownerUserId: params.userId })) {
+				if (sandbox.visibility !== "private" || sandbox.state !== "running") continue;
+				const stopping = await beginStop(sandbox, false, "Its person left the organisation", principal).catch(
+					(error: unknown) => {
+						if (!(error instanceof KantelError && error.code === "conflict")) throw error;
+						return undefined;
+					},
+				);
+				if (stopping !== undefined) keepGoing(stopping.work);
+				else {
+					await patchSandbox(sandbox.id, (latest) =>
+						latest.moving !== undefined && latest.stopFor === undefined
+							? { ...latest, stopFor: "Its person left the organisation" }
+							: undefined,
+					);
+				}
 			}
 			return undefined;
 		},
@@ -9968,8 +9982,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				requireSetupScope(principal, role, current);
 				// Its lifecycle as checked here: the stop and the boot below are claimed only while nothing else (another restart, a
 				// recovery, on any gateway) has moved it since, even if it is back in the state read.
+				// Nor while it moves (on any gateway): its move's stop and boot are its own.
+				if (current.moving !== undefined) throw movingConflict();
 				const unmoved = (seen: StoredSandbox) => (latest: StoredSandbox) =>
-					(latest.lifecycle ?? 0) === (seen.lifecycle ?? 0);
+					(latest.lifecycle ?? 0) === (seen.lifecycle ?? 0) && latest.moving === undefined;
 				// A running one holds its place already; the hosts are checked before it is stopped, so a sandbox no host can
 				// take now is refused as it is, not left stopped.
 				if (current.state !== "running") await requireCapacity(current.accountId, 1);
@@ -12986,19 +13002,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Starts a running sandbox again where it was, once its move `operationId` was rolled back after it was stopped for
-	 * it: still `starting`, its move cleared and its egress read afresh, it boots as a start boots it there (`boot`), and
-	 * is `error` if that fails. Back on a source revoked meanwhile, it is `error`, as a revocation leaves it.
+	 * it: still `starting`, its egress read afresh, it boots as a start boots it there (`boot`), and is `error` if that
+	 * fails. Its move stays on it until that boot is published (cleared with it), so a gateway gone meanwhile leaves it
+	 * for the sweep, whose settling finds the move undone and starts it again here. Back on a source revoked meanwhile,
+	 * it is `error`, as a revocation leaves it.
 	 */
 	async function startAfterMove(sandboxId: string, operationId: string): Promise<void> {
 		const cleared = await transition(
 			sandboxId,
 			"starting",
 			(latest) => {
-				const { moving: _done, ...rest } = latest;
 				if (latest.hostId !== undefined && latest.strandedOn?.includes(latest.hostId) === true) {
+					const { moving: _done, ...rest } = latest;
 					return withState(rest, "error", { reason: HOST_REVOKED_REASON, ports: [] });
 				}
-				return { ...rest, egressRevision: later(latest.egressRevision) };
+				return { ...latest, egressRevision: later(latest.egressRevision) };
 			},
 			(latest) => latest.moving?.operationId === operationId,
 		).catch(() => undefined);
@@ -13019,6 +13037,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			},
 			undefined,
 			{ egressRevision: again.egressRevision },
+			() => ({ moving: undefined }),
+		).catch(() => undefined);
+		// A boot that failed leaves it `error` with its move, which is undone: cleared, as the error leaves it.
+		await patchSandbox(sandboxId, (latest) =>
+			latest.moving?.operationId === operationId && latest.state === "error"
+				? { ...latest, moving: undefined }
+				: undefined,
 		).catch(() => undefined);
 	}
 
@@ -13098,13 +13123,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<Sandbox> {
 		const { sandbox, role } = await sandboxFor(principal, sandboxId, "sandboxes:write");
 		const current = await settledFor(principal, sandbox.id);
-		if (current.state === "running") return sandboxView(current, principal);
 		// A move not yet settled may have a copy running on another host: settled first (one gone quiet here, else the
-		// sweep), never booted over.
+		// sweep), never booted over; a running one's too, before it is answered as running.
 		if (current.moving !== undefined && !settled && current.moving.heartbeatAt + UPGRADE_STALE_MS <= now()) {
 			await settleStuckMove(current).catch(() => undefined);
 			return restart(principal, sandboxId, body, how, true);
 		}
+		if (current.state === "running") return sandboxView(current, principal);
 		if (current.moving !== undefined) {
 			throw new KantelError("conflict", "The sandbox's move to another host isn't settled yet; try again shortly");
 		}

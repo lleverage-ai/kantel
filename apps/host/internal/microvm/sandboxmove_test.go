@@ -586,6 +586,11 @@ func TestRunningSandboxMovesWithARestart(t *testing.T) {
 	if !b.HoldsSandbox("sb1", "mov_1-live") {
 		t.Fatal("the staged first copy isn't held")
 	}
+	// A fetch that finds it held (an import asked again) discards what is left of it: never the staged copy itself.
+	b.DiscardSandboxImport("sb1", "mov_1-live")
+	if !b.HoldsSandbox("sb1", "mov_1-live") {
+		t.Fatal("a discard dropped the staged first copy")
+	}
 	if _, err := b.get("sb1"); err == nil {
 		t.Fatal("a staged copy made the sandbox")
 	}

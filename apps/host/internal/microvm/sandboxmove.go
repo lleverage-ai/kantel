@@ -175,12 +175,24 @@ func (m *Manager) ExportSandbox(ctx context.Context, p proto.SandboxExportParams
 // blocks at once, after the host's own writes of it are flushed).
 func (m *Manager) cloneForExport(s *sandbox, dir string, p proto.SandboxExportParams) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.mu.Unlock()
+		}
+	}()
 	if s.meta.State != proto.StateStopped && (!p.Live || s.meta.State != proto.StateRunning) {
 		if p.Live {
 			return conflict("sandbox %s is %s: only a running or stopped sandbox is moved", s.meta.ID, s.meta.State)
 		}
 		return conflict("sandbox %s is %s: only a stopped sandbox is moved", s.meta.ID, s.meta.State)
+	}
+	if p.Live {
+		// Its files cloned without its lock, so its commands and files go on meanwhile (a full copy, where there are no
+		// reflinks, takes a while). Its starts and stops wait for the export (the host's lifecycle lock), and what the
+		// guest writes as it is copied is put right by the final copy.
+		s.mu.Unlock()
+		locked = false
 	}
 	_ = os.RemoveAll(dir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -200,6 +212,10 @@ func (m *Manager) cloneForExport(s *sandbox, dir string, p proto.SandboxExportPa
 		if err := m.cloneExportFile(src, dst); err != nil {
 			return fmt.Errorf("its %s: %w", part, err)
 		}
+	}
+	if !locked {
+		s.mu.Lock()
+		locked = true
 	}
 	rootfs := vmRootfs(vm)
 	if rootfs == "" {
@@ -736,13 +752,18 @@ func (m *Manager) ImportedSandbox(id, version string) (proto.SandboxInfo, error)
 // plane sends again to go on with one cut short; never resumed by the host on its own.
 func (m *Manager) SandboxImportPartials() [][2]string { return nil }
 
-// DiscardSandboxImport drops version's import of a sandbox, if it is made ready, and everything it fetched.
+// DiscardSandboxImport drops version's import of a sandbox, if it is made ready, and everything it fetched; but not
+// one kept staged and fetched whole (ImportOptions.Stage), which only its cancel, a delete, or the publish of the
+// version over it removes.
 func (m *Manager) DiscardSandboxImport(id, version string) {
 	if !sandboxObject(id, version) {
 		return
 	}
 	m.moves.mu.Lock()
 	defer m.moves.mu.Unlock()
+	if m.staged(id, version) {
+		return
+	}
 	_ = os.RemoveAll(m.sandboxImportDir(id, version))
 	_ = os.Remove(filepath.Join(m.cfg.Root, sandboxImportsDir, id))
 }
