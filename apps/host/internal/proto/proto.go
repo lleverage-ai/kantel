@@ -81,6 +81,10 @@ const (
 	ErrInternal    = "internal"
 	ErrUnsupported = "unsupported"
 	ErrTimeout     = "timeout"
+	// ErrSuspended answers a command with an ID whose call broke as its sandbox was stopped keeping its memory (a
+	// pause, or a move to another host that keeps it): the command carries on in that memory, and is followed by its ID
+	// (sandbox.exec.get) wherever the sandbox runs next.
+	ErrSuspended = "suspended"
 )
 
 type Error struct {

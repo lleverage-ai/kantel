@@ -30,17 +30,20 @@
 #      estimated at, and moves nothing;
 #   6. a move to B: a process started before it (a ticker writing the time every 0.2 s) is still running after it, with
 #      the same PID, and carries on writing; its `moved` says its memory was kept, and the longest gap in its ticks (the
-#      pause) is printed beside the estimate;
+#      pause) is printed beside the estimate. Commands sent through Kantel before it carry on too, by their IDs: a
+#      detached one runs on B with the same ID, its output growing there, and its kill works there; a foreground
+#      `POST /commands`, and `kantel exec` (this branch's CLI), each answer their command's whole output and exit code;
 #   7. A's Firecracker made to report another version (a wrapper answering --version), so its runtime fingerprint
 #      differs: a dry run answers A as a host that restarts it, saying why, and a move to A restarts it (the ticker is
-#      gone there) and says why in its `moved`.
+#      gone there) and says why in its `moved`; a detached command started before it is killed, and says why.
 #
 # It stops and removes the stack at the end, whatever happened.
 #
 #   apps/host/test/move.sh
 #
 # Needs what local-stack.sh needs (its KANTEL_STACK_* settings pick the images, and the guest image must take sticky
-# drives; KANTEL_STACK_DIR, KANTEL_STACK_IMAGE_DIGEST and KANTEL_STACK_HOST_FLAGS are set here). The stack is named
+# drives, and have this branch's guest agent for its foreground command to carry on in 6; KANTEL_STACK_DIR,
+# KANTEL_STACK_IMAGE_DIGEST and KANTEL_STACK_HOST_FLAGS are set here). The stack is named
 # move-<pid>, with its own state directory, so it runs beside other stacks.
 set -euo pipefail
 
@@ -289,15 +292,42 @@ running_on "$a_id" || fail "the dry run moved it"
 estimate=$(jq -r '.targets[0] | "\(.pauseMs) ms for \(.memoryBytes) bytes at \(.bytesPerSecond) B/s (measured: \(.rateMeasured))"' <<<"$plan")
 echo "dry run: B keeps its memory, about $estimate"
 
-echo "== 6. Moved with its memory: a process started before it still runs after it"
+echo "== 6. Moved with its memory: a process started before it still runs after it, and so do its commands"
 pid=$(run "$ticker" | xargs)
 [ -n "$pid" ] || fail "no ticker"
+# A detached command, a foreground one whose call waits through the move, and kantel exec following one.
+detached=$(api POST "/sandboxes/$sandbox/commands" -d '{"command":"for i in $(seq 1 600); do echo tick $i; sleep 0.5; done","detached":true}' | jq -r .id)
+[ -n "$detached" ] && [ "$detached" != null ] || fail "no detached command"
+api POST "/sandboxes/$sandbox/commands" -d '{"command":"for i in $(seq 1 120); do echo fg $i; sleep 0.5; done; echo fg-done","timeoutMs":300000}' >"$dir/foreground.json" &
+foreground=$!
+(cd "$here/../../cli" && go build -o "$dir/kantel" ./cmd/kantel)
+(
+	KANTEL_URL=$url KANTEL_API_KEY=$key "$dir/kantel" exec "$sandbox" --timeout 120 -- 'for i in $(seq 1 60); do echo cli $i; sleep 0.5; done; echo cli-done' >"$dir/exec.out" 2>"$dir/exec.err"
+	echo $? >"$dir/exec.code"
+) &
+following=$!
 sleep 3
 moved=$(api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$b_id\"}")
 jq -e --arg h "$b_id" '.state == "running" and .hostId == $h and .moved.keptMemory == true' >/dev/null <<<"$moved" ||
 	fail "the move with its memory: $(jq -c '{state, hostId, moved}' <<<"$moved")"
 [ "$(alive "$pid")" = yes ] || fail "the ticker ($pid) isn't running on B"
 ticking || fail "the ticker stopped writing on B"
+# The detached command runs on B by its ID, its output growing there, and is killed there.
+ticks() { api GET "/sandboxes/$sandbox/commands/$detached" | jq -e -r 'select(.state == "running") | .stdout | split("\n") | length'; }
+before=$(ticks) || fail "the detached command isn't running on B: $(api GET "/sandboxes/$sandbox/commands/$detached" | jq -c '{state, exitCode, stderr}')"
+sleep 2
+after=$(ticks) || fail "the detached command ended on B"
+[ "$after" -gt "$before" ] || fail "the detached command's output didn't grow on B ($before, then $after lines)"
+api DELETE "/sandboxes/$sandbox/commands/$detached" | jq -e '.state == "killed"' >/dev/null || fail "its kill on B"
+run "pgrep -f '[s]eq 1 600' >/dev/null && echo running || echo gone" | grep -qx gone || fail "the detached command runs on after its kill"
+# The foreground call and kantel exec answer their commands' whole output and exit code.
+wait "$foreground" || true
+jq -e '.state == "exited" and .exitCode == 0 and (.stdout | test("^fg 1\n(.|\n)*fg 120\nfg-done\n$"))' "$dir/foreground.json" >/dev/null ||
+	fail "the foreground command across the move: $(jq -c '{id, state, exitCode, stderr}' "$dir/foreground.json")"
+wait "$following" || true
+[ "$(cat "$dir/exec.code")" = 0 ] && [ "$(head -n 1 "$dir/exec.out")" = "cli 1" ] && [ "$(tail -n 2 "$dir/exec.out" | xargs)" = "cli 60 cli-done" ] ||
+	fail "kantel exec across the move exited $(cat "$dir/exec.code"): $(tail -n 3 "$dir/exec.out" | xargs); $(cat "$dir/exec.err")"
+echo "commands carried on: $detached ran on B and was killed there; the foreground command and kantel exec ended 0 with all their output"
 pause=$(run "awk 'NR > 1 && \$1 - prev > gap { gap = \$1 - prev } { prev = \$1 } END { printf \"%.1f\", gap }' /home/user/ticks")
 on "$a" "test ! -e $root/sandboxes/$sandbox && test ! -e $root/sandbox-exports/$sandbox" || fail "A kept its copy"
 on "$b" "test ! -e $root/sandbox-imports/$sandbox" || fail "B kept its import"
@@ -317,10 +347,13 @@ until_ok mesh_up "$a" || fail "$a brought no mesh up"
 plan=$(api GET "/sandboxes/$sandbox/move")
 jq -e --arg a "$a_id" '.targets[0].hostId == $a and .targets[0].keepsMemory == false and
 	(.targets[0].restartReason | test("runtime"))' >/dev/null <<<"$plan" || fail "the dry run: $(jq -c . <<<"$plan")"
+detached=$(api POST "/sandboxes/$sandbox/commands" -d '{"command":"sleep 600","detached":true}' | jq -r .id)
 moved=$(api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\"}")
 jq -e --arg h "$a_id" '.state == "running" and .hostId == $h and .moved.keptMemory == false and (.moved.restartReason | test("runtime"))' \
 	>/dev/null <<<"$moved" || fail "the move to a host whose runtime differs: $(jq -c '{state, hostId, moved}' <<<"$moved")"
 ticking && fail "the ticker writes on, on A, after a restart"
+api GET "/sandboxes/$sandbox/commands/$detached" | jq -e '.state == "killed" and (.stderr | test("restarted there \\(the new host has another runtime"))' >/dev/null ||
+	fail "the command running as it restarted: $(api GET "/sandboxes/$sandbox/commands/$detached" | jq -c '{state, stderr}')"
 echo "restarted on A: $(jq -r .moved.restartReason <<<"$moved")"
 echo
 echo "PASS"

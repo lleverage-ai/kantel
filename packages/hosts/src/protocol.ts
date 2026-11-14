@@ -34,7 +34,14 @@ export type HostErrorCode =
 	| "unavailable"
 	| "internal"
 	| "unsupported"
-	| "timeout";
+	| "timeout"
+	/**
+	 * A command with an ID whose call broke as its sandbox was stopped keeping its memory (a pause, or a move to another
+	 * host that keeps it): the command carries on in that memory, and is followed by its ID (`sandbox.exec.get`)
+	 * wherever the sandbox runs next. A host from before answers such a call with the error its guest connection broke
+	 * with.
+	 */
+	| "suspended";
 
 export interface HostError {
 	readonly code: HostErrorCode | string;
@@ -293,7 +300,9 @@ export const HOST_FEATURES = {
 	 * with no limit but its own `timeoutMs`, its result kept for `sandbox.exec.get`. A later kantel-host also keeps a
 	 * foreground one running when its connection goes, to its own limit, with its result for `sandbox.exec.get` (an
 	 * earlier one ends it with the connection, and then doesn't know it), and answers a running one's get with its output
-	 * so far where its sandbox keeps it (`HostExecStatus.stdout`). Without it Kantel can't stop a
+	 * so far where its sandbox keeps it (`HostExecStatus.stdout`). A later one still keeps a foreground one past a stop
+	 * that keeps its sandbox's memory (a pause, or a move), in that memory, and answers its call `suspended` (the
+	 * sandbox's guest keeps it by its ID, for the host it runs on next). Without it Kantel can't stop a
 	 * host's command, and a detached one runs as a foreground one, to the guest's default limit (120 s; an isolate's
 	 * 30 s).
 	 */
