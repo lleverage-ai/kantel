@@ -150,6 +150,9 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 		if err := m.UnmarshalBinary(mapRaw); err != nil {
 			return st, err
 		}
+		// Every part's blocks known so far, however the rest goes.
+		st.Blocks += m.Blocks()
+		j.blocks.Store(int64(st.Blocks))
 		path, err := parted.PartPartial(r, d.Part)
 		if err != nil {
 			return st, err
@@ -159,10 +162,7 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 			return st, err
 		}
 		parts = append(parts, fetching{name: d.Part, raw: mapRaw, p: p})
-		st.Blocks += m.Blocks()
 		inPlace += p.inPlace()
-		// What is known so far, reported should a later part fail.
-		j.blocks.Store(int64(st.Blocks))
 		j.inPlace.Store(int64(inPlace))
 		st.Resumed = st.Resumed || p.resumed
 		left += p.left()

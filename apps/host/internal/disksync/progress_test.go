@@ -245,3 +245,18 @@ func TestFetchProgressLeavesOutAVersionHeld(t *testing.T) {
 		}
 	}
 }
+
+// A fetch whose partial can't be made (no room for a full copy of the nearest version) still reports the blocks its map
+// gave.
+func TestFetchProgressOfAPartialNotMade(t *testing.T) {
+	f := newFixture(t, 1)
+	f.put("v2", disk(t, 3, 0))
+	f.local.cloneErr = &proto.Error{Code: proto.ErrCapacity, Message: "no room for a full copy"}
+	fetcher := f.fetcher()
+	if _, err := wait(t, fetcher.Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})); !isCapacity(err) {
+		t.Fatalf("with no room for the clone: %v", err)
+	}
+	if p, ok := progressOf(fetcher, "v2"); !ok || p.State != proto.FetchFailed || p.Blocks != 3 || p.InPlace != 0 {
+		t.Fatalf("failed %+v (listed %v)", p, ok)
+	}
+}

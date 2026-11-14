@@ -367,6 +367,8 @@ func (f *Fetcher) fetch(ctx context.Context, req Request, j *Job) (Stats, error)
 	if err := m.UnmarshalBinary(raw); err != nil {
 		return Stats{}, err
 	}
+	// Its blocks are known from here, however the rest goes.
+	j.blocks.Store(int64(m.Blocks()))
 	path, err := f.Store.Partial(req.Ref)
 	if err != nil {
 		return Stats{}, err
@@ -378,7 +380,6 @@ func (f *Fetcher) fetch(ctx context.Context, req Request, j *Job) (Stats, error)
 		return Stats{}, err
 	}
 	defer p.file.Close()
-	j.blocks.Store(int64(m.Blocks()))
 	j.inPlace.Store(int64(p.inPlace()))
 	// Room for everything the fetch writes from here, before it writes any of it: the blocks it fetches, and the blocks
 	// of zeros it clears, which take none when a hole is punched but may where one can't be.
