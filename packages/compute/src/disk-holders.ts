@@ -4,7 +4,7 @@
  * in its own pool that hold it, and a grant to fetch it from them, signed with the control plane's grant key.
  *
  * Holders are reconciled from each capacity report a host sends (`recordHoldings`), so they are the copies hosts say
- * they have. Two kinds so far:
+ * they have. Three kinds so far:
  *
  * - `sticky`: a sticky disk's versions, each in the catalogue (`StoredStickyDiskVersion`) with its map digest; a host
  *   holds only versions the catalogue has, of an account whose data it may have.
@@ -15,6 +15,12 @@
  *   host is there too.
  *   `disk.locate` answers the digest most of the asker's pool's holders of its architecture have, and only those
  *   holders.
+ * - `snapshot`: a saved snapshot (`snapshots/<id>/` on a host), its ID the host's snapshot ID (a ref's, `{hostId}/{id}`),
+ *   in two versions, one for each of its block-mapped files: `disk` and `memory`. Its record is the snapshot's
+ *   (`StoredSnapshot`, by a ref naming one of its holders and the ID): a host holds a version only of a saved snapshot
+ *   the catalogue has, of an account whose data it may have, and is offered it only in the snapshot's pool, of its
+ *   architecture. Each holder carries the map digest its host reported. Synced wherever there is a grant key (sticky
+ *   disks or templates on): its hosts fetch it from each other over the same mesh.
  *
  * The grant key is one Ed25519 key per control plane, made by the first gateway that needs it and kept sealed with the
  * deployment's secrets key (`StoredSetting` `grantKey`), so every gateway over one database signs with it. Without a
@@ -46,6 +52,7 @@ import {
 	type StoredDiskHolder,
 	type StoredHost,
 	type StoredSetting,
+	type StoredSnapshot,
 } from "./store.ts";
 
 /** A host's request for a version of an object (`disk.locate`). */
@@ -108,11 +115,17 @@ export type ObjectHoldingsReport = readonly {
 /** What one capacity report says a host holds: each absent says nothing of its kind, so nothing of it is forgotten. */
 export interface HoldingsReport {
 	readonly stickyDisks?: StickyHoldingsReport;
-	readonly objects?: { readonly rootfs?: ObjectHoldingsReport };
+	readonly objects?: { readonly rootfs?: ObjectHoldingsReport; readonly snapshot?: ObjectHoldingsReport };
 }
 
 /** The one version of a template's root filesystem. */
 export const ROOTFS_VERSION = "1";
+
+/** A saved snapshot's versions (the host's `SnapshotDiskVersion` and `SnapshotMemoryVersion`): its disk, and its memory. */
+export const SNAPSHOT_VERSIONS: readonly string[] = ["disk", "memory"];
+
+/** A snapshot's ID on its host, as a ref names it (`snap_` and 16 hex digits, and any the host's own `validID` takes). */
+const SNAPSHOT_ID = /^[A-Za-z0-9_-]{1,100}$/;
 
 /** A root filesystem's key: 64 hex digits, as a host names `images/templates/<key>.ext4`. */
 const ROOTFS_KEY = /^[0-9a-f]{64}$/;
@@ -124,9 +137,10 @@ export interface DiskHolders {
 	/**
 	 * Reconciles `hostId`'s holders with what it reported holding at `at`, kind by kind, for each kind the report speaks
 	 * of: a version it holds becomes `held` there (a sticky disk's only when the catalogue has it; a root filesystem's
-	 * with the map digest reported, replacing one with another), and one it no longer reports is let go, unless it is
-	 * being fetched or its holder is newer than the report could know (`reportGraceMs`). Nothing of sticky disks with them
-	 * off, nor of root filesystems with templates off.
+	 * with the map digest reported, replacing one with another; a saved snapshot's only when the catalogue has the
+	 * snapshot, with its digest), and one it no longer reports is let go, unless it is being fetched or its holder is
+	 * newer than the report could know (`reportGraceMs`). Nothing of sticky disks with them off, nor of root filesystems
+	 * with templates off, nor of snapshots with both off.
 	 */
 	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/** A version just committed on `hostId`: the host it was made on holds it. */
@@ -154,6 +168,25 @@ export interface DiskHolders {
 	 * of any kind, on revoked hosts, each older than `reportGraceMs` at `at`.
 	 */
 	sweep(at: number): Promise<void>;
+}
+
+/**
+ * Of a version's holders by the map digest each holds, the digest most of them hold (of two as many, the one held
+ * longest), with its holders.
+ */
+function mostHeld(byDigest: ReadonlyMap<string, { hostId: string; address: string; since: number }[]>) {
+	let best: { mapDigest: string; holders: { hostId: string; address: string; since: number }[] } | undefined;
+	const oldest = (list: readonly { readonly since: number }[]) => Math.min(...list.map((each) => each.since));
+	for (const [mapDigest, holders] of byDigest) {
+		if (
+			best === undefined ||
+			holders.length > best.holders.length ||
+			(holders.length === best.holders.length && oldest(holders) < oldest(best.holders))
+		) {
+			best = { mapDigest, holders };
+		}
+	}
+	return best;
 }
 
 /** The setting the grant key is kept in, and where its private key is sealed. */
@@ -262,6 +295,8 @@ export function createDiskHolders(options: {
 	readonly keysChanged?: () => void;
 }): DiskHolders {
 	const { store, now, sealer } = options;
+	/** Saved snapshots are synced where there is a grant key: sticky disks or templates on. */
+	const snapshots = options.stickyDisks || options.templates;
 
 	/** The private key last opened, by its public key and sealed value: opened again only when they change. */
 	let opened: { readonly publicKey: string; readonly ct: string; readonly key: Promise<GrantKey> } | undefined;
@@ -431,17 +466,7 @@ export function createDiskHolders(options: {
 				{ hostId: host.id, address, since: holder.since },
 			]);
 		}
-		let best: { mapDigest: string; holders: { hostId: string; address: string; since: number }[] } | undefined;
-		const oldest = (list: readonly { readonly since: number }[]) => Math.min(...list.map((each) => each.since));
-		for (const [mapDigest, holders] of byDigest) {
-			if (
-				best === undefined ||
-				holders.length > best.holders.length ||
-				(holders.length === best.holders.length && oldest(holders) < oldest(best.holders))
-			) {
-				best = { mapDigest, holders };
-			}
-		}
+		const best = mostHeld(byDigest);
 		if (best === undefined) return { holders: [] };
 		const signing = await signer(sealer);
 		const pool = await store.pools.get(asker.poolId);
@@ -458,11 +483,93 @@ export function createDiskHolders(options: {
 		return { mapDigest: best.mapDigest, holders, grant };
 	}
 
+	/**
+	 * The saved snapshot a host's snapshot ID is: the one with the ref its holders were recorded with, or a ref naming
+	 * one of them or `hostId` (the host reporting or asking) and the ID. With the host its ref names, whose pool it is in
+	 * when it records none (taken before pools). Undefined when the catalogue has none ready.
+	 */
+	async function savedSnapshot(
+		objectId: string,
+		holders: readonly StoredDiskHolder[],
+		hostId: string,
+	): Promise<{ readonly record: StoredSnapshot; readonly hostId: string; readonly ref: string } | undefined> {
+		const refs = new Set<string>();
+		for (const holder of holders) if (holder.ref !== undefined) refs.add(holder.ref);
+		for (const each of [hostId, ...holders.map((holder) => holder.hostId)]) refs.add(`${each}/${objectId}`);
+		for (const ref of refs) {
+			const [refHost, refId] = ref.split("/");
+			if (refHost === undefined || refId !== objectId) continue;
+			for (const record of await store.snapshots.list({ ref })) {
+				if (record.kind === "saved" && record.state === "ready") return { record, hostId: refHost, ref };
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * `disk.locate` for a saved snapshot's version: the holders, in the snapshot's pool and of the asker's architecture,
+	 * that hold the map digest most of them hold, with a grant naming the snapshot's account. Only to a host in that
+	 * pool that may have the account's data; none, and no digest, when no other such host holds it.
+	 */
+	async function locateSnapshot(hostId: string, request: DiskLocateRequest): Promise<DiskLocation> {
+		if (!snapshots)
+			throw new KantelError("not_supported", "Sticky disks and templates are off here, so hosts sync no snapshots");
+		if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+		const missing = () => new KantelError("not_found", "No such saved snapshot");
+		if (!SNAPSHOT_ID.test(request.objectId) || !SNAPSHOT_VERSIONS.includes(request.version)) throw missing();
+		const hosts = new Map((await options.hosts()).map((host) => [host.id, host]));
+		const asker = hosts.get(hostId);
+		if (asker === undefined || asker.state === "revoked" || asker.poolId === undefined) throw missing();
+		const held = (await store.diskHolders.list({ objectId: request.objectId })).filter(
+			(holder) => holder.kind === "snapshot",
+		);
+		const found = await savedSnapshot(request.objectId, held, hostId);
+		// No host has reported it yet (its record is found by a holder's ref): no holders, as for any version held nowhere.
+		if (found === undefined && held.length === 0) return { holders: [] };
+		if (found === undefined) throw missing();
+		const { record } = found;
+		const poolId = record.poolId ?? hosts.get(found.hostId)?.poolId;
+		// A host an account added may have only that account's data; and a snapshot is only its pool's hosts'.
+		if ((asker.accountId !== undefined && asker.accountId !== record.accountId) || poolId !== asker.poolId) {
+			throw missing();
+		}
+		const byDigest = new Map<string, { hostId: string; address: string; since: number }[]>();
+		for (const holder of held) {
+			if (holder.version !== request.version || holder.state !== "held" || holder.mapDigest === undefined) continue;
+			if (holder.hostId === hostId) continue;
+			const host = hosts.get(holder.hostId);
+			// Online (a draining host still serves), in the snapshot's pool, and of the asker's architecture.
+			if (host === undefined || (host.state !== "online" && host.state !== "draining")) continue;
+			if (host.poolId !== poolId || host.arch !== asker.arch) continue;
+			const address = options.meshAddress(host.id);
+			if (address === undefined) continue;
+			byDigest.set(holder.mapDigest, [
+				...(byDigest.get(holder.mapDigest) ?? []),
+				{ hostId: host.id, address, since: holder.since },
+			]);
+		}
+		const best = mostHeld(byDigest);
+		if (best === undefined) return { holders: [] };
+		const signing = await signer(sealer);
+		const holders = best.holders.map(({ hostId, address }) => ({ hostId, address }));
+		const grant = await signing.sign({
+			kind: "snapshot",
+			objectId: request.objectId,
+			version: request.version,
+			accountId: record.accountId,
+			from: holders.map((holder) => holder.hostId),
+			to: hostId,
+			exp: now() + GRANT_TTL_MS,
+		});
+		return { mapDigest: best.mapDigest, holders, grant };
+	}
+
 	return {
 		async recordHoldings(hostId, at, report) {
 			const sticky = options.stickyDisks ? report.stickyDisks : undefined;
 			const rootfs = options.templates ? report.objects?.rootfs : undefined;
-			if (sticky === undefined && rootfs === undefined) return;
+			const snapshot = snapshots ? report.objects?.snapshot : undefined;
+			if (sticky === undefined && rootfs === undefined && snapshot === undefined) return;
 			// The newest report wins: one older than a report already taken, here or on another gateway, changes nothing.
 			if (!(await store.diskHolderWrites.claim(hostId, at))) return;
 			const current = await store.diskHolders.list({ hostId });
@@ -562,6 +669,54 @@ export function createDiskHolders(options: {
 				}
 				letGo(mine, new Set(reported.keys()));
 			}
+			if (snapshot !== undefined) {
+				// Only a version of a saved snapshot the catalogue has, of an account whose data the host may have.
+				const reported = new Map<
+					string,
+					{ readonly objectId: string; readonly version: string; readonly mapDigest: string }
+				>();
+				for (const object of snapshot) {
+					if (!SNAPSHOT_ID.test(object.objectId)) continue;
+					for (const held of object.versions) {
+						if (!SNAPSHOT_VERSIONS.includes(held.version) || !MAP_DIGEST.test(held.mapDigest)) continue;
+						reported.set(versionKey(object.objectId, held.version), {
+							objectId: object.objectId,
+							version: held.version,
+							mapDigest: held.mapDigest,
+						});
+					}
+				}
+				const mine = current.filter((holder) => holder.kind === "snapshot");
+				const known = new Map(mine.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
+				const reporter = (await options.hosts()).find((host) => host.id === hostId);
+				const records = new Map<string, { readonly record: StoredSnapshot; readonly ref: string } | undefined>();
+				for (const [key, { objectId, version, mapDigest }] of reported) {
+					const holder = known.get(key);
+					if (holder?.state === "held" && holder.mapDigest === mapDigest) continue;
+					if (reporter === undefined || reporter.state === "revoked") continue;
+					// By a ref naming this host (it saved it) or another of its holders (this is a copy).
+					if (!records.has(objectId)) {
+						const others = (await store.diskHolders.list({ objectId })).filter((each) => each.kind === "snapshot");
+						records.set(objectId, await savedSnapshot(objectId, others, hostId));
+					}
+					const found = records.get(objectId);
+					if (found === undefined) continue;
+					if (reporter.accountId !== undefined && reporter.accountId !== found.record.accountId) continue;
+					if (holder !== undefined) release.push(holder);
+					hold.push({
+						id: diskHolderId("snapshot", objectId, version, hostId),
+						kind: "snapshot",
+						objectId,
+						version,
+						hostId,
+						state: "held",
+						since: at,
+						mapDigest,
+						ref: found.ref,
+					});
+				}
+				letGo(mine, new Set(reported.keys()));
+			}
 			if (hold.length > 0 || release.length > 0) await store.diskHolderWrites.reconcile(hostId, at, { hold, release });
 		},
 		async recordCommit(kind, objectId, version, hostId) {
@@ -582,6 +737,7 @@ export function createDiskHolders(options: {
 				throw new KantelError("invalid", `There is no kind of disk ${JSON.stringify(request.kind)}`);
 			}
 			if (request.kind === "rootfs") return locateRootfs(hostId, request);
+			if (request.kind === "snapshot") return locateSnapshot(hostId, request);
 			if (request.kind !== "sticky") {
 				throw new KantelError("not_supported", `Kantel keeps no copies of ${request.kind} objects yet`);
 			}

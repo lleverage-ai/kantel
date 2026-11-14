@@ -1070,6 +1070,11 @@ type ExtractedArchive struct {
 	Symlinks int64 `json:"symlinks"`
 }
 
+type FetchHostSnapshotBody struct {
+	// The saved snapshot's ID.
+	SnapshotID string `json:"snapshotId"`
+}
+
 type FetchHostStickyDiskBody struct {
 	// The sticky disk's ID.
 	StickyDiskID string `json:"stickyDiskId"`

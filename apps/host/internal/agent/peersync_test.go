@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
+	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -263,5 +264,165 @@ func TestRootfsSync(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("disk.locate not asked")
+	}
+}
+
+// snapshotFetchTier is a microVM tier whose saved snapshots sync too: it holds snapshot s1's disk, without the memory,
+// which it wants, and records the fetches made ready.
+type snapshotFetchTier struct {
+	*rootfsFetchTier
+	prepared []string
+}
+
+func (s *snapshotFetchTier) HoldsSnapshot(id, version string) bool {
+	return id == "s1" && version == microvm.SnapshotDisk
+}
+func (s *snapshotFetchTier) OpenSnapshot(string, string, bool) (*os.File, []byte, error) {
+	return nil, nil, fs.ErrNotExist
+}
+func (s *snapshotFetchTier) ReadSnapshotFile(string, string, string) ([]byte, error) {
+	return nil, fs.ErrNotExist
+}
+func (s *snapshotFetchTier) PrepareSnapshotFetch(_ context.Context, id string, _ []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prepared = append(s.prepared, id)
+	return nil
+}
+func (s *snapshotFetchTier) WantsSnapshotMemory(id string) bool { return id == "s1" }
+func (s *snapshotFetchTier) SnapshotPartial(string, string) (string, error) {
+	return "", errors.New("no partials here")
+}
+func (s *snapshotFetchTier) PublishFetchedSnapshot(string, string, *os.File, []byte, map[string][]byte) error {
+	return nil
+}
+func (s *snapshotFetchTier) SnapshotPartials() [][2]string              { return nil }
+func (s *snapshotFetchTier) ReserveSnapshotFetch(int64) (func(), error) { return func() {}, nil }
+func (s *snapshotFetchTier) DiscardSnapshotPartial(id, version string) {
+	s.DiscardStickyPartial("snapshot", id+"/"+version)
+}
+func (s *snapshotFetchTier) SnapshotHoldings() []proto.ObjectHolding {
+	return []proto.ObjectHolding{{ObjectID: "s1", Versions: []proto.ObjectVersionHolding{{Version: "disk", MapDigest: "sha256:2"}}}}
+}
+
+// A host whose microVM tier has saved snapshots, with the mesh, reports snapshot-sync and the snapshots it holds beside
+// its root filesystems, and takes disk.fetch for a snapshot: its disk once the snapshot's record from a holder has made
+// the fetch ready, and its memory, which it asks for itself once it holds the disk.
+func TestSnapshotSync(t *testing.T) {
+	tier := &snapshotFetchTier{rootfsFetchTier: &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
+	without := newLifecycleHost(t, tier.lifecycleTier)
+	without.tiers[microvm.Tier] = tier
+	if slices.Contains(without.makeFacts().Features, proto.FeatureSnapshotSync) || without.Capacity().Holdings != nil {
+		t.Fatal("snapshot-sync, or holdings, without the mesh")
+	}
+
+	h := newLifecycleHost(t, tier.lifecycleTier)
+	h.tiers[microvm.Tier] = tier
+	h.mesh = &fakeMesh{}
+	h.cfg.SyncRateMbit = -1
+	located := make(chan proto.DiskLocateParams, 8)
+	h.callKantel = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		located <- params.(proto.DiskLocateParams)
+		return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no such snapshot"}
+	}
+	h.startPeerSync()
+	defer h.syncStop()
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureSnapshotSync) {
+		t.Fatal("snapshot-sync not reported")
+	}
+	holdings := h.Capacity().Holdings
+	if len(holdings[proto.DiskKindRootfs]) != 1 || len(holdings[proto.DiskKindSnapshot]) != 1 || holdings[proto.DiskKindSnapshot][0].ObjectID != "s1" {
+		t.Fatalf("holdings %+v", holdings)
+	}
+	kinds := h.syncKinds()
+	if got := kinds.Files(disksyncRef("s1", "disk")); !slices.Equal(got, []string{microvm.SnapshotRecordFile}) {
+		t.Fatalf("a disk's files %v", got)
+	}
+	if got := kinds.Files(disksyncRef("s1", "memory")); !slices.Equal(got, []string{microvm.SnapshotStateFile}) {
+		t.Fatalf("a memory's files %v", got)
+	}
+	var pe *proto.Error
+	for name, c := range map[string]struct {
+		p    proto.DiskFetchParams
+		code string
+	}{
+		"another version":   {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s1", Version: "1"}, proto.ErrInvalid},
+		"memory not wanted": {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "memory"}, proto.ErrConflict},
+		"a disk not held":   {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "disk"}, ""},
+		"a disk held":       {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s1", Version: "disk"}, ""},
+	} {
+		if err := call(t, h, proto.MethodDiskFetch, c.p); c.code == "" && err != nil || c.code != "" && (!errors.As(err, &pe) || pe.Code != c.code) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// s2's disk: its record is asked for where disk.locate says, which has no such snapshot, so its fetch isn't made
+	// ready. s1's disk is here: its memory is asked for.
+	want := map[proto.DiskLocateParams]bool{
+		{Kind: "snapshot", ObjectID: "s2", Version: "disk"}:   true,
+		{Kind: "snapshot", ObjectID: "s1", Version: "memory"}: true,
+	}
+	for len(want) > 0 {
+		select {
+		case p := <-located:
+			if !want[p] {
+				t.Fatalf("located %+v", p)
+			}
+			delete(want, p)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("not located: %v", want)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	tier.mu.Lock()
+	defer tier.mu.Unlock()
+	if len(tier.prepared) != 0 {
+		t.Fatalf("made ready %v", tier.prepared)
+	}
+}
+
+func disksyncRef(id, version string) disksync.Ref {
+	return disksync.Ref{Kind: proto.DiskKindSnapshot, ObjectID: id, Version: version}
+}
+
+// A snapshot's memory that no host holds yet when its disk arrives (its holder hasn't reported it) is asked for again a
+// while later; once the control plane has no such snapshot, no more.
+func TestSnapshotMemoryAskedAgain(t *testing.T) {
+	defer func(wait time.Duration) { snapshotMemoryRetry = wait }(snapshotMemoryRetry)
+	snapshotMemoryRetry = 10 * time.Millisecond
+	tier := &snapshotFetchTier{rootfsFetchTier: &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
+	h := newLifecycleHost(t, tier.lifecycleTier)
+	h.tiers[microvm.Tier] = tier
+	h.mesh = &fakeMesh{}
+	h.cfg.SyncRateMbit = -1
+	var mu sync.Mutex
+	asked := 0
+	h.callKantel = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if p := params.(proto.DiskLocateParams); p.Version != microvm.SnapshotMemory {
+			return nil, fmt.Errorf("located %+v", p)
+		}
+		asked++
+		if asked < 3 {
+			return json.RawMessage(`{"holders":[]}`), nil
+		}
+		return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no such snapshot"}
+	}
+	h.startPeerSync()
+	defer h.syncStop()
+	done := make(chan struct{})
+	go func() {
+		h.fetchSnapshotMemory("s1")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("still asking")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if asked != 3 {
+		t.Fatalf("asked %d times", asked)
 	}
 }

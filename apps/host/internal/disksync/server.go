@@ -8,8 +8,9 @@ package disksync
 //	GET /v1/objects/{kind}/{id}/{version}/files/{name}   one of the version's small files, whole
 //
 // A version is one block-mapped file (map and data), and, for some kinds, small files beside it that go whole (a
-// template's root filesystem has its record, which names the image it was made from). A kind whose versions have
-// several block-mapped files (a snapshot's disk and memory) is to name them the same way, under files/{name}.
+// template's root filesystem has its record, which names the image it was made from). An object with several
+// block-mapped files has a version for each: a saved snapshot's disk and its memory are its versions "disk" and
+// "memory", each with its own map, holders and grants, so its memory goes only to the hosts that fetch it.
 //
 // Each request carries a grant (Authorization: Bearer <grant>) the control plane signed, naming this host in from and
 // the asking peer as to. Which peer asks is the request's source address: WireGuard takes a packet from a peer only

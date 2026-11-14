@@ -835,6 +835,29 @@ func TestFetchTakesTheVersionsSmallFiles(t *testing.T) {
 	}
 }
 
+// ReadFile takes one of a version's small files from its holders, asking disk.locate where they are, without fetching
+// the version: nothing is written, and a file no holder has is nil.
+func TestReadFileFromTheHolders(t *testing.T) {
+	f := newFixture(t, 2)
+	f.put("v2", disk(t, 2, 0))
+	f.holders[0].store.files = []string{"record", "other"}
+	f.holders[1].store.files = []string{"record", "other"}
+	if err := os.WriteFile(filepath.Join(f.holders[1].store.dir, "v2.record"), []byte("the record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}}
+	raw, err := f.fetcher().ReadFile(context.Background(), req, "record")
+	if err != nil || string(raw) != "the record" {
+		t.Fatalf("the record: %q, %v", raw, err)
+	}
+	if raw, err := f.fetcher().ReadFile(context.Background(), req, "other"); err != nil || raw != nil {
+		t.Fatalf("a file no holder has: %q, %v", raw, err)
+	}
+	if f.local.Held(req.Ref) || len(f.local.Partials()) != 0 {
+		t.Fatal("the version fetched")
+	}
+}
+
 // Kinds passes each call to its kind's store, and a kind it hasn't is a version the host doesn't hold.
 func TestKindsDispatchByKind(t *testing.T) {
 	sticky := &dirStore{dir: t.TempDir()}

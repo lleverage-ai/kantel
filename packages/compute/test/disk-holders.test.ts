@@ -53,6 +53,8 @@ function setUp(
 		fetchDisk?: SandboxBackend["fetchDisk"];
 		/** The backend's telling of hosts of new grant keys (`SandboxBackend.grantKeysChanged`). */
 		grantKeysChanged?: SandboxBackend["grantKeysChanged"];
+		/** Told of each snapshot's bytes deleted, by ref, before the stub deletes them. */
+		deletedSnapshot?: (ref: string) => void;
 		/** Whether Tom is a super-admin (default true). */
 		superAdmin?: boolean;
 		/** The clock's start (default 13 Nov 2026). */
@@ -69,6 +71,10 @@ function setUp(
 		...(holdings === undefined ? {} : { stickyHoldings: async () => holdings() }),
 		...(options.fetchDisk === undefined ? {} : { fetchDisk: options.fetchDisk }),
 		...(options.grantKeysChanged === undefined ? {} : { grantKeysChanged: options.grantKeysChanged }),
+		async deleteSnapshot(ref) {
+			options.deletedSnapshot?.(ref);
+			await backend.deleteSnapshot(ref);
+		},
 		async commitStickyDisk(sandboxId, diskId, version) {
 			if (backend.commitStickyDisk === undefined) throw new Error("The stub commits sticky disks");
 			const committed = await backend.commitStickyDisk(sandboxId, diskId, version);
@@ -155,7 +161,22 @@ function setUp(
 			.filter((holder) => holder.version === version)
 			.map((holder) => [holder.hostId, holder.state])
 			.sort();
-	return Object.assign(client, { api, clock, pool, committed, holders });
+	/**
+	 * A saved snapshot of a sandbox on the stub's host, in pool A (once `pool()` is called), its ref named as a host
+	 * backend's are: the host, and `id` there.
+	 */
+	const saved = async (id: string) => {
+		const sandbox = await client.createSandbox({ type: "microvm", wait: true });
+		const snapshot = await client.saveSnapshot({ name: id, sandboxId: sandbox.id });
+		const stored = await api.store.snapshots.update(snapshot.id, (current) => ({
+			...current,
+			ref: `${STUB_HOST_ID}/${id}`,
+			poolId: "pool_a",
+		}));
+		if (stored === undefined) throw new Error("no snapshot");
+		return stored;
+	};
+	return Object.assign(client, { api, clock, pool, committed, holders, saved });
 }
 
 const DISK = {
@@ -306,7 +327,7 @@ describe("disk holders", () => {
 		await expect(tom.api.service.locateDisk("host_b", { ...request, kind: "disk" })).rejects.toMatchObject({
 			code: "invalid",
 		});
-		await expect(tom.api.service.locateDisk("host_b", { ...request, kind: "snapshot" })).rejects.toMatchObject({
+		await expect(tom.api.service.locateDisk("host_b", { ...request, kind: "template" })).rejects.toMatchObject({
 			code: "not_supported",
 		});
 	});
@@ -510,6 +531,145 @@ describe("disk holders", () => {
 		await tom.api.service.sweep();
 		await tom.api.service.idle();
 		expect(await tom.api.store.diskHolders.list()).toEqual([]);
+	});
+
+	it("keeps the saved snapshots hosts report, and locates each version in the snapshot's pool, with a grant naming its account", async () => {
+		const tom = setUp({ arch: { host_g: "aarch64" } });
+		await tom.pool();
+		const snap = await tom.saved("hs1");
+		const report = (hostId: string, objects: readonly { objectId: string; versions: string[] }[]) => {
+			tom.clock.now += 1;
+			return tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: {
+					snapshot: objects.map(({ objectId, versions }) => ({
+						objectId,
+						versions: versions.map((version) => ({ version, mapDigest: version === "disk" ? DIGEST : OTHER_DIGEST })),
+					})),
+				},
+			});
+		};
+		const snapshotHolders = async () =>
+			(await tom.api.store.diskHolders.list())
+				.filter((holder) => holder.kind === "snapshot")
+				.map((holder) => [holder.hostId, holder.objectId, holder.version, holder.mapDigest])
+				.sort();
+		// Its host: its disk and memory. Not a snapshot the catalogue hasn't, nor a version or ID that isn't one.
+		await report(STUB_HOST_ID, [
+			{ objectId: "hs1", versions: ["disk", "memory", "1"] },
+			{ objectId: "hs_unknown", versions: ["disk"] },
+			{ objectId: "../x", versions: ["disk"] },
+		]);
+		// Copies: another host in its pool, which fetched its disk; another account's host, which may hold none of it.
+		await report("host_b", [{ objectId: "hs1", versions: ["disk"] }]);
+		await report("host_f", [{ objectId: "hs1", versions: ["disk"] }]);
+		await report("host_g", [{ objectId: "hs1", versions: ["disk"] }]);
+		expect(await snapshotHolders()).toEqual([
+			["host_b", "hs1", "disk", DIGEST],
+			["host_g", "hs1", "disk", DIGEST],
+			[STUB_HOST_ID, "hs1", "disk", DIGEST],
+			[STUB_HOST_ID, "hs1", "memory", OTHER_DIGEST],
+		]);
+		const disk = { kind: "snapshot", objectId: "hs1", version: "disk" };
+		const found = await tom.api.service.locateDisk("host_d", disk);
+		// Not host_g, of another architecture.
+		expect(found).toMatchObject({
+			mapDigest: DIGEST,
+			holders: [
+				{ hostId: STUB_HOST_ID, address: "fd00:a::1" },
+				{ hostId: "host_b", address: "fd00:a::2" },
+			],
+		});
+		const publicKey = await tom.api.service.grantPublicKey();
+		if (publicKey === undefined || found.grant === undefined) throw new Error("no grant");
+		expect(await verifyGrant(publicKey, found.grant, tom.clock.now)).toMatchObject({
+			kind: "snapshot",
+			objectId: "hs1",
+			version: "disk",
+			accountId: snap.accountId,
+			from: [STUB_HOST_ID, "host_b"],
+			to: "host_d",
+		});
+		// Its memory only where it is.
+		expect(await tom.api.service.locateDisk("host_b", { ...disk, version: "memory" })).toMatchObject({
+			mapDigest: OTHER_DIGEST,
+			holders: [{ hostId: STUB_HOST_ID }],
+		});
+		// Another pool's host, another account's, a revoked one, a version that isn't one: none of it.
+		for (const [hostId, request] of [
+			["host_c", disk],
+			["host_f", disk],
+			["host_b", { ...disk, version: "1" }],
+			["host_e", disk],
+		] as const) {
+			await expect(tom.api.service.locateDisk(hostId, request)).rejects.toMatchObject({ code: "not_found" });
+		}
+		// A snapshot no host holds: no holders.
+		expect(await tom.api.service.locateDisk("host_b", { ...disk, objectId: "hs_unknown" })).toEqual({ holders: [] });
+		// Its own host no longer holds it: the copies are still its, by the ref they were recorded with, and a new one is
+		// taken too.
+		tom.clock.now += 3 * 60_000;
+		await report(STUB_HOST_ID, []);
+		expect((await snapshotHolders()).map(([hostId]) => hostId)).not.toContain(STUB_HOST_ID);
+		expect(await tom.api.service.locateDisk("host_d", disk)).toMatchObject({
+			holders: [{ hostId: "host_b" }],
+		});
+		await report("host_d", [{ objectId: "hs1", versions: ["disk"] }]);
+		expect((await snapshotHolders()).map(([hostId]) => hostId)).toContain("host_d");
+		// Let go once a host no longer reports it.
+		tom.clock.now += 3 * 60_000;
+		await report("host_b", []);
+		expect((await snapshotHolders()).map(([hostId]) => hostId)).not.toContain("host_b");
+		// Sticky disks and templates off: no grants, so nothing synced.
+		const off = setUp({ stickyDisks: false });
+		await off.pool();
+		await expect(off.api.service.locateDisk(STUB_HOST_ID, disk)).rejects.toMatchObject({ code: "not_supported" });
+	});
+
+	it("has a host fetch a saved snapshot's disk from its pool's holders, and deletes the copies with the snapshot", async () => {
+		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];
+		const deleted: string[] = [];
+		const tom = setUp({
+			fetchDisk: async (hostId, fetch) => {
+				fetches.push({ hostId, fetch });
+			},
+			deletedSnapshot: (ref) => deleted.push(ref),
+		});
+		await tom.pool();
+		const snap = await tom.saved("hs1");
+		// Not before its host reports it.
+		await expect(tom.fetchHostSnapshot("host_b", { snapshotId: snap.id })).rejects.toMatchObject({ code: "conflict" });
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		});
+		await tom.fetchHostSnapshot("host_b", { snapshotId: snap.id });
+		expect(fetches).toEqual([
+			{
+				hostId: "host_b",
+				fetch: expect.objectContaining({
+					kind: "snapshot",
+					objectId: "hs1",
+					version: "disk",
+					mapDigest: DIGEST,
+					holders: [{ hostId: STUB_HOST_ID, address: "fd00:a::1" }],
+				}),
+			},
+		]);
+		// Its own host has no other holder; another pool's host may not hold it; a snapshot that isn't there.
+		await expect(tom.fetchHostSnapshot(STUB_HOST_ID, { snapshotId: snap.id })).rejects.toMatchObject({
+			code: "conflict",
+		});
+		await expect(tom.fetchHostSnapshot("host_c", { snapshotId: snap.id })).rejects.toMatchObject({ code: "not_found" });
+		await expect(tom.fetchHostSnapshot("host_b", { snapshotId: "snap_missing" })).rejects.toMatchObject({
+			code: "not_found",
+		});
+		// host_b has its copy now: deleting the snapshot deletes its bytes on its host, then the copy, and forgets both.
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		});
+		await tom.deleteSnapshot(snap.id);
+		expect(deleted).toEqual([`${STUB_HOST_ID}/hs1`, "host_b/hs1"]);
+		expect((await tom.api.store.diskHolders.list()).filter((holder) => holder.kind === "snapshot")).toEqual([]);
 	});
 
 	it("has a host fetch a version from its pool's holders, with a grant naming it", async () => {

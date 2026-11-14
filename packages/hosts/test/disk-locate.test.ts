@@ -161,6 +161,12 @@ describe("the disk store on the host link", () => {
 			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs: [] } }),
 		);
 		expect(recordHoldings).toHaveBeenCalledTimes(2);
+		// Saved snapshots, beside them.
+		const snapshot = [{ objectId: "snap_1", versions: [{ version: "disk", mapDigest: digest, allocatedBytes: 10 }] }];
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { rootfs, snapshot } } } });
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs, snapshot } }),
+		);
 	});
 
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {

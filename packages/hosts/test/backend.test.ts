@@ -877,6 +877,14 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(synced.host.params.filter((call) => call.method === "disk.fetch").map((call) => call.params)).toEqual([
 			fetch,
 		]);
+		// A snapshot only to a host that fetches snapshots.
+		const snapshot = { ...fetch, kind: "snapshot", objectId: "snap_1", version: "disk" };
+		await expect(backend.fetchDisk?.(synced.hostId, snapshot)).rejects.toMatchObject({ code: "not_supported" });
+		const snapshots = await hostWith("snapshots", ["sticky-disks", "mesh", "disk-sync", "snapshot-sync"]);
+		await backend.fetchDisk?.(snapshots.hostId, snapshot);
+		expect(snapshots.host.params.filter((call) => call.method === "disk.fetch").map((call) => call.params)).toEqual([
+			snapshot,
+		]);
 	});
 
 	it("attaches sticky disks only on a host that runs them, and commits and deletes them there", async () => {

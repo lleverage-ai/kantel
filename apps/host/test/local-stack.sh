@@ -29,6 +29,11 @@
 #   KANTEL_STACK_ISOLATE_IMAGE   the isolate VM's image (default /var/lib/kantel-host/images/isolate.ext4); one from
 #                                guest/rootfs.sh <out> isolate amd64 on this branch runs this branch's isolate runtime
 #   KANTEL_STACK_FIRECRACKER     Firecracker (default /var/lib/kantel-host/bin/firecracker)
+#   KANTEL_STACK_IMAGE_DIGEST    a SHA-256 (64 hex digits) each host records for its microVM image, as a download records
+#                                one (images/sandbox.ext4.sha256-source): with it the hosts can tell their images are the
+#                                same, so a snapshot's memory restores on another host (its portable runtime is known)
+#   KANTEL_STACK_HOST_FLAGS      more flags for each host's kantel-host run, such as --local 127.0.0.1:7070 (its calls
+#                                over HTTP inside its container, for tests that call a host directly)
 #   KANTEL_STACK_DIR             where the stack's state is (default /tmp/kantel-local-stack): the gateway's log and
 #                                bootstrap file (its keys, mode 0600), the hosts' settings, PIDs and names. One stack
 #                                per directory; give another directory (and --port) for a second
@@ -121,10 +126,14 @@ start_host() {
 	container="kantel-stack-$name-$host"
 	docker rm -f "$container" >/dev/null 2>&1 || true
 	echo "$container" >>"$dir/containers"
+	local digest=()
+	[ -f "$dir/sandbox.sha256-source" ] && digest=(-v "$dir/sandbox.sha256-source:/images/sandbox.ext4.sha256-source:ro")
 	docker run -d --name "$container" --privileged --device /dev/kvm \
 		-v "$kernel:/images/vmlinux:ro" -v "$sandbox_image:/images/sandbox.ext4:ro" -v "$isolate_image:/images/isolate.ext4:ro" \
+		"${digest[@]}" \
 		-v "$dir/bin:/opt/kantel:ro" -v "$dir/$host/config.json:/etc/kantel-host/config.json:ro" \
-		"$image" sh -c 'ulimit -c 0; exec /opt/kantel/kantel-host run --config /etc/kantel-host/config.json' >/dev/null
+		-e KANTEL_STACK_HOST_FLAGS="${KANTEL_STACK_HOST_FLAGS:-}" \
+		"$image" sh -c 'ulimit -c 0; exec /opt/kantel/kantel-host run --config /etc/kantel-host/config.json $KANTEL_STACK_HOST_FLAGS' >/dev/null
 	echo "$reg" | jq -r .hostId >"$dir/$host/host-id"
 }
 
@@ -199,7 +208,14 @@ up() {
 	done
 	mkdir -p "$dir/bin"
 	chmod 700 "$dir"
-	rm -f "$dir/containers"
+	rm -f "$dir/containers" "$dir/sandbox.sha256-source"
+	if [ -n "${KANTEL_STACK_IMAGE_DIGEST:-}" ]; then
+		[[ $KANTEL_STACK_IMAGE_DIGEST =~ ^[0-9a-f]{64}$ ]] || {
+			echo "local-stack: KANTEL_STACK_IMAGE_DIGEST is 64 hex digits" >&2
+			exit 1
+		}
+		echo "$KANTEL_STACK_IMAGE_DIGEST" >"$dir/sandbox.sha256-source"
+	fi
 	echo "$name" >"$dir/name"
 
 	(cd "$here/apps/host" && CGO_ENABLED=0 go build -o "$dir/bin/kantel-host" ./cmd/kantel-host)

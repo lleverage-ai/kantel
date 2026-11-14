@@ -255,6 +255,10 @@ type Config struct {
 	// Pool, when set, is the pool the host is in now, as the last welcome said ("" while none has): a template's root
 	// filesystem built or fetched is stamped with it, so it is offered only in that pool (rootfssync.go).
 	Pool func() string
+	// HostImage, when set, is the microVMs' root filesystem of a host image version (images/v/<version>/sandbox.ext4),
+	// downloaded from its release first when the host hasn't it: a snapshot fetched from a peer is a layer over the
+	// image its sandbox booted (snapshotsync.go).
+	HostImage func(ctx context.Context, version string) (string, error)
 	// Discard boots every microVM with discard on its writable disk (fc.BootConfig.Discard), for a Firecracker that
 	// can (fc.DiscardSupported): blocks the guest frees, and those a trim before a save frees (trimDisk), are holes in
 	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. It is in the templates' fingerprint.
@@ -411,6 +415,8 @@ type Manager struct {
 	hostMemoryMiB int64
 	// tpl is templates' root filesystems and snapshots (templates.go).
 	tpl *templateCache
+	// snapshotMaps is saved snapshots' block maps (snapshotsync.go).
+	snapshotMaps snapshotMaps
 	// builds are the template builds admitted and not yet ended, by snapshot ID, with their machines: guarded by mu,
 	// with sandboxes, so a create and a build are admitted one at a time against what both hold.
 	builds map[string]proto.Size
@@ -705,6 +711,8 @@ func New(cfg Config) (*Manager, error) {
 	// Block maps of the sticky disk versions committed before them, and of templates' root filesystems made before them.
 	m.mapOldSticky(m.bg)
 	m.mapOldRootfs()
+	// And of saved snapshots.
+	m.mapOldSnapshots()
 	return m, nil
 }
 
@@ -3527,6 +3535,14 @@ type snapshotMeta struct {
 	// has started. It is in no sandbox's history (snapshotsOf), and one a previous run left is deleted when the host
 	// starts (reapTransientSnapshots), since its disk may be gone.
 	Transient bool `json:"transient,omitempty"`
+	// ColdBoot marks a copy fetched from another host (snapshotsync.go) of a snapshot with memory, whose memory isn't
+	// here (Memory false): this host's CPU or runtime isn't the one it was made on, or its memory hasn't come yet. A
+	// sandbox made from it boots on its disk.
+	ColdBoot bool `json:"coldBoot,omitempty"`
+	// RootfsDigest, for a snapshot over a template's root filesystem, is that file's block map digest on the host it is
+	// fetched from (ReadSnapshotFile adds it): two hosts may each have built one under its key, with other bytes, and a
+	// copy goes only over the same build (snapshotsync.go).
+	RootfsDigest string `json:"rootfsDigest,omitempty"`
 }
 
 func (m *Manager) snapshotDir(id string) string {
@@ -3906,8 +3922,17 @@ func snapshotBytes(dir string) int64 {
 // SaveSnapshot keeps a sandbox's current state under a name, until it is deleted: live for a running sandbox, from its
 // newest snapshot for a stopped one. A running sandbox's save keeps its disk only, unless p.Memory asks for its
 // memory too: a memory file is as big as the machine's memory, and ties a sandbox made from the snapshot to the same
-// machine size. A stopped one's keeps what its stop kept, memory or not, whatever p.Memory says.
+// machine size. A stopped one's keeps what its stop kept, memory or not, whatever p.Memory says. Saved, its files get
+// their block maps in the background (snapshotsync.go).
 func (m *Manager) SaveSnapshot(ctx context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error) {
+	snap, err := m.saveSnapshotNow(ctx, p)
+	if err == nil {
+		m.mapSnapshotLater(snap.ID)
+	}
+	return snap, err
+}
+
+func (m *Manager) saveSnapshotNow(ctx context.Context, p proto.SnapshotParams) (proto.SnapshotInfo, error) {
 	s, err := m.get(p.SandboxID)
 	if err != nil {
 		return proto.SnapshotInfo{}, err
@@ -3988,6 +4013,8 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		os.RemoveAll(sdir)
 		return proto.SnapshotInfo{}, err
 	}
+	// The same disk has the same map, when its source has one (a saved snapshot's): the rest are made after.
+	_ = os.Link(filepath.Join(from, "disk.map"), filepath.Join(sdir, "disk.map"))
 	// Its sticky disks' clones, which no one writes once in a snapshot, as its disk is.
 	if err := linkSticky(from, sdir, src.StickyDisks); err != nil {
 		os.RemoveAll(sdir)
@@ -3999,6 +4026,9 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	if kept.Memory {
 		ok := os.Link(filepath.Join(from, "state"), filepath.Join(sdir, "state")) == nil &&
 			m.spool.link(filepath.Join(from, "mem"), filepath.Join(sdir, "mem")) == nil
+		if ok {
+			_ = os.Link(filepath.Join(from, "mem.map"), filepath.Join(sdir, "mem.map"))
+		}
 		for i, digest := range src.BundleSlots {
 			if ok && digest != "" {
 				ok = os.Link(filepath.Join(from, bundleDriveFile(i)), filepath.Join(sdir, bundleDriveFile(i))) == nil
@@ -4008,6 +4038,7 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 			// Its disk alone, as pruneAuto leaves an older snapshot: a sandbox made from it boots.
 			_ = os.Remove(filepath.Join(sdir, "state"))
 			_ = os.Remove(filepath.Join(sdir, "mem"))
+			_ = os.Remove(filepath.Join(sdir, "mem.map"))
 			dropDrives(sdir)
 			kept.Memory = false
 		}
@@ -4022,6 +4053,8 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 		os.RemoveAll(sdir)
 		return proto.SnapshotInfo{}, err
 	}
+	// Its files' maps, those it didn't link from its source, in the background.
+	m.mapSnapshotLater(p.SnapshotID)
 	// What of it is its own, and what it shares (with its source, at least): the control plane counts the shared files
 	// for one of their holders, as it does from snapshot.list, so the size it records now is the one a refresh gives.
 	answer := kept.SnapshotInfo
@@ -4042,9 +4075,11 @@ func (m *Manager) DeleteSnapshot(id string) error {
 		return err
 	}
 	defer m.evictBundles()
-	// Not while a keep links it (KeepSnapshot).
+	// Not while a keep links it (KeepSnapshot), or a fetch of its memory publishes it (snapshotsync.go).
 	m.autoMu.Lock()
 	defer m.autoMu.Unlock()
+	// A fetch of its memory under way, if any, has nothing to go into.
+	_ = os.RemoveAll(m.snapshotFetchDir(id))
 	return os.RemoveAll(m.snapshotDir(id))
 }
 
