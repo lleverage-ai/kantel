@@ -390,6 +390,13 @@ export type StoredSandbox = Omit<
 		};
 		readonly egressRevision?: number;
 		/**
+		 * Whether its memory goes with it, once its new host is chosen (said before anything is copied), and why not where
+		 * it was asked to and might have: the API's `move.keepMemory` and `restartReason`. Absent before then, and on a move
+		 * from before Kantel kept it: it isn't kept.
+		 */
+		readonly keepMemory?: boolean;
+		readonly restartReason?: string;
+		/**
 		 * A stop owed once the move ends, wherever it runs then (its person left the organisation as it moved): its
 		 * reason, which becomes its `stopFor` as it runs again, for the sweep to carry out.
 		 */

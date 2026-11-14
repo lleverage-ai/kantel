@@ -13,8 +13,11 @@
  */
 import { base64ToBytes, bytesToBase64 } from "./util.ts";
 
-/** What a disk store object is: sticky disks now; templates' root filesystems and snapshots, saved snapshots and sandboxes' disks later. */
-export const DISK_KINDS = ["sticky", "rootfs", "template", "snapshot", "sandbox"] as const;
+/**
+ * What a disk store object is: a sticky disk, a template's root filesystem, a template snapshot, a saved snapshot, a
+ * moved sandbox's disk, and a moved sandbox's memory (the last two only ever located by the host registry, for a move).
+ */
+export const DISK_KINDS = ["sticky", "rootfs", "template", "snapshot", "sandbox", "sandbox-memory"] as const;
 export type DiskKind = (typeof DISK_KINDS)[number];
 
 /** How long a grant is valid from when it is signed. */

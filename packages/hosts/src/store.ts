@@ -131,6 +131,13 @@ export interface PlacementRecord {
 			readonly diskGiB: number;
 		};
 		readonly mapDigest?: string;
+		/**
+		 * Its memory moves too (`HOST_FEATURES.sandboxMoveMemory`, the hosts' fingerprints matching): a running sandbox is
+		 * stopped keeping it, and its export makes the same version of its memory's object (`sandbox-memory`), whose map
+		 * digest is `memoryDigest`.
+		 */
+		readonly memory?: true;
+		readonly memoryDigest?: string;
 		readonly settling?: { readonly by: string; readonly until: number };
 		/**
 		 * A rollback has begun (its first claim): the move never switches from then on, whatever becomes of that claim,

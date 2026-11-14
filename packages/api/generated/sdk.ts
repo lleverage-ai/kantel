@@ -1705,7 +1705,7 @@ export type MountStatus = "pending" | "ready" | "failed";
 export interface MoveSandboxBody {
 	/** The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox. */
 	readonly hostId?: string;
-	/** Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused or running one is refused unless this is `false`. Then it boots on its disk on the new host and its memory is lost: a running one is copied as it runs, stopped, copied again (only what it wrote since), and started there, so it is unavailable only for that stop, the last copy and its boot. */
+	/** Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't (`hostId` names one, or there is no other), it restarts there instead, and its `move` says why (`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable only for that stop, the last copy and its boot. A stopped sandbox has no memory. */
 	readonly keepMemory?: boolean;
 	/** Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was. */
 	readonly wait?: boolean;
@@ -1998,6 +1998,8 @@ export interface Sandbox {
 	readonly upgradedFrom?: SandboxUpgrade;
 	/** A move to another host under way (its `state` is `moving`). */
 	readonly move?: SandboxMove;
+	/** Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it. */
+	readonly moved?: SandboxMoved;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
 	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
@@ -2174,10 +2176,45 @@ export interface SandboxMove {
 	readonly phase: "copying" | "stopping" | "final-copy" | "starting";
 	/** The host it is moving to, where the caller may know it, once chosen. */
 	readonly hostId?: string;
-	/** Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host. */
+	/** Whether its memory moves too, so it carries on where it left off on the new host: asked for (the default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running programs ending (`restartReason` says why, where it had memory that might have moved). Said once its new host is chosen, before anything is copied. */
 	readonly keepMemory: boolean;
+	/** Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from its host's, or a host can't move memory yet. */
+	readonly restartReason?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly startedAt: number;
+}
+
+/** Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it. */
+export interface SandboxMoved {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	/** Its memory moved with it, so its programs carried on; `false`, it booted on its disk there. */
+	readonly keptMemory: boolean;
+	/** Why its memory didn't move with it although that was asked for, as its `move` said. */
+	readonly restartReason?: string;
+}
+
+/** A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory. */
+export interface SandboxMovePlan {
+	/** Each host it may move to now, as the scheduler would place it (room and all), with what a move there does with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host. */
+	readonly targets?: readonly SandboxMoveTarget[];
+}
+
+export interface SandboxMoveTarget {
+	/** A host it may move to now. */
+	readonly hostId: string;
+	/** A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it restarts there, booting on its disk. */
+	readonly keepsMemory: boolean;
+	/** Why a move there restarts it, where it has memory that might have moved. */
+	readonly restartReason?: string;
+	/** Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it wrote since its first copy and its boot. */
+	readonly pauseMs?: number;
+	/** Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its guest has touched; the rest is zero, and costs nothing), a paused one's memory file. */
+	readonly memoryBytes?: number;
+	/** The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false). */
+	readonly bytesPerSecond?: number;
+	/** `bytesPerSecond` was measured by the hosts, rather than assumed. */
+	readonly rateMeasured?: boolean;
 }
 
 /** The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call. */
@@ -3580,8 +3617,10 @@ export interface KantelClient {
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
 	/** Upgrade an isolate to a microVM. Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and `/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`, Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was. Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the upgrade; a `sandbox.upgraded` event records it. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/upgrade` */
 	upgradeSandbox(sandboxId: string, body?: UpgradeSandboxBody, options?: CallOptions): Promise<Sandbox>;
-	/** Move a sandbox to another host. Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a paused or running sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. A running one moves with a restart: it is copied as it runs, then stopped (its processes end), what it wrote since is copied, and it is started on the new host, so it is unavailable for seconds rather than for the whole copy. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again. Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/move` */
+	/** Move a sandbox to another host. Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs, then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with `keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/move` */
 	moveSandbox(sandboxId: string, body?: MoveSandboxBody, options?: CallOptions): Promise<Sandbox>;
+	/** Plan a sandbox's move. A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused as a move would be when it can't move. A key needs `sandboxes:write`. `GET /sandboxes/{sandboxId}/move` */
+	planSandboxMove(sandboxId: string, options?: CallOptions): Promise<SandboxMovePlan>;
 	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/restart-on-latest` */
@@ -3993,6 +4032,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/move`, body, idempotent: true },
 				callOptions,
 			),
+		planSandboxMove: (sandboxId, callOptions) =>
+			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/move` }, callOptions),
 		recoverSandbox: (sandboxId, callOptions) =>
 			send(
 				options,

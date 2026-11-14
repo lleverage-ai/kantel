@@ -766,10 +766,11 @@ export interface ComputeService {
 	locateDisk(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
 	 * A grant for host `to` to fetch a version of an object of `accountId`'s from the hosts `from`, whose holders the
-	 * host registry knows rather than the catalogue: a move's export (kind `sandbox`). `not_supported` with no grant key.
+	 * host registry knows rather than the catalogue: a move's export (kind `sandbox`), and its memory (`sandbox-memory`).
+	 * `not_supported` with no grant key.
 	 */
 	grantFetch(grant: {
-		readonly kind: "sandbox";
+		readonly kind: "sandbox" | "sandbox-memory";
 		readonly objectId: string;
 		readonly version: string;
 		readonly accountId: string;
@@ -4081,7 +4082,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return {
 			move: {
 				phase: moving.phase,
-				keepMemory: false,
+				keepMemory: moving.keepMemory === true,
+				...(moving.restartReason === undefined ? {} : { restartReason: moving.restartReason }),
 				startedAt: moving.at,
 				...(to === undefined ? {} : { hostId: to }),
 			},
@@ -4126,6 +4128,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(sandbox.autoUpgrade === true ? { autoUpgrade: true } : {}),
 			...(sandbox.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: sandbox.autoUpgradeFrom }),
 			...(sandbox.upgradedFrom === undefined ? {} : { upgradedFrom: { ...sandbox.upgradedFrom } }),
+			...(sandbox.moved === undefined ? {} : { moved: { ...sandbox.moved } }),
 			latestSnapshotId: sandbox.latestSnapshotId,
 			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
@@ -9907,6 +9910,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			);
 		},
 
+		planSandboxMove: async (principal, { params }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			return planMoveOf(principal, role, sandbox.id);
+		},
+
 		moveSandbox: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			return once(principal, "moveSandbox", { params, body, idempotencyKey }, async () =>
@@ -12678,6 +12686,94 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * Refuses a sandbox that can't move to another host as it is: not a microVM, moving or upgrading already, not
+	 * running, stopped or paused, kept to its host by its create, or not on a host yet.
+	 */
+	function requireMovable(current: StoredSandbox): void {
+		if (current.type !== "microvm") throw new KantelError("not_supported", "Only a microVM moves to another host");
+		if (current.moving !== undefined || current.upgrading !== undefined) {
+			throw new KantelError("conflict", "The sandbox is being moved or upgraded already");
+		}
+		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "running") {
+			throw new KantelError(
+				"conflict",
+				`The sandbox is ${current.state}: only a running, stopped or paused sandbox moves to another host`,
+			);
+		}
+		if (current.hostPin !== undefined) {
+			throw new KantelError(
+				"conflict",
+				"The sandbox is kept to its host (its create named the host), so it doesn't move",
+			);
+		}
+		if (current.hostId === undefined)
+			throw new KantelError("conflict", "The sandbox isn't on a host yet; start it instead");
+	}
+
+	/**
+	 * The hosts a sandbox may move to, as a start would choose them: its labels and its pool kept (it never leaves its
+	 * pool), its own host among them, which its backend leaves out.
+	 */
+	async function moveHostsOf(principal: Principal, current: StoredSandbox): Promise<readonly string[]> {
+		return requireHosts(
+			await ensureHosts(),
+			current.accountId,
+			"microvm",
+			{ ...current.hostLabels },
+			true,
+			await mayShare(principal),
+			undefined,
+			await poolOfSandbox(current),
+		);
+	}
+
+	/**
+	 * A move's dry run (`GET /sandboxes/{id}/move`): each host it may move to now, whether a move there keeps its memory
+	 * (and why not) and the pause it takes. Refused as the move would be; nothing changes. None for a caller who may not
+	 * know its host, as its view leaves its host out.
+	 */
+	async function planMoveOf(
+		principal: Principal,
+		role: MemberRole,
+		sandboxId: string,
+	): Promise<computeSchema.SandboxMovePlan> {
+		const current = await settledFor(principal, sandboxId);
+		if (backend.move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
+		requireMovable(current);
+		requireSetupScope(principal, role, current);
+		const hosts = await moveHostsOf(principal, current);
+		const own = current.hostId;
+		const options = await backend.planMove?.(current.id, {
+			accountId: current.accountId,
+			eligibleHosts: hosts.filter((hostId) => hostId !== own),
+			...pooled(current.poolId),
+			...(current.state === "running" ? { running: true } : {}),
+		});
+		// A backend that can't say answers none: the caller lists hosts as it would without a dry run.
+		if (options === undefined) return {};
+		if ((await sandboxView(current, principal)).hostId === undefined) return {};
+		// A stopped sandbox has no memory: it boots there, as any start does.
+		const memory = current.state !== "stopped";
+		return {
+			targets: options.map((option) => ({
+				hostId: option.hostId,
+				keepsMemory: memory && option.memory.kept,
+				...(memory && option.memory.reason !== undefined ? { restartReason: option.memory.reason } : {}),
+				...(memory && option.memory.kept && option.pauseMs !== undefined
+					? {
+							pauseMs: option.pauseMs,
+							...(option.memoryBytes === undefined ? {} : { memoryBytes: option.memoryBytes }),
+							...(option.bytesPerSecond === undefined
+								? {}
+								: { bytesPerSecond: Math.max(1, Math.round(option.bytesPerSecond)) }),
+							...(option.rateMeasured === undefined ? {} : { rateMeasured: option.rateMeasured }),
+						}
+					: {}),
+			})),
+		};
+	}
+
+	/**
 	 * `POST /sandboxes/{id}/move`: a microVM moved to another host in its pool, with its ID, settings and URLs, and
 	 * started there on its disk.
 	 *
@@ -12687,9 +12783,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * copies it, starts it on the new host and only then places it there (`SandboxBackend.move`); it is published as a
 	 * boot's is (`commitMove`, through `boot`), its egress reconciled first. A failure the backend is sure of puts the
 	 * record back exactly as it was, stopped (or paused) where it was. An outcome the backend can't tell is settled with
-	 * it at once where it can say, else left for the sweep. Memory doesn't move yet: a paused or running sandbox moves
-	 * only with `keepMemory: false`, booting on its disk. Answers once it runs on its new host, or with `wait: false` as
-	 * soon as it is moving.
+	 * it at once where it can say, else left for the sweep. A paused or running sandbox keeps its memory unless
+	 * `keepMemory` is `false`, where its new host's CPU and runtime match its own (its backend chooses one that does
+	 * first): its backend says which as it chooses the host (`onPlanned`), before anything is copied, and the record's
+	 * move says so (`keepMemory`, and `restartReason` where it restarts), its `moved` once it runs there. Answers once it
+	 * runs on its new host, or with `wait: false` as soon as it is moving.
 	 *
 	 * A running sandbox moves with a restart (docs/design/disk-store.md, "Moving a sandbox to another host"): it stays
 	 * `running` with its move while its first copy is made, so its commands and files work on, and goes `starting` only
@@ -12719,51 +12817,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await settleStuckMove(current).catch(() => undefined);
 			return moveToHost(principal, role, sandboxId, body, true);
 		}
-		if (current.moving !== undefined || current.upgrading !== undefined) {
-			throw new KantelError("conflict", "The sandbox is being moved or upgraded already");
-		}
-		if (current.state === "paused" && body.keepMemory !== false) {
-			throw new KantelError(
-				"conflict",
-				"The sandbox is paused, and its memory can't be moved to another host yet: move it with keepMemory false to boot it on its disk there (its memory is lost), or stop it first",
-			);
-		}
-		if (current.state === "running" && body.keepMemory !== false) {
-			throw new KantelError(
-				"conflict",
-				"The sandbox is running, and its memory can't be moved to another host yet: move it with keepMemory false to restart it there (its processes end; its disk moves), or stop it first",
-			);
-		}
-		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "running") {
-			throw new KantelError(
-				"conflict",
-				`The sandbox is ${current.state}: only a running, stopped or paused sandbox moves to another host`,
-			);
-		}
+		requireMovable(current);
 		const running = current.state === "running";
-		if (current.hostPin !== undefined) {
-			throw new KantelError(
-				"conflict",
-				"The sandbox is kept to its host (its create named the host), so it doesn't move",
-			);
-		}
-		if (current.hostId === undefined)
-			throw new KantelError("conflict", "The sandbox isn't on a host yet; start it instead");
+		// Its memory too, unless asked not to: a running or paused one's, where its new host matches its own.
+		const keepMemory = body.keepMemory !== false && current.state !== "stopped";
 		// Comes back running, on its new host: it counts against the account's sandboxes as a start does (a running one
 		// counts already).
 		if (!running) await requireCapacity(current.accountId, 1);
-		// The hosts it may use, as a start would choose them: its labels and its pool kept (it never leaves its pool), its
-		// own host among them, which its backend leaves out.
-		const hosts = requireHosts(
-			await ensureHosts(),
-			current.accountId,
-			"microvm",
-			{ ...current.hostLabels },
-			true,
-			await mayShare(principal),
-			undefined,
-			await poolOfSandbox(current),
-		);
+		const hosts = await moveHostsOf(principal, current);
 		if (body.hostId !== undefined && !hosts.includes(body.hostId)) {
 			throw placementError(
 				"unavailable",
@@ -12860,6 +12921,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw error;
 				}
 				let placement: Placement;
+				// Whether its memory goes too, as its backend chose with the host (`onPlanned`).
+				let keptMemory = false;
 				try {
 					placement = await move(
 						current.id,
@@ -12881,8 +12944,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 										? { ...latest, moving: { ...latest.moving, phase: "final-copy", to: hostId } }
 										: undefined,
 								).catch(() => undefined);
-								// Its processes ended with its stop: its commands with them.
-								keepGoing(killCommandsOf(sandboxId));
+								// Its processes ended with its stop, its commands with them; kept in its memory, they carry on.
+								if (!keptMemory) keepGoing(killCommandsOf(sandboxId));
 							},
 							onStarting: (hostId) => {
 								patchSandbox(sandboxId, (latest) =>
@@ -12890,6 +12953,27 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 										? { ...latest, moving: { ...latest.moving, phase: "starting", to: hostId } }
 										: undefined,
 								).catch(() => undefined);
+							},
+							...(keepMemory ? { keepMemory: true } : {}),
+							// Said before anything is copied: where it goes, and whether its memory goes too, or why it restarts.
+							// Must land: the record says so, and its commands are kept or ended by it. Its backend gives the move up,
+							// nothing sent, if it doesn't.
+							onPlanned: async (hostId, memory) => {
+								const written = await patchSandbox(sandboxId, (latest) =>
+									latest.moving?.operationId === operationId
+										? {
+												...latest,
+												moving: {
+													...latest.moving,
+													to: hostId,
+													keepMemory: memory.kept,
+													...(memory.reason === undefined ? {} : { restartReason: memory.reason }),
+												},
+											}
+										: undefined,
+								);
+								if (written === undefined) throw new KantelError("conflict", "The sandbox changed as its move began");
+								keptMemory = memory.kept;
 							},
 						},
 						operationId,
@@ -13044,11 +13128,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (cleared === undefined || !("moved" in cleared) || cleared.moved.state !== "starting") return;
 		const again = cleared.moved;
 		const hostId = again.hostId;
+		// Stopped keeping its memory for a move that kept it (its record says so before anything is sent: `onPlanned`
+		// must land): resumed from that memory, its programs carrying on. Otherwise started on its disk.
+		const resumes = again.moving?.keepMemory === true;
 		await boot(
 			sandboxId,
 			async () => {
 				if (hostId === undefined) throw new KantelError("unavailable", "The sandbox has no host to start on again");
-				return backend.start(sandboxId, {
+				return (resumes ? backend.resume : backend.start).call(backend, sandboxId, {
 					...sizingOf(again),
 					env: again.env,
 					eligibleHosts: [hostId],
@@ -13091,6 +13178,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				latestSnapshotId: undefined,
 				latestSnapshotAt: undefined,
 				pausedSnapshotId: undefined,
+				// What became of its memory, as its move said before it began.
+				moved: {
+					at: now(),
+					keptMemory: latest.moving?.keepMemory === true,
+					...(latest.moving?.restartReason === undefined ? {} : { restartReason: latest.moving.restartReason }),
+				},
 				...owedStop(latest),
 			}),
 		);

@@ -1171,13 +1171,44 @@ export const Sandbox = Type.Object(
 					),
 					keepMemory: Type.Boolean({
 						description:
-							"Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host.",
+							"Whether its memory moves too, so it carries on where it left off on the new host: asked for (the " +
+							"default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running " +
+							"programs ending (`restartReason` says why, where it had memory that might have moved). Said once its " +
+							"new host is chosen, before anything is copied.",
 					}),
+					restartReason: Type.Optional(
+						Type.String({
+							description:
+								"Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from " +
+								"its host's, or a host can't move memory yet.",
+						}),
+					),
 					startedAt: Timestamp,
 				},
 				{
 					title: "SandboxMove",
 					description: "A move to another host under way (its `state` is `moving`).",
+				},
+			),
+		),
+		moved: Type.Optional(
+			Type.Object(
+				{
+					at: Timestamp,
+					keptMemory: Type.Boolean({
+						description: "Its memory moved with it, so its programs carried on; `false`, it booted on its disk there.",
+					}),
+					restartReason: Type.Optional(
+						Type.String({
+							description: "Why its memory didn't move with it although that was asked for, as its `move` said.",
+						}),
+					),
+				},
+				{
+					title: "SandboxMoved",
+					description:
+						"Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a " +
+						"sandbox never moved, and from one moved before Kantel kept it.",
 				},
 			),
 		),
@@ -1492,6 +1523,68 @@ export const UpgradeSandboxBody = Type.Object(
 	},
 );
 
+export const SandboxMoveTarget = Type.Object(
+	{
+		hostId: Type.String({ description: "A host it may move to now." }),
+		keepsMemory: Type.Boolean({
+			description:
+				"A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it " +
+				"restarts there, booting on its disk.",
+		}),
+		restartReason: Type.Optional(
+			Type.String({
+				description: "Why a move there restarts it, where it has memory that might have moved.",
+			}),
+		),
+		pauseMs: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over " +
+					"the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it " +
+					"wrote since its first copy and its boot.",
+			}),
+		),
+		memoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its " +
+					"guest has touched; the rest is zero, and costs nothing), a paused one's memory file.",
+			}),
+		),
+		bytesPerSecond: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description:
+					"The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the " +
+					"other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false).",
+			}),
+		),
+		rateMeasured: Type.Optional(
+			Type.Boolean({ description: "`bytesPerSecond` was measured by the hosts, rather than assumed." }),
+		),
+	},
+	{ title: "SandboxMoveTarget" },
+);
+
+export const SandboxMovePlan = Type.Object(
+	{
+		targets: Type.Optional(
+			Type.Array(SandboxMoveTarget, {
+				description:
+					"Each host it may move to now, as the scheduler would place it (room and all), with what a move there does " +
+					"with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host.",
+			}),
+		),
+	},
+	{
+		title: "SandboxMovePlan",
+		description:
+			"A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory.",
+	},
+);
+
 export const MoveSandboxBody = Type.Object(
 	{
 		hostId: Type.Optional(
@@ -1504,11 +1597,14 @@ export const MoveSandboxBody = Type.Object(
 		keepMemory: Type.Optional(
 			Type.Boolean({
 				description:
-					"Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped " +
-					"sandbox has none, and a paused or running one is refused unless this is `false`. Then it boots on its " +
-					"disk on the new host and its memory is lost: a running one is copied as it runs, stopped, copied again " +
-					"(only what it wrote since), and started there, so it is unavailable only for that stop, the last copy " +
-					"and its boot.",
+					"Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory " +
+					"moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then " +
+					"stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is " +
+					"paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't " +
+					"(`hostId` names one, or there is no other), it restarts there instead, and its `move` says why " +
+					"(`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a " +
+					"running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable " +
+					"only for that stop, the last copy and its boot. A stopped sandbox has no memory.",
 			}),
 		),
 		wait: Type.Optional(
@@ -4675,6 +4771,8 @@ export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
 export type UpgradeSandboxBody = Static<typeof UpgradeSandboxBody>;
 export type MoveSandboxBody = Static<typeof MoveSandboxBody>;
+export type SandboxMovePlan = Static<typeof SandboxMovePlan>;
+export type SandboxMoveTarget = Static<typeof SandboxMoveTarget>;
 export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;

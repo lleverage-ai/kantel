@@ -211,6 +211,42 @@ function behaves(open: () => Promise<HostStore>) {
 		}
 	});
 
+	it("keeps a move's memory with its intent, and its memory's digest and a rollback's claim never both land", async () => {
+		const store = await open();
+		const size = { name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 };
+		const move = {
+			operationId: "mov1",
+			target: "host_m2",
+			phase: "final-copy" as const,
+			size,
+			live: true as const,
+			memory: true as const,
+		};
+		// The export's digests are written only while no rollback has begun (as the hosts service's `moveOn`), and a
+		// rollback's claim only while it is unclaimed: at once, many times over, one lands.
+		for (let round = 0; round < 10; round += 1) {
+			await store.putPlacement({ ...placement("s1", "host_m1", 1), state: "stopped", move });
+			const digests = store.updatePlacement("s1", (latest) =>
+				latest.move?.operationId === "mov1" && latest.move.rollingBack !== true && latest.move.settling === undefined
+					? { ...latest, move: { ...latest.move, mapDigest: "sha256:disk", memoryDigest: "sha256:memory" } }
+					: undefined,
+			);
+			const claimed = store.updatePlacement("s1", (latest) =>
+				latest.move?.operationId === "mov1" &&
+				latest.move.settling === undefined &&
+				latest.move.memoryDigest === undefined
+					? { ...latest, move: { ...latest.move, settling: { by: "rbm", until: 9 }, rollingBack: true } }
+					: undefined,
+			);
+			const [wrote, claim] = await Promise.all([digests, claimed]);
+			expect([wrote, claim].filter((each) => each !== undefined)).toHaveLength(1);
+			const now = await store.getPlacement("s1");
+			expect(now?.move).toMatchObject({ memory: true, live: true });
+			if (wrote !== undefined) expect(now?.move).toMatchObject({ memoryDigest: "sha256:memory" });
+			else expect(now?.move).toMatchObject({ rollingBack: true, settling: { by: "rbm" } });
+		}
+	});
+
 	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {
 		const store = await open();
 		await store.putPlacement(placement("s1", "host_a", 1));

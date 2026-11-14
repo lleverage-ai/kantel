@@ -12,11 +12,35 @@ const HOSTS: readonly MoveTarget[] = [
 	{ hostId: "hst_hetzner_4", hostName: "hetzner-fsn1-04" },
 ];
 
-/** As a move's dry run will answer: memory kept between matching hosts, with the pause Kantel expects. */
+/**
+ * As a move's dry run answers: memory kept between matching hosts, with the pause Kantel expects, and a host whose CPU
+ * differs restarting it, with why.
+ */
 const DRY_RUN: readonly MoveTarget[] = [
 	{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", memory: "kept", pauseMs: 4_000 },
-	{ hostId: "hst_hetzner_3", hostName: "hetzner-fsn1-03", memory: "kept", pauseMs: 11_000 },
-	{ hostId: "hst_arm_1", hostName: "graviton-eu-west-1", memory: "restarts", pauseMs: 25_000 },
+	{ hostId: "hst_hetzner_3", hostName: "hetzner-fsn1-03", memory: "kept", pauseMs: 69_000 },
+	{
+		hostId: "hst_intel_1",
+		hostName: "hetzner-fsn1-07",
+		memory: "restarts",
+		restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
+	},
+];
+
+/** As a dry run answers where no host matches: each restarts it, and says why. */
+const NONE_MATCH: readonly MoveTarget[] = [
+	{
+		hostId: "hst_intel_1",
+		hostName: "hetzner-fsn1-07",
+		memory: "restarts",
+		restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
+	},
+	{
+		hostId: "hst_old_1",
+		hostName: "hetzner-fsn1-09",
+		memory: "restarts",
+		restartReason: "The new host can't take a sandbox's memory: upgrade its kantel-host",
+	},
 ];
 
 const LONG: readonly MoveTarget[] = [
@@ -29,10 +53,14 @@ const LONG: readonly MoveTarget[] = [
 	{ hostId: "hst_long_2", hostName: "another-host-with-a-name-nobody-would-type-twice-fsn1-dc14-02" },
 ];
 
-const moving = (phase: string, hostName = "hetzner-fsn1-01"): Sandbox => ({
+const moving = (
+	phase: string,
+	hostName = "hetzner-fsn1-01",
+	more: { readonly keepMemory?: boolean; readonly restartReason?: string } = {},
+): Sandbox => ({
 	...RENDER,
 	state: "moving",
-	move: { phase, hostId: "hst_hetzner_1", hostName, keepMemory: false, startedAt: Date.now() - 42_000 },
+	move: { phase, hostId: "hst_hetzner_1", hostName, keepMemory: false, startedAt: Date.now() - 42_000, ...more },
 });
 
 // The dialog as a microVM's menu opens it: the hosts come after a moment (or never, or not at all), and Move answers
@@ -98,16 +126,26 @@ export const Loading: Story = () => <Scenario read="hang" />;
 /** No other host in its pool can take it. */
 export const NoHosts: Story = () => <Scenario targets={[]} />;
 
-/** Several hosts. Until Kantel answers a move's dry run, each restarts it, with no estimate. */
+/** Several hosts, from a Kantel that can't say what a move does to memory: each restarts it, with no estimate. */
 export const SeveralHosts: Story = () => <Scenario />;
 
 /** With the dry run: memory kept between matching hosts, and the pause expected, with Restart it instead. */
-export const DryRun: Story = () => <Scenario targets={DRY_RUN} />;
+export const DryRun: Story = () => <Scenario sandbox={{ ...BROWSER_AGENT, state: "running" }} targets={DRY_RUN} />;
 
-/** A paused sandbox: its memory can't move yet, so it boots on its disk on the new host. */
-export const Paused: Story = () => <Scenario sandbox={{ ...BROWSER_AGENT, state: "paused" }} />;
+/** No host matches a running sandbox's: each restarts it, and the dialog says why for the one chosen. */
+export const NoMatchingHost: Story = () => (
+	<Scenario sandbox={{ ...BROWSER_AGENT, state: "running" }} targets={NONE_MATCH} />
+);
 
-/** A running sandbox: copied as it runs, then stopped for a last copy and restarted on its disk on the new host. */
+/** A paused sandbox: its memory moves where the hosts match, and it carries on there. */
+export const Paused: Story = () => <Scenario sandbox={{ ...BROWSER_AGENT, state: "paused" }} targets={DRY_RUN} />;
+
+/** A paused sandbox with no matching host: it boots on its disk on the new host, its memory lost. */
+export const PausedRestarts: Story = () => (
+	<Scenario sandbox={{ ...BROWSER_AGENT, state: "paused" }} targets={NONE_MATCH} />
+);
+
+/** A running sandbox with no dry run: copied as it runs, then stopped for a last copy and restarted on its disk. */
 export const Running: Story = () => <Scenario sandbox={{ ...BROWSER_AGENT, state: "running" }} />;
 
 /** Moving: the dialog shows its phase until it runs there, and Close leaves it moving. */
@@ -121,6 +159,18 @@ export const Starting: Story = () => <Scenario sandbox={moving("starting")} />;
 
 /** A running sandbox's move (a later Kantel): stopped for the last copy. */
 export const StoppingPhase: Story = () => <Scenario sandbox={moving("stopping")} />;
+
+/** A running sandbox's move that keeps its memory: its programs carry on there. */
+export const KeepingMemory: Story = () => <Scenario sandbox={moving("final-copy", undefined, { keepMemory: true })} />;
+
+/** A move that restarts it although it was asked to keep its memory: why, as Kantel said once it chose the host. */
+export const RestartingWithReason: Story = () => (
+	<Scenario
+		sandbox={moving("copying", "hetzner-fsn1-07", {
+			restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
+		})}
+	/>
+);
 
 /** A running sandbox's move: the changes made since the first copy go across. */
 export const FinalCopy: Story = () => <Scenario sandbox={moving("final-copy")} />;

@@ -2602,7 +2602,7 @@
 			"post": {
 				"operationId": "moveSandbox",
 				"summary": "Move a sandbox to another host",
-				"description": "Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a paused or running sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. A running one moves with a restart: it is copied as it runs, then stopped (its processes end), what it wrote since is copied, and it is started on the new host, so it is unavailable for seconds rather than for the whole copy. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again. Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.",
+				"description": "Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs, then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with `keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -2709,6 +2709,105 @@
 					},
 					"429": {
 						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "planSandboxMove",
+				"summary": "Plan a sandbox's move",
+				"description": "A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused as a move would be when it can't move. A key needs `sandboxes:write`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Where it may move, and what each way does.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxMovePlan"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -18361,7 +18460,7 @@
 					},
 					"keepMemory": {
 						"type": "boolean",
-						"description": "Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped sandbox has none, and a paused or running one is refused unless this is `false`. Then it boots on its disk on the new host and its memory is lost: a running one is copied as it runs, stopped, copied again (only what it wrote since), and started there, so it is unavailable only for that stop, the last copy and its boot."
+						"description": "Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't (`hostId` names one, or there is no other), it restarts there instead, and its `move` says why (`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable only for that stop, the last copy and its boot. A stopped sandbox has no memory."
 					},
 					"wait": {
 						"type": "boolean",
@@ -19146,6 +19245,9 @@
 					"move": {
 						"$ref": "#/components/schemas/SandboxMove"
 					},
+					"moved": {
+						"$ref": "#/components/schemas/SandboxMoved"
+					},
 					"latestSnapshotId": {
 						"type": "string",
 						"description": "The snapshot a resume or fork would use."
@@ -19593,7 +19695,11 @@
 					},
 					"keepMemory": {
 						"type": "boolean",
-						"description": "Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host."
+						"description": "Whether its memory moves too, so it carries on where it left off on the new host: asked for (the default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running programs ending (`restartReason` says why, where it had memory that might have moved). Said once its new host is chosen, before anything is copied."
+					},
+					"restartReason": {
+						"type": "string",
+						"description": "Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from its host's, or a host can't move memory yet."
 					},
 					"startedAt": {
 						"type": "integer",
@@ -19602,6 +19708,78 @@
 				},
 				"title": "SandboxMove",
 				"description": "A move to another host under way (its `state` is `moving`)."
+			},
+			"SandboxMoved": {
+				"type": "object",
+				"required": ["at", "keptMemory"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"keptMemory": {
+						"type": "boolean",
+						"description": "Its memory moved with it, so its programs carried on; `false`, it booted on its disk there."
+					},
+					"restartReason": {
+						"type": "string",
+						"description": "Why its memory didn't move with it although that was asked for, as its `move` said."
+					}
+				},
+				"title": "SandboxMoved",
+				"description": "Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it."
+			},
+			"SandboxMovePlan": {
+				"type": "object",
+				"properties": {
+					"targets": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxMoveTarget"
+						},
+						"description": "Each host it may move to now, as the scheduler would place it (room and all), with what a move there does with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host."
+					}
+				},
+				"title": "SandboxMovePlan",
+				"description": "A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory."
+			},
+			"SandboxMoveTarget": {
+				"type": "object",
+				"required": ["hostId", "keepsMemory"],
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "A host it may move to now."
+					},
+					"keepsMemory": {
+						"type": "boolean",
+						"description": "A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it restarts there, booting on its disk."
+					},
+					"restartReason": {
+						"type": "string",
+						"description": "Why a move there restarts it, where it has memory that might have moved."
+					},
+					"pauseMs": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it wrote since its first copy and its boot."
+					},
+					"memoryBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its guest has touched; the rest is zero, and costs nothing), a paused one's memory file."
+					},
+					"bytesPerSecond": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false)."
+					},
+					"rateMeasured": {
+						"type": "boolean",
+						"description": "`bytesPerSecond` was measured by the hosts, rather than assumed."
+					}
+				},
+				"title": "SandboxMoveTarget"
 			},
 			"SandboxNotRunning": {
 				"type": "object",

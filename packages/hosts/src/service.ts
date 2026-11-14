@@ -35,6 +35,7 @@ import {
 	type PortStream,
 } from "./hub.ts";
 import { meshAddressFor, meshPeerChanged, meshPeersAmong, meshPrefix, runsMesh } from "./mesh.ts";
+import { type MoveMemoryWay, moveLinkRate, moveMemoryWay, movePauseMs } from "./move-memory.ts";
 import {
 	GUEST_FEATURES,
 	HOST_CLOSE_REVOKED,
@@ -65,6 +66,8 @@ import {
 	type HostObjectKind,
 	type HostSandbox,
 	type HostSandboxExportParams,
+	type HostSandboxExportResult,
+	type HostSandboxMemory,
 	type HostSandboxUsage,
 	type HostSecrets,
 	type HostSize,
@@ -77,6 +80,7 @@ import {
 	type HostWelcome,
 	type HostWelcomeMesh,
 	needsEgressPolicy,
+	SANDBOX_MEMORY_KIND,
 	type SandboxTier,
 } from "./protocol.ts";
 import {
@@ -340,6 +344,41 @@ export interface MoveSandboxInput {
 	readonly onStopping?: (hostId: string) => Promise<void>;
 	/** Told, with the target, once a running sandbox is stopped and its final copy is being made. */
 	readonly onFinalCopy?: (hostId: string) => void;
+	/**
+	 * Keep its memory (`HOST_FEATURES.sandboxMoveMemory` on both hosts), where the target's CPU and runtime match: a
+	 * running sandbox is stopped keeping it, and a paused one's goes, so it carries on there. A target where it can be
+	 * kept is chosen first. Elsewhere it restarts, as without.
+	 */
+	readonly keepMemory?: boolean;
+	/**
+	 * Awaited once the target is chosen and the move kept on the placement, before anything is sent: the target, and
+	 * whether its memory goes too (and why not; the reason names no host). A rejection gives the move up, its intent
+	 * cleared, or, where that can't be done (or the move was sent before), rejects `upgradeOutcomeUnknown`, for
+	 * `settleMove`.
+	 */
+	readonly onPlanned?: (hostId: string, memory: MoveMemoryWay) => Promise<void>;
+}
+
+/** A move's dry run (`sandboxes.planMove`): its account, the hosts it may go to, its pool, and whether it runs. */
+export interface MovePlanInput {
+	readonly owner?: string;
+	readonly hostIds?: readonly string[];
+	readonly poolId?: string;
+	readonly running?: boolean;
+}
+
+/**
+ * One host a move may take a sandbox to, as a dry run answers it: whether a move there keeps its memory (and why not),
+ * and for one that does, the pause it is expected to take (`pauseMs`: `memoryBytes` over the link's rate, as the hosts
+ * measured it or, with neither measured, assumed).
+ */
+export interface MovePlanHost {
+	readonly hostId: string;
+	readonly memory: MoveMemoryWay;
+	readonly memoryBytes?: number;
+	readonly pauseMs?: number;
+	readonly bytesPerSecond?: number;
+	readonly rateMeasured?: boolean;
 }
 
 /** The version a running sandbox's first copy is exported as, made as it runs: its move's, marked. */
@@ -616,7 +655,7 @@ export interface HostComputeLink {
 	 * the registry knows. `not_supported` while there is no grant key.
 	 */
 	grantFetch?(grant: {
-		readonly kind: "sandbox";
+		readonly kind: "sandbox" | typeof SANDBOX_MEMORY_KIND;
 		readonly objectId: string;
 		readonly version: string;
 		readonly accountId: string;
@@ -928,6 +967,12 @@ export interface HostsService {
 		 * `operationId`, it goes on with the first.
 		 */
 		move(sandboxId: string, input: MoveSandboxInput): Promise<SandboxPlacement>;
+		/**
+		 * A move's dry run: each host a move of the sandbox may take it to now (as `move` would choose among them, room
+		 * and all), with what it does with its memory and the pause it would take. Nothing is kept or sent but the
+		 * sandbox's host's `sandbox.memory`. Refused as `move` refuses one that can't move.
+		 */
+		planMove(sandboxId: string, input: MovePlanInput): Promise<readonly MovePlanHost[]>;
 		/**
 		 * Move `operationId`'s outcome, for one whose answer or gateway was lost: done (switched, the sandbox running on its
 		 * new host), or failed and rolled back. Rejects while a host it needs can't be reached.
@@ -1844,7 +1889,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		async diskLocate(hostId, params) {
 			// A move's export: where it is the registry knows, not the catalogue.
-			if (params.kind === "sandbox") return locateMove(hostId, params);
+			if (params.kind === "sandbox" || params.kind === SANDBOX_MEMORY_KIND) return locateMove(hostId, params);
 			if (compute?.locateDisk === undefined) {
 				throw new KantelError("not_supported", "The compute plane keeps no disk catalogue here");
 			}
@@ -2905,20 +2950,116 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * that version and its source has made it (its map digest kept), from the source, at its mesh address, with a grant
 	 * naming the sandbox's account. `not_found` otherwise: a fetch of it is no use.
 	 */
+	/**
+	 * The hosts a microVM placed as `source` may move to, as a move chooses among them: its host (which must move
+	 * sandboxes, a running one's too with `live`, be in its pool's mesh with sync on, and be connected), the other hosts
+	 * of its pool it may use (`listed`), those of them that can take it (`able`: they move sandboxes, are in the mesh and
+	 * of the same architecture), and the request and candidates the scheduler places it with.
+	 */
+	const moveCandidates = async (
+		source: PlacementRecord,
+		input: { readonly owner?: string; readonly hostIds?: readonly string[]; readonly to?: string },
+		live: boolean,
+	) => {
+		const sourceHost = sane(await hostOf(source.hostId));
+		const meshed = (host: HostRecord) =>
+			host.mesh !== undefined && host.poolId !== undefined && host.mesh.poolId === host.poolId;
+		const moves = (host: HostRecord) =>
+			host.facts?.features?.includes(HOST_FEATURES.sandboxMove) === true &&
+			(!live || host.facts.features.includes(HOST_FEATURES.sandboxMoveRunning));
+		if (!moves(sourceHost)) {
+			throw new KantelError(
+				"not_supported",
+				live
+					? `The sandbox's host ${sourceHost.name} can't move a running sandbox; stop it first, or upgrade its kantel-host`
+					: `The sandbox's host ${sourceHost.name} can't move sandboxes; upgrade its kantel-host`,
+			);
+		}
+		if (!meshed(sourceHost) || !(await (compute?.poolSync?.(sourceHost.poolId ?? "") ?? false))) {
+			throw new KantelError(
+				"not_supported",
+				"The sandbox's host isn't in its pool's mesh: turn the pool's sync on to move sandboxes between its hosts",
+			);
+		}
+		if (!hub.connected(sourceHost.id)) {
+			throw new KantelError("unavailable", `The sandbox's host ${sourceHost.name} isn't connected`);
+		}
+		const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
+		// Never off its pool (its host's, which it is in), nor onto a host it may not use.
+		const listed = (await store.listHosts())
+			.map(sane)
+			.filter((host) => host.id !== sourceHost.id && (only === undefined || only.has(host.id)))
+			.filter((host) => input.to === undefined || host.id === input.to)
+			.filter((host) => host.accountId === undefined || host.accountId === input.owner)
+			.filter((host) => host.poolId !== undefined && host.poolId === sourceHost.poolId);
+		if (input.to !== undefined && listed.length === 0) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				"The host asked for isn't one this sandbox may move to: another host in its pool that it may use",
+			);
+		}
+		// A host that fetches it (`sandboxMove`, in the mesh) and boots its disk: its root image is the same
+		// architecture's, and the host gets the image itself (`sandbox.import` refuses one it can't have).
+		const able = listed.filter((host) => moves(host) && meshed(host) && host.facts?.arch === sourceHost.facts?.arch);
+		const shape = /^custom-/.test(source.size)
+			? { vcpus: source.vcpus, memoryMiB: source.memoryMiB, diskGiB: source.diskGiB }
+			: undefined;
+		const request = {
+			tier: "microvm" as const,
+			...(shape === undefined ? { size: source.size } : { shape }),
+			...(input.owner === undefined ? {} : { owner: input.owner }),
+		};
+		const candidateOf = (host: HostRecord): Candidate => {
+			const held = reservedOn(host);
+			return {
+				host,
+				connected: hub.connected(host.id),
+				reservedMemoryMiB: held.memoryMiB,
+				reservedDiskGiB: held.diskGiB,
+				heldMemory: held.memory,
+				owners: new Set(),
+			};
+		};
+		return { sourceHost, listed, able, request, candidateOf, custom: shape !== undefined };
+	};
+
+	/**
+	 * What a move of a sandbox with its memory would carry, as its host says (`sandbox.memory`): undefined from a host
+	 * that doesn't move memory, which keeps none.
+	 */
+	const memoryOf = async (sourceHost: HostRecord, sandboxId: string): Promise<HostSandboxMemory | undefined> => {
+		if (sourceHost.facts?.features?.includes(HOST_FEATURES.sandboxMoveMemory) !== true) return undefined;
+		const told = await onHost<HostSandboxMemory>(sourceHost.id, HostMethods.sandboxMemory, { sandboxId });
+		if (typeof told?.memory !== "boolean" || typeof told.bytes !== "number" || !Number.isFinite(told.bytes)) {
+			throw new KantelError("unavailable", "The sandbox's host answered what its memory is in a shape it doesn't take");
+		}
+		return {
+			memory: told.memory,
+			bytes: Math.max(0, told.bytes),
+			...(typeof told.runtime === "string" && told.runtime !== "" ? { runtime: told.runtime } : {}),
+			...(typeof told.refused === "string" && told.refused !== "" ? { refused: told.refused } : {}),
+		};
+	};
+
 	const locateMove = async (hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult> => {
 		const missing = () => new KantelError("not_found", "No such move under way to this host");
 		const placement = await store.getPlacement(params.objectId);
 		const move = placement?.move;
 		if (placement === undefined || move === undefined || move.target !== hostId) throw missing();
-		// Its export, or a running sandbox's first copy.
+		// Its export, its memory, or a running sandbox's first copy.
 		const digest =
-			params.version === move.operationId
-				? move.mapDigest
-				: move.live === true && params.version === moveLiveVersion(move.operationId)
-					? move.liveDigest
-					: undefined;
+			params.kind === SANDBOX_MEMORY_KIND
+				? params.version === move.operationId
+					? move.memoryDigest
+					: undefined
+				: params.version === move.operationId
+					? move.mapDigest
+					: move.live === true && params.version === moveLiveVersion(move.operationId)
+						? move.liveDigest
+						: undefined;
 		if (digest === undefined) throw missing();
-		return grantMove(placement, move.target, digest, params.version);
+		return grantMove(placement, move.target, digest, params.version, params.kind === SANDBOX_MEMORY_KIND);
 	};
 
 	/**
@@ -2930,6 +3071,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		target: string,
 		mapDigest: string,
 		version: string,
+		memory = false,
 	): Promise<HostDiskLocateResult & { readonly grant: string }> => {
 		const source = await store.getHost(placement.hostId);
 		const address = source?.mesh?.address;
@@ -2941,7 +3083,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		if (placement.owner === undefined) throw new KantelError("invalid", "The sandbox has no account");
 		const grant = await compute.grantFetch({
-			kind: "sandbox",
+			kind: memory ? SANDBOX_MEMORY_KIND : "sandbox",
 			objectId: placement.sandboxId,
 			version,
 			accountId: placement.owner,
@@ -3718,74 +3860,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						`The sandbox is ${source.state} on its host: only a ${live ? "running or stopped" : "stopped"} sandbox moves`,
 					);
 				}
-				const sourceHost = sane(await hostOf(source.hostId));
-				const meshed = (host: HostRecord) =>
-					host.mesh !== undefined && host.poolId !== undefined && host.mesh.poolId === host.poolId;
-				const moves = (host: HostRecord) =>
-					host.facts?.features?.includes(HOST_FEATURES.sandboxMove) === true &&
-					(!live || host.facts.features.includes(HOST_FEATURES.sandboxMoveRunning));
-				if (!moves(sourceHost)) {
-					throw new KantelError(
-						"not_supported",
-						live
-							? `The sandbox's host ${sourceHost.name} can't move a running sandbox; stop it first, or upgrade its kantel-host`
-							: `The sandbox's host ${sourceHost.name} can't move sandboxes; upgrade its kantel-host`,
-					);
-				}
-				if (!meshed(sourceHost) || !(await (compute?.poolSync?.(sourceHost.poolId ?? "") ?? false))) {
-					throw new KantelError(
-						"not_supported",
-						"The sandbox's host isn't in its pool's mesh: turn the pool's sync on to move sandboxes between its hosts",
-					);
-				}
-				if (!hub.connected(sourceHost.id)) {
-					throw new KantelError("unavailable", `The sandbox's host ${sourceHost.name} isn't connected`);
-				}
-				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
-				// Never off its pool (its host's, which it is in), nor onto a host it may not use.
-				const listed = (await store.listHosts())
-					.map(sane)
-					.filter((host) => host.id !== sourceHost.id && (only === undefined || only.has(host.id)))
-					.filter((host) => input.to === undefined || host.id === input.to)
-					.filter((host) => host.accountId === undefined || host.accountId === input.owner)
-					.filter((host) => host.poolId !== undefined && host.poolId === sourceHost.poolId);
-				if (input.to !== undefined && listed.length === 0) {
-					throw placementError(
-						"unavailable",
-						"host_unavailable",
-						"The host asked for isn't one this sandbox may move to: another host in its pool that it may use",
-					);
-				}
-				// A host that fetches it (`sandboxMove`, in the mesh) and boots its disk: its root image is the same
-				// architecture's, and the host gets the image itself (`sandbox.import` refuses one it can't have).
-				const able = listed.filter(
-					(host) => moves(host) && meshed(host) && host.facts?.arch === sourceHost.facts?.arch,
-				);
-				const shape = /^custom-/.test(source.size)
-					? { vcpus: source.vcpus, memoryMiB: source.memoryMiB, diskGiB: source.diskGiB }
-					: undefined;
-				const request = {
-					tier: "microvm" as const,
-					...(shape === undefined ? { size: source.size } : { shape }),
-					...(input.owner === undefined ? {} : { owner: input.owner }),
-				};
-				const candidateOf = (host: HostRecord): Candidate => {
-					const held = reservedOn(host);
-					return {
-						host,
-						connected: hub.connected(host.id),
-						reservedMemoryMiB: held.memoryMiB,
-						reservedDiskGiB: held.diskGiB,
-						heldMemory: held.memory,
-						owners: new Set(),
-					};
-				};
+				const { sourceHost, listed, able, request, candidateOf, custom } = await moveCandidates(source, input, live);
+				// What its memory is, where it is asked to keep it: told by its host (a host that can't say keeps none).
+				const keepAsked = source.move === undefined && input.keepMemory === true;
+				const memory = keepAsked ? await memoryOf(sourceHost, sandboxId) : undefined;
+				const wayTo = (host: HostRecord): MoveMemoryWay =>
+					source.move !== undefined
+						? { kept: source.move.memory === true }
+						: moveMemoryWay(sourceHost, host, memory, keepAsked);
 				// A retry of the same move goes on to the target its intent names.
 				const retried = source.move === undefined ? undefined : listed.find((host) => host.id === source.move?.target);
+				// Asked to keep its memory: a host it can be kept on is chosen first, else any (which restarts it).
+				const keepers = keepAsked ? able.filter((host) => wayTo(host).kept) : [];
+				const preferred = keepers.length === 0 ? undefined : place(request, keepers.map(candidateOf));
 				const chosen =
 					retried !== undefined && source.move !== undefined
-						? { host: retried, size: source.move.size, custom: shape !== undefined, fullness: 0 }
-						: place(request, able.map(candidateOf));
+						? { host: retried, size: source.move.size, custom, fullness: 0 }
+						: preferred !== undefined && !isRefusal(preferred)
+							? preferred
+							: place(request, able.map(candidateOf));
 				if (isRefusal(chosen)) {
 					throw placementError(
 						"exhausted",
@@ -3798,6 +3891,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					);
 				}
 				const target = chosen.host;
+				const way = wayTo(target);
 				const size = {
 					name: source.size,
 					vcpus: chosen.size.vcpus,
@@ -3822,6 +3916,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 									phase: "copy",
 									size,
 									...(live ? { live: true as const } : {}),
+									...(way.kept ? { memory: true as const } : {}),
 								},
 								updatedAt: clock.now(),
 							}
@@ -3839,6 +3934,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						"unavailable",
 						"host_unavailable",
 						`The host ${target.name} is draining, or was moved to another pool`,
+					);
+				}
+				// Said before anything is sent: where it goes, and whether its memory goes too (or why it restarts). One the
+				// caller can't record gives the move up, its intent cleared.
+				try {
+					await input.onPlanned?.(target.id, way);
+				} catch (error) {
+					// Given up only once its intent is gone; a move sent again may have sent things already, and one whose
+					// intent couldn't be cleared is still on the placement: either is settled (`settleMove`), never forgotten.
+					const cleared = source.move === undefined && (await clearMove(sandboxId, operationId).catch(() => false));
+					if (cleared) throw error;
+					throw upgradeOutcomeUnknown(
+						`The move couldn't be recorded as it began (${error instanceof Error ? error.message : String(error)}), and is settled instead`,
 					);
 				}
 				reserve(target.id, size.memoryMiB, size.diskGiB);
@@ -3872,18 +3980,22 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					if (written === undefined) throw new KantelError("conflict", "The move was undone meanwhile");
 					return written;
 				};
-				/** A version of the sandbox exported on its source, and its map digest. */
-				const exportOf = async (params: HostSandboxExportParams): Promise<string> => {
-					const exported = await onHost<{ readonly mapDigest: string }>(
-						sourceHost.id,
-						HostMethods.sandboxExport,
-						params,
-						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
-					);
-					if (typeof exported.mapDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(exported.mapDigest)) {
+				/** A version of the sandbox exported on its source, and its map digests (its memory's too, with `memory`). */
+				const exportOf = async (params: HostSandboxExportParams): Promise<HostSandboxExportResult> => {
+					const exported = await onHost<HostSandboxExportResult>(sourceHost.id, HostMethods.sandboxExport, params, {
+						timeoutMs: DISK_COPY_TIMEOUT_MS,
+					});
+					const digest = (value: unknown) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+					if (!digest(exported.mapDigest)) {
 						throw new KantelError("unavailable", "The sandbox's host answered its export without a map digest");
 					}
-					return exported.mapDigest;
+					if (params.memory === true && !digest(exported.memoryMapDigest)) {
+						throw new KantelError(
+							"unavailable",
+							"The sandbox's host answered its export without its memory's map digest",
+						);
+					}
+					return exported;
 				};
 				const liveVersion = moveLiveVersion(operationId);
 				// How far a move sent again got: a running sandbox's first copy and stop aren't made again once done (its
@@ -3893,7 +4005,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					if (live && reached === "copy") {
 						// Its first copy, made as it runs (a crash-consistent copy, made at once), fetched by the target and kept
 						// staged there; its map digest kept for the target's own `disk.locate`.
-						const first = await exportOf({ sandboxId, version: liveVersion, live: true });
+						const { mapDigest: first } = await exportOf({ sandboxId, version: liveVersion, live: true });
 						const copying = await moveOn((move) => ({ ...move, liveDigest: first }));
 						await onHost(
 							target.id,
@@ -3907,17 +4019,18 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 							target,
 						);
-						// Then stopped, its memory let go: recorded first, so a rollback from here knows it may have stopped it.
+						// Then stopped, its memory let go or kept: recorded first, so a rollback from here knows it may have stopped it.
 						await moveOn((move) => ({ ...move, phase: "stop" }));
 					}
 					if (live && (reached === "copy" || reached === "stop")) {
 						await input.onStopping?.(target.id);
 						// Fenced on the source by its first copy there: once a rollback has deleted that, a stop sent late (this
 						// gateway stalled as another settled the move and started it again) is refused, never stopping it.
+						// Kept, its memory is what its final export copies; a rollback resumes it from that where it was.
 						await onHost(
 							sourceHost.id,
 							HostMethods.stop,
-							{ sandboxId, memory: false, export: liveVersion },
+							{ sandboxId, memory: intended.move.memory === true, export: liveVersion },
 							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 						);
 						await moveOn((move) => ({ ...move, phase: "final-copy" }));
@@ -3925,26 +4038,52 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					}
 					// Its export (a running sandbox's over its first copy, which maps only the blocks written since), whose map
 					// digest is kept for the target's own `disk.locate` (a grant renewed, a fetch asked again).
-					const mapDigest = await exportOf({
+					// Its memory too where it is kept, as the same version of its memory's object.
+					const keeps = intended.move.memory === true;
+					const { mapDigest, memoryMapDigest: memoryDigest } = await exportOf({
 						sandboxId,
 						version: operationId,
 						...(live ? { base: liveVersion } : {}),
+						...(keeps ? { memory: true } : {}),
 					});
-					const recorded = await moveOn((move) => ({ ...move, mapDigest }));
+					const recorded = await moveOn((move) => ({
+						...move,
+						mapDigest,
+						...(keeps && memoryDigest !== undefined ? { memoryDigest } : {}),
+					}));
 					const location = await grantMove(recorded, target.id, mapDigest, operationId);
+					const memoryAt =
+						keeps && memoryDigest !== undefined
+							? await grantMove(recorded, target.id, memoryDigest, operationId, true)
+							: undefined;
 					await onHost(
 						target.id,
 						HostMethods.sandboxImport,
-						{ sandboxId, version: operationId, ...location, ...(live ? { base: liveVersion } : {}) },
+						{
+							sandboxId,
+							version: operationId,
+							...location,
+							...(live ? { base: liveVersion } : {}),
+							...(memoryAt === undefined
+								? {}
+								: {
+										memory: {
+											mapDigest: memoryAt.mapDigest ?? memoryDigest,
+											holders: memoryAt.holders,
+											grant: memoryAt.grant,
+										},
+									}),
+						},
 						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 						target,
 					);
 					await moveOn((move) => ({ ...move, phase: "start" }));
 					input.onStarting?.(target.id);
 					const boot = input.start(target.facts?.features ?? []);
+					// With its memory, resumed from it (a start boots on the disk, its memory dropped).
 					started = await onHost<HostSandbox>(
 						target.id,
-						HostMethods.start,
+						intended.move.memory === true ? HostMethods.resume : HostMethods.start,
 						{ sandboxId, ...boot.params },
 						undefined,
 						target,
@@ -4018,6 +4157,35 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					...(mounts === undefined ? {} : { mounts }),
 					...(taking?.poolId === undefined ? {} : { poolId: taking.poolId }),
 				};
+			},
+			async planMove(sandboxId, input) {
+				const source = await placementOf(sandboxId);
+				if (source.tier !== "microvm" || isLeftover(source)) {
+					throw new KantelError("conflict", "Only a microVM moves to another host");
+				}
+				const live = input.running === true;
+				const { sourceHost, able, request, candidateOf } = await moveCandidates(source, input, live);
+				const memory = await memoryOf(sourceHost, sandboxId);
+				const plan: MovePlanHost[] = [];
+				for (const host of able) {
+					// Only where a move would go now, room and all.
+					if (isRefusal(place(request, [candidateOf(host)]))) continue;
+					const way = moveMemoryWay(sourceHost, host, memory, true);
+					if (!way.kept || memory === undefined) {
+						plan.push({ hostId: host.id, memory: way });
+						continue;
+					}
+					const rate = moveLinkRate(sourceHost, host);
+					plan.push({
+						hostId: host.id,
+						memory: way,
+						memoryBytes: memory.bytes,
+						pauseMs: movePauseMs(memory.bytes, rate),
+						bytesPerSecond: rate.bytesPerSecond,
+						rateMeasured: rate.measured,
+					});
+				}
+				return plan;
 			},
 			async settleMove(sandboxId, operationId) {
 				return settleMoveWith(sandboxId, operationId);
