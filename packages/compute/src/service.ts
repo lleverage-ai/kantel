@@ -9592,10 +9592,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } }),
 				]);
 				const work = track([sandbox.id], async () => {
-					const sticky = await stickySpecOf(sandbox);
 					const booted = await boot(
 						sandbox.id,
-						() =>
+						// Its sticky disks read in the boot, so a disk deleted since (or a read that fails) ends it in `error`, said
+						// so, rather than leave it `starting` for good.
+						async () =>
 							backend.create({
 								sandboxId: sandbox.id,
 								accountId: account.id,
@@ -9613,7 +9614,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
-								...sticky,
+								...(await stickySpecOf(sandbox)),
 							}),
 						sandbox,
 						{ egressRevision },
