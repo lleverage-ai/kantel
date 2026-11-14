@@ -770,6 +770,11 @@ export interface HostObjectVersionHolding {
 	 */
 	readonly cpu?: HostCpuFingerprint;
 	readonly runtime?: string;
+	/**
+	 * A saved snapshot's version (`HOST_FEATURES.snapshotSync`) the host fetched from a peer, not one it saved: Kantel has
+	 * it deleted at once when it knows no such snapshot, where a host's own waits out a save that may be under way.
+	 */
+	readonly copy?: boolean;
 }
 
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */

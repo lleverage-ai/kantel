@@ -119,6 +119,8 @@ export type ObjectHoldingsReport = readonly {
 		readonly version: string;
 		readonly mapDigest: string;
 		readonly pool?: string;
+		/** A saved snapshot's copy its host fetched from a peer, not one it saved. */
+		readonly copy?: boolean;
 	} & SnapshotMadeOn)[];
 }[];
 
@@ -144,6 +146,13 @@ export const TEMPLATE_VERSION = "1";
 /** A template snapshot's ID (`templateSnapshotId`). */
 const TEMPLATE_SNAPSHOT_ID = /^tsn_[0-9a-f]{24}(?:_\d+)?(?:_a\d+)?$/;
 
+/**
+ * How long a saved snapshot a host reports holding, and saved itself, may have no record in the catalogue before it is
+ * deleted from the host: a save's record has its ref once the host answers, and a save or keep is given 30 minutes
+ * (`DISK_COPY_TIMEOUT_MS`), so 2 hours spares any under way. A copy fetched from a peer has no such wait.
+ */
+export const SNAPSHOT_ORPHAN_GRACE_MS = 2 * 60 * 60_000;
+
 /** A saved snapshot's versions (the host's `SnapshotDiskVersion` and `SnapshotMemoryVersion`): its disk, and its memory. */
 export const SNAPSHOT_VERSIONS: readonly string[] = ["disk", "memory"];
 
@@ -167,9 +176,9 @@ export interface DiskHolders {
 	recordCommit(kind: DiskKind, objectId: string, version: string, hostId: string): Promise<void>;
 	/**
 	 * `hostId` is to be told to fetch a saved snapshot's version, a copy of `ref`: it is `fetching` there until its
-	 * reports say it holds it, or the snapshot is deleted, however long its fetch takes or if it never finishes, so
-	 * deleting the snapshot reaches it before its first report. Nothing when it holds it already. Answers the holder's
-	 * ID when it wrote one.
+	 * reports say it holds it, or the snapshot is deleted, so deleting the snapshot reaches it at once. A fast path only:
+	 * nothing depends on it, as a copy of a snapshot the catalogue has no record of is deleted from whichever host
+	 * reports it (`recordHoldings`). Nothing when it holds it already. Answers the holder's ID when it wrote one.
 	 */
 	recordSnapshotFetch(objectId: string, version: string, hostId: string, ref: string): Promise<string | undefined>;
 	/** Answers `disk.locate` from `hostId`. */
@@ -301,6 +310,11 @@ export function createDiskHolders(options: {
 	readonly reportGraceMs: number;
 	/** The grant keys changed here (a rotation, or a key that couldn't be opened replaced): hosts are told them. */
 	readonly keysChanged?: () => void;
+	/**
+	 * Deletes a host's copy of a saved snapshot the catalogue has no record of (`snapshot.delete`), best effort: a report
+	 * that still lists it asks again a grace later.
+	 */
+	readonly deleteSnapshotCopy?: (hostId: string, objectId: string) => Promise<void>;
 }): DiskHolders {
 	const { store, now, sealer } = options;
 	/** Saved snapshots are synced where there is a grant key: sticky disks or templates on. */
@@ -586,6 +600,21 @@ export function createDiskHolders(options: {
 	}
 
 	/**
+	 * Whether the catalogue has any record, of any kind or state, of a host's snapshot ID, by the refs `savedSnapshot`
+	 * looks for: an automatic snapshot's bytes are a saved snapshot on its host too, and one being deleted is the
+	 * delete's to remove.
+	 */
+	async function anyRecord(objectId: string, holders: readonly StoredDiskHolder[], hostId: string): Promise<boolean> {
+		const refs = new Set<string>([`${hostId}/${objectId}`]);
+		for (const holder of holders) {
+			if (holder.ref !== undefined) refs.add(holder.ref);
+			refs.add(`${holder.hostId}/${objectId}`);
+		}
+		for (const ref of refs) if ((await store.snapshots.list({ ref })).length > 0) return true;
+		return false;
+	}
+
+	/**
 	 * `disk.locate` for a saved snapshot's version: the holders, in the snapshot's pool and of the asker's architecture,
 	 * that hold the map digest most of them hold, with a grant naming the snapshot's account. Only to a host in that
 	 * pool that may have the account's data; none, and no digest, when no other such host holds it.
@@ -603,8 +632,7 @@ export function createDiskHolders(options: {
 			(holder) => holder.kind === "snapshot",
 		);
 		const found = await savedSnapshot(request.objectId, held, hostId);
-		// No host has reported it yet (its record is found by a holder's ref): no holders, as for any version held nowhere.
-		if (found === undefined && held.length === 0) return { holders: [] };
+		// None the catalogue has: deleted (a host fetching it then drops its copy), or never reported by its host.
 		if (found === undefined) throw missing();
 		const { record } = found;
 		const poolId = record.poolId ?? hosts.get(found.hostId)?.poolId;
@@ -644,6 +672,8 @@ export function createDiskHolders(options: {
 			const current = await store.diskHolders.list({ hostId });
 			const hold: StoredDiskHolder[] = [];
 			const release: StoredDiskHolder[] = [];
+			/** Saved snapshots the host holds that the catalogue has no record of, to delete from it. */
+			const orphans = new Set<string>();
 			// Let go: what it no longer reports, unless it is still fetching it, or its holder may be newer than the report.
 			const letGo = (holders: readonly StoredDiskHolder[], reported: ReadonlySet<string>) => {
 				for (const holder of holders) {
@@ -796,7 +826,12 @@ export function createDiskHolders(options: {
 				// Only a version of a saved snapshot the catalogue has, of an account whose data the host may have.
 				const reported = new Map<
 					string,
-					{ readonly objectId: string; readonly version: string; readonly mapDigest: string }
+					{
+						readonly objectId: string;
+						readonly version: string;
+						readonly mapDigest: string;
+						readonly copy: boolean;
+					}
 				>();
 				for (const object of snapshot) {
 					if (!SNAPSHOT_ID.test(object.objectId)) continue;
@@ -806,6 +841,7 @@ export function createDiskHolders(options: {
 							objectId: object.objectId,
 							version: held.version,
 							mapDigest: held.mapDigest,
+							copy: held.copy === true,
 						});
 					}
 				}
@@ -813,17 +849,46 @@ export function createDiskHolders(options: {
 				const known = new Map(mine.map((holder) => [versionKey(holder.objectId, holder.version), holder]));
 				const reporter = (await options.hosts()).find((host) => host.id === hostId);
 				const records = new Map<string, { readonly record: StoredSnapshot; readonly ref: string } | undefined>();
-				for (const [key, { objectId, version, mapDigest }] of reported) {
+				const others = new Map<string, readonly StoredDiskHolder[]>();
+				const holdersOf = async (objectId: string) => {
+					let list = others.get(objectId);
+					if (list === undefined) {
+						list = (await store.diskHolders.list({ objectId })).filter((each) => each.kind === "snapshot");
+						others.set(objectId, list);
+					}
+					return list;
+				};
+				for (const [key, { objectId, version, mapDigest, copy }] of reported) {
 					const holder = known.get(key);
 					if (holder?.state === "held" && holder.mapDigest === mapDigest) continue;
 					if (reporter === undefined || reporter.state === "revoked") continue;
 					// By a ref naming this host (it saved it) or another of its holders (this is a copy).
 					if (!records.has(objectId)) {
-						const others = (await store.diskHolders.list({ objectId })).filter((each) => each.kind === "snapshot");
-						records.set(objectId, await savedSnapshot(objectId, others, hostId));
+						records.set(objectId, await savedSnapshot(objectId, await holdersOf(objectId), hostId));
 					}
 					const found = records.get(objectId);
-					if (found === undefined) continue;
+					if (found === undefined) {
+						// A snapshot the catalogue has no record of at all, by any ref it could be found by, is deleted from the
+						// host: at once for a copy, after SNAPSHOT_ORPHAN_GRACE_MS for one the host saved, as its save may be under
+						// way (its record has its ref once the save is answered). A row in `deleting` keeps when it was found so,
+						// and when it was last told, so it is told again a grace later while it reports it.
+						if (await anyRecord(objectId, await holdersOf(objectId), hostId)) continue;
+						const marked = holder?.state === "deleting" ? holder : undefined;
+						const due = marked === undefined ? copy : marked.since <= at - SNAPSHOT_ORPHAN_GRACE_MS;
+						if (marked !== undefined && !due) continue;
+						if (holder !== undefined) release.push(holder);
+						hold.push({
+							id: diskHolderId("snapshot", objectId, version, hostId),
+							kind: "snapshot",
+							objectId,
+							version,
+							hostId,
+							state: "deleting",
+							since: at,
+						});
+						if (due) orphans.add(objectId);
+						continue;
+					}
 					if (reporter.accountId !== undefined && reporter.accountId !== found.record.accountId) continue;
 					if (holder !== undefined) release.push(holder);
 					hold.push({
@@ -841,6 +906,7 @@ export function createDiskHolders(options: {
 				letGo(mine, new Set(reported.keys()));
 			}
 			if (hold.length > 0 || release.length > 0) await store.diskHolderWrites.reconcile(hostId, at, { hold, release });
+			for (const objectId of orphans) await options.deleteSnapshotCopy?.(hostId, objectId).catch(() => undefined);
 		},
 		async recordSnapshotFetch(objectId, version, hostId, ref) {
 			const id = diskHolderId("snapshot", objectId, version, hostId);
@@ -984,9 +1050,23 @@ export function createDiskHolders(options: {
 			const versions = holders.some((holder) => holder.kind === "sticky")
 				? new Set((await store.stickyDiskVersions.list()).map((version) => versionKey(version.diskId, version.id)))
 				: new Set<string>();
+			// A saved snapshot's holder must still have its record (by its ref): forgotten, the host's next report finds the
+			// copy unknown and has it deleted. However its record went, its copies go.
+			const refs = new Map<string, boolean>();
+			const hasRecord = async (ref: string | undefined) => {
+				if (ref === undefined) return false;
+				let has = refs.get(ref);
+				if (has === undefined) {
+					has = (await store.snapshots.list({ ref })).length > 0;
+					refs.set(ref, has);
+				}
+				return has;
+			};
 			for (const holder of holders) {
-				// A sticky holder's version must still be in the catalogue; other kinds have no record of their own.
-				const recorded = holder.kind !== "sticky" || versions.has(versionKey(holder.objectId, holder.version));
+				// A sticky holder's version must still be in the catalogue; a root filesystem or template snapshot has no
+				// record here to check.
+				let recorded = holder.kind !== "sticky" || versions.has(versionKey(holder.objectId, holder.version));
+				if (holder.kind === "snapshot" && holder.state !== "deleting") recorded = await hasRecord(holder.ref);
 				if (recorded && !revoked.has(holder.hostId)) continue;
 				await store.diskHolders.delete(holder.id);
 			}

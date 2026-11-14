@@ -215,6 +215,10 @@ func TestSnapshotSyncWithMatchingFingerprints(t *testing.T) {
 		t.Fatalf("state %q", state)
 	}
 	bHeld := b.SnapshotHoldings()
+	// B's is a copy, so Kantel deletes it at once should it no longer know the snapshot; A's is its own.
+	if !bHeld[0].Versions[0].Copy || held[0].Versions[0].Copy {
+		t.Fatalf("copies: B %+v, A %+v", bHeld, held)
+	}
 	for _, version := range []string{SnapshotDisk, SnapshotMemory} {
 		if got := digestOf(bHeld, "snap1", version); got == "" || got != digestOf(held, "snap1", version) {
 			t.Fatalf("%s's digest %q on B, %q on A", version, got, digestOf(held, "snap1", version))

@@ -3557,6 +3557,8 @@ type snapshotMeta struct {
 	// fetched from (ReadSnapshotFile adds it): two hosts may each have built one under its key, with other bytes, and a
 	// copy goes only over the same build (snapshotsync.go).
 	RootfsDigest string `json:"rootfsDigest,omitempty"`
+	// Fetched marks a copy fetched from another host (snapshotsync.go), not one saved here: its holdings say so.
+	Fetched bool `json:"fetched,omitempty"`
 }
 
 func (m *Manager) snapshotDir(id string) string {

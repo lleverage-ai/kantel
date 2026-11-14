@@ -514,3 +514,30 @@ func TestSnapshotMemoryAskedAgain(t *testing.T) {
 		t.Fatalf("asked %d times", asked)
 	}
 }
+
+// Just before a fetched snapshot's version is published, Kantel is asked whether it still has the snapshot: one it
+// doesn't (deleted while it was fetched) is refused as not_found, which the fetcher takes to discard the fetch.
+func TestSnapshotPublishedOnlyWhileKantelHasIt(t *testing.T) {
+	tier := &snapshotFetchTier{rootfsFetchTier: &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
+	h := newLifecycleHost(t, tier.lifecycleTier)
+	h.tiers[microvm.Tier] = tier
+	h.mesh = &fakeMesh{}
+	h.cfg.SyncRateMbit = -1
+	gone := true
+	h.callKantel = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		if gone {
+			return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no such saved snapshot"}
+		}
+		return json.RawMessage(`{"holders":[]}`), nil
+	}
+	h.startPeerSync()
+	defer h.syncStop()
+	ref := disksyncRef("s3", "disk")
+	if err := h.syncKinds().Publish(ref, nil, nil, nil); !disksync.IsNotFound(err) {
+		t.Fatalf("published a snapshot Kantel no longer has: %v", err)
+	}
+	gone = false
+	if err := h.syncKinds().Publish(ref, nil, nil, nil); err != nil {
+		t.Fatalf("a snapshot Kantel has: %v", err)
+	}
+}

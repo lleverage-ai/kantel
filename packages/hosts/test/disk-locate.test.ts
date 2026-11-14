@@ -162,7 +162,9 @@ describe("the disk store on the host link", () => {
 		);
 		expect(recordHoldings).toHaveBeenCalledTimes(2);
 		// Saved snapshots, beside them.
-		const snapshot = [{ objectId: "snap_1", versions: [{ version: "disk", mapDigest: digest, allocatedBytes: 10 }] }];
+		const snapshot = [
+			{ objectId: "snap_1", versions: [{ version: "disk", mapDigest: digest, allocatedBytes: 10, copy: true }] },
+		];
 		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { rootfs, snapshot } } } });
 		await vi.waitFor(() =>
 			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs, snapshot } }),

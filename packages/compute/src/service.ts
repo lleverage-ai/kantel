@@ -2945,6 +2945,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		keysChanged: () => {
 			if (backend.grantKeysChanged !== undefined) keepGoing(backend.grantKeysChanged());
 		},
+		// A copy of a saved snapshot the catalogue no longer has, whatever became of its record: deleted from its host.
+		deleteSnapshotCopy: (hostId, objectId) => backend.deleteSnapshot(`${hostId}/${objectId}`),
 	});
 
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
@@ -5510,7 +5512,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Deletes a snapshot's bytes on the host its ref names, then the copies other hosts fetched of it, or are fetching
 	 * (`disk-holders.ts`, kind `snapshot`: the holders recorded as copies of this ref, never of another ref that shares
-	 * its host's ID), whose holders go with them. A copy on a host that can't be reached now stays there. Bytes their
+	 * its host's ID), whose holders go with them. That is the prompt path only: a copy it doesn't reach (its host away,
+	 * or told to fetch it just as this ran) is deleted when its host next reports it (`DiskHolders.recordHoldings`). Bytes their
 	 * host no longer has count as deleted; any other failure there is thrown, and the copies are left for a retry.
 	 */
 	async function deleteSnapshotBytes(ref: string): Promise<void> {
@@ -11393,6 +11396,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			) {
 				throw notFound("saved snapshot");
 			}
+			// Not before its host has reported it: there is nowhere to fetch it from.
+			const held = (await diskHolders.holdersOf("snapshot", objectId)).get("disk") ?? [];
+			if (!held.some((holder) => holder.ref === ref && holder.state === "held" && holder.hostId !== host.id)) {
+				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
+			}
 			// Its disk, where it is for this host, as the host's own disk.locate would get it: the host fetches its memory
 			// after, if it restores it.
 			const request = { kind: "snapshot", objectId, version: "disk" };
@@ -11400,15 +11408,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (location.holders.length === 0) {
 				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 			}
-			// Fetching there before it is told, so a delete of the snapshot meanwhile reaches the host, as one before its
-			// first report of the copy does. Told nothing (away, or refused), it isn't.
-			const fetching = await diskHolders.recordSnapshotFetch(objectId, "disk", host.id, ref);
-			try {
-				await backend.fetchDisk(host.id, { ...request, ...location });
-			} catch (error) {
-				if (fetching !== undefined) await store.diskHolders.deleteIf(fetching, (held) => held.state === "fetching");
-				throw error;
-			}
+			// Fetching there before it is told, so a delete of the snapshot meanwhile reaches the host at once, as one
+			// before its first report of the copy does; kept when the call fails, as the host may have started it anyway.
+			// A fast path only: whatever it misses, the host's report of a copy of a snapshot the catalogue no longer has
+			// gets it deleted (`DiskHolders.recordHoldings`), and the host asks before it publishes one.
+			await diskHolders.recordSnapshotFetch(objectId, "disk", host.id, ref);
+			await backend.fetchDisk(host.id, { ...request, ...location });
 			return undefined;
 		},
 

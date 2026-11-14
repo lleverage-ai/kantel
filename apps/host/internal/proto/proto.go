@@ -1199,6 +1199,9 @@ type ObjectVersionHolding struct {
 	Pool           string          `json:"pool,omitempty"`
 	CPU            *CPUFingerprint `json:"cpu,omitempty"`
 	Runtime        string          `json:"runtime,omitempty"`
+	// Copy marks a saved snapshot's version (DiskKindSnapshot) the host fetched from a peer, not one it saved: Kantel
+	// has it deleted at once when it knows no such snapshot, where a host's own waits out a save that may be under way.
+	Copy bool `json:"copy,omitempty"`
 }
 
 // DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is

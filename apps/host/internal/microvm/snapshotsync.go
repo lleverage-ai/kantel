@@ -198,7 +198,7 @@ func (m *Manager) PrepareSnapshotFetch(ctx context.Context, id string, record []
 	staged.Rootfs, staged.Base = rootfs, images.VersionOf(rootfs)
 	// Its memory isn't here: a sandbox made from it boots on its disk until it is (WantsSnapshotMemory).
 	staged.ColdBoot = snap.Memory || snap.ColdBoot
-	staged.Memory = false
+	staged.Memory, staged.Fetched = false, true
 	raw, _ := json.MarshalIndent(staged, "", "  ")
 	// Under the base lock, as a snapshot's save names its base: a prune sees the image in use from here (BasesUnder),
 	// and one that took it meanwhile is found here. Not for a snapshot deleted here meanwhile (autoMu).
@@ -582,6 +582,7 @@ func (m *Manager) SnapshotHoldings() []proto.ObjectHolding {
 			}
 			versions = append(versions, proto.ObjectVersionHolding{
 				Version: version, MapDigest: digest, AllocatedBytes: diskUsage(filepath.Join(m.snapshotDir(snap.ID), file)),
+				Copy: snap.Fetched,
 			})
 		}
 		if len(versions) > 0 {

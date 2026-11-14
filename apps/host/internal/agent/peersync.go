@@ -419,7 +419,7 @@ func (h *Host) syncKinds() disksync.Kinds {
 		k[proto.DiskKindTemplate] = templateObjects{t}
 	}
 	if t, ok := h.tiers[microvm.Tier].(SnapshotFetcher); ok {
-		k[proto.DiskKindSnapshot] = snapshotObjects{t: t, published: h.snapshotPublished}
+		k[proto.DiskKindSnapshot] = snapshotObjects{t: t, published: h.snapshotPublished, known: h.snapshotKnown}
 	}
 	return k
 }
@@ -608,6 +608,19 @@ func (s templateObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
 
 func (s templateObjects) Discard(r disksync.Ref) { s.t.DiscardTemplateFetch(r.ObjectID) }
 
+// snapshotKnown asks Kantel (disk.locate) whether it still has a snapshot whose version is about to be published here,
+// just before it is: not_found, which the fetcher takes as the version gone and discards its fetch, when it doesn't (it
+// was deleted while the copy was fetched). Any other answer, or none, lets it be published: Kantel has a copy of a
+// snapshot it no longer knows deleted from the host's next report, so this only saves the copy being made.
+func (h *Host) snapshotKnown(r disksync.Ref) error {
+	ctx, cancel := context.WithTimeout(h.fetcher.Context, 30*time.Second)
+	defer cancel()
+	if _, err := h.locateDisk(ctx, r); disksync.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 // snapshotPublished follows a snapshot's version published: its disk here, its memory comes next if the host restores
 // it.
 func (h *Host) snapshotPublished(id, version string) {
@@ -617,10 +630,12 @@ func (h *Host) snapshotPublished(id, version string) {
 }
 
 // snapshotObjects are a tier's saved snapshots: two versions each, its disk with its record beside it and its memory
-// with the machine's state, and no nearest version to start a fetch from. published is told of each version
-// published.
+// with the machine's state, and no nearest version to start a fetch from. known, before a version is published, says
+// whether Kantel still has the snapshot (a delete may have come while it was fetched); published is told of each
+// version published.
 type snapshotObjects struct {
 	t         SnapshotFetcher
+	known     func(r disksync.Ref) error
 	published func(id, version string)
 }
 
@@ -648,6 +663,11 @@ func (s snapshotObjects) Files(r disksync.Ref) []string {
 }
 
 func (s snapshotObjects) Publish(r disksync.Ref, partial *os.File, mapFile []byte, files map[string][]byte) error {
+	if s.known != nil {
+		if err := s.known(r); err != nil {
+			return err
+		}
+	}
 	if err := s.t.PublishFetchedSnapshot(r.ObjectID, r.Version, partial, mapFile, files); err != nil {
 		return err
 	}
