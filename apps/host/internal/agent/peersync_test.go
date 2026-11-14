@@ -368,6 +368,8 @@ func TestTemplateSync(t *testing.T) {
 type snapshotFetchTier struct {
 	*rootfsFetchTier
 	prepared []string
+	// wants are what it wants of s1 (SnapshotWants): its memory, unless set.
+	wants []string
 }
 
 func (s *snapshotFetchTier) HoldsSnapshot(id, version string) bool {
@@ -385,7 +387,23 @@ func (s *snapshotFetchTier) PrepareSnapshotFetch(_ context.Context, id string, _
 	s.prepared = append(s.prepared, id)
 	return nil
 }
-func (s *snapshotFetchTier) WantsSnapshotMemory(id string) bool { return id == "s1" }
+func (s *snapshotFetchTier) WantsSnapshot(id, version string) bool {
+	return slices.Contains(s.SnapshotWants(id), version)
+}
+func (s *snapshotFetchTier) SnapshotWants(id string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != "s1" {
+		return nil
+	}
+	if s.wants == nil {
+		return []string{microvm.SnapshotMemory}
+	}
+	return slices.Clone(s.wants)
+}
+func (s *snapshotFetchTier) CloneNearestSnapshot(string, string, string) (*blockmap.Map, error) {
+	return nil, nil
+}
 func (s *snapshotFetchTier) SnapshotPartial(string, string) (string, error) {
 	return "", errors.New("no partials here")
 }
@@ -437,15 +455,19 @@ func TestSnapshotSync(t *testing.T) {
 	if got := kinds.Files(disksyncRef("s1", "memory")); !slices.Equal(got, []string{microvm.SnapshotStateFile}) {
 		t.Fatalf("a memory's files %v", got)
 	}
+	if got := kinds.Files(disksyncRef("s1", "sticky0")); len(got) != 0 {
+		t.Fatalf("a drive's files %v", got)
+	}
 	var pe *proto.Error
 	for name, c := range map[string]struct {
 		p    proto.DiskFetchParams
 		code string
 	}{
-		"another version":   {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s1", Version: "1"}, proto.ErrInvalid},
-		"memory not wanted": {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "memory"}, proto.ErrConflict},
-		"a disk not held":   {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "disk"}, ""},
-		"a disk held":       {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s1", Version: "disk"}, ""},
+		"another version":    {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s1", Version: "1"}, proto.ErrInvalid},
+		"memory not wanted":  {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "memory"}, proto.ErrConflict},
+		"a drive not wanted": {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s1", Version: "bundle0"}, proto.ErrConflict},
+		"a disk not held":    {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "disk"}, ""},
+		"a disk held":        {proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s1", Version: "disk"}, ""},
 	} {
 		if err := call(t, h, proto.MethodDiskFetch, c.p); c.code == "" && err != nil || c.code != "" && (!errors.As(err, &pe) || pe.Code != c.code) {
 			t.Errorf("%s: %v", name, err)
@@ -549,9 +571,10 @@ func disksyncRef(id, version string) disksync.Ref {
 	return disksync.Ref{Kind: proto.DiskKindSnapshot, ObjectID: id, Version: version}
 }
 
-// A snapshot's memory that no host holds yet when its disk arrives (its holder hasn't reported it) is asked for again a
-// while later; once the control plane has no such snapshot, no more.
-func TestSnapshotMemoryAskedAgain(t *testing.T) {
+// What the host wants of a snapshot whose disk is here is fetched one version at a time, in the order the tier wants
+// them (its drives' files, then its memory): one no host holds yet (its holder hasn't reported it) is asked for again a
+// while later, and once it is no longer wanted, the next; once the control plane has no such snapshot, no more.
+func TestSnapshotRestAskedAgain(t *testing.T) {
 	defer func(wait time.Duration) { snapshotMemoryRetry = wait }(snapshotMemoryRetry)
 	snapshotMemoryRetry = 10 * time.Millisecond
 	tier := &snapshotFetchTier{rootfsFetchTier: &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
@@ -559,25 +582,33 @@ func TestSnapshotMemoryAskedAgain(t *testing.T) {
 	h.tiers[microvm.Tier] = tier
 	h.mesh = &fakeMesh{}
 	h.cfg.SyncRateMbit = -1
+	tier.wants = []string{"sticky0", microvm.SnapshotMemory}
 	var mu sync.Mutex
-	asked := 0
+	var asked []string
 	h.callKantel = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		p := params.(proto.DiskLocateParams)
 		mu.Lock()
 		defer mu.Unlock()
-		if p := params.(proto.DiskLocateParams); p.Version != microvm.SnapshotMemory {
-			return nil, fmt.Errorf("located %+v", p)
-		}
-		asked++
-		if asked < 3 {
+		asked = append(asked, p.Version)
+		switch {
+		case p.Version == "sticky0" && len(asked) == 2:
+			// Fetched by another call meanwhile: the memory is next.
+			tier.mu.Lock()
+			tier.wants = []string{microvm.SnapshotMemory}
+			tier.mu.Unlock()
 			return json.RawMessage(`{"holders":[]}`), nil
+		case p.Version == microvm.SnapshotMemory && len(asked) < 5:
+			return json.RawMessage(`{"holders":[]}`), nil
+		case p.Version == microvm.SnapshotMemory:
+			return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no such snapshot"}
 		}
-		return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no such snapshot"}
+		return json.RawMessage(`{"holders":[]}`), nil
 	}
 	h.startPeerSync()
 	defer h.syncStop()
 	done := make(chan struct{})
 	go func() {
-		h.fetchSnapshotMemory("s1")
+		h.fetchSnapshotRest("s1")
 		close(done)
 	}()
 	select {
@@ -587,8 +618,8 @@ func TestSnapshotMemoryAskedAgain(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if asked != 3 {
-		t.Fatalf("asked %d times", asked)
+	if want := []string{"sticky0", "sticky0", "memory", "memory", "memory"}; !slices.Equal(asked, want) {
+		t.Fatalf("asked %v, not %v", asked, want)
 	}
 }
 

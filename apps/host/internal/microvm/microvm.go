@@ -2287,14 +2287,17 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 			unhold()
 			return sandboxOrigin{}, err
 		}
-		if snap.Size != size.Name && snap.Memory {
+		// A copy's memory only over every file its guest had on its drives (snapshotsync.go), which it gets before its
+		// memory: else it boots on its disk.
+		memory := snap.Memory && (!snap.Fetched || m.snapshotDrivesHere(snap))
+		if snap.Size != size.Name && memory {
 			unhold()
 			return sandboxOrigin{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s holds the memory of a %s sandbox, so a sandbox made from it has to be that machine too, not %s (%d vCPU, %d MiB)", p.From, snap.Size, size.Name, size.VCPUs, size.MemoryMiB)}
 		}
 		sdir := m.snapshotDir(p.From)
 		origin := sandboxOrigin{rootfs: m.snapshotRootfs(snap), disk: filepath.Join(sdir, fc.DiskFile), source: "snapshot", guest: snap.Guest, unhold: unhold}
 		origin.stickyDir, origin.stickyDisks = sdir, append([]stickyDisk(nil), snap.StickyDisks...)
-		if snap.Memory {
+		if memory {
 			origin.stickyDrives = snap.StickyDrives
 			origin.state, origin.mem = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			// Its memory holds the guest's mounts of the bundles on its drives then: the same images, on the same drives.
@@ -3338,7 +3341,7 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 		m.spool.cancel(spooled)
 		return "", err
 	}
-	snap.SizeBytes = snapshotBytes(sdir)
+	snap.SizeBytes = m.snapshotBytes(sdir)
 	// Transient before the fork can take its disk: a host restarting in between must find it is no snapshot to keep.
 	if err := m.writeSnapshotMetaAs(s, snap, transient); err != nil {
 		os.RemoveAll(sdir)
@@ -3432,7 +3435,7 @@ func (m *Manager) liveDiskSnapshot(ctx context.Context, s *sandbox, snap *proto.
 		return err
 	}
 	snap.Memory = false
-	snap.SizeBytes = snapshotBytes(sdir)
+	snap.SizeBytes = m.snapshotBytes(sdir)
 	if err := m.writeSnapshotMeta(s, snap); err != nil {
 		os.RemoveAll(sdir)
 		return err
@@ -3647,7 +3650,7 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 			snap.Memory = false
 		}
 	}
-	snap.SizeBytes = snapshotBytes(sdir)
+	snap.SizeBytes = m.snapshotBytes(sdir)
 	if err := m.writeSnapshotMeta(s, snap); err != nil {
 		// Unpublished (a full disk, say): the copy is no snapshot, and nothing that lists snapshots would ever find it.
 		os.RemoveAll(sdir)
@@ -3871,9 +3874,10 @@ func (m *Manager) measureSnapshots(snaps []snapshotMeta) (held, unique map[strin
 	}
 	files := map[fileID]*file{}
 	held, unique = map[string]int64{}, map[string]int64{}
+	cached := m.cachedImages()
 	for _, snap := range snaps {
 		held[snap.ID], unique[snap.ID] = 0, 0
-		snapshotFiles(m.snapshotDir(snap.ID), func(id fileID, bytes int64) {
+		snapshotFiles(m.snapshotDir(snap.ID), cached, func(id fileID, bytes int64) {
 			held[snap.ID] += bytes
 			f := files[id]
 			if f == nil {
@@ -3912,11 +3916,13 @@ type fileID struct{ dev, ino uint64 }
 
 // snapshotFiles calls each with every file a snapshot's directory has on the disk now, and the blocks it has allocated
 // (a sparse disk's holes take none), each file once. Left out: a memory file still in RAM, a symlink into the spool
-// until it is flushed to the disk; and its bundle drives, links to the bundle cache's images, which are the cache's.
-func snapshotFiles(dir string, each func(id fileID, bytes int64)) {
+// until it is flushed to the disk; and any of the bundle cache's images (cached, by file: its bundle drives' links to
+// them), which are the cache's. A bundle image that is no link to the cache, such as one a copy fetched from a peer
+// (snapshotsync.go) and every snapshot later linking it, is the snapshot's own and counts.
+func snapshotFiles(dir string, cached map[fileID]bool, each func(id fileID, bytes int64)) {
 	seen := map[fileID]bool{}
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() || strings.HasPrefix(d.Name(), "bundle") {
+		if err != nil || !d.Type().IsRegular() {
 			return nil
 		}
 		var st syscall.Stat_t
@@ -3924,7 +3930,7 @@ func snapshotFiles(dir string, each func(id fileID, bytes int64)) {
 			return nil
 		}
 		id := fileID{uint64(st.Dev), st.Ino}
-		if seen[id] {
+		if seen[id] || cached[id] {
 			return nil
 		}
 		seen[id] = true
@@ -3933,10 +3939,25 @@ func snapshotFiles(dir string, each func(id fileID, bytes int64)) {
 	})
 }
 
+// cachedImages are the bundle cache's images now, by file: none without a cache.
+func (m *Manager) cachedImages() map[fileID]bool {
+	if m.cfg.Bundles == nil {
+		return nil
+	}
+	out := map[fileID]bool{}
+	for _, path := range m.cfg.Bundles.Images() {
+		var st syscall.Stat_t
+		if syscall.Stat(path, &st) == nil {
+			out[fileID{uint64(st.Dev), st.Ino}] = true
+		}
+	}
+	return out
+}
+
 // snapshotBytes is all a snapshot's directory takes on the disk now (snapshotFiles), shared files included.
-func snapshotBytes(dir string) int64 {
+func (m *Manager) snapshotBytes(dir string) int64 {
 	var total int64
-	snapshotFiles(dir, func(_ fileID, bytes int64) { total += bytes })
+	snapshotFiles(dir, m.cachedImages(), func(_ fileID, bytes int64) { total += bytes })
 	return total
 }
 
@@ -4070,8 +4091,13 @@ func (m *Manager) KeepSnapshot(_ context.Context, p proto.SnapshotParams) (proto
 	if !kept.Memory {
 		kept.BundleDrives, kept.BundleSlots, kept.StickyDrives = 0, nil, 0
 	}
+	// Its drives' files are its source's, and so are their maps, where its source has them.
+	for _, version := range snapshotDriveVersions(kept) {
+		_, mapFile := snapshotFile(version)
+		_ = os.Link(filepath.Join(from, mapFile), filepath.Join(sdir, mapFile))
+	}
 	// Its own files in full: it shares them with its source, but it is the one kept (snapshotSizes counts them for it).
-	kept.SizeBytes = snapshotBytes(sdir)
+	kept.SizeBytes = m.snapshotBytes(sdir)
 	raw, _ := json.MarshalIndent(kept, "", "  ")
 	if err := fsutil.WriteFileDurably(filepath.Join(sdir, "meta.json"), raw, 0o600); err != nil {
 		os.RemoveAll(sdir)

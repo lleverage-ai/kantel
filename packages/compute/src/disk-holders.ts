@@ -21,8 +21,8 @@
  *   holds only copies of an account whose data it may have. `disk.locate` answers only holders whose copy restores on
  *   the asker (`memoryRestoresOn`), of a snapshot still in use, in the asker's pool, with the digest most of them have.
  * - `snapshot`: a saved snapshot (`snapshots/<id>/` on a host), its ID the host's snapshot ID (a ref's, `{hostId}/{id}`,
- *   or the whole of one naming no host), in two versions, one for each of its block-mapped files: `disk` and `memory`.
- *   Its record is the snapshot's (`StoredSnapshot`, by its ID alone or a ref naming one of its holders and the ID): a
+ *   or the whole of one naming no host), a version for each of its block-mapped files: `disk` and `memory`, and the
+ *   files on its machine's drives (`sticky<k>`, `bundle<i>`), which a copy fetches before its memory. Its record is the snapshot's (`StoredSnapshot`, by its ID alone or a ref naming one of its holders and the ID): a
  *   host holds a version only of a saved snapshot
  *   the catalogue has, of an account whose data it may have, and is offered it only in the snapshot's pool, of its
  *   architecture. Each holder carries the map digest its host reported. Synced wherever there is a grant key (sticky
@@ -168,6 +168,17 @@ export const SNAPSHOT_ORPHAN_GRACE_MS = 2 * 60 * 60_000;
 
 /** A saved snapshot's versions (the host's `SnapshotDiskVersion` and `SnapshotMemoryVersion`): its disk, and its memory. */
 export const SNAPSHOT_VERSIONS: readonly string[] = ["disk", "memory"];
+
+/**
+ * A saved snapshot's drive versions (the host's `SnapshotBundleVersion` and `SnapshotStickyVersion`): the bundle image
+ * on bundle drive `i` of its machine (`bundle<i>`), and its clone of the sticky disk on sticky drive `k` (`sticky<k>`).
+ */
+const SNAPSHOT_DRIVE_VERSION = /^(?:bundle|sticky)(?:0|[1-9][0-9]?)$/;
+
+/** Whether `version` names one of a saved snapshot's versions: its disk, its memory, or the file on one of its drives. */
+function snapshotVersion(version: string): boolean {
+	return SNAPSHOT_VERSIONS.includes(version) || SNAPSHOT_DRIVE_VERSION.test(version);
+}
 
 /** A snapshot's ID on its host, as a ref names it (`snap_` and 16 hex digits, and any the host's own `validID` takes). */
 const SNAPSHOT_ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -656,7 +667,7 @@ export function createDiskHolders(options: {
 			throw new KantelError("not_supported", "Sticky disks and templates are off here, so hosts sync no snapshots");
 		if (sealer === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
 		const missing = () => new KantelError("not_found", "No such saved snapshot");
-		if (!SNAPSHOT_ID.test(request.objectId) || !SNAPSHOT_VERSIONS.includes(request.version)) throw missing();
+		if (!SNAPSHOT_ID.test(request.objectId) || !snapshotVersion(request.version)) throw missing();
 		const hosts = new Map((await options.hosts()).map((host) => [host.id, host]));
 		const asker = hosts.get(hostId);
 		if (asker === undefined || asker.state === "revoked" || asker.poolId === undefined) throw missing();
@@ -759,7 +770,7 @@ export function createDiskHolders(options: {
 				const entry = await store.templateSnapshots.get(fetch.objectId);
 				if (entry === undefined || !(await mayHold(entry.accountId))) continue;
 			} else {
-				if (!SNAPSHOT_ID.test(fetch.objectId) || !SNAPSHOT_VERSIONS.includes(fetch.version)) continue;
+				if (!SNAPSHOT_ID.test(fetch.objectId) || !snapshotVersion(fetch.version)) continue;
 				const others = (await store.diskHolders.list({ objectId: fetch.objectId })).filter(
 					(each) => each.kind === "snapshot",
 				);
@@ -974,7 +985,7 @@ export function createDiskHolders(options: {
 				for (const object of snapshot) {
 					if (!SNAPSHOT_ID.test(object.objectId)) continue;
 					for (const held of object.versions) {
-						if (!SNAPSHOT_VERSIONS.includes(held.version) || !MAP_DIGEST.test(held.mapDigest)) continue;
+						if (!snapshotVersion(held.version) || !MAP_DIGEST.test(held.mapDigest)) continue;
 						reported.set(versionKey(object.objectId, held.version), {
 							objectId: object.objectId,
 							version: held.version,

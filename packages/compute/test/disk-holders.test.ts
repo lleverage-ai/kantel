@@ -812,9 +812,10 @@ describe("disk holders", () => {
 				.filter((holder) => holder.kind === "snapshot" && holder.state === "held")
 				.map((holder) => [holder.hostId, holder.objectId, holder.version, holder.mapDigest])
 				.sort();
-		// Its host: its disk and memory. Not a snapshot the catalogue hasn't, nor a version or ID that isn't one.
+		// Its host: its disk, memory and the files on its drives. Not a snapshot the catalogue hasn't, nor a version or ID
+		// that isn't one.
 		await report(STUB_HOST_ID, [
-			{ objectId: "hs1", versions: ["disk", "memory", "1"] },
+			{ objectId: "hs1", versions: ["disk", "memory", "sticky0", "bundle11", "1", "sticky", "bundle01", "drive0"] },
 			{ objectId: "hs_unknown", versions: ["disk"] },
 			{ objectId: "../x", versions: ["disk"] },
 		]);
@@ -825,8 +826,10 @@ describe("disk holders", () => {
 		expect(await snapshotHolders()).toEqual([
 			["host_b", "hs1", "disk", DIGEST],
 			["host_g", "hs1", "disk", DIGEST],
+			[STUB_HOST_ID, "hs1", "bundle11", OTHER_DIGEST],
 			[STUB_HOST_ID, "hs1", "disk", DIGEST],
 			[STUB_HOST_ID, "hs1", "memory", OTHER_DIGEST],
+			[STUB_HOST_ID, "hs1", "sticky0", OTHER_DIGEST],
 		]);
 		const disk = { kind: "snapshot", objectId: "hs1", version: "disk" };
 		const found = await tom.api.service.locateDisk("host_d", disk);
@@ -848,11 +851,13 @@ describe("disk holders", () => {
 			from: [STUB_HOST_ID, "host_b"],
 			to: "host_d",
 		});
-		// Its memory only where it is.
-		expect(await tom.api.service.locateDisk("host_b", { ...disk, version: "memory" })).toMatchObject({
-			mapDigest: OTHER_DIGEST,
-			holders: [{ hostId: STUB_HOST_ID }],
-		});
+		// Its memory, and its drives' files, only where they are.
+		for (const version of ["memory", "sticky0", "bundle11"]) {
+			expect(await tom.api.service.locateDisk("host_b", { ...disk, version })).toMatchObject({
+				mapDigest: OTHER_DIGEST,
+				holders: [{ hostId: STUB_HOST_ID }],
+			});
+		}
 		// Another pool's host, another account's, a revoked one, a version that isn't one: none of it.
 		for (const [hostId, request] of [
 			["host_c", disk],

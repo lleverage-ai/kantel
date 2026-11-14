@@ -12,7 +12,8 @@ import (
 )
 
 // The tier's files by what they are for, each once: memory a stop's snapshot shares with its sandbox counts for the
-// sandbox, and a file counted before (a bundle image) counts nothing here.
+// sandbox, and a file counted before (a bundle image) counts nothing here; a bundle image of a copy's own (fetched from a
+// peer, no link to the cache) is its snapshot's.
 func TestDiskBreakdownCountsEachFileOnce(t *testing.T) {
 	root := t.TempDir()
 	m := &Manager{cfg: Config{Root: root}}
@@ -55,6 +56,7 @@ func TestDiskBreakdownCountsEachFileOnce(t *testing.T) {
 	}
 	saved := snapshot("snap_saved", "saved")
 	file(filepath.Join(saved, "disk.ext4"), 6<<20)
+	file(filepath.Join(saved, "bundle0.erofs"), 1<<20)
 	// A kept copy of the automatic snapshot: its disk linked, its memory (the sandbox's) too.
 	kept := snapshot("snap_kept", "saved")
 	if err := os.Link(filepath.Join(auto, "disk.ext4"), filepath.Join(kept, "disk.ext4")); err != nil {
