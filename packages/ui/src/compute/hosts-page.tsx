@@ -860,7 +860,7 @@ const Chevron = ({ open }: { open: boolean }) => (
 );
 
 function HostRow({ host, source, now, names, onDrain, onRemove, onUpdate, onLimit, onMove, opened }: RowProps) {
-	const labels = Object.entries(host.labels);
+	const labels = Object.entries(host.labels).sort(([a], [b]) => a.localeCompare(b));
 	const [open, setOpen] = useState(opened);
 	const live = useHostUsage(source, host);
 	const graphsId = `host-graphs-${host.id}`;
