@@ -263,14 +263,74 @@ const FeatureTemplateImageCopies = "template-image-copies"
 // its copy boots on its disk). It comes with FeatureDiskSync, on the microVM tier.
 const FeatureSnapshotSync = "snapshot-sync"
 
+// FeatureSandboxMove: a stopped microVM sandbox moves to another host in its pool (docs/design/disk-store.md, "Moving
+// a sandbox to another host"). Its disk and sticky drives are a disk store object, kind DiskKindSandbox, its ID the
+// sandbox's, one version for each export (the move's operation ID): sandbox.export (SandboxExportParams) on its host
+// makes that version, clones of its files under sandbox-exports/<id>/<version>/ and their maps, which the host then
+// serves to its mesh peers; sandbox.import (SandboxImportParams) on the target fetches it and makes the sandbox there,
+// stopped, with the same ID, to start as any other; sandbox.export.delete drops a version; sandbox.import.cancel
+// (SandboxExportParams, a move rolled back) ends a version's import on the target for good, deleting a sandbox it made
+// there, and no sandbox.import of that version still under way makes it after. A delete of the sandbox drops its
+// exports too, and on the target an import under way. It comes with FeatureSnapshotSync, on the microVM tier.
+const FeatureSandboxMove = "sandbox-move"
+
 // Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
-// filesystem, a template snapshot, and a saved snapshot.
+// filesystem, a template snapshot, a saved snapshot, and a sandbox being moved (FeatureSandboxMove).
 const (
 	DiskKindSticky   = "sticky"
 	DiskKindRootfs   = "rootfs"
 	DiskKindTemplate = "template"
 	DiskKindSnapshot = "snapshot"
+	DiskKindSandbox  = "sandbox"
 )
+
+// A moved sandbox's parts (DiskKindSandbox): its disk, and its sticky drives' files, each block-mapped, in this order
+// in its manifest. A drive with no disk on it is an empty file.
+const (
+	SandboxPartDisk    = "disk"
+	SandboxPartSticky0 = "sticky0"
+	SandboxPartSticky1 = "sticky1"
+)
+
+// SandboxRecordFile names a moved sandbox's record among its small files: its host's record of it (its size, env,
+// egress, mounts, sticky disks and root image), which the target makes its own.
+const SandboxRecordFile = "record"
+
+// SandboxExportParams is sandbox.export (FeatureSandboxMove): the stopped sandbox's disk and sticky drives cloned as
+// version Version (a valid ID, Kantel's for the move) of the object DiskKindSandbox/SandboxID, and mapped. Sent again,
+// it answers the version it made. ErrConflict unless the sandbox is stopped.
+type SandboxExportParams struct {
+	SandboxID string `json:"sandboxId"`
+	Version   string `json:"version"`
+}
+
+// SandboxExportResult is what sandbox.export made: the version's map digest (its manifest's) and the bytes its files
+// take on the host's disk.
+type SandboxExportResult struct {
+	MapDigest      string `json:"mapDigest"`
+	AllocatedBytes int64  `json:"allocatedBytes"`
+}
+
+// SandboxExportDeleteParams is sandbox.export.delete (FeatureSandboxMove): that version of the sandbox's exports, or
+// with no Version every one, deleted; the sandbox stays. Answered {}.
+type SandboxExportDeleteParams struct {
+	SandboxID string `json:"sandboxId"`
+	Version   string `json:"version,omitempty"`
+}
+
+// SandboxImportParams is sandbox.import (FeatureSandboxMove): version Version of DiskKindSandbox/SandboxID fetched
+// from the hosts that hold it (what disk.locate would answer this host: MapDigest, Holders, Grant), its root image put
+// in place first (a host image version from its release, a template's root filesystem from a peer), and made a
+// stopped sandbox here with the same ID. Answered with its SandboxInfo once it is here: a call that ends first leaves
+// the fetch going on, and the same call again waits for it. ErrConflict when a sandbox of that ID is here already, but
+// one this version made; a delete of the ID ends it.
+type SandboxImportParams struct {
+	SandboxID string       `json:"sandboxId"`
+	Version   string       `json:"version"`
+	MapDigest string       `json:"mapDigest"`
+	Holders   []DiskHolder `json:"holders"`
+	Grant     string       `json:"grant"`
+}
 
 // A saved snapshot's versions as a disk store object (DiskKindSnapshot): its disk, and its memory.
 const (
@@ -1372,7 +1432,8 @@ type SandboxRef struct {
 
 // DeleteParams is sandbox.delete. KeepSnapshots is for the isolate an upgrade left once its microVM runs on another
 // host: it goes as on the upgrade's own host (isolate.Manager.Dispose), its automatic snapshots kept, since the sandbox
-// lives on and Kantel keeps them as its. A host from before it deletes them as a delete does.
+// lives on and Kantel keeps them as its. A host from before it deletes them as a delete does. It is also for a
+// microVM moved to another host (FeatureSandboxMove): its automatic snapshots stay here, as its history.
 type DeleteParams struct {
 	SandboxID     string `json:"sandboxId"`
 	KeepSnapshots bool   `json:"keepSnapshots,omitempty"`
@@ -1806,4 +1867,12 @@ const (
 	MethodStickyCommit = "sticky.commit"
 	// MethodStickyDelete (Kantel → host, StickyDeleteParams; FeatureStickyDisks) answers {}.
 	MethodStickyDelete = "sticky.delete"
+	// MethodSandboxExport (Kantel → host, SandboxExportParams; FeatureSandboxMove) answers a SandboxExportResult.
+	MethodSandboxExport = "sandbox.export"
+	// MethodSandboxExportDelete (Kantel → host, SandboxExportDeleteParams; FeatureSandboxMove) answers {}.
+	MethodSandboxExportDelete = "sandbox.export.delete"
+	// MethodSandboxImport (Kantel → host, SandboxImportParams; FeatureSandboxMove) answers the sandbox's SandboxInfo.
+	MethodSandboxImport = "sandbox.import"
+	// MethodSandboxImportCancel (Kantel → host, SandboxExportParams; FeatureSandboxMove) answers {}.
+	MethodSandboxImportCancel = "sandbox.import.cancel"
 )

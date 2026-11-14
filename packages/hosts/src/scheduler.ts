@@ -100,6 +100,8 @@ export interface Placement {
 	readonly size: HostSize;
 	/** A shape off the host's named sizes: sent to it as vCPUs, memory and disk, and booted from scratch. */
 	readonly custom: boolean;
+	/** How full the host would be with it placed (`fullness`). */
+	readonly fullness: number;
 }
 
 /** No host can take it: why, in words, and as a `PlacementReason`. */
@@ -367,8 +369,36 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	);
 	const best = fits[0];
 	if (best === undefined) return { reason: "No host", code: "no_host" };
-	return { host: best.candidate.host, size: best.size, custom: best.custom };
+	return { host: best.candidate.host, size: best.size, custom: best.custom, fullness: best.fullness };
 }
+
+/**
+ * How full a host with a template's snapshot may be, once the create is placed on it, before an emptier host without
+ * the snapshot boots the template fresh instead (`bootsFreshInstead`). Below it a restore (a few seconds) wins over a
+ * fresh boot (about 25 seconds, with the template's setup) whatever the others hold: half its memory or vCPUs is room
+ * to spare.
+ */
+export const SPREAD_FULLNESS = 0.5;
+
+/**
+ * How much fuller than the emptiest host without the snapshot a host with it must be, past `SPREAD_FULLNESS`, before
+ * the create boots fresh there instead: a quarter of a host. Hosts about as full stay with the restore, and each fresh
+ * boot narrows the gap, so creates in a row fill both by turns rather than all going to the one host emptier now.
+ */
+export const SPREAD_MARGIN = 0.25;
+
+/**
+ * Whether a create from a template snapshot boots fresh on the emptiest host without it (`fresh`) rather than restoring
+ * on the host with it chosen (`restore`): only when the restore's host would be at least `SPREAD_FULLNESS` full, and
+ * at least `SPREAD_MARGIN` fuller than the other, each counted with the create placed (`Placement.fullness`). A fresh
+ * boot costs the create time once, where a host packed past its CPUs slows every sandbox on it for as long as they run.
+ * Until a pool's hosts all hold the snapshot (its copies still on their way after a build, or a host on another CPU or
+ * runtime building its own), this keeps the one host with it from filling while the others sit empty.
+ */
+export const bootsFreshInstead = (restore: Placement, fresh: Placement): boolean =>
+	// In hundredths, as `fullness` is rounded, so 0.57 less 0.32 is a quarter.
+	Math.round(restore.fullness * 100) >= Math.round(SPREAD_FULLNESS * 100) &&
+	Math.round((restore.fullness - fresh.fullness) * 100) >= Math.round(SPREAD_MARGIN * 100);
 
 /**
  * How full a host would be with `size` placed on it, from 0 (more than 1 when over-booked): the larger of the share of

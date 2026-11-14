@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HOST_FEATURES, type HostFacts } from "../src/protocol.ts";
 import {
+	bootsFreshInstead,
 	buildFitsOn,
 	type Candidate,
 	customSizeName,
@@ -8,7 +9,10 @@ import {
 	freeMemoryOn,
 	holdsHeads,
 	isRefusal,
+	type Placement,
 	place,
+	SPREAD_FULLNESS,
+	SPREAD_MARGIN,
 	shapeOn,
 } from "../src/scheduler.ts";
 import type { HostRecord } from "../src/store.ts";
@@ -444,5 +448,60 @@ describe("place", () => {
 			codeOf(microvm, [isolatesOnly, candidate("gone", {}, { connected: false }), candidate("full", capacity(1_000))]),
 		).toBe("insufficient_capacity");
 		expect(codeOf(microvm, [isolatesOnly, candidate("drained", { draining: true })])).toBe("no_host_for_type");
+	});
+});
+
+describe("bootsFreshInstead", () => {
+	/** Where `place` puts a 4 vCPU, 8 GiB machine among `candidates` alone. */
+	const placed = (...candidates: Candidate[]): Placement => {
+		const chosen = place({ tier: "microvm", size: "large" }, candidates);
+		if (isRefusal(chosen)) throw new Error(chosen.reason);
+		return chosen;
+	};
+
+	it("counts each host's fullness with the create placed", () => {
+		// 16 of 32 GiB used, and 8 more: 0.75. Empty: a quarter.
+		expect(placed(candidate("holder", capacity(16_384))).fullness).toBe(0.75);
+		expect(placed(candidate("empty", capacity(32_768))).fullness).toBe(0.25);
+		// Its CPUs booked count too: 12 of 16 vCPUs with this one.
+		expect(placed(candidate("booked", capacity(32_768), { bookedVcpus: 8 })).fullness).toBe(0.75);
+	});
+
+	it("boots fresh on a much emptier host once the one with the snapshot would be at least half full", () => {
+		const empty = placed(candidate("empty", capacity(32_768)));
+		expect(bootsFreshInstead(placed(candidate("holder", capacity(16_384))), empty)).toBe(true);
+		// At the threshold exactly, and a quarter apart exactly.
+		const half = placed(candidate("half", capacity(24_576)));
+		expect(half.fullness).toBe(SPREAD_FULLNESS);
+		expect(half.fullness - empty.fullness).toBe(SPREAD_MARGIN);
+		expect(bootsFreshInstead(half, empty)).toBe(true);
+		// Its CPUs booked, though it has memory: a fresh boot elsewhere too.
+		expect(bootsFreshInstead(placed(candidate("booked", capacity(32_768), { bookedVcpus: 8 })), empty)).toBe(true);
+	});
+
+	it("restores on the host with the snapshot while it has plenty of room, however empty the others", () => {
+		// 0.47 full with it placed: under half, so the restore wins over an empty host.
+		const roomy = placed(candidate("roomy", capacity(25_600)));
+		expect(roomy.fullness).toBeLessThan(SPREAD_FULLNESS);
+		expect(bootsFreshInstead(roomy, placed(candidate("empty", capacity(32_768))))).toBe(false);
+		// Nor for a far bigger, emptier host.
+		const big = candidate("big", { facts: { ...facts, memoryMiB: 131_072, cpus: 64 }, ...capacity(131_072) });
+		expect(placed(big).fullness).toBe(0.06);
+		expect(bootsFreshInstead(roomy, placed(big))).toBe(false);
+	});
+
+	it("restores when the other host is nearly as full", () => {
+		const holder = placed(candidate("holder", capacity(16_384)));
+		// 0.75 against 0.53: within a quarter.
+		const other = placed(candidate("other", capacity(23_552)));
+		expect(other.fullness).toBe(0.53);
+		expect(bootsFreshInstead(holder, other)).toBe(false);
+		// Both over-booked, within a quarter of each other: the restore.
+		expect(
+			bootsFreshInstead(
+				placed(candidate("over", capacity(16_384), { bookedVcpus: 20 })),
+				placed(candidate("overToo", capacity(16_384), { bookedVcpus: 18 })),
+			),
+		).toBe(false);
 	});
 });
