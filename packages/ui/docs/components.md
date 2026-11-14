@@ -493,7 +493,7 @@ read, an older gateway and a phone; the switch on, off, read only and refused. A
 
 Move to host (`src/compute/sandbox-move.tsx`), from a microVM's menu on its page and its row in the Sandboxes list,
 where the `SandboxesSource` has `move` and `moveTargets`. The item is there for every microVM, greyed out unless it can
-move now (`canMove`: stopped or paused, on a host the viewer can see, connected). The dialog lists the hosts it may move
+move now (`canMove`: running, stopped or paused, on a host the viewer can see, connected). The dialog lists the hosts it may move
 to (`moveTargets`: the other hosts of its pool that run microVMs), one radio row each with the host's name, cut short
 with the whole name in its tooltip, and what a move there does: Keeps memory or Restarts, and the pause Kantel expects
 (`pauseMs`) where it gives one. Until Kantel answers a move's dry run, `memory` and `pauseMs` are absent: every host

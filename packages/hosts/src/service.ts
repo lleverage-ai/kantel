@@ -64,6 +64,7 @@ import {
 	type HostMountStatus,
 	type HostObjectKind,
 	type HostSandbox,
+	type HostSandboxExportParams,
 	type HostSandboxUsage,
 	type HostSecrets,
 	type HostSize,
@@ -303,9 +304,9 @@ export interface UpgradedSandbox extends SandboxPlacement {
 }
 
 /**
- * A stopped microVM's move to another host in its pool (`sandboxes.move`, docs/design/disk-store.md, "Moving a sandbox
- * to another host"): Kantel's ID for it, which its source exports as the version of the sandbox's object and its
- * target fetches; the hosts it may go to, or the one asked for; and how it starts there.
+ * A microVM's move to another host in its pool (`sandboxes.move`, docs/design/disk-store.md, "Moving a sandbox to
+ * another host"): Kantel's ID for it, which its source exports as the version of the sandbox's object and its target
+ * fetches; the hosts it may go to, or the one asked for; whether it runs; and how it starts there.
  */
 export interface MoveSandboxInput {
 	readonly operationId: string;
@@ -327,7 +328,22 @@ export interface MoveSandboxInput {
 	};
 	/** Told, with the target, once the sandbox's files are there and it starts there. */
 	readonly onStarting?: (hostId: string) => void;
+	/**
+	 * It runs (`HOST_FEATURES.sandboxMoveRunning` on both hosts): copied as it runs, then stopped without its memory,
+	 * copied again over the first copy (only the blocks written since), and started on the target.
+	 */
+	readonly running?: boolean;
+	/**
+	 * Awaited, with the target, before a running sandbox is stopped for its final copy: rejects when it may not be
+	 * stopped (it changed meanwhile), and the move is rolled back with the sandbox running where it was.
+	 */
+	readonly onStopping?: (hostId: string) => Promise<void>;
+	/** Told, with the target, once a running sandbox is stopped and its final copy is being made. */
+	readonly onFinalCopy?: (hostId: string) => void;
 }
+
+/** The version a running sandbox's first copy is exported as, made as it runs: its move's, marked. */
+export const moveLiveVersion = (operationId: string): string => `${operationId}-live`;
 
 /** Where an upgrade's tar is put in the microVM before its host extracts it (and deletes it). */
 const UPGRADE_STAGING = "/tmp/.kantel-upgrade.tar";
@@ -2770,7 +2786,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	/**
 	 * Rolls back a move that hasn't switched: the target's copy cancelled (`sandbox.import.cancel`: whatever it fetched,
 	 * and a sandbox it made or started there, deleted, and never made after by an import still under way), the source's
-	 * export deleted, the move cleared off the placement, which never left the source. Claimed first, as an upgrade's
+	 * export deleted (a running sandbox's first copy too), the move cleared off the placement, which never left the
+	 * source. A sandbox the move stopped there is left stopped: the compute plane starts it again. Claimed first, as an upgrade's
 	 * rollback is (`move.settling`, for `settleLeaseMs`), so only one gateway sends the compensating calls at a time, and
 	 * each only while its claim and the move still stand. `done` once rolled back; `unreachable` when a host couldn't be
 	 * reached (the claim let go, the move left on the placement to be settled later); `busy` while another gateway has
@@ -2809,6 +2826,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					return { ...latest, move };
 				})
 				.catch(() => undefined);
+		// A running sandbox's move made a first copy too, as a version of its own.
+		const versions = claimed.move.live === true ? [operationId, moveLiveVersion(operationId)] : [operationId];
 		for (const [hostId, method] of [
 			[claimed.move.target, HostMethods.sandboxImportCancel],
 			[claimed.hostId, HostMethods.sandboxExportDelete],
@@ -2817,12 +2836,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			// A host an operator revoked never connects again: nothing of the move is left there to undo.
 			const host = await store.getHost(hostId);
 			if (host === undefined || host.revoked) continue;
-			try {
-				await onHost(hostId, method, { sandboxId, version: operationId });
-			} catch (error) {
-				if (!(isKantelError(error) && error.code === "not_found")) {
-					await letGo();
-					return "unreachable";
+			for (const version of versions) {
+				try {
+					await onHost(hostId, method, { sandboxId, version });
+				} catch (error) {
+					if (!(isKantelError(error) && error.code === "not_found")) {
+						await letGo();
+						return "unreachable";
+					}
 				}
 			}
 		}
@@ -2888,23 +2909,27 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const missing = () => new KantelError("not_found", "No such move under way to this host");
 		const placement = await store.getPlacement(params.objectId);
 		const move = placement?.move;
-		if (
-			placement === undefined ||
-			move === undefined ||
-			move.operationId !== params.version ||
-			move.target !== hostId ||
-			move.mapDigest === undefined
-		) {
-			throw missing();
-		}
-		return grantMove(placement, move.target, move.mapDigest);
+		if (placement === undefined || move === undefined || move.target !== hostId) throw missing();
+		// Its export, or a running sandbox's first copy.
+		const digest =
+			params.version === move.operationId
+				? move.mapDigest
+				: move.live === true && params.version === moveLiveVersion(move.operationId)
+					? move.liveDigest
+					: undefined;
+		if (digest === undefined) throw missing();
+		return grantMove(placement, move.target, digest, params.version);
 	};
 
-	/** Where a move's export is for its target: its source, at its mesh address, with a grant naming the target. */
+	/**
+	 * Where a version of a move's export (its own, or a running sandbox's first copy) is for its target: its source, at
+	 * its mesh address, with a grant naming the target.
+	 */
 	const grantMove = async (
 		placement: PlacementRecord,
 		target: string,
 		mapDigest: string,
+		version: string,
 	): Promise<HostDiskLocateResult & { readonly grant: string }> => {
 		const source = await store.getHost(placement.hostId);
 		const address = source?.mesh?.address;
@@ -2918,7 +2943,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const grant = await compute.grantFetch({
 			kind: "sandbox",
 			objectId: placement.sandboxId,
-			version: placement.move?.operationId ?? "",
+			version,
 			accountId: placement.owner,
 			from: [placement.hostId],
 			to: target,
@@ -3683,17 +3708,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						);
 					}
 				}
-				if (source.move === undefined && source.state !== "stopped") {
-					throw new KantelError("conflict", `The sandbox is ${source.state} on its host: only a stopped sandbox moves`);
+				// A running sandbox's (its intent says, once written): copied as it runs, stopped, copied again over that.
+				const live = source.move === undefined ? input.running === true : source.move.live === true;
+				// Running as its host last said, or stopped (it exited meanwhile): its stop below is then done already.
+				const movable = (state: string) => state === "stopped" || (live && state === "running");
+				if (source.move === undefined && !movable(source.state)) {
+					throw new KantelError(
+						"conflict",
+						`The sandbox is ${source.state} on its host: only a ${live ? "running or stopped" : "stopped"} sandbox moves`,
+					);
 				}
 				const sourceHost = sane(await hostOf(source.hostId));
 				const meshed = (host: HostRecord) =>
 					host.mesh !== undefined && host.poolId !== undefined && host.mesh.poolId === host.poolId;
-				const moves = (host: HostRecord) => host.facts?.features?.includes(HOST_FEATURES.sandboxMove) === true;
+				const moves = (host: HostRecord) =>
+					host.facts?.features?.includes(HOST_FEATURES.sandboxMove) === true &&
+					(!live || host.facts.features.includes(HOST_FEATURES.sandboxMoveRunning));
 				if (!moves(sourceHost)) {
 					throw new KantelError(
 						"not_supported",
-						`The sandbox's host ${sourceHost.name} can't move sandboxes; upgrade its kantel-host`,
+						live
+							? `The sandbox's host ${sourceHost.name} can't move a running sandbox; stop it first, or upgrade its kantel-host`
+							: `The sandbox's host ${sourceHost.name} can't move sandboxes; upgrade its kantel-host`,
 					);
 				}
 				if (!meshed(sourceHost) || !(await (compute?.poolSync?.(sourceHost.poolId ?? "") ?? false))) {
@@ -3757,7 +3793,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						able.length === 0
 							? listed.length === 0
 								? "No other host in the sandbox's pool may take it"
-								: "No other host in the sandbox's pool can take a moved sandbox: each needs a kantel-host that moves sandboxes, in the pool's mesh, of the same architecture"
+								: `No other host in the sandbox's pool can take a moved sandbox: each needs a kantel-host that moves ${live ? "running " : ""}sandboxes, in the pool's mesh, of the same architecture`
 							: chosen.reason,
 					);
 				}
@@ -3776,11 +3812,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					latest.tier === "microvm" &&
 					latest.upgrade === undefined &&
 					(latest.move === undefined
-						? latest.state === "stopped" && latest.cleanup === undefined
+						? movable(latest.state) && latest.cleanup === undefined
 						: latest.move.operationId === operationId && latest.move.target === target.id)
 						? {
 								...latest,
-								move: latest.move ?? { operationId, target: target.id, phase: "copy", size },
+								move: latest.move ?? {
+									operationId,
+									target: target.id,
+									phase: "copy",
+									size,
+									...(live ? { live: true as const } : {}),
+								},
 								updatedAt: clock.now(),
 							}
 						: undefined,
@@ -3812,38 +3854,92 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				};
 				let started: HostSandbox;
 				let mounts: readonly HostMountStatus[] | undefined;
-				try {
+				/**
+				 * Changes the move on the placement, only while it is this one's and no rollback has begun (one that has may be
+				 * cancelling the target's copies as this runs).
+				 */
+				const moveOn = async (
+					change: (move: NonNullable<PlacementRecord["move"]>) => NonNullable<PlacementRecord["move"]>,
+				) => {
+					const written = await store.updatePlacement(sandboxId, (latest) =>
+						movingBy(latest, operationId) &&
+						latest.move !== undefined &&
+						latest.move.rollingBack !== true &&
+						latest.move.settling === undefined
+							? { ...latest, move: change(latest.move) }
+							: undefined,
+					);
+					if (written === undefined) throw new KantelError("conflict", "The move was undone meanwhile");
+					return written;
+				};
+				/** A version of the sandbox exported on its source, and its map digest. */
+				const exportOf = async (params: HostSandboxExportParams): Promise<string> => {
 					const exported = await onHost<{ readonly mapDigest: string }>(
 						sourceHost.id,
 						HostMethods.sandboxExport,
-						{ sandboxId, version: operationId },
+						params,
 						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 					);
 					if (typeof exported.mapDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(exported.mapDigest)) {
 						throw new KantelError("unavailable", "The sandbox's host answered its export without a map digest");
 					}
-					// Its map digest, for the target's own `disk.locate` (a grant renewed, a fetch asked again): only while this
-					// move is the one on the placement.
-					const recorded = await store.updatePlacement(sandboxId, (latest) =>
-						movingBy(latest, operationId) && latest.move !== undefined
-							? { ...latest, move: { ...latest.move, mapDigest: exported.mapDigest } }
-							: undefined,
-					);
-					if (recorded === undefined) throw new KantelError("conflict", "The move was undone meanwhile");
-					const location = await grantMove(recorded, target.id, exported.mapDigest);
+					return exported.mapDigest;
+				};
+				const liveVersion = moveLiveVersion(operationId);
+				// How far a move sent again got: a running sandbox's first copy and stop aren't made again once done (its
+				// target's staged first copy goes once its final copy is the sandbox there).
+				const reached = intended.move.phase;
+				try {
+					if (live && reached === "copy") {
+						// Its first copy, made as it runs (a crash-consistent copy, made at once), fetched by the target and kept
+						// staged there; its map digest kept for the target's own `disk.locate`.
+						const first = await exportOf({ sandboxId, version: liveVersion, live: true });
+						const copying = await moveOn((move) => ({ ...move, liveDigest: first }));
+						await onHost(
+							target.id,
+							HostMethods.sandboxImport,
+							{
+								sandboxId,
+								version: liveVersion,
+								...(await grantMove(copying, target.id, first, liveVersion)),
+								stage: true,
+							},
+							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+							target,
+						);
+						// Then stopped, its memory let go: recorded first, so a rollback from here knows it may have stopped it.
+						await moveOn((move) => ({ ...move, phase: "stop" }));
+					}
+					if (live && (reached === "copy" || reached === "stop")) {
+						await input.onStopping?.(target.id);
+						// Fenced on the source by its first copy there: once a rollback has deleted that, a stop sent late (this
+						// gateway stalled as another settled the move and started it again) is refused, never stopping it.
+						await onHost(
+							sourceHost.id,
+							HostMethods.stop,
+							{ sandboxId, memory: false, export: liveVersion },
+							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+						);
+						await moveOn((move) => ({ ...move, phase: "final-copy" }));
+						input.onFinalCopy?.(target.id);
+					}
+					// Its export (a running sandbox's over its first copy, which maps only the blocks written since), whose map
+					// digest is kept for the target's own `disk.locate` (a grant renewed, a fetch asked again).
+					const mapDigest = await exportOf({
+						sandboxId,
+						version: operationId,
+						...(live ? { base: liveVersion } : {}),
+					});
+					const recorded = await moveOn((move) => ({ ...move, mapDigest }));
+					const location = await grantMove(recorded, target.id, mapDigest, operationId);
 					await onHost(
 						target.id,
 						HostMethods.sandboxImport,
-						{ sandboxId, version: operationId, ...location },
+						{ sandboxId, version: operationId, ...location, ...(live ? { base: liveVersion } : {}) },
 						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 						target,
 					);
-					const starting = await store.updatePlacement(sandboxId, (latest) =>
-						movingBy(latest, operationId) && latest.move !== undefined
-							? { ...latest, move: { ...latest.move, phase: "start" } }
-							: undefined,
-					);
-					if (starting === undefined) throw new KantelError("conflict", "The move was undone meanwhile");
+					await moveOn((move) => ({ ...move, phase: "start" }));
 					input.onStarting?.(target.id);
 					const boot = input.start(target.facts?.features ?? []);
 					started = await onHost<HostSandbox>(
@@ -3967,17 +4063,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const moving = placement.move;
 				if (moving !== undefined) {
 					const target = await store.getHost(moving.target);
-					if (target !== undefined && !target.revoked) {
+					// A running sandbox's first copy, staged there, too.
+					const versions =
+						moving.live === true ? [moving.operationId, moveLiveVersion(moving.operationId)] : [moving.operationId];
+					for (const version of target === undefined || target.revoked ? [] : versions) {
 						try {
-							await onHost(moving.target, HostMethods.sandboxImportCancel, {
-								sandboxId,
-								version: moving.operationId,
-							});
+							await onHost(moving.target, HostMethods.sandboxImportCancel, { sandboxId, version });
 						} catch (error) {
 							if (!(isKantelError(error) && error.code === "not_found")) {
 								throw new KantelError(
 									"unavailable",
-									`The sandbox is being moved to host ${target.name}, which can't be told to drop its copy yet (${error instanceof Error ? error.message : String(error)}); try the delete again`,
+									`The sandbox is being moved to host ${target?.name ?? moving.target}, which can't be told to drop its copy yet (${error instanceof Error ? error.message : String(error)}); try the delete again`,
 								);
 							}
 						}

@@ -711,24 +711,27 @@ func accountLabel(a api.Account) string {
 	return a.Name + " (" + a.ID + ")"
 }
 
-// moveCommand is kantel move: a stopped microVM moved to another host in its pool, and started there.
+// moveCommand is kantel move: a microVM moved to another host in its pool, and started there.
 func moveCommand() *cli.Command {
 	return &cli.Command{
-		Name: "move", Summary: "Move a stopped sandbox to another host in its pool, and start it there", Args: IDArg,
+		Name: "move", Summary: "Move a sandbox to another host in its pool, and start it there", Args: IDArg,
 		Flags: []cli.Flag{
 			{Name: "to", Type: cli.String, Value: "<host>", Description: "The host to move it to, by ID (default: the scheduler's pick)"},
-			{Name: "drop-memory", Type: cli.Bool, Description: "Move a paused sandbox, booting it on its disk on the new host (its memory is lost)"},
+			{Name: "drop-memory", Type: cli.Bool, Description: "Move a running or paused sandbox, booting it on its disk on the new host (its memory is lost)"},
 			{Name: "wait", Type: cli.Bool, Description: "Answer once it runs on the new host (the default)"},
 			noWaitFlag,
 		},
 		Details: "Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts\n" +
 			"there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name,\n" +
-			"settings and URLs, and never leaves its pool. If it can't be moved, it is left stopped where it was.\n\n" +
-			"Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet, so a paused one\n" +
-			"moves only with --drop-memory. Its automatic snapshots from before stay on the old host.",
+			"settings and URLs, and never leaves its pool. If it can't be moved, it is left where it was.\n\n" +
+			"Memory doesn't move yet, so a running or paused one moves only with --drop-memory. A running one moves\n" +
+			"with a restart: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and\n" +
+			"it starts on the new host, so it is unavailable for seconds. If that fails after the stop, it starts again\n" +
+			"where it was. Its automatic snapshots from before stay on the old host.",
 		Examples: []cli.Example{
 			{What: "Move a stopped sandbox to whichever host the scheduler picks", Line: "kantel move sbx_4kq9x2mt"},
 			{What: "To a host of your choosing", Line: "kantel move sbx_4kq9x2mt --to hst_7c2m9q4k"},
+			{What: "Move a running sandbox, restarting it on the new host", Line: "kantel move sbx_4kq9x2mt --drop-memory"},
 		},
 		Run: func(c *cli.Context) error {
 			if c.Bool("wait") && c.Bool("no-wait") {

@@ -107,6 +107,9 @@ export const DryRun: Story = () => <Scenario targets={DRY_RUN} />;
 /** A paused sandbox: its memory can't move yet, so it boots on its disk on the new host. */
 export const Paused: Story = () => <Scenario sandbox={{ ...BROWSER_AGENT, state: "paused" }} />;
 
+/** A running sandbox: copied as it runs, then stopped for a last copy and restarted on its disk on the new host. */
+export const Running: Story = () => <Scenario sandbox={{ ...BROWSER_AGENT, state: "running" }} />;
+
 /** Moving: the dialog shows its phase until it runs there, and Close leaves it moving. */
 export const InProgress: Story = () => <Scenario slow press />;
 

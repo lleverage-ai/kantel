@@ -313,20 +313,20 @@ kantel upgrade sbx_4kq9x2mt --from monorepo-ci
 
 ### kantel move
 
-Move a stopped sandbox to another host in its pool, and start it there.
+Move a sandbox to another host in its pool, and start it there.
 
 ```sh
 kantel move <id> [flags]
 ```
 
-Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name, settings and URLs, and never leaves its pool. If it can't be moved, it is left stopped where it was.
+Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name, settings and URLs, and never leaves its pool. If it can't be moved, it is left where it was.
 
-Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet, so a paused one moves only with --drop-memory. Its automatic snapshots from before stay on the old host.
+Memory doesn't move yet, so a running or paused one moves only with --drop-memory. A running one moves with a restart: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it starts on the new host, so it is unavailable for seconds. If that fails after the stop, it starts again where it was. Its automatic snapshots from before stay on the old host.
 
 | Flag | What it does |
 | --- | --- |
 | `--to <host>` | The host to move it to, by ID (default: the scheduler's pick) |
-| `--drop-memory` | Move a paused sandbox, booting it on its disk on the new host (its memory is lost) |
+| `--drop-memory` | Move a running or paused sandbox, booting it on its disk on the new host (its memory is lost) |
 | `--wait` | Answer once it runs on the new host (the default) |
 | `--no-wait` | Answer at once rather than once it runs |
 
@@ -336,6 +336,9 @@ kantel move sbx_4kq9x2mt
 
 # To a host of your choosing
 kantel move sbx_4kq9x2mt --to hst_7c2m9q4k
+
+# Move a running sandbox, restarting it on the new host
+kantel move sbx_4kq9x2mt --drop-memory
 ```
 
 ### kantel fork

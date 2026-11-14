@@ -420,8 +420,11 @@ type SandboxMover interface {
 	// ImportGeneration is how many deletes of the sandbox the host has had, which PrepareSandboxImport is given as read
 	// before its record: a delete since refuses it.
 	ImportGeneration(id string) uint64
-	PrepareSandboxImport(ctx context.Context, id, version string, since uint64, record []byte) error
+	PrepareSandboxImport(ctx context.Context, id, version string, since uint64, record []byte, opts microvm.ImportOptions) error
 	SandboxPartPartial(id, version, part string) (string, error)
+	// CloneSandboxPartBase makes dst a clone of a part of the version an import starts from (ImportOptions.Base), and
+	// answers its map: nil when the import has none here.
+	CloneSandboxPartBase(id, version, part, dst string) (*blockmap.Map, error)
 	PublishFetchedSandbox(id, version string, parts map[string]disksync.FetchedPart) error
 	ImportedSandbox(id, version string) (proto.SandboxInfo, error)
 	SandboxImportPartials() [][2]string
@@ -498,8 +501,9 @@ func (h *Host) sandboxImportCancel(params json.RawMessage) (any, error) {
 
 // sandboxImport is sandbox.import: the sandbox's record read from a holder first, so its size and root image are known
 // to be had here (a host image version from its release, a template's root filesystem from a peer) before its files
-// are fetched; then the fetch, waited for; then the sandbox, stopped here. A call that ends first leaves the fetch
-// going on, and the same call again waits for it.
+// are fetched; then the fetch, waited for; then the sandbox, stopped here, or with Stage the version kept staged for a
+// later one to start from (Base). A call that ends first leaves the fetch going on, and the same call again waits
+// for it.
 func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, error) {
 	p, err := decode[proto.SandboxImportParams](params)
 	if err != nil {
@@ -516,6 +520,11 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 		Ref:       disksync.Ref{Kind: proto.DiskKindSandbox, ObjectID: p.SandboxID, Version: p.Version},
 		MapDigest: p.MapDigest, Holders: p.Holders, Grant: p.Grant,
 	}
+	if p.Stage && t.HoldsSandbox(p.SandboxID, p.Version) {
+		// Staged already (asked again, its answer lost): kept as it is, for the final copy to start from. Never through
+		// the fetcher, which drops what is left of a version it finds held.
+		return map[string]any{}, nil
+	}
 	if !t.HoldsSandbox(p.SandboxID, p.Version) && !h.fetcher.Running(req.Ref) {
 		// Read first: a delete of the sandbox while the record is read, or its image had, refuses the import.
 		since := t.ImportGeneration(p.SandboxID)
@@ -526,7 +535,8 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 		if err != nil {
 			return nil, fmt.Errorf("the sandbox's record: %w", err)
 		}
-		if err := t.PrepareSandboxImport(ctx, p.SandboxID, p.Version, since, record); err != nil {
+		opts := microvm.ImportOptions{Stage: p.Stage, Base: p.Base}
+		if err := t.PrepareSandboxImport(ctx, p.SandboxID, p.Version, since, record, opts); err != nil {
 			return nil, err
 		}
 	}
@@ -538,6 +548,10 @@ func (h *Host) sandboxImport(ctx context.Context, params json.RawMessage) (any, 
 	}
 	if _, err := job.Result(); err != nil {
 		return nil, err
+	}
+	if p.Stage {
+		// Kept staged, for the next version to start from: there is no sandbox to answer yet.
+		return map[string]any{}, nil
 	}
 	return t.ImportedSandbox(p.SandboxID, p.Version)
 }
@@ -567,6 +581,8 @@ func (h *Host) syncKinds() disksync.Kinds {
 
 // peerStore is the objects the host holds and fetches, for peer sync: its syncKinds', as they are at each call.
 type peerStore struct{ h *Host }
+
+var _ disksync.PartNearest = peerStore{}
 
 func (s peerStore) Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error) {
 	return s.h.syncKinds().Open(kind, objectID, version, withMap)
@@ -606,6 +622,10 @@ func (s peerStore) OpenPart(r disksync.Ref, part string, withMap bool) (*os.File
 
 func (s peerStore) PartPartial(r disksync.Ref, part string) (string, error) {
 	return s.h.syncKinds().PartPartial(r, part)
+}
+
+func (s peerStore) ClonePartNearest(r disksync.Ref, part, dst string) (*blockmap.Map, error) {
+	return s.h.syncKinds().ClonePartNearest(r, part, dst)
 }
 
 func (s peerStore) PublishParts(r disksync.Ref, parts map[string]disksync.FetchedPart, files map[string][]byte) error {
@@ -838,10 +858,14 @@ func (s snapshotObjects) Reserve(_ disksync.Ref, bytes int64) (func(), error) {
 func (s snapshotObjects) Discard(r disksync.Ref) { s.t.DiscardSnapshotPartial(r.ObjectID, r.Version) }
 
 // sandboxObjects are a tier's moved sandboxes: a version for each export, its disk and sticky drives its parts and its
-// record whole, with no nearest version to start a fetch from (the target has no copy of it).
+// record whole. Each part's fetch starts from the version staged here that the import names as its base (a running
+// sandbox's first copy), else from an empty file.
 type sandboxObjects struct{ t SandboxMover }
 
-var _ disksync.Parted = sandboxObjects{}
+var (
+	_ disksync.Parted      = sandboxObjects{}
+	_ disksync.PartNearest = sandboxObjects{}
+)
 
 func (s sandboxObjects) Parts(string) []string { return microvm.SandboxParts }
 
@@ -868,6 +892,10 @@ func (s sandboxObjects) PartPartial(r disksync.Ref, part string) (string, error)
 }
 
 func (s sandboxObjects) CloneNearest(disksync.Ref, string) (*blockmap.Map, error) { return nil, nil }
+
+func (s sandboxObjects) ClonePartNearest(r disksync.Ref, part, dst string) (*blockmap.Map, error) {
+	return s.t.CloneSandboxPartBase(r.ObjectID, r.Version, part, dst)
+}
 
 func (s sandboxObjects) Files(disksync.Ref) []string { return microvm.SandboxFiles }
 

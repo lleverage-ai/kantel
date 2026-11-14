@@ -172,6 +172,27 @@ describe("image patching on", () => {
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
 	});
 
+	it("never restarts a sandbox whose move is under way, as another gateway would find it", async () => {
+		const { api, tom, starts } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		// Its machine exited as a running sandbox's first copy was made: `error`, its move still on it.
+		const at = Date.now();
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			state: "error",
+			moving: { operationId: "mov_1", at, heartbeatAt: at, phase: "copying", from: "running", before: {} },
+		}));
+		const before = starts.length;
+		const refused = await failure(tom.restartSandboxOnLatest(sandbox.id));
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toContain("moving");
+		expect(starts.length).toBe(before);
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({
+			state: "error",
+			moving: { operationId: "mov_1" },
+		});
+	});
+
 	it("keeps a restart's key when its stop fails part way, so a retry never ends commands again", async () => {
 		const { api, backend, tom, calls } = setup(indexed);
 		const sandbox = await tom.createSandbox({ wait: true });

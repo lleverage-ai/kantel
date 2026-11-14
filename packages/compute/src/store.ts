@@ -366,17 +366,19 @@ export type StoredSandbox = Omit<
 		readonly egressRevision?: number;
 	};
 	/**
-	 * A move to another host under way (it is `starting`; the API answers it `moving`): its operation ID, which its
-	 * backend does at most once and can settle (`SandboxBackend.settleMove`), when it began and when its gateway last said
-	 * it was at it (`heartbeatAt`: one gone quiet is settled by the sweep), how far it got (`phase`), the host asked for,
-	 * what it was before (`from`, `before`: what a rollback puts back), and the egress revision its start sends.
+	 * A move to another host under way (it is `starting`, or `running` while a running sandbox's first copy is made; the
+	 * API answers it `moving`): its operation ID, which its backend does at most once and can settle
+	 * (`SandboxBackend.settleMove`), when it began and when its gateway last said it was at it (`heartbeatAt`: one gone
+	 * quiet is settled by the sweep), how far it got (`phase`), the host asked for, what it was before (`from`, `before`:
+	 * what a rollback puts back; a running sandbox stopped for its move is started again), and the egress revision its
+	 * start sends.
 	 */
 	readonly moving?: {
 		readonly operationId: string;
 		readonly at: number;
 		readonly heartbeatAt: number;
-		readonly phase: "copying" | "starting";
-		readonly from: "stopped" | "paused";
+		readonly phase: "copying" | "stopping" | "final-copy" | "starting";
+		readonly from: "stopped" | "paused" | "running";
 		/** The host asked for, or once it starts there, the one it is moving to. */
 		readonly to?: string;
 		readonly before: {
@@ -387,6 +389,11 @@ export type StoredSandbox = Omit<
 			readonly mountsAt?: number;
 		};
 		readonly egressRevision?: number;
+		/**
+		 * A stop owed once the move ends, wherever it runs then (its person left the organisation as it moved): its
+		 * reason, which becomes its `stopFor` as it runs again, for the sweep to carry out.
+		 */
+		readonly stopAfter?: string;
 	};
 };
 

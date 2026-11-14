@@ -2832,6 +2832,24 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keepMemory := p.Memory == nil || *p.Memory
+	if p.Export != "" {
+		// A running sandbox's move's stop: only while its first copy is here, which its rollback deletes first.
+		if !m.exportWhole(p.SandboxID, p.Export) {
+			return proto.SnapshotInfo{}, conflict("sandbox %s's move %s was undone here", s.meta.ID, p.Export)
+		}
+		if s.meta.State == proto.StateStopped && p.SnapshotID == "" {
+			// Stopped by it already (a move sent again): done, its memory let go as it asked.
+			if !keepMemory && s.meta.Memory {
+				_ = os.Remove(filepath.Join(s.vmDir(), "state"))
+				_ = os.Remove(filepath.Join(s.vmDir(), "mem"))
+				s.meta.Memory = false
+				if err := m.writeMeta(s); err != nil {
+					return proto.SnapshotInfo{}, err
+				}
+			}
+			return proto.SnapshotInfo{SandboxID: s.meta.ID, Kind: "auto", Tier: Tier}, nil
+		}
+	}
 	if s.meta.State == proto.StateStopped && p.SnapshotID != "" {
 		// Stopped already (its VM exited or was reset, or an earlier stop the control plane never heard back from): the
 		// stop is done, and answers a snapshot of its disk as it is, so a sandbox the control plane has in error can be

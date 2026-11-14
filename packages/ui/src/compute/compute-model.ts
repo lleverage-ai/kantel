@@ -2412,14 +2412,15 @@ export function movePhaseText(phase: string): string {
 }
 
 /**
- * Whether a sandbox can be moved to another host now: a microVM, stopped or paused (a paused one boots on its disk
- * there unless its memory can move), on a host the viewer knows (its pool's other hosts are listed from it), connected.
+ * Whether a sandbox can be moved to another host now: a microVM, running, stopped or paused (a running or paused one
+ * boots on its disk there unless its memory can move; a running one is copied as it runs, then stopped for a last
+ * copy), on a host the viewer knows (its pool's other hosts are listed from it), connected.
  */
 export const canMove = (sandbox: Pick<Sandbox, "kind" | "state" | "hostId" | "hostUnreachable">): boolean =>
 	sandbox.kind === "microvm" &&
 	sandbox.hostId !== undefined &&
 	sandbox.hostUnreachable !== true &&
-	(sandbox.state === "stopped" || sandbox.state === "paused");
+	(sandbox.state === "running" || sandbox.state === "stopped" || sandbox.state === "paused");
 
 /** "52m", "6h 10m", "Always on", or a dash when it isn't running. */
 export function stopsInText(sandbox: Pick<Sandbox, "state" | "stopsAt">, now: number): string {
