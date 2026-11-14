@@ -432,8 +432,11 @@ func (m *Manager) discardTemplateFetch(id string) {
 // reads its whole disk and memory), and the manifest digests of those made, as read when their maps had that size and
 // time.
 type templateMaps struct {
-	mu      sync.Mutex
-	making  map[string]bool
+	mu     sync.Mutex
+	making map[string]bool
+	// again are those asked for while their maps were being made: the snapshot may have been built again under its ID
+	// meanwhile, so they are made again once the first ends.
+	again   map[string]bool
 	digests map[string]templateDigest
 	turn    sync.Mutex
 }
@@ -543,7 +546,8 @@ func stampTemplatePool(dir, pool string) {
 }
 
 // mapTemplateLater makes a template snapshot's maps in the background, under the tier's own context, after any being
-// made, unless it has them or they are being made: a build asks for them, so does the host as it starts. Not on a
+// made, unless it has them; one asked for while they are being made is made again after (built again under its ID
+// meanwhile). A build asks for them, so does the host as it starts. Not on a
 // Manager made without New (tests), which has no background of its own to end. One made before its CPU and runtime
 // were kept isn't mapped: no other host takes its memory.
 func (m *Manager) mapTemplateLater(id string) {
@@ -553,6 +557,10 @@ func (m *Manager) mapTemplateLater(id string) {
 	maps := &m.templateMaps
 	maps.mu.Lock()
 	if maps.making[id] {
+		if maps.again == nil {
+			maps.again = map[string]bool{}
+		}
+		maps.again[id] = true
 		maps.mu.Unlock()
 		return
 	}
@@ -562,15 +570,23 @@ func (m *Manager) mapTemplateLater(id string) {
 	maps.making[id] = true
 	maps.mu.Unlock()
 	go func() {
-		defer func() {
+		for {
+			maps.turn.Lock()
+			err := m.mapTemplate(m.background(), id)
+			maps.turn.Unlock()
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				m.log.Warn("a template snapshot's block maps couldn't be made", "snapshot", id, "error", err)
+			}
 			maps.mu.Lock()
+			if maps.again[id] && m.background().Err() == nil {
+				delete(maps.again, id)
+				maps.mu.Unlock()
+				continue
+			}
+			delete(maps.again, id)
 			delete(maps.making, id)
 			maps.mu.Unlock()
-		}()
-		maps.turn.Lock()
-		defer maps.turn.Unlock()
-		if err := m.mapTemplate(m.background(), id); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			m.log.Warn("a template snapshot's block maps couldn't be made", "snapshot", id, "error", err)
+			return
 		}
 	}()
 }

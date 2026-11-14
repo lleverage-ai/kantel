@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
@@ -458,5 +459,46 @@ func TestATemplateSnapshotIsPublishedOnlyOverTheSameRootfs(t *testing.T) {
 	// Nor listed by its holder then.
 	if len(a.TemplateHoldings()) != 0 {
 		t.Fatal("listed without its root filesystem's digest")
+	}
+}
+
+// A template snapshot's maps asked for while they are being made (it built again under its ID meanwhile) are made
+// again once the first pass ends, not dropped.
+func TestTemplateMapsAskedAgainWhileMadeAreMade(t *testing.T) {
+	m := syncHost(t, "pool_a")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.bg = ctx
+	builtTemplate(t, m, "tsn_1")
+	m.templateMaps.turn.Lock()
+	m.mapTemplateLater("tsn_1")
+	// Built again while the first waits its turn: the first pass may map the old one; this one must not be lost.
+	if err := m.DeleteTemplate("tsn_1"); err != nil {
+		t.Fatal(err)
+	}
+	builtTemplate(t, m, "tsn_1")
+	m.mapTemplateLater("tsn_1")
+	m.templateMaps.mu.Lock()
+	again := m.templateMaps.again["tsn_1"]
+	m.templateMaps.mu.Unlock()
+	if !again {
+		t.Fatal("the second request was dropped")
+	}
+	m.templateMaps.turn.Unlock()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m.templateMaps.mu.Lock()
+		done := !m.templateMaps.making["tsn_1"]
+		m.templateMaps.mu.Unlock()
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("still mapping")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(m.TemplateHoldings()) != 1 {
+		t.Fatal("the snapshot built again wasn't mapped")
 	}
 }
