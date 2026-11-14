@@ -51,6 +51,9 @@ type commandRun struct {
 	// reserved: a guest's start in flight (startDetached). A get answers it running; a kill waits for the start to
 	// settle (done closes), then kills what it left: the guest's command, or a host-run fallback.
 	reserved bool
+	// suspended: its call broke as its sandbox was stopped keeping its memory, and it was let go (suspend). Its done
+	// closing is never its end: a get waiting on it asks the sandbox instead.
+	suspended bool
 }
 
 // addResult is what add made of a run.
@@ -213,16 +216,32 @@ func (c *commandRuns) kill(key string) (bool, <-chan struct{}) {
 	return true, nil
 }
 
-// status is a run's status now.
-func (c *commandRuns) status(commandID string, run *commandRun) proto.ExecStatus {
+// status is a run's status now; false for one let go as its sandbox was suspended, which the sandbox answers for.
+func (c *commandRuns) status(commandID string, run *commandRun) (proto.ExecStatus, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if run.suspended {
+		return proto.ExecStatus{}, false
+	}
 	// A reservation's done closing is its start settling, never the command ending: it is running (or starting).
 	if run.reserved || !ended(run) {
-		return proto.ExecStatus{CommandID: commandID, State: proto.ExecRunning}
+		return proto.ExecStatus{CommandID: commandID, State: proto.ExecRunning}, true
 	}
 	result := run.result
-	return proto.ExecStatus{CommandID: commandID, State: proto.ExecEnded, Result: &result}
+	return proto.ExecStatus{CommandID: commandID, State: proto.ExecEnded, Result: &result}, true
+}
+
+// suspend lets go of a foreground run whose call broke as its sandbox was stopped keeping its memory
+// (proto.ErrSuspended): the command carries on there, where the sandbox keeps it by its ID, so a get asks the sandbox
+// (once it runs again, on this host or another) rather than answer the broken call's end.
+func (c *commandRuns) suspend(key string, run *commandRun) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.byKey[key] == run {
+		delete(c.byKey, key)
+	}
+	run.suspended = true
+	close(run.done)
 }
 
 // forget ends a sandbox's runs and drops them (its delete).
@@ -261,6 +280,11 @@ func conflictf(format string, args ...any) error {
 	return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf(format, args...)}
 }
 
+func isSuspended(err error) bool {
+	var pe *proto.Error
+	return errors.As(err, &pe) && pe.Code == proto.ErrSuspended
+}
+
 func isUnsupported(err error) bool {
 	var pe *proto.Error
 	return errors.As(err, &pe) && pe.Code == proto.ErrUnsupported
@@ -271,7 +295,9 @@ func isUnsupported(err error) bool {
 // A foreground one runs on when the connection its call came on goes (a reconnect, a newer connection taking over):
 // its call's context outlives the session (keptExec), so it ends at its own limit or a kill.
 // Its result is kept, as a detached one's is, for the control plane to fetch by its ID (sandbox.exec.get) on the next
-// connection when its answer had nowhere to go.
+// connection when its answer had nowhere to go. One whose call broke as its sandbox was stopped keeping its memory
+// (proto.ErrSuspended) carries on in that memory: it is let go here, answered suspended, and a get then asks the
+// sandbox, wherever it runs next.
 func (h *Host) runCommand(ctx context.Context, t Tier, p proto.ExecParams, onOutput func(stdout, stderr string)) (any, error) {
 	if !validCommandID(p.CommandID) {
 		return nil, invalid("a command's ID is up to %d letters, digits, _, - and .", maxCommandID)
@@ -287,6 +313,10 @@ func (h *Host) runCommand(ctx context.Context, t Tier, p proto.ExecParams, onOut
 		return nil, r.refusal(p.CommandID)
 	}
 	result, err := t.Exec(runCtx, p, onOutput)
+	if isSuspended(err) {
+		h.runs.suspend(key, run)
+		return nil, err
+	}
 	answer, killed := h.runs.end(key, run, result, err)
 	if err != nil && !killed {
 		return nil, err
@@ -413,11 +443,13 @@ func (h *Host) commandStatus(ctx context.Context, p proto.ExecRef) (any, error) 
 			}
 			timer.Stop()
 		}
-		status := h.runs.status(p.CommandID, run)
-		if status.State == proto.ExecRunning && !run.reserved {
-			status = h.outputSoFar(ctx, p, status)
+		// One let go as it waited (its sandbox stopped keeping its memory) is the sandbox's to answer, as below.
+		if status, ok := h.runs.status(p.CommandID, run); ok {
+			if status.State == proto.ExecRunning && !run.reserved {
+				status = h.outputSoFar(ctx, p, status)
+			}
+			return status, nil
 		}
-		return status, nil
 	}
 	t, err := h.tierOf(p.SandboxID)
 	if err != nil {
@@ -480,8 +512,10 @@ func (h *Host) killCommand(ctx context.Context, p proto.ExecRef) (any, error) {
 		return nil, err
 	}
 	if runner, ok := t.(CommandRunner); ok {
+		// Its guest's kill failing is the answer even when a run here was ended: a foreground command the guest keeps past
+		// its call (guest.ExecRequest.Keep) runs on when that call is cancelled, so only the guest's kill stops it.
 		inGuest, err := runner.KillCommand(ctx, p.SandboxID, p.CommandID)
-		if err != nil && !killed {
+		if err != nil {
 			return nil, err
 		}
 		killed = killed || inGuest

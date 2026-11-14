@@ -64,9 +64,11 @@ function TargetRow({
 					{target.hostName}
 				</span>
 				<span className="flex flex-none items-center gap-3 text-sm text-muted">
-					<span>{memoryText(target)}</span>
-					{target.pauseMs === undefined ? null : (
-						<span title="The pause Kantel expects while it moves">{duration(target.pauseMs)} pause</span>
+					<span title={target.restartReason}>{memoryText(target)}</span>
+					{target.memory !== "kept" || target.pauseMs === undefined ? null : (
+						<span title="The pause Kantel expects while its memory is copied">
+							About {duration(target.pauseMs)} pause
+						</span>
 					)}
 				</span>
 			</label>
@@ -120,7 +122,9 @@ export function MoveDialog({ sandbox, targets, onClose, onMove, onFailed }: Move
 		const box = sandbox;
 		setBusy({ target, since: Date.now() });
 		setFailure(undefined);
-		onMove(box, { hostId: target.hostId, keepMemory: target.memory === "kept" && !restart }).then(
+		// With a dry run's answer, its memory is asked to go unless a restart is: a host where it can't, restarts it, and
+		// Kantel says why on its move. Without one (an older Kantel), it restarts.
+		onMove(box, { hostId: target.hostId, keepMemory: target.memory !== undefined && !restart }).then(
 			() => {
 				if (attempt.current === mine) close();
 			},
@@ -169,6 +173,15 @@ export function MoveDialog({ sandbox, targets, onClose, onMove, onFailed }: Move
 						<Elapsed since={since} />
 					</span>
 				</div>
+				{sandbox?.state !== "moving" || sandbox.move === undefined ? null : (
+					<p className="m-0 pt-2 text-sm text-muted" data-move-memory={sandbox.move.keepMemory ? "kept" : "restarts"}>
+						{sandbox.move.keepMemory
+							? "Its memory moves with it, so its programs carry on there."
+							: sandbox.move.restartReason === undefined
+								? "It boots on its disk there."
+								: `It boots on its disk there. ${sandbox.move.restartReason}.`}
+					</p>
+				)}
 			</Dialog>
 		);
 	}
@@ -231,13 +244,24 @@ export function MoveDialog({ sandbox, targets, onClose, onMove, onFailed }: Move
 				{target?.memory === "kept" ? (
 					<CheckboxField
 						label="Restart it instead"
-						hint="It boots on its disk there: running programs and memory are lost."
+						hint="It boots on its disk there: running programs and memory are lost, and it pauses only for its stop, a last copy and its boot."
 						checked={restart}
 						onChange={(event) => setRestart(event.currentTarget.checked)}
 					/>
 				) : null}
+				{target?.memory === "restarts" && target.restartReason !== undefined && sandbox?.state !== "stopped" ? (
+					<p className="m-0 text-sm text-muted" data-move-restart-reason>
+						{target.restartReason}.
+					</p>
+				) : null}
 				{restarts && sandbox?.state === "paused" ? (
 					<p className="m-0 text-sm text-muted">It's paused, so its memory is lost: it boots on its disk there.</p>
+				) : null}
+				{restarts && sandbox?.state === "running" ? (
+					<p className="m-0 text-sm text-muted">
+						It keeps running while its disk is copied, then stops for a last copy and starts there: running programs
+						end.
+					</p>
 				) : null}
 				{failure === undefined ? null : <Notice level="error">{failure}</Notice>}
 			</div>

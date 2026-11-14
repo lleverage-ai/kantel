@@ -5,6 +5,7 @@
 #
 #   apps/host/test/local-stack.sh up [--two-hosts | --hosts <n>] [--name <prefix>] [--port <port>]
 #   apps/host/test/local-stack.sh status [--name <prefix>]
+#   apps/host/test/local-stack.sh restart [--name <prefix>]
 #   apps/host/test/local-stack.sh down [--name <prefix>]
 #
 # up starts it and leaves it running. By default one host runs both tiers, isolates and microVMs, so an isolate's
@@ -19,7 +20,9 @@
 # same --name. Without --name the stack is named after its directory, as before.
 # It prints the control plane's URL, where its super-admin API key is, and commands to try with this branch's CLI.
 # down stops and removes what up made (the gateway by its PID, the containers by their names) and nothing else; the
-# Docker image it builds (kantel-host-stack:local) is kept for the next up. status says what is running.
+# Docker image it builds (kantel-host-stack:local) is kept for the next up. status says what is running. restart
+# kills the gateway (SIGKILL, as a crash would) and starts it again with the settings up had; with
+# KANTEL_STACK_DATABASE_URL its records outlast that, and the hosts connect to it again.
 #
 # Needs Docker, /dev/kvm, Go, Bun, jq, curl and the workspace's node_modules (npx -y pnpm@10.34.9 install). The guest
 # images and Firecracker default to an installed host's (/var/lib/kantel-host); set them with
@@ -34,6 +37,8 @@
 #                                same, so a snapshot's memory restores on another host (its portable runtime is known)
 #   KANTEL_STACK_HOST_FLAGS      more flags for each host's kantel-host run, such as --local 127.0.0.1:7070 (its calls
 #                                over HTTP inside its container, for tests that call a host directly)
+#   KANTEL_STACK_DATABASE_URL    a Postgres database for the control plane's records (its KANTEL_DATABASE_URL), so they
+#                                outlast a restart; unset, they are in memory. It needs KANTEL_SECRETS_KEY too
 #   KANTEL_STACK_DIR             where the stack's state is (default /tmp/kantel-local-stack): the gateway's log and
 #                                bootstrap file (its keys, mode 0600), the hosts' settings, PIDs and names. One stack
 #                                per directory; give another directory (and --port) for a second
@@ -102,6 +107,49 @@ gateway_pid() {
 	if [ -r "/proc/$pid/cmdline" ] && tr '\0' ' ' <"/proc/$pid/cmdline" | grep -q "src/gateway/main.ts"; then
 		echo "$pid"
 	fi
+}
+
+# The gateway, with the settings up saved (gateway.env), its log appended to; waits until it answers.
+start_gateway() {
+	(
+		cd "$here/apps/selfhosted"
+		# shellcheck disable=SC1091
+		. "$dir/gateway.env"
+		KANTEL_COMPUTE_IMAGES=off KANTEL_HOST_RELEASES=off KANTEL_BOOTSTRAP_FILE="$dir/bootstrap.json" \
+			setsid nohup bun src/gateway/main.ts >>"$dir/gateway.log" 2>&1 </dev/null &
+		echo $! >"$dir/gateway.pid"
+	)
+	local deadline=$((SECONDS + 180)) started
+	started=$(cat "$dir/gateway.pid")
+	until [ -s "$dir/bootstrap.json" ] && curl -sf "$(url)/healthz" >/dev/null; do
+		# Gone, by its PID: its command line is this script's until it has become the gateway, a moment after.
+		if [ $SECONDS -gt $deadline ] || ! kill -0 "$started" 2>/dev/null; then
+			echo "local-stack: the gateway didn't start; $dir/gateway.log says why" >&2
+			tail -20 "$dir/gateway.log" >&2
+			exit 1
+		fi
+		sleep 0.5
+	done
+}
+
+# Kills the gateway as a crash would, and starts it again as up did.
+restart() {
+	local pid
+	pid=$(gateway_pid)
+	[ -f "$dir/gateway.env" ] || {
+		echo "local-stack: no stack in $dir to restart" >&2
+		exit 1
+	}
+	if [ -n "$pid" ]; then
+		kill -9 "$pid"
+		for _ in $(seq 50); do
+			[ -d "/proc/$pid" ] || break
+			sleep 0.1
+		done
+		echo "Killed the gateway (PID $pid)."
+	fi
+	start_gateway
+	echo "Started the gateway again (PID $(gateway_pid))."
 }
 
 # A host: its join token minted, registered (its credential kept in its settings, mode 0600) and started.
@@ -230,22 +278,14 @@ EOF
 	address=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
 	echo "http://$address:$port" >"$dir/url"
 	rm -f "$dir/bootstrap.json"
-	(
-		cd "$here/apps/selfhosted"
-		PORT=$port HOST=$address KANTEL_COMPUTE_PUBLIC_URL="http://$address:$port" KANTEL_COMPUTE_IMAGES=off \
-			KANTEL_HOST_RELEASES=off KANTEL_BOOTSTRAP_FILE="$dir/bootstrap.json" \
-			setsid nohup bun src/gateway/main.ts >"$dir/gateway.log" 2>&1 </dev/null &
-		echo $! >"$dir/gateway.pid"
-	)
-	local deadline=$((SECONDS + 60))
-	until [ -s "$dir/bootstrap.json" ] && curl -sf "$(url)/healthz" >/dev/null; do
-		if [ $SECONDS -gt $deadline ] || [ -z "$(gateway_pid)" ]; then
-			echo "local-stack: the gateway didn't start; $dir/gateway.log says why" >&2
-			tail -20 "$dir/gateway.log" >&2
-			exit 1
-		fi
-		sleep 0.5
-	done
+	# The gateway's settings, for restart: the KANTEL_* the caller set, and where it listens.
+	{
+		export -p | grep -E '^declare -x KANTEL_' | grep -vE '^declare -x KANTEL_STACK_' || true
+		echo "export PORT=$port HOST=$address KANTEL_COMPUTE_PUBLIC_URL=http://$address:$port"
+		[ -z "${KANTEL_STACK_DATABASE_URL:-}" ] || echo "export KANTEL_DATABASE_URL=$(printf %q "$KANTEL_STACK_DATABASE_URL")"
+	} >"$dir/gateway.env"
+	chmod 600 "$dir/gateway.env"
+	start_gateway
 
 	if $two; then
 		start_host a '["isolate"]'
@@ -349,6 +389,11 @@ status)
 	shift
 	stack_args "$@"
 	status
+	;;
+restart)
+	shift
+	stack_args "$@"
+	restart
 	;;
 down)
 	shift

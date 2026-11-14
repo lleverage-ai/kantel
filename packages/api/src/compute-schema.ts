@@ -300,7 +300,8 @@ export const SandboxState = Type.Union(
 		description:
 			"`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. " +
 			"`moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then " +
-			"started there; commands and file calls wait for it as they do for a start. " +
+			"started there; commands and file calls wait for it as they do for a start, except while a running sandbox's " +
+			"first copy is made (`copying`), when it still runs them. " +
 			"`stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like " +
 			"`stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the " +
 			"last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for " +
@@ -1155,23 +1156,59 @@ export const Sandbox = Type.Object(
 		move: Type.Optional(
 			Type.Object(
 				{
-					phase: Type.Union([Type.Literal("copying"), Type.Literal("starting")], {
-						description:
-							"`copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it " +
-							"is starting on it.",
-					}),
+					phase: Type.Union(
+						[Type.Literal("copying"), Type.Literal("stopping"), Type.Literal("final-copy"), Type.Literal("starting")],
+						{
+							description:
+								"`copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it " +
+								"runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes " +
+								"ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are " +
+								"there, and it is starting on it.",
+						},
+					),
 					hostId: Type.Optional(
 						Type.String({ description: "The host it is moving to, where the caller may know it, once chosen." }),
 					),
 					keepMemory: Type.Boolean({
 						description:
-							"Whether its memory moves too. `false` for now: a move copies its disk, and it boots on it on the new host.",
+							"Whether its memory moves too, so it carries on where it left off on the new host: asked for (the " +
+							"default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running " +
+							"programs ending (`restartReason` says why, where it had memory that might have moved). Said once its " +
+							"new host is chosen, before anything is copied.",
 					}),
+					restartReason: Type.Optional(
+						Type.String({
+							description:
+								"Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from " +
+								"its host's, or a host can't move memory yet.",
+						}),
+					),
 					startedAt: Timestamp,
 				},
 				{
 					title: "SandboxMove",
 					description: "A move to another host under way (its `state` is `moving`).",
+				},
+			),
+		),
+		moved: Type.Optional(
+			Type.Object(
+				{
+					at: Timestamp,
+					keptMemory: Type.Boolean({
+						description: "Its memory moved with it, so its programs carried on; `false`, it booted on its disk there.",
+					}),
+					restartReason: Type.Optional(
+						Type.String({
+							description: "Why its memory didn't move with it although that was asked for, as its `move` said.",
+						}),
+					),
+				},
+				{
+					title: "SandboxMoved",
+					description:
+						"Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a " +
+						"sandbox never moved, and from one moved before Kantel kept it.",
 				},
 			),
 		),
@@ -1486,6 +1523,68 @@ export const UpgradeSandboxBody = Type.Object(
 	},
 );
 
+export const SandboxMoveTarget = Type.Object(
+	{
+		hostId: Type.String({ description: "A host it may move to now." }),
+		keepsMemory: Type.Boolean({
+			description:
+				"A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it " +
+				"restarts there, booting on its disk.",
+		}),
+		restartReason: Type.Optional(
+			Type.String({
+				description: "Why a move there restarts it, where it has memory that might have moved.",
+			}),
+		),
+		pauseMs: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over " +
+					"the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it " +
+					"wrote since its first copy and its boot.",
+			}),
+		),
+		memoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its " +
+					"guest has touched; the rest is zero, and costs nothing), a paused one's memory file.",
+			}),
+		),
+		bytesPerSecond: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description:
+					"The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the " +
+					"other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false).",
+			}),
+		),
+		rateMeasured: Type.Optional(
+			Type.Boolean({ description: "`bytesPerSecond` was measured by the hosts, rather than assumed." }),
+		),
+	},
+	{ title: "SandboxMoveTarget" },
+);
+
+export const SandboxMovePlan = Type.Object(
+	{
+		targets: Type.Optional(
+			Type.Array(SandboxMoveTarget, {
+				description:
+					"Each host it may move to now, as the scheduler would place it (room and all), with what a move there does " +
+					"with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host.",
+			}),
+		),
+	},
+	{
+		title: "SandboxMovePlan",
+		description:
+			"A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory.",
+	},
+);
+
 export const MoveSandboxBody = Type.Object(
 	{
 		hostId: Type.Optional(
@@ -1498,9 +1597,14 @@ export const MoveSandboxBody = Type.Object(
 		keepMemory: Type.Optional(
 			Type.Boolean({
 				description:
-					"Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped " +
-					"sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new " +
-					"host and its memory is lost.",
+					"Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory " +
+					"moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then " +
+					"stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is " +
+					"paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't " +
+					"(`hostId` names one, or there is no other), it restarts there instead, and its `move` says why " +
+					"(`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a " +
+					"running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable " +
+					"only for that stop, the last copy and its boot. A stopped sandbox has no memory.",
 			}),
 		),
 		wait: Type.Optional(
@@ -3825,6 +3929,93 @@ export const HostMesh = Type.Object(
 	},
 );
 
+export const HostEvacuationState = Type.Union(
+	[Type.Literal("running"), Type.Literal("done"), Type.Literal("failed"), Type.Literal("stopped")],
+	{
+		title: "HostEvacuationState",
+		description:
+			"`running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped " +
+			"with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the " +
+			"host was undrained, which ends it; a move under way then finishes.",
+	},
+);
+
+/** What a host's evacuation and its summary on the host both have. */
+const evacuationProgress = {
+	state: HostEvacuationState,
+	reason: Type.Optional(
+		Type.String({ description: "Why it failed or stopped, where that wasn't a sandbox's move (each says its own)." }),
+	),
+	startedAt: Timestamp,
+	endedAt: Type.Optional(Timestamp),
+	moved: Type.Integer({ minimum: 0, description: "The sandboxes moved to another host." }),
+	remaining: Type.Integer({ minimum: 0, description: "Those still to move, or moving now." }),
+	skipped: Type.Integer({ minimum: 0, description: "Those that can't move, each with its reason." }),
+	failed: Type.Integer({ minimum: 0, description: "Those whose move failed: each is where it was, as it was." }),
+};
+
+export const HostEvacuationProgress = Type.Object(evacuationProgress, {
+	title: "HostEvacuationProgress",
+	description: "How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got.",
+});
+
+export const HostEvacuationSandbox = Type.Object(
+	{
+		sandboxId: id("The sandbox's ID."),
+		name: Type.Optional(Type.String({ description: "Its name, where the caller may see the sandbox." })),
+		type: SandboxType,
+		state: Type.Union(
+			[
+				Type.Literal("waiting"),
+				Type.Literal("moving"),
+				Type.Literal("moved"),
+				Type.Literal("skipped"),
+				Type.Literal("failed"),
+			],
+			{
+				description:
+					"`waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its " +
+					"move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an " +
+					"isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its " +
+					"move failed (`reason`), and it is where it was.",
+			},
+		),
+		phase: Type.Optional(
+			Type.Union(
+				[Type.Literal("copying"), Type.Literal("stopping"), Type.Literal("final-copy"), Type.Literal("starting")],
+				{ description: "Where its move has got, while it moves: as its own `move.phase`." },
+			),
+		),
+		hostId: Type.Optional(Type.String({ description: "The host it moved to." })),
+		keptMemory: Type.Optional(
+			Type.Boolean({
+				description: "Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there.",
+			}),
+		),
+		reason: Type.Optional(
+			Type.String({ description: "Why it was skipped, why its move failed, or why it restarted where it moved." }),
+		),
+	},
+	{ title: "HostEvacuationSandbox", description: "One sandbox of a host's evacuation." },
+);
+
+export const HostEvacuation = Type.Object(
+	{
+		hostId: id("The host's ID."),
+		...evacuationProgress,
+		sandboxes: Type.Array(HostEvacuationSandbox, {
+			description: "Each sandbox that was on the host when it began, or came onto it since, in the order taken.",
+		}),
+	},
+	{
+		title: "HostEvacuation",
+		description:
+			"Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or " +
+			"retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting " +
+			"it otherwise). It carries on across a control plane restart.",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -3919,6 +4110,7 @@ export const Host = Type.Object(
 		diskUsage: Type.Optional(HostDiskUsage),
 		memory: Type.Optional(HostMemory),
 		mesh: Type.Optional(HostMesh),
+		evacuation: Type.Optional(HostEvacuationProgress),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Integer({
 				minimum: 0,
@@ -4667,6 +4859,8 @@ export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
 export type UpgradeSandboxBody = Static<typeof UpgradeSandboxBody>;
 export type MoveSandboxBody = Static<typeof MoveSandboxBody>;
+export type SandboxMovePlan = Static<typeof SandboxMovePlan>;
+export type SandboxMoveTarget = Static<typeof SandboxMoveTarget>;
 export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;
@@ -4739,6 +4933,10 @@ export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostMesh = Static<typeof HostMesh>;
+export type HostEvacuation = Static<typeof HostEvacuation>;
+export type HostEvacuationProgress = Static<typeof HostEvacuationProgress>;
+export type HostEvacuationSandbox = Static<typeof HostEvacuationSandbox>;
+export type HostEvacuationState = Static<typeof HostEvacuationState>;
 export type HostMeshPeer = Static<typeof HostMeshPeer>;
 export type HostDiskUsage = Static<typeof HostDiskUsage>;
 export type HostMemory = Static<typeof HostMemory>;

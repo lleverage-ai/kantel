@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -39,7 +40,7 @@ func (s *moveTier) ReadSandboxFile(string, string, string) ([]byte, error) {
 	return nil, os.ErrNotExist
 }
 func (s *moveTier) ImportGeneration(string) uint64 { return 0 }
-func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ uint64, _ []byte) error {
+func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _ uint64, _ []byte, _ microvm.ImportOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prepared = append(s.prepared, id+"/"+version)
@@ -47,6 +48,9 @@ func (s *moveTier) PrepareSandboxImport(_ context.Context, id, version string, _
 }
 func (s *moveTier) SandboxPartPartial(string, string, string) (string, error) {
 	return "", errors.New("no partials here")
+}
+func (s *moveTier) CloneSandboxPartBase(string, string, string, string) (*blockmap.Map, error) {
+	return nil, nil
 }
 func (s *moveTier) PublishFetchedSandbox(string, string, map[string]disksync.FetchedPart) error {
 	return nil
@@ -156,5 +160,81 @@ func TestSandboxMove(t *testing.T) {
 	defer tier.mu.Unlock()
 	if !slices.Equal(tier.exported, []string{"sb1/mov_1"}) || len(tier.prepared) != 0 || !slices.Equal(tier.moved, []string{"sb3"}) {
 		t.Fatalf("exported %v, made ready %v, deleted as moved %v", tier.exported, tier.prepared, tier.moved)
+	}
+}
+
+// memoryMoveTier is a moveTier that moves sandboxes' memory too.
+type memoryMoveTier struct{ *moveTier }
+
+func (s memoryMoveTier) SandboxMemory(string) (proto.SandboxMemoryInfo, error) {
+	return proto.SandboxMemoryInfo{Memory: true, Runtime: "firecracker=v1;kernel=k", Bytes: 1 << 20}, nil
+}
+func (s memoryMoveTier) HoldsSandboxMemory(string, string) bool { return false }
+func (s memoryMoveTier) OpenSandboxMemoryPart(string, string, string, bool) (*os.File, []byte, error) {
+	return nil, nil, os.ErrNotExist
+}
+func (s memoryMoveTier) ReadSandboxMemoryFile(string, string, string) ([]byte, error) {
+	return nil, os.ErrNotExist
+}
+func (s memoryMoveTier) SandboxMemoryPartPartial(string, string, string) (string, error) {
+	return "", errors.New("no partials here")
+}
+func (s memoryMoveTier) CloneSandboxMemoryPartNearest(string, string, string, string) (*blockmap.Map, error) {
+	return nil, nil
+}
+func (s memoryMoveTier) PublishFetchedSandboxMemory(string, string, map[string]disksync.FetchedPart, map[string][]byte) error {
+	return nil
+}
+func (s memoryMoveTier) DiscardSandboxMemoryImport(string, string) {}
+
+// A host whose microVM tier moves memory reports sandbox-move-memory, serves its kind's parts and answers
+// sandbox.memory; one whose tier doesn't refuses an export or import with memory, and reports no such feature.
+func TestSandboxMoveWithMemory(t *testing.T) {
+	newTier := func() *moveTier {
+		return &moveTier{snapshotFetchTier: &snapshotFetchTier{rootfsFetchTier: &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}}
+	}
+	meshed := func(tier Tier, lifecycle *lifecycleTier) *Host {
+		h := newLifecycleHost(t, lifecycle)
+		h.tiers[microvm.Tier] = tier
+		h.mesh = &fakeMesh{}
+		h.cfg.SyncRateMbit = -1
+		h.callKantel = func(context.Context, string, any) (json.RawMessage, error) {
+			return json.Marshal(proto.DiskLocateResult{Holders: []proto.DiskHolder{}})
+		}
+		h.startPeerSync()
+		t.Cleanup(h.syncStop)
+		return h
+	}
+	var pe *proto.Error
+	plain := newTier()
+	old := meshed(plain, plain.lifecycleTier)
+	if slices.Contains(old.makeFacts().Features, proto.FeatureSandboxMoveMemory) {
+		t.Fatal("sandbox-move-memory from a tier that doesn't move memory")
+	}
+	if err := call(t, old, proto.MethodSandboxExport, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1", Memory: true}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
+		t.Fatalf("an export with memory: %v", err)
+	}
+	if err := call(t, old, proto.MethodSandboxImport, proto.SandboxImportParams{SandboxID: "sb1", Version: "mov_1", Memory: &proto.SandboxImportMemory{}}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
+		t.Fatalf("an import with memory: %v", err)
+	}
+
+	inner := newTier()
+	h := meshed(memoryMoveTier{inner}, inner.lifecycleTier)
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureSandboxMoveMemory) {
+		t.Fatal("sandbox-move-memory not reported")
+	}
+	if got := h.syncKinds().Parts(proto.DiskKindSandboxMemory); !slices.Equal(got, proto.SandboxMemoryParts) || len(got) != 1+proto.SandboxMemoryBundles {
+		t.Fatalf("a moved sandbox's memory's parts %v", got)
+	}
+	params, _ := json.Marshal(proto.SandboxMemoryParams{SandboxID: "sb1"})
+	raw, err := h.Call(context.Background(), proto.MethodSandboxMemory, params, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, ok := raw.(proto.SandboxMemoryInfo); !ok || !info.Memory || info.Bytes != 1<<20 {
+		t.Fatalf("sandbox.memory = %#v", raw)
+	}
+	if err := call(t, h, proto.MethodSandboxImport, proto.SandboxImportParams{SandboxID: "sb1", Version: "mov_1", Stage: true, Memory: &proto.SandboxImportMemory{}}); !errors.As(err, &pe) || pe.Code != proto.ErrInvalid {
+		t.Fatalf("a staged import with memory: %v", err)
 	}
 }

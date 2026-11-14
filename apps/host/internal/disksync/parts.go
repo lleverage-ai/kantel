@@ -10,9 +10,10 @@ package disksync
 //	GET /v1/objects/{kind}/{id}/{version}/parts/{part}/map      a part's block map
 //	GET /v1/objects/{kind}/{id}/{version}/parts/{part}/data     a part's bytes, a run of blocks with Range
 //
-// A fetch takes each part into a partial of its own (Parted.PartPartial), from an empty file, with its own bitmap, so it
-// goes on where it stopped as a one-file version's does; then the version's small files; then the parts are published
-// together (Parted.PublishParts).
+// A fetch takes each part into a partial of its own (Parted.PartPartial), from a clone of the host's nearest version of
+// that part where its kind has one (PartNearest), else from an empty file, with its own bitmap, so it goes on where it
+// stopped as a one-file version's does; then the version's small files; then the parts are published together
+// (Parted.PublishParts).
 
 import (
 	"bytes"
@@ -41,6 +42,14 @@ type Parted interface {
 	// file and the version's small files (those of Store.Files its holder had). A part whose partial was removed
 	// meanwhile fails it, and nothing is published.
 	PublishParts(r Ref, parts map[string]FetchedPart, files map[string][]byte) error
+}
+
+// PartNearest is what a Parted Store adds when a fetch of one of its parts may start from a version of that part the
+// host has: a moved sandbox's second copy, over its first.
+type PartNearest interface {
+	// ClonePartNearest makes dst a clone of the host's nearest version of the part, and answers its map: nil (and no
+	// clone) when there is none, as Store.CloneNearest.
+	ClonePartNearest(r Ref, part, dst string) (*blockmap.Map, error)
 }
 
 // FetchedPart is one part a fetch wrote: its partial file, and its map's file.
@@ -157,7 +166,7 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 		if err != nil {
 			return st, err
 		}
-		p, err := f.prepare(r, path, m, d.Digest, base+"data", nil)
+		p, err := f.prepare(r, path, m, d.Digest, base+"data", nearestPart(parted, r, d.Part))
 		if err != nil {
 			return st, err
 		}
@@ -209,6 +218,16 @@ func (f *Fetcher) fetchParts(ctx context.Context, r Ref, parted Parted, src *hol
 		_ = os.Remove(part.p.bitmapPath)
 	}
 	return st, nil
+}
+
+// nearestPart is how a fetch of one part clones the host's nearest version of it (PartNearest), or nil for a kind
+// whose parts start from an empty file.
+func nearestPart(parted Parted, r Ref, part string) func(dst string) (*blockmap.Map, error) {
+	n, ok := parted.(PartNearest)
+	if !ok {
+		return nil
+	}
+	return func(dst string) (*blockmap.Map, error) { return n.ClonePartNearest(r, part, dst) }
 }
 
 // validPart says whether part is one of kind's parts on v.

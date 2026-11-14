@@ -81,6 +81,10 @@ const (
 	ErrInternal    = "internal"
 	ErrUnsupported = "unsupported"
 	ErrTimeout     = "timeout"
+	// ErrSuspended answers a command with an ID whose call broke as its sandbox was stopped keeping its memory (a
+	// pause, or a move to another host that keeps it): the command carries on in that memory, and is followed by its ID
+	// (sandbox.exec.get) wherever the sandbox runs next.
+	ErrSuspended = "suspended"
 )
 
 type Error struct {
@@ -229,6 +233,11 @@ type MeshPeerHealth struct {
 	Endpoint      string  `json:"endpoint,omitempty"`
 	LastHandshake int64   `json:"lastHandshake,omitempty"`
 	RTTMs         float64 `json:"rttMs,omitempty"`
+	// FetchBytesPerSecond is the rate the host's last fetch from this peer ran at (FeatureSandboxMoveMemory): the bytes
+	// its blocks took over the time spent fetching them, measured on a fetch of at least 16 MiB from that peer alone,
+	// at FetchRateAt (Unix ms). Absent before the host has made one since it started.
+	FetchBytesPerSecond int64 `json:"fetchBytesPerSecond,omitempty"`
+	FetchRateAt         int64 `json:"fetchRateAt,omitempty"`
 }
 
 // FeatureDiskSync: the host fetches disk versions from its mesh peers (docs/design/disk-store.md, "2c. Peer sync"):
@@ -279,6 +288,25 @@ const FeatureSnapshotSync = "snapshot-sync"
 // exports too, and on the target an import under way. It comes with FeatureSnapshotSync, on the microVM tier.
 const FeatureSandboxMove = "sandbox-move"
 
+// FeatureSandboxMoveRunning: a running microVM sandbox moves too, with a restart (docs/design/disk-store.md, "Moving a
+// sandbox to another host", with a restart). Its host exports it while it runs (SandboxExportParams.Live: its files
+// cloned at once, a crash-consistent copy) as a version of its own, which the target fetches and keeps staged
+// (SandboxImportParams.Stage); the sandbox is then stopped without its memory and exported again over that first version
+// (SandboxExportParams.Base: its maps made from the first's, FIEMAP telling the blocks written since), and the target
+// fetches the second version over its staged first (SandboxImportParams.Base), only the blocks that differ, and makes
+// the sandbox from it. It comes with FeatureSandboxMove.
+const FeatureSandboxMoveRunning = "sandbox-move-running"
+
+// FeatureSandboxMoveMemory: a microVM sandbox moves with its memory, between hosts whose CPU and runtime fingerprints
+// match (docs/design/disk-store.md, "Moving a sandbox to another host", keeping memory). sandbox.memory
+// (SandboxMemoryParams) says what a move of it would carry: the portable runtime its memory is of and its size. A
+// running sandbox's move stops it keeping its memory (StopParams.Memory with Export); then sandbox.export with Memory
+// also makes the same version of the object DiskKindSandboxMemory/SandboxID, whose parts are SandboxMemoryParts (its
+// memory file, and the files on its bundle drives, which its guest has mounted) and whose small file is the machine's
+// state (SandboxStateFile). sandbox.import with Memory fetches that version before the disk's, and makes the sandbox
+// stopped with its memory, so its start restores it. It comes with FeatureSandboxMoveRunning.
+const FeatureSandboxMoveMemory = "sandbox-move-memory"
+
 // Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
 // filesystem, a template snapshot, a saved snapshot, and a sandbox being moved (FeatureSandboxMove).
 const (
@@ -287,6 +315,9 @@ const (
 	DiskKindTemplate = "template"
 	DiskKindSnapshot = "snapshot"
 	DiskKindSandbox  = "sandbox"
+	// DiskKindSandboxMemory is a moved sandbox's memory (FeatureSandboxMoveMemory), a version for each export that
+	// keeps it, the same as its disk's.
+	DiskKindSandboxMemory = "sandbox-memory"
 )
 
 // A moved sandbox's parts (DiskKindSandbox): its disk, and its sticky drives' files, each block-mapped, in this order
@@ -297,23 +328,73 @@ const (
 	SandboxPartSticky1 = "sticky1"
 )
 
+// SandboxPartMemory is a moved sandbox's memory file among its memory's parts (DiskKindSandboxMemory).
+const SandboxPartMemory = "mem"
+
+// SandboxMemoryBundles is how many bundle drives a sandbox moved with its memory may have: its memory's parts are
+// its memory file and one for each (SandboxMemoryParts), an empty file for a drive with nothing on it.
+const SandboxMemoryBundles = 8
+
+// SandboxMemoryParts are a moved sandbox's memory's parts (DiskKindSandboxMemory), in its manifest's order: its
+// memory file, then the files on its bundle drives, bundle0 to bundle7.
+var SandboxMemoryParts = func() []string {
+	out := []string{SandboxPartMemory}
+	for i := range SandboxMemoryBundles {
+		out = append(out, fmt.Sprintf("bundle%d", i))
+	}
+	return out
+}()
+
+// SandboxStateFile names the machine's state (Firecracker's) among a moved sandbox's memory's small files.
+const SandboxStateFile = "state"
+
 // SandboxRecordFile names a moved sandbox's record among its small files: its host's record of it (its size, env,
 // egress, mounts, sticky disks and root image), which the target makes its own.
 const SandboxRecordFile = "record"
 
 // SandboxExportParams is sandbox.export (FeatureSandboxMove): the stopped sandbox's disk and sticky drives cloned as
 // version Version (a valid ID, Kantel's for the move) of the object DiskKindSandbox/SandboxID, and mapped. Sent again,
-// it answers the version it made. ErrConflict unless the sandbox is stopped.
+// it answers the version it made. ErrConflict unless the sandbox is stopped, or with Live running or stopped.
 type SandboxExportParams struct {
 	SandboxID string `json:"sandboxId"`
 	Version   string `json:"version"`
+	// Live (FeatureSandboxMoveRunning) exports a running sandbox too: its files cloned at once while it runs, a
+	// crash-consistent copy (where the file system has no reflinks, a copy the next version's maps put right).
+	Live bool `json:"live,omitempty"`
+	// Base (FeatureSandboxMoveRunning) is an earlier version of the sandbox's exports here: each part's map is made from
+	// that version's, so only the blocks written since it are read (FIEMAP).
+	Base string `json:"base,omitempty"`
+	// Memory (FeatureSandboxMoveMemory) exports a sandbox stopped with its memory with that memory too: the same
+	// version of DiskKindSandboxMemory/SandboxID. ErrConflict for a sandbox stopped without memory.
+	Memory bool `json:"memory,omitempty"`
 }
 
 // SandboxExportResult is what sandbox.export made: the version's map digest (its manifest's) and the bytes its files
-// take on the host's disk.
+// take on the host's disk; with Memory, its memory's map digest and the bytes those files take, beside.
 type SandboxExportResult struct {
-	MapDigest      string `json:"mapDigest"`
-	AllocatedBytes int64  `json:"allocatedBytes"`
+	MapDigest            string `json:"mapDigest"`
+	AllocatedBytes       int64  `json:"allocatedBytes"`
+	MemoryMapDigest      string `json:"memoryMapDigest,omitempty"`
+	MemoryAllocatedBytes int64  `json:"memoryAllocatedBytes,omitempty"`
+}
+
+// SandboxMemoryParams is sandbox.memory (FeatureSandboxMoveMemory): what a move of the sandbox with its memory would
+// carry, answered with a SandboxMemoryInfo.
+type SandboxMemoryParams struct {
+	SandboxID string `json:"sandboxId"`
+}
+
+// SandboxMemoryInfo is sandbox.memory's answer. Memory says whether the sandbox has memory to move: it runs, or it
+// was stopped keeping it. Runtime is the portable runtime its memory is of (HostRuntime.Runtime: only a host with
+// that runtime among its own and the same CPU restores it), empty when that can't be told. Bytes is the memory a move
+// would copy: a running machine's resident memory (the guest memory it has touched; the rest is zero, and a fetch
+// skips zero blocks), else its memory file's allocated bytes. Refused says why its memory can't move even so (more
+// bundle drives than SandboxMemoryBundles), empty when it can.
+type SandboxMemoryInfo struct {
+	Memory  bool   `json:"memory"`
+	Runtime string `json:"runtime,omitempty"`
+	Bytes   int64  `json:"bytes"`
+	Refused string `json:"refused,omitempty"`
 }
 
 // SandboxExportDeleteParams is sandbox.export.delete (FeatureSandboxMove): that version of the sandbox's exports, or
@@ -332,6 +413,23 @@ type SandboxExportDeleteParams struct {
 type SandboxImportParams struct {
 	SandboxID string       `json:"sandboxId"`
 	Version   string       `json:"version"`
+	MapDigest string       `json:"mapDigest"`
+	Holders   []DiskHolder `json:"holders"`
+	Grant     string       `json:"grant"`
+	// Stage (FeatureSandboxMoveRunning) fetches the version and keeps it staged rather than making the sandbox: a running
+	// sandbox's first copy, for a later version to start from (Base). Answered {} once it is here.
+	Stage bool `json:"stage,omitempty"`
+	// Base (FeatureSandboxMoveRunning) is a version of the sandbox staged here (Stage) that each part's fetch starts
+	// from: only the blocks that differ are fetched. It goes once this version is made the sandbox.
+	Base string `json:"base,omitempty"`
+	// Memory (FeatureSandboxMoveMemory) is where the same version of DiskKindSandboxMemory/SandboxID is (what
+	// disk.locate would answer this host for it): fetched first, the sandbox is made stopped with its memory, and its
+	// start restores it.
+	Memory *SandboxImportMemory `json:"memory,omitempty"`
+}
+
+// SandboxImportMemory is where a moved sandbox's memory is, for its import (SandboxImportParams.Memory).
+type SandboxImportMemory struct {
 	MapDigest string       `json:"mapDigest"`
 	Holders   []DiskHolder `json:"holders"`
 	Grant     string       `json:"grant"`
@@ -1468,6 +1566,10 @@ type StopParams struct {
 	SnapshotID string `json:"snapshotId"`
 	// Memory keeps the memory too, so a resume continues running processes (default true).
 	Memory *bool `json:"memory,omitempty"`
+	// Export (FeatureSandboxMoveRunning) is a running sandbox's move's first copy here (SandboxExportParams.Live): the
+	// stop is that move's, done only while the export is whole (ErrConflict once its rollback has deleted it, so a late
+	// stop never stops the sandbox it started again), and done already when the sandbox is stopped.
+	Export string `json:"export,omitempty"`
 }
 
 // HostImagesParams is host.images's: with SandboxID, the answer's Version is where a rebase of that sandbox lands.
@@ -1897,4 +1999,6 @@ const (
 	MethodSandboxImport = "sandbox.import"
 	// MethodSandboxImportCancel (Kantel → host, SandboxExportParams; FeatureSandboxMove) answers {}.
 	MethodSandboxImportCancel = "sandbox.import.cancel"
+	// MethodSandboxMemory (Kantel → host, SandboxMemoryParams; FeatureSandboxMoveMemory) answers a SandboxMemoryInfo.
+	MethodSandboxMemory = "sandbox.memory"
 )

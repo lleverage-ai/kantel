@@ -73,7 +73,7 @@ export type UpgradeOutcome =
 
 /**
  * A move's outcome as `settleMove` answers it: done, the sandbox running on its new host, or failed and rolled back
- * (stopped where it was).
+ * (where it was: stopped, once a running sandbox's move has stopped it).
  */
 export type MoveOutcome =
 	| { readonly state: "done"; readonly placement: Placement }
@@ -109,8 +109,8 @@ export type CreateOutcome =
 	| { readonly state: "pending" };
 
 /**
- * A move of a stopped microVM to another host (`SandboxBackend.move`): a boot's options on its new host (its egress,
- * revision, mounts, the hosts it may go to), its account, and the host asked for.
+ * A move of a microVM to another host (`SandboxBackend.move`): a boot's options on its new host (its egress, revision,
+ * mounts, the hosts it may go to), its account, the host asked for, and whether it runs.
  */
 export interface MoveSpec extends Omit<BootOptions, "fromSnapshot" | "rebase" | "rebaseTo" | "size" | "shape"> {
 	readonly accountId: string;
@@ -120,6 +120,56 @@ export interface MoveSpec extends Omit<BootOptions, "fromSnapshot" | "rebase" | 
 	readonly poolId?: string;
 	/** Told, with its new host, once its files are there and it starts there. */
 	readonly onStarting?: (hostId: string) => void;
+	/**
+	 * It runs: copied as it runs, then stopped without its memory (its processes end), copied again (only what it wrote
+	 * since), and started on its new host.
+	 */
+	readonly running?: boolean;
+	/**
+	 * Awaited, with its new host, before a running sandbox is stopped: rejects when it may not be (it changed
+	 * meanwhile), and the move is rolled back, the sandbox left running where it was.
+	 */
+	readonly onStopping?: (hostId: string) => Promise<void>;
+	/** Told, with its new host, once a running sandbox is stopped and its final copy is being made. */
+	readonly onFinalCopy?: (hostId: string) => void;
+	/**
+	 * Keep its memory where its new host's CPU and runtime match its own: a running sandbox is stopped keeping it, and
+	 * it carries on there. A host where it can be kept is chosen first; elsewhere it restarts.
+	 */
+	readonly keepMemory?: boolean;
+	/**
+	 * Awaited once its new host is chosen, before anything is copied: that host, and whether its memory goes too (and
+	 * why not, where it might have; the reason names no host). A rejection gives the move up before anything is sent,
+	 * its intent cleared, or, where that can't be done, leaves it to be settled (`settleMove`).
+	 */
+	readonly onPlanned?: (hostId: string, memory: MoveMemory) => Promise<void>;
+}
+
+/** What a move does with a sandbox's memory: keeps it, or restarts it, and why (where it might have been kept). */
+export interface MoveMemory {
+	readonly kept: boolean;
+	readonly reason?: string;
+}
+
+/** A move's dry run (`planMove`): the sandbox's account, the hosts it may go to, its pool, and whether it runs. */
+export interface MovePlanSpec {
+	readonly accountId: string;
+	readonly eligibleHosts: readonly string[];
+	readonly poolId?: string;
+	readonly running?: boolean;
+}
+
+/**
+ * One host a move may take a sandbox to now: what a move there that asks to keep its memory does with it, and where it
+ * keeps it, the pause it takes (its memory's bytes over the link's rate, measured by the hosts or assumed).
+ */
+export interface MoveOption {
+	readonly hostId: string;
+	readonly memory: MoveMemory;
+	readonly pauseMs?: number;
+	readonly memoryBytes?: number;
+	readonly bytesPerSecond?: number;
+	readonly rateMeasured?: boolean;
 }
 
 /** Where an upgraded isolate's `/workspace` files are in its microVM; `/workspace` there is a link to it. */
@@ -991,9 +1041,10 @@ export interface SandboxBackend {
 	 */
 	settleUpgrade?(sandboxId: string, operationId: string): Promise<UpgradeOutcome>;
 	/**
-	 * Moves a stopped microVM to another host in its pool (`POST /sandboxes/{id}/move`), with its ID, disk and sticky
-	 * disks' copies, and starts it there as `spec` boots it, cold, on its disk: answers its placement there, running. The
-	 * sandbox is on its old host until it runs on its new one; a failure before then leaves it stopped where it was.
+	 * Moves a microVM to another host in its pool (`POST /sandboxes/{id}/move`), with its ID, disk and sticky disks'
+	 * copies, and starts it there as `spec` boots it, cold, on its disk: answers its placement there, running. A running
+	 * one (`spec.running`) is copied as it runs, then stopped and copied again. The sandbox is on its old host until it
+	 * runs on its new one; a failure before then leaves it where it was (stopped, once it was stopped for the move).
 	 * `upgradeOutcomeUnknown` when that isn't known (`settleMove` says). Sent again with the same `operationId`, it goes
 	 * on with the first. Absent: sandboxes don't move here (`not_supported`).
 	 */
@@ -1003,6 +1054,11 @@ export interface SandboxBackend {
 	 * it can't land later. Rejects `unavailable` while it can't be told. Absent with `move` absent.
 	 */
 	settleMove?(sandboxId: string, operationId: string): Promise<MoveOutcome>;
+	/**
+	 * A move's dry run: each host a move of the sandbox may take it to now, with what it does with its memory and the
+	 * pause it takes. Absent with `move` absent; absent, or answering undefined, from a backend that can't say.
+	 */
+	planMove?(sandboxId: string, spec: MovePlanSpec): Promise<readonly MoveOption[] | undefined>;
 	/**
 	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
 	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.

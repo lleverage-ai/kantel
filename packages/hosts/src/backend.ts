@@ -97,6 +97,7 @@ import {
 	kantelErrorFromHost,
 	mountHandoff,
 	type SandboxPlacement,
+	suspendedOnHost,
 	unanswered,
 } from "./service.ts";
 import { parseSnapshotRef, savedSnapshotId, snapshotRef } from "./snapshot-refs.ts";
@@ -172,6 +173,14 @@ export const OLD_HOST_RECONNECT =
  * back and say how it ended.
  */
 export const FOREGROUND_RECONNECT_GRACE_MS = 120_000;
+/**
+ * Why a foreground command's call ended early when its host said its sandbox was stopped keeping its memory as it ran
+ * (`suspendedOnHost`): the command carries on in that memory, and is followed by its ID wherever the sandbox runs next.
+ */
+export const SUSPENDED_COMMAND =
+	"The sandbox was paused or moved to another host keeping its memory as this command ran";
+/** A command followed so, that the sandbox's guest then doesn't know: one from before carrying commands on ended it. */
+export const SUSPENDED_COMMAND_LOST = `${SUSPENDED_COMMAND}, and its guest agent ended it then (its image is from before commands carried on across a pause or a move), so its result is lost`;
 /** A foreground command's limit when it gave none: the guest's default. */
 const GUEST_DEFAULT_LIMIT_MS = 120_000;
 /** Why a kill can't reach the process on a host from before kills. */
@@ -665,6 +674,34 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
 	const warn = options.log ?? ((message: string) => console.warn(message));
 
+	/** The host the sandbox is placed on now, if any. */
+	const placedOn = async (sandboxId: string): Promise<string | undefined> =>
+		(await hosts.sandboxes.placement(sandboxId).catch(() => undefined))?.hostId;
+
+	/**
+	 * Asks the sandbox's host about one of its commands by its ID (`sandbox.exec.get`, `sandbox.exec.kill`). A host that
+	 * doesn't know it answers `not_found`; one asked as the sandbox moved to another host (it read its placement, and
+	 * the move switched it before the call came) is no longer its host, so that is `unavailable` instead, to ask again
+	 * where it runs now: a sandbox that moved with its memory has its commands there.
+	 */
+	async function callForCommand<T>(
+		sandboxId: string,
+		method: string,
+		params: HostExecRef,
+		signal?: AbortSignal,
+		timeoutMs?: number,
+	): Promise<T> {
+		const asked = await placedOn(sandboxId);
+		try {
+			return await call<T>(sandboxId, method, params, signal, timeoutMs);
+		} catch (error) {
+			if (isKantelError(error) && error.code === "not_found" && (await placedOn(sandboxId)) !== asked) {
+				throw new KantelError("unavailable", `${error.message}; the sandbox moved to another host meanwhile`);
+			}
+			throw error;
+		}
+	}
+
 	/** Whether the sandbox's host runs commands by Kantel's ID (`execControl`): detached ones, and kills. */
 	async function controlsCommands(sandboxId: string): Promise<boolean> {
 		const { hostId } = await tierOf(sandboxId);
@@ -674,7 +711,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	/**
 	 * A detached command's end, from its host (`sandbox.exec.get`, each held up to `EXEC_WAIT_MS` for it to end): not one
 	 * call, so it survives the host's connection dropping and coming back, a gateway taking the host over, and however
-	 * long the command runs. A host out of reach is asked again, from 1 s doubling to 30 s apart; one that no longer
+	 * long the command runs, or the sandbox moving to another host with its memory (it is asked of the host the sandbox
+	 * is on as it asks). A host out of reach is asked again, from 1 s doubling to 30 s apart; one that no longer
 	 * knows the command (it, or the sandbox, restarted) ends it with that said, or, after a start that went unanswered
 	 * (`unanswered`), with that start's error: it never started. `signal` ends the wait, not the command
 	 * (`DetachedWaitEnded`).
@@ -690,10 +728,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (signal?.aborted) throw new DetachedWaitEnded();
 			let status: HostExecStatus | undefined;
 			try {
-				status = await call<HostExecStatus>(
+				status = await callForCommand<HostExecStatus>(
 					sandboxId,
 					HostMethods.execGet,
-					{ commandId, waitMs: EXEC_WAIT_MS } satisfies HostExecRef,
+					{ commandId, waitMs: EXEC_WAIT_MS },
 					signal,
 					EXEC_WAIT_MS + 15_000,
 				);
@@ -725,16 +763,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
-	 * A foreground command's end after its host's connection went while it ran (`lost`, that call's error): followed by
-	 * its ID as a detached one is, until its own limit and `FOREGROUND_RECONNECT_GRACE_MS` more have passed. A host that
-	 * doesn't come back by then, or no longer knows the command (one from before keeping a foreground command past its
-	 * connection), ends it with `lost`, said so.
+	 * A foreground command's end after its host's connection went while it ran, or its sandbox was stopped keeping its
+	 * memory (`lost`, why its call ended): followed by its ID as a detached one is, until its own limit and
+	 * `FOREGROUND_RECONNECT_GRACE_MS` more have passed. A host that doesn't come back by then ends it with `lost`, said
+	 * so; one that no longer knows the command (one from before keeping a foreground command past its connection, or a
+	 * guest from before keeping it past a pause or move) with `forgotten`.
 	 */
 	async function foregroundEnd(
 		sandboxId: string,
 		commandId: string,
 		request: ExecRequest,
 		lost: KantelError,
+		forgotten: KantelError = lost,
 	): Promise<ExecResult> {
 		const deadline = new AbortController();
 		const timer = setTimeout(
@@ -743,7 +783,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		);
 		const signal = request.signal === undefined ? deadline.signal : AbortSignal.any([request.signal, deadline.signal]);
 		try {
-			return await commandEnd(sandboxId, commandId, signal, lost);
+			return await commandEnd(sandboxId, commandId, signal, forgotten);
 		} catch (error) {
 			// Stopped waiting by the caller (a kill, the gateway closing): as any aborted call.
 			if (request.signal?.aborted) throw error;
@@ -1386,8 +1426,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async move(sandboxId, spec, operationId): Promise<Placement> {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("conflict", "Only a microVM moves to another host");
-			// Its ports' exposures end as it boots again, as at any boot.
-			await options.ports?.forget(sandboxId);
+			// Its ports' exposures end as it boots again, as at any boot: a running sandbox's once it is stopped, as it
+			// serves them until then.
+			if (spec.running !== true) await options.ports?.forget(sandboxId);
 			const revision = spec.egressRevision ?? spec.egress?.revision;
 			const wanted = mountsOf(spec.mounts);
 			const { sandbox, hostId, ...known } = await hosts.sandboxes.move(sandboxId, {
@@ -1397,6 +1438,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(spec.to === undefined ? {} : { to: spec.to }),
 				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...(spec.onStarting === undefined ? {} : { onStarting: spec.onStarting }),
+				...(spec.running === true
+					? {
+							running: true,
+							onStopping: async (target: string) => {
+								await spec.onStopping?.(target);
+								await options.ports?.forget(sandboxId);
+							},
+						}
+					: {}),
+				...(spec.onFinalCopy === undefined ? {} : { onFinalCopy: spec.onFinalCopy }),
+				...(spec.keepMemory === true ? { keepMemory: true } : {}),
+				...(spec.onPlanned === undefined ? {} : { onPlanned: spec.onPlanned }),
 				start: (features) => {
 					const mounts = mountHandoff(wanted === undefined ? undefined : features, wanted);
 					return {
@@ -1410,6 +1463,16 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				},
 			});
 			return placed(sandboxId, sandbox, hostId, known);
+		},
+		async planMove(sandboxId, spec) {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("conflict", "Only a microVM moves to another host");
+			return hosts.sandboxes.planMove(sandboxId, {
+				owner: spec.accountId,
+				hostIds: spec.eligibleHosts,
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+				...(spec.running === true ? { running: true } : {}),
+			});
 		},
 		async settleMove(sandboxId, operationId) {
 			const outcome = await hosts.sandboxes.settleMove(sandboxId, operationId);
@@ -1474,6 +1537,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				// Only the wait ended (the gateway closing, or a kill already recorded): a host that runs commands by ID runs it on
 				// past this call, and its end is fetched by its ID, as a detached one's is.
 				if (request.signal?.aborted && controls && request.commandId !== undefined) throw new DetachedWaitEnded();
+				// Its sandbox was stopped keeping its memory as it ran (a pause, or a move to another host that keeps it): the
+				// command carries on in that memory, and is followed by its ID wherever the sandbox runs next.
+				if (!request.signal?.aborted && controls && request.commandId !== undefined && suspendedOnHost(error)) {
+					return foregroundEnd(
+						sandboxId,
+						request.commandId,
+						request,
+						new KantelError("unavailable", SUSPENDED_COMMAND),
+						new KantelError("unavailable", SUSPENDED_COMMAND_LOST),
+					);
+				}
 				if (request.signal?.aborted || !isKantelError(error) || !unanswered(error) || error.code !== "unavailable") {
 					throw error;
 				}
@@ -1493,13 +1567,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async killCommand(sandboxId, commandId) {
 			if (!(await controlsCommands(sandboxId))) throw new KantelError("not_supported", OLD_HOST_KILL);
-			await call<{ killed: boolean }>(sandboxId, HostMethods.execKill, { commandId } satisfies HostExecRef);
+			await callForCommand<{ killed: boolean }>(sandboxId, HostMethods.execKill, { commandId });
 		},
 		async commandResult(sandboxId, commandId) {
 			if (!(await controlsCommands(sandboxId))) {
 				throw new KantelError("not_supported", "This sandbox's host keeps no command results");
 			}
-			const status = await call<HostExecStatus>(sandboxId, HostMethods.execGet, { commandId } satisfies HostExecRef);
+			const status = await callForCommand<HostExecStatus>(sandboxId, HostMethods.execGet, { commandId });
 			if (status.state === "exited" && status.result !== undefined) return execResult(status.result);
 			// A host that reports a running command's output so far (`HostExecStatus.stdout`): what attach shows.
 			if (status.stdout === undefined && status.stderr === undefined) return undefined;

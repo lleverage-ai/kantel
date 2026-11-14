@@ -1464,6 +1464,50 @@ describe("moving a sandbox to another host", () => {
 		expect(await bob.sandboxes.moveTargets?.({ ...sandbox, hostId: "host_unseen" })).toEqual([]);
 	});
 
+	it("lists the hosts a move's dry run answers, with whether each keeps its memory and the pause expected", async () => {
+		const backend = movesBackend([await hostLike("host_b"), await hostLike("host_c")], Promise.resolve());
+		const plan: SandboxBackend = {
+			...backend,
+			planMove: async (_id, spec) =>
+				spec.eligibleHosts.map((hostId) =>
+					hostId === "host_b"
+						? {
+								hostId,
+								memory: { kept: true },
+								pauseMs: 4295,
+								memoryBytes: 536_870_912,
+								bytesPerSecond: 125_000_000,
+								rateMeasured: false,
+							}
+						: {
+								hostId,
+								memory: {
+									kept: false,
+									reason: "The new host has another CPU than its host, so its memory can't be restored there",
+								},
+							},
+				),
+		};
+		const { api, fetchApi } = setup({ backend: plan });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		const running = await source.sandboxes.get(made.id);
+		expect(running.state).toBe("running");
+		expect(await source.sandboxes.moveTargets?.(running)).toEqual([
+			{ hostId: "host_b", hostName: "host_b", memory: "kept", pauseMs: 4295 },
+			{
+				hostId: "host_c",
+				hostName: "host_c",
+				memory: "restarts",
+				restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
+			},
+		]);
+		// Nothing moved.
+		expect((await source.sandboxes.get(made.id)).state).toBe("running");
+	});
+
 	it("shows it moving, by phase and to which host, and answers it running there", async () => {
 		let release = () => {};
 		const gate = new Promise<void>((resolve) => {
@@ -1556,6 +1600,20 @@ describe("pools", () => {
 		expect((await hosts.pools.list()).find((pool) => pool.id === ci.id)?.hosts).toBe(1);
 		// A pool with a host in it isn't deleted.
 		await expect(hosts.pools.remove(ci.id)).rejects.toMatchObject({ code: "conflict" });
+	});
+
+	it("reads a host with no evacuation as none, and shows why sandboxes can't be moved off", async () => {
+		const source = await open(setup().fetchApi);
+		const hosts = source.hosts;
+		if (hosts?.evacuate === undefined || hosts.evacuation === undefined) throw new Error("No evacuations");
+		expect(await hosts.evacuation(STUB_HOST_ID)).toBeUndefined();
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.evacuation).toBeUndefined();
+		// The stub's hosts don't move sandboxes: Kantel's reason, and the host not drained by it.
+		await expect(hosts.evacuate(STUB_HOST_ID)).rejects.toMatchObject({
+			code: "not_supported",
+			message: expect.stringContaining("move sandboxes"),
+		});
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
 	});
 
 	it("names the chosen pool in a join token", async () => {

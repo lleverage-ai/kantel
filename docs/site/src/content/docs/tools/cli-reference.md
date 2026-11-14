@@ -313,29 +313,36 @@ kantel upgrade sbx_4kq9x2mt --from monorepo-ci
 
 ### kantel move
 
-Move a stopped sandbox to another host in its pool, and start it there.
+Move a sandbox to another host in its pool, and start it there.
 
 ```sh
 kantel move <id> [flags]
 ```
 
-Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name, settings and URLs, and never leaves its pool. If it can't be moved, it is left stopped where it was.
+Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name, settings and URLs, and never leaves its pool. If it can't be moved, it is left where it was.
 
-Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet, so a paused one moves only with --drop-memory. Its automatic snapshots from before stay on the old host.
+A running or paused one keeps its memory where both hosts' CPU and runtime match, and a host where it can is picked first: a running one is copied as it runs, stopped keeping its memory, and what it wrote since and its memory are copied and restored there, its programs carrying on after a pause of about its memory's copy. Elsewhere, or with --drop-memory, it restarts: copied as it runs, stopped (its processes end), what it wrote since copied, and booted on the new host, unavailable for seconds. --dry-run says which each host does before you move it. If a move fails after the stop, it starts again where it was. Its automatic snapshots from before stay on the old host.
 
 | Flag | What it does |
 | --- | --- |
 | `--to <host>` | The host to move it to, by ID (default: the scheduler's pick) |
-| `--drop-memory` | Move a paused sandbox, booting it on its disk on the new host (its memory is lost) |
+| `--drop-memory` | Restart a running or paused sandbox on the new host, booting it on its disk (its memory is lost) |
+| `--dry-run` | Move nothing: list the hosts it may move to, whether each keeps its memory, and the pause expected |
 | `--wait` | Answer once it runs on the new host (the default) |
 | `--no-wait` | Answer at once rather than once it runs |
 
 ```sh
-# Move a stopped sandbox to whichever host the scheduler picks
+# Move a sandbox to whichever host the scheduler picks, with its memory where it can
 kantel move sbx_4kq9x2mt
+
+# See where it may go, and whether each keeps its memory
+kantel move sbx_4kq9x2mt --dry-run
 
 # To a host of your choosing
 kantel move sbx_4kq9x2mt --to hst_7c2m9q4k
+
+# Move a running sandbox, restarting it on the new host
+kantel move sbx_4kq9x2mt --drop-memory
 ```
 
 ### kantel fork

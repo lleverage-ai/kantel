@@ -455,6 +455,8 @@ export interface SandboxMove {
 	readonly hostName?: string;
 	/** Its memory moves too, so it carries on where it was; otherwise it boots on its disk there. */
 	readonly keepMemory: boolean;
+	/** Why it restarts there although it had memory that might have moved, as Kantel said once it chose the host. */
+	readonly restartReason?: string;
 	readonly startedAt: number;
 }
 
@@ -467,8 +469,13 @@ export interface MoveTarget {
 	 * there, and running programs and memory are lost. Absent: Kantel doesn't say (no dry run yet), so it restarts.
 	 */
 	readonly memory?: "kept" | "restarts";
-	/** How long it is expected to be unavailable while it moves there, in milliseconds, where Kantel estimates it. */
+	/**
+	 * How long it is expected to be unavailable while it moves there keeping its memory, in milliseconds, where Kantel
+	 * estimates it: its memory's copy.
+	 */
 	readonly pauseMs?: number;
+	/** Why it restarts there although it has memory that might have moved: the hosts' CPU or runtime differ, say. */
+	readonly restartReason?: string;
 }
 
 /** What a move asks for: the host, and whether to keep its memory where that host can (`MoveTarget.memory`). */
@@ -1970,6 +1977,56 @@ export interface Host {
 	 * (its pool's sync is off, or an older host agent) or isn't connected.
 	 */
 	readonly mesh?: HostMesh;
+	/** How far its last move of every sandbox off it has got (`HostEvacuation`). Absent: it has had none. */
+	readonly evacuation?: HostEvacuationProgress;
+}
+
+/**
+ * `running`: its sandboxes are being moved off, two at a time. `done`: each moved, or was skipped with its reason.
+ * `failed`: it ended with a move that failed, or couldn't carry on. `stopped`: the host was undrained.
+ */
+export type HostEvacuationState = "running" | "done" | "failed" | "stopped";
+
+/** A host's evacuation in counts: how many sandboxes moved, are still to go, were skipped and failed. */
+export interface HostEvacuationProgress {
+	readonly state: HostEvacuationState;
+	/** Why it failed or stopped, where that wasn't one sandbox's move. */
+	readonly reason?: string;
+	readonly startedAt: number;
+	readonly endedAt?: number;
+	readonly moved: number;
+	/** Still to move, or moving now. */
+	readonly remaining: number;
+	readonly skipped: number;
+	readonly failed: number;
+}
+
+/**
+ * One sandbox of an evacuation. `waiting`: its turn hasn't come. `moving`: its move is under way (`phase`). `moved`: on
+ * `hostId` now. `skipped`: it can't move (`reason`). `failed`: its move failed (`reason`), and it's where it was.
+ */
+export interface HostEvacuationSandbox {
+	readonly id: string;
+	/** Absent where the viewer may not see the sandbox. */
+	readonly name?: string;
+	readonly kind: SandboxKind;
+	readonly state: "waiting" | "moving" | "moved" | "skipped" | "failed";
+	/** Where its move has got (`movePhaseText`), while it moves. */
+	readonly phase?: string;
+	/** The host it moved to. */
+	readonly hostId?: string;
+	/** Moved with its memory, so its programs carried on; false, it restarted there. */
+	readonly keptMemory?: boolean;
+	/** Why it was skipped, why its move failed, or why it restarted. */
+	readonly reason?: string;
+}
+
+/**
+ * Moving every sandbox off a draining host, so it can be updated, resized or retired without anyone losing one: each to
+ * another host in its pool, two at a time, as a move does by default.
+ */
+export interface HostEvacuation extends HostEvacuationProgress {
+	readonly sandboxes: readonly HostEvacuationSandbox[];
 }
 
 /**
@@ -2144,6 +2201,13 @@ export interface HostsSource {
 	 * It stays draining: undrain it once it should take sandboxes. Absent: hosts aren't moved from the console.
 	 */
 	move?(id: string, poolId: string): Promise<Host>;
+	/**
+	 * Drains the host, where it isn't draining, and moves every sandbox off it (`HostEvacuation`); one under way is
+	 * answered as it is. Absent: sandboxes aren't moved off hosts from the console.
+	 */
+	evacuate?(id: string): Promise<HostEvacuation>;
+	/** The host's last evacuation, or undefined when it has had none. */
+	evacuation?(id: string): Promise<HostEvacuation | undefined>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2412,14 +2476,15 @@ export function movePhaseText(phase: string): string {
 }
 
 /**
- * Whether a sandbox can be moved to another host now: a microVM, stopped or paused (a paused one boots on its disk
- * there unless its memory can move), on a host the viewer knows (its pool's other hosts are listed from it), connected.
+ * Whether a sandbox can be moved to another host now: a microVM, running, stopped or paused (a running or paused one
+ * boots on its disk there unless its memory can move; a running one is copied as it runs, then stopped for a last
+ * copy), on a host the viewer knows (its pool's other hosts are listed from it), connected.
  */
 export const canMove = (sandbox: Pick<Sandbox, "kind" | "state" | "hostId" | "hostUnreachable">): boolean =>
 	sandbox.kind === "microvm" &&
 	sandbox.hostId !== undefined &&
 	sandbox.hostUnreachable !== true &&
-	(sandbox.state === "stopped" || sandbox.state === "paused");
+	(sandbox.state === "running" || sandbox.state === "stopped" || sandbox.state === "paused");
 
 /** "52m", "6h 10m", "Always on", or a dash when it isn't running. */
 export function stopsInText(sandbox: Pick<Sandbox, "state" | "stopsAt">, now: number): string {

@@ -324,13 +324,18 @@ function meshHealth(value: unknown): { mesh?: HostMeshHealth } {
 	const peers: HostMeshPeerHealth[] = [];
 	for (const entry of Array.isArray(value.peers) ? value.peers.slice(0, MAX_MESH_PEERS) : []) {
 		if (!isObject(entry) || !meshText(entry.hostId) || !meshText(entry.path, 32)) continue;
-		const { endpoint, lastHandshake, rttMs } = entry;
+		const { endpoint, lastHandshake, rttMs, fetchBytesPerSecond, fetchRateAt } = entry;
+		const stamp = (at: unknown): at is number => figure(at) && Number.isSafeInteger(at) && at > 0;
 		peers.push({
 			hostId: entry.hostId,
 			path: entry.path,
 			...(meshText(endpoint) ? { endpoint } : {}),
-			...(figure(lastHandshake) && Number.isSafeInteger(lastHandshake) && lastHandshake > 0 ? { lastHandshake } : {}),
+			...(stamp(lastHandshake) ? { lastHandshake } : {}),
 			...(figure(rttMs) ? { rttMs } : {}),
+			// A rate only with when it was measured, and never 0: an estimate divides by it.
+			...(figure(fetchBytesPerSecond) && fetchBytesPerSecond > 0 && stamp(fetchRateAt)
+				? { fetchBytesPerSecond, fetchRateAt }
+				: {}),
 		});
 	}
 	return { mesh: { address: value.address, peers } };

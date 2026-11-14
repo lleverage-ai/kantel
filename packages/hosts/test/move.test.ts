@@ -7,8 +7,8 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender, type PersonIdentity } from "@kantel/compute";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createHostBackend } from "../src/backend.ts";
-import { HOST_FEATURES, type HostMeshFacts } from "../src/protocol.ts";
+import { createHostBackend, SUSPENDED_COMMAND_LOST } from "../src/backend.ts";
+import { HOST_FEATURES, type HostFacts, type HostMeshFacts } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -76,12 +76,12 @@ async function setup(options: { readonly now?: () => number; readonly stickyDisk
 	});
 	const pool = await root.createPool({ name: "agents", sync: true });
 	let byte = 1;
-	/** Joins a host to the pool (or `into`), running the mesh, with `features`. */
-	const join = async (features: readonly string[] = MOVES, into: string = pool.name) => {
+	/** Joins a host to the pool (or `into`), running the mesh, with `features` and facts beyond the usual (`more`). */
+	const join = async (features: readonly string[] = MOVES, into: string = pool.name, more: Partial<HostFacts> = {}) => {
 		const token = await root.createHostJoinToken({ pool: into });
 		const { hostId } = await service.register({ token: token.token });
 		const host = new FakeHost(service, hostId, features);
-		host.moreFacts = { mesh: meshOf(byte++) };
+		host.moreFacts = { mesh: meshOf(byte++), ...more };
 		host.connect();
 		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 		return host;
@@ -294,13 +294,14 @@ describe("moving a stopped sandbox to another host", () => {
 		const older = await join([HOST_FEATURES.mesh, HOST_FEATURES.egressPolicy]);
 		const running = await root.createSandbox({ type: "microvm", host: a.hostId, wait: true });
 		await unpinned(api, running.id);
-		expect((await failure(root.moveSandbox(running.id, {}))).code).toBe("conflict");
+		// Its host moves stopped sandboxes alone.
+		expect((await failure(root.moveSandbox(running.id, {}))).code).toBe("not_supported");
+		// Its memory can't go (its host doesn't move memory), and no other host can take its disk.
 		const paused = await root.createSandbox({ type: "microvm", host: a.hostId, wait: true });
 		await unpinned(api, paused.id);
 		await root.stopSandbox(paused.id, { keepMemory: true, wait: true });
-		const refused = await failure(root.moveSandbox(paused.id, {}));
-		expect(refused.code).toBe("conflict");
-		expect(refused.message).toContain("keepMemory");
+		expect((await failure(root.moveSandbox(paused.id, {}))).code).toBe("exhausted");
+		expect(await root.getSandbox(paused.id)).toMatchObject({ state: "paused", hostId: a.hostId });
 		const pinned = await stoppedOn(root, a, "disk");
 		expect((await failure(root.moveSandbox(pinned.id, {}))).code).toBe("conflict");
 		// No other host can take it: the only other one is from before moves.
@@ -667,5 +668,735 @@ describe("moving a stopped sandbox to another host", () => {
 		await service.sandboxes.delete(sandbox.id);
 		expect(b.cancelled.has(`${sandbox.id}/mov_gone`)).toBe(true);
 		expect(await service.sandboxes.placement(sandbox.id)).toBeUndefined();
+	});
+});
+
+const MOVES_RUNNING = [...MOVES, HOST_FEATURES.sandboxMoveRunning];
+
+/** A running microVM on `on`, with what is on its disk there, let go of the pin its create on `on` gave it. */
+async function runningOn(
+	root: ReturnType<typeof createKantelClient>,
+	api: ComputeApi,
+	on: FakeHost,
+	disk: string,
+): Promise<{ readonly id: string }> {
+	const made = await root.createSandbox({ type: "microvm", host: on.hostId, wait: true });
+	on.disks.set(made.id, disk);
+	await unpinned(api, made.id);
+	return made;
+}
+
+/** Holds each call `which` picks on `host` until the promise it answers is released. */
+function holding(host: FakeHost, which: (method: string, params: { readonly [key: string]: unknown }) => boolean) {
+	let release: () => void = () => undefined;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const hold = (method: string, params: { readonly [key: string]: unknown }) =>
+		which(method, params) ? held : undefined;
+	host.hold = hold;
+	return () => {
+		if (host.hold === hold) host.hold = undefined;
+		release();
+	};
+}
+
+describe("moving a running sandbox to another host, with a restart", () => {
+	it("copies it as it runs, stops it, copies what it wrote since over that, and starts it on the target", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "written before the move");
+		const staging = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		const moving = root.moveSandbox(sandbox.id, { keepMemory: false });
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		// Copying: it still runs where it was, and runs commands there.
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({
+			state: "moving",
+			hostId: a.hostId,
+			move: { phase: "copying", keepMemory: false },
+		});
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("running");
+		expect(await root.runCommand(sandbox.id, { command: "echo hi" })).toMatchObject({ exitCode: 0 });
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
+		// What it writes as its first copy is fetched goes in its final copy.
+		a.disks.set(sandbox.id, "written as it moved");
+		const finalCopy = holding(b, (method, params) => method === "sandbox.import" && params.stage !== true);
+		staging();
+		await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(2));
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "moving", move: { phase: "final-copy" } });
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("starting");
+		finalCopy();
+		const moved = await moving;
+		expect(moved).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+		expect(b.disks.get(sandbox.id)).toBe("written as it moved");
+		// Its source: its first copy exported as it ran, then stopped without its memory or a snapshot, its final copy
+		// exported over the first, and its copy deleted once the move switched.
+		expect(methodsOf(a, sandbox.id).slice(-4)).toEqual([
+			"sandbox.export",
+			"sandbox.stop",
+			"sandbox.export",
+			"sandbox.delete",
+		]);
+		const sent = (host: FakeHost, method: string) =>
+			host.calls.filter((call) => call.method === method && call.params.sandboxId === sandbox.id).map((c) => c.params);
+		const [first, final] = sent(a, "sandbox.export");
+		expect(first).toMatchObject({ version: expect.stringMatching(/^mov_.*-live$/), live: true });
+		expect(final).toMatchObject({ base: first?.version });
+		expect(final?.version).toBe(String(first?.version).replace(/-live$/, ""));
+		expect(sent(a, "sandbox.stop")[0]).toMatchObject({ memory: false });
+		expect(sent(a, "sandbox.stop")[0]?.snapshotId).toBeUndefined();
+		// Its target: the first copy fetched and kept staged, the final one fetched over it, then started.
+		expect(methodsOf(b, sandbox.id)).toEqual(["sandbox.import", "sandbox.import", "sandbox.start"]);
+		const [staged, over] = sent(b, "sandbox.import");
+		expect(staged).toMatchObject({ version: first?.version, stage: true });
+		expect(over).toMatchObject({ version: final?.version, base: first?.version });
+		expect(b.staged.size).toBe(0);
+		expect(a.exports.size).toBe(0);
+		expect(a.sandboxes.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: b.hostId, state: "running" });
+		expect(placement?.move).toBeUndefined();
+	});
+
+	it("answers its target's disk.locate for its first copy while that is fetched", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		const staging = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		const moving = root.moveSandbox(sandbox.id, { keepMemory: false });
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		const version = String(b.calls.find((call) => call.method === "sandbox.import")?.params.version);
+		const id = "loc_live";
+		b.send({ type: "call", id, method: "disk.locate", params: { kind: "sandbox", objectId: sandbox.id, version } });
+		const found = await vi.waitFor(() => {
+			const answer = b.sent.find((message) => message.type === "result" && message.id === id);
+			if (answer === undefined) throw new Error("not answered yet");
+			return answer;
+		});
+		expect(found).toMatchObject({ result: { holders: [{ hostId: a.hostId }], grant: expect.any(String) } });
+		staging();
+		expect(await moving).toMatchObject({ state: "running", hostId: b.hostId });
+	});
+
+	it("starts it again on its source when the move fails after it was stopped", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.refuse = (method) =>
+			method === "sandbox.start" ? { code: "unavailable", message: "it didn't boot" } : undefined;
+		const error = await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		expect(error.message).toContain("it didn't boot");
+		const after = await root.getSandbox(sandbox.id);
+		expect(after).toMatchObject({ state: "running", hostId: a.hostId });
+		expect(after.move).toBeUndefined();
+		expect(methodsOf(a, sandbox.id).slice(-5)).toEqual([
+			"sandbox.stop",
+			"sandbox.export",
+			"sandbox.export.delete",
+			"sandbox.export.delete",
+			"sandbox.start",
+		]);
+		expect(a.sandboxes.get(sandbox.id)?.state).toBe("running");
+		expect(a.exports.size).toBe(0);
+		// Both copies on its target cancelled: the final one, and the first staged there.
+		expect(b.cancelled.size).toBe(2);
+		expect(b.staged.size).toBe(0);
+		expect(b.sandboxes.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: a.hostId, state: "running" });
+		expect(placement?.move).toBeUndefined();
+	});
+
+	it("leaves it running where it was, never stopped, when its first copy fails", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.refuse = (method) =>
+			method === "sandbox.import" ? { code: "unavailable", message: "the copy failed part way" } : undefined;
+		const error = await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		expect(error.message).toContain("the copy failed part way");
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "running", hostId: a.hostId });
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
+		expect(a.exports.size).toBe(0);
+		expect(await root.runCommand(sandbox.id, { command: "echo hi" })).toMatchObject({ exitCode: 0 });
+	});
+
+	it("ends the move, never stopping it, when it exits while its first copy is made", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		const staging = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		// Its machine exited meanwhile: its record moved on, as its host's report of the exit leaves it.
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			state: "error",
+			lifecycle: (latest.lifecycle ?? 0) + 1,
+		}));
+		staging();
+		expect((await moving).code).toBe("conflict");
+		const after = await api.store.sandboxes.get(sandbox.id);
+		expect(after).toMatchObject({ state: "error", hostId: a.hostId });
+		expect(after?.moving).toBeUndefined();
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
+		expect(b.cancelled.size).toBe(2);
+		expect(a.exports.size).toBe(0);
+	});
+
+	it("refuses a stop, pause or recovery while it moves, as another gateway would find it", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		// A move another gateway is at: its record running, with the move on it.
+		const at = Date.now();
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			moving: { operationId: "mov_other", at, heartbeatAt: at, phase: "copying", from: "running", before: {} },
+		}));
+		for (const call of [
+			root.stopSandbox(sandbox.id, { wait: true }),
+			root.stopSandbox(sandbox.id, { keepMemory: true, wait: true }),
+			root.recoverSandbox(sandbox.id),
+		]) {
+			const refused = await failure(call);
+			expect(refused.code).toBe("conflict");
+			expect(refused.message).toContain("moving");
+		}
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "running" });
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
+	});
+
+	it("is refused where a host can't move a running sandbox", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const older = await join(MOVES);
+		const sandbox = await runningOn(root, api, a, "disk");
+		// Its only other host moves stopped sandboxes alone, whether its memory is asked to go or not.
+		expect((await failure(root.moveSandbox(sandbox.id, {}))).code).toBe("exhausted");
+		expect((await failure(root.moveSandbox(sandbox.id, { keepMemory: false }))).code).toBe("exhausted");
+		expect(older.calls.some((call) => call.method.startsWith("sandbox.import"))).toBe(false);
+		const onOlder = await runningOn(root, api, older, "disk");
+		await join(MOVES_RUNNING);
+		const refused = await failure(root.moveSandbox(onOlder.id, { keepMemory: false }));
+		expect(refused.code).toBe("not_supported");
+		expect(refused.message).toContain("running");
+		for (const id of [sandbox.id, onOlder.id]) {
+			expect(await root.getSandbox(id)).toMatchObject({ state: "running" });
+		}
+	});
+
+	it("settles a move whose target went away after the stop, starting it again on its source", async () => {
+		const clock = { at: Date.now() };
+		const { root, api, join } = await setup({ now: () => clock.at });
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		// Its target goes as it fetches the final copy: whether it imported it isn't known, and it can't be asked yet.
+		b.hold = (method, params) =>
+			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(2));
+		b.connection.closed(1006, "gone");
+		expect((await moving).code).toBe("unavailable");
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "moving", hostId: a.hostId });
+		expect(a.sandboxes.get(sandbox.id)?.state).toBe("stopped");
+		b.hold = undefined;
+		const welcomes = () => b.sent.filter((message) => message.type === "welcome").length;
+		const before = welcomes();
+		b.connect();
+		await vi.waitFor(() => expect(welcomes()).toBeGreaterThan(before));
+		clock.at += 3 * 60_000;
+		await api.service.sweep();
+		await vi.waitFor(async () =>
+			expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "running", hostId: a.hostId }),
+		);
+		expect(a.sandboxes.get(sandbox.id)?.state).toBe("running");
+		expect(b.cancelled.size).toBe(2);
+		expect(a.exports.size).toBe(0);
+	});
+
+	it("refuses a move again, after one try at settling it, while a quiet move can't be settled", async () => {
+		const clock = { at: Date.now() };
+		const { root, api, join, service } = await setup({ now: () => clock.at });
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.hold = (method, params) =>
+			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(2));
+		b.connection.closed(1006, "gone");
+		expect((await moving).code).toBe("unavailable");
+		// Its target still away and the move gone quiet: a move again tries to settle it once, and says why it can't.
+		clock.at += 3 * 60_000;
+		const settles = vi.spyOn(service.sandboxes, "settleMove");
+		const again = await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		expect(again.code).toBe("unavailable");
+		expect(again.message).toContain("can't be settled yet");
+		// Tried once by the move, and at most once more by the sweep a request may run: never again and again.
+		expect(settles.mock.calls.length).toBeGreaterThanOrEqual(1);
+		expect(settles.mock.calls.length).toBeLessThanOrEqual(2);
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "moving", hostId: a.hostId });
+	});
+
+	it("settles a quiet move left on a running sandbox before a start answers it", async () => {
+		const clock = { at: Date.now() };
+		const { root, api, join } = await setup({ now: () => clock.at });
+		const a = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		// A move whose gateway went during its first copy: nothing of it on the hosts' side.
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			moving: {
+				operationId: "mov_gone",
+				at: clock.at,
+				heartbeatAt: clock.at,
+				phase: "copying",
+				from: "running",
+				before: {},
+			},
+		}));
+		clock.at += 3 * 60_000;
+		const started = await root.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ state: "running", hostId: a.hostId });
+		expect(started.move).toBeUndefined();
+		expect((await api.store.sandboxes.get(sandbox.id))?.moving).toBeUndefined();
+	});
+
+	it("is error, its move cleared, when starting it again on its source fails too", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.refuse = (method) =>
+			method === "sandbox.start" ? { code: "unavailable", message: "it didn't boot" } : undefined;
+		a.refuse = (method) => (method === "sandbox.start" ? { code: "unavailable", message: "nor here" } : undefined);
+		await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		const after = await api.store.sandboxes.get(sandbox.id);
+		expect(after).toMatchObject({ state: "error", hostId: a.hostId });
+		expect(after?.moving).toBeUndefined();
+	});
+
+	it("keeps a stop owed as it moved (its person left) until the sweep stops it, wherever the move leaves it", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const owe = (id: string) =>
+			api.store.sandboxes.update(id, (latest) =>
+				latest.moving === undefined
+					? latest
+					: { ...latest, moving: { ...latest.moving, stopAfter: "Its person left the organisation" } },
+			);
+		// Moved: owed as its first copy was made, it runs on its target owing its stop, which the sweep carries out.
+		const moved = await runningOn(root, api, a, "disk");
+		let release = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		let moving = root.moveSandbox(moved.id, { keepMemory: false });
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		await owe(moved.id);
+		release();
+		expect(await moving).toMatchObject({ state: "running", hostId: b.hostId });
+		expect(await api.store.sandboxes.get(moved.id)).toMatchObject({ stopFor: "Its person left the organisation" });
+		await api.service.sweep();
+		await vi.waitFor(async () => expect((await root.getSandbox(moved.id)).state).toBe("stopped"));
+		// Rolled back before its stop: running on where it was, owing its stop.
+		const back = await runningOn(root, api, a, "disk");
+		const staged = b.calls.filter((call) => call.method === "sandbox.import").length;
+		b.refuse = (method, params) =>
+			method === "sandbox.import" && params.stage === true ? { code: "unavailable", message: "no room" } : undefined;
+		release = holding(b, (method) => method === "sandbox.import");
+		moving = root.moveSandbox(back.id, { keepMemory: false });
+		await vi.waitFor(() =>
+			expect(b.calls.filter((call) => call.method === "sandbox.import").length).toBeGreaterThan(staged),
+		);
+		await owe(back.id);
+		release();
+		await failure(moving);
+		expect(await api.store.sandboxes.get(back.id)).toMatchObject({
+			state: "running",
+			hostId: a.hostId,
+			stopFor: "Its person left the organisation",
+		});
+	});
+
+	it("still owes a stop the sandbox owed as its move began, once it runs where it went", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			stopFor: "Its person left the organisation",
+		}));
+		expect(await root.moveSandbox(sandbox.id, { keepMemory: false })).toMatchObject({ hostId: b.hostId });
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ stopFor: "Its person left the organisation" });
+	});
+});
+
+const MOVES_MEMORY = [...MOVES_RUNNING, HOST_FEATURES.sandboxMoveMemory];
+const MOVES_COMMANDS = [...MOVES_MEMORY, HOST_FEATURES.execControl];
+/** The ID of the foreground command `host` was sent for the sandbox, once it has been. */
+async function foregroundId(host: FakeHost, sandboxId: string): Promise<string> {
+	let id: unknown;
+	await vi.waitFor(() => {
+		id = host.calls.findLast(
+			(call) => call.method === "sandbox.exec" && call.params.sandboxId === sandboxId && call.params.detached !== true,
+		)?.params.commandId;
+		expect(typeof id).toBe("string");
+	});
+	return id as string;
+}
+const RUNTIME = "firecracker=v1.17.0;kernel=6.1.155;sticky=2";
+const AX102 = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+/** A host's CPU and runtime fingerprints: AX102's and `RUNTIME`, else as `more` says. */
+const fingerprints = (more: Partial<HostFacts> = {}): Partial<HostFacts> => ({
+	cpu: AX102,
+	runtimes: [{ image: "host-images-20261103", runtime: RUNTIME }],
+	...more,
+});
+
+describe("moving a sandbox with its memory", () => {
+	it("keeps a running sandbox's processes between hosts whose CPU and runtime match", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const b = await join(MOVES_MEMORY, undefined, fingerprints());
+		const sandbox = await runningOn(root, api, a, "disk");
+		a.processes.set(sandbox.id, "a job started before the move");
+		const moved = await root.moveSandbox(sandbox.id, {});
+		expect(moved).toMatchObject({ state: "running", hostId: b.hostId, moved: { keptMemory: true } });
+		expect(moved.moved?.restartReason).toBeUndefined();
+		expect(b.processes.get(sandbox.id)).toBe("a job started before the move");
+		// Stopped keeping its memory, exported with it, imported with it, and resumed from it.
+		expect(
+			a.calls.find((call) => call.method === "sandbox.stop" && call.params.sandboxId === sandbox.id)?.params,
+		).toMatchObject({ memory: true });
+		expect(
+			a.calls.find((call) => call.method === "sandbox.export" && call.params.base !== undefined)?.params,
+		).toMatchObject({
+			memory: true,
+		});
+		const imported = b.calls.find((call) => call.method === "sandbox.import" && call.params.stage !== true);
+		expect(imported?.params.memory).toMatchObject({ holders: [{ hostId: a.hostId }] });
+		const booted = b.calls.filter((call) => call.method === "sandbox.start" || call.method === "sandbox.resume");
+		expect(booted.map((call) => call.method)).toEqual(["sandbox.resume"]);
+		expect(a.sandboxes.has(sandbox.id)).toBe(false);
+	});
+
+	it("keeps its commands running when its memory goes, and ends them when it restarts", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		await join(MOVES_MEMORY, undefined, fingerprints());
+		await join(MOVES_MEMORY, undefined, fingerprints());
+		const sandbox = await runningOn(root, api, a, "disk");
+		const accountId = (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "";
+		const command = (id: string) => ({
+			id,
+			sandboxId: sandbox.id,
+			accountId,
+			command: "./serve",
+			state: "running" as const,
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now(),
+			detached: true,
+		});
+		await api.store.commands.put(command("cmd_kept"));
+		await root.moveSandbox(sandbox.id, {});
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		await api.store.commands.put(command("cmd_ended"));
+		await root.moveSandbox(sandbox.id, { keepMemory: false });
+		expect(await api.store.commands.get("cmd_ended")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("moved to another host and restarted there (the move was asked to restart it)"),
+		});
+	});
+
+	it("carries a foreground and a detached command on by their IDs, their output, end and kill on the new host", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const detached = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const foreground = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const id = await foregroundId(a, sandbox.id);
+		const moved = await root.moveSandbox(sandbox.id, {});
+		expect(moved).toMatchObject({ hostId: b.hostId, moved: { keptMemory: true } });
+		// The foreground call broke with A's stop: followed by its ID, on B, to its end there.
+		await vi.waitFor(
+			() =>
+				expect(b.calls.some((call) => call.method === "sandbox.exec.get" && call.params.commandId === id)).toBe(true),
+			{ timeout: 10_000 },
+		);
+		FakeHost.endCommand(sandbox.id, id, { exitCode: 0, stdout: "so far\nbuilt\n", stderr: "", durationMs: 9 });
+		expect(await foreground).toMatchObject({ id, state: "exited", exitCode: 0, stdout: "so far\nbuilt\n" });
+		// The detached one runs on, on B: its output so far from there, and its kill goes there.
+		expect(await root.getCommand(sandbox.id, detached.id)).toMatchObject({ state: "running", stdout: "so far\n" });
+		expect(await root.killCommand(sandbox.id, detached.id)).toMatchObject({ state: "killed" });
+		expect(b.calls.some((call) => call.method === "sandbox.exec.kill" && call.params.commandId === detached.id)).toBe(
+			true,
+		);
+		expect(FakeHost.guestCommands.get(`${sandbox.id}/${detached.id}`)?.result?.exitCode).toBe(137);
+	}, 20_000);
+
+	it("ends a foreground command its guest didn't carry on (an image from before) saying so, and one a restart ended", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const lost = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const id = await foregroundId(a, sandbox.id);
+		// Its guest ended it as its connection was reset: B's doesn't know it.
+		b.hold = (method) => {
+			if (method === "sandbox.resume") FakeHost.guestCommands.delete(`${sandbox.id}/${id}`);
+			return undefined;
+		};
+		await root.moveSandbox(sandbox.id, {});
+		expect(await lost).toMatchObject({ id, state: "exited", exitCode: 1, stderr: `${SUSPENDED_COMMAND_LOST}\n` });
+		// Moved with a restart: its command ends, as its call broke or as the move ended its commands, saying why.
+		const ended = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const restarted = await foregroundId(b, sandbox.id);
+		await root.moveSandbox(sandbox.id, { keepMemory: false });
+		expect(await ended).toMatchObject({
+			id: restarted,
+			state: expect.stringMatching(/^(exited|killed)$/),
+			stderr: expect.stringMatching(/restart(ed| it) there \(the move was asked to restart it\)/),
+		});
+	}, 20_000);
+
+	it("asks again where it runs now when its old host, asked as it moved, no longer knows a command", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		const b = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = b.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const detached = await root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		// A get A takes as the move begins is answered once the sandbox is B's, and A has deleted it.
+		let switched: () => void = () => undefined;
+		const done = new Promise<void>((resolve) => {
+			switched = resolve;
+		});
+		await vi.waitFor(() => expect(a.calls.some((call) => call.method === "sandbox.exec.get")).toBe(true));
+		a.hold = (method) => (method === "sandbox.exec.get" ? done : undefined);
+		a.refuse = (method) =>
+			method === "sandbox.exec.get" ? { code: "not_found", message: "no such sandbox" } : undefined;
+		await vi.waitFor(
+			() => expect(a.calls.filter((call) => call.method === "sandbox.exec.get").length).toBeGreaterThan(1),
+			{
+				timeout: 5_000,
+			},
+		);
+		await root.moveSandbox(sandbox.id, {});
+		switched();
+		await vi.waitFor(
+			() =>
+				expect(
+					b.calls.some((call) => call.method === "sandbox.exec.get" && call.params.commandId === detached.id),
+				).toBe(true),
+			{ timeout: 10_000 },
+		);
+		FakeHost.endCommand(sandbox.id, detached.id, { exitCode: 0, stdout: "served\n", stderr: "", durationMs: 9 });
+		await vi.waitFor(
+			async () =>
+				expect(await root.getCommand(sandbox.id, detached.id)).toMatchObject({ state: "exited", exitCode: 0 }),
+			{
+				timeout: 10_000,
+			},
+		);
+	}, 20_000);
+
+	it("is given up, nothing sent, when what it does with the memory can't be recorded; else left to settle", async () => {
+		const { root, api, join, service, store } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const b = await join(MOVES_MEMORY, undefined, fingerprints());
+		const sandbox = await runningOn(root, api, a, "disk");
+		const input = {
+			operationId: "mov_unrecorded",
+			owner: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			hostIds: [b.hostId],
+			running: true,
+			keepMemory: true,
+			start: () => ({ params: {} }),
+			onPlanned: async () => {
+				throw new Error("the record changed");
+			},
+		};
+		await expect(service.sandboxes.move(sandbox.id, input)).rejects.toThrow("the record changed");
+		expect((await store.getPlacement(sandbox.id))?.move).toBeUndefined();
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.export");
+		expect(methodsOf(b, sandbox.id)).toHaveLength(0);
+		// Its intent can't be cleared: the move's outcome is unknown, for its settling, not a failure.
+		const update = store.updatePlacement.bind(store);
+		let writes = 0;
+		store.updatePlacement = async (id, change) => {
+			writes += 1;
+			if (writes > 1) throw new Error("the store went away");
+			return update(id, change);
+		};
+		const unknown = await service.sandboxes
+			.move(sandbox.id, { ...input, operationId: "mov_unclear" })
+			.catch((error) => error);
+		store.updatePlacement = update;
+		expect(unknown).toBeInstanceOf(Error);
+		expect(String(unknown.message)).toContain("settled instead");
+		expect((await store.getPlacement(sandbox.id))?.move?.operationId).toBe("mov_unclear");
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.export");
+		await expect(service.sandboxes.settleMove(sandbox.id, "mov_unclear")).resolves.toMatchObject({ state: "failed" });
+		expect((await store.getPlacement(sandbox.id))?.move).toBeUndefined();
+	});
+
+	it("restarts it between hosts whose CPUs differ, and says why before it copies anything", async () => {
+		const { root, api, join, store } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const b = await join(MOVES_MEMORY, undefined, fingerprints({ cpu: { ...AX102, model: 68 } }));
+		const sandbox = await runningOn(root, api, a, "disk");
+		a.processes.set(sandbox.id, "a job");
+		// Held at its first copy: by then its move says it restarts, and why.
+		const release = holding(a, (method, params) => method === "sandbox.export" && params.live === true);
+		const moving = root.moveSandbox(sandbox.id, { wait: false });
+		await vi.waitFor(async () =>
+			expect((await root.getSandbox(sandbox.id)).move).toMatchObject({ keepMemory: false, hostId: b.hostId }),
+		);
+		expect((await root.getSandbox(sandbox.id)).move?.restartReason).toContain("CPU");
+		expect(methodsOf(b, sandbox.id)).toHaveLength(0);
+		release();
+		await moving;
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		const moved = await root.getSandbox(sandbox.id);
+		expect(moved).toMatchObject({ hostId: b.hostId, moved: { keptMemory: false } });
+		expect(moved.moved?.restartReason).toContain("CPU");
+		// It names no host: callers who may not know its hosts read it too.
+		for (const host of [a, b]) {
+			const name = (await store.getHost(host.hostId))?.name ?? host.hostId;
+			expect(moved.moved?.restartReason).not.toContain(name);
+		}
+		expect(b.processes.get(sandbox.id)).toBe("booted");
+		expect(a.calls.find((call) => call.method === "sandbox.stop")?.params).toMatchObject({ memory: false });
+		expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true);
+	});
+
+	it("restarts it where the target hasn't its memory's runtime, or a host can't move memory", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const other = await join(
+			MOVES_MEMORY,
+			undefined,
+			fingerprints({ runtimes: [{ image: "x", runtime: `${RUNTIME};x` }] }),
+		);
+		const older = await join(MOVES_RUNNING, undefined, fingerprints());
+		const sandbox = await runningOn(root, api, a, "disk");
+		const toOther = await root.moveSandbox(sandbox.id, { hostId: other.hostId });
+		expect(toOther.moved).toMatchObject({ keptMemory: false });
+		expect(toOther.moved?.restartReason).toContain("runtime");
+		const back = await runningOn(root, api, a, "disk");
+		const toOlder = await root.moveSandbox(back.id, { hostId: older.hostId });
+		expect(toOlder.moved?.restartReason).toContain("upgrade its kantel-host");
+	});
+
+	it("chooses a host it keeps its memory on first", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		await join(MOVES_MEMORY, undefined, fingerprints({ cpu: { ...AX102, model: 68 } }));
+		const c = await join(MOVES_MEMORY, undefined, fingerprints());
+		const sandbox = await runningOn(root, api, a, "disk");
+		a.processes.set(sandbox.id, "a job");
+		const moved = await root.moveSandbox(sandbox.id, {});
+		expect(moved).toMatchObject({ hostId: c.hostId, moved: { keptMemory: true } });
+		expect(c.processes.get(sandbox.id)).toBe("a job");
+	});
+
+	it("moves a paused sandbox with its memory, and a restart asked for lets it go", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const b = await join(MOVES_MEMORY, undefined, fingerprints());
+		const paused = await runningOn(root, api, a, "disk");
+		a.processes.set(paused.id, "paused job");
+		await root.stopSandbox(paused.id, { keepMemory: true, wait: true });
+		const moved = await root.moveSandbox(paused.id, {});
+		expect(moved).toMatchObject({ state: "running", hostId: b.hostId, moved: { keptMemory: true } });
+		expect(b.processes.get(paused.id)).toBe("paused job");
+		const restarted = await runningOn(root, api, a, "disk");
+		a.processes.set(restarted.id, "a job");
+		const fresh = await root.moveSandbox(restarted.id, { keepMemory: false });
+		expect(fresh.moved).toEqual({ at: expect.any(Number), keptMemory: false });
+		expect(b.processes.get(restarted.id)).toBe("booted");
+	});
+
+	it("rolled back after its stop, resumes it where it was from its memory", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const b = await join(MOVES_MEMORY, undefined, fingerprints());
+		const sandbox = await runningOn(root, api, a, "disk");
+		a.processes.set(sandbox.id, "a job");
+		b.refuse = (method, params) =>
+			method === "sandbox.import" && params.stage !== true ? { code: "unavailable", message: "no room" } : undefined;
+		expect((await failure(root.moveSandbox(sandbox.id, {}))).code).toBe("unavailable");
+		await vi.waitFor(async () =>
+			expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "running", hostId: a.hostId }),
+		);
+		expect(a.processes.get(sandbox.id)).toBe("a job");
+		// Resumed from the memory its move's stop kept, never booted on its disk.
+		const again = a.calls.filter(
+			(call) =>
+				(call.method === "sandbox.resume" || call.method === "sandbox.start") && call.params.sandboxId === sandbox.id,
+		);
+		expect(again.map((call) => call.method)).toEqual(["sandbox.resume"]);
+		expect(b.sandboxes.has(sandbox.id)).toBe(false);
+	});
+
+	it("answers a dry run with each host's way and estimated pause, moving nothing", async () => {
+		const { root, api, join, store } = await setup();
+		const a = await join(MOVES_MEMORY, undefined, fingerprints());
+		const b = await join(MOVES_MEMORY, undefined, fingerprints());
+		const c = await join(MOVES_MEMORY, undefined, fingerprints({ cpu: { ...AX102, model: 68 } }));
+		const sandbox = await runningOn(root, api, a, "disk");
+		// b measured its last fetch from a at 250 MB/s.
+		await store.updateHost(b.hostId, (host) => ({
+			...host,
+			capacity: {
+				freeMemoryMiB: 30_000,
+				freeDiskGiB: 400,
+				running: 0,
+				stopped: 0,
+				load1: 0,
+				...host.capacity,
+				mesh: {
+					address: "fd00::2",
+					peers: [{ hostId: a.hostId, path: "direct", fetchBytesPerSecond: 250_000_000, fetchRateAt: 1 }],
+				},
+			},
+		}));
+		const plan = await root.planSandboxMove(sandbox.id);
+		const byHost = new Map((plan.targets ?? []).map((target) => [target.hostId, target]));
+		expect([...byHost.keys()].sort()).toEqual([b.hostId, c.hostId].sort());
+		// 512 MiB of resident memory at 250 MB/s, as b measured it.
+		expect(byHost.get(b.hostId)).toEqual({
+			hostId: b.hostId,
+			keepsMemory: true,
+			pauseMs: Math.ceil((512 * 1024 * 1024 * 1000) / 250_000_000),
+			memoryBytes: 512 * 1024 * 1024,
+			bytesPerSecond: 250_000_000,
+			rateMeasured: true,
+		});
+		expect(byHost.get(c.hostId)?.keepsMemory).toBe(false);
+		expect(byHost.get(c.hostId)?.restartReason).toContain("CPU");
+		expect(byHost.get(c.hostId)?.pauseMs).toBeUndefined();
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.export");
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "running" });
+		expect((await api.store.sandboxes.get(sandbox.id))?.moving).toBeUndefined();
+		// A stopped sandbox has no memory: every host restarts it.
+		const stopped = await stoppedOn(root, a, "disk");
+		await unpinned(api, stopped.id);
+		const stoppedPlan = await root.planSandboxMove(stopped.id);
+		expect(stoppedPlan.targets?.every((target) => !target.keepsMemory && target.restartReason === undefined)).toBe(
+			true,
+		);
 	});
 });

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/bits"
 	"net/http"
 	"net/netip"
@@ -149,6 +150,45 @@ type Fetcher struct {
 	jobs  map[Ref]*Job
 	// failed are the fetches that ended with an error, as they stood then, until one is started again or held.
 	failed map[Ref]failure
+	// rates are the rates measured of the fetches from each peer, by its mesh address (RateFrom).
+	rates map[netip.Addr]Rate
+}
+
+// Rate is the rate a fetch from one peer ran at: the bytes its blocks took over the time spent fetching them, and when.
+type Rate struct {
+	BytesPerSecond int64
+	At             time.Time
+}
+
+// rateMinBytes is the least a fetch takes from one peer for its rate to be kept: a smaller one says more of the round
+// trip than of the link.
+const rateMinBytes = 16 << 20
+
+// Rates are the rates the host's last fetch from each peer ran at, by its mesh address: those of at least
+// rateMinBytes from that peer alone since the host started.
+func (f *Fetcher) Rates() map[netip.Addr]Rate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.rates)
+}
+
+// noteRate keeps a fetch's rate when it took at least rateMinBytes from one holder alone.
+func (f *Fetcher) noteRate(src *holders, fetched int64, took time.Duration) {
+	if fetched < rateMinBytes || took <= 0 {
+		return
+	}
+	src.mu.Lock()
+	list := append([]netip.Addr(nil), src.list...)
+	src.mu.Unlock()
+	if len(list) != 1 {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rates == nil {
+		f.rates = map[netip.Addr]Rate{}
+	}
+	f.rates[list[0]] = Rate{BytesPerSecond: int64(float64(fetched) / took.Seconds()), At: time.Now()}
 }
 
 // failure is how a failed fetch stood when it ended: its blocks, how many were in place, its error and when.
@@ -991,6 +1031,7 @@ func (p *partial) checkpoint() error {
 func (f *Fetcher) fetchRuns(ctx context.Context, src *holders, p *partial, runs []run) (int64, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	began := time.Now()
 	var (
 		mu      sync.Mutex
 		fetched int64
@@ -1058,6 +1099,9 @@ feed:
 	}
 	if failed == nil && ctx.Err() != nil {
 		failed = ctx.Err()
+	}
+	if failed == nil {
+		f.noteRate(src, fetched, time.Since(began))
 	}
 	return fetched, failed
 }

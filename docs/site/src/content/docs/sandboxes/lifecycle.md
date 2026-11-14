@@ -145,7 +145,7 @@ The same goes for a start, resume or fork, and for a create from a snapshot. The
 | `stopping` | Its disk is being saved |
 | `stopped` | It has no machine. Its disk is kept, and its running programs are gone |
 | `paused` | Like `stopped`, but its memory is kept too (microVMs only) |
-| `moving` | Being moved to another host, then started there; its `move` says how far (`copying`, `starting`) |
+| `moving` | Being moved to another host, then started there; its `move` says how far (`copying`, `stopping`, `final-copy`, `starting`) |
 | `error` | The last operation failed or its machine was lost |
 | `deleting`, `deleted` | Erased for good |
 
@@ -277,13 +277,24 @@ A running sandbox is recovered too, so a retry would restart it again and end wh
 
 ## Move to another host
 
-`POST /v1/sandboxes/{id}/move` (`kantel move <id>`) moves a stopped microVM to another host in its pool and starts it there. It keeps its ID, name, settings and URLs. Its disk and its sticky disks' copies go with it, including writes to them that weren't committed. Only once it runs on the new host is it placed there and its copy on the old host deleted. If it can't be moved, it is left stopped where it was. A move never leaves the sandbox's pool, and it needs the pool's sync on and hosts with a kantel-host that moves sandboxes.
+`POST /v1/sandboxes/{id}/move` (`kantel move <id>`) moves a microVM to another host in its pool and starts it there. It keeps its ID, name, settings and URLs. Its disk and its sticky disks' copies go with it, including writes to them that weren't committed. Only once it runs on the new host is it placed there and its copy on the old host deleted. If it can't be moved, it is left where it was. A move never leaves the sandbox's pool, and it needs the pool's sync on and hosts with a kantel-host that moves sandboxes.
 
 `hostId` (`--to <host>`) picks the host. Otherwise the scheduler picks one, as for a create. While it moves, its state is `moving`.
 
-In the console, **Move to host** in the sandbox's menu lists the other hosts of its pool that can run it. While it moves, the sandbox shows **Moving** and how far it has got. If the move fails, the console says why.
+In the console, **Move to host** in the sandbox's menu lists the other hosts of its pool that can run it, with whether each keeps its memory and the pause expected, and offers a restart instead. While it moves, the sandbox shows **Moving** and how far it has got. If the move fails, the console says why.
 
-Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet. A paused sandbox moves only with `keepMemory: false` (`--drop-memory`), and boots on its disk on the new host. Its automatic snapshots from before stay on the old host.
+A running or paused sandbox keeps its memory, so its programs carry on, where both hosts' CPU and runtime (Firecracker, guest kernel and image) match. The scheduler picks such a host first. Between hosts that don't match, the move restarts it instead: its `move` says so with a `restartReason` before anything is copied, and its `moved` says what became of its memory once it runs there. `keepMemory: false` (`--drop-memory`) always restarts it. Where its memory moves, the processes it runs carry on, and so do commands sent through Kantel and still running: each keeps its ID, a detached one's status, output and kill work on the new host, and a call waiting on a foreground one (and `kantel exec`) waits through the move and gets its real output and exit code. A foreground one carries on only where its old host's kantel-host and the sandbox's guest image are recent enough to keep it past the move; otherwise it ends with the move, and its `stderr` says why. A move that restarts the sandbox kills its running commands, and each one's `stderr` says the move restarted it and why. Its automatic snapshots from before stay on the old host.
+
+`GET /v1/sandboxes/{id}/move` (`kantel move <id> --dry-run`) is a move's dry run: it moves nothing, and answers `targets`, each host it may move to now, whether a move there keeps its memory (and why not), and the expected pause. The pause estimated is its memory's copy over the link: a running sandbox's resident memory (the rest is zero and costs nothing to copy), at the rate the new host's last copy from its host ran at, or 1 Gbit/s before the hosts have measured one. About 70 seconds for 8 GiB over 1 Gbit/s, less where much of it is unused. Writing the memory to disk on the old host and reading it to find what changed add to that, most on hosts without reflinks.
+
+A running sandbox moves in four steps, so it is unavailable only from its stop:
+
+1. `copying`: its disk and sticky disks are copied as it runs. It still runs commands and serves its ports.
+2. `stopping`: it is stopped, keeping its memory where it moves with it, and its running commands with it. Otherwise its processes end, and running commands are killed.
+3. `final-copy`: only what it wrote since the first copy is copied, and its memory with it.
+4. `starting`: it is restored on the new host from its memory, or boots there from its disk.
+
+From `stopping` on, commands and file calls wait for it as they do for a start. If the move fails after the stop, the sandbox is started again where it was, from its memory where it was kept. While it moves, a stop, pause, recover or delete is refused until the move ends. Both hosts need a kantel-host that moves running sandboxes, and one that moves memory for it to be kept.
 
 ```sh
 curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/move" \

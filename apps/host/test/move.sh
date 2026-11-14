@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Moving a stopped sandbox to another host (docs/design/disk-store.md, "Moving a sandbox to another host"):
+# Moving a sandbox to another host (docs/design/disk-store.md, "Moving a sandbox to another host"):
 # local-stack.sh --hosts 2 starts the self-hosted control plane, with sticky disks on (so it signs fetch grants), and two
 # kantel-host processes from this branch, each in a container of its own on Docker's bridge, both in the deployment's
 # default pool, which gets sync on. Their peer sync is held to 40 Mbit/s, so a copy takes long enough to be cut. Then a
@@ -12,12 +12,38 @@
 #      and its sticky disk's file, the random bytes the same; A's copy is deleted; and its port, exposed again, has the
 #      same URL as on A and serves its files from B.
 #
+# Then peer sync is let run at full speed, the sandbox started on B again, and a writer in it appends 1 MiB and a line
+# with the count to its disk every 0.6 s (100 MiB a minute) as it moves while it runs (with a restart, keepMemory false):
+#
+#   3. a running move back to A whose final copy fails (A can't make the sandbox from it) after B has stopped it: B
+#      starts it again, with what it wrote before the stop, and neither host keeps a copy of the move;
+#   4. a running move to A for real: its phases are copying, stopping, final-copy and starting, everything it wrote
+#      before the stop is on A (every count, in order, up to the last it wrote, and the bytes with them), and the time it
+#      was unavailable (from its stop until a command runs on A) and the bytes of each copy are printed. The local
+#      stack's hosts are on overlayfs over this machine's file system, not XFS, so each copy is a full copy here and
+#      the final copy's map reads every block; what goes over the mesh is still only the blocks that changed.
+#
+# Then it moves with its memory (keepMemory, the default), the hosts being the same machine (the same CPU) with the same
+# Firecracker, guest kernel and image (KANTEL_STACK_IMAGE_DIGEST), and memory snapshots written to disk (spoolMaxMiB -1):
+#
+#   5. a dry run (GET /sandboxes/{id}/move) answers B as a host that keeps its memory, with the pause expected and the rate it is
+#      estimated at, and moves nothing;
+#   6. a move to B: a process started before it (a ticker writing the time every 0.2 s) is still running after it, with
+#      the same PID, and carries on writing; its `moved` says its memory was kept, and the longest gap in its ticks (the
+#      pause) is printed beside the estimate. Commands sent through Kantel before it carry on too, by their IDs: a
+#      detached one runs on B with the same ID, its output growing there, and its kill works there; a foreground
+#      `POST /commands`, and `kantel exec` (this branch's CLI), each answer their command's whole output and exit code;
+#   7. A's Firecracker made to report another version (a wrapper answering --version), so its runtime fingerprint
+#      differs: a dry run answers A as a host that restarts it, saying why, and a move to A restarts it (the ticker is
+#      gone there) and says why in its `moved`; a detached command started before it is killed, and says why.
+#
 # It stops and removes the stack at the end, whatever happened.
 #
 #   apps/host/test/move.sh
 #
 # Needs what local-stack.sh needs (its KANTEL_STACK_* settings pick the images, and the guest image must take sticky
-# drives; KANTEL_STACK_DIR, KANTEL_STACK_IMAGE_DIGEST and KANTEL_STACK_HOST_FLAGS are set here). The stack is named
+# drives, and have this branch's guest agent for its foreground command to carry on in 6; KANTEL_STACK_DIR,
+# KANTEL_STACK_IMAGE_DIGEST and KANTEL_STACK_HOST_FLAGS are set here). The stack is named
 # move-<pid>, with its own state directory, so it runs beside other stacks.
 set -euo pipefail
 
@@ -152,5 +178,182 @@ run "$serve" >/dev/null
 wait=30 until_ok served disk-marker >/dev/null || fail "the port doesn't serve on B"
 [ "$(served disk-marker)" = on-disk ] || fail "the port on B served $(served disk-marker)"
 echo "moved: running on B with its files, sticky disk and bytes; A's copy deleted; its port at the same URL serves from B"
+
+# Peer sync at full speed for the running moves, the hosts restarted with the sandbox stopped.
+stop
+for h in h1 h2; do
+	jq '.syncRateMbit = -1 | .spoolMaxMiB = -1' "$dir/$h/config.json" >"$dir/$h/config.new" && cat "$dir/$h/config.new" >"$dir/$h/config.json"
+	docker restart "kantel-stack-$name-$h" >/dev/null
+done
+until_ok online "$a_id" || fail "$a didn't come back"
+until_ok online "$b_id" || fail "$b didn't come back"
+until_ok mesh_up "$a" || fail "$a brought no mesh up"
+until_ok mesh_up "$b" || fail "$b brought no mesh up"
+for c in "$a" "$b"; do
+	docker exec "$c" curl -sS http://127.0.0.1:7070/facts | jq -e '.features | index("sandbox-move-running")' >/dev/null ||
+		fail "$c doesn't report sandbox-move-running"
+done
+api POST "/sandboxes/$sandbox/start" -d '{"wait":true}' | jq -e --arg h "$b_id" '.state == "running" and .hostId == $h' >/dev/null ||
+	fail "it didn't start on B: $(api GET "/sandboxes/$sandbox")"
+# 1 MiB and its count every 0.6 s: 100 MiB a minute.
+writer='cd /home/user && (setsid sh -c '"'"'i=0; while true; do i=$((i+1)); head -c 1048576 /dev/urandom >> stream; echo $i >> counts; date +%s.%N > tick; sleep 0.6; done'"'"' >/dev/null 2>&1 &) && sleep 1'
+# Its counts are 1 to the last, in order, with a MiB of the stream for each: what it wrote is whole.
+whole() {
+	run 'n=$(wc -l < /home/user/counts); [ "$(seq 1 $n | sha256sum)" = "$(sha256sum < /home/user/counts)" ] && [ $(stat -c %s /home/user/stream) -ge $(((n) * 1048576)) ] && echo $n'
+}
+running_on() { api GET "/sandboxes/$sandbox" | jq -e --arg h "$1" '.state == "running" and .hostId == $h' >/dev/null; }
+
+echo "== 3. A running move whose final copy fails after the stop: it starts again where it was, with what it wrote"
+rm -f "$dir/live-a"
+run "rm -f /home/user/stream /home/user/counts; $writer" >/dev/null
+sleep 5
+# A can't make the sandbox from its final copy: something is in the way where it goes.
+on "$a" "mkdir -p $root/sandboxes/$sandbox && touch $root/sandboxes/$sandbox/in-the-way"
+api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\",\"keepMemory\":false,\"wait\":false}" |
+	jq -e '.state == "moving" and .move.phase == "copying"' >/dev/null || fail "the running move didn't begin"
+seen=$(run 'tail -n 1 /home/user/counts')
+[ -n "$seen" ] || fail "nothing written as it moved"
+wait=300 until_ok running_on "$b_id" || fail "it didn't start again on B: $(api GET "/sandboxes/$sandbox")"
+api GET "/sandboxes/$sandbox" | jq -e '.move == null' >/dev/null || fail "its move is still on it"
+n=$(whole) || fail "what it wrote before the stop isn't whole on B"
+[ "$n" -ge "$seen" ] || fail "B has $n counts, and $seen were written before the stop"
+on "$a" "rm -rf $root/sandboxes/$sandbox"
+on "$a" "test ! -e $root/sandbox-imports/$sandbox" || fail "A kept its copies"
+on "$b" "test ! -e $root/sandbox-exports/$sandbox" || fail "B kept its exports"
+echo "rolled back after the stop: started again on B with its $n counts (at least the $seen seen before the stop); no copies left"
+
+echo "== 4. Moved while it runs: unavailable only for its stop, the final copy and its boot"
+run "rm -f /home/user/stream /home/user/counts; $writer" >/dev/null
+sleep 30
+began=$(date +%s.%N)
+api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\",\"keepMemory\":false,\"wait\":false}" |
+	jq -e '.state == "moving"' >/dev/null || fail "the running move didn't begin"
+# Its state every 0.2 s, with the time, until it runs on A.
+: >"$dir/move-states"
+deadline=$((SECONDS + 600))
+until running_on "$a_id"; do
+	[ $SECONDS -lt $deadline ] || fail "it never ran on A: $(api GET "/sandboxes/$sandbox")"
+	printf '%s %s\n' "$(date +%s.%N)" "$(api GET "/sandboxes/$sandbox" | jq -r '[.state, (.move.phase // "-"), .hostId] | join(" ")')" >>"$dir/move-states"
+	sleep 0.2
+done
+ran=$(date +%s.%N)
+run true >/dev/null
+answered=$(date +%s.%N)
+last_tick=$(run 'cat /home/user/tick')
+phases=$(awk '{print $3}' "$dir/move-states" | uniq | grep -v '^-$' | xargs)
+for want in copying final-copy starting; do
+	grep -qw "$want" <<<"$phases" || fail "its phases were $phases, without $want"
+done
+stopped_at=$(awk '$3 != "copying" && $3 != "-" {print $1; exit}' "$dir/move-states")
+n=$(whole) || fail "what it wrote before the stop isn't whole on A"
+on "$b" "test ! -e $root/sandboxes/$sandbox && test ! -e $root/sandbox-exports/$sandbox" || fail "B kept its copy"
+on "$a" "test ! -e $root/sandbox-imports/$sandbox" || fail "A kept its staged first copy"
+# What A fetched of each copy (its first, as it ran, and its final one), as its fetches logged them.
+copies=$(docker logs "$a" 2>&1 | grep 'disk version fetched' | grep "sandbox/$sandbox/" | tail -2)
+first=$(grep -- '-live ' <<<"$copies" | grep -o 'fetchedBytes=[0-9]*' | cut -d= -f2 | tail -1)
+final=$(grep -v -- '-live ' <<<"$copies" | grep -o 'fetchedBytes=[0-9]*' | cut -d= -f2 | tail -1)
+awk -v began="$began" -v stopped="$stopped_at" -v ran="$ran" -v answered="$answered" -v tick="$last_tick" \
+	-v first="${first:-?}" -v final="${final:-?}" -v n="$n" 'BEGIN {
+		printf "moved while it ran: %d counts whole on A; phases '"$phases"'\n", n
+		printf "  copying took %.1f s; from its stop to running on A %.1f s; its last write to a command answered on A %.1f s\n",
+			stopped - began, ran - stopped, answered - tick
+		printf "  first copy fetched %s bytes; final copy fetched %s bytes\n", first, final
+	}'
+# The final copy fetched only what changed since the first: far less than the first.
+[ -n "$first" ] && [ -n "$final" ] || fail "A's fetches of the copies weren't logged: $copies"
+[ "$final" -lt $((first / 2)) ] || fail "the final copy fetched $final bytes, and the first $first: not only what changed"
+unavailable=$(awk -v t="$last_tick" -v a="$answered" 'BEGIN { printf "%d", a - t }')
+[ "$unavailable" -lt 30 ] || echo "NOTE: unavailable for ${unavailable} s here (overlayfs, no reflinks: each export and the final map read the whole disk)"
+
+for c in "$a" "$b"; do
+	docker exec "$c" curl -sS http://127.0.0.1:7070/facts | jq -e '.features | index("sandbox-move-memory")' >/dev/null ||
+		fail "$c doesn't report sandbox-move-memory"
+done
+# The writer stopped (its own command line matched, never this one's) and what it wrote let go.
+run "pkill -f '[t]ick; sleep 0.6' || true; rm -f /home/user/stream /home/user/counts" >/dev/null
+# A ticker started before the move: its PID, and the time every 0.2 s.
+ticker='cd /home/user && rm -f ticks && (setsid sh -c '"'"'echo $$ > ticker.pid; while true; do date +%s.%N >> ticks; sleep 0.2; done'"'"' >/dev/null 2>&1 &) && sleep 1 && cat ticker.pid'
+alive() { run "kill -0 $1 2>/dev/null && echo yes || echo no"; }
+# Whether the ticker writes on: its ticks grow over two seconds.
+ticking() {
+	local before after
+	before=$(run 'wc -l < /home/user/ticks')
+	sleep 2
+	after=$(run 'wc -l < /home/user/ticks')
+	[ "$after" -gt "$before" ]
+}
+
+echo "== 5. A dry run answers each host's way and estimated pause, and moves nothing"
+plan=$(api GET "/sandboxes/$sandbox/move")
+jq -e --arg b "$b_id" '(.targets | length) == 1 and .targets[0].hostId == $b and
+	.targets[0].keepsMemory == true and .targets[0].pauseMs >= 0 and .targets[0].memoryBytes > 0 and
+	.targets[0].bytesPerSecond > 0' >/dev/null <<<"$plan" || fail "the dry run: $(jq -c . <<<"$plan")"
+running_on "$a_id" || fail "the dry run moved it"
+estimate=$(jq -r '.targets[0] | "\(.pauseMs) ms for \(.memoryBytes) bytes at \(.bytesPerSecond) B/s (measured: \(.rateMeasured))"' <<<"$plan")
+echo "dry run: B keeps its memory, about $estimate"
+
+echo "== 6. Moved with its memory: a process started before it still runs after it, and so do its commands"
+pid=$(run "$ticker" | xargs)
+[ -n "$pid" ] || fail "no ticker"
+# A detached command, a foreground one whose call waits through the move, and kantel exec following one.
+detached=$(api POST "/sandboxes/$sandbox/commands" -d '{"command":"for i in $(seq 1 600); do echo tick $i; sleep 0.5; done","detached":true}' | jq -r .id)
+[ -n "$detached" ] && [ "$detached" != null ] || fail "no detached command"
+api POST "/sandboxes/$sandbox/commands" -d '{"command":"for i in $(seq 1 120); do echo fg $i; sleep 0.5; done; echo fg-done","timeoutMs":300000}' >"$dir/foreground.json" &
+foreground=$!
+(cd "$here/../../cli" && go build -o "$dir/kantel" ./cmd/kantel)
+(
+	KANTEL_URL=$url KANTEL_API_KEY=$key "$dir/kantel" exec "$sandbox" --timeout 120 -- 'for i in $(seq 1 60); do echo cli $i; sleep 0.5; done; echo cli-done' >"$dir/exec.out" 2>"$dir/exec.err"
+	echo $? >"$dir/exec.code"
+) &
+following=$!
+sleep 3
+moved=$(api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$b_id\"}")
+jq -e --arg h "$b_id" '.state == "running" and .hostId == $h and .moved.keptMemory == true' >/dev/null <<<"$moved" ||
+	fail "the move with its memory: $(jq -c '{state, hostId, moved}' <<<"$moved")"
+[ "$(alive "$pid")" = yes ] || fail "the ticker ($pid) isn't running on B"
+ticking || fail "the ticker stopped writing on B"
+# The detached command runs on B by its ID, its output growing there, and is killed there.
+ticks() { api GET "/sandboxes/$sandbox/commands/$detached" | jq -e -r 'select(.state == "running") | .stdout | split("\n") | length'; }
+before=$(ticks) || fail "the detached command isn't running on B: $(api GET "/sandboxes/$sandbox/commands/$detached" | jq -c '{state, exitCode, stderr}')"
+sleep 2
+after=$(ticks) || fail "the detached command ended on B"
+[ "$after" -gt "$before" ] || fail "the detached command's output didn't grow on B ($before, then $after lines)"
+api DELETE "/sandboxes/$sandbox/commands/$detached" | jq -e '.state == "killed"' >/dev/null || fail "its kill on B"
+run "pgrep -f '[s]eq 1 600' >/dev/null && echo running || echo gone" | grep -qx gone || fail "the detached command runs on after its kill"
+# The foreground call and kantel exec answer their commands' whole output and exit code.
+wait "$foreground" || true
+jq -e '.state == "exited" and .exitCode == 0 and (.stdout | test("^fg 1\n(.|\n)*fg 120\nfg-done\n$"))' "$dir/foreground.json" >/dev/null ||
+	fail "the foreground command across the move: $(jq -c '{id, state, exitCode, stderr}' "$dir/foreground.json")"
+wait "$following" || true
+[ "$(cat "$dir/exec.code")" = 0 ] && [ "$(head -n 1 "$dir/exec.out")" = "cli 1" ] && [ "$(tail -n 2 "$dir/exec.out" | xargs)" = "cli 60 cli-done" ] ||
+	fail "kantel exec across the move exited $(cat "$dir/exec.code"): $(tail -n 3 "$dir/exec.out" | xargs); $(cat "$dir/exec.err")"
+echo "commands carried on: $detached ran on B and was killed there; the foreground command and kantel exec ended 0 with all their output"
+pause=$(run "awk 'NR > 1 && \$1 - prev > gap { gap = \$1 - prev } { prev = \$1 } END { printf \"%.1f\", gap }' /home/user/ticks")
+on "$a" "test ! -e $root/sandboxes/$sandbox && test ! -e $root/sandbox-exports/$sandbox" || fail "A kept its copy"
+on "$b" "test ! -e $root/sandbox-imports/$sandbox" || fail "B kept its import"
+echo "moved with its memory: the ticker ($pid) runs on B and carries on; its longest gap $pause s (estimated: $estimate)"
+
+echo "== 7. A host whose runtime differs (another Firecracker): the move restarts it, and says why"
+cat >"$dir/bin/firecracker-other" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo "Firecracker v0.0.0-other"; exit 0; fi
+exec /opt/kantel/firecracker "$@"
+EOF
+chmod +x "$dir/bin/firecracker-other"
+jq '.firecracker = "/opt/kantel/firecracker-other"' "$dir/h1/config.json" >"$dir/h1/config.new" && cat "$dir/h1/config.new" >"$dir/h1/config.json"
+docker restart "$a" >/dev/null
+until_ok online "$a_id" || fail "$a didn't come back"
+until_ok mesh_up "$a" || fail "$a brought no mesh up"
+plan=$(api GET "/sandboxes/$sandbox/move")
+jq -e --arg a "$a_id" '.targets[0].hostId == $a and .targets[0].keepsMemory == false and
+	(.targets[0].restartReason | test("runtime"))' >/dev/null <<<"$plan" || fail "the dry run: $(jq -c . <<<"$plan")"
+detached=$(api POST "/sandboxes/$sandbox/commands" -d '{"command":"sleep 600","detached":true}' | jq -r .id)
+moved=$(api POST "/sandboxes/$sandbox/move" -d "{\"hostId\":\"$a_id\"}")
+jq -e --arg h "$a_id" '.state == "running" and .hostId == $h and .moved.keptMemory == false and (.moved.restartReason | test("runtime"))' \
+	>/dev/null <<<"$moved" || fail "the move to a host whose runtime differs: $(jq -c '{state, hostId, moved}' <<<"$moved")"
+ticking && fail "the ticker writes on, on A, after a restart"
+api GET "/sandboxes/$sandbox/commands/$detached" | jq -e '.state == "killed" and (.stderr | test("restarted there \\(the new host has another runtime"))' >/dev/null ||
+	fail "the command running as it restarted: $(api GET "/sandboxes/$sandbox/commands/$detached" | jq -c '{state, stderr}')"
+echo "restarted on A: $(jq -r .moved.restartReason <<<"$moved")"
 echo
 echo "PASS"

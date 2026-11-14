@@ -44,6 +44,7 @@ import {
 	type ExposedPort,
 	type FileEntry,
 	type Host,
+	type HostEvacuation,
 	type Invite,
 	KantelApiError,
 	type KantelClient,
@@ -138,6 +139,8 @@ type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
 type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
+type UiHostEvacuation = Awaited<ReturnType<NonNullable<HostsSource["evacuate"]>>>;
+type UiHostEvacuationProgress = NonNullable<UiHost["evacuation"]>;
 type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get"]>>;
 type UiPool = Awaited<ReturnType<NonNullable<HostsSource["pools"]>["list"]>>[number];
 type UiEnvironmentFile = UiEnvironment["files"][number];
@@ -605,6 +608,7 @@ function moveOf(sandbox: Sandbox, context: Context): { readonly move?: UiSandbox
 			...(move.hostId === undefined ? {} : { hostId: move.hostId }),
 			...(hostName === undefined ? {} : { hostName }),
 			keepMemory: move.keepMemory,
+			...(move.restartReason === undefined ? {} : { restartReason: move.restartReason }),
 			startedAt: move.startedAt,
 		},
 	};
@@ -1817,12 +1821,40 @@ async function hostChoices({ api, caller }: Context, accountId: string): Promise
 }
 
 /**
- * The hosts a microVM may move to, as far as the console can tell: the other online hosts that run microVMs in the pool
- * its own host is in (a move never leaves its pool), with the same architecture where both say. Kantel checks the rest
- * as it moves it (labels, a host pin, the pool's mesh, a host from before moves) and says why it refuses. None where
- * its host isn't one the viewer may see. Until Kantel answers a move's dry run, each restarts, with no estimate.
+ * The hosts a microVM may move to, as a move's dry run answers them (`planSandboxMove`): each with whether a move there keeps
+ * its memory (and why not) and the pause Kantel expects, by name where the console has read the host. A Kantel that
+ * can't say answers no `targets` (or, from before plans, no such route): then the hosts are as far as the console can tell, the other online hosts that
+ * run microVMs in the pool its own host is in (a move never leaves its pool), with the same architecture where both
+ * say, each with no estimate, and Kantel checks the rest as it moves it. None where its host isn't one the viewer may
+ * see.
  */
 async function moveTargets(context: Context, sandbox: UiSandbox): Promise<readonly UiMoveTarget[]> {
+	// Read first: the host names, and nothing to ask for where the viewer may see none of them.
+	const listed = await listedMoveTargets(context, sandbox);
+	if (listed.length === 0) return listed;
+	let plan: Awaited<ReturnType<typeof context.api.planSandboxMove>>;
+	try {
+		plan = await context.api.planSandboxMove(sandbox.id);
+	} catch (caught) {
+		// A Kantel from before moves were planned has no such route: the hosts as the console tells them.
+		if (caught instanceof KantelApiError && (caught.status === 404 || caught.status === 405)) return listed;
+		throw caught;
+	}
+	if (plan.targets === undefined) return listed;
+	const name = (hostId: string) => context.hostNames.get(hostId) ?? hostId;
+	return plan.targets
+		.map((target) => ({
+			hostId: target.hostId,
+			hostName: name(target.hostId),
+			memory: target.keepsMemory ? ("kept" as const) : ("restarts" as const),
+			...(target.pauseMs === undefined ? {} : { pauseMs: target.pauseMs }),
+			...(target.restartReason === undefined ? {} : { restartReason: target.restartReason }),
+		}))
+		.sort((a, b) => a.hostName.localeCompare(b.hostName));
+}
+
+/** The hosts a microVM may move to as far as the console can tell from the hosts it reads (`moveTargets`). */
+async function listedMoveTargets(context: Context, sandbox: UiSandbox): Promise<readonly UiMoveTarget[]> {
 	const { api, caller } = context;
 	let hosts: readonly Host[];
 	try {
@@ -1936,6 +1968,7 @@ function hostOf(host: Host): UiHost {
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
 		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+		...(host.evacuation === undefined ? {} : { evacuation: evacuationProgressOf(host.evacuation) }),
 		...(host.mesh === undefined
 			? {}
 			: {
@@ -1951,6 +1984,46 @@ function hostOf(host: Host): UiHost {
 					},
 				}),
 	};
+}
+
+/** An evacuation's counts and state, as a host's summary and the evacuation itself both have them. */
+function evacuationProgressOf(evacuation: Omit<HostEvacuation, "hostId" | "sandboxes">): UiHostEvacuationProgress {
+	return {
+		state: evacuation.state,
+		...(evacuation.reason === undefined ? {} : { reason: evacuation.reason }),
+		startedAt: evacuation.startedAt,
+		...(evacuation.endedAt === undefined ? {} : { endedAt: evacuation.endedAt }),
+		moved: evacuation.moved,
+		remaining: evacuation.remaining,
+		skipped: evacuation.skipped,
+		failed: evacuation.failed,
+	};
+}
+
+function evacuationOf(evacuation: HostEvacuation): UiHostEvacuation {
+	return {
+		...evacuationProgressOf(evacuation),
+		sandboxes: evacuation.sandboxes.map((item) => ({
+			id: item.sandboxId,
+			...(item.name === undefined ? {} : { name: item.name }),
+			kind: item.type,
+			state: item.state,
+			...(item.phase === undefined ? {} : { phase: item.phase }),
+			...(item.hostId === undefined ? {} : { hostId: item.hostId }),
+			...(item.keptMemory === undefined ? {} : { keptMemory: item.keptMemory }),
+			...(item.reason === undefined ? {} : { reason: item.reason }),
+		})),
+	};
+}
+
+/** A host's last evacuation, read with `read`: undefined when it has had none. */
+async function lastEvacuation(read: () => Promise<HostEvacuation>): Promise<UiHostEvacuation | undefined> {
+	try {
+		return evacuationOf(await read());
+	} catch (error) {
+		if (isCode(error, "not_found")) return undefined;
+		throw error;
+	}
 }
 
 function poolOf(pool: Pool): UiPool {
@@ -1986,6 +2059,8 @@ function hostsSource({ api }: Context): HostsSource {
 			remove: (id) => api.deletePool(id),
 		},
 		move: async (id, poolId) => hostOf(await api.updateHost(id, { pool: poolId })),
+		evacuate: async (id) => evacuationOf(await api.startHostEvacuation(id)),
+		evacuation: (id) => lastEvacuation(() => api.getHostEvacuation(id)),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
 			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
@@ -2093,6 +2168,8 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 			remove: (id) => api.deleteAccountPool(id),
 		},
 		move: async (id, poolId) => hostOf(await api.updateAccountHost(id, { pool: poolId })),
+		evacuate: async (id) => evacuationOf(await api.startAccountHostEvacuation(id)),
+		evacuation: (id) => lastEvacuation(() => api.getAccountHostEvacuation(id)),
 	};
 }
 

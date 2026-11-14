@@ -359,6 +359,9 @@ type sandbox struct {
 	killed    *fc.Machine
 	// reclaiming is a Reclaim under way (memory.go), which a stop or snapshot ends first.
 	reclaiming *reclaim
+	// suspends counts its stops that kept its memory (a pause, a move that keeps it), so a call to its guest that
+	// broke can tell whether one of them broke it (Exec): the guest's commands carry on in that memory.
+	suspends int
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -2832,6 +2835,24 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keepMemory := p.Memory == nil || *p.Memory
+	if p.Export != "" {
+		// A running sandbox's move's stop: only while its first copy is here, which its rollback deletes first.
+		if !m.exportWhole(p.SandboxID, p.Export) {
+			return proto.SnapshotInfo{}, conflict("sandbox %s's move %s was undone here", s.meta.ID, p.Export)
+		}
+		if s.meta.State == proto.StateStopped && p.SnapshotID == "" {
+			// Stopped by it already (a move sent again): done, its memory let go as it asked.
+			if !keepMemory && s.meta.Memory {
+				_ = os.Remove(filepath.Join(s.vmDir(), "state"))
+				_ = os.Remove(filepath.Join(s.vmDir(), "mem"))
+				s.meta.Memory = false
+				if err := m.writeMeta(s); err != nil {
+					return proto.SnapshotInfo{}, err
+				}
+			}
+			return proto.SnapshotInfo{SandboxID: s.meta.ID, Kind: "auto", Tier: Tier}, nil
+		}
+	}
 	if s.meta.State == proto.StateStopped && p.SnapshotID != "" {
 		// Stopped already (its VM exited or was reset, or an earlier stop the control plane never heard back from): the
 		// stop is done, and answers a snapshot of its disk as it is, so a sandbox the control plane has in error can be
@@ -2931,6 +2952,9 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	// A bundle it was still waiting for is waited for again by its next start, which reserves it again.
 	m.releaseBundles(s, nil)
 	s.meta.Memory = keepMemory
+	if keepMemory {
+		s.suspends++
+	}
 	s.meta.Pid = 0
 	s.meta.Error = ""
 	if err := m.writeMeta(s); err != nil {
@@ -4232,28 +4256,56 @@ func (m *Manager) List() []proto.SandboxInfo {
 }
 
 func (m *Manager) running(id string) (*guest.Client, error) {
+	client, _, err := m.runningSince(id)
+	return client, err
+}
+
+// runningSince is a running sandbox's guest, and how many of its stops kept its memory so far (sandbox.suspends).
+func (m *Manager) runningSince(id string) (*guest.Client, int, error) {
 	s, err := m.get(id)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State != proto.StateRunning || s.guest == nil {
-		return nil, conflict("sandbox %s is %s, not running", id, s.meta.State)
+		return nil, 0, conflict("sandbox %s is %s, not running", id, s.meta.State)
 	}
-	return s.guest, nil
+	return s.guest, s.suspends, nil
+}
+
+// suspendedSince is whether a stop that kept the sandbox's memory came after suspends (runningSince's count), once
+// any stop under way has finished.
+func (m *Manager) suspendedSince(id string, suspends int) bool {
+	s, err := m.get(id)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.suspends > suspends
 }
 
 // Exec runs a command in a running sandbox. With onOutput, output is streamed to it as it comes.
+//
+// A command with an ID that isn't streamed is kept past its connection to the guest (guest.ExecRequest.Keep): a stop
+// that keeps the sandbox's memory (a pause, or a move to another host that keeps it) breaks that connection, and the
+// command carries on in the memory. Its call then fails suspended (proto.ErrSuspended), so Kantel follows it by its ID
+// (sandbox.exec.get) wherever the sandbox runs next.
 func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(stdout, stderr string)) (proto.ExecResult, error) {
-	client, err := m.running(p.SandboxID)
+	client, suspends, err := m.runningSince(p.SandboxID)
 	if err != nil {
 		return proto.ExecResult{}, err
 	}
 	req := execRequest(p)
 	req.Detached = p.Detached
 	if !p.Stream || onOutput == nil {
+		req.Keep = p.CommandID != "" && !p.Detached
 		res, err := client.Exec(ctx, req)
+		// Only a call that broke with no answer from the guest: a refusal the guest answered is the command's own.
+		if err != nil && guest.StatusOf(err) == 0 && req.Keep && ctx.Err() == nil && m.suspendedSince(p.SandboxID, suspends) {
+			return proto.ExecResult{}, &proto.Error{Code: proto.ErrSuspended, Message: fmt.Sprintf("sandbox %s was stopped keeping its memory as command %s ran (a pause, or a move to another host): the command carries on in it", p.SandboxID, p.CommandID)}
+		}
 		return execResultOf(res), err
 	}
 	started := time.Now()

@@ -711,24 +711,32 @@ func accountLabel(a api.Account) string {
 	return a.Name + " (" + a.ID + ")"
 }
 
-// moveCommand is kantel move: a stopped microVM moved to another host in its pool, and started there.
+// moveCommand is kantel move: a microVM moved to another host in its pool, and started there.
 func moveCommand() *cli.Command {
 	return &cli.Command{
-		Name: "move", Summary: "Move a stopped sandbox to another host in its pool, and start it there", Args: IDArg,
+		Name: "move", Summary: "Move a sandbox to another host in its pool, and start it there", Args: IDArg,
 		Flags: []cli.Flag{
 			{Name: "to", Type: cli.String, Value: "<host>", Description: "The host to move it to, by ID (default: the scheduler's pick)"},
-			{Name: "drop-memory", Type: cli.Bool, Description: "Move a paused sandbox, booting it on its disk on the new host (its memory is lost)"},
+			{Name: "drop-memory", Type: cli.Bool, Description: "Restart a running or paused sandbox on the new host, booting it on its disk (its memory is lost)"},
+			{Name: "dry-run", Type: cli.Bool, Description: "Move nothing: list the hosts it may move to, whether each keeps its memory, and the pause expected"},
 			{Name: "wait", Type: cli.Bool, Description: "Answer once it runs on the new host (the default)"},
 			noWaitFlag,
 		},
 		Details: "Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts\n" +
 			"there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name,\n" +
-			"settings and URLs, and never leaves its pool. If it can't be moved, it is left stopped where it was.\n\n" +
-			"Only a stopped sandbox moves for now: stop a running one first. Memory doesn't move yet, so a paused one\n" +
-			"moves only with --drop-memory. Its automatic snapshots from before stay on the old host.",
+			"settings and URLs, and never leaves its pool. If it can't be moved, it is left where it was.\n\n" +
+			"A running or paused one keeps its memory where both hosts' CPU and runtime match, and a host where it\n" +
+			"can is picked first: a running one is copied as it runs, stopped keeping its memory, and what it wrote\n" +
+			"since and its memory are copied and restored there, its programs carrying on after a pause of about its\n" +
+			"memory's copy. Elsewhere, or with --drop-memory, it restarts: copied as it runs, stopped (its processes\n" +
+			"end), what it wrote since copied, and booted on the new host, unavailable for seconds. --dry-run says\n" +
+			"which each host does before you move it. If a move fails after the stop, it starts again where it was.\n" +
+			"Its automatic snapshots from before stay on the old host.",
 		Examples: []cli.Example{
-			{What: "Move a stopped sandbox to whichever host the scheduler picks", Line: "kantel move sbx_4kq9x2mt"},
+			{What: "Move a sandbox to whichever host the scheduler picks, with its memory where it can", Line: "kantel move sbx_4kq9x2mt"},
+			{What: "See where it may go, and whether each keeps its memory", Line: "kantel move sbx_4kq9x2mt --dry-run"},
 			{What: "To a host of your choosing", Line: "kantel move sbx_4kq9x2mt --to hst_7c2m9q4k"},
+			{What: "Move a running sandbox, restarting it on the new host", Line: "kantel move sbx_4kq9x2mt --drop-memory"},
 		},
 		Run: func(c *cli.Context) error {
 			if c.Bool("wait") && c.Bool("no-wait") {
@@ -743,6 +751,18 @@ func moveCommand() *cli.Command {
 				return err
 			}
 			var raw json.RawMessage
+			if c.Bool("dry-run") {
+				var plan *api.SandboxMovePlan
+				err = c.Spin("Asking where "+c.Arg(0)+" may move…", func() error {
+					plan, err = client.PlanSandboxMove(c.Ctx, c.Arg(0), api.Raw(&raw))
+					return err
+				})
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, plan, func() string { return moveTargetsText(c, c.Arg(0), *plan) })
+				return nil
+			}
 			var sandbox *api.Sandbox
 			err = c.Spin("Moving "+c.Arg(0)+" to another host…", func() error {
 				sandbox, err = client.MoveSandbox(c.Ctx, c.Arg(0), body, api.Raw(&raw))
@@ -753,10 +773,21 @@ func moveCommand() *cli.Command {
 			}
 			c.Emit(raw, sandbox, func() string {
 				if sandbox.State != api.SandboxStateRunning {
-					return sandbox.ID + " " + c.Style.State(StateOf(*sandbox))
+					out := sandbox.ID + " " + c.Style.State(StateOf(*sandbox))
+					if m := sandbox.Move; m != nil && m.RestartReason != nil {
+						out += "\n  It restarts there: " + *m.RestartReason + "."
+					}
+					return out
 				}
-				return "Moved " + sandbox.ID + " (" + sandbox.Name + ") to " + hostOf(*sandbox) + ", " + c.Style.State(StateOf(*sandbox)) + ".\n" +
-					"  It booted on its disk there: what ran before it stopped isn't running."
+				out := "Moved " + sandbox.ID + " (" + sandbox.Name + ") to " + hostOf(*sandbox) + ", " + c.Style.State(StateOf(*sandbox)) + ".\n"
+				if m := sandbox.Moved; m != nil && m.KeptMemory {
+					return out + "  Its memory moved with it: what ran before carries on."
+				}
+				out += "  It booted on its disk there: what ran before it stopped isn't running."
+				if m := sandbox.Moved; m != nil && m.RestartReason != nil {
+					out += "\n  Its memory couldn't move: " + *m.RestartReason + "."
+				}
+				return out
 			})
 			if sandbox.State == api.SandboxStateError {
 				return cli.ExitCode(cli.ExitFailed)
@@ -764,6 +795,31 @@ func moveCommand() *cli.Command {
 			return nil
 		},
 	}
+}
+
+// moveTargetsText is a move's dry run as a table: each host it may move to, whether its memory goes too (and why
+// not), and the pause expected where it does.
+func moveTargetsText(c *cli.Context, id string, plan api.SandboxMovePlan) string {
+	if len(plan.Targets) == 0 {
+		return "No other host in its pool can take " + id + " now, as far as Kantel can say."
+	}
+	var rows [][]string
+	for _, t := range plan.Targets {
+		memory, pause := "restarts", ""
+		if t.KeepsMemory {
+			memory = "keeps memory"
+			if t.PauseMs != nil {
+				pause = "about " + cli.Duration(float64(*t.PauseMs)/1000)
+				if t.RateMeasured == nil || !*t.RateMeasured {
+					pause += " (rate assumed)"
+				}
+			}
+		} else if t.RestartReason != nil {
+			memory += ": " + *t.RestartReason
+		}
+		rows = append(rows, []string{t.HostID, memory, pause})
+	}
+	return cli.Table(c.Style, []string{"HOST", "MEMORY", "PAUSE"}, rows)
 }
 
 // upgradeCommand is kantel upgrade: an isolate made a microVM with the same ID, files and settings.

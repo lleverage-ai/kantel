@@ -426,7 +426,7 @@ func (q *ListSandboxProcessesQuery) values() url.Values {
 type ListSandboxesQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account *string
-	// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+	// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
 	State *SandboxState
 	// Include stopped, paused and errored sandboxes. Default: only active ones.
 	All *bool
@@ -823,6 +823,24 @@ func (c *Client) GetHost(ctx context.Context, hostID string, opts ...CallOption)
 func (c *Client) UpdateHost(ctx context.Context, hostID string, body UpdateHostBody, opts ...CallOption) (*Host, error) {
 	var out Host
 	if err := c.Do(ctx, Call{Method: "PATCH", Path: fmt.Sprintf("/admin/hosts/%s", url.PathEscape(hostID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetHostEvacuation GET /admin/hosts/{hostId}/evacuation: Get a host's evacuation. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) GetHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/admin/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StartHostEvacuation POST /admin/hosts/{hostId}/evacuation: Move every sandbox off a host. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A deployment super-admin only (a key needs `hosts:admin`).
+func (c *Client) StartHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/admin/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -1259,6 +1277,24 @@ func (c *Client) UpdateAccountHost(ctx context.Context, hostID string, body Upda
 	return &out, nil
 }
 
+// GetAccountHostEvacuation GET /hosts/{hostId}/evacuation: Get the evacuation of one of an account's hosts. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) GetAccountHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StartAccountHostEvacuation POST /hosts/{hostId}/evacuation: Move every sandbox off one of an account's hosts. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+func (c *Client) StartAccountHostEvacuation(ctx context.Context, hostID string, opts ...CallOption) (*HostEvacuation, error) {
+	var out HostEvacuation
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/hosts/%s/evacuation", url.PathEscape(hostID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // UpdateAccountHostAgent POST /hosts/{hostId}/update: Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 func (c *Client) UpdateAccountHostAgent(ctx context.Context, hostID string, opts ...CallOption) (*Host, error) {
 	var out Host
@@ -1593,7 +1629,16 @@ func (c *Client) RefreshSandboxMounts(ctx context.Context, sandboxID string, bod
 	return &out, nil
 }
 
-// MoveSandbox POST /sandboxes/{sandboxId}/move: Move a sandbox to another host. Moves a stopped microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. Memory doesn't move yet: a paused sandbox is refused unless `keepMemory` is `false`, and then boots on its disk. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left stopped where it was. Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.
+// PlanSandboxMove GET /sandboxes/{sandboxId}/move: Plan a sandbox's move. A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused as a move would be when it can't move. A key needs `sandboxes:write`.
+func (c *Client) PlanSandboxMove(ctx context.Context, sandboxID string, opts ...CallOption) (*SandboxMovePlan, error) {
+	var out SandboxMovePlan
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/move", url.PathEscape(sandboxID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// MoveSandbox POST /sandboxes/{sandboxId}/move: Move a sandbox to another host. Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs, then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with `keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.
 func (c *Client) MoveSandbox(ctx context.Context, sandboxID string, body MoveSandboxBody, opts ...CallOption) (*Sandbox, error) {
 	var out Sandbox
 	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/move", url.PathEscape(sandboxID)), Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {

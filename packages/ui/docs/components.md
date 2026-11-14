@@ -468,6 +468,31 @@ brings the peers.
 
 **Cost:** none: the host sends it with every heartbeat.
 
+### HostEvacuationPanel and EvacuateDialog
+
+Move sandboxes off a host (`src/compute/host-evacuation.tsx`), from Move sandboxes off in its ⋯ menu on the Hosts page
+where the `HostsSource` has `evacuate`: `EvacuateDialog` says what it does (the host is drained, each sandbox moves to
+another host in its pool two at a time, keeping its memory where the hosts match and restarting otherwise, and any that
+can't move stay with the reason), then begins it and opens the host's row. `HostEvacuationPanel`, at the top of the
+opened row of a draining host or one that has had an evacuation (`HostEvacuationSection` reads it from
+`HostsSource.evacuation`, every 2 seconds while it runs), shows a heading with its state in words (2 of 8 sandboxes
+moved; Done; Ended, with what failed; Stopped, as an undrain does), a bar of how much has ended while it runs, and a row
+per sandbox: its name (A private sandbox, where the viewer may not see it) and ID, its state (Waiting, the move's phase
+worded as Move to host words it, Moved to the host by name, Skipped, Failed) and the detail: whether its memory was kept
+or why it restarted, and why it was skipped or failed. Before one begins it says what it does, with Move sandboxes off;
+after one failed or stopped, it offers it again (Try again). The host's row shows the count under its state while it
+runs (`evacuationRowText`). `narrow` gives a short row per sandbox instead of the table.
+
+**Don't use it for** moving one sandbox (`MoveDialog`) or a host to another pool (Move to pool).
+
+**States:** idle, idle while away, in progress (copying, a last copy, waiting, moved with memory kept and restarted),
+some skipped with reasons (kept to its host, an isolate, in error) and a private sandbox, done, done with nothing on
+it, failed (a move, and the host revoked), stopped, loading, a failed read, long content, a phone, and the dialog and
+its refusal; all in its stories. The Hosts page's stories open the dialog on a phone and a wide screen.
+
+**Cost:** one read of the evacuation when a draining host's row opens, then one every 2 seconds while it runs; the page
+reads the hosts every 5 seconds meanwhile, for the rows' counts.
+
 ### SnapshotHosts and SnapshotCopiesSwitch
 
 A saved snapshot's hosts (`src/compute/snapshot-hosts.tsx`), in a dialog from Hosts in its menu on the Snapshots page:
@@ -493,7 +518,7 @@ read, an older gateway and a phone; the switch on, off, read only and refused. A
 
 Move to host (`src/compute/sandbox-move.tsx`), from a microVM's menu on its page and its row in the Sandboxes list,
 where the `SandboxesSource` has `move` and `moveTargets`. The item is there for every microVM, greyed out unless it can
-move now (`canMove`: stopped or paused, on a host the viewer can see, connected). The dialog lists the hosts it may move
+move now (`canMove`: running, stopped or paused, on a host the viewer can see, connected). The dialog lists the hosts it may move
 to (`moveTargets`: the other hosts of its pool that run microVMs), one radio row each with the host's name, cut short
 with the whole name in its tooltip, and what a move there does: Keeps memory or Restarts, and the pause Kantel expects
 (`pauseMs`) where it gives one. Until Kantel answers a move's dry run, `memory` and `pauseMs` are absent: every host
