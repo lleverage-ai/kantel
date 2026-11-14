@@ -2448,11 +2448,15 @@ type SandboxStartup struct {
 	Disk *SandboxStartupDisk `json:"disk,omitempty"`
 	// Making its disk, in milliseconds.
 	DiskMs float64 `json:"diskMs"`
+	// For a sandbox made from a saved snapshot on a host that didn't hold it: its host fetching the snapshot's disk from another host in its pool first, in milliseconds, until the host reported it (each 15 seconds or so). Not in `hostMs`.
+	FetchMs *float64 `json:"fetchMs,omitempty"`
 	// The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts).
 	HostMs float64 `json:"hostMs"`
+	// For a sandbox made from a snapshot that holds memory: whether its memory was restored, its processes carrying on (`true`), or it booted on the snapshot's disk alone (`false`), on a host whose copy of the snapshot has no memory it can restore (another CPU or runtime, or its memory not fetched yet).
+	RestoredMemory *bool `json:"restoredMemory,omitempty"`
 	// For a fork of a running sandbox: the live snapshot of its source it was made from.
 	SnapshotMs *float64 `json:"snapshotMs,omitempty"`
-	// From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it.
+	// From Kantel's call to its host until the host answered, in milliseconds, its fetch (`fetchMs`) included. Well over `hostMs` and `fetchMs` is time on the way to and from the host, not on it.
 	TotalMs float64 `json:"totalMs"`
 }
 

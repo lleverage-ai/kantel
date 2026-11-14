@@ -209,6 +209,11 @@ export interface SandboxSpec {
 	readonly poolId?: string;
 	/** Start from this snapshot's disk (a `ref` the backend answered); absent, from an empty disk. */
 	readonly fromSnapshot?: string;
+	/**
+	 * With `fromSnapshot`: the hosts holding it, and whether another host may fetch it first. Absent: only the host its
+	 * ref names, where it names one.
+	 */
+	readonly snapshotCopies?: SnapshotCopies;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
 	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
@@ -221,6 +226,21 @@ export interface SandboxSpec {
 	readonly mounts?: readonly BackendMount[];
 	/** Sticky disks to attach (`stickyDisks`): it goes only where the backend can attach them. */
 	readonly stickyDisks?: readonly BackendStickyDisk[];
+}
+
+/**
+ * Where a create from a snapshot can start (`SandboxSpec.snapshotCopies`, docs/design/disk-store.md, "Phase 3 notes"):
+ * the hosts holding it, the one it was taken on first, then those with a copy (the catalogue's `snapshot` holders),
+ * each one of the spec's eligible hosts. A backend places it on a holder with room, those whose copy restores its
+ * memory there first; with none, and `fetch`, on another eligible host with room, which fetches it first.
+ */
+export interface SnapshotCopies {
+	/** Each host holding it, and whether its copy there restores the snapshot's memory (its own, or a copy's memory). */
+	readonly holders: readonly { readonly hostId: string; readonly memory: boolean }[];
+	/** Whether the snapshot holds memory: a create elsewhere, or on a holder without it, boots on its disk. */
+	readonly memory: boolean;
+	/** Whether a host may fetch it from a holder first: snapshots are synced here, and a holder has reported it. */
+	readonly fetch: boolean;
 }
 
 /** What an upgrade makes (`SandboxBackend.upgrade`): a microVM create's spec, and what it starts from. */
@@ -607,6 +627,11 @@ export interface TakeSnapshotOptions {
 
 export interface TakenSnapshot extends SnapshotMadeOn {
 	readonly ref: string;
+	/**
+	 * The host it was taken on, which holds it first: where `ref` names no host (a saved snapshot's ID alone), the
+	 * compute plane names that host's copy by it. Absent where the backend has no hosts (the stub).
+	 */
+	readonly hostId?: string;
 	readonly sizeBytes: number;
 	/** The base image version its root file system is, as `Placement.base`; absent where the backend doesn't know. */
 	readonly base?: string;

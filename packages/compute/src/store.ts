@@ -390,6 +390,12 @@ export type StoredCommand = computeSchema.Command & {
  */
 export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 	readonly ref?: string;
+	/**
+	 * The host it was taken on, as its backend said (`TakenSnapshot.hostId`): its first holder where `ref` names none (a
+	 * saved snapshot's ID alone), its copy there named `<hostId>/<ref>`. Absent for one taken before this was kept, whose
+	 * ref names its host, and for a backend with no hosts.
+	 */
+	readonly hostId?: string;
 	readonly base?: string;
 	/**
 	 * All its files take on its host's disk, those it shares with other snapshots included, as the host last said (a

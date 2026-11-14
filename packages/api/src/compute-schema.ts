@@ -972,6 +972,22 @@ export const SandboxStartup = Type.Object(
 			}),
 		),
 		diskMs: Type.Number({ description: "Making its disk, in milliseconds." }),
+		fetchMs: Type.Optional(
+			Type.Number({
+				description:
+					"For a sandbox made from a saved snapshot on a host that didn't hold it: its host fetching the snapshot's " +
+					"disk from another host in its pool first, in milliseconds, until the host reported it (each 15 seconds or " +
+					"so). Not in `hostMs`.",
+			}),
+		),
+		restoredMemory: Type.Optional(
+			Type.Boolean({
+				description:
+					"For a sandbox made from a snapshot that holds memory: whether its memory was restored, its processes " +
+					"carrying on (`true`), or it booted on the snapshot's disk alone (`false`), on a host whose copy of the " +
+					"snapshot has no memory it can restore (another CPU or runtime, or its memory not fetched yet).",
+			}),
+		),
 		snapshotMs: Type.Optional(
 			Type.Number({
 				description: "For a fork of a running sandbox: the live snapshot of its source it was made from.",
@@ -990,8 +1006,8 @@ export const SandboxStartup = Type.Object(
 		}),
 		totalMs: Type.Number({
 			description:
-				"From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the " +
-				"way to and from the host, not on it.",
+				"From Kantel's call to its host until the host answered, in milliseconds, its fetch (`fetchMs`) included. " +
+				"Well over `hostMs` and `fetchMs` is time on the way to and from the host, not on it.",
 		}),
 	},
 	{

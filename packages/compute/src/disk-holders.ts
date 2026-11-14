@@ -20,9 +20,10 @@
  *   holder carries its host's map digest, pool stamp, and what its memory was made on (its CPU and runtime), and a host
  *   holds only copies of an account whose data it may have. `disk.locate` answers only holders whose copy restores on
  *   the asker (`memoryRestoresOn`), of a snapshot still in use, in the asker's pool, with the digest most of them have.
- * - `snapshot`: a saved snapshot (`snapshots/<id>/` on a host), its ID the host's snapshot ID (a ref's, `{hostId}/{id}`),
- *   in two versions, one for each of its block-mapped files: `disk` and `memory`. Its record is the snapshot's
- *   (`StoredSnapshot`, by a ref naming one of its holders and the ID): a host holds a version only of a saved snapshot
+ * - `snapshot`: a saved snapshot (`snapshots/<id>/` on a host), its ID the host's snapshot ID (a ref's, `{hostId}/{id}`,
+ *   or the whole of one naming no host), in two versions, one for each of its block-mapped files: `disk` and `memory`.
+ *   Its record is the snapshot's (`StoredSnapshot`, by its ID alone or a ref naming one of its holders and the ID): a
+ *   host holds a version only of a saved snapshot
  *   the catalogue has, of an account whose data it may have, and is offered it only in the snapshot's pool, of its
  *   architecture. Each holder carries the map digest its host reported. Synced wherever there is a grant key (sticky
  *   disks or templates on): its hosts fetch it from each other over the same mesh.
@@ -197,6 +198,8 @@ export interface DiskHolders {
 	rotate(by: string): Promise<GrantKeyring>;
 	/** The holders of an object's versions, by version. */
 	holdersOf(kind: DiskKind, objectId: string): Promise<Map<string, StoredDiskHolder[]>>;
+	/** Whether saved snapshots are synced here (sticky disks or templates on, and a grant key): hosts fetch them. */
+	readonly syncsSnapshots: boolean;
 	/** Forgets every holder of an object, or of one of its versions. */
 	forget(kind: DiskKind, objectId: string, version?: string): Promise<void>;
 	/**
@@ -575,28 +578,37 @@ export function createDiskHolders(options: {
 	}
 
 	/**
-	 * The saved snapshot a host's snapshot ID is: the one with a ref naming `hostId` (the host reporting it, which saved
-	 * it) and the ID, else the ref its holders were recorded with, else a ref naming one of them. With the host its ref
-	 * names, whose pool it is in when it records none (taken before pools). Undefined when the catalogue has none ready.
-	 * A host's snapshot ID is its own choice, so two refs may share one: each copy is held as the ref it was recorded
-	 * with.
+	 * The saved snapshot a host's snapshot ID is: the one whose ref is the ID alone (a saved snapshot's, unique across
+	 * hosts), else one with a ref naming `hostId` (the host reporting it, which saved it) and the ID, else the ref its
+	 * holders were recorded with, else a ref naming one of them. With the host it was taken on (its ref's, or its record's
+	 * for a ref naming none), whose pool it is in when it records none (taken before pools). Undefined when the catalogue
+	 * has none ready. An older host's snapshot ID is its own choice, so two refs may share one: each copy is held as the
+	 * ref it was recorded with.
 	 */
 	async function savedSnapshot(
 		objectId: string,
 		holders: readonly StoredDiskHolder[],
 		hostId: string,
-	): Promise<{ readonly record: StoredSnapshot; readonly hostId: string; readonly ref: string } | undefined> {
-		const refs = new Set<string>([`${hostId}/${objectId}`]);
-		for (const holder of holders) if (holder.ref !== undefined) refs.add(holder.ref);
-		for (const holder of holders) refs.add(`${holder.hostId}/${objectId}`);
-		for (const ref of refs) {
-			const [refHost, refId] = ref.split("/");
-			if (refHost === undefined || refId !== objectId) continue;
+	): Promise<{ readonly record: StoredSnapshot; readonly hostId?: string; readonly ref: string } | undefined> {
+		for (const ref of recordRefs(objectId, holders, hostId)) {
+			const [refHost, refId] = ref.includes("/") ? ref.split("/") : [undefined, ref];
+			if (refId !== objectId) continue;
 			for (const record of await store.snapshots.list({ ref })) {
-				if (record.kind === "saved" && record.state === "ready") return { record, hostId: refHost, ref };
+				if (record.kind === "saved" && record.state === "ready") {
+					const taken = refHost ?? record.hostId;
+					return { record, ...(taken === undefined ? {} : { hostId: taken }), ref };
+				}
 			}
 		}
 		return undefined;
+	}
+
+	/** The refs a host's snapshot ID may be recorded by (`savedSnapshot`): the ID alone first, then those naming a host. */
+	function recordRefs(objectId: string, holders: readonly StoredDiskHolder[], hostId: string): Set<string> {
+		const refs = new Set<string>([objectId, `${hostId}/${objectId}`]);
+		for (const holder of holders) if (holder.ref !== undefined) refs.add(holder.ref);
+		for (const holder of holders) refs.add(`${holder.hostId}/${objectId}`);
+		return refs;
 	}
 
 	/**
@@ -605,12 +617,9 @@ export function createDiskHolders(options: {
 	 * delete's to remove.
 	 */
 	async function anyRecord(objectId: string, holders: readonly StoredDiskHolder[], hostId: string): Promise<boolean> {
-		const refs = new Set<string>([`${hostId}/${objectId}`]);
-		for (const holder of holders) {
-			if (holder.ref !== undefined) refs.add(holder.ref);
-			refs.add(`${holder.hostId}/${objectId}`);
+		for (const ref of recordRefs(objectId, holders, hostId)) {
+			if ((await store.snapshots.list({ ref })).length > 0) return true;
 		}
-		for (const ref of refs) if ((await store.snapshots.list({ ref })).length > 0) return true;
 		return false;
 	}
 
@@ -635,7 +644,7 @@ export function createDiskHolders(options: {
 		// None the catalogue has: deleted (a host fetching it then drops its copy), or never reported by its host.
 		if (found === undefined) throw missing();
 		const { record } = found;
-		const poolId = record.poolId ?? hosts.get(found.hostId)?.poolId;
+		const poolId = record.poolId ?? (found.hostId === undefined ? undefined : hosts.get(found.hostId)?.poolId);
 		// A host an account added may have only that account's data; and a snapshot is only its pool's hosts'.
 		if ((asker.accountId !== undefined && asker.accountId !== record.accountId) || poolId !== asker.poolId) {
 			throw missing();
@@ -661,6 +670,7 @@ export function createDiskHolders(options: {
 	}
 
 	return {
+		syncsSnapshots: snapshots && sealer !== undefined,
 		async recordHoldings(hostId, at, report) {
 			const sticky = options.stickyDisks ? report.stickyDisks : undefined;
 			const rootfs = options.templates ? report.objects?.rootfs : undefined;

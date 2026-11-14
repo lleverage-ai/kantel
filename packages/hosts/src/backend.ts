@@ -2,10 +2,11 @@
  * The compute API's `SandboxBackend` over the hosts that joined: each call is placed by the scheduler or relayed to the
  * sandbox's host over its WebSocket. The compute API keeps every record; this keeps only placements (the registry's).
  *
- * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
- * it goes on that host. A template snapshot's `ref` is the same, and a sandbox made from it goes on its host, or any
- * other with a copy of it (`SandboxTemplateBoot.snapshotHosts`), or boots the template fresh elsewhere when those are
- * full. Desktops, browsers and SSH are reached through tunnel URLs
+ * A snapshot's `ref` is `{hostId}/{snapshotId}`, or a saved snapshot's ID alone (`snapshot-refs.ts`). A sandbox made
+ * from one goes on a host holding it with room (`SandboxSpec.snapshotCopies`), else on another eligible host that
+ * fetches it first; a sandbox forked or upgraded from one goes on the host its ref names. A template snapshot's `ref`
+ * is `{hostId}/{snapshotId}`, and a sandbox made from it goes on its host, or any other with a copy of it
+ * (`SandboxTemplateBoot.snapshotHosts`), or boots the template fresh elsewhere when those are full. Desktops, browsers and SSH are reached through tunnel URLs
  * with tickets (`tunnel.ts`): the desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced
  * there when the ticket says so, Chromium's DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
@@ -39,6 +40,7 @@ import {
 	type SandboxBackend,
 	type SandboxSpec,
 	type SandboxTemplateBoot,
+	type SnapshotCopies,
 	type SnapshotMadeOn,
 	type TakenSnapshot,
 	type TemplateRuntime,
@@ -82,6 +84,7 @@ import {
 	type HostStickyDiskStatus,
 	type HostTemplateBoot,
 	type SandboxTier,
+	SNAPSHOT_VERSIONS,
 } from "./protocol.ts";
 import {
 	type CreateSandboxInput,
@@ -93,6 +96,7 @@ import {
 	type SandboxPlacement,
 	unanswered,
 } from "./service.ts";
+import { parseSnapshotRef, savedSnapshotId, snapshotRef } from "./snapshot-refs.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { BROWSER_STREAM_PORT, DESKTOP_PORT } from "./desktop.ts";
@@ -127,6 +131,14 @@ const STOP_ATTEMPTS = 3;
 const HOST_SETTLE_MS = 3_000;
 /** How long a stop waiting for its host waits between looks, and between sends. */
 const HOST_RECONNECT_POLL_MS = 1_000;
+/**
+ * How long a create waits for the host it chose to fetch the snapshot it starts from: its disk's blocks over the pool's
+ * mesh, and the root image it is over first where the host lacks it (a host images release, a template's root
+ * filesystem from a peer).
+ */
+export const SNAPSHOT_FETCH_TIMEOUT_MS = 15 * 60_000;
+/** How often a create waiting for a snapshot's fetch reads whether its host has reported it. */
+const SNAPSHOT_FETCH_POLL_MS = 1_000;
 /** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
 const EXEC_RETRY_MIN_MS = 1_000;
 const EXEC_RETRY_MAX_MS = 30_000;
@@ -235,6 +247,8 @@ export interface HostBackendOptions {
 	readonly now?: () => number;
 	/** Where it warns of what it works around (a host too old for a call); default `console.warn`. */
 	readonly log?: (message: string) => void;
+	/** How long a create waits for a snapshot's fetch (default `SNAPSHOT_FETCH_TIMEOUT_MS`). */
+	readonly snapshotFetchTimeoutMs?: number;
 }
 
 /**
@@ -296,10 +310,10 @@ function diskByRef(hostId: string, usage: HostDiskUsage): BackendDiskUsage {
 	return {
 		...rest,
 		snapshotOwnBytes: Object.fromEntries(
-			Object.entries(snapshotOwnBytes).map(([id, bytes]) => [`${hostId}/${id}`, bytes]),
+			Object.entries(snapshotOwnBytes).map(([id, bytes]) => [snapshotRef(hostId, id), bytes]),
 		),
 		snapshotShared: (snapshotShared ?? []).map((group) => ({
-			refs: group.snapshots.map((id) => `${hostId}/${id}`),
+			refs: group.snapshots.map((id) => snapshotRef(hostId, id)),
 			bytes: group.bytes,
 		})),
 	};
@@ -319,7 +333,8 @@ const madeOn = (made: { readonly cpu?: unknown; readonly runtime?: unknown }): S
 };
 
 const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
-	ref: `${hostId}/${snap.id}`,
+	ref: snapshotRef(hostId, snap.id),
+	hostId,
 	sizeBytes: snap.sizeBytes,
 	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
 	...madeOn(snap),
@@ -328,7 +343,7 @@ const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
 		? {
 				uniqueBytes: snap.uniqueBytes,
 				shared: (snap.shared ?? []).map((group) => ({
-					refs: group.snapshots.map((id) => `${hostId}/${id}`),
+					refs: group.snapshots.map((id) => snapshotRef(hostId, id)),
 					bytes: group.bytes,
 				})),
 			}
@@ -346,13 +361,44 @@ interface HostFileEntry {
 const snapshotId = () =>
 	`snap_${[...crypto.getRandomValues(new Uint8Array(8))].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 
-function parseRef(ref: string): { hostId: string; snapshotId: string } {
-	const [hostId, id, extra] = ref.split("/");
-	if (hostId === undefined || id === undefined || extra !== undefined || hostId === "" || id === "") {
-		throw new KantelError("not_found", "No such snapshot");
-	}
-	return { hostId, snapshotId: id };
+/**
+ * A saved snapshot's ID on a host with `features`: one that syncs snapshots (`HOST_FEATURES.snapshotSync`) names it so
+ * that its ref is the ID alone (`savedSnapshotId`), its holders the catalogue's; any other, as before, by its host.
+ */
+const savedIdOn = (features: readonly string[]): string =>
+	features.includes(HOST_FEATURES.snapshotSync) ? savedSnapshotId() : snapshotId();
+
+/** A ref's parts (`parseSnapshotRef`): its host absent for a saved snapshot's ID alone. `not_found` for any other. */
+function parseRef(ref: string): { readonly hostId?: string; readonly snapshotId: string } {
+	const parsed = parseSnapshotRef(ref);
+	if (parsed === undefined) throw new KantelError("not_found", "No such snapshot");
+	return parsed;
 }
+
+/**
+ * A ref naming its host, for a call to that host (its files, its delete, a fork or upgrade from it): the compute plane
+ * names a copy on a host so. `not_found` for a saved snapshot's ID alone.
+ */
+function onHostRef(ref: string): { readonly hostId: string; readonly snapshotId: string } {
+	const { hostId, snapshotId } = parseRef(ref);
+	if (hostId === undefined) throw new KantelError("not_found", "No such snapshot on a host");
+	return { hostId, snapshotId };
+}
+
+/**
+ * Whether a create from a snapshot restored its memory, as its host's timings say (kantel-host's create from a snapshot
+ * times a `restore` of its memory, or a `boot` on its disk alone); undefined where they say neither.
+ */
+function restoredMemory(sandbox: HostSandbox): boolean | undefined {
+	const timings = sandbox.timings;
+	if (timings?.restore !== undefined) return true;
+	if (timings?.boot !== undefined) return false;
+	return undefined;
+}
+
+/** The ways to place among `hostIds`: all at once (the registry picks the one with most room), then each in turn. */
+const inTurn = (hostIds: readonly string[]): (readonly string[])[] =>
+	hostIds.length > 1 ? [hostIds, ...hostIds.map((hostId) => [hostId])] : [hostIds];
 
 /** A template's base image as a host takes it: its name, and its digest unless there is none (the host's own image). */
 function hostTemplateBase(baseImage: string, baseDigest: string): Pick<HostTemplateBoot, "baseImage" | "baseDigest"> {
@@ -725,8 +771,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	};
 
 	/**
-	 * A disk is where it is: a sandbox or snapshot runs again only on its own host, and only when that host is one the
-	 * service named eligible (online or draining, the account's own or shared, the type and labels).
+	 * A disk is where it is: a sandbox runs again only on its own host, and a fork or upgrade from a snapshot only on the
+	 * host its ref names, and only when that host is one the service named eligible (online or draining, the account's
+	 * own or shared, the type and labels). A create from a snapshot goes on any host holding it, or fetching it
+	 * (`createFromSnapshot`).
 	 */
 	const mayUse = (hostId: string, eligible: readonly string[]) => {
 		if (!eligible.includes(hostId)) {
@@ -809,14 +857,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
-	 * Places and makes one sandbox. A sandbox's own snapshot is on one host's disk: the sandbox goes there. A template
-	 * snapshot is on its host and the others with a copy of it (`snapshotHosts`): the sandbox goes on one of them. It only
-	 * speeds a create up, so when they have no room (`exhausted`) the template boots fresh on another eligible host
-	 * instead (`bootedFresh`); a sandbox's own snapshot has nowhere else to go.
+	 * Places and makes one sandbox. From a snapshot, on a host that holds it (`fromSnapshot`). A template snapshot is on
+	 * its host and the others with a copy of it (`snapshotHosts`): the sandbox goes on one of them. It only speeds a
+	 * create up, so when they have no room (`exhausted`) the template boots fresh on another eligible host instead
+	 * (`bootedFresh`).
 	 */
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
-		const templateFrom = spec.template?.snapshot === undefined ? undefined : parseRef(spec.template.snapshot);
+		const templateFrom = spec.template?.snapshot === undefined ? undefined : onHostRef(spec.template.snapshot);
 		// The hosts with a copy of the template's snapshot that restores there (its own host's, else the others'): the
 		// registry places it on the one with the most room.
 		const withSnapshot =
@@ -825,48 +873,49 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				: (spec.template?.snapshotHosts ?? [templateFrom.hostId]).filter((hostId) =>
 						spec.eligibleHosts.includes(hostId),
 					);
-		const pinned = from ?? (withSnapshot.length === 0 ? templateFrom : undefined);
-		if (pinned !== undefined) mayUse(pinned.hostId, spec.eligibleHosts);
+		if (from === undefined && withSnapshot.length === 0 && templateFrom !== undefined) {
+			mayUse(templateFrom.hostId, spec.eligibleHosts);
+		}
 		const mounts = mountsOf(spec.mounts);
 		// The service sends the mounts the host it chooses can do, and answers each one's status.
+		const input = (hostIds: readonly string[], templateSnapshot: string | undefined): CreateSandboxInput => ({
+			sandboxId: spec.sandboxId,
+			tier: spec.type,
+			...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+			// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
+			// custom shape; a template's snapshot is restored only where it was built as that shape. A memory snapshot's
+			// host makes it as the snapshot's own size wherever the shape is that machine's, whatever name it resolves to.
+			...(spec.shape === undefined
+				? {}
+				: {
+						shape: {
+							vcpus: spec.shape.vcpus,
+							memoryMiB: spec.shape.memoryMb,
+							// A microVM's disk, where one was chosen or kept: else its host gives the shape's.
+							...(spec.type === "microvm" && spec.shape.diskGb !== undefined ? { diskGiB: spec.shape.diskGb } : {}),
+						},
+					}),
+			owner: spec.accountId,
+			env: spec.env,
+			hostIds,
+			...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+			...(from === undefined ? {} : { from: from.snapshotId }),
+			...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
+			...egressOf(spec.egress),
+			...(mounts === undefined ? {} : { mounts }),
+			...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
+				? {}
+				: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
+		});
 		const create = (hostIds: readonly string[], templateSnapshot: string | undefined) =>
-			hosts.sandboxes.create({
-				sandboxId: spec.sandboxId,
-				tier: spec.type,
-				...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
-				// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
-				// custom shape; a template's snapshot is restored only where it was built as that shape. A memory snapshot's
-				// host makes it as the snapshot's own size wherever the shape is that machine's, whatever name it resolves to.
-				...(spec.shape === undefined
-					? {}
-					: {
-							shape: {
-								vcpus: spec.shape.vcpus,
-								memoryMiB: spec.shape.memoryMb,
-								// A microVM's disk, where one was chosen or kept: else its host gives the shape's.
-								...(spec.type === "microvm" && spec.shape.diskGb !== undefined ? { diskGiB: spec.shape.diskGb } : {}),
-							},
-						}),
-				owner: spec.accountId,
-				env: spec.env,
-				hostIds,
-				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
-				...(from === undefined ? {} : { from: from.snapshotId }),
-				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
-				...egressOf(spec.egress),
-				...(mounts === undefined ? {} : { mounts }),
-				...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
-					? {}
-					: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
-			});
+			hosts.sandboxes.create(input(hostIds, templateSnapshot));
+		if (from !== undefined) return createFromSnapshot(spec, from, (hostIds) => input(hostIds, undefined));
 		if (templateFrom !== undefined) {
 			const elsewhere = spec.eligibleHosts.filter((hostId) => !withSnapshot.includes(hostId));
 			// All the hosts with it at once (the registry picks the one with most room), then, should the one it picked refuse
 			// for want of room itself (another replica's work), each in turn.
-			const tries =
-				withSnapshot.length > 1 ? [withSnapshot, ...withSnapshot.map((hostId) => [hostId])] : [withSnapshot];
 			let refused: unknown;
-			for (const hostIds of tries) {
+			for (const hostIds of inTurn(withSnapshot)) {
 				try {
 					const { sandbox, hostId, ...known } = await create(hostIds, templateFrom.snapshotId);
 					const placement = await placed(spec.sandboxId, sandbox, hostId, known);
@@ -882,11 +931,123 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { sandbox, hostId, ...known } = await create(elsewhere, undefined);
 			return { ...(await placed(spec.sandboxId, sandbox, hostId, known)), bootedFresh: true };
 		}
-		const { sandbox, hostId, ...known } = await create(
-			pinned === undefined ? spec.eligibleHosts : [pinned.hostId],
-			undefined,
-		);
+		const { sandbox, hostId, ...known } = await create(spec.eligibleHosts, undefined);
 		return placed(spec.sandboxId, sandbox, hostId, known);
+	}
+
+	/**
+	 * Places and makes a sandbox from a snapshot (docs/design/disk-store.md, "Phase 3 notes"): on a host holding it with
+	 * room (`SandboxSpec.snapshotCopies`, else the host its ref names), those whose copy restores its memory first, each
+	 * group all at once (the registry picks the one with most room) and then each in turn, should the one it picked refuse
+	 * for want of room itself. With none, and the snapshot one that may be fetched, on another eligible host with room
+	 * that fetches it first (`fetchSnapshot`), which its startup reports as `fetchMs`. A copy without the snapshot's memory
+	 * boots on its disk, which its startup says (`restoredMemory`).
+	 */
+	async function createFromSnapshot(
+		spec: SandboxSpec,
+		from: { readonly hostId?: string; readonly snapshotId: string },
+		input: (hostIds: readonly string[]) => CreateSandboxInput,
+	): Promise<Placement> {
+		const copies: SnapshotCopies | undefined =
+			spec.snapshotCopies ??
+			(from.hostId === undefined
+				? undefined
+				: { holders: [{ hostId: from.hostId, memory: false }], memory: false, fetch: false });
+		if (copies === undefined || (copies.holders.length === 0 && !copies.fetch)) {
+			throw placementError("unavailable", "host_unavailable", "No host holds the snapshot's disk now");
+		}
+		const holders = copies.holders.filter((holder) => spec.eligibleHosts.includes(holder.hostId));
+		const restoring = holders.filter((holder) => holder.memory).map((holder) => holder.hostId);
+		const diskOnly = holders.filter((holder) => !holder.memory).map((holder) => holder.hostId);
+		const made = async (hostIds: readonly string[], fetchMs?: number): Promise<Placement> => {
+			const { sandbox, hostId, ...known } = await hosts.sandboxes.create(input(hostIds));
+			const placement = await placed(spec.sandboxId, sandbox, hostId, known);
+			if (placement.startup === undefined) return placement;
+			return {
+				...placement,
+				startup: {
+					...placement.startup,
+					...(fetchMs === undefined ? {} : { fetchMs }),
+					// Only a snapshot with memory says: as its host's timings say it started (a restore of the memory, or a boot
+					// on the disk), else as its copy there was, one with its memory restoring it.
+					...(copies.memory ? { restoredMemory: restoredMemory(sandbox) ?? restoring.includes(hostId) } : {}),
+				},
+			};
+		};
+		let refused: unknown;
+		for (const group of [restoring, diskOnly]) {
+			if (group.length === 0) continue;
+			for (const hostIds of inTurn(group)) {
+				try {
+					return await made(hostIds);
+				} catch (error) {
+					if (!isKantelError(error, "exhausted")) throw error;
+					refused = error;
+				}
+			}
+		}
+		const fetchers = copies.fetch ? await fetchersAmong(spec.eligibleHosts, holders) : [];
+		if (fetchers.length === 0) {
+			if (refused !== undefined) throw refused;
+			const named = copies.holders.map((holder) => holder.hostId).join(", ");
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				copies.holders.length === 1
+					? `The host its disk is on (${named}) can't take it now`
+					: `None of the hosts its disk is on (${named}) can take it now`,
+			);
+		}
+		// The one the registry would place it on now, which fetches it; placed there once it has it.
+		const hostId = await hosts.sandboxes.choose(input(fetchers));
+		const started = now();
+		await fetchSnapshot(hostId, from.snapshotId);
+		return made([hostId], now() - started);
+	}
+
+	/**
+	 * The hosts among `eligible` that may fetch a snapshot for a create: those that don't hold it (`holders`) and fetch
+	 * saved snapshots from their peers (`HOST_FEATURES.snapshotSync`).
+	 */
+	async function fetchersAmong(
+		eligible: readonly string[],
+		holders: readonly { readonly hostId: string }[],
+	): Promise<string[]> {
+		const others = eligible.filter((hostId) => !holders.some((holder) => holder.hostId === hostId));
+		if (others.length === 0) return [];
+		const fetching = new Set(
+			(await hosts.list({ allocations: false }))
+				.filter(
+					(host) =>
+						host.features.includes(HOST_FEATURES.diskSync) && host.features.includes(HOST_FEATURES.snapshotSync),
+				)
+				.map((host) => host.id),
+		);
+		return others.filter((hostId) => fetching.has(hostId));
+	}
+
+	/**
+	 * Has `hostId` fetch a saved snapshot's disk from the hosts in its pool that hold it (`disk.fetch`, which the host
+	 * answers once it has started, asking `disk.locate` where it is), and waits until the host reports holding it
+	 * (`HostCapacity.holdings`, each heartbeat), for `SNAPSHOT_FETCH_TIMEOUT_MS` at most. Its memory follows on its own
+	 * where the host restores it; a create before then boots on the disk.
+	 */
+	async function fetchSnapshot(hostId: string, snapshotId: string): Promise<void> {
+		const version = SNAPSHOT_VERSIONS.disk;
+		await hosts.diskFetch(hostId, { kind: "snapshot", objectId: snapshotId, version }).catch((error: unknown) => {
+			throw kantelErrorFromHost(error);
+		});
+		const timeout = options.snapshotFetchTimeoutMs ?? SNAPSHOT_FETCH_TIMEOUT_MS;
+		const until = now() + timeout;
+		while (!(await hosts.holdsObject(hostId, "snapshot", snapshotId, version))) {
+			if (now() >= until) {
+				throw new KantelError(
+					"unavailable",
+					`The host ${hostId} didn't fetch the snapshot's disk within ${Math.round(timeout / 60_000)} minutes: try again, or start it on a host that holds it`,
+				);
+			}
+			await pause(SNAPSHOT_FETCH_POLL_MS, undefined);
+		}
 	}
 
 	return {
@@ -1070,7 +1231,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "isolate") throw new KantelError("conflict", "The sandbox is a microVM already");
 			// From a snapshot, on its host only, as a create from it.
-			const from = spec.intoSnapshot === undefined ? undefined : parseRef(spec.intoSnapshot);
+			const from = spec.intoSnapshot === undefined ? undefined : onHostRef(spec.intoSnapshot);
 			if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
 			const { sandbox, hostId, path, files, bytes, ...known } = await hosts.sandboxes.upgrade(sandboxId, {
 				...(spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
@@ -1430,13 +1591,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async takeSnapshot(sandboxId, options): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
+			const id = savedIdOn(await featuresOf(hostId));
 			// As long as a fork: a live save writes the machine's memory and copies its whole disk. Given up on sooner, it
 			// went on and saved a snapshot no one knew the ID of. The disk only unless memory is asked for: a host from before
 			// `memory` keeps memory either way, and says so.
 			const snap = await call<HostSnapshot>(
 				sandboxId,
 				"snapshot.save",
-				{ snapshotId: snapshotId(), ...(options?.memory === true ? { memory: true } : {}) },
+				{ snapshotId: id, ...(options?.memory === true ? { memory: true } : {}) },
 				undefined,
 				DISK_COPY_TIMEOUT_MS,
 			);
@@ -1447,14 +1609,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		// before it could (hosts are updated apart from the control plane) is answered `undefined`, so the save shares the
 		// automatic snapshot's ref as it did before, and the host may still prune it.
 		async keepSnapshot(ref): Promise<TakenSnapshot | undefined> {
-			const { hostId, snapshotId: from } = parseRef(ref);
-			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.snapshotKeep)) {
+			const { hostId, snapshotId: from } = onHostRef(ref);
+			const features = await featuresOf(hostId);
+			if (!features.includes(HOST_FEATURES.snapshotKeep)) {
 				warn(
 					`hosts: ${hostId} can't keep snapshot ${from} as a copy of its own (no ${HOST_FEATURES.snapshotKeep}): the saved snapshot shares it, and goes when the host prunes it; update kantel-host`,
 				);
 				return undefined;
 			}
-			const params: HostSnapshotKeep = { snapshotId: snapshotId(), from };
+			const params: HostSnapshotKeep = { snapshotId: savedIdOn(features), from };
 			// The host's errors as Kantel's (a pruned source is `not_found`, a host away `unavailable`), an unanswered call
 			// still marked as one: the host may have made the snapshot.
 			const snap = await hosts.hub
@@ -1482,12 +1645,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				const { id, sizeBytes } = snap;
 				if (typeof id !== "string" || typeof sizeBytes !== "number") continue;
 				if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) continue;
-				sizes.set(`${hostId}/${id}`, sizeBytes);
+				sizes.set(snapshotRef(hostId, id), sizeBytes);
 			}
 			return sizes;
 		},
 		async listSnapshotFiles(ref, path) {
-			const { hostId, snapshotId: id } = parseRef(ref);
+			const { hostId, snapshotId: id } = onHostRef(ref);
 			const { entries } = await hosts.hub.call<{ entries: HostFileEntry[] | null }>(hostId, "snapshot.tree", {
 				snapshotId: id,
 				path,
@@ -1495,12 +1658,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return (entries ?? []).map(fileEntry);
 		},
 		async readSnapshotFile(ref, path) {
-			const { hostId, snapshotId: id } = parseRef(ref);
+			const { hostId, snapshotId: id } = onHostRef(ref);
 			const { data } = await hosts.hub.call<{ data: string }>(hostId, "snapshot.read", { snapshotId: id, path });
 			return fromBase64(data);
 		},
 		async deleteSnapshot(ref) {
-			const { hostId, snapshotId: id } = parseRef(ref);
+			const { hostId, snapshotId: id } = onHostRef(ref);
 			await hosts.hub.call(hostId, "snapshot.delete", { snapshotId: id });
 		},
 		async templateRuntimes(): Promise<TemplateRuntime[]> {
@@ -1536,7 +1699,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async deleteTemplateSnapshot(bytes) {
 			// A host names a template snapshot's bytes by its ID, which its ref is too.
 			const { hostId, snapshotId: id } =
-				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : parseRef(bytes.ref);
+				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : onHostRef(bytes.ref);
 			await hosts.templates.delete(hostId, id);
 		},
 		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee, ifAbsent }) {

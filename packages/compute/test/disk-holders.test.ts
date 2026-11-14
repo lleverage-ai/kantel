@@ -5,7 +5,13 @@ import { createKantelClient } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BackendDiskFetch, BackendHost, BackendStickyHoldings, SandboxBackend } from "../src/backend.ts";
+import type {
+	BackendDiskFetch,
+	BackendHost,
+	BackendStickyHoldings,
+	SandboxBackend,
+	SandboxSpec,
+} from "../src/backend.ts";
 import {
 	GRANT_KEY_OVERLAP_MS,
 	GRANT_KEY_PUBLISH_MS,
@@ -63,6 +69,8 @@ function setUp(
 		grantKeysChanged?: SandboxBackend["grantKeysChanged"];
 		/** Told of each snapshot's bytes deleted, by ref, before the stub deletes them. */
 		deletedSnapshot?: (ref: string) => void;
+		/** Told of each create's spec; one from a snapshot is then made on an empty disk, the stub not holding its ref. */
+		created?: (spec: SandboxSpec) => void;
 		/** Whether Tom is a super-admin (default true). */
 		superAdmin?: boolean;
 		/** The clock's start (default 13 Nov 2026). */
@@ -82,6 +90,12 @@ function setUp(
 		async deleteSnapshot(ref) {
 			options.deletedSnapshot?.(ref);
 			await backend.deleteSnapshot(ref);
+		},
+		async create(spec) {
+			if (options.created === undefined) return backend.create(spec);
+			options.created(spec);
+			const { fromSnapshot: _from, snapshotCopies: _copies, ...fresh } = spec;
+			return backend.create(fresh);
 		},
 		async commitStickyDisk(sandboxId, diskId, version) {
 			if (backend.commitStickyDisk === undefined) throw new Error("The stub commits sticky disks");
@@ -185,7 +199,19 @@ function setUp(
 		if (stored === undefined) throw new Error("no snapshot");
 		return stored;
 	};
-	return Object.assign(client, { api, clock, pool, committed, holders, saved });
+	/** A saved snapshot as a host that syncs them names it: by its ID alone, taken on the stub's host. */
+	const savedAlone = async (id: string, memory = false) => {
+		const stored = await saved(id);
+		const alone = await api.store.snapshots.update(stored.id, (current) => ({
+			...current,
+			ref: id,
+			hostId: STUB_HOST_ID,
+			memory,
+		}));
+		if (alone === undefined) throw new Error("no snapshot");
+		return alone;
+	};
+	return Object.assign(client, { api, clock, pool, committed, holders, saved, savedAlone });
 }
 
 const DISK = {
@@ -903,6 +929,119 @@ describe("disk holders", () => {
 			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST, copy: true }] }] },
 		});
 		expect(deleted).toContain("host_b/hs1");
+	});
+
+	it("starts a sandbox from a saved snapshot on any of its holders in its pool, or one that fetches it", async () => {
+		const specs: SandboxSpec[] = [];
+		const deleted: string[] = [];
+		const tom = setUp({ created: (spec) => specs.push(spec), deletedSnapshot: (ref) => deleted.push(ref) });
+		await tom.pool();
+		const id = "ssnap_0123456789abcdef0123456789abcdef";
+		const snap = await tom.savedAlone(id, true);
+		const report = (hostId: string, versions: readonly string[]) => {
+			tom.clock.now += 1;
+			return tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: {
+					snapshot: [{ objectId: id, versions: versions.map((version) => ({ version, mapDigest: DIGEST })) }],
+				},
+			});
+		};
+		// Not yet reported by any host: the one it was taken on alone, and nothing to fetch it from.
+		await tom.createSandbox({ from: snap.id, wait: true });
+		expect(specs.at(-1)?.fromSnapshot).toBe(id);
+		expect(specs.at(-1)?.snapshotCopies).toEqual({
+			holders: [{ hostId: STUB_HOST_ID, memory: true }],
+			memory: true,
+			fetch: false,
+		});
+		// Its host and a copy of its disk on host_b: pinned to host_g in its pool, which holds none, it goes there to
+		// fetch it.
+		await report(STUB_HOST_ID, ["disk", "memory"]);
+		await report("host_b", ["disk"]);
+		await tom.createSandbox({ from: snap.id, host: "host_g", wait: true });
+		expect(specs.at(-1)?.eligibleHosts).toEqual(["host_g"]);
+		expect(specs.at(-1)?.snapshotCopies?.fetch).toBe(true);
+		// host_g's copy, with its memory; host_c's is another pool's.
+		await report("host_g", ["disk", "memory"]);
+		await tom.createSandbox({ from: snap.id, wait: true });
+		const spec = specs.at(-1);
+		expect(spec?.snapshotCopies).toEqual({
+			holders: [
+				{ hostId: STUB_HOST_ID, memory: true },
+				{ hostId: "host_b", memory: false },
+				{ hostId: "host_g", memory: true },
+			],
+			memory: true,
+			fetch: true,
+		});
+		// Its pool's online hosts only, any of which may fetch it: not host_c in pool B.
+		expect([...(spec?.eligibleHosts ?? [])].sort()).toEqual(["host_b", "host_g", STUB_HOST_ID]);
+		// A sandbox made from it never names it for a fork or upgrade: its copy on its host does.
+		expect(await tom.api.store.snapshots.get(snap.id)).toMatchObject({ ref: id, hostId: STUB_HOST_ID });
+		// Deleted: its bytes on the host it was taken on, then each copy.
+		await tom.deleteSnapshot(snap.id);
+		expect(deleted).toEqual([`${STUB_HOST_ID}/${id}`, `host_b/${id}`, `host_g/${id}`]);
+	});
+
+	it("starts a sandbox from an old ref's snapshot on its host or a copy of it, and fetches none with sync off", async () => {
+		const specs: SandboxSpec[] = [];
+		const tom = setUp({ created: (spec) => specs.push(spec) });
+		await tom.pool();
+		const snap = await tom.saved("hs1");
+		// Its host reports it, and a copy of it on host_b, held under its old ref.
+		for (const [hostId, copy] of [
+			[STUB_HOST_ID, false],
+			["host_b", true],
+		] as const) {
+			tom.clock.now += 1;
+			await tom.api.service.recordHoldings(hostId, tom.clock.now, {
+				objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST, copy }] }] },
+			});
+		}
+		await tom.createSandbox({ from: snap.id, wait: true });
+		expect(specs.at(-1)).toMatchObject({
+			fromSnapshot: `${STUB_HOST_ID}/hs1`,
+			snapshotCopies: {
+				holders: [
+					{ hostId: STUB_HOST_ID, memory: false },
+					{ hostId: "host_b", memory: false },
+				],
+				memory: false,
+				fetch: true,
+			},
+		});
+		// Sticky disks and templates off: nothing is synced, so its host alone, and a pin elsewhere is refused.
+		const offSpecs: SandboxSpec[] = [];
+		const off = setUp({ stickyDisks: false, created: (spec) => offSpecs.push(spec) });
+		await off.pool();
+		const alone = await off.savedAlone("ssnap_fedcba9876543210fedcba9876543210");
+		await off.createSandbox({ from: alone.id, wait: true });
+		expect(offSpecs.at(-1)?.snapshotCopies).toEqual({
+			holders: [{ hostId: STUB_HOST_ID, memory: false }],
+			memory: false,
+			fetch: false,
+		});
+		await expect(off.createSandbox({ from: alone.id, host: "host_b" })).rejects.toMatchObject({
+			code: "unavailable",
+		});
+	});
+
+	it("takes a saved snapshot's size and base only from the host it was taken on, not a copy's", async () => {
+		const tom = setUp();
+		await tom.pool();
+		const id = "ssnap_0123456789abcdef0123456789abcdef";
+		const snap = await tom.savedAlone(id);
+		await tom.api.service.recordSnapshotSizes("host_b", [{ ref: id, sizeBytes: 999 }]);
+		await tom.api.service.recordBases("host_b", { snapshots: [{ ref: id, base: "host-images-20261101" }] });
+		expect(await tom.api.store.snapshots.get(snap.id)).not.toMatchObject({ sizeBytes: 999 });
+		expect((await tom.api.store.snapshots.get(snap.id))?.base).toBeUndefined();
+		await tom.api.service.recordSnapshotSizes(STUB_HOST_ID, [{ ref: id, sizeBytes: 4096 }]);
+		await tom.api.service.recordBases(STUB_HOST_ID, { snapshots: [{ ref: id, base: "host-images-20261102" }] });
+		expect(await tom.api.store.snapshots.get(snap.id)).toMatchObject({
+			sizeBytes: 4096,
+			fullSizeBytes: 4096,
+			base: "host-images-20261102",
+		});
 	});
 
 	it("has a host fetch a version from its pool's holders, with a grant naming it", async () => {
