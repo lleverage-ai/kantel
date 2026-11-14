@@ -79,6 +79,35 @@ export type MoveOutcome =
 	| { readonly state: "done"; readonly placement: Placement }
 	| { readonly state: "failed"; readonly reason?: string };
 
+/** What a backend's create whose outcome isn't known was refused with (`createOutcomeUnknown`). */
+const unknownCreates = new WeakSet<KantelError>();
+
+/**
+ * A create whose outcome isn't known: its host was sent it and never answered (its connection dropped, or the call
+ * timed out), so it may have made the machine. Marks `error` and answers it. Neither made nor failed: the caller keeps
+ * the sandbox `starting` until `settleCreate` says which, from what the host reports.
+ */
+export function createOutcomeUnknown(error: KantelError): KantelError {
+	unknownCreates.add(error);
+	return error;
+}
+
+/** Whether `error` is `createOutcomeUnknown`'s. */
+export function isCreateOutcomeUnknown(error: unknown): boolean {
+	return error instanceof KantelError && unknownCreates.has(error);
+}
+
+/**
+ * A create's outcome as `settleCreate` answers it, from what its host reported since its answer was lost: made and
+ * running (its placement); made and ended since (its placement, and the host's word on why); not made (`lost`, why);
+ * `pending` while the host hasn't said, or the create isn't placed. `reportedAt` is when its host's report was taken.
+ */
+export type CreateOutcome =
+	| { readonly state: "running"; readonly placement: Placement; readonly reportedAt: number }
+	| { readonly state: "ended"; readonly placement: Placement; readonly reason: string; readonly reportedAt: number }
+	| { readonly state: "lost"; readonly reason: string; readonly reportedAt: number }
+	| { readonly state: "pending" };
+
 /**
  * A move of a stopped microVM to another host (`SandboxBackend.move`): a boot's options on its new host (its egress,
  * revision, mounts, the hosts it may go to), its account, and the host asked for.
@@ -613,6 +642,16 @@ export interface Placement {
 	 */
 	readonly machineAt?: number;
 	/**
+	 * Its guest agent's health as its host reported it, for a machine that ran before this answer (a create settled from
+	 * its host's report, `settleCreate`): `unresponsive` with why, and its stamp (`healthAt`), which orders later reports.
+	 * Absent: a fresh boot's, which answers.
+	 */
+	readonly reportedHealth?: {
+		readonly unresponsive: boolean;
+		readonly reason?: string;
+		readonly healthAt?: number;
+	};
+	/**
 	 * How its machine's start took its time on its host, by phase, without `totalMs` (the service measures that around
 	 * the call). Absent where the backend doesn't say (the stub, an older host, an isolate).
 	 */
@@ -882,8 +921,17 @@ export interface SandboxBackend {
 	 * is (the stub).
 	 */
 	hostConnected?(hostId: string): Promise<boolean | undefined>;
-	/** Places and boots a new machine. */
+	/**
+	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
+	 * (`settleCreate` says what came of it).
+	 */
 	create(spec: SandboxSpec): Promise<Placement>;
+	/**
+	 * The outcome of a create (or fork) whose answer, or whose gateway, was lost, from what its host has reported since
+	 * (its hello's sandboxes once it reconnects, or an event): never guessed. Rejects while the host it is on can't be
+	 * asked. Absent: a backend whose creates are always answered (the stub).
+	 */
+	settleCreate?(sandboxId: string): Promise<CreateOutcome>;
 	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/**

@@ -1,10 +1,22 @@
 // A host lost in the middle of a call: Kantel claims no more than the host has said. A create or fork it never answered
 // stays placed on it, counted there, until it reconnects and says what it holds; one it refused, or that never left, is
-// gone. A sandbox on a revoked host is written off by its delete, without asking a host that never comes back.
-import { createRoutedBackend, createStubBackend, HELD_ELSEWHERE, STUB_HOST_ID } from "@kantel/compute";
+// gone. The compute plane's sandbox follows (#880): settled from what the host says, never waited on for the call's
+// timeout. A sandbox on a revoked host is written off by its delete, without asking a host that never comes back.
+import { createKantelClient } from "@kantel/api/sdk";
+import {
+	CREATE_SETTLE_GRACE_MS,
+	createComputeApi,
+	createRoutedBackend,
+	createStubBackend,
+	HELD_ELSEWHERE,
+	joinTokenSpender,
+	type SandboxBackend,
+	STUB_HOST_ID,
+} from "@kantel/compute";
 import { isKantelError, placementReasonOf } from "@kantel/contracts";
-import { afterEach, describe, expect, it } from "vitest";
-import { createHostBackend } from "../src/backend.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CREATE_LOST, createHostBackend } from "../src/backend.ts";
+import type { HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService, unanswered } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -12,7 +24,9 @@ import { createTunnelTickets } from "../src/tunnel.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
 const services: HostsService[] = [];
-afterEach(() => {
+const closers: (() => Promise<void>)[] = [];
+afterEach(async () => {
+	for (const close of closers.splice(0).reverse()) await close();
 	for (const service of services.splice(0)) service.close();
 });
 
@@ -332,5 +346,288 @@ describe("a create made again over two backends", () => {
 		await tick();
 		const error = await backend.create(spec("sbx-wait", [hostId, STUB_HOST_ID])).catch((caught: unknown) => caught);
 		expect(isKantelError(error, "conflict")).toBe(true);
+	});
+});
+
+describe("a create whose answer was lost, in the compute plane", () => {
+	/** The compute API over a host, on a clock the test moves on (its sweep's grace). */
+	async function computeSetup() {
+		let skew = 0;
+		const service = createHostsService({
+			store: createMemoryHostStore(),
+			publicUrl: "https://kantel.test",
+			log: () => undefined,
+		});
+		services.push(service);
+		/** A gateway: another over the same store is this one restarted, with none of its calls in flight. */
+		const gateway = (
+			store?: ReturnType<typeof createComputeApi>["store"],
+			wrap: (backend: SandboxBackend) => SandboxBackend = (backend) => backend,
+		) => {
+			const made = createComputeApi({
+				...(store === undefined ? {} : { store }),
+				backend: wrap(
+					createHostBackend({
+						hosts: service,
+						publicUrl: "https://kantel.test",
+						tickets: createTunnelTickets(createMemoryRelayStore()),
+					}),
+				),
+				authenticatePerson: async (request) =>
+					request.headers.get("authorization") === "Bearer root"
+						? { userId: "usr_root", name: "Root", superAdmin: true }
+						: undefined,
+				fetch: async () => new Response(null, { status: 204 }),
+				publicUrl: "https://kantel.test",
+				now: () => Date.now() + skew,
+			});
+			closers.push(() => made.close());
+			return made;
+		};
+		const api = gateway();
+		service.useJoinTokens(joinTokenSpender(api.store));
+		service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
+		const root = createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const { hostId } = await service.register({ token: (await root.createHostJoinToken({ name: "box" })).token });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+		// The host takes the create and never answers it: its connection drops first.
+		host.hold = (method) => (method === "sandbox.create" ? never() : undefined);
+		const { id } = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.create")).toBe(true));
+		/** The host back, holding `held`; `sweeping`'s sweep run past its grace. */
+		const reconnect = async (held: HostSandbox[], sweeping = api) => {
+			const back = new FakeHost(service, hostId);
+			back.connect(held);
+			await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+			skew += CREATE_SETTLE_GRACE_MS;
+			await sweeping.service.sweep();
+			await sweeping.service.idle();
+			return back;
+		};
+		return {
+			api,
+			root,
+			service,
+			hostId,
+			host,
+			id,
+			reconnect,
+			restarted: (
+				wrap?: (backend: SandboxBackend) => SandboxBackend,
+				store: ReturnType<typeof createComputeApi>["store"] = api.store,
+			) => gateway(store, wrap),
+			skip: (ms: number) => {
+				skew += ms;
+			},
+		};
+	}
+
+	it("is settled running on its host once the host reconnects and reports it, by any gateway", async () => {
+		const { api, root, hostId, host, id, reconnect, restarted } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		// Not failed on a guess, and not waited on for the call's timeout either.
+		expect((await root.getSandbox(id)).state).toBe("starting");
+		// Settled by a gateway that never made the call (the stack object restarted, as both hosts dropped together).
+		await reconnect([{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }], restarted());
+		expect(await root.getSandbox(id)).toMatchObject({ state: "running", hostId });
+	});
+
+	it("fails, saying why, when the host reconnects without it, and a start makes it again", async () => {
+		const { api, root, host, id, reconnect } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = await reconnect([]);
+		expect(await root.getSandbox(id)).toMatchObject({ state: "error", reason: CREATE_LOST });
+		await root.startSandbox(id);
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("running");
+		expect(back.calls.filter((call) => call.method === "sandbox.create")).toHaveLength(1);
+	});
+	it("keeps the guest health its host reports for a create it settles running", async () => {
+		const { api, root, host, id, reconnect } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		await reconnect([
+			{
+				id,
+				tier: "microvm",
+				size: "default",
+				state: "running",
+				createdAt: 1,
+				health: "unresponsive",
+				healthReason: "its guest agent doesn't answer",
+				healthAt: 5,
+			},
+		]);
+		const settled = await root.getSandbox(id);
+		expect(settled).toMatchObject({ state: "running", health: "unresponsive" });
+		// Stamped as the host stamped it: an older report doesn't undo it, a newer one does.
+		const hostId = settled.hostId ?? "";
+		await api.service.reportHealth(hostId, id, undefined, undefined, 4);
+		expect((await root.getSandbox(id)).health).toBe("unresponsive");
+		await api.service.reportHealth(hostId, id, undefined, undefined, 6);
+		expect((await root.getSandbox(id)).health).toBe("ok");
+	});
+
+	it("keeps a machine that ended on its host, and a stale gateway's late answer never touches a later attempt", async () => {
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		// The host made it, and it ended while the host was away.
+		const ended: HostSandbox = { id, tier: "microvm", size: "default", state: "stopped", createdAt: 1, error: "oom" };
+		const back = new FakeHost(service, hostId);
+		let gets = 0;
+		let answerGet: () => void = () => undefined;
+		let answerStart: (() => void) | undefined;
+		back.hold = (method) => {
+			if (method === "sandbox.get" && gets++ === 0) {
+				return new Promise<void>((resolve) => {
+					answerGet = resolve;
+				});
+			}
+			if (method === "sandbox.start") {
+				return new Promise<void>((resolve) => {
+					answerStart = resolve;
+				});
+			}
+			return undefined;
+		};
+		back.connect([ended]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		// One gateway asks the host, and its answer is slow; another, meanwhile, settles it: `error`, on its host, kept.
+		const slow = restarted();
+		void slow.service.sweep();
+		await vi.waitFor(() => expect(gets).toBe(1));
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await root.getSandbox(id)).toMatchObject({ state: "error", hostId, reason: expect.stringMatching(/oom/) });
+		// Started again, booting the machine kept there: under way when the slow answer lands, saying it ended.
+		await root.startSandbox(id);
+		await vi.waitFor(() => expect(answerStart).toBeDefined());
+		back.answer = (method) => (method === "sandbox.get" ? ended : undefined);
+		answerGet();
+		await slow.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("starting");
+		back.answer = undefined;
+		answerStart?.();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("running");
+		// Nothing settling it ever acted on the host.
+		expect(back.calls.some((call) => call.method === "sandbox.delete" || call.method === "sandbox.stop")).toBe(false);
+	});
+
+	it("never stops a later attempt for egress a stale settlement couldn't send", async () => {
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = new FakeHost(service, hostId);
+		let egresses = 0;
+		let answerEgress: () => void = () => undefined;
+		let answerStart: (() => void) | undefined;
+		back.hold = (method) => {
+			if (method === "sandbox.egress" && egresses++ === 0) {
+				return new Promise<void>((resolve) => {
+					answerEgress = resolve;
+				});
+			}
+			if (method === "sandbox.start") {
+				return new Promise<void>((resolve) => {
+					answerStart = resolve;
+				});
+			}
+			return undefined;
+		};
+		back.connect([{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		// One gateway sends its egress, and the answer is slow; another settles it running meanwhile.
+		const slow = restarted();
+		void slow.service.sweep();
+		await vi.waitFor(() => expect(egresses).toBe(1));
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("running");
+		const revision = (await api.store.sandboxes.get(id))?.egressRevision;
+		// Stopped and started again: the new attempt under way when the slow egress is refused as unenforceable. Even with
+		// the egress revision the stale one read (a start renews it, which is no fence of its own), it isn't touched.
+		await root.stopSandbox(id);
+		await api.service.idle();
+		await root.startSandbox(id);
+		await vi.waitFor(() => expect(answerStart).toBeDefined());
+		await api.store.sandboxes.update(id, (current) => ({ ...current, egressRevision: revision }));
+		back.refuse = (method) =>
+			method === "sandbox.egress" ? { code: "unsupported", message: "this host doesn't enforce egress" } : undefined;
+		answerEgress();
+		await slow.service.idle();
+		back.refuse = undefined;
+		// Neither stopped nor made due to stop: the stale settlement's stop is fenced to its own attempt.
+		expect(await api.store.sandboxes.get(id)).toMatchObject({ state: "starting", stopFor: undefined });
+		answerStart?.();
+		await api.service.idle();
+		// Not made due to stop either: the sweep leaves it running.
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("running");
+		// The one stop is the caller's.
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+	});
+	it("stops a create it settles running whose egress its host refuses, at once", async () => {
+		const { api, root, service, hostId, host, id, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = new FakeHost(service, hostId);
+		back.refuse = (method) =>
+			method === "sandbox.egress" ? { code: "unsupported", message: "this host doesn't enforce egress" } : undefined;
+		back.connect([{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		await api.service.sweep();
+		await api.service.idle();
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+		expect((await root.getSandbox(id)).state).toBe("stopped");
+	});
+
+	it("still stops it once the stop's lease is past when its gateway went with the stop decided", async () => {
+		const { api, root, service, hostId, host, id, restarted, skip } = await computeSetup();
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		const back = new FakeHost(service, hostId);
+		back.refuse = (method) =>
+			method === "sandbox.egress" ? { code: "unsupported", message: "this host doesn't enforce egress" } : undefined;
+		back.connect([{ id, tier: "microvm", size: "default", state: "running", createdAt: 1 }]);
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		skip(CREATE_SETTLE_GRACE_MS);
+		// A gateway that goes the moment it has made the stop due, before its move to stopping.
+		const sandboxes = api.store.sandboxes;
+		const update: typeof sandboxes.update = async (...args) => {
+			const written = await sandboxes.update(...args);
+			if (written?.state === "starting" && written.stopFor !== undefined) throw new Error("the gateway went");
+			return written;
+		};
+		const dying = restarted(undefined, {
+			...api.store,
+			sandboxes: new Proxy(sandboxes, {
+				get: (target, key) => (key === "update" ? update : Reflect.get(target, key)),
+			}),
+		});
+		await dying.service.sweep();
+		await dying.service.idle();
+		expect(back.calls.some((call) => call.method === "sandbox.stop")).toBe(false);
+		expect(await api.store.sandboxes.get(id)).toMatchObject({ state: "starting", stopFor: expect.any(String) });
+		// Another gateway's sweep takes the abandoned stop on once its lease is past.
+		skip(5 * 60_000 + 1);
+		await api.service.sweep();
+		await api.service.idle();
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+		expect((await root.getSandbox(id)).state).toBe("stopped");
 	});
 });
