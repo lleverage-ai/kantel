@@ -3610,18 +3610,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (holders.some((each) => each.hostId === holder.hostId)) continue;
 			holders.push({ hostId: holder.hostId, memory: memory && withMemory.has(holder.hostId) });
 		}
-		const online = new Set(
+		const online = new Map(
 			hosts
 				.filter((host) => (host.state === "online" || host.state === "draining") && host.poolId === poolId)
-				.map((host) => host.id),
+				.map((host) => [host.id, host]),
 		);
+		// The holders that serve it (a full or draining one too), which a host fetches from only of its architecture.
+		const serving = disks.filter((holder) => holder.mapDigest !== undefined && online.has(holder.hostId));
+		const architectures = [...new Set(serving.flatMap((holder) => online.get(holder.hostId)?.arch ?? []))];
 		// Only a saved snapshot's ID alone: an older ref's host-local ID may name another snapshot on the host fetching it.
 		const fetch =
-			diskHolders.syncsSnapshots &&
-			poolId !== undefined &&
-			refHost(ref) === undefined &&
-			disks.some((holder) => holder.mapDigest !== undefined && online.has(holder.hostId));
-		return { holders, memory, fetch };
+			diskHolders.syncsSnapshots && poolId !== undefined && refHost(ref) === undefined && serving.length > 0;
+		return { holders, memory, fetch, ...(fetch && architectures.length > 0 ? { architectures } : {}) };
 	}
 
 	/**
@@ -5456,7 +5456,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? undefined
 				: await store.snapshots.get(sandbox.source.snapshotId);
 		let fromCopies: Pick<SandboxSpec, "fromSnapshot" | "snapshotCopies"> = {};
-		if (source?.ref !== undefined && refHost(source.ref) === undefined && source.hostId !== undefined) {
+		// Either kind of ref: an older one names its host and is never fetched, but goes on a copy held under it too.
+		if (source?.ref !== undefined && (refHost(source.ref) !== undefined || source.hostId !== undefined)) {
 			const known = await ensureHosts();
 			const poolId = sandbox.poolId ?? source.poolId;
 			fromCopies = { fromSnapshot: source.ref, snapshotCopies: await snapshotCopiesOf(source, known, poolId) };

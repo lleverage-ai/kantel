@@ -989,7 +989,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 		}
 		// Only a saved snapshot's ID alone is fetched: an older ref's host-local ID may name another snapshot elsewhere.
-		const fetchers = copies.fetch && from.hostId === undefined ? await fetchersAmong(spec.eligibleHosts, holders) : [];
+		const fetchers =
+			copies.fetch && from.hostId === undefined
+				? await fetchersAmong(spec.eligibleHosts, holders, copies.architectures)
+				: [];
 		if (fetchers.length === 0) {
 			if (refused !== undefined) throw refused;
 			const named = copies.holders.map((holder) => holder.hostId).join(", ");
@@ -1018,12 +1021,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
-	 * The hosts among `eligible` that may fetch a snapshot for a create: those that don't hold it (`holders`) and fetch
-	 * saved snapshots from their peers (`HOST_FEATURES.snapshotSync`).
+	 * The hosts among `eligible` that may fetch a snapshot for a create: those that don't hold it (`holders`), fetch
+	 * saved snapshots from their peers (`HOST_FEATURES.snapshotSync`), and are of an architecture a holder serves
+	 * (`architectures`, where said).
 	 */
 	async function fetchersAmong(
 		eligible: readonly string[],
 		holders: readonly { readonly hostId: string }[],
+		architectures: SnapshotCopies["architectures"],
 	): Promise<string[]> {
 		const others = eligible.filter((hostId) => !holders.some((holder) => holder.hostId === hostId));
 		if (others.length === 0) return [];
@@ -1031,7 +1036,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			(await hosts.list({ allocations: false }))
 				.filter(
 					(host) =>
-						host.features.includes(HOST_FEATURES.diskSync) && host.features.includes(HOST_FEATURES.snapshotSync),
+						host.features.includes(HOST_FEATURES.diskSync) &&
+						host.features.includes(HOST_FEATURES.snapshotSync) &&
+						(architectures === undefined || (host.arch !== undefined && architectures.includes(host.arch))),
 				)
 				.map((host) => host.id),
 		);

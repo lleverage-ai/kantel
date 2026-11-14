@@ -1124,6 +1124,8 @@ describe("disk holders", () => {
 			],
 			memory: true,
 			fetch: true,
+			// Those serving it are all x86_64: a fetcher must be one too.
+			architectures: ["x86_64"],
 		});
 		// Its pool's online hosts only, any of which may fetch it: not host_c in pool B.
 		expect([...(spec?.eligibleHosts ?? [])].sort()).toEqual(["host_b", "host_g", STUB_HOST_ID]);
@@ -1175,7 +1177,13 @@ describe("disk holders", () => {
 
 	it("starts a sandbox from an old ref's snapshot on its host or a copy of it, and fetches none with sync off", async () => {
 		const specs: SandboxSpec[] = [];
-		const tom = setUp({ created: (spec) => specs.push(spec) });
+		let refuse = false;
+		const tom = setUp({
+			created: (spec) => {
+				specs.push(spec);
+				if (refuse) throw new KantelError("exhausted", "No host has room");
+			},
+		});
 		await tom.pool();
 		const snap = await tom.saved("hs1");
 		// Its host reports it, and a copy of it on host_b, held under its old ref.
@@ -1200,6 +1208,16 @@ describe("disk holders", () => {
 				// Never fetched: its host-local ID may name another snapshot on the host that would fetch it.
 				fetch: false,
 			},
+		});
+		// A create from it that failed before it was placed is made again on the copy too, by its start.
+		refuse = true;
+		const failed = await tom.createSandbox({ from: snap.id, wait: true });
+		expect(failed.state).toBe("error");
+		refuse = false;
+		await tom.startSandbox(failed.id, { wait: true });
+		expect(specs.at(-1)).toMatchObject({
+			fromSnapshot: `${STUB_HOST_ID}/hs1`,
+			snapshotCopies: { holders: [{ hostId: STUB_HOST_ID }, { hostId: "host_b" }], fetch: false },
 		});
 		// Sticky disks and templates off: nothing is synced, so its host alone, and a pin elsewhere is refused.
 		const offSpecs: SandboxSpec[] = [];

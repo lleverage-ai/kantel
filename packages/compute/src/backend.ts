@@ -241,6 +241,11 @@ export interface SnapshotCopies {
 	readonly memory: boolean;
 	/** Whether a host may fetch it from a holder first: snapshots are synced here, and a holder has reported it. */
 	readonly fetch: boolean;
+	/**
+	 * With `fetch`: the architectures of the holders that serve it, of which a host fetching it must be one (a holder
+	 * serves only hosts of its own). Absent: none said, any.
+	 */
+	readonly architectures?: readonly ("x86_64" | "aarch64")[];
 }
 
 /** What an upgrade makes (`SandboxBackend.upgrade`): a microVM create's spec, and what it starts from. */

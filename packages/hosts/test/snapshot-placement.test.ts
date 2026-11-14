@@ -40,6 +40,8 @@ async function addHost(
 	options: {
 		readonly sync?: boolean;
 		readonly freeMemoryMiB?: number;
+		/** Its architecture as kantel-host reports it (default amd64). */
+		readonly arch?: string;
 		/** The timings its creates answer, by step; absent, none (a host that says nothing of how it started). */
 		readonly timings?: () => { readonly [step: string]: number } | undefined;
 	} = {},
@@ -54,6 +56,7 @@ async function addHost(
 		joinedAt: 1,
 	});
 	const host = new FakeHost(service, id, featuresOf(options.sync !== false));
+	if (options.arch !== undefined) host.moreFacts = { arch: options.arch };
 	if (options.freeMemoryMiB !== undefined) host.freeMemoryMiB = options.freeMemoryMiB;
 	// A create answers the phases its start took, as a current host does.
 	const answered = host.answer;
@@ -337,6 +340,29 @@ describe("a create from a saved snapshot", () => {
 			.catch((error: unknown) => error);
 		expect(isKantelError(old, "exhausted")).toBe(true);
 		expect(c.calls.filter((call) => call.method === "disk.fetch")).toHaveLength(1);
+	});
+
+	it("is fetched only by a host of an architecture a holder serves", async () => {
+		const { store, service, backend } = await setup();
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		// host_b is aarch64, with the most room; host_c x86_64 like the holder.
+		const b = await addHost(store, service, "host_b", { freeMemoryMiB: 30_000, arch: "arm64" });
+		const c = await addHost(store, service, "host_c", { freeMemoryMiB: 10_000 });
+		c.answer = ((answered) => (method: string) => {
+			if (method !== "disk.fetch") return answered?.(method);
+			setTimeout(() => reportsHolding(c), 10);
+			return {};
+		})(c.answer);
+		const placed = await backend.create(
+			spec(["host_a", "host_b", "host_c"], SNAPSHOT, {
+				holders: [{ hostId: "host_a", memory: false }],
+				memory: false,
+				fetch: true,
+				architectures: ["x86_64"],
+			}),
+		);
+		expect(placed.hostId).toBe("host_c");
+		expect(b.calls).toEqual([]);
 	});
 
 	it("gives up on a fetch its host never reports", async () => {
