@@ -51,6 +51,7 @@ import {
 	type HostEnvAnswer,
 	type HostExecResult,
 	type HostFacts,
+	type HostFetchProgress,
 	type HostGrantKey,
 	type HostHello,
 	type HostImageChannel,
@@ -703,6 +704,18 @@ export interface HostHoldingsReport {
 	readonly fetches?: HostCapacity["fetches"];
 }
 
+/**
+ * What a host's last capacity report says of a version of a disk store object: when Kantel received the report (absent
+ * with none), whether the host holds the version, and its fetch there as listed, `queued`, `running` or `failed` with
+ * its error. Without `fetch`, the report lists no fetch of it, or says nothing of fetches (a host that doesn't fetch, or
+ * from before it said).
+ */
+export interface HostObjectFetch {
+	readonly at?: number;
+	readonly held: boolean;
+	readonly fetch?: HostFetchProgress;
+}
+
 /** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
 export interface HostStickyReport {
 	readonly hostId: string;
@@ -720,14 +733,16 @@ export interface HostsService {
 	stickyReports(): Promise<HostStickyReport[]>;
 	/**
 	 * Has a host fetch a disk version from its peers (`disk.fetch`, `HOST_FEATURES.diskSync`), resolving once the fetch
-	 * has started; `unavailable` if away.
+	 * has started, to when the host answered (the clock a capacity report's `HostObjectFetch.at` is on): a report received
+	 * after says how this fetch goes. `unavailable` if away.
 	 */
-	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<void>;
+	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<number>;
 	/**
-	 * Whether a host's last capacity report, as kept, listed a version of a disk store object it holds
-	 * (`HostCapacity.holdings`): a fetch it was told of has arrived once it does.
+	 * What a host's last capacity report, as kept, says of a version of a disk store object (`HostObjectFetch`): whether
+	 * it holds it (`HostCapacity.holdings`), as a fetch it was told of has arrived once it does, and how its fetch goes
+	 * (`HostCapacity.fetches`).
 	 */
-	holdsObject(hostId: string, kind: HostObjectKind, objectId: string, version: string): Promise<boolean>;
+	objectFetch(hostId: string, kind: HostObjectKind, objectId: string, version: string): Promise<HostObjectFetch>;
 	/** Registration spends join tokens from here from now on, not the registry's own. */
 	useJoinTokens(tokens: ExternalJoinTokens): void;
 	/**
@@ -2715,17 +2730,26 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.stickyDelete, { diskId, ...(version === undefined ? {} : { version }) });
 		},
-		async holdsObject(hostId, kind, objectId, version) {
-			const capacity = storedCapacity((await store.getHost(hostId))?.capacity);
-			return (
+		async objectFetch(hostId, kind, objectId, version) {
+			const host = await store.getHost(hostId);
+			const capacity = storedCapacity(host?.capacity);
+			const held =
 				capacity?.holdings?.[kind]?.some(
-					(held) => held.objectId === objectId && held.versions.some((each) => each.version === version),
-				) === true
+					(each) => each.objectId === objectId && each.versions.some((stored) => stored.version === version),
+				) === true;
+			const fetch = capacity?.fetches?.find(
+				(each) => each.kind === kind && each.objectId === objectId && each.version === version,
 			);
+			return {
+				...(capacity === undefined || host?.capacityAt === undefined ? {} : { at: host.capacityAt }),
+				held,
+				...(fetch === undefined ? {} : { fetch }),
+			};
 		},
 		async diskFetch(hostId, params) {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.diskFetch, params);
+			return clock.now();
 		},
 		async stickyReports() {
 			// Only hosts connected here: one away (or on another replica) is left to whoever holds it now.
