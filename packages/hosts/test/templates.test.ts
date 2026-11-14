@@ -339,6 +339,52 @@ describe("host backend templates", () => {
 		expect(other.calls.some((call) => call.method === "sandbox.create")).toBe(false);
 	});
 
+	it("restores a template snapshot on whichever host with a copy has the most room, and boots fresh elsewhere when they have none", async () => {
+		const { store, service, backend } = await setup();
+		const built = await addHost(store, service, "host_b", { freeMemoryMiB: 3000 });
+		const copy = await addHost(store, service, "host_c", { freeMemoryMiB: 30_000 });
+		const other = await addHost(store, service, "host_a", { freeMemoryMiB: 60_000 });
+		for (const host of [built, copy]) host.createSource = "snapshot";
+		const spec: SandboxSpec = {
+			sandboxId: "sbx_copy",
+			accountId: "acc_a",
+			type: "microvm",
+			subdomain: "sbx_copy",
+			env: {},
+			eligibleHosts: ["host_a", "host_b", "host_c"],
+			template: {
+				baseImage: "kantel/sandbox",
+				baseDigest: "",
+				snapshot: "host_b/tsn_1",
+				snapshotHosts: ["host_b", "host_c"],
+			},
+			shape: { vcpus: 2, memoryMb: 2048 },
+		};
+		// The emptier of the two with the snapshot, never the emptiest host without it.
+		const placement = await backend.create(spec);
+		expect(placement.hostId).toBe("host_c");
+		expect(placement.bootedFresh).toBeUndefined();
+		const params = copy.calls.find((call) => call.params.sandboxId === "sbx_copy")?.params as {
+			template?: { snapshot?: string };
+		};
+		expect(params.template?.snapshot).toBe("tsn_1");
+		expect(other.calls.some((call) => call.method === "sandbox.create")).toBe(false);
+		// Neither with room: fresh on the host without it.
+		for (const host of [built, copy]) {
+			host.refuse = (method) =>
+				method === "sandbox.create" ? { code: "capacity", message: "this host hasn't 2048 MiB free" } : undefined;
+		}
+		expect(await backend.create({ ...spec, sandboxId: "sbx_none" })).toMatchObject({
+			hostId: "host_a",
+			bootedFresh: true,
+		});
+		// The snapshot's own host not one the create may use, a copy's host is: restored there.
+		copy.refuse = undefined;
+		expect(
+			await backend.create({ ...spec, sandboxId: "sbx_elsewhere", eligibleHosts: ["host_a", "host_c"] }),
+		).toMatchObject({ hostId: "host_c" });
+	});
+
 	it("boots the template fresh on another host when its snapshot's host has no room, or on it when it misses the snapshot, but a sandbox's own snapshot waits", async () => {
 		const { store, service, backend } = await setup();
 		const other = await addHost(store, service, "host_a");

@@ -3,8 +3,9 @@
  * sandbox's host over its WebSocket. The compute API keeps every record; this keeps only placements (the registry's).
  *
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
- * it goes on that host. A template snapshot's `ref` is the same, and a sandbox made from it goes on its host too, or
- * boots the template fresh elsewhere when that host is full. Desktops, browsers and SSH are reached through tunnel URLs
+ * it goes on that host. A template snapshot's `ref` is the same, and a sandbox made from it goes on its host, or any
+ * other with a copy of it (`SandboxTemplateBoot.snapshotHosts`), or boots the template fresh elsewhere when those are
+ * full. Desktops, browsers and SSH are reached through tunnel URLs
  * with tickets (`tunnel.ts`): the desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced
  * there when the ticket says so, Chromium's DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
@@ -808,14 +809,23 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
-	 * Places and makes one sandbox. A snapshot, the sandbox's or its template's, is on one host's disk: the sandbox goes
-	 * there. A template snapshot only speeds a create up, so when its host has no room (`exhausted`) the template boots
-	 * fresh on another eligible host instead (`bootedFresh`); a sandbox's own snapshot has nowhere else to go.
+	 * Places and makes one sandbox. A sandbox's own snapshot is on one host's disk: the sandbox goes there. A template
+	 * snapshot is on its host and the others with a copy of it (`snapshotHosts`): the sandbox goes on one of them. It only
+	 * speeds a create up, so when they have no room (`exhausted`) the template boots fresh on another eligible host
+	 * instead (`bootedFresh`); a sandbox's own snapshot has nowhere else to go.
 	 */
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
 		const templateFrom = spec.template?.snapshot === undefined ? undefined : parseRef(spec.template.snapshot);
-		const pinned = from ?? templateFrom;
+		// The hosts with a copy of the template's snapshot that restores there (its own host's, else the others'): the
+		// registry places it on the one with the most room.
+		const withSnapshot =
+			templateFrom === undefined
+				? []
+				: (spec.template?.snapshotHosts ?? [templateFrom.hostId]).filter((hostId) =>
+						spec.eligibleHosts.includes(hostId),
+					);
+		const pinned = from ?? (withSnapshot.length === 0 ? templateFrom : undefined);
 		if (pinned !== undefined) mayUse(pinned.hostId, spec.eligibleHosts);
 		const mounts = mountsOf(spec.mounts);
 		// The service sends the mounts the host it chooses can do, and answers each one's status.
@@ -850,9 +860,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
 			});
 		if (templateFrom !== undefined) {
-			const elsewhere = spec.eligibleHosts.filter((hostId) => hostId !== templateFrom.hostId);
+			const elsewhere = spec.eligibleHosts.filter((hostId) => !withSnapshot.includes(hostId));
 			try {
-				const { sandbox, hostId, ...known } = await create([templateFrom.hostId], templateFrom.snapshotId);
+				const { sandbox, hostId, ...known } = await create(withSnapshot, templateFrom.snapshotId);
 				const placement = await placed(spec.sandboxId, sandbox, hostId, known);
 				// Its host couldn't restore the snapshot (gone, broken, made for another machine) and booted the template
 				// fresh, running its setup.

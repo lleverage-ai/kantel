@@ -362,6 +362,13 @@ export interface SandboxTemplateBoot {
 	 * speeds a create up.
 	 */
 	readonly snapshot?: string;
+	/**
+	 * Every host that holds a copy of `snapshot` that restores there (its own build's, or one fetched from a peer: the
+	 * catalogue's `template` holders), each one of the spec's eligible hosts; the host in `snapshot`'s ref among them
+	 * when it is one. A backend starts the sandbox from the snapshot on whichever of them it places it on. Absent: only
+	 * `snapshot`'s host. Never kept for a retry (`StoredSandbox.templateBoot`), which boots fresh.
+	 */
+	readonly snapshotHosts?: readonly string[];
 }
 
 /** A machine's vCPUs, memory and disk, as its host gave them. */
@@ -436,6 +443,26 @@ export interface CpuFingerprint {
 export interface SnapshotMadeOn {
 	readonly cpu?: CpuFingerprint;
 	readonly runtime?: string;
+}
+
+/** A CPU fingerprint as a host's details show it (`Host.cpuFingerprint`): `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. */
+export const cpuFingerprintText = (cpu: CpuFingerprint): string =>
+	`${cpu.vendor} family ${cpu.family} model ${cpu.model}, features ${cpu.featuresHash}`;
+
+/**
+ * Whether a snapshot's memory, made on `made`, restores on a host as its details say it is (`Host.cpuFingerprint` and
+ * `runtimeFingerprints`): the same CPU, its features known, and the snapshot's runtime among the host's. A snapshot or
+ * host that doesn't say either matches nothing.
+ */
+export function memoryRestoresOn(
+	host: { readonly cpuFingerprint?: string; readonly runtimeFingerprints?: readonly string[] } | undefined,
+	made: SnapshotMadeOn,
+): boolean {
+	if (host?.cpuFingerprint === undefined || made.cpu === undefined || made.cpu.featuresHash === "") return false;
+	if (made.runtime === undefined || made.runtime === "") return false;
+	return (
+		cpuFingerprintText(made.cpu) === host.cpuFingerprint && (host.runtimeFingerprints ?? []).includes(made.runtime)
+	);
 }
 
 /** A template snapshot built: its opaque reference, the host holding it, its size, and what it was made on. */
