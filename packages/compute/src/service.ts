@@ -112,6 +112,7 @@ import {
 import { createGithubApp, type GithubApp, importAppKey } from "./github-app.ts";
 import {
 	createGithubRunners,
+	kindView,
 	newGithubRunnersId,
 	type RunnerPool,
 	type StoredGithubRunners,
@@ -150,7 +151,7 @@ import {
 	sandboxNotRunning,
 	sandboxUnresponsive,
 } from "./not-running.ts";
-import { createPoolService, defaultPoolOf, poolOwnerOf } from "./pools.ts";
+import { createPoolService, defaultPoolOf, type PoolRunners, poolOwnerOf } from "./pools.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -1115,6 +1116,10 @@ const GITHUB_RUNNER_SCOPES: readonly computeSchema.ApiKeyScope[] = [
 ];
 /** What a broker key needs as well while one of its integration's pools commits sticky disks. */
 const GITHUB_RUNNER_COMMIT_SCOPE: computeSchema.ApiKeyScope = "snapshots:write";
+/** The most runner kinds an integration has, across its pools: as many as its `pools` take. */
+const MAX_RUNNER_KINDS = 20;
+/** Runner pools as the integration's `pools` take them: never with a pool, which those don't say. */
+const unpooled = (pools: readonly RunnerPool[]): RunnerPool[] => pools.map(({ poolId: _pool, ...pool }) => pool);
 /** Whether one of `pools` commits its runners' copies of its sticky disks. */
 const poolsCommit = (pools: readonly RunnerPool[]): boolean =>
 	pools.some((pool) => pool.stickyDisks?.some((sticky) => sticky.commit !== undefined) === true);
@@ -2205,6 +2210,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				})),
 		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
 		...(runnerSettings?.log === undefined ? {} : { log: runnerSettings.log }),
+		place: (record) => placeRunnerKinds(record),
 		sandboxes: {
 			async create(principal, body) {
 				return answered(await handlers.createSandbox(principal, { params: {}, query: {}, body }, internalRequest()));
@@ -2321,7 +2327,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await templates.templateIn(accountId, pool.template);
 			if ((pool.stickyDisks?.length ?? 0) > 0) {
 				requireSticky();
-				await stickyDisksFor(accountId, pool.stickyDisks ?? []);
+				const attached = await stickyDisksFor(accountId, pool.stickyDisks ?? []);
+				// A kind's runners are made in its pool, and a sticky disk is attached only in its own.
+				const held = pool.poolId === undefined ? undefined : await poolOfStickyDisks(attached, await ensureHosts());
+				if (held !== undefined && held.poolId !== pool.poolId) {
+					throw new KantelError(
+						"invalid",
+						`The sticky disk ${held.disk} is in pool ${await poolName(held.poolId)}, not ${pool.label}'s pool ${await poolName(pool.poolId ?? "")}: a runner kind's sticky disks are in its pool`,
+					);
+				}
 			}
 		}
 	}
@@ -2341,6 +2355,199 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: { ...current, scopes: [...current.scopes, GITHUB_RUNNER_COMMIT_SCOPE] },
 		);
 	}
+
+	/** What the broker logs: the deployment's runner log, else the process's. */
+	const runnerLog = (message: string): void => (runnerSettings?.log ?? console.log)(`[github-runners] ${message}`);
+	/**
+	 * The pool a runner kind with none goes in, and why. The pool its sticky disks are in, where its runners went before
+	 * kinds were in pools; else the one pool whose hosts its `hostLabels` select, of the hosts that could run its runners
+	 * (microVM hosts its integration's runners may use, the account's own first, as placement prefers them); else, with
+	 * no labels or labels that select hosts in several pools or none, the default pool its runners went to before: the
+	 * account's own default where one of its hosts there could run them, else the deployment's where it may use that.
+	 * Judged on the hosts as they are, not whether each is online now, so a host away for a moment doesn't move it. A
+	 * failed read rejects, so the kind is placed on a later try rather than from what couldn't be read.
+	 */
+	async function kindPool(
+		accountId: string,
+		/** Whether its runners may run on the deployment's shared hosts (`mayShare` of its integration's key). */
+		shared: boolean,
+		kind: RunnerPool,
+	): Promise<{ readonly poolId: string; readonly why: string }> {
+		const hosts = await ensureHosts();
+		if ((kind.stickyDisks?.length ?? 0) > 0) {
+			// A disk gone, or two in different pools, says nothing of a pool; any other failure is thrown.
+			const settled = (error: unknown) => {
+				if (error instanceof KantelError && (error.code === "not_found" || error.code === "invalid")) return undefined;
+				throw error;
+			};
+			const attached = await stickyDisksFor(accountId, kind.stickyDisks ?? []).catch(settled);
+			const held = attached === undefined ? undefined : await poolOfStickyDisks(attached, hosts).catch(settled);
+			if (held !== undefined) return { poolId: held.poolId, why: `its sticky disk ${held.disk} is there` };
+		}
+		const labels = Object.entries(kind.hostLabels ?? {});
+		const could = hosts.filter(
+			(host) =>
+				host.state !== "revoked" &&
+				host.tiers.includes("microvm") &&
+				(host.accountId === accountId || (shared && host.accountId === undefined)) &&
+				labels.every(([name, value]) => host.labels[name] === value),
+		);
+		const fallback = async (why: string) => {
+			const choice = await placementPool(accountId, undefined, hosts, shared);
+			const ran = (poolId: string | undefined) => poolId !== undefined && could.some((host) => host.poolId === poolId);
+			const poolId = ran(choice.own) ? choice.own : ran(choice.shared) ? choice.shared : (choice.own ?? choice.shared);
+			return { poolId: poolId ?? (await pools.defaultPool(accountId)).id, why };
+		};
+		if (labels.length === 0) return fallback("it has no host labels, so it went in the default pool");
+		const own = could.filter((host) => host.accountId === accountId);
+		const selected = unique((own.length > 0 ? own : could).flatMap((host) => host.poolId ?? []));
+		const [only] = selected;
+		if (selected.length === 1 && only !== undefined) return { poolId: only, why: "its host labels select hosts there" };
+		return fallback(
+			selected.length === 0
+				? "its host labels select no host, so it went in the default pool"
+				: "its host labels select hosts in several pools, so it went in the default pool",
+		);
+	}
+	/**
+	 * `kinds` each in a pool: one already in one stays there, one `current` has (by label) stays in that one's, and a new
+	 * one goes where `kindPool` says.
+	 */
+	async function placedKinds(
+		accountId: string,
+		shared: boolean,
+		kinds: readonly RunnerPool[],
+		current: readonly RunnerPool[],
+		/** The integration, by ID or name, for the log. */
+		integration: string,
+	): Promise<RunnerPool[]> {
+		const placed: RunnerPool[] = [];
+		for (const kind of kinds) {
+			const kept = kind.poolId ?? current.find((other) => other.label === kind.label)?.poolId;
+			if (kept !== undefined && (await store.pools.get(kept)) !== undefined) {
+				placed.push({ ...kind, poolId: kept });
+				continue;
+			}
+			const { poolId, why } = await kindPool(accountId, shared, kind);
+			runnerLog(`${integration}: runner kind ${kind.label} is in pool ${await poolName(poolId)}: ${why}`);
+			placed.push({ ...kind, poolId });
+		}
+		return placed;
+	}
+	/**
+	 * Puts an integration's kinds that have no pool (kept before kinds were in pools, or whose pool went) in one, once:
+	 * a kind given a pool meanwhile keeps it. Answers the record as it is then; one that couldn't be placed now is
+	 * answered as it was, and placed on a later read.
+	 */
+	async function placeRunnerKinds(record: StoredGithubRunners): Promise<StoredGithubRunners> {
+		const live = await Promise.all(
+			record.pools.map(async (kind) => kind.poolId !== undefined && (await store.pools.get(kind.poolId)) !== undefined),
+		);
+		if (live.every(Boolean)) return record;
+		try {
+			const lacking = record.pools.filter((_kind, at) => live[at] !== true).map(({ poolId: _pool, ...kind }) => kind);
+			const key = await store.apiKeys.get(record.keyId);
+			const shared = key === undefined || (await mayShare(keyPrincipal(key)));
+			const placed = await placedKinds(record.accountId, shared, lacking, [], record.id);
+			// Only a kind still as it was read: one placed or moved meanwhile keeps that.
+			const seen = new Map(record.pools.map((kind) => [kind.label, kind.poolId]));
+			const updated = await store.githubRunners.update(record.id, (current) => {
+				let changed = false;
+				const kinds = current.pools.map((kind) => {
+					const into = placed.find((other) => other.label === kind.label)?.poolId;
+					if (into === undefined || !seen.has(kind.label) || seen.get(kind.label) !== kind.poolId) return kind;
+					changed = true;
+					return { ...kind, poolId: into };
+				});
+				return changed ? { ...current, pools: kinds } : undefined;
+			});
+			return updated ?? (await store.githubRunners.get(record.id)) ?? record;
+		} catch (error) {
+			runnerLog(
+				`${record.id}: its runner kinds couldn't be put in pools yet: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return record;
+		}
+	}
+
+	/** GitHub runner kinds as the account pools' `runners` read and write them: kept with their integrations. */
+	const poolRunners: PoolRunners = {
+		async of(owner, list) {
+			const byPool = new Map<string, computeSchema.GithubRunnerKind[]>();
+			for (const found of await store.githubRunners.list({ accountId: owner })) {
+				if (found.retiringAt !== undefined) continue;
+				const record = await placeRunnerKinds(found);
+				for (const kind of record.pools) {
+					if (kind.poolId === undefined || !list.some((pool) => pool.id === kind.poolId)) continue;
+					byPool.set(kind.poolId, [...(byPool.get(kind.poolId) ?? []), kindView(record.id, kind)]);
+				}
+			}
+			return byPool;
+		},
+		async in(pool) {
+			const labels: string[] = [];
+			const integrations =
+				pool.owner === OPERATOR_POOLS
+					? await store.githubRunners.list()
+					: await store.githubRunners.list({ accountId: pool.owner });
+			for (const found of integrations) {
+				if (found.retiringAt !== undefined) continue;
+				const record = await placeRunnerKinds(found);
+				for (const kind of record.pools) if (kind.poolId === pool.id) labels.push(kind.label);
+			}
+			return labels;
+		},
+		async set(principal, pool, kinds) {
+			requireGithubRunners();
+			const accountId = pool.owner;
+			// The integrations the call names, each the account's, and those with kinds in the pool now, which it replaces.
+			const records = new Map<string, StoredGithubRunners>();
+			for (const id of unique(kinds.map((kind) => kind.integration))) {
+				const found = await store.githubRunners.get(id);
+				if (found === undefined || found.retiringAt !== undefined || found.accountId !== accountId) {
+					throw new KantelError("not_found", `No GitHub runner integration ${id} in the pool's account`);
+				}
+				records.set(id, await placeRunnerKinds(found));
+			}
+			for (const found of await store.githubRunners.list({ accountId })) {
+				if (found.retiringAt !== undefined || records.has(found.id)) continue;
+				const record = await placeRunnerKinds(found);
+				if (record.pools.some((kind) => kind.poolId === pool.id)) records.set(found.id, record);
+			}
+			/** Each integration's kinds in the pool from now: the call's, a label it has in another pool moving here. */
+			const mine = (id: string): RunnerPool[] =>
+				kinds
+					.filter((kind) => kind.integration === id)
+					.map(({ integration: _integration, ...kind }) => ({ ...kind, poolId: pool.id }));
+			const merged = (id: string, current: readonly RunnerPool[]): RunnerPool[] => {
+				const here = mine(id);
+				const labels = new Set(here.map((kind) => kind.label));
+				return [...current.filter((kind) => kind.poolId !== pool.id && !labels.has(kind.label)), ...here];
+			};
+			// Every integration's kinds checked as they would be, before any is written.
+			for (const [id, record] of records) {
+				const next = merged(id, record.pools);
+				if (next.length > MAX_RUNNER_KINDS) {
+					throw new KantelError("invalid", `${record.name} would have more than ${MAX_RUNNER_KINDS} runner kinds`);
+				}
+				await checkPools(accountId, next);
+				// Kinds that commit need the key to commit, given it first, as the integration's own update does.
+				if (poolsCommit(next)) await grantRunnerCommits(principal, record.keyId);
+			}
+			// Each integration's write merges into its kinds as they are then, held to the limit again. Each is atomic; a call
+			// changing several integrations writes them one after another.
+			for (const id of records.keys()) {
+				await store.githubRunners.update(id, (current) => {
+					if (current.retiringAt !== undefined) return undefined;
+					const next = merged(id, current.pools);
+					if (next.length > MAX_RUNNER_KINDS) {
+						throw new KantelError("invalid", `${current.name} would have more than ${MAX_RUNNER_KINDS} runner kinds`);
+					}
+					return { ...current, pools: next, updatedAt: now() };
+				});
+			}
+		},
+	};
 
 	// Sticky disks.
 	const requireSticky = (): void => {
@@ -2700,6 +2907,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 		requireAccountHosts: () => requireAccountHosts(),
 		once: (principal, operation, input, work) => once(principal, operation, input, work),
+		...(runnerSettings === undefined ? {} : { runners: poolRunners }),
 	});
 
 	// Which hosts hold which disk versions, and grants to fetch them from each other (`disk-holders.ts`).
@@ -10738,10 +10946,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
 			}
 			await importAppKey(body.privateKey);
-			await checkPools(account.id, body.pools);
+			// Its kinds, each in a pool: where its sticky disks are, else where its host labels select (`kindPool`).
+			const kinds = await placedKinds(account.id, await mayShare(principal), unpooled(body.pools ?? []), [], body.name);
+			await checkPools(account.id, kinds);
 			// Its key acts for runners with what a create, a command and a delete need, and a commit where a pool commits,
 			// and no more.
-			const scopes = githubRunnerScopes(body.pools);
+			const scopes = githubRunnerScopes(kinds);
 			requireGrantable(principal, scopes);
 			return once(
 				principal,
@@ -10776,7 +10986,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						scope,
 						...(body.runnerGroupId === undefined ? {} : { runnerGroupId: body.runnerGroupId }),
 						...(body.repositories === undefined ? {} : { repositories: [...body.repositories] }),
-						pools: body.pools.map((pool) => ({ ...pool })),
+						pools: kinds,
 						enabled: true,
 						keyId: key.id,
 						privateKey: sealed.privateKey,
@@ -10800,17 +11010,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		updateGithubRunners: async (principal, { params, body }, request) => {
-			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			const found = await githubRunnersFor(principal, params.githubRunnersId);
 			if (body.privateKey !== undefined) await importAppKey(body.privateKey);
-			if (body.pools !== undefined) await checkPools(record.accountId, body.pools);
+			// Its kinds as runner pools: each it has keeps its pool, and a new one goes where `kindPool` says.
+			const record = body.pools === undefined ? found : await placeRunnerKinds(found);
+			const key = body.pools === undefined ? undefined : await store.apiKeys.get(record.keyId);
+			const kinds =
+				body.pools === undefined
+					? undefined
+					: await placedKinds(
+							record.accountId,
+							key === undefined || (await mayShare(keyPrincipal(key))),
+							unpooled(body.pools),
+							record.pools,
+							record.id,
+						);
+			if (kinds !== undefined) await checkPools(record.accountId, kinds);
 			// Pools that commit need the key to commit: an integration made without that (or before it was granted) has its
 			// key given it, by a caller who may grant it. Before the pools change, so no pool commits with a key that can't.
-			if (body.pools !== undefined && poolsCommit(body.pools)) await grantRunnerCommits(principal, record.keyId);
+			if (kinds !== undefined && poolsCommit(kinds)) await grantRunnerCommits(principal, record.keyId);
 			const resealed =
 				body.privateKey === undefined
 					? undefined
 					: await requireSealer().seal(body.privateKey, sealedAt("githubRunners", record.id, "privateKey"));
 			const updated = await store.githubRunners.update(record.id, (current) => {
+				// Its kinds were placed and checked in the pools they were in then: a kind moved meanwhile (through a pool's
+				// `runners`) isn't moved back, and the call is tried again from where it now is.
+				const was = (pools: readonly RunnerPool[], label: string) => pools.find((kind) => kind.label === label)?.poolId;
+				if (kinds?.some((kind) => was(current.pools, kind.label) !== was(record.pools, kind.label)) === true) {
+					throw new KantelError("conflict", "The integration's runner kinds moved between pools meanwhile: try again");
+				}
 				const scope = body.scope ?? current.scope;
 				const runnerGroupId = body.runnerGroupId === null ? undefined : (body.runnerGroupId ?? current.runnerGroupId);
 				if (scope === "organization" && runnerGroupId === undefined) {
@@ -10828,7 +11057,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(body.name === undefined ? {} : { name: body.name }),
 					...(body.appId === undefined ? {} : { appId: body.appId }),
 					...(body.owner === undefined ? {} : { owner: body.owner }),
-					...(body.pools === undefined ? {} : { pools: body.pools.map((pool) => ({ ...pool })) }),
+					...(kinds === undefined ? {} : { pools: kinds }),
 					...(body.enabled === undefined ? {} : { enabled: body.enabled }),
 					...(resealed === undefined ? {} : { privateKey: resealed }),
 					scope,
