@@ -9,7 +9,10 @@
 // the payload; an empty payload closes that direction.
 package proto
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ProtocolVersion is bumped on any incompatible change; Kantel refuses a host whose version it doesn't speak.
 const ProtocolVersion = 1
@@ -260,7 +263,9 @@ const FeatureTemplateImageCopies = "template-image-copies"
 // state). The host maps each saved snapshot's files, lists those with maps in Capacity.Holdings, serves them to its
 // mesh peers, and takes disk.fetch for a snapshot's disk version: it makes sure it has the root image the disk is a
 // layer over first, and fetches the memory too only when its CPU and runtime fingerprints match the snapshot's (else
-// its copy boots on its disk). It comes with FeatureDiskSync, on the microVM tier.
+// its copy boots on its disk). The files on its machine's drives are versions too (SnapshotBundleVersion,
+// SnapshotStickyVersion), which a host with this feature serves when it has them and fetches for its copies, its
+// memory only after them. It comes with FeatureDiskSync, on the microVM tier.
 const FeatureSnapshotSync = "snapshot-sync"
 
 // FeatureSandboxMove: a stopped microVM sandbox moves to another host in its pool (docs/design/disk-store.md, "Moving
@@ -358,6 +363,16 @@ const (
 	SnapshotDiskVersion   = "disk"
 	SnapshotMemoryVersion = "memory"
 )
+
+// A saved snapshot's drives are versions of it too, one for each file on a drive of its machine: SnapshotBundleVersion(i)
+// is the bundle image on bundle drive i (bundle0, bundle1, ...), as its machine had it when its memory was taken;
+// SnapshotStickyVersion(k) is its clone of the sticky disk on sticky drive k (sticky0, sticky1). A host fetches a
+// copy's sticky clones so a sandbox made from it has its sticky disks, and its bundle images when it restores its
+// memory, which it fetches only once every drive is here: the guest has those files mounted.
+func SnapshotBundleVersion(i int) string { return fmt.Sprintf("bundle%d", i) }
+
+// SnapshotStickyVersion is a saved snapshot's clone of the sticky disk on sticky drive k (SnapshotBundleVersion).
+func SnapshotStickyVersion(k int) string { return fmt.Sprintf("sticky%d", k) }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.

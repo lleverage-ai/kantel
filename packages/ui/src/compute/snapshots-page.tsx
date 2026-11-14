@@ -115,7 +115,9 @@ const SNAPSHOT_REASON_LABELS: Readonly<Record<SnapshotReason, string>> = {
 
 /** A saved snapshot's labels as `key=value, …`, or undefined with none. */
 function labelsText(entry: SavedSnapshot): string | undefined {
-	const pairs = Object.entries(entry.labels ?? {}).map(([key, value]) => `${key}=${value}`);
+	const pairs = Object.entries(entry.labels ?? {})
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([key, value]) => `${key}=${value}`);
 	return pairs.length === 0 ? undefined : pairs.join(", ");
 }
 

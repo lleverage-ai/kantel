@@ -95,21 +95,36 @@ func (m *Manager) openNearestSticky(diskID, version string) (*os.File, *blockmap
 		if v.version == version {
 			continue
 		}
-		bm, _, err := blockmap.ReadFile(m.stickyMapFile(diskID, v.version))
-		if err != nil {
-			continue
+		if f, bm := m.openStickyMapped(diskID, v.version); f != nil {
+			return f, bm, v.version
 		}
-		f, err := os.Open(m.stickyVersionFile(diskID, v.version))
-		if err != nil {
-			continue
-		}
-		if info, err := f.Stat(); err != nil || info.Size() != bm.Size {
-			f.Close()
-			continue
-		}
-		return f, bm, v.version
 	}
 	return nil, nil, ""
+}
+
+// openStickyWithMap opens a version of a disk the host holds with its map, read-locked, and reads its map: nil when
+// it hasn't both.
+func (m *Manager) openStickyWithMap(diskID, version string) (*os.File, *blockmap.Map) {
+	m.stickyMu.RLock()
+	defer m.stickyMu.RUnlock()
+	return m.openStickyMapped(diskID, version)
+}
+
+// openStickyMapped is openStickyWithMap, with stickyMu held.
+func (m *Manager) openStickyMapped(diskID, version string) (*os.File, *blockmap.Map) {
+	bm, _, err := blockmap.ReadFile(m.stickyMapFile(diskID, version))
+	if err != nil {
+		return nil, nil
+	}
+	f, err := os.Open(m.stickyVersionFile(diskID, version))
+	if err != nil {
+		return nil, nil
+	}
+	if info, err := f.Stat(); err != nil || info.Size() != bm.Size {
+		f.Close()
+		return nil, nil
+	}
+	return f, bm
 }
 
 // PublishFetchedSticky makes a fetched partial file, written through partial, the disk's version, newest in its

@@ -217,33 +217,30 @@ func (h *Host) fetchTemplate(ctx context.Context, snapshotID string) error {
 
 // fetchSnapshot is disk.fetch for a saved snapshot, answered at once. Its disk: the record from a holder first, so the
 // host has the root image the disk is over (microvm's PrepareSnapshotFetch: a template's root filesystem from a peer,
-// a host image version from its release) before the disk is fetched; its memory follows once the disk is here, if the
-// host restores it (fetchSnapshotMemory). Its memory: fetched only when the host holds its disk and restores it.
+// a host image version from its release) before the disk is fetched; the rest of it follows once the disk is here
+// (fetchSnapshotRest): its drives' files, and its memory if the host restores it. Its memory, or a drive's file: fetched
+// only when the host holds its disk and wants it (WantsSnapshot).
 func (h *Host) fetchSnapshot(p proto.DiskFetchParams) (any, error) {
 	t, ok := h.tiers[microvm.Tier].(SnapshotFetcher)
 	if !ok {
 		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't fetch snapshots"}
 	}
-	switch p.Version {
-	case microvm.SnapshotMemory:
-		if !t.WantsSnapshotMemory(p.ObjectID) {
-			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("this host doesn't hold snapshot %s's disk, has its memory already, or doesn't restore it (its CPU or runtime differs)", p.ObjectID)}
-		}
-		h.fetcher.Start(disksync.Request{
-			Ref:       disksync.Ref{Kind: p.Kind, ObjectID: p.ObjectID, Version: p.Version},
-			MapDigest: p.MapDigest, Holders: p.Holders, Grant: p.Grant,
-		})
-		return map[string]any{}, nil
-	case microvm.SnapshotDisk:
-	default:
-		return nil, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("a snapshot has no version %q", p.Version)}
-	}
 	req := disksync.Request{
 		Ref:       disksync.Ref{Kind: p.Kind, ObjectID: p.ObjectID, Version: p.Version},
 		MapDigest: p.MapDigest, Holders: p.Holders, Grant: p.Grant,
 	}
+	if p.Version != microvm.SnapshotDisk {
+		if !microvm.SnapshotVersion(p.Version) {
+			return nil, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("a snapshot has no version %q", p.Version)}
+		}
+		if !t.WantsSnapshot(p.ObjectID, p.Version) {
+			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("this host doesn't hold snapshot %s's disk, has its %s already, or doesn't want it (it doesn't restore its memory: its CPU or runtime differs, or the files on its drives aren't all here yet)", p.ObjectID, p.Version)}
+		}
+		h.fetcher.Start(req)
+		return map[string]any{}, nil
+	}
 	if t.HoldsSnapshot(p.ObjectID, microvm.SnapshotDisk) {
-		go h.fetchSnapshotMemory(p.ObjectID)
+		go h.fetchSnapshotRest(p.ObjectID)
 		return map[string]any{}, nil
 	}
 	// Its record is read and the host made ready as the fetch's preparation, so it is reported from now (queued, with
@@ -264,31 +261,41 @@ func (h *Host) fetchSnapshot(p proto.DiskFetchParams) (any, error) {
 	return map[string]any{}, nil
 }
 
-// snapshotMemoryRetry is how long a fetch of a snapshot's memory that failed waits before it is tried again, doubled
-// each time up to 16 times as long, for snapshotMemoryTries in all: its holder may not have mapped or reported it yet
-// when the disk arrives. One that still fails is tried again when the host next connects (ResumeAll).
+// snapshotMemoryRetry is how long a fetch of a snapshot's drive's file or memory that failed waits before it is tried
+// again, doubled each time up to 16 times as long, for snapshotMemoryTries failures in all: its holder may not have
+// mapped or reported it yet when the disk arrives. One that still fails is tried again when the host next connects
+// (ResumeAll, then fetchSnapshotRest as it is published).
 var (
 	snapshotMemoryRetry = 30 * time.Second
 	snapshotMemoryTries = 8
 )
 
-// fetchSnapshotMemory fetches a snapshot's memory, asking disk.locate where it is, while the host holds the snapshot's
-// disk without it and restores it (WantsSnapshotMemory): once its disk is published. A fetch that fails is tried again
-// a while later (snapshotMemoryRetry), unless the control plane has no such snapshot.
-func (h *Host) fetchSnapshotMemory(id string) {
+// fetchSnapshotRest fetches what the host wants of a snapshot whose disk it holds, one version at a time, asking
+// disk.locate where each is (SnapshotWants: its drives' files, then its memory once they are here). A fetch that fails
+// is tried again a while later (snapshotMemoryRetry), unless the control plane has no such snapshot (or, if it is from
+// before drives' versions, no such version), when the rest stays as it is and the snapshot's copy boots on its disk.
+func (h *Host) fetchSnapshotRest(id string) {
 	t, ok := h.tiers[microvm.Tier].(SnapshotFetcher)
 	if !ok || h.fetcher == nil {
 		return
 	}
 	ctx := h.fetcher.Context
 	wait := snapshotMemoryRetry
-	for try := 0; try < snapshotMemoryTries && t.WantsSnapshotMemory(id); try++ {
-		job := h.fetcher.Start(disksync.Request{Ref: disksync.Ref{Kind: proto.DiskKindSnapshot, ObjectID: id, Version: microvm.SnapshotMemory}})
-		<-job.Done()
-		_, err := job.Result()
-		if err == nil || disksync.IsNotFound(err) {
+	for failed := 0; failed < snapshotMemoryTries; {
+		wants := t.SnapshotWants(id)
+		if len(wants) == 0 {
 			return
 		}
+		job := h.fetcher.Start(disksync.Request{Ref: disksync.Ref{Kind: proto.DiskKindSnapshot, ObjectID: id, Version: wants[0]}})
+		<-job.Done()
+		_, err := job.Result()
+		if disksync.IsNotFound(err) {
+			return
+		}
+		if err == nil && !slices.Contains(t.SnapshotWants(id), wants[0]) {
+			continue
+		}
+		failed++
 		select {
 		case <-ctx.Done():
 			return
@@ -387,7 +394,9 @@ type SnapshotFetcher interface {
 	OpenSnapshot(id, version string, withMap bool) (*os.File, []byte, error)
 	ReadSnapshotFile(id, version, name string) ([]byte, error)
 	PrepareSnapshotFetch(ctx context.Context, id string, record []byte) error
-	WantsSnapshotMemory(id string) bool
+	WantsSnapshot(id, version string) bool
+	SnapshotWants(id string) []string
+	CloneNearestSnapshot(id, version, dst string) (*blockmap.Map, error)
 	SnapshotPartial(id, version string) (string, error)
 	PublishFetchedSnapshot(id, version string, partial *os.File, mapFile []byte, files map[string][]byte) error
 	SnapshotPartials() [][2]string
@@ -768,18 +777,18 @@ func (h *Host) snapshotKnown(r disksync.Ref) error {
 	return nil
 }
 
-// snapshotPublished follows a snapshot's version published: its disk here, its memory comes next if the host restores
-// it.
+// snapshotPublished follows a snapshot's version published: its disk or a drive's file here, what else the host wants
+// of it comes next (its drives' files, then its memory if the host restores it).
 func (h *Host) snapshotPublished(id, version string) {
-	if version == microvm.SnapshotDisk {
-		go h.fetchSnapshotMemory(id)
+	if version != microvm.SnapshotMemory {
+		go h.fetchSnapshotRest(id)
 	}
 }
 
-// snapshotObjects are a tier's saved snapshots: two versions each, its disk with its record beside it and its memory
-// with the machine's state, and no nearest version to start a fetch from. known, before a version is published, says
-// whether Kantel still has the snapshot (a delete may have come while it was fetched); published is told of each
-// version published.
+// snapshotObjects are a tier's saved snapshots: its disk with its record beside it, its memory with the machine's
+// state, and its drives' files, each a version of its own; a drive's fetch starts from the host's nearest file to it
+// (CloneNearestSnapshot). known, before a version is published, says whether Kantel still has the snapshot (a delete
+// may have come while it was fetched); published is told of each version published.
 type snapshotObjects struct {
 	t         SnapshotFetcher
 	known     func(r disksync.Ref) error
@@ -800,13 +809,18 @@ func (s snapshotObjects) Partial(r disksync.Ref) (string, error) {
 	return s.t.SnapshotPartial(r.ObjectID, r.Version)
 }
 
-func (s snapshotObjects) CloneNearest(disksync.Ref, string) (*blockmap.Map, error) { return nil, nil }
+func (s snapshotObjects) CloneNearest(r disksync.Ref, dst string) (*blockmap.Map, error) {
+	return s.t.CloneNearestSnapshot(r.ObjectID, r.Version, dst)
+}
 
 func (s snapshotObjects) Files(r disksync.Ref) []string {
-	if r.Version == microvm.SnapshotMemory {
+	switch r.Version {
+	case microvm.SnapshotMemory:
 		return []string{microvm.SnapshotStateFile}
+	case microvm.SnapshotDisk:
+		return []string{microvm.SnapshotRecordFile}
 	}
-	return []string{microvm.SnapshotRecordFile}
+	return nil
 }
 
 func (s snapshotObjects) Publish(r disksync.Ref, partial *os.File, mapFile []byte, files map[string][]byte) error {
