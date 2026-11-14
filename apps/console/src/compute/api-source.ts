@@ -121,6 +121,8 @@ type UiInvite = Awaited<ReturnType<AccountsSource["invites"]>>[number];
 type UiSandbox = Awaited<ReturnType<SandboxesSource["list"]>>[number];
 type UiSandboxSize = UiSandbox["size"];
 type UiSandboxState = UiSandbox["state"];
+type UiSandboxMove = NonNullable<UiSandbox["move"]>;
+type UiMoveTarget = Awaited<ReturnType<NonNullable<SandboxesSource["moveTargets"]>>>[number];
 type UiCommand = Awaited<ReturnType<SandboxesSource["history"]>>[number];
 type UiPort = Awaited<ReturnType<NonNullable<SandboxesSource["ports"]>>>[number];
 type UiSandboxSnapshot = Awaited<ReturnType<SnapshotsSource["history"]>>[number];
@@ -236,6 +238,11 @@ interface Context {
 	 * Every environment the console reads goes in.
 	 */
 	readonly environmentNames: Map<string, string>;
+	/**
+	 * Hosts' names by ID, as last read: a sandbox's move names only the host it is moving to, and the UI shows its name.
+	 * Every host the console lists for a move, and every sandbox's own host, goes in.
+	 */
+	readonly hostNames: Map<string, string>;
 	/** One raw call with the client's options, for a route the generated SDK doesn't have yet. */
 	readonly call: <T>(call: ApiCall) => Promise<T>;
 	/**
@@ -404,8 +411,7 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	stopping: "stopping",
 	stopped: "stopped",
 	paused: "paused",
-	// The UI has no moving yet: one moving to another host is starting there.
-	moving: "starting",
+	moving: "moving",
 	error: "error",
 	// The UI has no deleting or deleted: one being erased is on its way out, and a deleted one is gone.
 	deleting: "stopping",
@@ -584,6 +590,26 @@ function imageOf(sandbox: Sandbox): { image?: UiSandboxImage } {
 	};
 }
 
+/** A moving sandbox's `move`, its target named where the console has read that host. */
+function moveOf(sandbox: Sandbox, context: Context): { readonly move?: UiSandboxMove } {
+	if (sandbox.hostId !== undefined && sandbox.hostName !== undefined) {
+		context.hostNames.set(sandbox.hostId, sandbox.hostName);
+	}
+	const { move } = sandbox;
+	if (sandbox.state !== "moving" || move === undefined) return {};
+	const hostName = move.hostId === undefined ? undefined : context.hostNames.get(move.hostId);
+	return {
+		move: {
+			// Phases a later Kantel adds (a running sandbox's) pass through: the UI words any it doesn't know.
+			phase: move.phase,
+			...(move.hostId === undefined ? {} : { hostId: move.hostId }),
+			...(hostName === undefined ? {} : { hostName }),
+			keepMemory: move.keepMemory,
+			startedAt: move.startedAt,
+		},
+	};
+}
+
 function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	return {
 		id: sandbox.id,
@@ -635,6 +661,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		usage: sandbox.usage.recentCpu,
 		...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
 		...(sandbox.hostName === undefined ? {} : { hostName: sandbox.hostName }),
+		...moveOf(sandbox, context),
 		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
 		// Running, but its guest agent doesn't answer: why, for the page's notice and its Recover.
 		...(sandbox.state === "running" && sandbox.health === "unresponsive"
@@ -767,6 +794,11 @@ function sandboxesSource(context: Context): SandboxesSource {
 		recover: async (id) => view(await api.recoverSandbox(id)),
 		// Answers once the microVM runs with the isolate's files; a failure leaves the isolate as it was.
 		upgrade: async (id) => view(await api.upgradeSandbox(id, { wait: true })),
+		moveTargets: (sandbox) => moveTargets(context, sandbox),
+		// Answers once it runs on its new host, so a failure comes back with its reason; it is `moving` meanwhile, which
+		// the live feed says, and the pages read it again while it is.
+		move: async (id, choice) =>
+			view(await api.moveSandbox(id, { hostId: choice.hostId, keepMemory: choice.keepMemory, wait: true })),
 		// Not in the generated SDK yet: the raw route, as `recoverSandbox` calls its own.
 		restartOnLatest: async (id) =>
 			view(
@@ -1785,6 +1817,40 @@ async function hostChoices({ api, caller }: Context, accountId: string): Promise
 }
 
 /**
+ * The hosts a microVM may move to, as far as the console can tell: the other online hosts that run microVMs in the pool
+ * its own host is in (a move never leaves its pool), with the same architecture where both say. Kantel checks the rest
+ * as it moves it (labels, a host pin, the pool's mesh, a host from before moves) and says why it refuses. None where
+ * its host isn't one the viewer may see. Until Kantel answers a move's dry run, each restarts, with no estimate.
+ */
+async function moveTargets(context: Context, sandbox: UiSandbox): Promise<readonly UiMoveTarget[]> {
+	const { api, caller } = context;
+	let hosts: readonly Host[];
+	try {
+		hosts = caller.superAdmin
+			? (await api.listHosts()).items
+			: (await api.listAccountHosts({ account: sandbox.accountId })).items;
+	} catch (caught) {
+		if (caught instanceof KantelApiError && (caught.code === "not_supported" || caught.code === "forbidden")) return [];
+		throw caught;
+	}
+	for (const host of hosts) context.hostNames.set(host.id, host.name);
+	const own = hosts.find((host) => host.id === sandbox.hostId);
+	if (own === undefined) return [];
+	return hosts
+		.filter(
+			(host) =>
+				host.id !== own.id &&
+				host.state === "online" &&
+				host.tiers.includes("microvm") &&
+				host.poolId === own.poolId &&
+				(host.accountId === undefined || host.accountId === sandbox.accountId) &&
+				(host.arch === undefined || own.arch === undefined || host.arch === own.arch),
+		)
+		.sort((a, b) => a.name.localeCompare(b.name))
+		.map((host) => ({ hostId: host.id, hostName: host.name }));
+}
+
+/**
  * The account's pools, for New sandbox's pool picker: none where the deployment has account hosts off (`not_supported`)
  * or the caller may not read them (`forbidden`), so there is no picker, as with one pool.
  */
@@ -2293,6 +2359,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		},
 		caller,
 		environmentNames: new Map(),
+		hostNames: new Map(),
 		call: <T>(call: ApiCall) => send<T>(clientOptions, call),
 		bucketSources: new Map(),
 		live: liveSandboxes(api),

@@ -61,6 +61,7 @@ import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxEnvironments } from "./sandbox-environments.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
+import { moveProgressText } from "./sandbox-move.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { SandboxViewer, type ScreenView } from "./sandbox-screen.tsx";
 import { SandboxSsh } from "./sandbox-ssh.tsx";
@@ -604,6 +605,11 @@ export function SandboxPage({
 						</span>
 					)}
 					{stoppedBy === undefined ? null : <span>{stoppedBy}</span>}
+					{sandbox.state === "moving" ? (
+						<span className="min-w-0 wrap-anywhere" data-move-phase={sandbox.move?.phase}>
+							{moveProgressText(sandbox.move?.phase ?? "copying", sandbox.move?.hostName)}
+						</span>
+					) : null}
 				</div>
 			</header>
 			{sandbox.state === "error" && sandbox.error !== undefined ? <Notice level="error">{sandbox.error}</Notice> : null}

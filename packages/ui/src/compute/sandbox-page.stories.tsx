@@ -161,6 +161,20 @@ export const DesktopUnavailable: Story = () => <Scenario unavailable="Not availa
 /** A stopped microVM: no previews, Resume, and its files from its last snapshot. */
 export const Stopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;
 
+/** Moving to another host: Moving, and how far it has got, with nothing to do until it runs there. */
+export const Moving: Story = () => (
+	<Scenario sandboxId="sbx_2q8w5e1rz4" options={{ moving: { sbx_2q8w5e1rz4: "copying" } }} />
+);
+
+/** The same on a phone, starting on its new host. */
+export const MovingMobile: Story = () => (
+	<Scenario sandboxId="sbx_2q8w5e1rz4" options={{ moving: { sbx_2q8w5e1rz4: "starting" } }} narrow />
+);
+MovingMobile.meta = { width: 390 };
+
+/** The menu of a stopped microVM, with Move to host. */
+export const StoppedMenu: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" menuOpen />;
+
 /** A stopped one's Files: its latest snapshot's. */
 export const StoppedFiles: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" view="files" />;
 

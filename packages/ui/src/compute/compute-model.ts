@@ -112,8 +112,11 @@ export interface AccountsSource {
  */
 export type SandboxKind = "isolate" | "microvm";
 
-/** A sandbox's state. A stop keeps the disk as a snapshot; `paused` keeps memory too (microVMs only). */
-export type SandboxState = "starting" | "running" | "paused" | "stopping" | "stopped" | "error";
+/**
+ * A sandbox's state. A stop keeps the disk as a snapshot; `paused` keeps memory too (microVMs only). `moving`: being
+ * moved to another host in its pool (its `move` says how far), then started there.
+ */
+export type SandboxState = "starting" | "running" | "paused" | "stopping" | "stopped" | "moving" | "error";
 
 export type SandboxSize = "small" | "medium" | "large" | "xlarge";
 
@@ -399,6 +402,8 @@ export interface Sandbox {
 	readonly hostId?: string;
 	/** That host's name, with `hostId`. */
 	readonly hostName?: string;
+	/** How far its move to another host has got, while it's `moving`. */
+	readonly move?: SandboxMove;
 	/** What went wrong, when it's in `error`. */
 	readonly error?: string;
 	/**
@@ -436,6 +441,40 @@ export interface Sandbox {
 		readonly version: number;
 		readonly start: "snapshot" | "boot";
 	};
+}
+
+/** A move to another host under way (the sandbox is `moving`). */
+export interface SandboxMove {
+	/**
+	 * How far it has got: `copying` (its disk goes to the new host) then `starting` (it starts there). A later Kantel may
+	 * say others (a running sandbox's `stopping` and `final-copy`): `movePhaseText` words any it doesn't know.
+	 */
+	readonly phase: string;
+	/** The host it is moving to, where Kantel says, and its name where the console knows it. */
+	readonly hostId?: string;
+	readonly hostName?: string;
+	/** Its memory moves too, so it carries on where it was; otherwise it boots on its disk there. */
+	readonly keepMemory: boolean;
+	readonly startedAt: number;
+}
+
+/** A host a sandbox may move to, and what moving there does to it. */
+export interface MoveTarget {
+	readonly hostId: string;
+	readonly hostName: string;
+	/**
+	 * `kept`: its memory moves too, so running programs carry on (the hosts match). `restarts`: it boots on its disk
+	 * there, and running programs and memory are lost. Absent: Kantel doesn't say (no dry run yet), so it restarts.
+	 */
+	readonly memory?: "kept" | "restarts";
+	/** How long it is expected to be unavailable while it moves there, in milliseconds, where Kantel estimates it. */
+	readonly pauseMs?: number;
+}
+
+/** What a move asks for: the host, and whether to keep its memory where that host can (`MoveTarget.memory`). */
+export interface MoveChoice {
+	readonly hostId: string;
+	readonly keepMemory: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -946,6 +985,16 @@ export interface SandboxesSource {
 	 * so running processes and memory are lost and its files stay. Absent: the console doesn't offer it.
 	 */
 	restartOnLatest?(id: string): Promise<Sandbox>;
+	/**
+	 * The hosts a microVM may move to: the other hosts of its pool that can run it, each with what a move there does to
+	 * its memory where Kantel says. Absent, or without `move`: the console doesn't offer Move to host.
+	 */
+	moveTargets?(sandbox: Sandbox): Promise<readonly MoveTarget[]>;
+	/**
+	 * Moves a sandbox to another host in its pool, with its ID, settings and URLs, and answers it once it runs there. It
+	 * is `moving` meanwhile. A failure leaves it where and as it was, and says why.
+	 */
+	move?(id: string, choice: MoveChoice): Promise<Sandbox>;
 	/** Deletes the sandbox and every snapshot of it, for good. */
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
@@ -2216,6 +2265,7 @@ export const SANDBOX_STATE_LABELS: Readonly<Record<SandboxState, string>> = {
 	paused: "Paused",
 	stopping: "Stopping",
 	stopped: "Stopped",
+	moving: "Moving",
 	error: "Error",
 };
 
@@ -2280,6 +2330,7 @@ export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
 	paused: "waiting",
 	stopping: "working",
 	stopped: "idle",
+	moving: "working",
 	error: "error",
 };
 
@@ -2337,8 +2388,39 @@ export const sizeText = (
 export const sandboxMachineText = (sandbox: Pick<Sandbox, "kind" | "shape" | "resources">): string =>
 	`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(sandboxSpec(sandbox))}`;
 
-/** A sandbox is between states, so the page reads it again soon. */
-export const sandboxMoving = (state: SandboxState): boolean => state === "starting" || state === "stopping";
+/** A sandbox is between states (moving to another host among them), so the page reads it again soon. */
+export const sandboxMoving = (state: SandboxState): boolean =>
+	state === "starting" || state === "stopping" || state === "moving";
+
+/** What a move's phase says it is doing, as a sentence's start: "Copying its disk". */
+const MOVE_PHASES: ReadonlyMap<string, string> = new Map([
+	["copying", "Copying its disk"],
+	["stopping", "Stopping it for the last copy"],
+	["final-copy", "Copying its last changes"],
+	["starting", "Starting it"],
+]);
+
+/**
+ * A move's phase in words: "Copying its disk", "Starting it". A phase this console doesn't know reads as Kantel names
+ * it, in sentence case ("final-check" is "Final check").
+ */
+export function movePhaseText(phase: string): string {
+	const known = MOVE_PHASES.get(phase);
+	if (known !== undefined) return known;
+	const words = phase.replace(/[-_]+/g, " ").trim();
+	return words === "" ? "Moving" : `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
+/**
+ * Whether a sandbox can be moved to another host now: a microVM, running, stopped or paused (a running or paused one
+ * boots on its disk there unless its memory can move; a running one is copied as it runs, then stopped for a last
+ * copy), on a host the viewer knows (its pool's other hosts are listed from it), connected.
+ */
+export const canMove = (sandbox: Pick<Sandbox, "kind" | "state" | "hostId" | "hostUnreachable">): boolean =>
+	sandbox.kind === "microvm" &&
+	sandbox.hostId !== undefined &&
+	sandbox.hostUnreachable !== true &&
+	(sandbox.state === "running" || sandbox.state === "stopped" || sandbox.state === "paused");
 
 /** "52m", "6h 10m", "Always on", or a dash when it isn't running. */
 export function stopsInText(sandbox: Pick<Sandbox, "state" | "stopsAt">, now: number): string {

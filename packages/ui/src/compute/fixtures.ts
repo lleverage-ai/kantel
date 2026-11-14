@@ -1828,6 +1828,11 @@ export interface ComputeFixtureOptions {
 	 */
 	readonly hostsAway?: readonly string[];
 	/**
+	 * Sample sandboxes, by ID, moving to another host, at the phase given (a move's `phase`): for a story of a move under
+	 * way. Each is moving to the other host of its pool, and stays moving.
+	 */
+	readonly moving?: Readonly<Record<string, string>>;
+	/**
 	 * Where hosts reach the control plane, as the deployment set it. Default a default install's loopback address
 	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
 	 */
@@ -1955,7 +1960,21 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				box.snapshot?.takenAt === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
 			const away =
 				box.hostId !== undefined && options.hostsAway?.includes(box.hostId) === true ? { hostUnreachable: true } : {};
-			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot, ...away })))];
+			const phase = options.moving?.[box.id];
+			const move: Partial<Sandbox> =
+				phase === undefined
+					? {}
+					: {
+							state: "moving",
+							move: {
+								phase,
+								hostId: "hst_hetzner_1",
+								hostName: "hetzner-fsn1-01",
+								keepMemory: false,
+								startedAt: at(FIXTURE_NOW - 3 * MINUTE),
+							},
+						};
+			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot, ...away, ...move })))];
 		}),
 	);
 	// Bundles by account and digest: a digest names a bundle only within its account.
@@ -2556,6 +2575,28 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					if (current.kind !== "isolate") return current;
 					const box = put({ ...current, kind: "microvm", state: "running" });
 					return box;
+				}),
+			// The other online hosts of its host's pool that run microVMs. No dry run: each restarts, with no estimate.
+			moveTargets: (box) =>
+				gate(() => {
+					const own = hosts.get(box.hostId ?? "");
+					if (own === undefined) return [];
+					return [...hosts.values()]
+						.filter((host) => host.id !== own.id && host.poolId === own.poolId && host.state === "online" && host.kvm)
+						.map((host) => ({ hostId: host.id, hostName: host.name }));
+				}),
+			// As Kantel does: `moving` while its disk is copied, then while it starts there, and running there once moved.
+			move: (id, choice) =>
+				gate(async () => {
+					const current = find(sandboxes, id, "sandbox");
+					const hostName = hosts.get(choice.hostId)?.name ?? choice.hostId;
+					const move = { hostId: choice.hostId, hostName, keepMemory: false, startedAt: now() };
+					put({ ...current, state: "moving", move: { ...move, phase: "copying" } });
+					await new Promise((resolve) => setTimeout(resolve, settleMs * 2));
+					put({ ...find(sandboxes, id, "sandbox"), move: { ...move, phase: "starting" } });
+					await new Promise((resolve) => setTimeout(resolve, settleMs));
+					const { move: _, ...moved } = find(sandboxes, id, "sandbox");
+					return put({ ...moved, state: "running", hostId: choice.hostId, hostName, stopsAt: now() + HOUR });
 				}),
 			recover: (id) =>
 				gate(() => {

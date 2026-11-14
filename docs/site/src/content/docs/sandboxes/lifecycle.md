@@ -281,6 +281,8 @@ A running sandbox is recovered too, so a retry would restart it again and end wh
 
 `hostId` (`--to <host>`) picks the host. Otherwise the scheduler picks one, as for a create. While it moves, its state is `moving`.
 
+In the console, **Move to host** in the sandbox's menu lists the other hosts of its pool that can run it. While it moves, the sandbox shows **Moving** and how far it has got. If the move fails, the console says why.
+
 Memory doesn't move yet, so a running or paused sandbox moves only with `keepMemory: false` (`--drop-memory`), and boots on its disk on the new host. Its automatic snapshots from before stay on the old host.
 
 A running sandbox moves with a restart, so it is unavailable for seconds rather than for the whole copy:
@@ -290,7 +292,7 @@ A running sandbox moves with a restart, so it is unavailable for seconds rather 
 3. `final-copy`: only what it wrote since the first copy is copied.
 4. `starting`: it boots on the new host, from its disk.
 
-From `stopping` on, commands and file calls wait for it as they do for a start. If the move fails after the stop, the sandbox is started again where it was. A stop, pause or delete during `copying` ends the move first. Both hosts need a kantel-host that moves running sandboxes.
+From `stopping` on, commands and file calls wait for it as they do for a start. If the move fails after the stop, the sandbox is started again where it was. While it moves, a stop, pause, recover or delete is refused until the move ends. Both hosts need a kantel-host that moves running sandboxes.
 
 ```sh
 curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/move" \

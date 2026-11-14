@@ -6,6 +6,7 @@
 import { createKantelClient } from "@kantel/api/sdk";
 import {
 	type AuthenticatePerson,
+	type BackendHost,
 	type ComputeApi,
 	createComputeApi,
 	type PersonIdentity,
@@ -1382,6 +1383,132 @@ describe("hosts", () => {
 		await expect(adas.list()).rejects.toMatchObject({ code: "forbidden" });
 		// A super-admin manages the deployment's hosts instead.
 		expect(ada.ownHosts).toBeUndefined();
+	});
+});
+
+/** A host like the stub's, by another ID and name, with `change` over it. */
+async function hostLike(id: string, change: Partial<BackendHost> = {}): Promise<BackendHost> {
+	const [template] = (await createStubBackend().capabilities()).hosts;
+	if (template === undefined) throw new Error("The stub has no host");
+	return { ...template, id, name: id, ...change };
+}
+
+/** What a moved microVM can do on its new host, as the stub's microVMs can. */
+const MICROVM_CAPABILITIES = {
+	exec: true,
+	files: true,
+	javascript: true,
+	python: true,
+	ssh: true,
+	desktop: false,
+	browser: false,
+	ports: true,
+	docker: true,
+	kvm: false,
+	pause: true,
+} as const;
+
+/**
+ * The stub backend with more hosts beside its own (`extra`) and a move: each waits for `gate` between its copy and
+ * its start, so a test can read it mid-move, then lands on the host asked for, or fails with `refuse` where given.
+ */
+function movesBackend(extra: readonly BackendHost[], gate: Promise<void>, refuse?: string) {
+	const stub = createStubBackend();
+	const backend: SandboxBackend = {
+		...stub,
+		capabilities: async () => {
+			const base = await stub.capabilities();
+			return { ...base, hosts: [...base.hosts, ...extra] };
+		},
+		move: async (_id, spec) => {
+			await gate;
+			if (refuse !== undefined) throw new KantelError("unavailable", refuse);
+			const to = spec.to ?? spec.eligibleHosts?.[0];
+			if (to === undefined) throw new KantelError("exhausted", "No host to move to");
+			spec.onStarting?.(to);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			return { hostId: to, capabilities: MICROVM_CAPABILITIES };
+		},
+	};
+	return backend;
+}
+
+describe("moving a sandbox to another host", () => {
+	it("lists the other online microVM hosts of its pool it may use, by name", async () => {
+		const extra = [
+			await hostLike("host_c"),
+			await hostLike("host_b"),
+			await hostLike("host_isolates", { tiers: ["isolate"] }),
+			await hostLike("host_arm", { arch: "aarch64" }),
+			await hostLike("host_other_pool"),
+		];
+		const { api, fetchApi } = setup({ backend: movesBackend(extra, Promise.resolve()) });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		const pool = await source.hosts?.pools?.create("elsewhere");
+		if (pool === undefined) throw new Error("No pools for a super-admin");
+		await api.store.hosts.update("host_other_pool", (host) => ({ ...host, poolId: pool.id }));
+		const sandbox = await source.sandboxes.get(made.id);
+		expect(sandbox.hostId).toBe(STUB_HOST_ID);
+		const targets = await source.sandboxes.moveTargets?.(sandbox);
+		// Its own host, an isolates-only host, another architecture and another pool's host aren't offered; none says
+		// what a move does to memory yet (no dry run), so each restarts.
+		expect(targets).toEqual([
+			{ hostId: "host_b", hostName: "host_b" },
+			{ hostId: "host_c", hostName: "host_c" },
+		]);
+		// Someone who can't see its host has nothing listed.
+		const bob = await open(fetchApi, "person-bob");
+		expect(await bob.sandboxes.moveTargets?.({ ...sandbox, hostId: "host_unseen" })).toEqual([]);
+	});
+
+	it("shows it moving, by phase and to which host, and answers it running there", async () => {
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { api, fetchApi } = setup({ backend: movesBackend([await hostLike("host_b")], gate) });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		await source.sandboxes.stop(made.id);
+		await api.service.idle();
+		const stopped = await source.sandboxes.get(made.id);
+		expect(stopped.state).toBe("stopped");
+		const [target] = (await source.sandboxes.moveTargets?.(stopped)) ?? [];
+		if (target === undefined || source.sandboxes.move === undefined) throw new Error("Nowhere to move it");
+
+		const moving = source.sandboxes.move(made.id, { hostId: target.hostId, keepMemory: false });
+		await vi.waitFor(async () => expect((await source.sandboxes.get(made.id)).state).toBe("moving"));
+		const copying = await source.sandboxes.get(made.id);
+		expect(copying.move).toMatchObject({ phase: "copying", hostId: "host_b", hostName: "host_b", keepMemory: false });
+		expect(sandboxActions(copying.state)).toEqual({
+			connect: false,
+			stop: false,
+			resume: false,
+			fork: false,
+			recover: false,
+		});
+		release();
+		const moved = await moving;
+		expect(moved).toMatchObject({ id: made.id, state: "running", hostId: "host_b" });
+		expect(moved.move).toBeUndefined();
+	});
+
+	it("says why a move failed, and leaves it stopped where it was", async () => {
+		const reason = "host_b refused the sandbox's root image: it has no room for it";
+		const { api, fetchApi } = setup({ backend: movesBackend([await hostLike("host_b")], Promise.resolve(), reason) });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		await source.sandboxes.stop(made.id);
+		await api.service.idle();
+		await expect(source.sandboxes.move?.(made.id, { hostId: "host_b", keepMemory: false })).rejects.toThrow(reason);
+		expect(await source.sandboxes.get(made.id)).toMatchObject({ state: "stopped", hostId: STUB_HOST_ID });
 	});
 });
 

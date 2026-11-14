@@ -3,6 +3,7 @@ import {
 	AppWindow,
 	Archive,
 	ArchiveRestore,
+	ArrowRightLeft,
 	ArrowUp,
 	Blocks,
 	BookOpen,
@@ -161,6 +162,8 @@ export const CatalogueIcon = lucide(Blocks, "CatalogueIcon");
 export const ServerIcon = lucide(Server, "ServerIcon");
 /** A host moved to another pool. */
 export const MoveIcon = lucide(FolderInput, "MoveIcon");
+/** A sandbox moved to another host. */
+export const MoveHostIcon = lucide(ArrowRightLeft, "MoveHostIcon");
 /** Made the default: a pool new hosts join. */
 export const DefaultIcon = lucide(Star, "DefaultIcon");
 // An environment: what a sandbox starts with (variables, protected values, secret files, repos and grants).
