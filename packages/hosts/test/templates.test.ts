@@ -381,11 +381,12 @@ describe("host backend templates", () => {
 			hostId: "host_a",
 			bootedFresh: true,
 		});
-		// The emptier one refusing for want of room itself (another replica's work): the other with the snapshot takes it.
+		// The emptier one refusing for want of room itself (another replica's work): the other with the snapshot takes it,
+		// with room to spare (under half full), though the host without it is emptier.
 		built.refuse = undefined;
 		built.send({
 			type: "heartbeat",
-			heartbeat: { capacity: { freeMemoryMiB: 3000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
+			heartbeat: { capacity: { freeMemoryMiB: 20_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
 		});
 		await tick();
 		expect(await backend.create({ ...spec, sandboxId: "sbx_next" })).toMatchObject({ hostId: "host_b" });
@@ -395,6 +396,108 @@ describe("host backend templates", () => {
 		expect(
 			await backend.create({ ...spec, sandboxId: "sbx_elsewhere", eligibleHosts: ["host_a", "host_c"] }),
 		).toMatchObject({ hostId: "host_c" });
+	});
+
+	describe("while a pool's other hosts lack the snapshot", () => {
+		/**
+		 * A create from a template snapshot `host_b` holds, which `host_a` may boot fresh: right after a build, before the
+		 * copies arrive, or with `host_a` on another CPU or runtime building its own.
+		 */
+		const specOf = (sandboxId: string, snapshotHosts: readonly string[] = ["host_b"]): SandboxSpec => ({
+			sandboxId,
+			accountId: "acc_a",
+			type: "microvm",
+			subdomain: sandboxId,
+			env: {},
+			eligibleHosts: ["host_b", "host_a"],
+			template: { baseImage: "kantel/sandbox", baseDigest: "", snapshot: "host_b/tsn_1", snapshotHosts },
+			shape: { vcpus: 2, memoryMb: 2048 },
+		});
+		const templateOf = (host: FakeHost, sandboxId: string) =>
+			(
+				host.calls.find((call) => call.method === "sandbox.create" && call.params.sandboxId === sandboxId)?.params as {
+					template?: { snapshot?: string };
+				}
+			)?.template;
+
+		it("boots fresh on an empty host without it when the one with it would be much fuller", async () => {
+			const { store, service, backend } = await setup();
+			// 22 GiB of its 32 used, so 0.76 full with the create placed; the other host is empty.
+			const holder = await addHost(store, service, "host_b", { freeMemoryMiB: 10_000 });
+			const other = await addHost(store, service, "host_a", { freeMemoryMiB: 32_768 });
+			holder.createSource = "snapshot";
+			const placement = await backend.create(specOf("sbx_spread"));
+			expect(placement).toMatchObject({ hostId: "host_a", bootedFresh: true });
+			// Sent as a fresh boot, without the snapshot it doesn't hold, and once: the holder never asked.
+			expect(templateOf(other, "sbx_spread")).toMatchObject({ baseImage: "kantel/sandbox" });
+			expect(templateOf(other, "sbx_spread")).not.toHaveProperty("snapshot");
+			expect(holder.calls.some((call) => call.params.sandboxId === "sbx_spread")).toBe(false);
+		});
+
+		it("restores on the host with it while it has plenty of room, however empty the others", async () => {
+			const { store, service, backend } = await setup();
+			// 0.42 full with the create placed: under half, so the restore wins over an empty host's fresh boot.
+			const holder = await addHost(store, service, "host_b", { freeMemoryMiB: 21_000 });
+			const other = await addHost(store, service, "host_a", { freeMemoryMiB: 32_768 });
+			holder.createSource = "snapshot";
+			const placement = await backend.create(specOf("sbx_stay"));
+			expect(placement.hostId).toBe("host_b");
+			expect(placement.bootedFresh).toBeUndefined();
+			expect(templateOf(holder, "sbx_stay")?.snapshot).toBe("tsn_1");
+			expect(other.calls.some((call) => call.params.sandboxId === "sbx_stay")).toBe(false);
+		});
+
+		it("restores on the host with it when the others are nearly as full", async () => {
+			const { store, service, backend } = await setup();
+			// 0.76 full with the create placed, the other 0.55: within a quarter of each other.
+			const holder = await addHost(store, service, "host_b", { freeMemoryMiB: 10_000 });
+			await addHost(store, service, "host_a", { freeMemoryMiB: 16_800 });
+			holder.createSource = "snapshot";
+			expect(await backend.create(specOf("sbx_close"))).toMatchObject({ hostId: "host_b" });
+			expect(templateOf(holder, "sbx_close")?.snapshot).toBe("tsn_1");
+		});
+
+		it("compares the emptiest host with a copy, not the fullest", async () => {
+			const { store, service, backend } = await setup();
+			const holder = await addHost(store, service, "host_b", { freeMemoryMiB: 10_000 });
+			const copy = await addHost(store, service, "host_c", { freeMemoryMiB: 21_000 });
+			await addHost(store, service, "host_a", { freeMemoryMiB: 32_768 });
+			for (const host of [holder, copy]) host.createSource = "snapshot";
+			const placement = await backend.create({
+				...specOf("sbx_copy_room", ["host_b", "host_c"]),
+				eligibleHosts: ["host_b", "host_c", "host_a"],
+			});
+			expect(placement.hostId).toBe("host_c");
+			expect(placement.bootedFresh).toBeUndefined();
+		});
+
+		it("fills both hosts by turns over creates in a row rather than packing the one with it (#879)", async () => {
+			const { store, service, backend } = await setup();
+			// Two empty hosts of 16 CPUs and 32 GiB; 4 vCPU, 4 GiB machines, so a quarter of a host's CPUs each.
+			const holder = await addHost(store, service, "host_b", { freeMemoryMiB: 32_768 });
+			const other = await addHost(store, service, "host_a", { freeMemoryMiB: 32_768 });
+			holder.createSource = "snapshot";
+			const where: string[] = [];
+			for (let i = 0; i < 8; i++) {
+				const spec = { ...specOf(`sbx_row_${i}`), shape: { vcpus: 4, memoryMb: 4096 } };
+				const placement = await backend.create(spec);
+				where.push(`${placement.hostId}${placement.bootedFresh === true ? " fresh" : ""}`);
+			}
+			expect(where).toEqual([
+				// The holder while it would be under half full, then by turns: the other host boots fresh whenever the holder
+				// would be a quarter fuller, and the holder restores whenever they'd be as full. Without the spread, all eight
+				// would restore on the holder.
+				"host_b",
+				"host_a fresh",
+				"host_b",
+				"host_a fresh",
+				"host_b",
+				"host_a fresh",
+				"host_b",
+				"host_a fresh",
+			]);
+			expect(other.calls.filter((call) => call.method === "sandbox.create").length).toBe(4);
+		});
 	});
 
 	it("boots the template fresh on another host when its snapshot's host has no room, or on it when it misses the snapshot, but a sandbox's own snapshot waits", async () => {

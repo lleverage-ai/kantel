@@ -84,6 +84,7 @@ import {
 	type ReleaseCheck,
 } from "./releases.ts";
 import {
+	bootsFreshInstead,
 	buildFitsOn,
 	type Candidate,
 	type HeldMemory,
@@ -277,6 +278,11 @@ export interface CreateSandboxInput {
 	 * and restores it only when it was built as the create's size or shape.
 	 */
 	readonly template?: HostTemplateBoot;
+	/**
+	 * With a template `snapshot`: the other hosts the create may use, which don't hold it. The emptiest of them boots the
+	 * template fresh instead when the hosts holding it would be much fuller (`bootsFreshInstead`); else they're ignored.
+	 */
+	readonly freshHosts?: readonly string[];
 }
 
 /**
@@ -2800,6 +2806,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (input.from !== undefined && only?.size !== 1) {
 					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
 				}
+				// The hosts without the template snapshot that may boot it fresh instead.
+				const fresh = new Set(
+					input.template?.snapshot === undefined || only === undefined
+						? []
+						: (input.freshHosts ?? []).filter((hostId) => !only.has(hostId)),
+				);
 				if (input.template !== undefined && tier !== "microvm") {
 					throw new KantelError("invalid", "A sandbox made from a template is a microVM");
 				}
@@ -2812,7 +2824,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				refuseTaken(existing);
 				const usable = listed
 					.map(sane)
-					.filter((host) => only === undefined || only.has(host.id))
+					.filter((host) => only === undefined || only.has(host.id) || fresh.has(host.id))
 					// An account's own host takes only that account's sandboxes, whatever the caller named.
 					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
 				// A template goes only to a host that runs templates; a custom image's only to one that builds them.
@@ -2870,19 +2882,33 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						};
 					}),
 				);
-				const template = input.template;
-				const chosen = place(
-					{
-						tier,
-						...(input.size === undefined ? {} : { size: input.size }),
-						...(shape === undefined ? {} : { shape }),
-						...(input.owner === undefined ? {} : { owner: input.owner }),
-						...(input.labels === undefined ? {} : { labels: input.labels }),
-						// A host holding each disk's head (the version asked for) is preferred.
-						...(sticky ? { stickyDisks: input.stickyDisks } : {}),
-					},
-					candidates,
+				const request = {
+					tier,
+					...(input.size === undefined ? {} : { size: input.size }),
+					...(shape === undefined ? {} : { shape }),
+					...(input.owner === undefined ? {} : { owner: input.owner }),
+					...(input.labels === undefined ? {} : { labels: input.labels }),
+					// A host holding each disk's head (the version asked for) is preferred.
+					...(sticky ? { stickyDisks: input.stickyDisks } : {}),
+				};
+				let template = input.template;
+				let chosen = place(
+					request,
+					candidates.filter((candidate) => !fresh.has(candidate.host.id)),
 				);
+				// On a host with the template snapshot, unless that host would be much fuller than the emptiest without it, which
+				// boots the template fresh instead. With no room on any host with it, the caller boots it fresh elsewhere.
+				if (!isRefusal(chosen) && fresh.size > 0) {
+					const instead = place(
+						request,
+						candidates.filter((candidate) => fresh.has(candidate.host.id)),
+					);
+					if (!isRefusal(instead) && template !== undefined && bootsFreshInstead(chosen, instead)) {
+						const { snapshot: _restore, ...boot } = template;
+						template = boot;
+						chosen = instead;
+					}
+				}
 				if (isRefusal(chosen)) {
 					// From a snapshot it goes only on the snapshot's host: that host not being up is the reason, not a lack of hosts.
 					const pinned = input.from !== undefined || input.template?.snapshot !== undefined;
