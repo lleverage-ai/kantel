@@ -248,6 +248,12 @@ const FeatureRootfsSync = "rootfs-sync"
 // only when none has one. It comes with FeatureRootfsSync, on the microVM tier.
 const FeatureTemplateSync = "template-sync"
 
+// FeatureTemplateImageCopies: a template.build of a custom image with Copy (TemplateBuildParams.Copy) is a copy of an
+// entry another host built: its root filesystem is only the one Copy names, with the digest Copy names, held here or
+// fetched from a peer, never built or pulled again (which might make another image under the same key), so whatever
+// snapshot the build fetches or boots is over the entry's image. It comes with FeatureTemplateSync.
+const FeatureTemplateImageCopies = "template-image-copies"
+
 // FeatureSnapshotSync: saved snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3
 // notes"), kind DiskKindSnapshot, each its snapshot ID (a ref's), in two versions, one for each of its block-mapped
 // files: SnapshotDiskVersion (disk.ext4, with its record beside it) and SnapshotMemoryVersion (mem, with the machine's
@@ -638,6 +644,12 @@ type Capacity struct {
 	// that kind it holds, [] for none; a kind left out says nothing of it (a host without it, or an inventory that
 	// couldn't be read in full), so the control plane forgets nothing of that kind.
 	Holdings map[string][]ObjectHolding `json:"holdings,omitempty"`
+	// Fetches are the disk store versions the host is fetching from its peers (FeatureDiskSync), of any kind: those
+	// under way or waiting their turn, and those that failed and are left to go on. [] when there are none; absent (nil,
+	// which omitzero leaves out) from a host that doesn't fetch, and from one from before it said. A version is listed
+	// here or as held, never both. The control plane records each as a copy being fetched, and lets one go that a report
+	// no longer lists, never on an absent one.
+	Fetches []FetchProgress `json:"fetches,omitzero"`
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.
 	Memory *MemoryReport `json:"memory,omitempty"`
@@ -1264,6 +1276,28 @@ type ObjectVersionHolding struct {
 	Copy bool `json:"copy,omitempty"`
 }
 
+// Fetch states (FetchProgress.State): waiting its turn behind the host's other fetches, or being prepared for (a saved
+// snapshot's disk, while its record is read and its root image got); under way; or stopped by an error, its partial
+// left to go on when it is asked for again.
+const (
+	FetchQueued  = "queued"
+	FetchRunning = "running"
+	FetchFailed  = "failed"
+)
+
+// FetchProgress is one version a host is fetching (Capacity.Fetches): its state; its blocks (every part's, for a kind
+// with parts), 0 until its map has been read; how many of them are in place; and the last error it met, while it is
+// tried again or has failed.
+type FetchProgress struct {
+	Kind     string `json:"kind"`
+	ObjectID string `json:"objectId"`
+	Version  string `json:"version"`
+	State    string `json:"state"`
+	Blocks   int64  `json:"blocks"`
+	InPlace  int64  `json:"inPlace"`
+	Error    string `json:"error,omitempty"`
+}
+
 // DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is
 // DiskKindSticky, DiskKindRootfs (FeatureRootfsSync), DiskKindTemplate (FeatureTemplateSync), for which Kantel
 // answers only holders whose copy restores on the asking host's CPU and runtime, or DiskKindSnapshot
@@ -1353,6 +1387,16 @@ type TemplateBuildParams struct {
 	Egress *Egress `json:"egress,omitempty"`
 	// Owner is the account the template is of, which the egress proxy names the build's requests after.
 	Owner string `json:"owner,omitempty"`
+	// Copy makes a custom image's build a copy of an entry built on another host (FeatureTemplateImageCopies), over
+	// only that entry's image. Nil: a root filesystem no peer holds is built or pulled here.
+	Copy *TemplateCopy `json:"copy,omitempty"`
+}
+
+// TemplateCopy is the image a copy of a custom image's template snapshot is over: the root filesystem the entry's
+// build made (its TemplateBuildResult.RootfsKey) and the image digest that build named (ImageDigest).
+type TemplateCopy struct {
+	RootfsKey   string `json:"rootfsKey"`
+	ImageDigest string `json:"imageDigest"`
 }
 
 // TemplateBuildResult is template.build's answer. Ref names the snapshot on this host (its ID).

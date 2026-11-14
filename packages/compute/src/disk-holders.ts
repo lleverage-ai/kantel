@@ -125,7 +125,17 @@ export type ObjectHoldingsReport = readonly {
 	} & SnapshotMadeOn)[];
 }[];
 
-/** What one capacity report says a host holds: each absent says nothing of its kind, so nothing of it is forgotten. */
+/**
+ * A host's report of the versions it is fetching from its peers (`HostCapacity.fetches`): those under way, waiting
+ * their turn, or failed with their partials left to go on. Progress isn't kept in the catalogue, only that the host is
+ * fetching each.
+ */
+export type FetchesReport = readonly { readonly kind: string; readonly objectId: string; readonly version: string }[];
+
+/**
+ * What one capacity report says a host holds, and is fetching: each absent says nothing of its kind (or of fetches), so
+ * nothing of it is forgotten.
+ */
 export interface HoldingsReport {
 	readonly stickyDisks?: StickyHoldingsReport;
 	readonly objects?: {
@@ -133,6 +143,7 @@ export interface HoldingsReport {
 		readonly template?: ObjectHoldingsReport;
 		readonly snapshot?: ObjectHoldingsReport;
 	};
+	readonly fetches?: FetchesReport;
 }
 
 /** The one version of a template's root filesystem. */
@@ -169,8 +180,10 @@ export interface DiskHolders {
 	 * of: a version it holds becomes `held` there (a sticky disk's only when the catalogue has it; a root filesystem's
 	 * with the map digest reported, replacing one with another; a saved snapshot's only when the catalogue has the
 	 * snapshot, with its digest), and one it no longer reports is let go, unless it is being fetched or its holder is
-	 * newer than the report could know (`reportGraceMs`). Nothing of sticky disks with them off, nor of root filesystems
-	 * or template snapshots with templates off, nor of saved snapshots with both off.
+	 * newer than the report could know (`reportGraceMs`). With the report's fetches, a version it is fetching and neither
+	 * holds nor has a holder for becomes `fetching` there (by the same rules as one held), and a `fetching` holder it
+	 * neither reports fetching nor holding is let go. Nothing of sticky disks with them off, nor of root filesystems or
+	 * template snapshots with templates off, nor of saved snapshots with both off.
 	 */
 	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/** A version just committed on `hostId`: the host it was made on holds it. */
@@ -666,13 +679,116 @@ export function createDiskHolders(options: {
 		return granted("snapshot", request, hostId, record.accountId, byDigest);
 	}
 
+	/**
+	 * Whether a kind's copies are synced here: sticky disks' with them on, root filesystems' and templates' with
+	 * templates, saved snapshots' with either.
+	 */
+	const synced = (kind: string): kind is DiskKind =>
+		kind === "sticky"
+			? options.stickyDisks
+			: kind === "rootfs" || kind === "template"
+				? options.templates
+				: kind === "snapshot" && snapshots;
+
+	/**
+	 * Adds to `changes` what a report's fetches make of `hostId`'s holders (`current`, as read before `changes` were
+	 * made): a version it is fetching, of a kind synced here, that it has no holder for (or one `changes` let go) and that
+	 * `changes` don't make it hold, is recorded `fetching` from `at`, if it is one the host could hold: a sticky disk's
+	 * version the catalogue has, of an account whose data the host may have; a root filesystem's key; a template
+	 * snapshot the catalogue has, of an account whose data the host may have; a saved snapshot's version the catalogue
+	 * has ready (`savedSnapshot`), of an account whose data the host may have, as a copy of its ref. A `fetching` holder
+	 * it no longer reports fetching is let go, unless `changes` already release it (it holds it now) or it is newer than
+	 * the report could know (`reportGraceMs`: one `recordSnapshotFetch` wrote as the host was told). Its digest, pool and
+	 * what it was made on come once it is held: a `fetching` holder is never offered to fetch from.
+	 */
+	async function fetching(
+		hostId: string,
+		at: number,
+		fetches: FetchesReport,
+		current: readonly StoredDiskHolder[],
+		changes: { readonly hold: StoredDiskHolder[]; readonly release: StoredDiskHolder[] },
+	): Promise<void> {
+		const known = new Map(current.map((holder) => [holder.id, holder]));
+		const holding = new Set(changes.hold.map((holder) => holder.id));
+		const released = new Set(changes.release.map((holder) => holder.id));
+		const reported = new Set<string>();
+		let reporter: Promise<StoredHost | undefined> | undefined;
+		const host = () => {
+			reporter ??= options.hosts().then((hosts) => hosts.find((each) => each.id === hostId));
+			return reporter;
+		};
+		const mayHold = async (accountId: string) => {
+			const found = await host();
+			return (
+				found !== undefined &&
+				found.state !== "revoked" &&
+				(found.accountId === undefined || found.accountId === accountId)
+			);
+		};
+		for (const fetch of fetches) {
+			if (!synced(fetch.kind)) continue;
+			const id = diskHolderId(fetch.kind, fetch.objectId, fetch.version, hostId);
+			reported.add(id);
+			// One with a holder already stays as it is, unless `changes` let it go (it no longer holds it): it is fetching it
+			// again.
+			if (holding.has(id) || (known.has(id) && !released.has(id))) continue;
+			let ref: string | undefined;
+			if (fetch.kind === "sticky") {
+				const recorded = await store.stickyDiskVersions.get(fetch.version);
+				if (recorded === undefined || recorded.diskId !== fetch.objectId || !(await mayHold(recorded.accountId)))
+					continue;
+			} else if (fetch.kind === "rootfs") {
+				if (!ROOTFS_KEY.test(fetch.objectId) || fetch.version !== ROOTFS_VERSION) continue;
+				const found = await host();
+				if (found === undefined || found.state === "revoked") continue;
+			} else if (fetch.kind === "template") {
+				if (!TEMPLATE_SNAPSHOT_ID.test(fetch.objectId) || fetch.version !== TEMPLATE_VERSION) continue;
+				const entry = await store.templateSnapshots.get(fetch.objectId);
+				if (entry === undefined || !(await mayHold(entry.accountId))) continue;
+			} else {
+				if (!SNAPSHOT_ID.test(fetch.objectId) || !SNAPSHOT_VERSIONS.includes(fetch.version)) continue;
+				const others = (await store.diskHolders.list({ objectId: fetch.objectId })).filter(
+					(each) => each.kind === "snapshot",
+				);
+				const found = await savedSnapshot(fetch.objectId, others, hostId);
+				if (found === undefined || !(await mayHold(found.record.accountId))) continue;
+				ref = found.ref;
+			}
+			holding.add(id);
+			changes.hold.push({
+				id,
+				kind: fetch.kind,
+				objectId: fetch.objectId,
+				version: fetch.version,
+				hostId,
+				state: "fetching",
+				since: at,
+				...(ref === undefined ? {} : { ref }),
+			});
+		}
+		for (const holder of current) {
+			if (holder.state !== "fetching" || !synced(holder.kind)) continue;
+			if (reported.has(holder.id) || released.has(holder.id)) continue;
+			if (holder.since > at - options.reportGraceMs) continue;
+			changes.release.push(holder);
+		}
+	}
+
 	return {
 		async recordHoldings(hostId, at, report) {
 			const sticky = options.stickyDisks ? report.stickyDisks : undefined;
 			const rootfs = options.templates ? report.objects?.rootfs : undefined;
 			const template = options.templates ? report.objects?.template : undefined;
 			const snapshot = snapshots ? report.objects?.snapshot : undefined;
-			if (sticky === undefined && rootfs === undefined && template === undefined && snapshot === undefined) return;
+			const fetches = report.fetches?.filter((fetch) => synced(fetch.kind));
+			if (
+				sticky === undefined &&
+				rootfs === undefined &&
+				template === undefined &&
+				snapshot === undefined &&
+				fetches === undefined
+			)
+				return;
 			// The newest report wins: one older than a report already taken, here or on another gateway, changes nothing.
 			if (!(await store.diskHolderWrites.claim(hostId, at))) return;
 			const current = await store.diskHolders.list({ hostId });
@@ -910,6 +1026,9 @@ export function createDiskHolders(options: {
 					});
 				}
 				letGo(mine, new Set(reported.keys()));
+			}
+			if (fetches !== undefined) {
+				await fetching(hostId, at, fetches, current, { hold, release });
 			}
 			if (hold.length > 0 || release.length > 0) await store.diskHolderWrites.reconcile(hostId, at, { hold, release });
 			for (const objectId of orphans) await options.deleteSnapshotCopy?.(hostId, objectId).catch(() => undefined);

@@ -400,6 +400,14 @@ export const HOST_FEATURES = {
 	 */
 	templateSync: "template-sync",
 	/**
+	 * A `template.build` of a custom image with `copy` (`HostTemplateBuild.copy`) is a copy of an entry another host
+	 * built: its root filesystem is only the one `copy` names, with the digest `copy` names, held on the host or fetched
+	 * from a peer, never built or pulled again (which might make another image under the same key), so whatever snapshot
+	 * the build fetches or boots is over the entry's image. A host without it would ignore `copy`. Reported with
+	 * `templateSync`.
+	 */
+	templateImageCopies: "template-image-copies",
+	/**
 	 * Saved snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"): kind `snapshot`,
 	 * each its snapshot ID (a ref's), in two versions, one for each block-mapped file: `disk` (`disk.ext4`, with its
 	 * record) and `memory` (`mem`, with the machine's state). The host maps each saved snapshot's files, lists those with
@@ -731,6 +739,12 @@ export interface HostCapacity {
 	 */
 	readonly holdings?: { readonly [kind in HostObjectKind]?: readonly HostObjectHolding[] };
 	/**
+	 * The disk store versions it is fetching from its peers (`HOST_FEATURES.diskSync`), of any kind: those under way or
+	 * waiting their turn, and those that failed and are left to go on. [] for none. Absent from a host that doesn't fetch,
+	 * and from one from before it said: nothing is let go on it. A version is listed here or as held, never both.
+	 */
+	readonly fetches?: readonly HostFetchProgress[];
+	/**
 	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up: the host's page shows it
 	 * (`Host.mesh`). Absent from a host without the feature, or whose mesh is down (its pool's sync off).
 	 */
@@ -826,6 +840,23 @@ export interface HostObjectVersionHolding {
 	 * it deleted at once when it knows no such snapshot, where a host's own waits out a save that may be under way.
 	 */
 	readonly copy?: boolean;
+}
+
+/**
+ * One version a host is fetching (`HostCapacity.fetches`, `FetchProgress` in proto.go): waiting its turn behind the
+ * host's other fetches, or being prepared for (a saved snapshot's disk, while its record is read and its root image got)
+ * (`queued`), under way (`running`), or stopped by an error with its partial left to go on when it is asked for again
+ * (`failed`); its blocks (every part's, for a kind with parts), 0 until its map has been read; how many of them are in
+ * place; and the last error it met, while it is tried again or has failed.
+ */
+export interface HostFetchProgress {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly state: "queued" | "running" | "failed";
+	readonly blocks: number;
+	readonly inPlace: number;
+	readonly error?: string;
 }
 
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
@@ -1594,6 +1625,18 @@ export interface HostTemplateBuild extends HostTemplateBase {
 	readonly egress?: HostEgress;
 	/** The account the template is of. */
 	readonly owner?: string;
+	/**
+	 * Makes a custom image's build a copy of an entry built on another host (`HOST_FEATURES.templateImageCopies`), over
+	 * only that entry's image: the root filesystem its build made (`HostTemplateBuilt.rootfsKey`) and the digest it named.
+	 * Absent: a root filesystem no peer holds is built or pulled on the host.
+	 */
+	readonly copy?: HostTemplateCopy;
+}
+
+/** The image a copy of a custom image's template snapshot is over (`HostTemplateBuild.copy`). */
+export interface HostTemplateCopy {
+	readonly rootfsKey: string;
+	readonly imageDigest: string;
 }
 
 /** `template.build`'s answer: `ref` names the snapshot on its host. */

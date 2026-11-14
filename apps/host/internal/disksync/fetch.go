@@ -28,12 +28,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/bits"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -56,6 +59,9 @@ const (
 	maxFileBytes = 1 << 20
 	// grantMargin is how long before its grant expires a fetch asks for a new one.
 	grantMargin = time.Minute
+	// failedKeep is how long a failed fetch with no partial left is still reported (Progress): one with a partial is
+	// reported for as long as the partial is there.
+	failedKeep = 10 * time.Minute
 )
 
 // runBlocks is the most blocks one request asks for: 64 MiB.
@@ -99,11 +105,15 @@ type Store interface {
 }
 
 // Request is a fetch of a version, with what disk.locate said of it; with no holders, grant or digest it is asked.
+// Prepare, when set, readies the host for the fetch before it waits its turn (a saved snapshot's record read, and the
+// root image its disk is over made sure of): the fetch is reported queued while it runs, and an error it answers ends
+// the fetch as one of the fetch's own would. It holds no turn, so a fetch it waits for (a root filesystem's) can run.
 type Request struct {
 	Ref
 	MapDigest string
 	Holders   []proto.DiskHolder
 	Grant     string
+	Prepare   func(ctx context.Context) error
 }
 
 // Stats are what a fetch did: of the version's blocks, how many it had already (Reused: the nearest version had them,
@@ -137,6 +147,15 @@ type Fetcher struct {
 	slots chan struct{}
 	mu    sync.Mutex
 	jobs  map[Ref]*Job
+	// failed are the fetches that ended with an error, as they stood then, until one is started again or held.
+	failed map[Ref]failure
+}
+
+// failure is how a failed fetch stood when it ended: its blocks, how many were in place, its error and when.
+type failure struct {
+	blocks, inPlace int64
+	err             string
+	at              time.Time
 }
 
 // Job is a fetch under way, or queued.
@@ -146,6 +165,22 @@ type Job struct {
 	stats Stats
 	// again is a resume asked for while it ran (ResumeAll): one that fails is started again once it has ended.
 	again bool
+
+	// running is set once it has its turn. blocks are its version's (every part's), once its map is read, and inPlace
+	// how many of them are in place. lastErr is the last error it met: a holder that failed it, or the failure of the
+	// fetch it goes on from.
+	running         atomic.Bool
+	blocks, inPlace atomic.Int64
+	lastErr         atomic.Pointer[string]
+}
+
+// noteError records err as the last error the fetch met.
+func (j *Job) noteError(err error) {
+	if j == nil || err == nil {
+		return
+	}
+	msg := err.Error()
+	j.lastErr.Store(&msg)
 }
 
 // Done is closed when the fetch has ended.
@@ -162,6 +197,7 @@ func (f *Fetcher) init() {
 		}
 		f.slots = make(chan struct{}, n)
 		f.jobs = map[Ref]*Job{}
+		f.failed = map[Ref]failure{}
 		if f.Client == nil {
 			var protocols http.Protocols
 			protocols.SetUnencryptedHTTP2(true)
@@ -187,19 +223,41 @@ func (f *Fetcher) Start(req Request) *Job {
 		return j
 	}
 	j := &Job{done: make(chan struct{})}
+	if failed, ok := f.failed[req.Ref]; ok {
+		// It goes on from where the failed fetch stopped, which it reports until it has its own.
+		j.blocks.Store(failed.blocks)
+		j.inPlace.Store(failed.inPlace)
+		j.lastErr.Store(&failed.err)
+		delete(f.failed, req.Ref)
+	}
 	f.jobs[req.Ref] = j
 	go func() {
 		defer close(j.done)
 		defer func() {
 			f.mu.Lock()
 			delete(f.jobs, req.Ref)
+			// A failure is reported until the fetch is asked for again: not one the host's stop or the control plane's
+			// not_found (its partial discarded) ended.
+			if j.err != nil && f.Context.Err() == nil && !IsNotFound(j.err) {
+				f.failed[req.Ref] = failure{blocks: j.blocks.Load(), inPlace: j.inPlace.Load(), err: j.err.Error(), at: time.Now()}
+			}
 			again := j.again && j.err != nil && f.Context.Err() == nil
 			f.mu.Unlock()
 			if again {
-				// A resume came while it was failing (the control plane back, say): what it left goes on.
+				// A resume came while it was failing (the control plane back, say): what it left goes on, asked of the
+				// control plane afresh and without its preparation, as ResumeAll starts one.
 				f.Start(Request{Ref: req.Ref})
 			}
 		}()
+		if req.Prepare != nil {
+			if j.err = req.Prepare(f.Context); j.err != nil {
+				if IsNotFound(j.err) {
+					f.Store.Discard(req.Ref)
+				}
+				f.Log.Warn("a disk version's fetch couldn't be prepared", "version", req.Ref.String(), "error", j.err)
+				return
+			}
+		}
 		select {
 		case f.slots <- struct{}{}:
 		case <-f.Context.Done():
@@ -207,8 +265,9 @@ func (f *Fetcher) Start(req Request) *Job {
 			return
 		}
 		defer func() { <-f.slots }()
+		j.running.Store(true)
 		start := time.Now()
-		j.stats, j.err = f.fetch(f.Context, req)
+		j.stats, j.err = f.fetch(f.Context, req, j)
 		if IsNotFound(j.err) {
 			// The control plane has no such version (deleted): what was fetched of it is no use.
 			f.Store.Discard(req.Ref)
@@ -222,6 +281,64 @@ func (f *Fetcher) Start(req Request) *Job {
 			"took", time.Since(start).Round(time.Millisecond))
 	}()
 	return j
+}
+
+// Progress is every fetch under way or waiting its turn, and every failed one, by kind, object and version: a failed
+// one while its partial is left for it to go on (and for failedKeep after it failed), and not once the version is held.
+// Never nil, so a report says there are none.
+func (f *Fetcher) Progress() []proto.FetchProgress {
+	f.init()
+	f.mu.Lock()
+	out := make([]proto.FetchProgress, 0, len(f.jobs)+len(f.failed))
+	for r, j := range f.jobs {
+		state := proto.FetchQueued
+		if j.running.Load() {
+			state = proto.FetchRunning
+		}
+		p := proto.FetchProgress{Kind: r.Kind, ObjectID: r.ObjectID, Version: r.Version, State: state,
+			Blocks: j.blocks.Load(), InPlace: j.inPlace.Load()}
+		if msg := j.lastErr.Load(); msg != nil {
+			p.Error = *msg
+		}
+		out = append(out, p)
+	}
+	failed := make(map[Ref]failure, len(f.failed))
+	for r, fl := range f.failed {
+		failed[r] = fl
+	}
+	f.mu.Unlock()
+	// A version is reported fetching or held, never both: one queued may be of a version the host holds (asked for as
+	// the catalogue caught up), which it ends at once when its turn comes. The store is read without the lock.
+	out = slices.DeleteFunc(out, func(p proto.FetchProgress) bool {
+		return p.State == proto.FetchQueued && f.Store.Held(Ref{Kind: p.Kind, ObjectID: p.ObjectID, Version: p.Version})
+	})
+	if len(failed) > 0 {
+		// Without the lock: the store may be slow, and a fetch that starts meanwhile is reported next time.
+		partials := map[Ref]bool{}
+		for _, r := range f.Store.Partials() {
+			partials[r] = true
+		}
+		var gone []Ref
+		for r, fl := range failed {
+			if f.Store.Held(r) || (!partials[r] && time.Since(fl.at) > failedKeep) {
+				gone = append(gone, r)
+				continue
+			}
+			out = append(out, proto.FetchProgress{Kind: r.Kind, ObjectID: r.ObjectID, Version: r.Version,
+				State: proto.FetchFailed, Blocks: fl.blocks, InPlace: fl.inPlace, Error: fl.err})
+		}
+		f.mu.Lock()
+		for _, r := range gone {
+			if fl, ok := f.failed[r]; ok && fl.at.Equal(failed[r].at) {
+				delete(f.failed, r)
+			}
+		}
+		f.mu.Unlock()
+	}
+	slices.SortFunc(out, func(a, b proto.FetchProgress) int {
+		return strings.Compare(a.Kind+"/"+a.ObjectID+"/"+a.Version, b.Kind+"/"+b.ObjectID+"/"+b.Version)
+	})
+	return out
 }
 
 // Running says whether the version is being fetched, or waits its turn.
@@ -239,13 +356,13 @@ var (
 	errNoHolder = errors.New("no host holds the version")
 )
 
-func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
+func (f *Fetcher) fetch(ctx context.Context, req Request, j *Job) (Stats, error) {
 	if f.Store.Held(req.Ref) {
 		// A partial left of it (published, then the host stopped before removing it) is no fetch to go on with.
 		f.Store.Discard(req.Ref)
 		return Stats{}, nil
 	}
-	src := &holders{f: f, ref: req.Ref, digest: req.MapDigest}
+	src := &holders{f: f, job: j, ref: req.Ref, digest: req.MapDigest}
 	if len(req.Holders) == 0 || req.Grant == "" || req.MapDigest == "" {
 		if err := src.refresh(ctx, 0); err != nil {
 			return Stats{}, err
@@ -264,6 +381,8 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 	if err := m.UnmarshalBinary(raw); err != nil {
 		return Stats{}, err
 	}
+	// Its blocks are known from here, however the rest goes.
+	j.blocks.Store(int64(m.Blocks()))
 	path, err := f.Store.Partial(req.Ref)
 	if err != nil {
 		return Stats{}, err
@@ -275,6 +394,7 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 		return Stats{}, err
 	}
 	defer p.file.Close()
+	j.inPlace.Store(int64(p.inPlace()))
 	// Room for everything the fetch writes from here, before it writes any of it: the blocks it fetches, and the blocks
 	// of zeros it clears, which take none when a hole is punched but may where one can't be.
 	release, err := f.Store.Reserve(req.Ref, p.left())
@@ -285,6 +405,7 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 	if err := p.clearZeros(); err != nil {
 		return Stats{}, err
 	}
+	j.inPlace.Store(int64(p.inPlace()))
 	st := Stats{Blocks: m.Blocks(), Resumed: p.resumed}
 	runs := p.runs()
 	for _, r := range runs {
@@ -329,7 +450,9 @@ func (f *Fetcher) ReadFile(ctx context.Context, req Request, name string) ([]byt
 // holders are the hosts a fetch fetches from, and its grant, asked for again when a holder refuses it or it is about
 // to expire.
 type holders struct {
-	f      *Fetcher
+	f *Fetcher
+	// job is the fetch's, for its progress.
+	job    *Job
 	ref    Ref
 	digest string
 
@@ -485,6 +608,7 @@ func (h *holders) fetchMap(ctx context.Context, what, digest string) ([]byte, er
 			}
 			refused = refused || errors.Is(err, errGrant)
 			errs = append(errs, err)
+			h.job.noteError(err)
 		}
 		if !refused {
 			break
@@ -535,6 +659,7 @@ func (h *holders) fetchFile(ctx context.Context, name string) ([]byte, error) {
 			}
 			refused = refused || errors.Is(err, errGrant)
 			errs = append(errs, err)
+			h.job.noteError(err)
 		}
 		if missing == len(list) {
 			return nil, nil
@@ -609,6 +734,15 @@ type partial struct {
 
 func (p *partial) isDone(i int) bool { return p.done[i/8]&(1<<(i%8)) != 0 }
 func (p *partial) setDone(i int)     { p.done[i/8] |= 1 << (i % 8) }
+
+// inPlace is how many blocks its bitmap records in place. Not while its runs are fetched: checkpoints change it then.
+func (p *partial) inPlace() int {
+	n := 0
+	for _, b := range p.done {
+		n += bits.OnesCount8(b)
+	}
+	return n
+}
 
 // bitmapMagic starts a bitmap's file, followed by the map digest it is for, a newline and a bit per block.
 const bitmapMagic = "KTFETCH1 "
@@ -953,6 +1087,7 @@ func (f *Fetcher) fetchRun(ctx context.Context, src *holders, p *partial, r run,
 			return fetched, ctx.Err()
 		}
 		errs = append(errs, err)
+		src.job.noteError(err)
 		if errors.Is(err, errGrant) {
 			if err := src.refresh(ctx, gen); err != nil {
 				return fetched, err
@@ -1002,6 +1137,7 @@ func (f *Fetcher) fetchFrom(ctx context.Context, src *holders, p *partial, addr 
 			return fetched, err
 		}
 		p.wrote(i)
+		src.job.inPlace.Add(1)
 		*next = i + 1
 	}
 	return fetched, nil

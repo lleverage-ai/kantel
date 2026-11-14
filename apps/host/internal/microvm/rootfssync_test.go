@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -338,5 +339,105 @@ func TestACustomImageBuildFetchesItsRootfsFromAPeerFirst(t *testing.T) {
 	}
 	if _, rec, ok := customCached(m.tpl.rootfs, key); !ok || rec.ImageDigest != otherDigest {
 		t.Fatalf("the fetched image %+v %v", rec, ok)
+	}
+}
+
+// A copy of a custom image's entry (TemplateBuildParams.Copy) is over only that entry's image: its root filesystem
+// fetched from a peer, or held here already, with the digest the copy names. With no peer holding it, or one holding
+// another image under the key, the copy fails and nothing is built or pulled; a copy that names another key than the
+// template's image, or of a template with no custom image, is refused.
+func TestACopyOfACustomImageIsOnlyOverItsEntrysImage(t *testing.T) {
+	key := customImageKey("acc_1", testDockerfile, templateImage{BaseImage: "kantel/sandbox"})
+	digest := "sha256:" + strings.Repeat("ef", 32)
+	copyOf := func(id string, c proto.TemplateCopy) proto.TemplateBuildParams {
+		return proto.TemplateBuildParams{SnapshotID: id, KeyHash: "k1", BaseImage: "kantel/sandbox", Image: testDockerfile, VCPUs: 2, MemoryMiB: 4096, DiskGiB: 20, Owner: "acc_1", Copy: &c}
+	}
+	fetchAs := func(m *Manager, recorded string, asked *int) func(context.Context, string) error {
+		return func(_ context.Context, got string) error {
+			*asked++
+			if got != key {
+				t.Fatalf("asked for %s", got)
+			}
+			if recorded == "" {
+				return ErrNoPeerRootfs
+			}
+			if err := os.MkdirAll(m.tpl.rootfs.dir, 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(m.tpl.rootfs.path(key), []byte("ext4"), 0o600); err != nil {
+				return err
+			}
+			return os.WriteFile(m.tpl.rootfs.recordPath(key), []byte(`{"imageDigest":"`+recorded+`","builtFrom":"dockerfile x"}`), 0o600)
+		}
+	}
+	code := func(err error) string {
+		var pe *proto.Error
+		if errors.As(err, &pe) {
+			return pe.Code
+		}
+		return ""
+	}
+
+	// No peer holds it: the copy fails, and builds nothing.
+	m, docker, b := builderManager(t)
+	asked := 0
+	m.cfg.FetchRootfs = fetchAs(m, "", &asked)
+	if _, err := m.BuildTemplate(context.Background(), copyOf("tsn_1", proto.TemplateCopy{RootfsKey: key, ImageDigest: digest})); code(err) != proto.ErrNotFound || asked != 1 {
+		t.Fatalf("with no peer: %v (asked %d)", err, asked)
+	}
+	if len(b.jobs) != 0 || len(docker.calls) != 0 || fileExists(m.tpl.rootfs.path(key)) {
+		t.Fatalf("built %d images, ran %v", len(b.jobs), docker.calls)
+	}
+
+	// A peer holds another image under the key: the copy fails, and the image isn't built either.
+	m, docker, b = builderManager(t)
+	asked = 0
+	m.cfg.FetchRootfs = fetchAs(m, otherDigest, &asked)
+	if _, err := m.BuildTemplate(context.Background(), copyOf("tsn_1", proto.TemplateCopy{RootfsKey: key, ImageDigest: digest})); code(err) != proto.ErrConflict {
+		t.Fatalf("over another image: %v", err)
+	}
+	if len(b.jobs) != 0 || len(docker.calls) != 0 {
+		t.Fatalf("built %d images, ran %v", len(b.jobs), docker.calls)
+	}
+	// Held here as another image (built here under the same key): the same, and no peer is asked.
+	asked = 0
+	if _, err := m.BuildTemplate(context.Background(), copyOf("tsn_2", proto.TemplateCopy{RootfsKey: key, ImageDigest: digest})); code(err) != proto.ErrConflict || asked != 0 {
+		t.Fatalf("over another image held here: %v (asked %d)", err, asked)
+	}
+
+	// A peer holds the entry's image: the build goes on over it (to the snapshot, asked of a peer first), building no
+	// image.
+	m, docker, b = builderManager(t)
+	asked = 0
+	m.cfg.FetchRootfs = fetchAs(m, digest, &asked)
+	snapshots := 0
+	m.cfg.FetchTemplate = func(context.Context, string) error {
+		snapshots++
+		return ErrNoPeerTemplate
+	}
+	_, err := m.BuildTemplate(context.Background(), copyOf("tsn_1", proto.TemplateCopy{RootfsKey: key, ImageDigest: digest}))
+	if c := code(err); c == proto.ErrNotFound || c == proto.ErrConflict || c == proto.ErrInvalid || asked != 1 || snapshots != 1 {
+		t.Fatalf("over the entry's image: %v (asked %d, snapshot asked %d)", err, asked, snapshots)
+	}
+	if len(b.jobs) != 0 || len(docker.calls) != 0 {
+		t.Fatalf("built %d images, ran %v", len(b.jobs), docker.calls)
+	}
+	if _, rec, ok := customCached(m.tpl.rootfs, key); !ok || rec.ImageDigest != digest {
+		t.Fatalf("the fetched image %+v %v", rec, ok)
+	}
+
+	// Refused: another key, a digest that isn't one, and a copy of a template on a Kantel base.
+	for _, c := range []proto.TemplateCopy{{RootfsKey: strings.Repeat("0", 64), ImageDigest: digest}, {RootfsKey: key, ImageDigest: "latest"}, {RootfsKey: key}} {
+		if _, err := m.BuildTemplate(context.Background(), copyOf("tsn_3", c)); code(err) != proto.ErrInvalid {
+			t.Fatalf("copy %+v: %v", c, err)
+		}
+	}
+	base := copyOf("tsn_3", proto.TemplateCopy{RootfsKey: key, ImageDigest: digest})
+	base.Image = nil
+	if _, err := m.BuildTemplate(context.Background(), base); code(err) != proto.ErrInvalid {
+		t.Fatalf("a copy of a base template: %v", err)
+	}
+	if len(b.jobs) != 0 {
+		t.Fatalf("built %d images", len(b.jobs))
 	}
 }

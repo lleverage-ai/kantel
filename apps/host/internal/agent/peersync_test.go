@@ -99,6 +99,8 @@ type fetchTier struct {
 	discarded []string
 }
 
+func (f *fetchTier) Usage() (int64, int, int) { return 0, 0, 0 }
+
 func (f *fetchTier) OpenStickyVersion(string, string, bool) (*os.File, []byte, error) {
 	return nil, nil, fs.ErrNotExist
 }
@@ -124,8 +126,8 @@ func (f *fetchTier) DiscardStickyPartial(diskID, version string) {
 // told where to find is asked of disk.locate. One without either refuses disk.fetch.
 func TestDiskFetch(t *testing.T) {
 	without := newLifecycleHost(t, newLifecycleTier())
-	if slices.Contains(without.makeFacts().Features, proto.FeatureDiskSync) {
-		t.Fatal("disk-sync reported without the mesh")
+	if slices.Contains(without.makeFacts().Features, proto.FeatureDiskSync) || without.fetcher != nil {
+		t.Fatal("disk-sync, or a fetcher, without the mesh")
 	}
 	var pe *proto.Error
 	if err := call(t, without, proto.MethodDiskFetch, proto.DiskFetchParams{Kind: "sticky", ObjectID: "ci", Version: "v2"}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
@@ -149,6 +151,10 @@ func TestDiskFetch(t *testing.T) {
 	defer h.syncStop()
 	if !slices.Contains(h.makeFacts().Features, proto.FeatureDiskSync) {
 		t.Fatal("disk-sync not reported")
+	}
+	// None under way: reported as none, not left out.
+	if raw, _ := json.Marshal(h.Capacity()); !strings.Contains(string(raw), `"fetches":[]`) {
+		t.Fatalf("capacity %s", raw)
 	}
 	for name, c := range map[string]struct {
 		p    proto.DiskFetchParams
@@ -301,7 +307,8 @@ func TestTemplateSync(t *testing.T) {
 	tier := &templateFetchTier{&rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
 	without := newLifecycleHost(t, tier.lifecycleTier)
 	without.tiers[microvm.Tier] = tier
-	if slices.Contains(without.makeFacts().Features, proto.FeatureTemplateSync) || without.Capacity().Holdings != nil {
+	if slices.Contains(without.makeFacts().Features, proto.FeatureTemplateSync) ||
+		slices.Contains(without.makeFacts().Features, proto.FeatureTemplateImageCopies) || without.Capacity().Holdings != nil {
 		t.Fatal("template-sync, or holdings, without the mesh")
 	}
 	if err := without.fetchTemplate(context.Background(), "tsn_2"); !errors.Is(err, microvm.ErrNoPeerTemplate) {
@@ -319,7 +326,8 @@ func TestTemplateSync(t *testing.T) {
 	}
 	h.startPeerSync()
 	defer h.syncStop()
-	if !slices.Contains(h.makeFacts().Features, proto.FeatureTemplateSync) {
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureTemplateSync) ||
+		!slices.Contains(h.makeFacts().Features, proto.FeatureTemplateImageCopies) {
 		t.Fatalf("features %v", h.makeFacts().Features)
 	}
 	holdings := h.Capacity().Holdings
@@ -461,6 +469,75 @@ func TestSnapshotSync(t *testing.T) {
 		}
 	}
 	time.Sleep(50 * time.Millisecond)
+	tier.mu.Lock()
+	defer tier.mu.Unlock()
+	if len(tier.prepared) != 0 {
+		t.Fatalf("made ready %v", tier.prepared)
+	}
+}
+
+// A saved snapshot's disk fetch is reported from when disk.fetch takes it, queued with no blocks, while its record is
+// read and the host made ready for it; a preparation that fails is reported as a failed fetch, with its error.
+func TestSnapshotFetchReportedWhilePrepared(t *testing.T) {
+	tier := &snapshotFetchTier{rootfsFetchTier: &rootfsFetchTier{fetchTier: &fetchTier{stickyTier: &stickyTier{lifecycleTier: newLifecycleTier()}}}}
+	h := newLifecycleHost(t, tier.lifecycleTier)
+	h.tiers[microvm.Tier] = tier
+	h.mesh = &fakeMesh{}
+	h.cfg.SyncRateMbit = -1
+	// disk.locate is answered once gate is closed, with no holders: none has its record.
+	asked, gate := make(chan struct{}, 8), make(chan struct{})
+	h.callKantel = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		asked <- struct{}{}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return json.RawMessage(`{"holders":[]}`), nil
+	}
+	h.startPeerSync()
+	defer h.syncStop()
+	fetchOf := func() (proto.FetchProgress, bool) {
+		for _, p := range h.Capacity().Fetches {
+			if p.Kind == proto.DiskKindSnapshot && p.ObjectID == "s2" && p.Version == microvm.SnapshotDisk {
+				return p, true
+			}
+		}
+		return proto.FetchProgress{}, false
+	}
+	if err := call(t, h, proto.MethodDiskFetch, proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "disk"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("its record isn't asked for")
+	}
+	if p, ok := fetchOf(); !ok || p.State != proto.FetchQueued || p.Blocks != 0 || p.InPlace != 0 {
+		t.Fatalf("preparing %+v (listed %v)", p, ok)
+	}
+	// Asked again while it is prepared, it is the same fetch.
+	if err := call(t, h, proto.MethodDiskFetch, proto.DiskFetchParams{Kind: "snapshot", ObjectID: "s2", Version: "disk"}); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p, ok := fetchOf()
+		if ok && p.State == proto.FetchFailed {
+			if p.Error == "" || p.Blocks != 0 {
+				t.Fatalf("failed %+v", p)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("not reported failed: %+v (listed %v)", p, ok)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("its record asked for %d more times", len(asked))
+	}
 	tier.mu.Lock()
 	defer tier.mu.Unlock()
 	if len(tier.prepared) != 0 {

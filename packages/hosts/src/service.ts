@@ -84,6 +84,7 @@ import {
 	type ReleaseCheck,
 } from "./releases.ts";
 import {
+	bootsFreshInstead,
 	buildFitsOn,
 	type Candidate,
 	type HeldMemory,
@@ -277,6 +278,11 @@ export interface CreateSandboxInput {
 	 * and restores it only when it was built as the create's size or shape.
 	 */
 	readonly template?: HostTemplateBoot;
+	/**
+	 * With a template `snapshot`: the other hosts the create may use, which don't hold it. The emptiest of them boots the
+	 * template fresh instead when the hosts holding it would be much fuller (`bootsFreshInstead`); else they're ignored.
+	 */
+	readonly freshHosts?: readonly string[];
 }
 
 /**
@@ -723,12 +729,14 @@ export interface SandboxPlacement {
 }
 
 /**
- * What a capacity report says a host holds: its sticky disks' versions (`HostCapacity.stickyDisks`) and its objects of
- * other kinds (`HostCapacity.holdings`). Each absent says nothing.
+ * What a capacity report says a host holds: its sticky disks' versions (`HostCapacity.stickyDisks`), its objects of
+ * other kinds (`HostCapacity.holdings`), and the versions it is fetching (`HostCapacity.fetches`). Each absent says
+ * nothing.
  */
 export interface HostHoldingsReport {
 	readonly stickyDisks?: readonly HostStickyHolding[];
 	readonly objects?: HostCapacity["holdings"];
+	readonly fetches?: HostCapacity["fetches"];
 }
 
 /** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
@@ -1477,19 +1485,24 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * Keeps a report's holdings (sticky disks' versions, and objects of other kinds) in the catalogue, received at `at`,
-	 * in its own time and one at a time per host. The catalogue takes only a host's newest report, on any gateway
+	 * Keeps a report's holdings (sticky disks' versions, objects of other kinds, and fetches) in the catalogue, received
+	 * at `at`, in its own time and one at a time per host. The catalogue takes only a host's newest report, on any gateway
 	 * (`DiskHolderWrites`), so one held up here never undoes a newer. Nothing from a report that doesn't say what it
 	 * holds: absent isn't none.
 	 */
 	const holdingsRecorded = new Map<string, Promise<void>>();
 	const recordHoldings = (hostId: string, at: number, capacity: HostCapacity) => {
 		const link = compute;
-		const { stickyDisks, holdings: objects } = capacity;
-		if (link?.recordHoldings === undefined || (stickyDisks === undefined && objects === undefined)) return;
+		const { stickyDisks, holdings: objects, fetches } = capacity;
+		if (
+			link?.recordHoldings === undefined ||
+			(stickyDisks === undefined && objects === undefined && fetches === undefined)
+		)
+			return;
 		const held: HostHoldingsReport = {
 			...(stickyDisks === undefined ? {} : { stickyDisks }),
 			...(objects === undefined ? {} : { objects }),
+			...(fetches === undefined ? {} : { fetches }),
 		};
 		const previous = holdingsRecorded.get(hostId) ?? Promise.resolve();
 		const next = previous.then(() => link.recordHoldings?.(hostId, at, held));
@@ -3022,6 +3035,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (input.from !== undefined && only?.size !== 1) {
 					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
 				}
+				// The hosts without the template snapshot that may boot it fresh instead.
+				const fresh = new Set(
+					input.template?.snapshot === undefined || only === undefined
+						? []
+						: (input.freshHosts ?? []).filter((hostId) => !only.has(hostId)),
+				);
 				if (input.template !== undefined && tier !== "microvm") {
 					throw new KantelError("invalid", "A sandbox made from a template is a microVM");
 				}
@@ -3034,7 +3053,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				refuseTaken(existing);
 				const usable = listed
 					.map(sane)
-					.filter((host) => only === undefined || only.has(host.id))
+					.filter((host) => only === undefined || only.has(host.id) || fresh.has(host.id))
 					// An account's own host takes only that account's sandboxes, whatever the caller named.
 					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
 				// A template goes only to a host that runs templates; a custom image's only to one that builds them.
@@ -3092,19 +3111,33 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						};
 					}),
 				);
-				const template = input.template;
-				const chosen = place(
-					{
-						tier,
-						...(input.size === undefined ? {} : { size: input.size }),
-						...(shape === undefined ? {} : { shape }),
-						...(input.owner === undefined ? {} : { owner: input.owner }),
-						...(input.labels === undefined ? {} : { labels: input.labels }),
-						// A host holding each disk's head (the version asked for) is preferred.
-						...(sticky ? { stickyDisks: input.stickyDisks } : {}),
-					},
-					candidates,
+				const request = {
+					tier,
+					...(input.size === undefined ? {} : { size: input.size }),
+					...(shape === undefined ? {} : { shape }),
+					...(input.owner === undefined ? {} : { owner: input.owner }),
+					...(input.labels === undefined ? {} : { labels: input.labels }),
+					// A host holding each disk's head (the version asked for) is preferred.
+					...(sticky ? { stickyDisks: input.stickyDisks } : {}),
+				};
+				let template = input.template;
+				let chosen = place(
+					request,
+					candidates.filter((candidate) => !fresh.has(candidate.host.id)),
 				);
+				// On a host with the template snapshot, unless that host would be much fuller than the emptiest without it, which
+				// boots the template fresh instead. With no room on any host with it, the caller boots it fresh elsewhere.
+				if (!isRefusal(chosen) && fresh.size > 0) {
+					const instead = place(
+						request,
+						candidates.filter((candidate) => fresh.has(candidate.host.id)),
+					);
+					if (!isRefusal(instead) && template !== undefined && bootsFreshInstead(chosen, instead)) {
+						const { snapshot: _restore, ...boot } = template;
+						template = boot;
+						chosen = instead;
+					}
+				}
 				if (isRefusal(chosen)) {
 					// From a snapshot it goes only on the snapshot's host: that host not being up is the reason, not a lack of hosts.
 					const pinned = input.from !== undefined || input.template?.snapshot !== undefined;
@@ -3917,6 +3950,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					throw new KantelError(
 						"not_supported",
 						`The host ${host.name} doesn't build templates' custom images; switch its templateBuilder on`,
+					);
+				}
+				// A copy only to a host that keeps it to the entry's image: an older one would drop `copy`, and might build or
+				// pull another image under the entry's ID.
+				if (
+					input.copy !== undefined &&
+					storedFacts(host.facts)?.features?.includes(HOST_FEATURES.templateImageCopies) !== true
+				) {
+					throw new KantelError(
+						"not_supported",
+						`The host ${host.name} doesn't copy templates' custom images; upgrade its kantel-host`,
 					);
 				}
 				const shape = buildShape(host, input);

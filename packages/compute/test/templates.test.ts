@@ -36,6 +36,7 @@ import {
 	TEMPLATE_BUILD_LEASE_MS,
 	TEMPLATE_BUILD_RETRY_MS,
 	TEMPLATE_COPY_RETRY_MS,
+	TEMPLATE_IMAGE_COPIES_FEATURE,
 	TEMPLATE_SYNC_FEATURE,
 	templateCacheKey,
 } from "../src/templates.ts";
@@ -694,9 +695,10 @@ describe("a template snapshot's copies", () => {
 	const MAP = digest("a");
 	/**
 	 * A pool (pool_a, sync on) of the stub's host and b, c, d and e: b like the stub, c on another CPU, d without
-	 * template-sync, e without a mesh address (not in the pool's mesh).
+	 * template-sync, e without a mesh address (not in the pool's mesh). Those in `copiesImages` keep a custom image's
+	 * copy to its entry's image (`template-image-copies`).
 	 */
-	async function pooled() {
+	async function pooled(copiesImages: readonly string[] = []) {
 		const differs: { [hostId: string]: Partial<BackendHost> } = {
 			host_c: { cpuFingerprint: "AuthenticAMD family 25 model 68, features sha256:0123456789abcdef" },
 			host_d: { features: [] },
@@ -708,7 +710,11 @@ describe("a template snapshot's copies", () => {
 				...host,
 				poolId: "pool_a",
 				meshAddress: `fd00:a::${host.id.slice(-1)}`,
-				features: [...(host.features ?? []), TEMPLATE_SYNC_FEATURE],
+				features: [
+					...(host.features ?? []),
+					TEMPLATE_SYNC_FEATURE,
+					...(copiesImages.includes(host.id) ? [TEMPLATE_IMAGE_COPIES_FEATURE] : []),
+				],
 				cpuFingerprint: CPU_TEXT,
 				runtimeFingerprints: [RUNTIME],
 				...differs[host.id],
@@ -810,19 +816,93 @@ describe("a template snapshot's copies", () => {
 		expect((await t.api.store.diskHolders.list()).filter((holder) => holder.objectId === id)).toEqual([]);
 	});
 
-	it("aren't asked of a custom image's: a copy says nothing of the image it was made of", async () => {
-		const t = await pooled();
-		const template = await t.tom.createTemplate({
-			name: "rg",
-			spec: { ...SPEC, image: { kind: "dockerfile", dockerfile: "ARG KANTEL_BASE\nFROM $KANTEL_BASE\n" } },
+	const DOCKERFILE_SPEC: computeSchema.TemplateSpec = {
+		...SPEC,
+		image: { kind: "dockerfile", dockerfile: "ARG KANTEL_BASE\nFROM $KANTEL_BASE\n" },
+	};
+
+	it("of a custom image's are over only its entry's image, and asked only of hosts that keep a copy to it", async () => {
+		// b and c keep a copy to the entry's image; the stub's host doesn't, nor d (no template-sync), nor e (no mesh).
+		const t = await pooled(["host_b", "host_c"]);
+		t.customImageHosts.delete("host_c");
+		const template = await t.tom.createTemplate({ name: "rg", spec: DOCKERFILE_SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		const entry = await t.api.store.templateSnapshots.get(id);
+		expect(entry?.rootfsKey).toMatch(/^[0-9a-f]{64}$/);
+		expect(entry?.key.imageDigest).toMatch(/^sha256:/);
+		await holds(t, STUB_HOST_ID, [id]);
+		await t.api.service.sweep();
+		// Only b: c doesn't build custom images, and the others don't keep a copy to its image.
+		const asked = await t.build(1);
+		expect(asked.spec).toMatchObject({
+			hostId: "host_b",
+			snapshotId: id,
+			// The hash it was claimed and built under, before its build named its digest.
+			keyHash: entry?.claimHash,
+			image: { kind: "dockerfile", scope: `${template.id}@1#0` },
+			copy: { rootfsKey: entry?.rootfsKey, imageDigest: entry?.key.imageDigest },
 		});
+		asked.release();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(2);
+		expect(t.bytesOnHosts.has(`host_b ${id}`)).toBe(true);
+		// The builder's own build was never a copy.
+		expect(t.builds[0]?.spec.copy).toBeUndefined();
+	});
+
+	it("of a custom image's are deleted when their host says they are over another image", async () => {
+		const t = await pooled(["host_b"]);
+		const template = await t.tom.createTemplate({ name: "rg", spec: DOCKERFILE_SPEC });
 		(await t.build(0)).release();
 		await t.api.service.idle();
 		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
 		await holds(t, STUB_HOST_ID, [id]);
 		await t.api.service.sweep();
+		(await t.build(1)).releaseWith((built) => ({ ...built, imageDigest: D3 }));
 		await t.api.service.idle();
-		expect(t.builds).toHaveLength(1);
+		expect(t.bytesOnHosts.has(`host_b ${id}`)).toBe(false);
+		expect(t.bytesOnHosts.has(`${STUB_HOST_ID} ${id}`)).toBe(true);
+	});
+
+	it("of a custom image's serve its creates while its builder can't, and it isn't built again", async () => {
+		const t = await pooled(["host_b"]);
+		const template = await t.tom.createTemplate({ name: "rg", spec: DOCKERFILE_SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		const entry = await t.api.store.templateSnapshots.get(id);
+		await holds(t, STUB_HOST_ID, [id]);
+		await t.api.service.sweep();
+		(await t.build(1)).release();
+		await t.api.service.idle();
+		await holds(t, "host_b", [id]);
+
+		// Both hold it: a create restores it on either, and boots it fresh only on one of them.
+		const both = await t.tom.createSandbox({ template: template.id, wait: true });
+		expect(both.template).toMatchObject({ snapshotId: id, start: "snapshot" });
+		expect(specOf(t.created, both.id).template?.snapshotHosts).toEqual([STUB_HOST_ID, "host_b"]);
+		expect(specOf(t.created, both.id).eligibleHosts).toEqual([STUB_HOST_ID, "host_b"]);
+		const fresh = await t.tom.createSandbox({ template: template.id, size: "large", wait: true });
+		expect(fresh.template).toMatchObject({ start: "boot" });
+		expect(specOf(t.created, fresh.id).eligibleHosts).toEqual([STUB_HOST_ID, "host_b"]);
+		expect(specOf(t.created, fresh.id).template).toMatchObject({
+			rootfsKey: entry?.rootfsKey,
+			imageDigest: entry?.key.imageDigest,
+		});
+
+		// Its builder stops building custom images: the copy on b serves the template, and the image isn't built again.
+		t.customImageHosts.delete(STUB_HOST_ID);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(2);
+		expect((await t.api.store.templateSnapshots.get(id))?.state).toBe("ready");
+		const onCopy = await t.tom.createSandbox({ template: template.id, wait: true });
+		expect(onCopy.template).toMatchObject({ snapshotId: id, start: "snapshot" });
+		expect(specOf(t.created, onCopy.id).template?.snapshotHosts).toEqual(["host_b"]);
+		expect(specOf(t.created, onCopy.id).eligibleHosts).toEqual(["host_b"]);
+		expect(onCopy.image).toBe(`dockerfile@${entry?.key.imageDigest}`);
 	});
 
 	it("are deleted by the sweep when their entry is gone or thrown away", async () => {

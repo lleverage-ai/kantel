@@ -437,6 +437,12 @@ export interface TemplateBuildSpec {
 	readonly keyHash: string;
 	/** The host to build on: the one whose runtime the key names. */
 	readonly hostId: string;
+	/**
+	 * A custom image's build that is a copy of an entry built on another host: over only that entry's image, its root
+	 * filesystem (`rootfsKey`, fetched from a host that holds it) and the digest its build named, never built or pulled
+	 * again. Only a host that keeps a copy to it (`template-image-copies`) is given one.
+	 */
+	readonly copy?: { readonly rootfsKey: string; readonly imageDigest: string };
 }
 
 /**

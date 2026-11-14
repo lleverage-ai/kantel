@@ -10,6 +10,7 @@ import {
 	GRANT_KEY_OVERLAP_MS,
 	GRANT_KEY_PUBLISH_MS,
 	GRANT_KEY_REPLACE_AFTER_MS,
+	type HoldingsReport,
 	SNAPSHOT_ORPHAN_GRACE_MS,
 } from "../src/disk-holders.ts";
 import { createGrantKey, GRANT_TTL_MS, verifyGrant } from "../src/grants.ts";
@@ -280,6 +281,135 @@ describe("disk holders", () => {
 			expect(await tom.api.store.diskHolders.list()).toEqual([]);
 		});
 	}
+
+	for (const [name, kind] of [
+		["memory", undefined],
+		["SQLite", nodeSqliteDatabase],
+		["Postgres", pgliteDatabase],
+	] as const) {
+		it(`records the versions hosts report fetching, never offers them, and lets one go once it isn't reported, in ${name}`, {
+			timeout: kind?.testTimeoutMs,
+		}, async () => {
+			const tom = setUp({
+				...(kind === undefined ? {} : { store: await sqlStore(kind) }),
+				secretsKey: SECRETS_KEY,
+				templates: true,
+			});
+			const { disk, version } = await tom.committed();
+			await tom.pool();
+			const sticky = { kind: "sticky", objectId: disk.id, version: version.id };
+			const report = (hostId: string, held: HoldingsReport) => {
+				tom.clock.now += 1;
+				return tom.api.service.recordHoldings(hostId, tom.clock.now, held);
+			};
+			// A version the catalogue has; not one it doesn't, nor a kind it keeps no copies of.
+			await report("host_b", {
+				fetches: [
+					sticky,
+					{ kind: "sticky", objectId: disk.id, version: "sdv_unknown" },
+					{ kind: "snapshot", objectId: "snp_1", version: "1" },
+				],
+			});
+			expect(await tom.holders(version.id)).toEqual([
+				["host_b", "fetching"],
+				[STUB_HOST_ID, "held"],
+			]);
+			expect(await tom.holders("sdv_unknown")).toEqual([]);
+			expect(await tom.holders("1")).toEqual([]);
+			// Another account's own host can't hold this account's data, and a revoked host holds nothing.
+			await report("host_f", { fetches: [sticky] });
+			await report("host_e", { fetches: [sticky] });
+			expect(await tom.holders(version.id)).toHaveLength(2);
+			// Never offered to fetch from: only the host that holds it is.
+			const found = await tom.api.service.locateDisk("host_g", sticky);
+			expect(found.holders).toEqual([{ hostId: STUB_HOST_ID, address: "fd00:a::1" }]);
+			// A report without fetches says nothing of them, and one of holdings lets no fetch go, however late.
+			tom.clock.now += 3 * 60_000;
+			await report("host_b", { stickyDisks: [{ diskId: disk.id, versions: [] }] });
+			expect(await tom.holders(version.id)).toContainEqual(["host_b", "fetching"]);
+			// Reported fetching again, it stays as it was recorded.
+			const [recorded] = (await tom.api.store.diskHolders.list({ hostId: "host_b" })).filter(
+				(each) => each.version === version.id,
+			);
+			await report("host_b", { fetches: [sticky] });
+			expect(
+				(await tom.api.store.diskHolders.list({ hostId: "host_b" })).find((each) => each.version === version.id),
+			).toEqual(recorded);
+			// No longer reported (it failed and was discarded, say): let go, by a report it can't be newer than.
+			tom.clock.now += 3 * 60_000;
+			await report("host_b", { fetches: [] });
+			expect(await tom.holders(version.id)).toEqual([[STUB_HOST_ID, "held"]]);
+			// Fetching, then held: the same report that no longer lists the fetch lists it held.
+			await report("host_b", { fetches: [sticky] });
+			await report("host_b", { stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }], fetches: [] });
+			expect(await tom.holders(version.id)).toEqual([
+				["host_b", "held"],
+				[STUB_HOST_ID, "held"],
+			]);
+			// Held, then fetching again (its copy lost, and fetched anew): the holder becomes a fetching one once the report
+			// is past the grace.
+			tom.clock.now += 3 * 60_000;
+			await report("host_b", { stickyDisks: [{ diskId: disk.id, versions: [] }], fetches: [sticky] });
+			expect(await tom.holders(version.id)).toEqual([
+				["host_b", "fetching"],
+				[STUB_HOST_ID, "held"],
+			]);
+			// Other kinds: a root filesystem's key, and a template snapshot the catalogue has; never offered either.
+			await report("host_b", {
+				fetches: [
+					sticky,
+					{ kind: "rootfs", objectId: KEY, version: "1" },
+					{ kind: "rootfs", objectId: "../etc", version: "1" },
+					{ kind: "template", objectId: "tsn_000000000000000000000000", version: "1" },
+				],
+			});
+			expect(
+				(await tom.api.store.diskHolders.list({ hostId: "host_b" }))
+					.map((each) => [each.kind, each.objectId, each.state])
+					.sort(),
+			).toEqual([
+				["rootfs", KEY, "fetching"],
+				["sticky", disk.id, "fetching"],
+			]);
+			expect(await tom.api.service.locateDisk("host_g", { kind: "rootfs", objectId: KEY, version: "1" })).toEqual({
+				holders: [],
+			});
+			// A rootfs report lists it held: held, with its digest.
+			await report("host_b", {
+				objects: { rootfs: [{ objectId: KEY, versions: [{ version: "1", mapDigest: DIGEST, pool: "pool_a" }] }] },
+				fetches: [sticky],
+			});
+			expect(
+				(await tom.api.store.diskHolders.list({ hostId: "host_b" }))
+					.map((each) => [each.kind, each.state, each.mapDigest])
+					.sort(),
+			).toEqual([
+				["rootfs", "held", DIGEST],
+				["sticky", "fetching", undefined],
+			]);
+		});
+	}
+
+	it("records no fetches of a kind that is off here", async () => {
+		const tom = setUp({ secretsKey: SECRETS_KEY, stickyDisks: true, templates: false });
+		await tom.pool();
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			fetches: [{ kind: "rootfs", objectId: KEY, version: "1" }],
+		});
+		expect(await tom.api.store.diskHolders.list()).toEqual([]);
+		// A fetching holder of a kind that is off isn't let go on a report either.
+		await tom.api.store.diskHolders.put({
+			id: `rootfs:${KEY}:1:host_b`,
+			kind: "rootfs",
+			objectId: KEY,
+			version: "1",
+			hostId: "host_b",
+			state: "fetching",
+			since: tom.clock.now,
+		});
+		await tom.api.service.recordHoldings("host_b", tom.clock.now + 1, { fetches: [] });
+		expect(await tom.api.store.diskHolders.list()).toHaveLength(1);
+	});
 
 	it("locates a version only on online, unrevoked hosts in the asker's pool, with a grant that expires", async () => {
 		const tom = setUp();
@@ -779,6 +909,26 @@ describe("disk holders", () => {
 			state: "fetching",
 			ref: `${STUB_HOST_ID}/hs1`,
 		});
+		// A report of no fetches measured before it was told doesn't let it go; one a while later that still doesn't list
+		// it does, and one that lists it records it again, as a copy of its ref.
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [] });
+		expect(await tom.api.store.diskHolders.get(`snapshot:hs1:disk:host_b`)).toMatchObject({ state: "fetching" });
+		tom.clock.now += 3 * 60_000;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [] });
+		expect(await tom.api.store.diskHolders.get(`snapshot:hs1:disk:host_b`)).toBeUndefined();
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			fetches: [disk, { kind: "snapshot", objectId: "hs_unknown", version: "disk" }],
+		});
+		expect(await tom.api.store.diskHolders.get(`snapshot:hs1:disk:host_b`)).toMatchObject({
+			state: "fetching",
+			ref: `${STUB_HOST_ID}/hs1`,
+		});
+		expect(await tom.api.store.diskHolders.get(`snapshot:hs_unknown:disk:host_b`)).toBeUndefined();
+		expect((await tom.api.service.locateDisk("host_d", disk)).holders.map((each) => each.hostId)).toEqual([
+			STUB_HOST_ID,
+		]);
 		// Another ref that shares the host's ID (a host may name its snapshots as it likes): its holders and bytes stay.
 		const other = await tom.saved("hs1-other");
 		await tom.api.store.snapshots.update(other.id, (current) => ({ ...current, ref: "host_g/hs1" }));
@@ -799,6 +949,36 @@ describe("disk holders", () => {
 				.filter((holder) => holder.kind === "snapshot")
 				.map((each) => each.hostId),
 		).toEqual(["host_g"]);
+	});
+
+	it("keeps a host's fetching holder of a saved snapshot while it reports the fetch prepared, past the grace, and failed", async () => {
+		const tom = setUp({ fetchDisk: async () => undefined });
+		await tom.pool();
+		const snap = await tom.saved("hs1");
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		});
+		await tom.fetchHostSnapshot("host_b", { snapshotId: snap.id });
+		const holder = () => tom.api.store.diskHolders.get("snapshot:hs1:disk:host_b");
+		expect(await holder()).toMatchObject({ state: "fetching", ref: `${STUB_HOST_ID}/hs1` });
+		const since = (await holder())?.since;
+		// While its record is read and its root image fetched, the host reports it queued with no blocks, however long
+		// that takes: its holder stays as recordSnapshotFetch wrote it.
+		const preparing = { kind: "snapshot", objectId: "hs1", version: "disk", state: "queued", blocks: 0, inPlace: 0 };
+		for (let report = 0; report < 3; report++) {
+			tom.clock.now += 3 * 60_000;
+			await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [preparing] });
+			expect(await holder()).toMatchObject({ state: "fetching", since, ref: `${STUB_HOST_ID}/hs1` });
+		}
+		// A preparation that failed is reported failed: the holder stays while it is listed.
+		const failed = { ...preparing, state: "failed", error: "no root image for it" };
+		tom.clock.now += 3 * 60_000;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [failed] });
+		expect(await holder()).toMatchObject({ state: "fetching", since });
+		// Once the host no longer lists it, it is let go.
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, { fetches: [] });
+		expect(await holder()).toBeUndefined();
 	});
 
 	for (const [name, lose] of [
@@ -1103,8 +1283,12 @@ describe("disk holders", () => {
 		};
 		await sweep();
 		expect((await tom.getStickyDisk(disk.id)).versions?.map((each) => each.id)).toEqual([head.id, old.id]);
-		// host_b lets it go too: it is forgotten, with its holders.
+		// host_b lets it go too, and host_g fetching it is no copy to keep it for: it is forgotten, with its holders.
 		await wrapped.recordHoldings("host_b", tom.clock.now, { stickyDisks: [{ diskId: disk.id, versions: [] }] });
+		await wrapped.recordHoldings("host_g", tom.clock.now, {
+			fetches: [{ kind: "sticky", objectId: disk.id, version: old.id }],
+		});
+		expect(await tom.holders(old.id)).toContainEqual(["host_g", "fetching"]);
 		reports = [{ hostId: STUB_HOST_ID, reportedAt: tom.clock.now + 11 * 60_000, disks: [] }];
 		await sweep();
 		expect((await tom.getStickyDisk(disk.id)).versions?.map((each) => each.id)).toEqual([head.id]);

@@ -1074,8 +1074,9 @@ export interface StoredDiskHolder {
 	readonly version: string;
 	readonly hostId: string;
 	/**
-	 * `held`: the host has it in full. `fetching`: it is fetching it from others, and reports it held once it has it.
-	 * `deleting`: it has been told to let it go.
+	 * `held`: the host has it in full. `fetching`: it is fetching it from others (its reports' `fetches`: under way,
+	 * waiting its turn, or failed with what it fetched left to go on), and reports it held once it has it; it is never
+	 * offered to fetch from, and isn't a copy anything can count on. `deleting`: it has been told to let it go.
 	 */
 	readonly state: "fetching" | "held" | "deleting";
 	/** When it reached `state`. */
