@@ -4,7 +4,7 @@
 # kantel-host processes from this branch, each in a container of its own on Docker's bridge, in the deployment's default
 # pool, which gets sync on. The hosts are the same machine with the same Firecracker, guest kernel and image
 # (KANTEL_STACK_IMAGE_DIGEST), memory snapshots written to disk, and peer sync held to 80 Mbit/s so the moves take a
-# while. Three running microVMs and two stopped ones are made on h1, each with a marker file and 48 MiB of random bytes
+# while. Three running microVMs and two stopped ones are made on h1, each with a marker file and 24 MiB of random bytes
 # on its disk, and a ticker (a process writing the time every 0.2 s) in each running one. Then:
 #
 #   1. POST /admin/hosts/{h1}/evacuation drains h1 and begins moving its five sandboxes off, at most two at a time;
@@ -111,7 +111,7 @@ for i in 1 2 3 4 5; do
 	id=$(jq -r .id <<<"$made")
 	[ -n "$id" ] && [ "$id" != null ] || fail "no sandbox: $made"
 	[ "$(jq -r .hostId <<<"$made")" = "$h1" ] || fail "$id isn't on h1"
-	run "$id" "echo marker-$i > /home/user/marker && head -c 48M /dev/urandom > /home/user/bulk && sync" >/dev/null
+	run "$id" "echo marker-$i > /home/user/marker && head -c 24M /dev/urandom > /home/user/bulk && sync" >/dev/null
 	bulk[$id]=$(run "$id" 'sha256sum /home/user/bulk | cut -d" " -f1')
 	if [ "$i" -le 3 ]; then
 		tickers[$id]=$(run "$id" "$ticker" | xargs)

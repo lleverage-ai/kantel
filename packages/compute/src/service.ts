@@ -12064,11 +12064,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updateAccountHostAgent: async (principal, { params }) =>
 			updateHostAgentOf((await accountHostFor(principal, params.hostId, "account:admin")).host),
 
-		startAccountHostEvacuation: async (principal, { params }) =>
-			startEvacuation(principal, (await accountHostFor(principal, params.hostId, "account:admin")).host, false),
+		startAccountHostEvacuation: async (principal, { params }) => {
+			const { host, acting } = await accountHostFor(principal, params.hostId, "account:admin");
+			return startEvacuation(principal, host, false, acting.role);
+		},
 
-		getAccountHostEvacuation: async (principal, { params }) =>
-			evacuationOf(principal, (await accountHostFor(principal, params.hostId, "account:read")).host.id, false),
+		getAccountHostEvacuation: async (principal, { params }) => {
+			const { host, acting } = await accountHostFor(principal, params.hostId, "account:read");
+			return evacuationOf(principal, host.id, false, acting.role);
+		},
 
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
@@ -13067,19 +13071,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * An evacuation as the API answers it. Each sandbox is named only to a caller who may see it (`everyName`: the
-	 * deployment's super-admin; else one shared with the organisation, or the caller's own), and one moving says where
-	 * its move has got, read from its record.
+	 * An evacuation as the API answers it. Each sandbox is named only to a caller who may see it now: the deployment's
+	 * super-admin (`everyName`), else one who may see its record as it is (`canSee`, in the account where they have
+	 * `role`); one gone is judged as it was when taken. One moving says where its move has got, read from its record.
 	 */
 	async function evacuationView(
 		principal: Principal,
 		evacuation: StoredEvacuation,
 		everyName: boolean,
+		role?: MemberRole,
 	): Promise<computeSchema.HostEvacuation> {
 		const sandboxes = await Promise.all(
 			evacuation.sandboxes.map(async (item): Promise<computeSchema.HostEvacuationSandbox> => {
-				const phase = item.state === "moving" ? (await store.sandboxes.get(item.sandboxId))?.moving?.phase : undefined;
-				const named = everyName || item.visibility !== "private" || item.ownerUserId === principal.userId;
+				const record = item.state === "moving" || !everyName ? await store.sandboxes.get(item.sandboxId) : undefined;
+				const phase = item.state === "moving" ? record?.moving?.phase : undefined;
+				const named =
+					everyName ||
+					(record !== undefined && record.state !== "deleted"
+						? role !== undefined && (await canSee(principal, record, role))
+						: item.visibility !== "private" || item.ownerUserId === principal.userId);
 				return {
 					sandboxId: item.sandboxId,
 					...(named && item.name !== undefined ? { name: item.name } : {}),
@@ -13100,10 +13110,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		principal: Principal,
 		hostId: string,
 		everyName: boolean,
+		role?: MemberRole,
 	): Promise<computeSchema.HostEvacuation> {
 		const evacuation = await store.evacuations.get(hostId);
 		if (evacuation === undefined) throw new KantelError("not_found", "The host has had no evacuation");
-		return evacuationView(principal, evacuation, everyName);
+		return evacuationView(principal, evacuation, everyName, role);
 	}
 
 	/**
@@ -13115,23 +13126,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		principal: Principal,
 		host: StoredHost,
 		everyName: boolean,
+		role?: MemberRole,
 	): Promise<computeSchema.HostEvacuation> {
 		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
 		if (backend.move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
 		const running = await store.evacuations.get(host.id);
-		if (running?.state === "running") return evacuationView(principal, running, everyName);
+		if (running?.state === "running") return evacuationView(principal, running, everyName, role);
 		if (!(await connectedHosts()).has(host.id)) {
 			throw new KantelError("unavailable", "The host isn't connected: move its sandboxes off once it is back");
 		}
 		// Drained first, so no new sandbox lands on it as its sandboxes go.
 		if (host.state !== "draining") await changeHost(host, { draining: true });
+		// Its sandboxes listed as it begins, so the answer has them: written with the record, before any gateway holds it.
+		const sandboxes = (await store.sandboxes.list({ hostId: host.id })).flatMap((sandbox) => {
+			const item = evacuationSandboxOf(host.id, undefined, sandbox, false);
+			return item === undefined ? [] : [item];
+		});
 		const fresh: StoredEvacuation = {
 			id: host.id,
 			run: randomId("evac"),
 			state: "running",
 			startedAt: now(),
 			by: { userId: principal.userId, superAdmin: everyName },
-			sandboxes: [],
+			sandboxes,
 		};
 		// One at a time: of two calls at once, one begins it and the other answers it.
 		const begun =
@@ -13140,23 +13157,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: await store.evacuations.update(host.id, (current) => (current.state === "running" ? undefined : fresh))) ??
 			(await store.evacuations.get(host.id));
 		if (begun === undefined) throw new KantelError("conflict", "The host's evacuation changed as it began; try again");
-		// Its sandboxes listed now, so the answer has them, then carried on in the background.
-		const looked = begun.run === fresh.run ? ((await lookAtEvacuation(host.id, fresh.run)) ?? begun) : begun;
 		keepGoing(carryOnEvacuation(host.id));
-		return evacuationView(principal, looked, everyName);
+		return evacuationView(principal, begun, everyName, role);
 	}
 
 	/**
 	 * Writes an evacuation's sandboxes as `change` makes them from the record as it is now, only while it is the run
-	 * `run` and running: a write never lands on a later evacuation of the host, or one that ended.
+	 * `run`: a write never lands on a later evacuation of the host. With `token`, only while that lease holds it, running,
+	 * so a gateway that lost it (its lease run out, another taking it on) looks and begins moves no more; without, a
+	 * move's outcome, which lands whoever holds it, and after it ended (undrained as the move went on).
 	 */
 	function changeEvacuation(
 		hostId: string,
 		run: string,
 		change: (sandboxes: readonly StoredEvacuationSandbox[]) => readonly StoredEvacuationSandbox[] | undefined,
+		token?: string,
 	): Promise<StoredEvacuation | undefined> {
 		return store.evacuations.update(hostId, (current) => {
-			if (current.run !== run || current.state !== "running") return undefined;
+			if (current.run !== run) return undefined;
+			if (
+				token !== undefined &&
+				(current.state !== "running" || current.lease?.token !== token || current.lease.until <= now())
+			) {
+				return undefined;
+			}
 			const sandboxes = change(current.sandboxes);
 			return sandboxes === undefined ? undefined : { ...current, sandboxes };
 		});
@@ -13225,12 +13249,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Looks at an evacuation's host again, and writes its sandboxes as they are now (`evacuationSandboxOf`): each on it,
 	 * in the order the store has them, those it had that are elsewhere now, and those gone left out. `ours` are this
-	 * gateway's moves under way.
+	 * gateway's moves under way; written only while its lease (`token`) holds it.
 	 */
 	async function lookAtEvacuation(
 		hostId: string,
 		run: string,
-		ours: ReadonlySet<string> = new Set(),
+		token: string,
+		ours: ReadonlySet<string>,
 	): Promise<StoredEvacuation | undefined> {
 		const read = await store.evacuations.get(hostId);
 		if (read === undefined || read.run !== run || read.state !== "running") return undefined;
@@ -13242,20 +13267,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (elsewhere !== undefined) records.set(item.sandboxId, elsewhere);
 			}
 		}
-		return changeEvacuation(hostId, run, (sandboxes) => {
-			const known = new Set(sandboxes.map((item) => item.sandboxId));
-			const kept = sandboxes.flatMap((item) => {
-				if (evacuationDone(item)) return [item];
-				const next = evacuationSandboxOf(hostId, item, records.get(item.sandboxId), ours.has(item.sandboxId));
-				return next === undefined ? [] : [next];
-			});
-			const added = onHost.flatMap((sandbox) => {
-				if (known.has(sandbox.id)) return [];
-				const next = evacuationSandboxOf(hostId, undefined, sandbox, false);
-				return next === undefined ? [] : [next];
-			});
-			return [...kept, ...added];
-		});
+		return changeEvacuation(
+			hostId,
+			run,
+			(sandboxes) => {
+				const known = new Set(sandboxes.map((item) => item.sandboxId));
+				const kept = sandboxes.flatMap((item) => {
+					if (evacuationDone(item)) return [item];
+					const next = evacuationSandboxOf(hostId, item, records.get(item.sandboxId), ours.has(item.sandboxId));
+					return next === undefined ? [] : [next];
+				});
+				const added = onHost.flatMap((sandbox) => {
+					if (known.has(sandbox.id)) return [];
+					const next = evacuationSandboxOf(hostId, undefined, sandbox, false);
+					return next === undefined ? [] : [next];
+				});
+				return [...kept, ...added];
+			},
+			token,
+		);
 	}
 
 	/** Ends an evacuation as `state`, said `reason`, its lease let go. */
@@ -13382,15 +13412,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const evacuator = await evacuatorOf(claimed);
 			while (!closing && held) {
 				const host = (await ensureHosts()).find((known) => known.id === hostId);
+				// Ended, its moves under way here finished first (their outcomes written), none begun after.
 				if (host === undefined || host.state === "revoked") {
+					await Promise.allSettled(moves.values());
 					await endEvacuation(hostId, run, "failed", "The host was revoked");
 					return;
 				}
 				if (host.state !== "draining") {
+					await Promise.allSettled(moves.values());
 					await endEvacuation(hostId, run, "stopped", "The host was undrained");
 					return;
 				}
-				const looked = await lookAtEvacuation(hostId, run, new Set(moves.keys()));
+				const looked = await lookAtEvacuation(hostId, run, token, new Set(moves.keys()));
 				if (looked === undefined || looked.lease?.token !== token) return;
 				if (moves.size === 0 && looked.sandboxes.every(evacuationDone)) {
 					await endEvacuation(
@@ -13403,7 +13436,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if ((await connectedHosts()).has(hostId)) {
 					let free = EVACUATION_MOVES - looked.sandboxes.filter((item) => item.state === "moving").length;
 					for (const item of looked.sandboxes) {
-						if (free <= 0) break;
+						if (free <= 0 || !held || closing) break;
 						if (item.state !== "waiting") continue;
 						const sandbox = await store.sandboxes.get(item.sandboxId);
 						if (
@@ -13415,12 +13448,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						) {
 							continue;
 						}
-						const marked = await changeEvacuation(hostId, run, (sandboxes) =>
-							sandboxes.some((other) => other.sandboxId === item.sandboxId && other.state === "waiting")
-								? sandboxes.map((other) =>
-										other.sandboxId === item.sandboxId ? { ...other, state: "moving" as const } : other,
-									)
-								: undefined,
+						// Claimed under the lease, and only while fewer than two are moving as the record is now.
+						const marked = await changeEvacuation(
+							hostId,
+							run,
+							(sandboxes) =>
+								sandboxes.some((other) => other.sandboxId === item.sandboxId && other.state === "waiting") &&
+								sandboxes.filter((other) => other.state === "moving").length < EVACUATION_MOVES
+									? sandboxes.map((other) =>
+											other.sandboxId === item.sandboxId ? { ...other, state: "moving" as const } : other,
+										)
+									: undefined,
+							token,
 						);
 						if (marked === undefined) continue;
 						free--;

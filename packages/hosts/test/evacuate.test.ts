@@ -233,6 +233,9 @@ describe("moving every sandbox off a draining host", () => {
 		await root.startHostEvacuation(a.hostId);
 		await vi.waitFor(() => expect(importsOn([b])).toBe(2));
 		await root.updateHost(a.hostId, { draining: false });
+		// Seen undrained while its two moves go on: it begins no more, and ends once they have.
+		await new Promise((resolve) => setTimeout(resolve, 2_500));
+		expect((await root.getHostEvacuation(a.hostId)).state).toBe("running");
 		release();
 		const stopped = await ended(root, a.hostId);
 		expect(stopped).toMatchObject({ state: "stopped", reason: "The host was undrained" });
@@ -243,6 +246,35 @@ describe("moving every sandbox off a draining host", () => {
 		const refused = await root.startHostEvacuation(a.hostId).catch((error: unknown) => error);
 		expect(refused).toBeInstanceOf(KantelApiError);
 		expect((refused as KantelApiError).code).toBe("conflict");
+	});
+
+	it("begins no move once another gateway holds it, and is carried on once that hold runs out", async () => {
+		const clock = { at: Date.now() };
+		const { root, api, store, join } = await setup({ now: () => clock.at });
+		const a = await join();
+		const b = await join();
+		for (let index = 0; index < 4; index++) await sandboxOn(root, api, a, "stopped");
+		const release = holdImports([b]);
+		await root.startHostEvacuation(a.hostId);
+		await vi.waitFor(() => expect(importsOn([b])).toBe(2));
+		// Its lease taken by another gateway (this one's run out as it stalled): it looks and begins no more.
+		await store.evacuations.update(a.hostId, (current) => ({
+			...current,
+			lease: { token: "another", until: clock.at + EVACUATION_LEASE_MS },
+		}));
+		release();
+		await vi.waitFor(async () =>
+			expect((await store.evacuations.get(a.hostId))?.sandboxes.filter((item) => item.state === "moved")).toHaveLength(
+				2,
+			),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 2_500));
+		expect(importsOn([b])).toBe(2);
+		expect((await store.evacuations.get(a.hostId))?.lease?.token).toBe("another");
+		// That gateway gone too: the sweep here carries it on.
+		clock.at += EVACUATION_LEASE_MS + 1;
+		await api.service.sweep();
+		expect(await ended(root, a.hostId)).toMatchObject({ state: "done", moved: 4 });
 	});
 
 	it("is carried on by the next control plane's sweep once the one carrying it on has gone", async () => {

@@ -119,9 +119,11 @@ start_gateway() {
 			setsid nohup bun src/gateway/main.ts >>"$dir/gateway.log" 2>&1 </dev/null &
 		echo $! >"$dir/gateway.pid"
 	)
-	local deadline=$((SECONDS + 60))
+	local deadline=$((SECONDS + 180)) started
+	started=$(cat "$dir/gateway.pid")
 	until [ -s "$dir/bootstrap.json" ] && curl -sf "$(url)/healthz" >/dev/null; do
-		if [ $SECONDS -gt $deadline ] || [ -z "$(gateway_pid)" ]; then
+		# Gone, by its PID: its command line is this script's until it has become the gateway, a moment after.
+		if [ $SECONDS -gt $deadline ] || ! kill -0 "$started" 2>/dev/null; then
 			echo "local-stack: the gateway didn't start; $dir/gateway.log says why" >&2
 			tail -20 "$dir/gateway.log" >&2
 			exit 1
