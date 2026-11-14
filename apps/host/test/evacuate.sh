@@ -3,7 +3,7 @@
 # starts the self-hosted control plane over a Postgres of its own (so its records outlast a restart) and three
 # kantel-host processes from this branch, each in a container of its own on Docker's bridge, in the deployment's default
 # pool, which gets sync on. The hosts are the same machine with the same Firecracker, guest kernel and image
-# (KANTEL_STACK_IMAGE_DIGEST), memory snapshots written to disk, and peer sync held to 80 Mbit/s so the moves take a
+# (KANTEL_STACK_IMAGE_DIGEST), memory snapshots written to disk, and peer sync held to 400 Mbit/s so the moves take a
 # while. Three running microVMs and two stopped ones are made on h1, each with a marker file and 24 MiB of random bytes
 # on its disk, and a ticker (a process writing the time every 0.2 s) in each running one. Then:
 #
@@ -70,6 +70,8 @@ until_ok() {
 	done
 }
 online() { api GET "/admin/hosts/$1" | jq -e '.state == "online"' >/dev/null 2>&1; }
+# Connected: online, or draining (h1, once its sandboxes are moving off).
+connected() { api GET "/admin/hosts/$1" | jq -e '.state == "online" or .state == "draining"' >/dev/null 2>&1; }
 mesh_up() { docker exec "$1" ip -6 -o addr show dev kmesh0 2>/dev/null | grep -q fd; }
 drain() {
 	local want=online
@@ -88,7 +90,7 @@ h1=$(cat "$dir/h1/host-id")
 h2=$(cat "$dir/h2/host-id")
 h3=$(cat "$dir/h3/host-id")
 for h in h1 h2 h3; do
-	jq '.syncRateMbit = 80 | .spoolMaxMiB = -1' "$dir/$h/config.json" >"$dir/$h/config.new" &&
+	jq '.syncRateMbit = 400 | .spoolMaxMiB = -1' "$dir/$h/config.json" >"$dir/$h/config.new" &&
 		cat "$dir/$h/config.new" >"$dir/$h/config.json"
 	docker restart "kantel-stack-$name-$h" >/dev/null
 done
@@ -145,7 +147,7 @@ echo "== 2. The control plane killed part way, and started again"
 after=$(api GET "/admin/hosts/$h1/evacuation")
 jq -e '.state == "running"' >/dev/null <<<"$after" || fail "it didn't outlast the restart: $(jq -c . <<<"$after")"
 echo "after the restart: $(jq -c '{state, moved, remaining}' <<<"$after")"
-for id in "$h1" "$h2" "$h3"; do wait=180 until_ok online "$id" || fail "$id didn't connect again"; done
+for id in "$h1" "$h2" "$h3"; do wait=180 until_ok connected "$id" || fail "$id didn't connect again"; done
 ended() { api GET "/admin/hosts/$h1/evacuation" | jq -e '.state != "running"' >/dev/null; }
 wait=900 until_ok ended || fail "it didn't end: $(api GET "/admin/hosts/$h1/evacuation" | jq -c .)"
 done_=$(api GET "/admin/hosts/$h1/evacuation")
