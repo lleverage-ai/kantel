@@ -4302,7 +4302,8 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	if !p.Stream || onOutput == nil {
 		req.Keep = p.CommandID != "" && !p.Detached
 		res, err := client.Exec(ctx, req)
-		if err != nil && req.Keep && ctx.Err() == nil && m.suspendedSince(p.SandboxID, suspends) {
+		// Only a call that broke with no answer from the guest: a refusal the guest answered is the command's own.
+		if err != nil && guest.StatusOf(err) == 0 && req.Keep && ctx.Err() == nil && m.suspendedSince(p.SandboxID, suspends) {
 			return proto.ExecResult{}, &proto.Error{Code: proto.ErrSuspended, Message: fmt.Sprintf("sandbox %s was stopped keeping its memory as command %s ran (a pause, or a move to another host): the command carries on in it", p.SandboxID, p.CommandID)}
 		}
 		return execResultOf(res), err

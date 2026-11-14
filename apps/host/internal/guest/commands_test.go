@@ -348,15 +348,39 @@ func TestAKeptForegroundCommandOutlivesItsConnection(t *testing.T) {
 	}
 }
 
-// One kept past its connection whose answer is sent is forgotten once it ends, as any foreground command is.
-func TestAKeptForegroundCommandAnsweredIsForgotten(t *testing.T) {
+// One kept past its connection keeps its result once answered too (the answer may never have reached the host), in a
+// ring of its own: many of them never push out a detached command's result.
+func TestAKeptForegroundCommandKeepsItsResultApartFromDetachedOnes(t *testing.T) {
 	client := clientFor(t, (&Server{}).Handler())
-	res, err := client.Exec(context.Background(), ExecRequest{Cwd: os.TempDir(), ID: "cmd_a", Keep: true, Command: "echo hi"})
-	if err != nil || res.Stdout != "hi\n" {
+	ctx := context.Background()
+	if _, err := client.StartCommand(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_d", Command: "echo detached"}); err != nil {
+		t.Fatal(err)
+	}
+	waitEnded(t, client, "cmd_d")
+	res, err := client.Exec(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_a", Keep: true, Command: "echo hi; exit 3"})
+	if err != nil || res.Stdout != "hi\n" || res.ExitCode != 3 {
 		t.Fatalf("answer %+v, %v", res, err)
 	}
-	if _, err := client.CommandStatus(context.Background(), "cmd_a", 0); !IsNotFound(err) {
-		t.Fatalf("after its answer: %v", err)
+	if result := waitEnded(t, client, "cmd_a"); result.ExitCode != 3 || result.Stdout != "hi\n" {
+		t.Fatalf("kept after its answer: %+v", result)
+	}
+	for i := range maxKeptCommands {
+		if _, err := client.Exec(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_k" + strconv.Itoa(i), Keep: true, Command: "true"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.CommandStatus(ctx, "cmd_a", 0); !IsNotFound(err) {
+		t.Fatalf("the oldest kept one after %d more: %v", maxKeptCommands, err)
+	}
+	if result := waitEnded(t, client, "cmd_d"); result.Stdout != "detached\n" {
+		t.Fatalf("the detached one's result: %+v", result)
+	}
+	// Without Keep a foreground command is forgotten once answered, as before.
+	if _, err := client.Exec(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_f", Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CommandStatus(ctx, "cmd_f", 0); !IsNotFound(err) {
+		t.Fatalf("a foreground one not kept, after its answer: %v", err)
 	}
 }
 

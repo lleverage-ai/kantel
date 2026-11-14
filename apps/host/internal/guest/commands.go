@@ -14,8 +14,8 @@ import (
 
 // Commands run with an ID (ExecRequest.ID) are known to the agent by it while they run, so the host can stop one
 // (POST /exec/{id}/kill), and a detached one (POST /exec/start) keeps its exit code and output once it ends, for the
-// host to fetch (GET /exec/{id}). So does a foreground one kept past its connection (ExecRequest.Keep) that ended
-// after its connection went: the host that fetches it may be another one, the sandbox having moved with its memory.
+// host to fetch (GET /exec/{id}). So does a foreground one kept past its connection (ExecRequest.Keep): its answer may
+// never reach the host, and the host that fetches it may be another one, the sandbox having moved with its memory.
 // A guest from before them answers these routes 404 or 405 (IsUnknownRoute): the host then runs a detached command
 // itself, as a foreground one held open (agent's background runs).
 
@@ -44,6 +44,10 @@ const MaxExecWait = 60 * time.Second
 // Each holds at most twice its MaxOutputBytes (1 MiB a stream by default).
 const maxEndedCommands = 32
 
+// maxKeptCommands is how many ended foreground commands kept past their connection (ExecRequest.Keep) the agent keeps
+// the results of, apart from the detached ones', so many short foreground commands never push out a detached one's.
+const maxKeptCommands = 16
+
 // maxCommandID bounds an ExecRequest.ID.
 const maxCommandID = 128
 
@@ -63,10 +67,11 @@ type command struct {
 
 // commands are the agent's commands run with an ID.
 type commands struct {
-	mu      sync.Mutex
-	byID    map[string]*command
-	ended   []string
-	ensured bool
+	mu   sync.Mutex
+	byID map[string]*command
+	// ended and kept are the ended detached and kept foreground commands' IDs, oldest first.
+	ended, kept []string
+	ensured     bool
 	// early are kills that found no command, by ID, for earlyKillTTL: the host's kill of a command can overtake its
 	// start (a foreground one kept past its call isn't ended by that call's cancelling), and the start it overtook is
 	// then refused, never run.
@@ -98,9 +103,10 @@ func (c *commands) add(id string, cmd *command) bool {
 	return true
 }
 
-// end records a command's result. A foreground one is forgotten, unless orphaned (its connection gone before it
-// ended, with nobody to answer); a detached one, and an orphaned one, is kept, with the newest maxEndedCommands of them.
-func (c *commands) end(id string, cmd *command, result ExecResult, orphaned bool) {
+// end records a command's result. A foreground one is forgotten, unless kept past its connection (keep: its answer
+// may never reach the host, the sandbox pausing or moving with its memory as it is sent), whose result is kept with the
+// newest maxKeptCommands of them; a detached one's is kept with the newest maxEndedCommands.
+func (c *commands) end(id string, cmd *command, result ExecResult, keep bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if cmd.killed {
@@ -108,17 +114,25 @@ func (c *commands) end(id string, cmd *command, result ExecResult, orphaned bool
 	}
 	cmd.result = result
 	close(cmd.done)
-	if !cmd.detached && !orphaned {
+	switch {
+	case cmd.detached:
+		c.ended = c.evict(append(c.ended, id), maxEndedCommands)
+	case keep:
+		c.kept = c.evict(append(c.kept, id), maxKeptCommands)
+	default:
 		if c.byID[id] == cmd {
 			delete(c.byID, id)
 		}
-		return
 	}
-	c.ended = append(c.ended, id)
-	for len(c.ended) > maxEndedCommands {
-		delete(c.byID, c.ended[0])
-		c.ended = c.ended[1:]
+}
+
+// evict drops the oldest of ids past max, and answers the rest; c.mu is held.
+func (c *commands) evict(ids []string, max int) []string {
+	for len(ids) > max {
+		delete(c.byID, ids[0])
+		ids = ids[1:]
 	}
+	return ids
 }
 
 func (c *commands) get(id string) *command {

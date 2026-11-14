@@ -785,17 +785,15 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	} else if err != nil && result.ExitCode == -1 {
 		failed = true
 	}
-	if run != nil {
-		// Its connection gone before it ended (the sandbox paused or moved with its memory): nobody is left to answer, so
-		// its result is kept for whichever host asks for it by its ID.
-		if orphaned := keep && r.Context().Err() != nil; orphaned {
-			kept := result
-			if failed {
-				kept.ExitCode, kept.Stderr = 1, kept.Stderr+err.Error()+"\n"
-			}
-			s.commands.end(req.ID, run, kept, true)
-			run = nil
+	if run != nil && keep {
+		// Kept before it is answered: its answer may never reach the host (the sandbox pausing or moving with its memory
+		// as it is sent), so its result is there for whichever host asks for it by its ID.
+		kept := result
+		if failed {
+			kept.ExitCode, kept.Stderr = 1, kept.Stderr+err.Error()+"\n"
 		}
+		s.commands.end(req.ID, run, kept, true)
+		run = nil
 	}
 	if failed {
 		fail(w, 500, err)

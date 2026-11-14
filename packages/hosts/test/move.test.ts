@@ -1171,6 +1171,32 @@ describe("moving a sandbox with its memory", () => {
 		});
 	}, 20_000);
 
+	it("keeps a foreground command running through a pause, to its real end once resumed; a stop ends it", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
+		a.keepsCommands = true;
+		const sandbox = await runningOn(root, api, a, "disk");
+		const running = root.runCommand(sandbox.id, { command: "./build", timeoutMs: 60_000 });
+		const id = await foregroundId(a, sandbox.id);
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		expect((await api.store.commands.get(id))?.state).toBe("running");
+		await root.resumeSandbox(sandbox.id, { wait: true });
+		await vi.waitFor(
+			() =>
+				expect(
+					a.calls.filter((call) => call.method === "sandbox.exec.get" && call.params.commandId === id).length,
+				).toBeGreaterThan(1),
+			{ timeout: 10_000 },
+		);
+		FakeHost.endCommand(sandbox.id, id, { exitCode: 2, stdout: "so far\nfailed\n", stderr: "", durationMs: 9 });
+		expect(await running).toMatchObject({ id, state: "exited", exitCode: 2, stdout: "so far\nfailed\n" });
+		// A stop (no memory kept) ends the commands running.
+		const stopped = root.runCommand(sandbox.id, { command: "./serve", detached: true });
+		const serving = (await stopped).id;
+		await root.stopSandbox(sandbox.id, { wait: true });
+		expect((await api.store.commands.get(serving))?.state).toBe("killed");
+	}, 20_000);
+
 	it("asks again where it runs now when its old host, asked as it moved, no longer knows a command", async () => {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_COMMANDS, undefined, fingerprints());
