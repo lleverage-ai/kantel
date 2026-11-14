@@ -9649,8 +9649,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteSandbox: async (principal, { params, idempotencyKey }) =>
 			once(principal, "deleteSandbox", { params, idempotencyKey }, async () => {
 				const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
-				const current = await settledFor(principal, sandbox.id);
+				let current = await settledFor(principal, sandbox.id);
 				if (current.state === "deleted") return sandboxView(current, principal);
+				// A move under way is settled first, so a delete never leaves one unsettled (its copy on another host unknown):
+				// one another gateway is at is waited for by the caller; one gone quiet is settled here, and one that can't be
+				// settled yet (a host it used away) is refused as it is, still moving.
+				if (current.moving !== undefined && current.state === "starting") {
+					if (current.moving.heartbeatAt + UPGRADE_STALE_MS > now()) {
+						throw new KantelError("conflict", "The sandbox is moving to another host; delete it once the move ends");
+					}
+					await settleStuckMove(current).catch(() => undefined);
+					current = await mustGetSandbox(sandbox.id);
+					if (current.moving !== undefined) {
+						throw new KantelError(
+							"unavailable",
+							"The sandbox's move can't be settled yet (a host it used doesn't answer); delete it once it has been",
+						);
+					}
+				}
 				// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
 				// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
 				// of them writes `deleted`.
@@ -12483,6 +12499,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const { sandbox, role } = await sandboxFor(principal, sandboxId, "sandboxes:write");
 		const current = await settledFor(principal, sandbox.id);
 		if (current.state === "running") return sandboxView(current, principal);
+		// A move not yet settled may have a copy running on another host: settled first (the sweep), never booted over.
+		if (current.moving !== undefined) {
+			throw new KantelError("conflict", "The sandbox's move to another host isn't settled yet; try again shortly");
+		}
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
 			throw new KantelError("conflict", `The sandbox is ${current.state}`);
 		}

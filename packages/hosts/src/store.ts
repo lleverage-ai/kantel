@@ -127,6 +127,11 @@ export interface PlacementRecord {
 		};
 		readonly mapDigest?: string;
 		readonly settling?: { readonly by: string; readonly until: number };
+		/**
+		 * A rollback has begun (its first claim): the move never switches from then on, whatever becomes of that claim,
+		 * since a compensating call may have landed already. Only a rollback that finishes clears it, with the move.
+		 */
+		readonly rollingBack?: true;
 	};
 	/**
 	 * The last move that switched the sandbox here (its operation ID) and the host it came from: kept until another move

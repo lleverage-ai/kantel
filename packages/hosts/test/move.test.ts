@@ -377,6 +377,83 @@ describe("moving a stopped sandbox to another host", () => {
 		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.delete");
 	});
 
+	it("never switches once a rollback has begun, even one let go when a host didn't answer", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		b.hold = (method) => (method === "sandbox.start" ? held : undefined);
+		const moving = failure(root.moveSandbox(sandbox.id, {}));
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.start")).toBe(true));
+		const version = String(b.calls.find((call) => call.method === "sandbox.import")?.params.version);
+		// Another gateway settles it as it starts: the target's copy is cancelled, but the source doesn't answer the
+		// export's delete, so that rollback lets its claim go.
+		a.refuse = (method) => (method === "sandbox.export.delete" ? { code: "unavailable", message: "away" } : undefined);
+		await expect(service.sandboxes.settleMove(sandbox.id, version)).rejects.toThrow(/can't be reached/);
+		expect(b.cancelled.has(`${sandbox.id}/${version}`)).toBe(true);
+		const between = await service.sandboxes.placement(sandbox.id);
+		expect(between?.move).toMatchObject({ rollingBack: true });
+		expect(between?.move?.settling).toBeUndefined();
+		release();
+		expect((await moving).code).toBe("unavailable");
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ hostId: a.hostId });
+		expect(a.sandboxes.has(sandbox.id)).toBe(true);
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.delete");
+		// Back: the rollback finishes, and it is stopped on its source.
+		a.refuse = undefined;
+		expect(await service.sandboxes.settleMove(sandbox.id, version)).toMatchObject({ state: "failed" });
+		expect((await service.sandboxes.placement(sandbox.id))?.move).toBeUndefined();
+	});
+
+	it("refuses a delete or a start of a sandbox whose move is under way, leaving it moving", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join();
+		const b = await join();
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		b.hold = (method) => (method === "sandbox.import" ? held : undefined);
+		const moving = root.moveSandbox(sandbox.id, { wait: false });
+		expect((await moving).state).toBe("moving");
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		// Another gateway over the same store and hosts: its calls aren't queued behind this one's move.
+		const gateway = createComputeApi({
+			store: api.store,
+			backend: createHostBackend({
+				hosts: service,
+				publicUrl: "https://kantel.test",
+				tickets: createTunnelTickets(createMemoryRelayStore()),
+			}),
+			authenticatePerson: async (request) =>
+				PEOPLE[request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? ""],
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+			stickyDisks: true,
+			secretsKey: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))),
+		});
+		closers.push(() => gateway.close());
+		const other = createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				gateway.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		expect((await failure(other.deleteSandbox(sandbox.id))).code).toBe("conflict");
+		expect((await failure(other.startSandbox(sandbox.id, {}))).code).toBe("conflict");
+		expect((await other.getSandbox(sandbox.id)).state).toBe("moving");
+		release();
+		await vi.waitFor(async () => expect((await other.getSandbox(sandbox.id)).state).toBe("running"));
+		expect(b.sandboxes.get(sandbox.id)?.state).toBe("running");
+	});
+
 	it("settles a move that switched as done, its source's copy deleted or not, and answers a retry with it", async () => {
 		const { root, api, service, join } = await setup();
 		const a = await join();

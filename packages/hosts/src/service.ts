@@ -2612,7 +2612,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (!movingBy(latest, operationId) || latest.move === undefined) return undefined;
 			const held = latest.move.settling;
 			if (held !== undefined && held.until > clock.now()) return undefined;
-			return { ...latest, move: { ...latest.move, settling: { by: token, until: clock.now() + settleLeaseMs } } };
+			return {
+				...latest,
+				move: {
+					...latest.move,
+					settling: { by: token, until: clock.now() + settleLeaseMs },
+					rollingBack: true,
+				},
+			};
 		});
 		if (claimed?.move === undefined) {
 			return movingBy(await store.getPlacement(sandboxId), operationId) ? "busy" : "superseded";
@@ -3565,8 +3572,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			async move(sandboxId, input) {
 				const { operationId } = input;
 				let source = await placementOf(sandboxId);
-				// Sent again once it has switched: done, as it is.
+				// Sent again once it has switched: done, as it is; once its rollback has begun, that is finished instead.
 				if (switchedBy(source, operationId)) return movedTo(source);
+				if (source.move?.operationId === operationId && source.move.rollingBack === true) {
+					const outcome = await settleMoveWith(sandboxId, operationId);
+					if (outcome.state === "done") return outcome.moved;
+					throw new KantelError("unavailable", `The move didn't happen: ${outcome.reason ?? "it was rolled back"}`);
+				}
 				if (source.tier !== "microvm" || isLeftover(source)) {
 					throw new KantelError("conflict", "Only a microVM moves to another host");
 				}
@@ -3765,9 +3777,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// that never switched is rolled back.
 				const switched = (latest: PlacementRecord): PlacementRecord | undefined => {
 					if (!movingBy(latest, operationId) || latest.hostId !== source.hostId) return undefined;
-					// Never once a rollback has claimed it (whether or not its claim has lapsed): it may be cancelling the
-					// target's copy as this runs.
-					if (latest.move?.settling !== undefined) return undefined;
+					// Never once a rollback has begun (claimed now, or once, and let go when a host didn't answer): it may be
+					// cancelling the target's copy as this runs, or have done so.
+					if (latest.move?.settling !== undefined || latest.move?.rollingBack === true) return undefined;
 					const { move: _done, ...rest } = latest;
 					return {
 						...asReported(
