@@ -15,6 +15,10 @@ package disksync
 //
 // A bitmap beside the partial, <version>.partial.done, records the blocks that are in place and synced, so a fetch
 // cut short (a restart, a peer gone) goes on where it stopped when it is asked again.
+//
+// A version of a kind with parts (Parted: a template snapshot's disk and memory) has several block-mapped files. Its
+// map is then its manifest (parts.go), which names each part's map digest; each part is fetched as above into its own
+// partial (Parted.PartPartial), from an empty file, and the parts are published together.
 
 import (
 	"bytes"
@@ -249,15 +253,24 @@ func (f *Fetcher) fetch(ctx context.Context, req Request) (Stats, error) {
 	} else {
 		src.set(req.Holders, req.Grant)
 	}
-	raw, m, err := src.fetchMap(ctx)
+	if parted, ok := f.Store.(Parted); ok && len(parted.Parts(req.Kind)) > 0 {
+		return f.fetchParts(ctx, req.Ref, parted, src)
+	}
+	raw, err := src.fetchMap(ctx, "map", "")
 	if err != nil {
+		return Stats{}, err
+	}
+	m := &blockmap.Map{}
+	if err := m.UnmarshalBinary(raw); err != nil {
 		return Stats{}, err
 	}
 	path, err := f.Store.Partial(req.Ref)
 	if err != nil {
 		return Stats{}, err
 	}
-	p, err := f.prepare(req.Ref, path, m, src.digest)
+	p, err := f.prepare(req.Ref, path, m, src.digest, "data", func(dst string) (*blockmap.Map, error) {
+		return f.Store.CloneNearest(req.Ref, dst)
+	})
 	if err != nil {
 		return Stats{}, err
 	}
@@ -433,19 +446,26 @@ func (h *holders) get(ctx context.Context, addr netip.Addr, grant, what string, 
 	return nil, fmt.Errorf("%s answered %d: %s", addr, res.StatusCode, bytes.TrimSpace(msg))
 }
 
-// fetchMap fetches the version's map from the first holder that gives one matching the digest.
-func (h *holders) fetchMap(ctx context.Context) ([]byte, *blockmap.Map, error) {
+// fetchMap fetches a map (what: the version's, "map", or a part's) from the first holder that gives one whose digest is
+// digest: with none, the version's map digest.
+func (h *holders) fetchMap(ctx context.Context, what, digest string) ([]byte, error) {
 	var errs []error
 	for attempt := 0; attempt < 2; attempt++ {
 		list, grant, gen, err := h.current(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
+		}
+		want := digest
+		if want == "" {
+			h.mu.Lock()
+			want = h.digest
+			h.mu.Unlock()
 		}
 		refused := false
 		for _, addr := range list {
-			raw, m, err := h.mapFrom(ctx, addr, grant)
+			raw, err := h.mapFrom(ctx, addr, grant, what, want)
 			if err == nil {
-				return raw, m, nil
+				return raw, nil
 			}
 			refused = refused || errors.Is(err, errGrant)
 			errs = append(errs, err)
@@ -454,10 +474,10 @@ func (h *holders) fetchMap(ctx context.Context) ([]byte, *blockmap.Map, error) {
 			break
 		}
 		if err := h.refresh(ctx, gen); err != nil {
-			return nil, nil, errors.Join(append(errs, err)...)
+			return nil, errors.Join(append(errs, err)...)
 		}
 	}
-	return nil, nil, fmt.Errorf("no holder gave the version's map: %w", errors.Join(errs...))
+	return nil, fmt.Errorf("no holder gave the version's %s: %w", what, errors.Join(errs...))
 }
 
 // fetchFiles fetches each of the version's small files whole, from the first holder that has it: one no holder has is
@@ -534,27 +554,23 @@ func (h *holders) fileFrom(ctx context.Context, addr netip.Addr, grant, name str
 	return raw, nil
 }
 
-func (h *holders) mapFrom(ctx context.Context, addr netip.Addr, grant string) ([]byte, *blockmap.Map, error) {
+func (h *holders) mapFrom(ctx context.Context, addr netip.Addr, grant, what, digest string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, mapTimeout)
 	defer cancel()
-	res, err := h.get(ctx, addr, grant, "map", 0, 0)
+	res, err := h.get(ctx, addr, grant, what, 0, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer res.Body.Close()
 	// A map is a header and 32 bytes a block of 4 MiB: a little over 16 MiB is a 2 TiB disk's, the largest.
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 17<<20))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if got := blockmap.Digest(raw); got != h.digest {
-		return nil, nil, fmt.Errorf("%s gave a map whose digest is %s, not %s", addr, got, h.digest)
+	if got := blockmap.Digest(raw); got != digest {
+		return nil, fmt.Errorf("%s gave a %s whose digest is %s, not %s", addr, what, got, digest)
 	}
-	m := &blockmap.Map{}
-	if err := m.UnmarshalBinary(raw); err != nil {
-		return nil, nil, err
-	}
-	return raw, m, nil
+	return raw, nil
 }
 
 // partial is a fetch's file and what of it is in place.
@@ -564,6 +580,8 @@ type partial struct {
 	digest     string
 	bitmapPath string
 	resumed    bool
+	// data is what its blocks are asked for as: "data", or a part's (parts/<name>/data).
+	data string
 
 	mu sync.Mutex
 	// done are the blocks in place and recorded in the bitmap; written those in place since its last checkpoint.
@@ -596,9 +614,10 @@ func writeBitmap(path, digest string, done []byte) error {
 }
 
 // prepare opens the version's partial file to go on with, as its bitmap says, or makes it afresh from the host's
-// nearest version (whose full copy, where there are no reflinks, holds its own room).
-func (f *Fetcher) prepare(r Ref, path string, m *blockmap.Map, digest string) (*partial, error) {
-	p := &partial{m: m, digest: digest, bitmapPath: path + ".done"}
+// nearest version (clone; whose full copy, where there are no reflinks, holds its own room), or with no clone from an
+// empty file. Its blocks are asked for as data.
+func (f *Fetcher) prepare(r Ref, path string, m *blockmap.Map, digest, data string, clone func(dst string) (*blockmap.Map, error)) (*partial, error) {
+	p := &partial{m: m, digest: digest, bitmapPath: path + ".done", data: data}
 	if done := readBitmap(p.bitmapPath, digest, m.Blocks()); done != nil {
 		if file, err := os.OpenFile(path, os.O_RDWR, 0); err == nil {
 			if info, err := file.Stat(); err == nil && info.Size() == m.Size {
@@ -609,7 +628,7 @@ func (f *Fetcher) prepare(r Ref, path string, m *blockmap.Map, digest string) (*
 		}
 	}
 	if p.file == nil {
-		if err := f.fresh(r, path, p); err != nil {
+		if err := f.fresh(r, path, p, clone); err != nil {
 			return nil, err
 		}
 	}
@@ -653,13 +672,17 @@ func (p *partial) clearZeros() error {
 }
 
 // fresh makes the partial file anew: a clone of the nearest version cut to the version's size, whose blocks that
-// match the version's are in place; else an empty file of that size.
-func (f *Fetcher) fresh(r Ref, path string, p *partial) error {
+// match the version's are in place; else (or with no clone) an empty file of that size.
+func (f *Fetcher) fresh(r Ref, path string, p *partial, clone func(dst string) (*blockmap.Map, error)) error {
 	_ = os.Remove(p.bitmapPath)
 	_ = os.Remove(path)
 	m := p.m
 	p.done = make([]byte, (m.Blocks()+7)/8)
-	base, err := f.Store.CloneNearest(r, path)
+	var base *blockmap.Map
+	var err error
+	if clone != nil {
+		base, err = clone(path)
+	}
 	if pe := (*proto.Error)(nil); errors.As(err, &pe) && pe.Code == proto.ErrCapacity {
 		// No room for a full copy of the nearest version: none for the version from nothing either.
 		_ = os.Remove(path)
@@ -940,7 +963,7 @@ func (f *Fetcher) fetchFrom(ctx context.Context, src *holders, p *partial, addr 
 	defer stalled.Stop()
 	start, _ := p.m.Range(*next)
 	_, end := p.m.Range(last)
-	res, err := src.get(ctx, addr, grant, "data", start, end)
+	res, err := src.get(ctx, addr, grant, p.data, start, end)
 	if err != nil {
 		return 0, err
 	}

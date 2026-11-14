@@ -181,6 +181,8 @@ type fixture struct {
 	// locate is what Locate answers (default: every holder, with a good grant).
 	locate func(r Ref) (proto.DiskLocateResult, error)
 	digest string
+	// kind is what its grants are for (default sticky).
+	kind string
 }
 
 type holderFixture struct {
@@ -240,7 +242,11 @@ func (f *fixture) grant(exp time.Time) string {
 	for _, h := range f.holders {
 		from = append(from, h.id)
 	}
-	return f.key.sign(f.t, Grant{Kind: "sticky", ObjectID: "sdk_1", Version: "v2", AccountID: "acc_1", From: from, To: "host_b", Exp: exp.UnixMilli()})
+	kind := f.kind
+	if kind == "" {
+		kind = "sticky"
+	}
+	return f.key.sign(f.t, Grant{Kind: kind, ObjectID: "sdk_1", Version: "v2", AccountID: "acc_1", From: from, To: "host_b", Exp: exp.UnixMilli()})
 }
 
 func (f *fixture) location() proto.DiskLocateResult {
