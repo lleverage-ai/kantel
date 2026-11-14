@@ -13,8 +13,17 @@ package microvm
 // fetched from a peer. Its record, made this host's (its root filesystem the path here, without its memory), is staged
 // beside the partial as meta.json, which keeps that image while the fetch goes on. Published, the directory becomes
 // snapshots/<id>/, a snapshot as any other, marked to cold-boot (ColdBoot) when the snapshot it is a copy of has memory.
-// Its memory comes after it, into mem.partial, only when this host restores it (WantsSnapshotMemory): the same CPU
+// Its memory comes after it, into mem.partial, only when this host restores it (WantsSnapshot): the same CPU
 // fingerprint and the same portable runtime. Published, the memory is in place first and the record says so last.
+//
+// The files on its machine's drives are versions of it too (proto.SnapshotBundleVersion, proto.SnapshotStickyVersion):
+// each sticky disk's clone, sticky<k>.ext4 in its directory, and, for a snapshot with memory, each bundle image on its
+// machine's drives then, its link bundle<i>.erofs, each mapped beside it (sticky<k>.map, bundle<i>.map). The guest has
+// them mounted in its memory, so a copy's memory comes only once every one of them is here, the holder's bytes (never
+// this host's own build of a bundle, which may differ): a copy fetches its sticky disks' clones, so a sandbox made from
+// it has them however it starts, and, where it restores the memory, its bundle images, into <version>.partial; then the
+// memory. Each fetch starts from this host's nearest file (CloneNearestSnapshot): the bundle's image in its cache, the
+// sticky disk's version the clone was made from, so it takes only the blocks that differ.
 
 import (
 	"context"
@@ -25,11 +34,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
+	"github.com/lleverage-ai/kantel/apps/host/internal/bundles"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
@@ -64,27 +75,108 @@ type snapshotMaps struct {
 
 // snapshotObject says whether id and version name a saved snapshot's version as an object.
 func snapshotObject(id, version string) bool {
-	return validID(id) && (version == SnapshotDisk || version == SnapshotMemory)
+	if version == SnapshotDisk || version == SnapshotMemory {
+		return validID(id)
+	}
+	_, _, ok := snapshotDrive(version)
+	return ok && validID(id)
+}
+
+// SnapshotVersion says whether version names one of a saved snapshot's versions: its disk, its memory, or the file on
+// one of its machine's drives.
+func SnapshotVersion(version string) bool {
+	_, _, drive := snapshotDrive(version)
+	return drive || version == SnapshotDisk || version == SnapshotMemory
+}
+
+// snapshotDrive reads a snapshot's drive version (proto.SnapshotBundleVersion, proto.SnapshotStickyVersion): whether
+// it is a bundle drive's, and the drive's index.
+func snapshotDrive(version string) (bundle bool, index int, ok bool) {
+	rest, bundle := strings.CutPrefix(version, "bundle")
+	if !bundle {
+		if rest, ok = strings.CutPrefix(version, "sticky"); !ok {
+			return false, 0, false
+		}
+	}
+	n, err := strconv.Atoi(rest)
+	if err != nil || n < 0 || n > 99 || strconv.Itoa(n) != rest {
+		return false, 0, false
+	}
+	return bundle, n, true
 }
 
 // snapshotFile is the file of a snapshot's version in its directory, and its map beside it.
 func snapshotFile(version string) (file, mapFile string) {
+	if bundle, i, ok := snapshotDrive(version); ok {
+		if bundle {
+			return bundleDriveFile(i), version + ".map"
+		}
+		return stickyDriveFile(i), version + ".map"
+	}
 	if version == SnapshotMemory {
 		return "mem", "mem.map"
 	}
 	return fc.DiskFile, "disk.map"
 }
 
+// snapshotDriveVersions are a saved snapshot's drive versions, as its record has them: its sticky disks' clones, then the
+// bundle images on its machine's drives when its memory was taken (which a copy's record keeps, its memory elsewhere).
+func snapshotDriveVersions(snap snapshotMeta) []string {
+	var out []string
+	for _, d := range attachedSticky(snap.StickyDisks) {
+		if v := proto.SnapshotStickyVersion(d.Slot); !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	for i, digest := range snap.BundleSlots {
+		if digest != "" && i < snap.BundleDrives {
+			out = append(out, proto.SnapshotBundleVersion(i))
+		}
+	}
+	return out
+}
+
+// snapshotVersions are the versions of a saved snapshot the host has the files of: its disk, its memory when its
+// record says it has it, and each of its drives whose file is in its directory.
+func (m *Manager) snapshotVersions(snap snapshotMeta) []string {
+	var out []string
+	for _, version := range append([]string{SnapshotDisk, SnapshotMemory}, snapshotDriveVersions(snap)...) {
+		if version == SnapshotMemory && !snap.Memory {
+			continue
+		}
+		file, _ := snapshotFile(version)
+		if fileExists(filepath.Join(m.snapshotDir(snap.ID), file)) {
+			out = append(out, version)
+		}
+	}
+	return out
+}
+
+// snapshotDrivesHere says whether every one of a saved snapshot's drives has its file in its directory.
+func (m *Manager) snapshotDrivesHere(snap snapshotMeta) bool {
+	for _, version := range snapshotDriveVersions(snap) {
+		file, _ := snapshotFile(version)
+		if !fileExists(filepath.Join(m.snapshotDir(snap.ID), file)) {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Manager) snapshotFetchDir(id string) string {
 	return filepath.Join(m.cfg.Root, snapshotFetchesDir, id)
 }
 
-// partialFile is a fetch's partial file of a version, in the snapshot's fetch directory.
+// snapshotPartialPath is a fetch's partial file of a version, in the snapshot's fetch directory: disk.partial,
+// mem.partial, or the drive version's (sticky0.partial, bundle0.partial, ...).
 func (m *Manager) snapshotPartialPath(id, version string) string {
-	if version == SnapshotMemory {
+	switch version {
+	case SnapshotMemory:
 		return filepath.Join(m.snapshotFetchDir(id), "mem.partial")
+	case SnapshotDisk:
+		return filepath.Join(m.snapshotFetchDir(id), "disk.partial")
 	}
-	return filepath.Join(m.snapshotFetchDir(id), "disk.partial")
+	return filepath.Join(m.snapshotFetchDir(id), version+".partial")
 }
 
 // stagedSnapshotPath is the record of a snapshot being fetched, made this host's (PrepareSnapshotFetch).
@@ -104,17 +196,13 @@ func (m *Manager) savedSnapshot(id string) (snapshotMeta, bool) {
 	return snap, true
 }
 
-// HoldsSnapshot says whether the host has a saved snapshot's version: its disk, or its memory.
+// HoldsSnapshot says whether the host has a saved snapshot's version: its disk, its memory, or a drive's file.
 func (m *Manager) HoldsSnapshot(id, version string) bool {
 	if !snapshotObject(id, version) {
 		return false
 	}
 	snap, ok := m.savedSnapshot(id)
-	if !ok || (version == SnapshotMemory && !snap.Memory) {
-		return false
-	}
-	file, _ := snapshotFile(version)
-	return fileExists(filepath.Join(m.snapshotDir(id), file))
+	return ok && slices.Contains(m.snapshotVersions(snap), version)
 }
 
 // OpenSnapshot opens a saved snapshot's version for a peer to fetch (disksync.Source): its file, and with withMap its
@@ -288,17 +376,54 @@ func runtimePart(runtime, name string) string {
 	return ""
 }
 
-// WantsSnapshotMemory says whether the host is to fetch a snapshot's memory: it holds the snapshot's disk as a copy
-// whose memory is elsewhere (ColdBoot), and restores it (restoresMemoryOf).
-func (m *Manager) WantsSnapshotMemory(id string) bool {
+// WantsSnapshot says whether the host is to fetch a version of a snapshot whose disk it holds as a copy (Fetched): a
+// sticky disk's clone it hasn't, so a sandbox made from it has the disk however it starts; and where it restores the
+// snapshot's memory (restoresMemoryOf) and hasn't it, a bundle image it hasn't, then the memory once every drive is
+// here, as the guest has them mounted.
+func (m *Manager) WantsSnapshot(id, version string) bool {
 	snap, ok := m.savedSnapshot(id)
-	return ok && snap.ColdBoot && !snap.Memory && m.restoresMemoryOf(snap) == nil
+	return ok && m.wantsSnapshot(snap, version)
+}
+
+func (m *Manager) wantsSnapshot(snap snapshotMeta, version string) bool {
+	if !snap.Fetched || version == SnapshotDisk {
+		return false
+	}
+	memory := snap.ColdBoot && !snap.Memory && m.restoresMemoryOf(snap) == nil
+	if version == SnapshotMemory {
+		return memory && m.snapshotDrivesHere(snap)
+	}
+	bundle, _, ok := snapshotDrive(version)
+	if !ok || !slices.Contains(snapshotDriveVersions(snap), version) || slices.Contains(m.snapshotVersions(snap), version) {
+		return false
+	}
+	return !bundle || memory
+}
+
+// SnapshotWants are the versions of a snapshot the host is to fetch now (WantsSnapshot), in the order it fetches them:
+// its drives, then its memory once they are here.
+func (m *Manager) SnapshotWants(id string) []string {
+	snap, ok := m.savedSnapshot(id)
+	if !ok {
+		return nil
+	}
+	return m.snapshotWants(snap)
+}
+
+func (m *Manager) snapshotWants(snap snapshotMeta) []string {
+	var out []string
+	for _, version := range append(snapshotDriveVersions(snap), SnapshotMemory) {
+		if m.wantsSnapshot(snap, version) {
+			out = append(out, version)
+		}
+	}
+	return out
 }
 
 // restoresMemoryOf says why the host can't restore a snapshot's memory, or nil when it can: the same CPU (Kantel sets
-// no Firecracker CPU template), and the snapshot's portable runtime the one this host has for its root image. A
-// snapshot whose machine had bundle images or sticky disks on its drives isn't restored on another host either: their
-// files stay on the host it was made on, and its guest has them mounted.
+// no Firecracker CPU template), and the snapshot's portable runtime the one this host has for its root image. A copy
+// whose machine had bundle images or sticky disks on its drives restores it only once their files are here too
+// (WantsSnapshot), which isn't this check's to say.
 func (m *Manager) restoresMemoryOf(snap snapshotMeta) error {
 	if !snap.CPU.Same(m.CPU()) {
 		return errors.New("its CPU fingerprint isn't this host's")
@@ -310,17 +435,11 @@ func (m *Manager) restoresMemoryOf(snap snapshotMeta) error {
 	if key, ok := templateRootfsKey(snap.Rootfs); ok && (snap.RootfsDigest == "" || m.rootfsMapDigest(key) != snap.RootfsDigest) {
 		return errors.New("its template root filesystem isn't the build this host has")
 	}
-	if slices.ContainsFunc(snap.BundleSlots, func(d string) bool { return d != "" }) {
-		return errors.New("its machine had bundle images on its drives")
-	}
-	if len(attachedSticky(snap.StickyDisks)) > 0 {
-		return errors.New("its machine had sticky disks")
-	}
 	return nil
 }
 
 // SnapshotPartial is where a fetch of a snapshot's version writes, its directory made: its disk once its fetch is made
-// ready (PrepareSnapshotFetch), its memory once the host holds its disk and wants it (WantsSnapshotMemory).
+// ready (PrepareSnapshotFetch), its memory or a drive's file once the host holds its disk and wants it (WantsSnapshot).
 func (m *Manager) SnapshotPartial(id, version string) (string, error) {
 	if !snapshotObject(id, version) {
 		return "", fmt.Errorf("bad snapshot ID or version")
@@ -331,14 +450,116 @@ func (m *Manager) SnapshotPartial(id, version string) (string, error) {
 			return "", fmt.Errorf("snapshot %s's fetch wasn't made ready: its root image may not be here", id)
 		}
 	case SnapshotMemory:
-		if !m.WantsSnapshotMemory(id) {
-			return "", fmt.Errorf("this host doesn't restore snapshot %s's memory, or doesn't hold its disk", id)
+		if !m.WantsSnapshot(id, version) {
+			return "", fmt.Errorf("this host doesn't restore snapshot %s's memory, doesn't hold its disk, or hasn't every file its drives had yet", id)
 		}
+	default:
+		if !m.WantsSnapshot(id, version) {
+			return "", fmt.Errorf("this host doesn't want snapshot %s's %s: it doesn't hold its disk, has it, or doesn't restore its memory", id, version)
+		}
+	}
+	if version != SnapshotDisk {
 		if err := os.MkdirAll(m.snapshotFetchDir(id), 0o700); err != nil {
 			return "", err
 		}
 	}
 	return m.snapshotPartialPath(id, version), nil
+}
+
+// CloneNearestSnapshot makes dst a clone of this host's nearest file to a snapshot's drive version and answers its map,
+// so a fetch of it takes only the blocks that differ: for a bundle image, the image of the same bundle in the host's
+// cache (its build here may differ from the holder's in a few blocks, such as its superblock, so it is never taken as
+// it is); for a sticky disk's clone, the disk's version it was cloned from, or else the host's newest. Nil, without
+// making dst, when the host has none, and for the snapshot's disk and memory.
+func (m *Manager) CloneNearestSnapshot(id, version, dst string) (*blockmap.Map, error) {
+	bundle, i, ok := snapshotDrive(version)
+	if !ok {
+		return nil, nil
+	}
+	snap, held := m.savedSnapshot(id)
+	if !held {
+		return nil, nil
+	}
+	if bundle {
+		if i >= len(snap.BundleSlots) || !bundles.ValidDigest(snap.BundleSlots[i]) || m.cfg.Bundles == nil {
+			return nil, nil
+		}
+		return m.cloneBundleImage(snap.BundleSlots[i], dst)
+	}
+	for _, d := range attachedSticky(snap.StickyDisks) {
+		if d.Slot == i && validID(d.DiskID) {
+			return m.cloneStickyNearest(d.DiskID, d.Version, dst)
+		}
+	}
+	return nil, nil
+}
+
+// cloneBundleImage makes dst a clone of a bundle's image in the host's cache, kept from eviction meanwhile, and maps
+// it: nil, without making dst, when the cache hasn't it.
+func (m *Manager) cloneBundleImage(digest, dst string) (*blockmap.Map, error) {
+	c := m.cfg.Bundles
+	release := c.Reserve(digest)
+	defer release()
+	src, err := os.Open(c.Image(digest))
+	if err != nil {
+		return nil, nil
+	}
+	defer src.Close()
+	if err := m.cloneFrom(src, c.Image(digest), dst); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(dst)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	bm, _, err := blockmap.Make(m.background(), f, nil)
+	if err != nil {
+		_ = os.Remove(dst)
+		return nil, err
+	}
+	m.log.Info("a snapshot's bundle image's fetch starts from the host's own image of it", "digest", digest)
+	return bm, nil
+}
+
+// cloneStickyNearest makes dst a clone of a sticky disk's version the host holds with a map, version if it holds it,
+// else its newest, and answers that map: nil, without making dst, when it holds none.
+func (m *Manager) cloneStickyNearest(diskID, version, dst string) (*blockmap.Map, error) {
+	if validID(version) {
+		if src, bm := m.openStickyWithMap(diskID, version); src != nil {
+			defer src.Close()
+			if err := m.cloneFrom(src, m.stickyVersionFile(diskID, version), dst); err != nil {
+				return nil, err
+			}
+			m.log.Info("a snapshot's sticky disk clone's fetch starts from the version it was cloned from", "disk", diskID, "version", version)
+			return bm, nil
+		}
+	}
+	return m.CloneNearestSticky(diskID, "", dst)
+}
+
+// cloneFrom makes dst a clone of src, open, at path: a reflink of the open file, else a full copy by name (path is
+// never replaced under its name while it is open here, so the copy is of the same file, or fails if it went), which
+// reserves its room first.
+func (m *Manager) cloneFrom(src *os.File, path, dst string) error {
+	if fsutil.ReflinkFrom(src, dst) == nil {
+		return nil
+	}
+	_ = os.Remove(dst)
+	release, err := m.reserveRoom(diskUsage(path), func(free, size int64) error {
+		return &proto.Error{Code: proto.ErrCapacity, Message: fmt.Sprintf(
+			"This host has %s of disk free, and a full copy of the file a snapshot's fetch starts from (its file system has no reflinks) needs %s and must leave %s free.",
+			gibText(max(free, 0)), gibText(size), gibText(snapshotHeadroom))}
+	})
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := cloneDisk(path, dst); err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	return nil
 }
 
 // ReserveSnapshotFetch holds room for the bytes a fetch of a snapshot's version is to write, beside every other copy
@@ -354,8 +575,8 @@ func (m *Manager) ReserveSnapshotFetch(bytes int64) (release func(), err error) 
 // PublishFetchedSnapshot makes a fetched partial file, written through partial, a snapshot's version, with its map
 // and its small files. Its disk: a directory of the file, its map and the staged record becomes snapshots/<id>/ in one
 // rename. Its memory: the machine's state, the file and its map go into the snapshot's directory, then its record says
-// it has memory. A version the host has already is kept, and the partial dropped; a partial removed meanwhile isn't
-// published.
+// it has memory. A drive's file: its map, then the file, into the snapshot's directory. A version the host has already
+// is kept, and the partial dropped; a partial removed meanwhile isn't published.
 func (m *Manager) PublishFetchedSnapshot(id, version string, partial *os.File, mapFile []byte, files map[string][]byte) error {
 	if !snapshotObject(id, version) {
 		return fmt.Errorf("bad snapshot ID or version")
@@ -377,17 +598,20 @@ func (m *Manager) PublishFetchedSnapshot(id, version string, partial *os.File, m
 			m.discardSnapshotPartial(id, version)
 			return nil
 		}
-	} else if m.HoldsSnapshot(id, SnapshotMemory) {
+	} else if m.HoldsSnapshot(id, version) {
 		m.discardSnapshotPartial(id, version)
 		return nil
 	}
 	if !sameFileAt(mine, path) {
 		return fmt.Errorf("the fetch of snapshot %s's %s was removed before it was published", id, version)
 	}
-	if version == SnapshotDisk {
+	switch version {
+	case SnapshotDisk:
 		err = m.publishSnapshotDisk(id, path, mapFile)
-	} else {
+	case SnapshotMemory:
 		err = m.publishSnapshotMemory(id, path, mapFile, files[SnapshotStateFile])
+	default:
+		err = m.publishSnapshotDrive(id, version, path, mapFile)
 	}
 	if err != nil {
 		return err
@@ -423,7 +647,7 @@ func (m *Manager) publishSnapshotDisk(id, path string, mapFile []byte) error {
 	if err := fsutil.WriteFileDurably(filepath.Join(staging, "disk.map"), mapFile, 0o600); err != nil {
 		return fail(err)
 	}
-	snap.SizeBytes, snap.UniqueBytes, snap.Shared = snapshotBytes(staging), 0, nil
+	snap.SizeBytes, snap.UniqueBytes, snap.Shared = m.snapshotBytes(staging), 0, nil
 	raw, _ = json.MarshalIndent(snap, "", "  ")
 	if err := fsutil.WriteFileDurably(filepath.Join(staging, "meta.json"), raw, 0o600); err != nil {
 		return fail(err)
@@ -446,6 +670,10 @@ func (m *Manager) publishSnapshotMemory(id, path string, mapFile, state []byte) 
 	if len(state) == 0 {
 		return fmt.Errorf("snapshot %s's holder gave no machine state with its memory", id)
 	}
+	// Its guest has the files on its drives mounted: never its memory over drives without them.
+	if !m.snapshotDrivesHere(snap) {
+		return fmt.Errorf("snapshot %s's memory came before every file its drives had", id)
+	}
 	dir := m.snapshotDir(id)
 	// The machine's state, the memory and its map first; the record says it has memory last, so a stop in between
 	// leaves a snapshot that boots on its disk, with files its next fetch replaces.
@@ -462,7 +690,33 @@ func (m *Manager) publishSnapshotMemory(id, path string, mapFile, state []byte) 
 		return err
 	}
 	snap.Memory, snap.ColdBoot = true, false
-	snap.SizeBytes = snapshotBytes(dir)
+	snap.SizeBytes = m.snapshotBytes(dir)
+	raw, _ := json.MarshalIndent(snap, "", "  ")
+	return fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
+}
+
+// publishSnapshotDrive puts a fetched drive's file into a copy's directory: its map first, then the file, so a drive's
+// file there is whole and mapped, then the record's size.
+func (m *Manager) publishSnapshotDrive(id, version, path string, mapFile []byte) error {
+	snap, ok := m.savedSnapshot(id)
+	if !ok {
+		return fmt.Errorf("the host no longer holds snapshot %s's disk", id)
+	}
+	if !slices.Contains(snapshotDriveVersions(snap), version) {
+		return fmt.Errorf("snapshot %s has no %s", id, version)
+	}
+	dir := m.snapshotDir(id)
+	file, mapName := snapshotFile(version)
+	if err := fsutil.WriteFileDurably(filepath.Join(dir, mapName), mapFile, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(path, filepath.Join(dir, file)); err != nil {
+		return err
+	}
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	snap.SizeBytes = m.snapshotBytes(dir)
 	raw, _ := json.MarshalIndent(snap, "", "  ")
 	return fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
 }
@@ -487,17 +741,19 @@ func (m *Manager) retireSnapshot(id string) {
 }
 
 // SnapshotPartials are the fetches of snapshots' versions left unfinished, by ID and version: a disk's from when its
-// fetch was made ready (its record staged), whether or not it had begun writing; a memory's from when the host holds
-// the disk and wants the memory (WantsSnapshotMemory), so one whose first try came before its holder had it goes on.
+// fetch was made ready (its record staged), whether or not it had begun writing; a drive's or a memory's from when the
+// host holds the disk and wants it (SnapshotWants), so one whose first try came before its holder had it goes on.
 func (m *Manager) SnapshotPartials() [][2]string {
 	out := m.snapshotFetchPartials()
 	snaps, _ := scanSnapshotsIn(m.cfg.Root)
 	for _, snap := range snaps {
-		if !snap.ColdBoot || snap.Memory || snap.Kind != "saved" || !validID(snap.ID) || m.restoresMemoryOf(snap) != nil {
+		if snap.Kind != "saved" || snap.Transient || !validID(snap.ID) {
 			continue
 		}
-		if p := [2]string{snap.ID, SnapshotMemory}; !slices.Contains(out, p) {
-			out = append(out, p)
+		for _, version := range m.snapshotWants(snap) {
+			if p := [2]string{snap.ID, version}; !slices.Contains(out, p) {
+				out = append(out, p)
+			}
 		}
 	}
 	return out
@@ -513,10 +769,35 @@ func (m *Manager) snapshotFetchPartials() [][2]string {
 		if !e.IsDir() || !validID(e.Name()) {
 			continue
 		}
-		for _, version := range []string{SnapshotDisk, SnapshotMemory} {
-			info, err := os.Lstat(m.snapshotPartialPath(e.Name(), version))
-			if (err == nil && info.Mode().IsRegular()) || (version == SnapshotDisk && fileExists(m.stagedSnapshotPath(e.Name()))) {
-				out = append(out, [2]string{e.Name(), version})
+		if fileExists(m.stagedSnapshotPath(e.Name())) {
+			out = append(out, [2]string{e.Name(), SnapshotDisk})
+		}
+		for _, version := range m.partialVersions(e.Name()) {
+			if p := [2]string{e.Name(), version}; !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// partialVersions are the versions of a snapshot with a partial file in its fetch directory.
+func (m *Manager) partialVersions(id string) []string {
+	entries, _ := os.ReadDir(m.snapshotFetchDir(id))
+	var out []string
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), ".partial")
+		if !ok || !e.Type().IsRegular() {
+			continue
+		}
+		switch name {
+		case "disk":
+			out = append(out, SnapshotDisk)
+		case "mem":
+			out = append(out, SnapshotMemory)
+		default:
+			if _, _, ok := snapshotDrive(name); ok {
+				out = append(out, name)
 			}
 		}
 	}
@@ -547,11 +828,8 @@ func (m *Manager) discardSnapshotPartial(id, version string) {
 			m.log.Warn("removing a snapshot's partial fetch", "path", path, "error", err)
 		}
 	}
-	other := SnapshotMemory
-	if version == SnapshotMemory {
-		other = SnapshotDisk
-	}
-	if !fileExists(m.snapshotPartialPath(id, other)) {
+	// The directory, once no other version's fetch is in it.
+	if len(m.partialVersions(id)) == 0 && !fileExists(m.stagedSnapshotPath(id)) {
 		_ = os.RemoveAll(m.snapshotFetchDir(id))
 	}
 }
@@ -571,10 +849,7 @@ func (m *Manager) SnapshotHoldings() []proto.ObjectHolding {
 			continue
 		}
 		var versions []proto.ObjectVersionHolding
-		for _, version := range []string{SnapshotDisk, SnapshotMemory} {
-			if version == SnapshotMemory && !snap.Memory {
-				continue
-			}
+		for _, version := range m.snapshotVersions(snap) {
 			file, mapFile := snapshotFile(version)
 			digest := m.snapshotMapDigest(filepath.Join(m.snapshotDir(snap.ID), mapFile))
 			if digest == "" {
@@ -650,38 +925,54 @@ func (m *Manager) mapSnapshotLater(id string) {
 	}()
 }
 
-// mapSnapshot makes the maps a saved snapshot hasn't: its disk's, and its memory's when it has memory. A snapshot's
-// files never change once it is made, so a map is good for as long as the snapshot is there; one deleted meanwhile
-// gets none.
+// mapSnapshot makes the maps a saved snapshot hasn't: its disk's, its memory's when it has memory, and its drives'
+// files' (a sticky disk's clone's from the map of the version it was cloned from, where the host still holds it, so
+// only the blocks they don't share are read). A snapshot's files never change once it is made, so a map is good for as
+// long as the snapshot is there; one deleted meanwhile gets none.
 func (m *Manager) mapSnapshot(ctx context.Context, id string) error {
 	snap, ok := m.savedSnapshot(id)
 	if !ok {
 		return nil
 	}
 	dir := m.snapshotDir(id)
-	for _, version := range []string{SnapshotDisk, SnapshotMemory} {
-		if version == SnapshotMemory && !snap.Memory {
-			continue
-		}
+	for _, version := range m.snapshotVersions(snap) {
 		file, mapFile := snapshotFile(version)
 		if fileExists(filepath.Join(dir, mapFile)) {
 			continue
 		}
-		if err := m.mapSnapshotFile(ctx, id, filepath.Join(dir, file), filepath.Join(dir, mapFile)); err != nil {
+		if err := m.mapSnapshotFile(ctx, id, filepath.Join(dir, file), filepath.Join(dir, mapFile), m.snapshotDriveBase(snap, version)); err != nil {
 			return fmt.Errorf("its %s: %w", version, err)
 		}
 	}
 	return nil
 }
 
-func (m *Manager) mapSnapshotFile(ctx context.Context, id, path, mapPath string) error {
+// snapshotDriveBase is, for a snapshot's sticky disk's clone, the disk's version it was cloned from, open with its map,
+// when the host holds both (stickyBase): nil for any other version.
+func (m *Manager) snapshotDriveBase(snap snapshotMeta, version string) *blockmap.Base {
+	bundle, k, ok := snapshotDrive(version)
+	if !ok || bundle {
+		return nil
+	}
+	for _, d := range attachedSticky(snap.StickyDisks) {
+		if d.Slot == k && validID(d.DiskID) && validID(d.Version) {
+			return m.stickyBase(d.DiskID, d.Version)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) mapSnapshotFile(ctx context.Context, id, path, mapPath string, base *blockmap.Base) error {
+	if base != nil {
+		defer base.File.Close()
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	start := time.Now()
-	bm, st, err := blockmap.Make(ctx, f, nil)
+	bm, st, err := blockmap.Make(ctx, f, base)
 	if err != nil {
 		return err
 	}
@@ -707,8 +998,11 @@ func (m *Manager) mapOldSnapshots() {
 			continue
 		}
 		dir := m.snapshotDir(snap.ID)
-		if !fileExists(filepath.Join(dir, "disk.map")) || (snap.Memory && !fileExists(filepath.Join(dir, "mem.map"))) {
-			m.mapSnapshotLater(snap.ID)
+		for _, version := range m.snapshotVersions(snap) {
+			if _, mapFile := snapshotFile(version); !fileExists(filepath.Join(dir, mapFile)) {
+				m.mapSnapshotLater(snap.ID)
+				break
+			}
 		}
 	}
 }

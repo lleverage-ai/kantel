@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
+	"github.com/lleverage-ai/kantel/apps/host/internal/bundles"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -192,7 +193,7 @@ func TestSnapshotSyncWithMatchingFingerprints(t *testing.T) {
 	if got := b.SnapshotPartials(); !slices.Equal(got, [][2]string{{"snap1", SnapshotMemory}}) {
 		t.Fatalf("partials once the disk is here %v", got)
 	}
-	if !b.HoldsSnapshot("snap1", SnapshotDisk) || b.HoldsSnapshot("snap1", SnapshotMemory) || !b.WantsSnapshotMemory("snap1") {
+	if !b.HoldsSnapshot("snap1", SnapshotDisk) || b.HoldsSnapshot("snap1", SnapshotMemory) || !b.WantsSnapshot("snap1", SnapshotMemory) {
 		t.Fatal("the copy's versions")
 	}
 	// Listed at once, with the holder's map: its disk alone.
@@ -208,7 +209,7 @@ func TestSnapshotSyncWithMatchingFingerprints(t *testing.T) {
 		t.Fatal(err)
 	}
 	copied, _ = b.readSnapshot("snap1")
-	if !copied.Memory || copied.ColdBoot || b.WantsSnapshotMemory("snap1") || len(b.SnapshotPartials()) != 0 {
+	if !copied.Memory || copied.ColdBoot || b.WantsSnapshot("snap1", SnapshotMemory) || len(b.SnapshotPartials()) != 0 {
 		t.Fatalf("with its memory: %+v", copied)
 	}
 	if state, _ := os.ReadFile(filepath.Join(b.snapshotDir("snap1"), "state")); string(state) != "machine state" {
@@ -249,8 +250,8 @@ func TestSnapshotSyncWithMatchingFingerprints(t *testing.T) {
 }
 
 // A host whose CPU differs, or whose runtime does, fetches only the disk: its copy stays marked to cold-boot, its memory
-// isn't asked for, and a sandbox made from it boots on its disk. So does a snapshot whose machine had bundle images or
-// sticky disks on its drives.
+// isn't asked for, and a sandbox made from it boots on its disk. So does a snapshot whose machine had bundle images on
+// its drives while their files aren't here.
 func TestSnapshotMemoryOnlyWithMatchingFingerprints(t *testing.T) {
 	ctx := context.Background()
 	for name, change := range map[string]func(a, b *Manager){
@@ -260,7 +261,7 @@ func TestSnapshotMemoryOnlyWithMatchingFingerprints(t *testing.T) {
 			b.cfg.CPU = &cpu
 		},
 		"another runtime": func(_, b *Manager) { b.cfg.FreePageReporting = true },
-		"bundle images": func(a, _ *Manager) {
+		"bundle images not here": func(a, _ *Manager) {
 			snap, _ := a.readSnapshot("snap1")
 			snap.BundleDrives, snap.BundleSlots = 1, []string{"sha256:1"}
 			raw, _ := json.Marshal(snap)
@@ -282,7 +283,7 @@ func TestSnapshotMemoryOnlyWithMatchingFingerprints(t *testing.T) {
 			if err := fetchTestVersion(t, a, b, "snap1", SnapshotDisk); err != nil {
 				t.Fatal(err)
 			}
-			if b.WantsSnapshotMemory("snap1") {
+			if b.WantsSnapshot("snap1", SnapshotMemory) {
 				t.Fatal("its memory wanted")
 			}
 			if _, err := b.SnapshotPartial("snap1", SnapshotMemory); err == nil {
@@ -584,5 +585,302 @@ func TestAFetchedCopyOutlivesTheHostsPruning(t *testing.T) {
 	}
 	if in, err := BasesUnder(b.cfg.Root); err != nil || !in["old"] {
 		t.Fatalf("the copy's image version isn't in use: %v %v", in, err)
+	}
+}
+
+// withTestDrives gives a saved snapshot in m's root the files its machine had on its drives: the image of bundle
+// digest on bundle drive 1 (of 2), and a clone of sticky disk disk1's version v1 on sticky drive 0, as a save leaves
+// them; m holds that version, mapped, with clone's bytes but its last block.
+func withTestDrives(t *testing.T, m *Manager, id, digest string, image, clone []byte) {
+	t.Helper()
+	snap, err := m.readSnapshot(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.BundleDrives, snap.BundleSlots = 2, []string{"", digest}
+	snap.StickyDisks = []stickyDisk{{DiskID: "disk1", Path: "/cache", Version: "v1", Slot: 0, State: proto.StickyMounted}}
+	snap.StickyDrives = 2
+	dir := m.snapshotDir(id)
+	raw, _ := json.Marshal(snap)
+	for name, data := range map[string][]byte{"meta.json": raw, bundleDriveFile(1): image, stickyDriveFile(0): clone} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	version := append(slices.Clone(clone[:len(clone)-blockmap.BlockSize]), bytes.Repeat([]byte{9}, blockmap.BlockSize)...)
+	writeTestStickyVersion(t, m, "disk1", "v1", version)
+}
+
+// writeTestStickyVersion puts a sticky disk's version, with its map, in m's sticky disks.
+func writeTestStickyVersion(t *testing.T, m *Manager, diskID, version string, data []byte) {
+	t.Helper()
+	path := m.stickyVersionFile(diskID, version)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.Open(path)
+	defer f.Close()
+	bm, _, err := blockmap.Make(context.Background(), f, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blockmap.WriteFile(m.stickyMapFile(diskID, version), bm); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// testBundleCache gives m a bundle cache holding digest's image with image's bytes.
+func testBundleCache(t *testing.T, m *Manager, digest string, image []byte) {
+	t.Helper()
+	cache, err := bundles.New(bundles.Config{Dir: t.TempDir(), Mkfs: "/bin/true", Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image != nil {
+		if err := os.WriteFile(cache.Image(digest), image, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.cfg.Bundles, m.cfg.BundleDrives = cache, 2
+}
+
+// A snapshot whose machine had a bundle image and a sticky disk on its drives serves each drive's file as a version of
+// its own, mapped (a sticky disk's clone from the version it was cloned from). Another host with the same CPU and
+// runtime fetches, after the disk, the sticky disk's clone, then the bundle's image, each starting from its own nearest
+// file (its own build of the image, the version the clone was made from), and the memory only once both are here: a
+// sandbox made from the copy before then boots on its disk, with its sticky disk; after, it restores the memory over
+// the holder's bytes on the same drives. A copy whose drive's file went boots on its disk.
+func TestSnapshotMemoryWithItsDrives(t *testing.T) {
+	ctx := context.Background()
+	a, _ := snapshotSyncHost(t)
+	b, _ := snapshotSyncHost(t)
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	image := bytes.Repeat([]byte{5}, 3*blockmap.BlockSize)
+	clone := append(bytes.Repeat([]byte{6}, 2*blockmap.BlockSize), bytes.Repeat([]byte{7}, blockmap.BlockSize)...)
+	saveTestSnapshot(t, a, "snap1", "old", true)
+	withTestDrives(t, a, "snap1", digest, image, clone)
+	// A's bundle drive is a link to its cache's image, as a save leaves it.
+	testBundleCache(t, a, digest, image)
+	aBundle := filepath.Join(a.snapshotDir("snap1"), bundleDriveFile(1))
+	if err := os.Remove(aBundle); err != nil || os.Link(a.cfg.Bundles.Image(digest), aBundle) != nil {
+		t.Fatal("linking A's bundle image")
+	}
+	// B's own build of the bundle's image differs in its first block; it holds the sticky disk's version too.
+	testBundleCache(t, b, digest, append(bytes.Repeat([]byte{4}, blockmap.BlockSize), image[blockmap.BlockSize:]...))
+	writeTestStickyVersion(t, b, "disk1", "v1", append(slices.Clone(clone[:2*blockmap.BlockSize]), bytes.Repeat([]byte{9}, blockmap.BlockSize)...))
+
+	if err := a.mapSnapshot(ctx, "snap1"); err != nil {
+		t.Fatal(err)
+	}
+	held := a.SnapshotHoldings()
+	for _, version := range []string{SnapshotDisk, SnapshotMemory, "sticky0", "bundle1"} {
+		if digestOf(held, "snap1", version) == "" {
+			t.Fatalf("%s not held: %+v", version, held)
+		}
+	}
+	if len(held[0].Versions) != 4 || a.HoldsSnapshot("snap1", "bundle0") || a.HoldsSnapshot("snap1", "sticky1") {
+		t.Fatalf("holdings %+v", held)
+	}
+	if _, err := a.ReadSnapshotFile("snap1", "bundle1", SnapshotRecordFile); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a drive's small file: %v", err)
+	}
+	// The original's drives are its own: it wants nothing.
+	if got := a.SnapshotWants("snap1"); len(got) != 0 {
+		t.Fatalf("the original wants %v", got)
+	}
+
+	record, _ := a.ReadSnapshotFile("snap1", SnapshotDisk, SnapshotRecordFile)
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", record); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchTestVersion(t, a, b, "snap1", SnapshotDisk); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.SnapshotWants("snap1"); !slices.Equal(got, []string{"sticky0", "bundle1"}) {
+		t.Fatalf("wanted once the disk is here: %v", got)
+	}
+	if got := b.SnapshotPartials(); !slices.Equal(got, [][2]string{{"snap1", "sticky0"}, {"snap1", "bundle1"}}) {
+		t.Fatalf("partials %v", got)
+	}
+	if _, err := b.SnapshotPartial("snap1", SnapshotMemory); err == nil {
+		t.Fatal("the memory's partial before its drives' files")
+	}
+	if _, err := b.SnapshotPartial("snap1", "bundle0"); err == nil {
+		t.Fatal("a partial of a drive the snapshot hasn't")
+	}
+
+	// Each drive's fetch starts from the host's nearest file: the same blocks are there already.
+	for version, want := range map[string]int{"sticky0": 2, "bundle1": 2} {
+		path, err := b.SnapshotPartial("snap1", version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		near, err := b.CloneNearestSnapshot("snap1", version, path)
+		if err != nil || near == nil {
+			t.Fatalf("%s's nearest: %v", version, err)
+		}
+		_, raw, _ := a.OpenSnapshot("snap1", version, true)
+		var theirs blockmap.Map
+		if err := theirs.UnmarshalBinary(raw); err != nil {
+			t.Fatal(err)
+		}
+		same := 0
+		for i := range theirs.Blocks() {
+			if near.Hash(i) == theirs.Hash(i) {
+				same++
+			}
+		}
+		if same != want {
+			t.Fatalf("%s: %d blocks the same as the holder's, not %d", version, same, want)
+		}
+		_ = os.Remove(path)
+	}
+	// The cache's image is kept as it is: never written by a fetch.
+	if got, _ := os.ReadFile(b.cfg.Bundles.Image(digest)); got[0] != 4 {
+		t.Fatal("the cache's image changed")
+	}
+
+	if err := fetchTestVersion(t, a, b, "snap1", "sticky0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.SnapshotWants("snap1"); !slices.Equal(got, []string{"bundle1"}) {
+		t.Fatalf("wanted once the sticky disk is here: %v", got)
+	}
+	// Made from it now: a boot on its disk, with its sticky disk's clone.
+	origin, err := b.startOf(ctx, proto.CreateParams{From: "snap1"}, DefaultSizes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin.unhold()
+	if origin.state != "" || origin.stickyDir != b.snapshotDir("snap1") || len(origin.stickyDisks) != 1 {
+		t.Fatalf("a create before its bundle's image %+v", origin)
+	}
+	if err := fetchTestVersion(t, a, b, "snap1", "bundle1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.SnapshotWants("snap1"); !slices.Equal(got, []string{SnapshotMemory}) {
+		t.Fatalf("wanted once its drives are here: %v", got)
+	}
+	if err := fetchTestVersion(t, a, b, "snap1", SnapshotMemory); err != nil {
+		t.Fatal(err)
+	}
+	copied, _ := b.readSnapshot("snap1")
+	if !copied.Memory || copied.ColdBoot || len(b.SnapshotWants("snap1")) != 0 || len(b.SnapshotPartials()) != 0 {
+		t.Fatalf("with its memory: %+v", copied)
+	}
+	for _, name := range []string{fc.DiskFile, "mem", bundleDriveFile(1), stickyDriveFile(0)} {
+		got, _ := os.ReadFile(filepath.Join(b.snapshotDir("snap1"), name))
+		want, _ := os.ReadFile(filepath.Join(a.snapshotDir("snap1"), name))
+		if !bytes.Equal(got, want) {
+			t.Fatalf("the copy's %s differs", name)
+		}
+	}
+	// The copy's bundle image is its own file, not a link to B's cache: its size counts it; the original's is the cache's.
+	var all int64
+	entries, _ := os.ReadDir(b.snapshotDir("snap1"))
+	for _, e := range entries {
+		all += diskUsage(filepath.Join(b.snapshotDir("snap1"), e.Name()))
+	}
+	if got := b.snapshotBytes(b.snapshotDir("snap1")); got != all || copied.SizeBytes != all {
+		t.Fatalf("the copy's size %d (recorded %d), its files %d", got, copied.SizeBytes, all)
+	}
+	var allA int64
+	entries, _ = os.ReadDir(a.snapshotDir("snap1"))
+	for _, e := range entries {
+		allA += diskUsage(filepath.Join(a.snapshotDir("snap1"), e.Name()))
+	}
+	if got := a.snapshotBytes(a.snapshotDir("snap1")); got != allA-diskUsage(filepath.Join(a.snapshotDir("snap1"), bundleDriveFile(1))) {
+		t.Fatalf("the original's size %d, its files %d", got, allA)
+	}
+	// A snapshot saved from a sandbox made from the copy links its bundle image: still its own bytes, counted.
+	if err := os.MkdirAll(b.snapshotDir("snap2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(b.snapshotDir("snap1"), bundleDriveFile(1)), filepath.Join(b.snapshotDir("snap2"), bundleDriveFile(1))); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.snapshotBytes(b.snapshotDir("snap2")); got == 0 || got != diskUsage(filepath.Join(b.snapshotDir("snap2"), bundleDriveFile(1))) {
+		t.Fatalf("a later snapshot's link to the copy's bundle image counts %d", got)
+	}
+	_ = os.RemoveAll(b.snapshotDir("snap2"))
+	bHeld := b.SnapshotHoldings()
+	for _, version := range []string{SnapshotDisk, SnapshotMemory, "sticky0", "bundle1"} {
+		if got := digestOf(bHeld, "snap1", version); got == "" || got != digestOf(held, "snap1", version) {
+			t.Fatalf("%s's digest %q on B, %q on A", version, got, digestOf(held, "snap1", version))
+		}
+	}
+	origin, err = b.startOf(ctx, proto.CreateParams{From: "snap1"}, DefaultSizes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin.unhold()
+	if origin.state == "" || origin.snapshotDir != b.snapshotDir("snap1") || !slices.Equal(origin.bundleSlots, []string{"", digest}) ||
+		origin.stickyDrives != 2 {
+		t.Fatalf("a create from the copy %+v", origin)
+	}
+
+	// A drive's file gone: its memory isn't restored over an empty drive.
+	if err := os.Remove(filepath.Join(b.snapshotDir("snap1"), bundleDriveFile(1))); err != nil {
+		t.Fatal(err)
+	}
+	origin, err = b.startOf(ctx, proto.CreateParams{From: "snap1"}, DefaultSizes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin.unhold()
+	if origin.state != "" {
+		t.Fatalf("restored without its bundle's image %+v", origin)
+	}
+}
+
+// A host that doesn't restore a snapshot's memory (another CPU) fetches its sticky disks' clones, so a sandbox made
+// from its copy has them, but never its bundle images or its memory.
+func TestSnapshotStickyClonesWithoutMemory(t *testing.T) {
+	ctx := context.Background()
+	a, _ := snapshotSyncHost(t)
+	b, _ := snapshotSyncHost(t)
+	cpu := testCPU
+	cpu.FeaturesHash = "sha256:fedcba9876543210"
+	b.cfg.CPU = &cpu
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	saveTestSnapshot(t, a, "snap1", "old", true)
+	withTestDrives(t, a, "snap1", digest, bytes.Repeat([]byte{5}, blockmap.BlockSize), bytes.Repeat([]byte{6}, 2*blockmap.BlockSize))
+	if err := a.mapSnapshot(ctx, "snap1"); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := a.ReadSnapshotFile("snap1", SnapshotDisk, SnapshotRecordFile)
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", record); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchTestVersion(t, a, b, "snap1", SnapshotDisk); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.SnapshotWants("snap1"); !slices.Equal(got, []string{"sticky0"}) {
+		t.Fatalf("wanted %v", got)
+	}
+	// B has no copy of the disk's version: its clone's fetch starts from nothing.
+	path, _ := b.SnapshotPartial("snap1", "sticky0")
+	if near, err := b.CloneNearestSnapshot("snap1", "sticky0", path); near != nil || err != nil {
+		t.Fatalf("a nearest file B hasn't: %v", err)
+	}
+	if err := fetchTestVersion(t, a, b, "snap1", "sticky0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.SnapshotWants("snap1"); len(got) != 0 {
+		t.Fatalf("wanted with its sticky disk here %v", got)
+	}
+	if _, err := b.SnapshotPartial("snap1", "bundle1"); err == nil {
+		t.Fatal("a partial of a bundle's image")
+	}
+	origin, err := b.startOf(ctx, proto.CreateParams{From: "snap1"}, DefaultSizes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin.unhold()
+	if origin.state != "" || len(origin.stickyDisks) != 1 || !fileExists(filepath.Join(origin.stickyDir, stickyDriveFile(0))) {
+		t.Fatalf("a create from the copy %+v", origin)
 	}
 }

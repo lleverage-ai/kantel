@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
@@ -27,7 +28,7 @@ func writeSnapshot(t *testing.T, m *Manager, id, kind string, createdAt, recorde
 }
 
 // A snapshot is measured as its files are on the disk now: a sparse disk's holes take nothing, a memory file still in
-// RAM (a symlink into the spool) and its bundle drives count nothing. A file linked into two snapshots is in both's
+// RAM (a symlink into the spool) and its bundle drives' links to the bundle cache count nothing. A file linked into two snapshots is in both's
 // size, in neither's unique bytes, and in one shared group of the two.
 func TestMeasuredSnapshotsCountWhatIsOnTheDisk(t *testing.T) {
 	root := t.TempDir()
@@ -60,7 +61,9 @@ func TestMeasuredSnapshotsCountWhatIsOnTheDisk(t *testing.T) {
 	if err := os.Symlink(spooled, filepath.Join(newer, "state")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(newer, bundleDriveFile(0)), make([]byte, 1<<20), 0o600); err != nil {
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	testBundleCache(t, m, digest, make([]byte, 1<<20))
+	if err := os.Link(m.cfg.Bundles.Image(digest), filepath.Join(newer, bundleDriveFile(0))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,12 +72,12 @@ func TestMeasuredSnapshotsCountWhatIsOnTheDisk(t *testing.T) {
 	for _, snap := range snaps {
 		got[snap.ID] = snap
 	}
-	mem := snapshotBytes(filepath.Join(older, "mem"))
-	oldDisk := snapshotBytes(filepath.Join(older, fc.DiskFile))
+	mem := m.snapshotBytes(filepath.Join(older, "mem"))
+	oldDisk := m.snapshotBytes(filepath.Join(older, fc.DiskFile))
 	if oldDisk >= 8<<20 {
 		t.Fatalf("the sparse disk's holes were counted: %d bytes", oldDisk)
 	}
-	oldMeta, newMeta := snapshotBytes(filepath.Join(older, "meta.json")), snapshotBytes(filepath.Join(newer, "meta.json"))
+	oldMeta, newMeta := m.snapshotBytes(filepath.Join(older, "meta.json")), m.snapshotBytes(filepath.Join(newer, "meta.json"))
 	if s := got["snap_old"]; s.SizeBytes != oldDisk+mem+oldMeta || s.UniqueBytes != oldDisk+oldMeta {
 		t.Fatalf("the older snapshot: %d bytes, %d its own", s.SizeBytes, s.UniqueBytes)
 	}
@@ -115,7 +118,7 @@ func TestKeepSnapshotAnswersWhatTheListMeasures(t *testing.T) {
 			t.Fatalf("the keep answered %d bytes, %d its own; the list measures %d, %d", kept.SizeBytes, kept.UniqueBytes, snap.SizeBytes, snap.UniqueBytes)
 		}
 	}
-	if !reflect.DeepEqual(kept.Shared, shared) || len(shared) != 1 || shared[0].Bytes != snapshotBytes(filepath.Join(source, fc.DiskFile)) {
+	if !reflect.DeepEqual(kept.Shared, shared) || len(shared) != 1 || shared[0].Bytes != m.snapshotBytes(filepath.Join(source, fc.DiskFile)) {
 		t.Fatalf("the keep shares %+v; the list %+v", kept.Shared, shared)
 	}
 	// Its meta.json keeps none of it: the next measure is the host's to make.
