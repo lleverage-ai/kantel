@@ -137,6 +137,8 @@ const HOST_RECONNECT_POLL_MS = 1_000;
  * filesystem from a peer).
  */
 export const SNAPSHOT_FETCH_TIMEOUT_MS = 15 * 60_000;
+/** How many hosts a create fetches its snapshot on at most, each one that had no room once it had it passed over. */
+const SNAPSHOT_FETCH_TRIES = 3;
 /** How often a create waiting for a snapshot's fetch reads whether its host has reported it. */
 const SNAPSHOT_FETCH_POLL_MS = 1_000;
 /** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
@@ -986,7 +988,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				}
 			}
 		}
-		const fetchers = copies.fetch ? await fetchersAmong(spec.eligibleHosts, holders) : [];
+		// Only a saved snapshot's ID alone is fetched: an older ref's host-local ID may name another snapshot elsewhere.
+		const fetchers = copies.fetch && from.hostId === undefined ? await fetchersAmong(spec.eligibleHosts, holders) : [];
 		if (fetchers.length === 0) {
 			if (refused !== undefined) throw refused;
 			const named = copies.holders.map((holder) => holder.hostId).join(", ");
@@ -998,11 +1001,20 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					: `None of the hosts its disk is on (${named}) can take it now`,
 			);
 		}
-		// The one the registry would place it on now, which fetches it; placed there once it has it.
-		const hostId = await hosts.sandboxes.choose(input(fetchers));
+		// The one the registry would place it on now, which fetches it; placed there once it has it. One that has no room
+		// by then (another create took it while it fetched) is passed over for the next, up to `SNAPSHOT_FETCH_TRIES`.
 		const started = now();
-		await fetchSnapshot(hostId, from.snapshotId);
-		return made([hostId], now() - started);
+		let left = fetchers;
+		for (let tries = 1; ; tries++) {
+			const hostId = await hosts.sandboxes.choose(input(left));
+			await fetchSnapshot(hostId, from.snapshotId);
+			try {
+				return await made([hostId], now() - started);
+			} catch (error) {
+				left = left.filter((each) => each !== hostId);
+				if (!isKantelError(error, "exhausted") || tries >= SNAPSHOT_FETCH_TRIES || left.length === 0) throw error;
+			}
+		}
 	}
 
 	/**

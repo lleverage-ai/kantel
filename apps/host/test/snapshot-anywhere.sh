@@ -60,7 +60,7 @@ until_ok() {
 	done
 }
 online() { api GET "/admin/hosts/$1" | jq -e '.state == "online"' >/dev/null; }
-offline() { api GET "/admin/hosts/$1" | jq -e '.state == "offline"' >/dev/null; }
+offline() { api GET "/admin/hosts/$1" | jq -e '.state == "unreachable"' >/dev/null; }
 mesh_up() { docker exec "$1" ip -6 -o addr show dev kmesh0 2>/dev/null | grep -q fd; }
 drain() {
 	local want=online

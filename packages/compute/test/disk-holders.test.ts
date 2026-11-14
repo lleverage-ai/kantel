@@ -94,6 +94,7 @@ function setUp(
 		},
 		async create(spec) {
 			if (options.created === undefined) return backend.create(spec);
+			// A test's refusal of the create (its holders full, say) is thrown from `created`.
 			options.created(spec);
 			const { fromSnapshot: _from, snapshotCopies: _copies, ...fresh } = spec;
 			return backend.create(fresh);
@@ -1133,6 +1134,45 @@ describe("disk holders", () => {
 		expect(deleted).toEqual([`${STUB_HOST_ID}/${id}`, `host_b/${id}`, `host_g/${id}`]);
 	});
 
+	it("makes a failed create from a saved snapshot again on its copies, and keeps it to its pool when its first host moves", async () => {
+		const specs: SandboxSpec[] = [];
+		let refuse = false;
+		const tom = setUp({
+			created: (spec) => {
+				specs.push(spec);
+				if (refuse) throw new KantelError("exhausted", "No host has room");
+			},
+		});
+		await tom.pool();
+		const id = "ssnap_0123456789abcdef0123456789abcdef";
+		const snap = await tom.savedAlone(id);
+		tom.clock.now += 1;
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+			objects: { snapshot: [{ objectId: id, versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		});
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			objects: { snapshot: [{ objectId: id, versions: [{ version: "disk", mapDigest: DIGEST, copy: true }] }] },
+		});
+		refuse = true;
+		const failed = await tom.createSandbox({ from: snap.id, wait: true });
+		expect(failed.state).toBe("error");
+		// Started again, never placed: from the snapshot's ID, on its holders, as its create was.
+		refuse = false;
+		const started = await tom.startSandbox(failed.id, { wait: true });
+		expect(started.state).toBe("running");
+		expect(specs.at(-1)).toMatchObject({
+			fromSnapshot: id,
+			snapshotCopies: { holders: [{ hostId: STUB_HOST_ID }, { hostId: "host_b" }], fetch: true },
+		});
+		// The host it was taken on moves to pool B: the create is still taken, to its copy on host_b in its own pool
+		// (which the stub, a host of one, can't make it on).
+		await tom.api.store.hosts.update(STUB_HOST_ID, (host) => ({ ...host, poolId: "pool_b" }));
+		const moved = await tom.createSandbox({ from: snap.id, wait: true });
+		expect(moved).toMatchObject({ poolId: "pool_a" });
+		expect(specs.at(-1)?.eligibleHosts).not.toContain(STUB_HOST_ID);
+		expect(specs.at(-1)?.eligibleHosts).toContain("host_b");
+	});
+
 	it("starts a sandbox from an old ref's snapshot on its host or a copy of it, and fetches none with sync off", async () => {
 		const specs: SandboxSpec[] = [];
 		const tom = setUp({ created: (spec) => specs.push(spec) });
@@ -1157,7 +1197,8 @@ describe("disk holders", () => {
 					{ hostId: "host_b", memory: false },
 				],
 				memory: false,
-				fetch: true,
+				// Never fetched: its host-local ID may name another snapshot on the host that would fetch it.
+				fetch: false,
 			},
 		});
 		// Sticky disks and templates off: nothing is synced, so its host alone, and a pin elsewhere is refused.

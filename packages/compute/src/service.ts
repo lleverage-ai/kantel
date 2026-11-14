@@ -80,6 +80,7 @@ import {
 	type Placement,
 	refusedBeforeTheMachine,
 	type SandboxBackend,
+	type SandboxSpec,
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
 	SNAPSHOT_KEEP_FEATURE,
@@ -3486,7 +3487,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const holderId = await hostOfSnapshot(snapshot);
 		const holderPool = holderId === undefined ? undefined : hosts.find((host) => host.id === holderId)?.poolId;
 		const recorded = await livePool(snapshot.poolId);
-		if (recorded !== undefined && holderPool !== undefined && holderPool !== recorded) {
+		// A ref naming no host (a saved snapshot's ID alone) is its pool's, on any of its holders there: the host it was
+		// taken on moving to another pool leaves the copies in its own.
+		const named = snapshot.ref !== undefined && refHost(snapshot.ref) !== undefined;
+		if (recorded !== undefined && holderPool !== undefined && holderPool !== recorded && named) {
 			throw placementError(
 				"unavailable",
 				"host_unavailable",
@@ -3611,9 +3615,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				.filter((host) => (host.state === "online" || host.state === "draining") && host.poolId === poolId)
 				.map((host) => host.id),
 		);
+		// Only a saved snapshot's ID alone: an older ref's host-local ID may name another snapshot on the host fetching it.
 		const fetch =
 			diskHolders.syncsSnapshots &&
 			poolId !== undefined &&
+			refHost(ref) === undefined &&
 			disks.some((holder) => holder.mapDigest !== undefined && online.has(holder.hostId));
 		return { holders, memory, fetch };
 	}
@@ -5444,8 +5450,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}
 		}
+		// From a saved snapshot named by its ID alone: on its holders in its pool, or a host that fetches it, as its create.
+		const source =
+			sandbox.source?.snapshotId === undefined || boot.fromSnapshot === undefined
+				? undefined
+				: await store.snapshots.get(sandbox.source.snapshotId);
+		let fromCopies: Pick<SandboxSpec, "fromSnapshot" | "snapshotCopies"> = {};
+		if (source?.ref !== undefined && refHost(source.ref) === undefined && source.hostId !== undefined) {
+			const known = await ensureHosts();
+			const poolId = sandbox.poolId ?? source.poolId;
+			fromCopies = { fromSnapshot: source.ref, snapshotCopies: await snapshotCopiesOf(source, known, poolId) };
+			if (poolId !== undefined) {
+				const inPool = new Set(known.filter((host) => host.poolId === poolId).map((host) => host.id));
+				eligibleHosts = eligibleHosts.filter((hostId) => inPool.has(hostId));
+			}
+		}
 		const placement = await backend.create({
 			...boot,
+			...fromCopies,
 			eligibleHosts,
 			// Placed afresh (from its source's snapshot too): in its pool, kept to it as the host admits it.
 			...pooled(sandbox.poolId),

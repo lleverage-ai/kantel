@@ -296,6 +296,49 @@ describe("a create from a saved snapshot", () => {
 		expect(c.calls).toEqual([]);
 	});
 
+	it("is fetched on the next host when the one that fetched it has no room by then, and never for an old ref", async () => {
+		const { store, service, backend } = await setup();
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		const fetching = (host: FakeHost, full: boolean) => {
+			host.answer = ((answered) => (method: string) => {
+				if (method !== "disk.fetch") return answered?.(method);
+				setTimeout(() => {
+					// Another create took its room while it fetched.
+					if (full) host.freeMemoryMiB = 100;
+					reportsHolding(host);
+				}, 10);
+				return {};
+			})(host.answer);
+		};
+		const b = await addHost(store, service, "host_b", { freeMemoryMiB: 30_000 });
+		const c = await addHost(store, service, "host_c", { freeMemoryMiB: 10_000 });
+		fetching(b, true);
+		fetching(c, false);
+		const placed = await backend.create(
+			spec(["host_a", "host_b", "host_c"], SNAPSHOT, {
+				holders: [{ hostId: "host_a", memory: false }],
+				memory: false,
+				fetch: true,
+			}),
+		);
+		expect(placed.hostId).toBe("host_c");
+		expect(b.calls.map((call) => call.method)).toEqual(["disk.fetch"]);
+		expect(c.calls.map((call) => call.method)).toEqual(["disk.fetch", "sandbox.create"]);
+		// An old ref's host-local ID may name another snapshot on the host that would fetch it: never fetched.
+		const old = await backend
+			.create({
+				...spec(["host_a", "host_c"], "host_a/snap_0123456789abcdef", {
+					holders: [{ hostId: "host_a", memory: false }],
+					memory: false,
+					fetch: true,
+				}),
+				sandboxId: "sbx_old",
+			})
+			.catch((error: unknown) => error);
+		expect(isKantelError(old, "exhausted")).toBe(true);
+		expect(c.calls.filter((call) => call.method === "disk.fetch")).toHaveLength(1);
+	});
+
 	it("gives up on a fetch its host never reports", async () => {
 		const { store, service, backend } = await setup({ snapshotFetchTimeoutMs: 50 });
 		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
