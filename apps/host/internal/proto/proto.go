@@ -584,6 +584,12 @@ type Capacity struct {
 	// that kind it holds, [] for none; a kind left out says nothing of it (a host without it, or an inventory that
 	// couldn't be read in full), so the control plane forgets nothing of that kind.
 	Holdings map[string][]ObjectHolding `json:"holdings,omitempty"`
+	// Fetches are the disk store versions the host is fetching from its peers (FeatureDiskSync), of any kind: those
+	// under way or waiting their turn, and those that failed and are left to go on. [] when there are none; absent (nil,
+	// which omitzero leaves out) from a host that doesn't fetch, and from one from before it said. A version is listed
+	// here or as held, never both. The control plane records each as a copy being fetched, and lets one go that a report
+	// no longer lists, never on an absent one.
+	Fetches []FetchProgress `json:"fetches,omitzero"`
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.
 	Memory *MemoryReport `json:"memory,omitempty"`
@@ -1208,6 +1214,27 @@ type ObjectVersionHolding struct {
 	// Copy marks a saved snapshot's version (DiskKindSnapshot) the host fetched from a peer, not one it saved: Kantel
 	// has it deleted at once when it knows no such snapshot, where a host's own waits out a save that may be under way.
 	Copy bool `json:"copy,omitempty"`
+}
+
+// Fetch states (FetchProgress.State): waiting its turn behind the host's other fetches, under way, or stopped by an
+// error, its partial left to go on when it is asked for again.
+const (
+	FetchQueued  = "queued"
+	FetchRunning = "running"
+	FetchFailed  = "failed"
+)
+
+// FetchProgress is one version a host is fetching (Capacity.Fetches): its state; its blocks (every part's, for a kind
+// with parts), 0 until its map has been read; how many of them are in place; and the last error it met, while it is
+// tried again or has failed.
+type FetchProgress struct {
+	Kind     string `json:"kind"`
+	ObjectID string `json:"objectId"`
+	Version  string `json:"version"`
+	State    string `json:"state"`
+	Blocks   int64  `json:"blocks"`
+	InPlace  int64  `json:"inPlace"`
+	Error    string `json:"error,omitempty"`
 }
 
 // DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is
