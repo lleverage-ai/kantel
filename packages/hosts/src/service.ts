@@ -41,6 +41,7 @@ import {
 	HOST_FEATURES,
 	type HostBucketSource,
 	type HostCapacity,
+	type HostDiskFetchParams,
 	type HostDiskLimits,
 	type HostDiskLocateParams,
 	type HostDiskLocateResult,
@@ -50,6 +51,7 @@ import {
 	type HostEnvAnswer,
 	type HostExecResult,
 	type HostFacts,
+	type HostGrantKey,
 	type HostHello,
 	type HostImageChannel,
 	type HostIsolateRuntime,
@@ -547,18 +549,19 @@ export interface HostComputeLink {
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
 	/**
-	 * A host's sticky disk holdings, from each hello and heartbeat that says what it holds, received at `at`: the
-	 * catalogue's copies on that host are made what it reports (`ComputeService.recordStickyHoldings`). Called by the
-	 * gateway holding the connection alone.
+	 * A host's holdings, from each hello and heartbeat that says what it holds, received at `at`: the catalogue's copies
+	 * on that host are made what it reports (`ComputeService.recordHoldings`). Called by the gateway holding the
+	 * connection alone.
 	 */
-	recordStickyHoldings?(hostId: string, at: number, holdings: readonly HostStickyHolding[]): Promise<void>;
+	recordHoldings?(hostId: string, at: number, holdings: HostHoldingsReport): Promise<void>;
 	/** A host's `disk.locate` (`ComputeService.locateDisk`). */
 	locateDisk?(hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult>;
 	/**
-	 * The control plane's grant key's public key, for hosts' welcomes (`ComputeService.grantPublicKey`); undefined while
-	 * it has none. A failure is logged and the welcome goes without, so a host still connects.
+	 * The grant keys hosts accept fetch grants from, for their welcomes (`ComputeService.grantKeys`): the one that signs
+	 * first, then those rotated out. Undefined while there are none. A failure is logged and the welcome goes without, so
+	 * a host still connects (and keeps the keys it has).
 	 */
-	grantKey?(): Promise<string | undefined>;
+	grantKeys?(): Promise<readonly HostGrantKey[] | undefined>;
 	/**
 	 * A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`): only for a
 	 * sandbox whose placement is on that host. `mountsAt` is when the host set them (absent from an older host).
@@ -679,6 +682,15 @@ export interface SandboxPlacement {
 	readonly poolId?: string;
 }
 
+/**
+ * What a capacity report says a host holds: its sticky disks' versions (`HostCapacity.stickyDisks`) and its objects of
+ * other kinds (`HostCapacity.holdings`). Each absent says nothing.
+ */
+export interface HostHoldingsReport {
+	readonly stickyDisks?: readonly HostStickyHolding[];
+	readonly objects?: HostCapacity["holdings"];
+}
+
 /** A connected host's last capacity report's sticky disk holdings (`HostCapacity.stickyDisks`). */
 export interface HostStickyReport {
 	readonly hostId: string;
@@ -694,6 +706,11 @@ export interface HostsService {
 	stickyDelete(hostId: string, diskId: string, version?: string): Promise<void>;
 	/** What each host connected here last reported holding of sticky disks, and when that report arrived. */
 	stickyReports(): Promise<HostStickyReport[]>;
+	/**
+	 * Has a host fetch a disk version from its peers (`disk.fetch`, `HOST_FEATURES.diskSync`), resolving once the fetch
+	 * has started; `unavailable` if away.
+	 */
+	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<void>;
 	/** Registration spends join tokens from here from now on, not the registry's own. */
 	useJoinTokens(tokens: ExternalJoinTokens): void;
 	/**
@@ -749,6 +766,11 @@ export interface HostsService {
 	 * mesh is sent its peers (none, with sync off) and its welcome again, which brings its mesh up or takes it down.
 	 */
 	poolChanged(poolId: string): Promise<void>;
+	/**
+	 * The control plane's grant keys changed (`ComputeHooks.grantKeys`): every host, wherever it is connected, is sent its
+	 * welcome again, which carries them. A host missed is told on a heartbeat within `GRANT_KEYS_REFRESH_MS`.
+	 */
+	grantKeysChanged(): Promise<void>;
 	/**
 	 * Whether a sandbox is placed on the host, one being made there included (a lost one not), an upgrade under way
 	 * makes its microVM there, or an upgraded isolate there is still to be deleted.
@@ -864,6 +886,12 @@ export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
  * whose telling failed after it was written) is made good within this.
  */
 export const MESH_REFRESH_MS = 60 * 1000;
+
+/**
+ * How often a connected host has the grant keys it was last told checked against the control plane's, on a heartbeat:
+ * a rotation's telling missed, or one done on another replica's store write alone, is made good within this.
+ */
+export const GRANT_KEYS_REFRESH_MS = 60 * 1000;
 
 /** How often a connected host's snapshot list is read again for their sizes (`HOST_FEATURES.snapshotSizes`). */
 export const SNAPSHOT_SIZES_REFRESH_MS = 10 * 60 * 1000;
@@ -1022,6 +1050,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const baseWelcome = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
+		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		// Hosts keep no warm pools; an older one that keeps some makes no more on this (see `endLegacyPools`).
 		pools: {},
 		...(host.draining ? { draining: true } : {}),
@@ -1153,6 +1182,61 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		);
 	};
 
+	/**
+	 * The grant keys each host connected here was last told by a welcome, as their IDs in order ("" none), and when a key
+	 * it was told of begins signing, if one does: its welcome is due again then, with that key first.
+	 */
+	const grantKeysTold = new Map<string, { readonly ids: string; readonly due?: number }>();
+	/** When each host's grant keys were last checked (`reconcileGrantKeys`). */
+	const grantKeysCheckedAt = new Map<string, number>();
+	const grantKeyIds = (keys: readonly HostGrantKey[] | undefined) => (keys ?? []).map((key) => key.id).join(" ");
+	/** The grant keys as read for the checks of one `GRANT_KEYS_REFRESH_MS`: one read a pass for every host here. */
+	let grantKeysRead: { readonly at: number; readonly read: Promise<string> } | undefined;
+	const grantKeysNow = (read: () => Promise<readonly HostGrantKey[] | undefined>): Promise<string> => {
+		const at = clock.now();
+		if (grantKeysRead === undefined || at - grantKeysRead.at >= GRANT_KEYS_REFRESH_MS) {
+			const reading = read().then(grantKeyIds);
+			grantKeysRead = { at, read: reading };
+			reading.catch(() => {
+				if (grantKeysRead?.read === reading) grantKeysRead = undefined;
+			});
+		}
+		return grantKeysRead.read;
+	};
+
+	/**
+	 * Sends a host connected here its welcome again when the grant keys it was last told aren't the control plane's now,
+	 * every `GRANT_KEYS_REFRESH_MS` on its heartbeat, and on the first heartbeat after a key it was told of begins signing:
+	 * a rotation's telling that missed it, a published key now signing, a rotated-out key whose time is up, or a welcome
+	 * that went without them when they couldn't be read. A read that fails is tried on a later pass.
+	 */
+	const reconcileGrantKeys = (hostId: string) => {
+		const told = grantKeysTold.get(hostId);
+		const read = compute?.grantKeys;
+		if (told === undefined || read === undefined) return;
+		const at = clock.now();
+		// A key it was told of begins signing: checked on this heartbeat, with a read of its own, so a host that holds one
+		// key only (from before rotation) has the new one within seconds.
+		const due = told.due !== undefined && told.due <= at;
+		if (!due && at - (grantKeysCheckedAt.get(hostId) ?? Number.NEGATIVE_INFINITY) < GRANT_KEYS_REFRESH_MS) return;
+		grantKeysCheckedAt.set(hostId, at);
+		report(
+			(async () => {
+				if (!due && (await grantKeysNow(read)) === told.ids) return;
+				// Read again before telling: the pass's read may be from before a change this host was told already.
+				const latest = grantKeyIds(await read());
+				const known = grantKeysTold.get(hostId);
+				if (latest === known?.ids) {
+					// Nothing new yet (the control plane's clock behind this one's): the regular check follows it from here.
+					if (known?.due !== undefined) grantKeysTold.set(hostId, { ids: known.ids });
+					return;
+				}
+				const host = await store.getHost(hostId);
+				if (host !== undefined && !host.revoked) rewelcome(host);
+			})(),
+		);
+	};
+
 	/** Runs a telling of hosts on a change, logging rather than failing it: `reconcileMesh` makes good one that fails. */
 	const tellMesh = async (work: Promise<void>) => {
 		await work.catch((error: unknown) => {
@@ -1197,15 +1281,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
 		const base = baseWelcome(host);
 		const images = welcomePart(host, "images", compute?.images);
-		const grantKey = welcomePart(host, "grant key", compute?.grantKey);
+		const grantKeys = welcomePart(host, "grant keys", compute?.grantKeys);
 		// The mesh isn't left out when it can't be read, as the others are: a welcome without it takes the host's mesh down
 		// (`meshFor`).
 		const mesh = meshable(host) ? meshFor(host) : undefined;
-		if (images === undefined && grantKey === undefined && mesh === undefined) return base;
-		return Promise.all([images, grantKey, mesh]).then(([images, grantKey, mesh]) => ({
+		if (images === undefined && grantKeys === undefined && mesh === undefined) return base;
+		return Promise.all([images, grantKeys, mesh]).then(([images, grantKeys, mesh]) => ({
 			...base,
 			...(images === undefined ? {} : { images }),
-			...(grantKey === undefined ? {} : { grantKey }),
+			// The key that signs as `grantKey` too, for hosts from before rotation.
+			...(grantKeys?.[0] === undefined ? {} : { grantKey: grantKeys[0].publicKey, grantKeys }),
 			...(mesh === undefined ? {} : { mesh }),
 		}));
 	};
@@ -1331,17 +1416,22 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * Keeps a report's sticky disk holdings in the catalogue, received at `at`, in its own time and one at a time per
-	 * host. The catalogue takes only a host's newest report, on any gateway (`DiskHolderWrites`), so one held up here
-	 * never undoes a newer. Nothing from a report that doesn't say what it holds: absent isn't none.
+	 * Keeps a report's holdings (sticky disks' versions, and objects of other kinds) in the catalogue, received at `at`,
+	 * in its own time and one at a time per host. The catalogue takes only a host's newest report, on any gateway
+	 * (`DiskHolderWrites`), so one held up here never undoes a newer. Nothing from a report that doesn't say what it
+	 * holds: absent isn't none.
 	 */
 	const holdingsRecorded = new Map<string, Promise<void>>();
 	const recordHoldings = (hostId: string, at: number, capacity: HostCapacity) => {
 		const link = compute;
-		const holdings = capacity.stickyDisks;
-		if (link?.recordStickyHoldings === undefined || holdings === undefined) return;
+		const { stickyDisks, holdings: objects } = capacity;
+		if (link?.recordHoldings === undefined || (stickyDisks === undefined && objects === undefined)) return;
+		const held: HostHoldingsReport = {
+			...(stickyDisks === undefined ? {} : { stickyDisks }),
+			...(objects === undefined ? {} : { objects }),
+		};
 		const previous = holdingsRecorded.get(hostId) ?? Promise.resolve();
-		const next = previous.then(() => link.recordStickyHoldings?.(hostId, at, holdings));
+		const next = previous.then(() => link.recordHoldings?.(hostId, at, held));
 		const settled = next.catch(() => undefined);
 		holdingsRecorded.set(hostId, settled);
 		void settled.then(() => {
@@ -1480,6 +1570,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// What it is told of the mesh, for `reconcileMesh`: only a host that runs it. A welcome made at once is answered at
 		// once, with no await more than before.
 		const noted = (welcome: HostWelcome): HostWelcome => {
+			const due = welcome.grantKeys?.find((key) => key.from !== undefined)?.from;
+			grantKeysTold.set(hostId, { ids: grantKeyIds(welcome.grantKeys), ...(due === undefined ? {} : { due }) });
 			const mesh = welcome.mesh;
 			if (!runsMesh(latest)) meshTold.delete(hostId);
 			else if (mesh === undefined) meshTold.set(hostId, {});
@@ -1547,6 +1639,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			reserved.delete(hostId);
 			refreshImages(hostId);
 			reconcileMesh(hostId);
+			reconcileGrantKeys(hostId);
 			readSnapshots(hostId);
 			runCleanups(hostId);
 			report(
@@ -1687,6 +1780,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			poolsEnded.delete(hostId);
 			meshTold.delete(hostId);
 			meshCheckedAt.delete(hostId);
+			grantKeysTold.delete(hostId);
+			grantKeysCheckedAt.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {
@@ -2461,6 +2556,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.stickyDelete, { diskId, ...(version === undefined ? {} : { version }) });
 		},
+		async diskFetch(hostId, params) {
+			// Routed as any call to a host: on this replica's connection or another's.
+			await onHost(hostId, HostMethods.diskFetch, params);
+		},
 		async stickyReports() {
 			// Only hosts connected here: one away (or on another replica) is left to whoever holds it now.
 			const reports: HostStickyReport[] = [];
@@ -2673,6 +2772,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (runsMesh(host)) await tellMesh(remeshPool(host.poolId, hostId));
 			return view(next);
 		},
+		async grantKeysChanged() {
+			// Every host, as `poolChanged` asks each: the hub finds the replica holding it, and reads its welcome afresh there.
+			grantKeysRead = undefined;
+			for (const host of await store.listHosts()) {
+				if (!host.revoked) rewelcome(host);
+			}
+		},
 		async poolChanged(poolId) {
 			if (compute?.poolSync === undefined) return;
 			for (const member of await store.listHosts()) {
@@ -2771,6 +2877,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						...(shape === undefined ? {} : { shape }),
 						...(input.owner === undefined ? {} : { owner: input.owner }),
 						...(input.labels === undefined ? {} : { labels: input.labels }),
+						// A host holding each disk's head (the version asked for) is preferred.
+						...(sticky ? { stickyDisks: input.stickyDisks } : {}),
 					},
 					candidates,
 				);

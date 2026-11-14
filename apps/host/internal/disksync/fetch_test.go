@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,8 @@ type dirStore struct {
 	cloned func(dst string)
 	// cloneErr, when set, is what CloneNearest fails with.
 	cloneErr error
+	// files are the small files its versions have, each <version>.<name>.
+	files []string
 	// room is the most a fetch may reserve (0: no limit); reserved what is reserved now, and most the most at once.
 	mu             sync.Mutex
 	room           int64
@@ -73,6 +76,15 @@ func (s *dirStore) Open(kind, objectID, version string, _ bool) (*os.File, []byt
 	return f, raw, err
 }
 
+func (s *dirStore) ReadFile(kind, objectID, version, name string) ([]byte, error) {
+	if kind != "sticky" || objectID != "sdk_1" || !slices.Contains(s.files, name) {
+		return nil, fs.ErrNotExist
+	}
+	return os.ReadFile(filepath.Join(s.dir, version+"."+name))
+}
+
+func (s *dirStore) Files(Ref) []string { return s.files }
+
 func (s *dirStore) Held(r Ref) bool { _, err := os.Stat(s.img(r.Version)); return err == nil }
 
 func (s *dirStore) Partial(r Ref) (string, error) {
@@ -103,11 +115,16 @@ func (s *dirStore) CloneNearest(r Ref, dst string) (*blockmap.Map, error) {
 	return m, nil
 }
 
-func (s *dirStore) Publish(r Ref, partial *os.File, mapFile []byte) error {
+func (s *dirStore) Publish(r Ref, partial *os.File, mapFile []byte, files map[string][]byte) error {
 	path, _ := s.Partial(r)
 	mine, _ := partial.Stat()
 	if now, err := os.Stat(path); err != nil || !os.SameFile(mine, now) {
 		return errors.New("the partial was removed")
+	}
+	for name, raw := range files {
+		if err := os.WriteFile(filepath.Join(s.dir, r.Version+"."+name), raw, 0o600); err != nil {
+			return err
+		}
 	}
 	if err := os.WriteFile(s.mapPath(r.Version), mapFile, 0o600); err != nil {
 		return err
@@ -190,7 +207,7 @@ func newFixture(t *testing.T, holders int) *fixture {
 	for i := range holders {
 		h := &holderFixture{id: "host_a" + string(rune('1'+i)), addr: netip.AddrFrom4([4]byte{127, 0, 0, byte(i + 1)}), store: &dirStore{dir: t.TempDir()}}
 		h.srv = &Server{
-			Source: h.store, Self: func() string { return h.id }, Key: func() string { return f.key.public },
+			Source: h.store, Self: func() string { return h.id }, Keys: func() []proto.GrantKey { return one(f.key.public) },
 			PeerAt: func(a netip.Addr) (string, bool) { return "host_b", a.IsLoopback() }, Log: log, Port: port,
 		}
 		inner := h.srv.Handler()
@@ -790,5 +807,57 @@ func TestLinkSpeed(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(sys, "eth0", "speed"), []byte("-1\n"), 0o600)
 	if got := linkSpeed(routes, sys); got != 0 {
 		t.Fatalf("unknown speed: %d", got)
+	}
+}
+
+// A version's small files come whole from a holder that has them, once its blocks are in place, and are published
+// with it; one no holder has is left out.
+func TestFetchTakesTheVersionsSmallFiles(t *testing.T) {
+	f := newFixture(t, 2)
+	data := disk(t, 2, 0)
+	f.put("v2", data)
+	f.local.files = []string{"record", "other"}
+	// Only the second holder has the record; neither has the other.
+	f.holders[0].store.files = []string{"record", "other"}
+	f.holders[1].store.files = []string{"record", "other"}
+	if err := os.WriteFile(filepath.Join(f.holders[1].store.dir, "v2.record"), []byte(`{"imageDigest":"sha256:1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wait(t, f.fetcher().Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})); err != nil {
+		t.Fatal(err)
+	}
+	f.checkHeld("v2", data)
+	if raw, err := os.ReadFile(filepath.Join(f.local.dir, "v2.record")); err != nil || string(raw) != `{"imageDigest":"sha256:1"}` {
+		t.Fatalf("the record: %q, %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.local.dir, "v2.other")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a file no holder has: %v", err)
+	}
+}
+
+// Kinds passes each call to its kind's store, and a kind it hasn't is a version the host doesn't hold.
+func TestKindsDispatchByKind(t *testing.T) {
+	sticky := &dirStore{dir: t.TempDir()}
+	sticky.put(t, "v1", disk(t, 1, 0))
+	k := Kinds{"sticky": sticky}
+	if f, _, err := k.Open("sticky", "sdk_1", "v1", true); err != nil {
+		t.Fatal(err)
+	} else {
+		f.Close()
+	}
+	if _, _, err := k.Open("rootfs", "sdk_1", "v1", true); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a kind it hasn't: %v", err)
+	}
+	if !k.Held(Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v1"}) || k.Held(Ref{Kind: "rootfs", ObjectID: "sdk_1", Version: "v1"}) {
+		t.Fatal("held")
+	}
+	if _, err := k.Partial(Ref{Kind: "rootfs", ObjectID: "k", Version: "1"}); err == nil {
+		t.Fatal("a partial of a kind it hasn't")
+	}
+	if err := os.WriteFile(filepath.Join(sticky.dir, "v2.partial"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := k.Partials(); len(got) != 1 || got[0].Version != "v2" {
+		t.Fatalf("partials %v", got)
 	}
 }

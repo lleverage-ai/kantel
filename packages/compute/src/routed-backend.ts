@@ -358,6 +358,10 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async updatePool(poolId, change) {
 			await primary.updatePool?.(poolId, change);
 		},
+		// The grant keys are for the primary's hosts, which sync with each other.
+		async grantKeysChanged() {
+			await primary.grantKeysChanged?.();
+		},
 		...(primary.hostHolds === undefined && fallback.hostHolds === undefined
 			? {}
 			: {
@@ -369,6 +373,7 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		// Hosts are the primary's (as for a revoke): the routed backend updates them only where the primary does.
 		...(primary.updateHostAgent === undefined ? {} : { updateHostAgent: primary.updateHostAgent.bind(primary) }),
 		...(primary.checkHostUpdates === undefined ? {} : { checkHostUpdates: primary.checkHostUpdates.bind(primary) }),
+		...(primary.fetchDisk === undefined ? {} : { fetchDisk: primary.fetchDisk.bind(primary) }),
 		// On the backend whose host it is; one without it can't say (`undefined`), as a host that doesn't measure.
 		...(primary.snapshotSizes === undefined && fallback.snapshotSizes === undefined
 			? {}

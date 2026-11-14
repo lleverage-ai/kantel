@@ -404,6 +404,7 @@ describe("Pool meshes", () => {
 		const w = await join("web", meshOf(3));
 		await vi.waitFor(() => expect(lastPeers(a)).toEqual([b.hostId]));
 		const before = lastWelcome(b)?.mesh?.address;
+		expect(lastWelcome(b)?.poolId).toBe(ci.id);
 		await root.updateHost(b.hostId, { draining: true });
 		await root.updateHost(b.hostId, { pool: "web" });
 		// The old pool's hosts no longer list it, the new pool's do, and it is welcomed with its place in the new pool.
@@ -411,6 +412,8 @@ describe("Pool meshes", () => {
 		expect(lastPeers(w)).toEqual([b.hostId]);
 		const webPrefix = await meshPrefix(web.id);
 		await vi.waitFor(() => expect(lastWelcome(b)?.mesh?.prefix).toBe(webPrefix));
+		// Its welcome names its new pool, which the root filesystems it makes from now on are stamped with.
+		expect(lastWelcome(b)?.poolId).toBe(web.id);
 		expect(lastWelcome(b)?.mesh?.address).not.toBe(before);
 		expect(lastWelcome(b)?.mesh?.peers.map((peer) => peer.hostId)).toEqual([w.hostId]);
 		expect(await meshPrefix(ci.id)).not.toBe(await meshPrefix(web.id));

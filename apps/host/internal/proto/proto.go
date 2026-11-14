@@ -233,6 +233,19 @@ type MeshPeerHealth struct {
 // starts on its newest and fetches that one in the background. It needs FeatureMesh and FeatureStickyDisks.
 const FeatureDiskSync = "disk-sync"
 
+// FeatureRootfsSync: templates' root filesystems are disk store objects on the host (docs/design/disk-store.md, "Phase
+// 3 notes"), kind DiskKindRootfs, each its key (TemplateBoot.RootfsKey) in one version, "1": the host makes each one's
+// block map, lists those with a map in Capacity.Holdings, serves them to its mesh peers with their records, and takes
+// disk.fetch for them. It comes with FeatureDiskSync, on the microVM tier.
+const FeatureRootfsSync = "rootfs-sync"
+
+// Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, and a template's
+// root filesystem.
+const (
+	DiskKindSticky = "sticky"
+	DiskKindRootfs = "rootfs"
+)
+
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
@@ -468,6 +481,10 @@ type Hello struct {
 type Welcome struct {
 	HostID           string `json:"hostId"`
 	HeartbeatSeconds int    `json:"heartbeatSeconds"`
+	// PoolID is the pool the host is in, as the control plane has it: the host stamps the templates' root filesystems it
+	// makes or fetches with it (ObjectVersionHolding.Pool). Absent from a control plane from before it said, or for a
+	// host in no pool yet.
+	PoolID string `json:"poolId,omitempty"`
 	// DesiredVersion, when set and different from the host's, is the version Kantel wants it on; a host with
 	// automatic updates on fetches it from UpdateURL (with {version}, {os} and {arch} filled in).
 	DesiredVersion string `json:"desiredVersion,omitempty"`
@@ -482,11 +499,30 @@ type Welcome struct {
 	// first welcome decides it; a later one doesn't change it.
 	UsageAcks bool `json:"usageAcks,omitempty"`
 	// GrantKey is the control plane's Ed25519 public key for fetch grants, its 32 raw bytes in base64url: a host serves
-	// a peer's fetch only with a grant it signed (DiskLocateResult.Grant). Empty while the control plane has none.
+	// a peer's fetch only with a grant it signed (DiskLocateResult.Grant). Empty while the control plane has none. It is
+	// the first of GrantKeys, for hosts from before rotation.
 	GrantKey string `json:"grantKey,omitempty"`
+	// GrantKeys are every grant key a host accepts grants from now: the one that signs first, then one a rotation
+	// published (signing from its From), then those rotated out, each until its Until. A host serves a grant any of them
+	// signed (by the key its kid names) and keeps the list until a welcome brings another. Empty from a control plane
+	// from before rotation, which sends GrantKey alone.
+	GrantKeys []GrantKey `json:"grantKeys,omitempty"`
 	// Mesh is the host's place in its pool's mesh (FeatureMesh), sent only to a host in a pool with sync on. A welcome
 	// without it takes the host's mesh device down.
 	Mesh *WelcomeMesh `json:"mesh,omitempty"`
+}
+
+// GrantKey is a grant key a host accepts fetch grants from (Welcome.GrantKeys).
+type GrantKey struct {
+	// ID is the key's ID, which a grant names as its kid.
+	ID string `json:"id"`
+	// PublicKey is its 32 raw bytes, in base64url.
+	PublicKey string `json:"publicKey"`
+	// Until is when a key rotated out stops being accepted, in milliseconds since the epoch; 0 for the others.
+	Until int64 `json:"until,omitempty"`
+	// From is when a key a rotation published begins signing, in milliseconds since the epoch; 0 for the others. A host
+	// accepts it already.
+	From int64 `json:"from,omitempty"`
 }
 
 // Capacity is what is free now.
@@ -511,6 +547,10 @@ type Capacity struct {
 	// inventory couldn't be read in full. The control plane forgets versions missing from a report, never on an absent
 	// one, so the two must stay distinct.
 	StickyDisks []StickyDiskHolding `json:"stickyDisks,omitzero"`
+	// Holdings are the disk store objects of other kinds the host holds, by kind (DiskKindRootfs, FeatureRootfsSync):
+	// a kind's list is every object of that kind it holds, [] for none; a kind left out says nothing of it (a host without
+	// it, or an inventory that couldn't be read in full), so the control plane forgets nothing of that kind.
+	Holdings map[string][]ObjectHolding `json:"holdings,omitempty"`
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.
 	Memory *MemoryReport `json:"memory,omitempty"`
@@ -1112,8 +1152,25 @@ type StickyVersionHolding struct {
 	MapDigest      string `json:"mapDigest,omitempty"`
 }
 
-// DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants. Kind is
-// "sticky" for now.
+// ObjectHolding is the versions of one disk store object a host holds (Capacity.Holdings).
+type ObjectHolding struct {
+	ObjectID string                 `json:"objectId"`
+	Versions []ObjectVersionHolding `json:"versions"`
+}
+
+// ObjectVersionHolding is one version a host holds, with its block map's digest (a version is listed only once it has
+// one), the bytes it takes on the host's disk, and the pool the host made it in (built it, or began fetching it), as
+// Welcome.PoolID said then: a copy made in one pool is offered only there, wherever its host moves. Absent from a copy
+// made before the host kept it, or while no welcome had named a pool.
+type ObjectVersionHolding struct {
+	Version        string `json:"version"`
+	MapDigest      string `json:"mapDigest"`
+	AllocatedBytes int64  `json:"allocatedBytes"`
+	Pool           string `json:"pool,omitempty"`
+}
+
+// DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is
+// DiskKindSticky, or DiskKindRootfs (FeatureRootfsSync).
 type DiskLocateParams struct {
 	Kind     string `json:"kind"`
 	ObjectID string `json:"objectId"`
@@ -1122,9 +1179,10 @@ type DiskLocateParams struct {
 
 // DiskLocateResult is where the version is: its block map digest, once Kantel has it; the online hosts in the asker's
 // pool that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them. The grant
-// is "<payload>.<signature>": the payload is the base64url JSON of {kind, objectId, version, accountId, from, to, exp}
-// (from the holders' host IDs, to the asker's, exp milliseconds since the epoch), and the signature Ed25519 over the
-// payload's ASCII text by Welcome.GrantKey, in base64url.
+// is "<payload>.<signature>": the payload is the base64url JSON of {kind, objectId, version, accountId, from, to, exp,
+// kid} (from the holders' host IDs, to the asker's, exp milliseconds since the epoch, kid the ID of the key that signed
+// it, one of Welcome.GrantKeys), and the signature Ed25519 over the payload's ASCII text by that key (Welcome.GrantKey,
+// the one that signs now), in base64url.
 type DiskLocateResult struct {
 	MapDigest string       `json:"mapDigest,omitempty"`
 	Holders   []DiskHolder `json:"holders"`

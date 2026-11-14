@@ -1,9 +1,10 @@
 // The disk store over the host link (docs/design/disk-store.md, 2c): a host's welcome carries the control plane's grant
-// key, its reports' sticky disk holdings reach the catalogue, and its `disk.locate` is answered for its own connection.
+// keys (told again when they change), its reports' sticky disk holdings reach the catalogue, and its `disk.locate` is answered for its own connection.
 import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HostGrantKey } from "../src/protocol.ts";
 import type { HostComputeLink } from "../src/service.ts";
-import { createHostsService } from "../src/service.ts";
+import { createHostsService, GRANT_KEYS_REFRESH_MS } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost } from "./fake-host.ts";
 
@@ -43,27 +44,123 @@ async function setup(link: Partial<HostComputeLink>) {
 }
 
 describe("the disk store on the host link", () => {
-	it("welcomes a host with the grant key, and without one when there is none or it can't be read", async () => {
-		const { host } = await setup({ grantKey: async () => "A".repeat(43) });
-		expect(host.sent.find((message) => message.type === "welcome")?.welcome?.grantKey).toBe("A".repeat(43));
-		for (const grantKey of [async () => undefined, async () => Promise.reject(new Error("no secrets key"))]) {
-			const { host: other } = await setup({ grantKey });
+	it("welcomes a host with the grant keys, and without them when there are none or they can't be read", async () => {
+		const keys = [
+			{ id: "key_new", publicKey: "A".repeat(43) },
+			{ id: "key_old", publicKey: "B".repeat(43), until: Date.UTC(2026, 10, 14) },
+		];
+		const { host } = await setup({ grantKeys: async () => keys });
+		const welcome = host.sent.find((message) => message.type === "welcome")?.welcome;
+		// The key that signs as `grantKey` too, for hosts from before rotation.
+		expect(welcome?.grantKey).toBe("A".repeat(43));
+		expect(welcome?.grantKeys).toEqual(keys);
+		for (const grantKeys of [async () => undefined, async () => Promise.reject(new Error("no secrets key"))]) {
+			const { host: other } = await setup({ grantKeys });
 			const welcome = other.sent.find((message) => message.type === "welcome")?.welcome;
 			expect(welcome).toBeDefined();
 			expect(welcome?.grantKey).toBeUndefined();
+			expect(welcome?.grantKeys).toBeUndefined();
 		}
 	});
 
+	it("sends connected hosts their welcome again when the grant keys change, and makes good a telling missed", async () => {
+		let keys: HostGrantKey[] = [{ id: "key_1", publicKey: "A".repeat(43) }];
+		const { service, host, clock } = await setup({ grantKeys: async () => keys });
+		const welcomes = () =>
+			host.sent.filter((message) => message.type === "welcome").map((message) => message.welcome?.grantKeys);
+		const heartbeat = () => host.send({ type: "heartbeat", heartbeat: { capacity } });
+		expect(welcomes()).toEqual([keys]);
+		// A rotation: told at once.
+		keys = [
+			{ id: "key_2", publicKey: "B".repeat(43) },
+			{ id: "key_1", publicKey: "A".repeat(43), until: clock.at + 16 * 60_000 },
+		];
+		await service.grantKeysChanged();
+		await vi.waitFor(() => expect(welcomes()).toEqual([expect.anything(), keys]));
+		// Unchanged: a heartbeat sends nothing.
+		heartbeat();
+		clock.at += GRANT_KEYS_REFRESH_MS;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toHaveLength(2);
+		// A change whose telling missed the host (another replica's, or the retired key's time up): on a later heartbeat.
+		keys = [{ id: "key_2", publicKey: "B".repeat(43) }];
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toHaveLength(2);
+		clock.at += GRANT_KEYS_REFRESH_MS;
+		heartbeat();
+		await vi.waitFor(() => expect(welcomes()).toEqual([expect.anything(), expect.anything(), keys]));
+	});
+
+	it("sends a host its welcome again on the first heartbeat once a key it was told of begins signing", async () => {
+		const at = Date.UTC(2026, 10, 13);
+		let keys: HostGrantKey[] = [
+			{ id: "key_1", publicKey: "A".repeat(43) },
+			{ id: "key_2", publicKey: "B".repeat(43), from: at + 3 * 60_000 },
+		];
+		const { host, clock } = await setup({ grantKeys: async () => keys });
+		const welcomes = () =>
+			host.sent.filter((message) => message.type === "welcome").map((message) => message.welcome?.grantKey);
+		const heartbeat = () => host.send({ type: "heartbeat", heartbeat: { capacity } });
+		// Checked half a minute before its time: nothing to tell yet.
+		clock.at = at + 3 * 60_000 - 30_000;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toEqual(["A".repeat(43)]);
+		// Its time comes within the minute between checks: on the next heartbeat, a host that holds only `grantKey` (one
+		// from before rotation) is given the key that signs now.
+		keys = [
+			{ id: "key_2", publicKey: "B".repeat(43) },
+			{ id: "key_1", publicKey: "A".repeat(43), until: at + 19 * 60_000 },
+		];
+		clock.at = at + 3 * 60_000;
+		heartbeat();
+		await vi.waitFor(() => expect(welcomes()).toEqual(["A".repeat(43), "B".repeat(43)]));
+		// Then nothing more until something changes.
+		heartbeat();
+		clock.at += GRANT_KEYS_REFRESH_MS;
+		heartbeat();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(welcomes()).toHaveLength(2);
+	});
+
 	it("passes each report's sticky disk holdings on, and none from a report that doesn't say", async () => {
-		const recordStickyHoldings = vi.fn(async () => undefined);
-		const { host, hostId } = await setup({ recordStickyHoldings });
+		const recordHoldings = vi.fn(async () => undefined);
+		const { host, hostId } = await setup({ recordHoldings });
 		const holdings = [{ diskId: "sdk_1", versions: [{ version: "sdv_1", allocatedBytes: 10, at: 1 }] }];
 		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: holdings } } });
-		await vi.waitFor(() => expect(recordStickyHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), holdings));
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), { stickyDisks: holdings }),
+		);
 		host.send({ type: "heartbeat", heartbeat: { capacity } });
 		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, stickyDisks: [] } } });
-		await vi.waitFor(() => expect(recordStickyHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), []));
-		expect(recordStickyHoldings).toHaveBeenCalledTimes(2);
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { stickyDisks: [] }),
+		);
+		expect(recordHoldings).toHaveBeenCalledTimes(2);
+	});
+
+	it("passes each report's root filesystems on, leaving out a kind it doesn't know or that isn't shaped as holdings", async () => {
+		const recordHoldings = vi.fn(async () => undefined);
+		const { host, hostId } = await setup({ recordHoldings });
+		const digest = `sha256:${"a".repeat(64)}`;
+		const rootfs = [{ objectId: "b".repeat(64), versions: [{ version: "1", mapDigest: digest, allocatedBytes: 10 }] }];
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { ...capacity, holdings: { rootfs, template: [{ objectId: "t", versions: [] }] } } },
+		});
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenCalledWith(hostId, expect.any(Number), { objects: { rootfs } }),
+		);
+		// A version without a map digest: the kind says nothing, so nothing is passed on.
+		const unmapped = [{ objectId: "b".repeat(64), versions: [{ version: "1", allocatedBytes: 10 }] }];
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { rootfs: unmapped } } } });
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, holdings: { rootfs: [] } } } });
+		await vi.waitFor(() =>
+			expect(recordHoldings).toHaveBeenLastCalledWith(hostId, expect.any(Number), { objects: { rootfs: [] } }),
+		);
+		expect(recordHoldings).toHaveBeenCalledTimes(2);
 	});
 
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {

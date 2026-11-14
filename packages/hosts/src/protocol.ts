@@ -383,6 +383,13 @@ export const HOST_FEATURES = {
 	 * starts on its newest and fetches that one in the background. Reported with `mesh` and `stickyDisks`.
 	 */
 	diskSync: "disk-sync",
+	/**
+	 * Templates' root filesystems are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"): kind
+	 * `rootfs`, each its key (`images/templates/<key>.ext4`, `HostTemplateBuildResult.rootfsKey`) in one version, `1`.
+	 * The host makes each one's block map, lists those with a map in `HostCapacity.holdings.rootfs`, serves them to its
+	 * mesh peers with their records, and takes `disk.fetch` for them. Reported with `diskSync`.
+	 */
+	rootfsSync: "rootfs-sync",
 } as const;
 
 /**
@@ -393,6 +400,10 @@ export const GUEST_FEATURES = {
 	/** It extracts with `realTarget` into a real directory only, refusing a link at the target or above it. */
 	extractRealTarget: "extract-real-target",
 } as const;
+
+/** The kinds of disk store object hosts report in `HostCapacity.holdings`: templates' root filesystems. */
+export const HOST_OBJECT_KINDS = ["rootfs"] as const;
+export type HostObjectKind = (typeof HOST_OBJECT_KINDS)[number];
 
 /** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
 export interface HostEnvAnswer {
@@ -639,6 +650,12 @@ export interface HostCapacity {
 	 */
 	readonly stickyDisks?: readonly HostStickyHolding[];
 	/**
+	 * The disk store objects of other kinds it holds (`HOST_FEATURES.rootfsSync`), by kind: a kind's list is every object
+	 * of that kind it holds, [] for none. A kind left out says nothing of it (a host without it, or one whose inventory
+	 * couldn't be read in full), so nothing of that kind is forgotten on it.
+	 */
+	readonly holdings?: { readonly [kind in HostObjectKind]?: readonly HostObjectHolding[] };
+	/**
 	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up: the host's page shows it
 	 * (`Host.mesh`). Absent from a host without the feature, or whose mesh is down (its pool's sync off).
 	 */
@@ -706,9 +723,28 @@ export interface HostStickyHolding {
 	readonly versions: readonly HostStickyVersionHolding[];
 }
 
+/** The versions of one disk store object a host holds (`HostCapacity.holdings`). */
+export interface HostObjectHolding {
+	readonly objectId: string;
+	readonly versions: readonly HostObjectVersionHolding[];
+}
+
+/**
+ * One version a host holds: its block map's digest (it is listed only once it has one), the bytes it takes, and the pool
+ * the host made it in (built it, or began fetching it), as `HostWelcome.poolId` said then: a copy made in one pool is
+ * offered only there, wherever its host moves. `pool` is absent from a copy made before the host kept it, or while no
+ * welcome had named a pool.
+ */
+export interface HostObjectVersionHolding {
+	readonly version: string;
+	readonly mapDigest: string;
+	readonly allocatedBytes: number;
+	readonly pool?: string;
+}
+
 /** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
 export interface HostDiskLocateParams {
-	/** `sticky` for now; `rootfs`, `template`, `snapshot` and `sandbox` later. */
+	/** `sticky`, or `rootfs` (`HOST_FEATURES.rootfsSync`); `template`, `snapshot` and `sandbox` later. */
 	readonly kind: string;
 	readonly objectId: string;
 	readonly version: string;
@@ -718,9 +754,10 @@ export interface HostDiskLocateParams {
  * The answer to `disk.locate`: the version's block map digest, once Kantel has it; the online hosts in the asker's pool
  * that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them.
  *
- * The grant is `<payload>.<signature>`: the payload is the JSON of `{ kind, objectId, version, accountId, from, to, exp }`
- * (`from` the holders' host IDs, `to` the asker's, `exp` milliseconds since the epoch, 15 minutes on) in base64url, and
- * the signature Ed25519 over the payload's ASCII text by the key `HostWelcome.grantKey` names, in base64url.
+ * The grant is `<payload>.<signature>`: the payload is the JSON of `{ kind, objectId, version, accountId, from, to, exp, kid }`
+ * (`from` the holders' host IDs, `to` the asker's, `exp` milliseconds since the epoch, 15 minutes on, `kid` the ID of
+ * the key that signed it, one of `HostWelcome.grantKeys`) in base64url, and the signature Ed25519 over the payload's
+ * ASCII text by that key (`HostWelcome.grantKey`, the one that signs now), in base64url.
  */
 export interface HostDiskLocateResult {
 	readonly mapDigest?: string;
@@ -1150,6 +1187,11 @@ export interface HostHello {
 export interface HostWelcome {
 	readonly hostId: string;
 	readonly heartbeatSeconds: number;
+	/**
+	 * The pool the host is in (`HostRecord.poolId`): it stamps the templates' root filesystems it makes or fetches with it
+	 * (`HostObjectVersionHolding.pool`). Absent for a host in no pool yet.
+	 */
+	readonly poolId?: string;
 	readonly desiredVersion?: string;
 	/** With `{version}`, `{os}` and `{arch}` for the host to fill in. */
 	readonly updateUrl?: string;
@@ -1179,9 +1221,32 @@ export interface HostWelcome {
 	/**
 	 * The control plane's Ed25519 public key for fetch grants (docs/design/disk-store.md, 2c), its 32 raw bytes in
 	 * base64url: a host serves a peer's fetch only with a grant this key signed (`HostDiskLocateResult.grant`). Absent
-	 * while the control plane has no grant key (sticky disks off, or no secrets key to keep one).
+	 * while the control plane has no grant key (sticky disks off, or no secrets key to keep one). The key that signs now,
+	 * the first of `grantKeys`, for hosts from before rotation.
 	 */
 	readonly grantKey?: string;
+	/**
+	 * Every grant key a host accepts grants from now: the one that signs first, then one a rotation published (signing
+	 * from its `from`), then those rotated out, each until its `until`. A host that reads it serves a grant signed by any
+	 * of them (by the key its `kid` names) and keeps the list until a welcome brings another; one from before rotation
+	 * reads only `grantKey`. Absent with `grantKey`.
+	 */
+	readonly grantKeys?: readonly HostGrantKey[];
+}
+
+/** A grant key a host accepts fetch grants from (`HostWelcome.grantKeys`). */
+export interface HostGrantKey {
+	/** Its ID, which a grant names as its `kid`. */
+	readonly id: string;
+	/** Its 32 raw bytes, in base64url. */
+	readonly publicKey: string;
+	/** For a key rotated out, when it stops being accepted, in milliseconds since the epoch. */
+	readonly until?: number;
+	/**
+	 * For a key a rotation published, when it begins signing, in milliseconds since the epoch: a host accepts it already,
+	 * and is sent its welcome again then, with it first.
+	 */
+	readonly from?: number;
 }
 
 /**

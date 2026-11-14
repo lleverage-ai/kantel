@@ -6,6 +6,7 @@ import {
 	customSizeName,
 	diskFor,
 	freeMemoryOn,
+	holdsHeads,
 	isRefusal,
 	place,
 	shapeOn,
@@ -240,6 +241,61 @@ describe("place", () => {
 		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("theirs");
 		const other = place({ tier: "isolate", size: "isolate", owner: "acct_2" }, [roomy, theirs]);
 		expect(isRefusal(other) ? other.reason : other.host.id).toBe("roomy");
+	});
+
+	it("prefers a host holding the head of every sticky disk, and between equals the least full", () => {
+		/** A host with `free` MiB free that last reported holding these versions of sticky disks. */
+		const holding = (id: string, free: number, held: { readonly [diskId: string]: readonly string[] }) =>
+			candidate(id, {
+				capacity: {
+					...capacity(free).capacity,
+					stickyDisks: Object.entries(held).map(([diskId, versions]) => ({
+						diskId,
+						versions: versions.map((version) => ({ version, allocatedBytes: 1, at: 1 })),
+					})),
+				},
+			});
+		const stickyDisks = [
+			{ diskId: "sdk_cache", path: "/cache", sizeGiB: 10, version: "sdv_2" },
+			{ diskId: "sdk_docker", path: "/docker", sizeGiB: 10, version: "sdv_9" },
+		];
+		const request = { tier: "microvm", size: "default", stickyDisks } as const;
+		const pick = (...candidates: Candidate[]) => {
+			const chosen = place(request, candidates);
+			return isRefusal(chosen) ? chosen.reason : chosen.host.id;
+		};
+		const warm = holding("warm", 4_000, { sdk_cache: ["sdv_1", "sdv_2"], sdk_docker: ["sdv_9"] });
+		// Emptier, but holding an older version of one disk, or one head of two, or nothing it says.
+		const older = holding("older", 30_000, { sdk_cache: ["sdv_1"], sdk_docker: ["sdv_9"] });
+		const half = holding("half", 30_000, { sdk_cache: ["sdv_2"] });
+		const silent = candidate("silent", capacity(30_000));
+		expect(pick(older, half, silent, warm)).toBe("warm");
+		// Between hosts that both hold the heads, or that both don't, projected fullness still decides.
+		const roomier = holding("roomier", 20_000, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_8", "sdv_9"] });
+		expect(pick(warm, roomier, older)).toBe("roomier");
+		expect(pick(holding("fuller", 8_000, {}), older)).toBe("older");
+		// It is a preference only: a host without the heads takes it when the one with them is full.
+		expect(pick(holding("full", 1_000, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_9"] }), older)).toBe("older");
+		// Without sticky disks, or with ones that have no head yet, nothing is preferred for them.
+		const plain = place({ tier: "microvm", size: "default" }, [warm, older]);
+		expect(isRefusal(plain) ? plain.reason : plain.host.id).toBe("older");
+		const fresh = place({ ...request, stickyDisks: [{ diskId: "sdk_new" }] }, [warm, older]);
+		expect(isRefusal(fresh) ? fresh.reason : fresh.host.id).toBe("older");
+	});
+
+	it("says a host holds the heads only of what it reports, every disk with a head", () => {
+		const host = candidate("h", {
+			capacity: {
+				...capacity(4_000).capacity,
+				stickyDisks: [{ diskId: "sdk_a", versions: [{ version: "sdv_1", allocatedBytes: 1, at: 1 }] }],
+			},
+		}).host;
+		expect(holdsHeads(host, undefined)).toBe(true);
+		expect(holdsHeads(host, [{ diskId: "sdk_a", version: "sdv_1" }, { diskId: "sdk_b" }])).toBe(true);
+		expect(holdsHeads(host, [{ diskId: "sdk_a", version: "sdv_2" }])).toBe(false);
+		expect(holdsHeads(host, [{ diskId: "sdk_b", version: "sdv_1" }])).toBe(false);
+		// A host that doesn't say what it holds (one without sticky disks, or a report it couldn't read in full).
+		expect(holdsHeads(candidate("quiet").host, [{ diskId: "sdk_a", version: "sdv_1" }])).toBe(false);
 	});
 
 	it("places a named size and a shape alike: the most free memory wins", () => {

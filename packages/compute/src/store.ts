@@ -633,6 +633,12 @@ export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
 	 * shut from the check to the move.
 	 */
 	readonly drainEpoch?: number;
+	/**
+	 * When it was last moved to another pool (`moveHost`); absent for a host never moved. A template's root filesystem it
+	 * reports with no pool stamp (made before hosts stamped them) is its pool's only while this is absent
+	 * (`DiskHolders.recordHoldings`).
+	 */
+	readonly poolSince?: number;
 };
 
 export interface StoredJoinToken {
@@ -760,12 +766,26 @@ export interface StoredSetting {
 	/**
 	 * `grantKey`: the control plane's Ed25519 key for fetch grants (`grants.ts`), made by the first gateway that needs it
 	 * and claimed (`insert`), so every gateway over one database signs with the same key. `value` is its public key, and
-	 * `sealed` its private key, sealed with the deployment's secrets key.
+	 * `sealed` its private key, sealed with the deployment's secrets key. A rotation writes `next` in one conditional
+	 * write (`update`); once `next.from` has passed it is the key that signs and the one before it is retired, whether or
+	 * not a later write has moved them into `value` and `retired` yet (`disk-holders.ts`).
 	 */
 	readonly id: "publicUrl" | "bundleStore" | "grantKey";
 	readonly value: string;
 	/** A value kept sealed beside `value`: the grant key's private key. */
 	readonly sealed?: SealedValue;
+	/** When the grant key in `value` began signing (absent: `updatedAt`). Only `grantKey` has it. */
+	readonly since?: number;
+	/**
+	 * The grant key a rotation published, which signs from `from` (milliseconds since the epoch): its public key and its
+	 * private key, sealed as `sealed` is. Only `grantKey` has it.
+	 */
+	readonly next?: { readonly publicKey: string; readonly sealed: SealedValue; readonly from: number };
+	/**
+	 * The grant keys rotated out, by their public keys, each still accepted until `until` (milliseconds since the epoch)
+	 * so grants signed with it just before stay good for their lifetime. Only `grantKey` has them.
+	 */
+	readonly retired?: readonly { readonly publicKey: string; readonly until: number }[];
 	readonly updatedAt: number;
 	readonly updatedBy: string;
 }
@@ -962,6 +982,11 @@ export interface StoredStickyDisk {
 	 */
 	readonly poolId?: string;
 	/**
+	 * The hosts a sandbox with it started on lately, each with when one last did (to within `STICKY_RAN_EVERY_MS`): those
+	 * within `STICKY_PREFETCH_MS` are sent each new head (docs/design/disk-store.md, 2d). Older entries go as one is written.
+	 */
+	readonly ranOn?: { readonly [hostId: string]: number };
+	/**
 	 * When it was deleted: from then it is gone to every caller and its name is free, and the record is kept so passes
 	 * delete its versions from hosts that were away (`STICKY_TOMBSTONE_MS`).
 	 */
@@ -1013,7 +1038,7 @@ export interface StoredStickyDiskVersion {
 export interface StoredDiskHolder {
 	readonly id: string;
 	readonly kind: DiskKind;
-	/** The object: a sticky disk's ID. */
+	/** The object: a sticky disk's ID, or a template root filesystem's key. */
 	readonly objectId: string;
 	readonly version: string;
 	readonly hostId: string;
@@ -1024,6 +1049,16 @@ export interface StoredDiskHolder {
 	readonly state: "fetching" | "held" | "deleting";
 	/** When it reached `state`. */
 	readonly since: number;
+	/**
+	 * The digest of its block map as its host reported it, for a kind whose versions have no record of their own (a
+	 * template's root filesystem); absent for a sticky disk's, whose version has it.
+	 */
+	readonly mapDigest?: string;
+	/**
+	 * The pool the copy was made in, as its host stamped it, for a kind with no record of its own (a template's root
+	 * filesystem): it is offered only there, so a host moved to another pool doesn't take the old pool's copies with it.
+	 */
+	readonly poolId?: string;
 }
 
 export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>
@@ -1039,8 +1074,8 @@ export interface StoredDiskReport {
  * Reconciling a host's holders from its reports, fenced so the newest report wins on every gateway:
  *
  * - `claim` makes a report the host's newest (`StoredDiskReport`), unless one as new or newer has been claimed.
- * - `reconcile` deletes the holders `release` names, each only as it was read, and inserts those `hold` names, each only
- *   while its sticky version's record is there; all of it only while `at` is still the host's newest report. So a report
+ * - `reconcile` deletes the holders `release` names, each only as it was read, and inserts those `hold` names, a sticky
+ *   disk's each only while its version's record is there; all of it only while `at` is still the host's newest report. So a report
  *   held up behind a newer one, here or on another gateway, changes nothing. Recording a holder changes its version's
  *   record (in SQL, its row's version), so a `StickyDiskWrites.forget` that read the holders before it reads them again.
  */
@@ -1096,6 +1131,32 @@ export interface StickyDiskWrites {
 		ids: readonly string[],
 		poolId: string,
 	): Promise<{ readonly diskId: string; readonly poolId: string } | undefined>;
+	/**
+	 * Notes that a sandbox with the live disk `id` started on `hostId` at `at` (`stickyRunNoted`), over the disk as it is
+	 * now, so a commit or tombstone meanwhile is kept. Never fenced by its account: a note neither adds a disk nor takes
+	 * one out, so it can't remove a disk or tombstone while the account closes.
+	 */
+	noteRun(id: string, hostId: string, at: number): Promise<void>;
+}
+
+/** How lately a host must have started a sandbox with a sticky disk to be sent each new head of it. */
+export const STICKY_PREFETCH_MS = 7 * 24 * 3_600_000;
+/**
+ * How often a host's start of a sandbox with a sticky disk is written down (`StoredStickyDisk.ranOn`): at most once an
+ * hour for each host and disk, so a burst of jobs costs a read each, not a write.
+ */
+export const STICKY_RAN_EVERY_MS = 3_600_000;
+
+/**
+ * `disk` with `hostId`'s start at `at` in its `ranOn`, entries past `STICKY_PREFETCH_MS` dropped; undefined, to write
+ * nothing, for a tombstoned disk or a host noted within `STICKY_RAN_EVERY_MS`.
+ */
+export function stickyRunNoted(disk: StoredStickyDisk, hostId: string, at: number): StoredStickyDisk | undefined {
+	if (disk.deletedAt !== undefined || (disk.ranOn?.[hostId] ?? Number.NEGATIVE_INFINITY) > at - STICKY_RAN_EVERY_MS) {
+		return undefined;
+	}
+	const recent = Object.entries(disk.ranOn ?? {}).filter(([, when]) => when > at - STICKY_PREFETCH_MS);
+	return { ...disk, ranOn: { ...Object.fromEntries(recent), [hostId]: at } };
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -1248,6 +1309,9 @@ function memoryStickyDiskWrites(
 			}
 			return undefined;
 		},
+		async noteRun(id, hostId, at) {
+			await disks.collection.update(id, (disk) => stickyRunNoted(disk, hostId, at));
+		},
 	};
 }
 
@@ -1277,7 +1341,8 @@ function memoryDiskHolderWrites(
 					holders.records.delete(holder.id);
 			}
 			for (const holder of hold) {
-				if (holders.records.has(holder.id) || !versions.records.has(holder.version)) continue;
+				if (holders.records.has(holder.id)) continue;
+				if (holder.kind === "sticky" && !versions.records.has(holder.version)) continue;
 				holders.records.set(holder.id, structuredClone(holder));
 			}
 		},

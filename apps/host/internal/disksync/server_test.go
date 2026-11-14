@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // fakeSource holds one version of sticky disk sdk_1, sdv_1.
@@ -33,6 +35,13 @@ func (f fakeSource) Open(kind, objectID, version string, withMap bool) (*os.File
 	return file, f.raw, err
 }
 
+func (f fakeSource) ReadFile(kind, objectID, version, name string) ([]byte, error) {
+	if kind != "sticky" || objectID != "sdk_1" || version != "sdv_1" || name != "record" {
+		return nil, fs.ErrNotExist
+	}
+	return []byte("the record"), nil
+}
+
 // testServer is a server for host_a, whose peer host_b is at fd4b::2 and host_c at fd4b::3.
 func testServer(t *testing.T, key testKey) (*Server, []byte) {
 	t.Helper()
@@ -45,7 +54,7 @@ func testServer(t *testing.T, key testKey) (*Server, []byte) {
 	return &Server{
 		Source: fakeSource{path: path, raw: []byte("the map")},
 		Self:   func() string { return "host_a" },
-		Key:    func() string { return key.public },
+		Keys:   func() []proto.GrantKey { return one(key.public) },
 		PeerAt: func(a netip.Addr) (string, bool) { id, ok := peers[a]; return id, ok },
 		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, data
@@ -85,6 +94,13 @@ func TestServerServesTheMapAndRangesOfTheVersionToTheGrantedPeer(t *testing.T) {
 	if got := w.Header().Get("Content-Range"); got != "bytes 4096-8191/1048576" {
 		t.Fatalf("content-range: %q", got)
 	}
+	w = get(h, "/v1/objects/sticky/sdk_1/sdv_1/files/record", "[fd4b::2]:40000", grant, "")
+	if w.Code != http.StatusOK || w.Body.String() != "the record" {
+		t.Fatalf("a small file: %d %q", w.Code, w.Body.String())
+	}
+	if w = get(h, "/v1/objects/sticky/sdk_1/sdv_1/files/other", "[fd4b::2]:40000", grant, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("a file the version hasn't: %d", w.Code)
+	}
 }
 
 func TestServerRefusesFetchesWithoutAGrantForThisHostAndPeer(t *testing.T) {
@@ -112,13 +128,34 @@ func TestServerRefusesFetchesWithoutAGrantForThisHostAndPeer(t *testing.T) {
 		if w := get(h, path, c.remote, c.grant, "bytes=0-1"); w.Code != c.want {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
 		}
+		if w := get(h, "/v1/objects/sticky/sdk_1/sdv_1/files/record", c.remote, c.grant, ""); w.Code != c.want {
+			t.Errorf("%s, a small file: %d %s", name, w.Code, w.Body.String())
+		}
 	}
 	g := grantFor("host_b", "host_a")
 	g.Version = "sdv_2"
 	if w := get(h, "/v1/objects/sticky/sdk_1/sdv_2/map", "[fd4b::2]:1", key.sign(t, g), ""); w.Code != http.StatusNotFound {
 		t.Errorf("a version it doesn't hold: %d", w.Code)
 	}
-	s.Key = func() string { return "" }
+	// While the grant key is rotated: the old key's grants are served until its time is up, the new key's from the start.
+	rotated := grantFor("host_b", "host_a")
+	rotated.Kid = "k2"
+	retired := grantFor("host_b", "host_a")
+	retired.Kid = "k1"
+	until := time.Now().Add(time.Minute).UnixMilli()
+	s.Keys = func() []proto.GrantKey {
+		return []proto.GrantKey{{ID: "k2", PublicKey: other.public}, {ID: "k1", PublicKey: key.public, Until: until}}
+	}
+	for name, grant := range map[string]string{"the new key's": other.sign(t, rotated), "the old key's": key.sign(t, retired)} {
+		if w := get(h, path, "[fd4b::2]:1", grant, ""); w.Code != http.StatusOK {
+			t.Errorf("%s, mid-rotation: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	until = time.Now().UnixMilli()
+	if w := get(h, path, "[fd4b::2]:1", key.sign(t, retired), ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("the old key's, past its time: %d", w.Code)
+	}
+	s.Keys = func() []proto.GrantKey { return nil }
 	if w := get(h, path, "[fd4b::2]:1", key.sign(t, grantFor("host_b", "host_a")), ""); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("without a grant key: %d", w.Code)
 	}

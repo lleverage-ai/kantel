@@ -151,6 +151,26 @@ Asks the host to update its host agent to `latestVersion`, which it does when `u
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Fetch a sticky disk version onto a host
+
+`POST /v1/admin/hosts/{hostId}/sticky-disk-fetches` (SDK method `fetchHostStickyDisk`)
+
+Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Body**: [FetchHostStickyDiskBody](/api/reference/types/#fetchhoststickydiskbody)
+
+**Answers**
+
+- `204`: no body. The fetch has started.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Check for host updates
 
 `POST /v1/admin/hosts/check-for-updates` (SDK method `checkHostUpdates`)
@@ -188,6 +208,30 @@ Sets where hosts reach this control plane, for the join commands made from now o
 - `200`: [PublicUrl](/api/reference/types/#publicurl) (`application/json`). The public URL.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get the grant keys
+
+`GET /v1/admin/grant-key` (SDK method `getGrantKeys`)
+
+The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [GrantKeys](/api/reference/types/#grantkeys) (`application/json`). The grant keys.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Rotate the grant key
+
+`POST /v1/admin/grant-key/rotate` (SDK method `rotateGrantKey`)
+
+Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [GrantKeys](/api/reference/types/#grantkeys) (`application/json`). The grant keys after the rotation.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## List the deployment's pools
 

@@ -238,6 +238,11 @@ export interface BackendStickyDisk {
 	readonly diskId: string;
 	readonly path: string;
 	readonly sizeGiB: number;
+	/**
+	 * The disk's head, where it has one: a host holding it is preferred, and attaches it; another attaches its newest
+	 * version (or a new disk) and, where it syncs, fetches the head in the background for the next sandbox.
+	 */
+	readonly version?: string;
 }
 
 /** A sandbox's sticky disk, as the backend answers it. */
@@ -248,6 +253,16 @@ export interface BackendStickyDiskStatus {
 	readonly version?: string;
 	readonly state: "mounted" | "failed";
 	readonly reason?: string;
+}
+
+/** A fetch of a disk store object's version (`fetchDisk`): what `disk.locate` would answer the host. */
+export interface BackendDiskFetch {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly mapDigest?: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
 }
 
 /** A committed sticky disk version, where it is. */
@@ -1027,6 +1042,12 @@ export interface SandboxBackend {
 	/** Deletes a sticky disk's versions from every host that runs sticky disks and is online now; idempotent. */
 	deleteStickyDisk?(diskId: string): Promise<void>;
 	/**
+	 * Has a host fetch a version of a disk store object from the hosts that hold it (`disk.fetch`), with where it is and a
+	 * grant naming the host; resolves once the fetch has started. `not_supported` for a host that doesn't fetch from its
+	 * peers. Absent: the backend's hosts don't sync.
+	 */
+	fetchDisk?(hostId: string, fetch: BackendDiskFetch): Promise<void>;
+	/**
 	 * What each connected host last reported holding of sticky disks. Absent: the backend doesn't say, and the catalogue
 	 * keeps every version.
 	 */
@@ -1047,6 +1068,11 @@ export interface SandboxBackend {
 	 * which pools have sync on). Absent, nothing to do.
 	 */
 	updatePool?(poolId: string, change: { readonly sync: boolean }): Promise<void>;
+	/**
+	 * The control plane's grant keys changed (`ComputeService.grantKeys`): a rotation, or a key that couldn't be opened
+	 * replaced. The backend's connected hosts are sent them. Absent, nothing to do.
+	 */
+	grantKeysChanged?(): Promise<void>;
 	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,

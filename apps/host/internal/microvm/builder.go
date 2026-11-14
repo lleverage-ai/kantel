@@ -213,8 +213,11 @@ func (m *Manager) customRootfs(ctx context.Context, build, owner string, img *pr
 	key := customImageKey(owner, img, base)
 	defer b.locks.lock(key)()
 	if path, rec, ok := customCached(b, key); ok {
+		m.mapRootfsLater(key)
 		return path, rec.ImageDigest, key, nil
 	}
+	// The pool it is made in, as the build starts.
+	pool := b.currentPool()
 	if err := os.MkdirAll(b.dir, 0o700); err != nil {
 		return "", "", "", err
 	}
@@ -249,6 +252,9 @@ func (m *Manager) customRootfs(ctx context.Context, build, owner string, img *pr
 	if err != nil {
 		return "", "", "", err
 	}
+	b.stampPool(key, pool)
+	// Made once the key's lock is let go, for peers to fetch it.
+	m.mapRootfsLater(key)
 	return path, out.imageDigest, key, nil
 }
 
@@ -268,6 +274,9 @@ func customCached(b *rootfsBuilder, key string) (string, builtRootfs, bool) {
 	if err == nil && json.Unmarshal(raw, &rec) == nil && digestOnly(rec.ImageDigest) != "" && rec.BuiltFrom != "" {
 		return path, rec, true
 	}
+	// Its map first: a peer is served a file only with its map (OpenRootfs).
+	_ = os.Remove(b.mapPath(key))
+	_ = os.Remove(b.poolPath(key))
 	_ = os.Remove(filepath.Join(b.dir, key+".json"))
 	_ = os.Remove(path)
 	return "", builtRootfs{}, false
@@ -286,6 +295,7 @@ func commitCustomRootfs(b *rootfsBuilder, key, built string, rec builtRootfs) (s
 	path := b.path(key)
 	record := filepath.Join(b.dir, key+".json")
 	fail := func(err error) (string, error) {
+		_ = os.Remove(b.mapPath(key))
 		_ = os.Remove(record)
 		_ = os.Remove(path)
 		return "", fmt.Errorf("keeping the template's built image: %w", err)
@@ -293,6 +303,8 @@ func commitCustomRootfs(b *rootfsBuilder, key, built string, rec builtRootfs) (s
 	if err := syncFile(built); err != nil {
 		return fail(err)
 	}
+	// A map left of a fetch cut short describes other bytes: this file gets its own (mapRootfsLater).
+	_ = os.Remove(b.mapPath(key))
 	if err := os.Rename(built, path); err != nil {
 		return fail(err)
 	}

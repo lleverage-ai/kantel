@@ -248,6 +248,13 @@ type Config struct {
 	// FetchSticky, when set, fetches a sticky disk version from the host's peers in the background: a create attaching
 	// a version the host doesn't hold starts on the host's newest, and asks for that one for the next.
 	FetchSticky func(diskID, version string)
+	// FetchRootfs, when set, fetches a template's root filesystem (images/templates/<key>.ext4) from a host in the pool
+	// that holds it, and answers once it is in place: ErrNoPeerRootfs when none holds it, or why the fetch failed. A
+	// template build asks it before it builds one.
+	FetchRootfs func(ctx context.Context, key string) error
+	// Pool, when set, is the pool the host is in now, as the last welcome said ("" while none has): a template's root
+	// filesystem built or fetched is stamped with it, so it is offered only in that pool (rootfssync.go).
+	Pool func() string
 	// Discard boots every microVM with discard on its writable disk (fc.BootConfig.Discard), for a Firecracker that
 	// can (fc.DiscardSupported): blocks the guest frees, and those a trim before a save frees (trimDisk), are holes in
 	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. It is in the templates' fingerprint.
@@ -652,6 +659,7 @@ func New(cfg Config) (*Manager, error) {
 	// Each image's report, a custom shape's boot's included; a host from before the root kept them has its templates'.
 	m.loadGuests()
 	m.tpl = newTemplateCache(cfg.Root, execRunner, cfg.TemplateRegistry)
+	m.tpl.rootfs.pool = cfg.Pool
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
 		m.inUse[size.Name] = &sync.RWMutex{}
@@ -694,8 +702,9 @@ func New(cfg Config) (*Manager, error) {
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	m.spool.adopt(spoolLinks(cfg.Root))
-	// Block maps of the sticky disk versions committed before them.
+	// Block maps of the sticky disk versions committed before them, and of templates' root filesystems made before them.
 	m.mapOldSticky(m.bg)
+	m.mapOldRootfs()
 	return m, nil
 }
 

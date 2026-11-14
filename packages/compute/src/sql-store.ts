@@ -31,6 +31,7 @@ import {
 	type StoredTemplate,
 	type StoredTemplateVersion,
 	stickyDiskNameId,
+	stickyRunNoted,
 	type TemplateWrites,
 	UniqueViolation,
 } from "./store.ts";
@@ -359,8 +360,10 @@ const STICKY_DISK_VERSIONS = "stickyDiskVersions";
  *   still holds what was read of it or what this write gives it, so a disk another writer changed since it was read
  *   means none lands, and it reads again. On Postgres their rows are locked first (`FOR UPDATE`), so none changes
  *   between the batch's statements; SQLite (D1 too) has one writer at a time.
+ * - `noteRun`: the disk's `update` over the version it read, unfenced.
  */
 function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
+	const disks = sqlCollection<StoredStickyDisk>(driver, STICKY_DISKS);
 	const postgres = driver.dialect === "postgres";
 	const seq = postgres
 		? "nextval('compute_api_records_seq')"
@@ -580,6 +583,9 @@ function sqlStickyDiskWrites(driver: SqlDriver): StickyDiskWrites {
 				`The sticky disks ${unique.join(", ")} kept changing while they were given a pool; gave up after ${UPDATE_ATTEMPTS} tries`,
 			);
 		},
+		async noteRun(id, hostId, at) {
+			await disks.update(id, (disk) => stickyRunNoted(disk, hostId, at));
+		},
 	};
 }
 
@@ -611,6 +617,11 @@ function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
 		SELECT ?, ?, ${seq}, 1, ?
 		WHERE EXISTS (SELECT 1 FROM compute_api_records v WHERE v.kind = ? AND v.id = ?) AND ${newest}
 		ON CONFLICT (kind, id) DO NOTHING`;
+	// A holder of a kind with no version record of its own (a template's root filesystem).
+	const holdUnrecorded = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		SELECT ?, ?, ${seq}, 1, ?
+		WHERE ${newest}
+		ON CONFLICT (kind, id) DO NOTHING`;
 	return {
 		async claim(hostId, at) {
 			const report: StoredDiskReport = { id: hostId, at };
@@ -625,21 +636,36 @@ function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
 					sql: release,
 					params: [DISK_HOLDERS, holder.id, JSON.stringify(holder), ...report],
 				})),
-				...changes.hold.flatMap((holder) => [
-					{ sql: touch, params: [STICKY_DISK_VERSIONS, holder.version, ...report] },
-					{
-						sql: hold,
-						params: [
-							DISK_HOLDERS,
-							holder.id,
-							...(postgres ? [] : [DISK_HOLDERS]),
-							JSON.stringify(holder),
-							STICKY_DISK_VERSIONS,
-							holder.version,
-							...report,
-						],
-					},
-				]),
+				...changes.hold.flatMap((holder) =>
+					holder.kind !== "sticky"
+						? [
+								{
+									sql: holdUnrecorded,
+									params: [
+										DISK_HOLDERS,
+										holder.id,
+										...(postgres ? [] : [DISK_HOLDERS]),
+										JSON.stringify(holder),
+										...report,
+									],
+								},
+							]
+						: [
+								{ sql: touch, params: [STICKY_DISK_VERSIONS, holder.version, ...report] },
+								{
+									sql: hold,
+									params: [
+										DISK_HOLDERS,
+										holder.id,
+										...(postgres ? [] : [DISK_HOLDERS]),
+										JSON.stringify(holder),
+										STICKY_DISK_VERSIONS,
+										holder.version,
+										...report,
+									],
+								},
+							],
+				),
 			];
 			if (statements.length > 1) await driver.batch(statements);
 		},

@@ -94,7 +94,10 @@ import {
 	createDiskHolders,
 	type DiskLocateRequest,
 	type DiskLocation,
-	type StickyHoldingsReport,
+	GRANT_KEY_UNAVAILABLE,
+	type GrantKeyring,
+	type GrantKeyView,
+	type HoldingsReport,
 } from "./disk-holders.ts";
 import {
 	composeEnv,
@@ -112,6 +115,7 @@ import {
 import { createGithubApp, type GithubApp, importAppKey } from "./github-app.ts";
 import {
 	createGithubRunners,
+	kindView,
 	newGithubRunnersId,
 	type RunnerPool,
 	type StoredGithubRunners,
@@ -150,7 +154,7 @@ import {
 	sandboxNotRunning,
 	sandboxUnresponsive,
 } from "./not-running.ts";
-import { createPoolService, defaultPoolOf, poolOwnerOf } from "./pools.ts";
+import { createPoolService, defaultPoolOf, type PoolRunners, poolOwnerOf } from "./pools.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -185,7 +189,7 @@ import type {
 	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
-import { OPERATOR_POOLS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
+import { OPERATOR_POOLS, STICKY_PREFETCH_MS, stickyDiskNameId, UniqueViolation, usageClaimId } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
@@ -728,22 +732,29 @@ export interface ComputeService {
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
-	 * A host's capacity report's sticky disk holdings (`HostCapacity.stickyDisks`), received at `at`: its copies in the
-	 * catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordStickyHoldings`). Nothing with sticky
-	 * disks off.
+	 * A host's capacity report's holdings (`HostCapacity.stickyDisks` and `HostCapacity.holdings`), received at `at`: its
+	 * copies in the catalogue (`StoredDiskHolder`) are made what it reports (`DiskHolders.recordHoldings`). Nothing of
+	 * sticky disks with them off, nor of templates' root filesystems with templates off.
 	 */
-	recordStickyHoldings(hostId: string, at: number, disks: StickyHoldingsReport): Promise<void>;
+	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
 	/**
 	 * A host's `disk.locate`: the version's block map digest, the online hosts in the asker's pool holding it with their
 	 * mesh addresses, and a grant to fetch it from them (docs/design/disk-store.md, 2c). `not_found` for a version the
-	 * catalogue doesn't have or the host may not have; `not_supported` with sticky disks off or no grant key.
+	 * catalogue doesn't have or the host may not have; `not_supported` with its kind off (sticky disks, templates) or no
+	 * grant key.
 	 */
 	locateDisk(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
 	/**
 	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with
-	 * sticky disks off, or with no secrets key over a persistent store.
+	 * sticky disks and templates off, or with no secrets key over a persistent store.
 	 */
 	grantPublicKey(): Promise<string | undefined>;
+	/**
+	 * Every grant key hosts accept grants from now, for their welcomes (`HostWelcome.grantKeys`): the one that signs first,
+	 * then one a rotation published (with when it signs), then those rotated out, each until it stops being accepted.
+	 * Undefined as for `grantPublicKey`.
+	 */
+	grantKeys(): Promise<readonly GrantKeyView[] | undefined>;
 	/**
 	 * A host connected to this gateway, or its connection here ended: each of its sandboxes that isn't deleted is
 	 * published to the live feed as it is (its state unchanged), so an open console reads it again and shows whether it can
@@ -1118,6 +1129,10 @@ const GITHUB_RUNNER_SCOPES: readonly computeSchema.ApiKeyScope[] = [
 ];
 /** What a broker key needs as well while one of its integration's pools commits sticky disks. */
 const GITHUB_RUNNER_COMMIT_SCOPE: computeSchema.ApiKeyScope = "snapshots:write";
+/** The most runner kinds an integration has, across its pools: as many as its `pools` take. */
+const MAX_RUNNER_KINDS = 20;
+/** Runner pools as the integration's `pools` take them: never with a pool, which those don't say. */
+const unpooled = (pools: readonly RunnerPool[]): RunnerPool[] => pools.map(({ poolId: _pool, ...pool }) => pool);
 /** Whether one of `pools` commits its runners' copies of its sticky disks. */
 const poolsCommit = (pools: readonly RunnerPool[]): boolean =>
 	pools.some((pool) => pool.stickyDisks?.some((sticky) => sticky.commit !== undefined) === true);
@@ -2208,6 +2223,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				})),
 		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
 		...(runnerSettings?.log === undefined ? {} : { log: runnerSettings.log }),
+		place: (record) => placeRunnerKinds(record),
 		sandboxes: {
 			async create(principal, body) {
 				return answered(await handlers.createSandbox(principal, { params: {}, query: {}, body }, internalRequest()));
@@ -2324,7 +2340,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await templates.templateIn(accountId, pool.template);
 			if ((pool.stickyDisks?.length ?? 0) > 0) {
 				requireSticky();
-				await stickyDisksFor(accountId, pool.stickyDisks ?? []);
+				const attached = await stickyDisksFor(accountId, pool.stickyDisks ?? []);
+				// A kind's runners are made in its pool, and a sticky disk is attached only in its own.
+				const held = pool.poolId === undefined ? undefined : await poolOfStickyDisks(attached, await ensureHosts());
+				if (held !== undefined && held.poolId !== pool.poolId) {
+					throw new KantelError(
+						"invalid",
+						`The sticky disk ${held.disk} is in pool ${await poolName(held.poolId)}, not ${pool.label}'s pool ${await poolName(pool.poolId ?? "")}: a runner kind's sticky disks are in its pool`,
+					);
+				}
 			}
 		}
 	}
@@ -2344,6 +2368,199 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: { ...current, scopes: [...current.scopes, GITHUB_RUNNER_COMMIT_SCOPE] },
 		);
 	}
+
+	/** What the broker logs: the deployment's runner log, else the process's. */
+	const runnerLog = (message: string): void => (runnerSettings?.log ?? console.log)(`[github-runners] ${message}`);
+	/**
+	 * The pool a runner kind with none goes in, and why. The pool its sticky disks are in, where its runners went before
+	 * kinds were in pools; else the one pool whose hosts its `hostLabels` select, of the hosts that could run its runners
+	 * (microVM hosts its integration's runners may use, the account's own first, as placement prefers them); else, with
+	 * no labels or labels that select hosts in several pools or none, the default pool its runners went to before: the
+	 * account's own default where one of its hosts there could run them, else the deployment's where it may use that.
+	 * Judged on the hosts as they are, not whether each is online now, so a host away for a moment doesn't move it. A
+	 * failed read rejects, so the kind is placed on a later try rather than from what couldn't be read.
+	 */
+	async function kindPool(
+		accountId: string,
+		/** Whether its runners may run on the deployment's shared hosts (`mayShare` of its integration's key). */
+		shared: boolean,
+		kind: RunnerPool,
+	): Promise<{ readonly poolId: string; readonly why: string }> {
+		const hosts = await ensureHosts();
+		if ((kind.stickyDisks?.length ?? 0) > 0) {
+			// A disk gone, or two in different pools, says nothing of a pool; any other failure is thrown.
+			const settled = (error: unknown) => {
+				if (error instanceof KantelError && (error.code === "not_found" || error.code === "invalid")) return undefined;
+				throw error;
+			};
+			const attached = await stickyDisksFor(accountId, kind.stickyDisks ?? []).catch(settled);
+			const held = attached === undefined ? undefined : await poolOfStickyDisks(attached, hosts).catch(settled);
+			if (held !== undefined) return { poolId: held.poolId, why: `its sticky disk ${held.disk} is there` };
+		}
+		const labels = Object.entries(kind.hostLabels ?? {});
+		const could = hosts.filter(
+			(host) =>
+				host.state !== "revoked" &&
+				host.tiers.includes("microvm") &&
+				(host.accountId === accountId || (shared && host.accountId === undefined)) &&
+				labels.every(([name, value]) => host.labels[name] === value),
+		);
+		const fallback = async (why: string) => {
+			const choice = await placementPool(accountId, undefined, hosts, shared);
+			const ran = (poolId: string | undefined) => poolId !== undefined && could.some((host) => host.poolId === poolId);
+			const poolId = ran(choice.own) ? choice.own : ran(choice.shared) ? choice.shared : (choice.own ?? choice.shared);
+			return { poolId: poolId ?? (await pools.defaultPool(accountId)).id, why };
+		};
+		if (labels.length === 0) return fallback("it has no host labels, so it went in the default pool");
+		const own = could.filter((host) => host.accountId === accountId);
+		const selected = unique((own.length > 0 ? own : could).flatMap((host) => host.poolId ?? []));
+		const [only] = selected;
+		if (selected.length === 1 && only !== undefined) return { poolId: only, why: "its host labels select hosts there" };
+		return fallback(
+			selected.length === 0
+				? "its host labels select no host, so it went in the default pool"
+				: "its host labels select hosts in several pools, so it went in the default pool",
+		);
+	}
+	/**
+	 * `kinds` each in a pool: one already in one stays there, one `current` has (by label) stays in that one's, and a new
+	 * one goes where `kindPool` says.
+	 */
+	async function placedKinds(
+		accountId: string,
+		shared: boolean,
+		kinds: readonly RunnerPool[],
+		current: readonly RunnerPool[],
+		/** The integration, by ID or name, for the log. */
+		integration: string,
+	): Promise<RunnerPool[]> {
+		const placed: RunnerPool[] = [];
+		for (const kind of kinds) {
+			const kept = kind.poolId ?? current.find((other) => other.label === kind.label)?.poolId;
+			if (kept !== undefined && (await store.pools.get(kept)) !== undefined) {
+				placed.push({ ...kind, poolId: kept });
+				continue;
+			}
+			const { poolId, why } = await kindPool(accountId, shared, kind);
+			runnerLog(`${integration}: runner kind ${kind.label} is in pool ${await poolName(poolId)}: ${why}`);
+			placed.push({ ...kind, poolId });
+		}
+		return placed;
+	}
+	/**
+	 * Puts an integration's kinds that have no pool (kept before kinds were in pools, or whose pool went) in one, once:
+	 * a kind given a pool meanwhile keeps it. Answers the record as it is then; one that couldn't be placed now is
+	 * answered as it was, and placed on a later read.
+	 */
+	async function placeRunnerKinds(record: StoredGithubRunners): Promise<StoredGithubRunners> {
+		const live = await Promise.all(
+			record.pools.map(async (kind) => kind.poolId !== undefined && (await store.pools.get(kind.poolId)) !== undefined),
+		);
+		if (live.every(Boolean)) return record;
+		try {
+			const lacking = record.pools.filter((_kind, at) => live[at] !== true).map(({ poolId: _pool, ...kind }) => kind);
+			const key = await store.apiKeys.get(record.keyId);
+			const shared = key === undefined || (await mayShare(keyPrincipal(key)));
+			const placed = await placedKinds(record.accountId, shared, lacking, [], record.id);
+			// Only a kind still as it was read: one placed or moved meanwhile keeps that.
+			const seen = new Map(record.pools.map((kind) => [kind.label, kind.poolId]));
+			const updated = await store.githubRunners.update(record.id, (current) => {
+				let changed = false;
+				const kinds = current.pools.map((kind) => {
+					const into = placed.find((other) => other.label === kind.label)?.poolId;
+					if (into === undefined || !seen.has(kind.label) || seen.get(kind.label) !== kind.poolId) return kind;
+					changed = true;
+					return { ...kind, poolId: into };
+				});
+				return changed ? { ...current, pools: kinds } : undefined;
+			});
+			return updated ?? (await store.githubRunners.get(record.id)) ?? record;
+		} catch (error) {
+			runnerLog(
+				`${record.id}: its runner kinds couldn't be put in pools yet: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return record;
+		}
+	}
+
+	/** GitHub runner kinds as the account pools' `runners` read and write them: kept with their integrations. */
+	const poolRunners: PoolRunners = {
+		async of(owner, list) {
+			const byPool = new Map<string, computeSchema.GithubRunnerKind[]>();
+			for (const found of await store.githubRunners.list({ accountId: owner })) {
+				if (found.retiringAt !== undefined) continue;
+				const record = await placeRunnerKinds(found);
+				for (const kind of record.pools) {
+					if (kind.poolId === undefined || !list.some((pool) => pool.id === kind.poolId)) continue;
+					byPool.set(kind.poolId, [...(byPool.get(kind.poolId) ?? []), kindView(record.id, kind)]);
+				}
+			}
+			return byPool;
+		},
+		async in(pool) {
+			const labels: string[] = [];
+			const integrations =
+				pool.owner === OPERATOR_POOLS
+					? await store.githubRunners.list()
+					: await store.githubRunners.list({ accountId: pool.owner });
+			for (const found of integrations) {
+				if (found.retiringAt !== undefined) continue;
+				const record = await placeRunnerKinds(found);
+				for (const kind of record.pools) if (kind.poolId === pool.id) labels.push(kind.label);
+			}
+			return labels;
+		},
+		async set(principal, pool, kinds) {
+			requireGithubRunners();
+			const accountId = pool.owner;
+			// The integrations the call names, each the account's, and those with kinds in the pool now, which it replaces.
+			const records = new Map<string, StoredGithubRunners>();
+			for (const id of unique(kinds.map((kind) => kind.integration))) {
+				const found = await store.githubRunners.get(id);
+				if (found === undefined || found.retiringAt !== undefined || found.accountId !== accountId) {
+					throw new KantelError("not_found", `No GitHub runner integration ${id} in the pool's account`);
+				}
+				records.set(id, await placeRunnerKinds(found));
+			}
+			for (const found of await store.githubRunners.list({ accountId })) {
+				if (found.retiringAt !== undefined || records.has(found.id)) continue;
+				const record = await placeRunnerKinds(found);
+				if (record.pools.some((kind) => kind.poolId === pool.id)) records.set(found.id, record);
+			}
+			/** Each integration's kinds in the pool from now: the call's, a label it has in another pool moving here. */
+			const mine = (id: string): RunnerPool[] =>
+				kinds
+					.filter((kind) => kind.integration === id)
+					.map(({ integration: _integration, ...kind }) => ({ ...kind, poolId: pool.id }));
+			const merged = (id: string, current: readonly RunnerPool[]): RunnerPool[] => {
+				const here = mine(id);
+				const labels = new Set(here.map((kind) => kind.label));
+				return [...current.filter((kind) => kind.poolId !== pool.id && !labels.has(kind.label)), ...here];
+			};
+			// Every integration's kinds checked as they would be, before any is written.
+			for (const [id, record] of records) {
+				const next = merged(id, record.pools);
+				if (next.length > MAX_RUNNER_KINDS) {
+					throw new KantelError("invalid", `${record.name} would have more than ${MAX_RUNNER_KINDS} runner kinds`);
+				}
+				await checkPools(accountId, next);
+				// Kinds that commit need the key to commit, given it first, as the integration's own update does.
+				if (poolsCommit(next)) await grantRunnerCommits(principal, record.keyId);
+			}
+			// Each integration's write merges into its kinds as they are then, held to the limit again. Each is atomic; a call
+			// changing several integrations writes them one after another.
+			for (const id of records.keys()) {
+				await store.githubRunners.update(id, (current) => {
+					if (current.retiringAt !== undefined) return undefined;
+					const next = merged(id, current.pools);
+					if (next.length > MAX_RUNNER_KINDS) {
+						throw new KantelError("invalid", `${current.name} would have more than ${MAX_RUNNER_KINDS} runner kinds`);
+					}
+					return { ...current, pools: next, updatedAt: now() };
+				});
+			}
+		},
+	};
 
 	// Sticky disks.
 	const requireSticky = (): void => {
@@ -2404,7 +2621,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (disk === undefined || disk.deletedAt !== undefined) {
 				throw new KantelError("not_found", `The sticky disk ${attached.name} was deleted`);
 			}
-			specs.push({ diskId: disk.id, path: attached.path, sizeGiB: disk.sizeGb });
+			// Its head, which placement prefers a host holding (docs/design/disk-store.md, 2d).
+			specs.push({
+				diskId: disk.id,
+				path: attached.path,
+				sizeGiB: disk.sizeGb,
+				...(disk.head === undefined ? {} : { version: disk.head }),
+			});
 		}
 		return { stickyDisks: specs };
 	}
@@ -2520,14 +2743,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Deletes deleted sticky disks' versions from every connected host again (a host away at the delete, or a commit
 	 * that finished after it), and their catalogue versions a delete stopped before, and forgets tombstones past
-	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then forgets the versions of
-	 * live disks their hosts no longer hold (`forgetDroppedStickyVersions`).
+	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then sweeps the holders of
+	 * every kind (`DiskHolders.sweep`), and forgets the versions of live disks their hosts no longer hold
+	 * (`forgetDroppedStickyVersions`). With sticky disks off and templates on, it sweeps the holders alone: templates'
+	 * root filesystems have holders too.
 	 */
 	async function sweepStickyDisks(): Promise<void> {
-		if (options.stickyDisks !== true) return;
+		if (options.stickyDisks !== true && options.templates !== true) return;
 		const t = now();
 		if (t - stickySweptAt < STICKY_SWEEP_EVERY_MS) return;
 		stickySweptAt = t;
+		if (options.stickyDisks !== true) {
+			await diskHolders.sweep(t);
+			return;
+		}
 		const disks = await store.stickyDisks.list();
 		if (backend.deleteStickyDisk !== undefined) {
 			for (const disk of disks) {
@@ -2582,9 +2811,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const report = reports.get(version.hostId);
 				const digest = report?.digests.get(`${disk.id}/${version.id}`);
 				if (version.mapDigest === undefined && digest !== undefined) {
-					await store.stickyDiskVersions.update(version.id, (current) =>
+					const given = await store.stickyDiskVersions.update(version.id, (current) =>
 						current.mapDigest === undefined ? { ...current, mapDigest: digest } : undefined,
 					);
+					// A head committed before its map was made is sent to its disk's hosts now it can be fetched. Whether it is the
+					// head is read again there: one committed since this pass read the disk is too.
+					if (given !== undefined) keepGoing(prefetchStickyHead(disk.id, version.id));
 				}
 				if (version.id === disk.head || report === undefined) continue;
 				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
@@ -2599,6 +2831,62 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await diskHolders.forget("sticky", disk.id, version.id);
 			}
 		}
+	}
+
+	/**
+	 * Writes down that a sandbox with sticky disks started on its host (`StoredStickyDisk.ranOn`), so each new head is sent
+	 * there (`prefetchStickyHead`): only where the host's entry is older than `STICKY_RAN_EVERY_MS`, so most starts only
+	 * read, and entries past `STICKY_PREFETCH_MS` go as it writes (`stickyRunNoted`). Through `StickyDiskWrites`, which
+	 * the account fence leaves alone, so a note landing as the account closes never removes the disk or its tombstone.
+	 */
+	async function noteStickyRuns(sandbox: StoredSandbox): Promise<void> {
+		const hostId = sandbox.hostId;
+		if (options.stickyDisks !== true || hostId === undefined) return;
+		for (const attached of sandbox.stickyDisks ?? [])
+			await store.stickyDiskWrites.noteRun(attached.diskId, hostId, now());
+	}
+
+	/**
+	 * Sends a sticky disk's head to the hosts in its pool that started a sandbox with it within `STICKY_PREFETCH_MS`
+	 * (`StoredStickyDisk.ranOn`), so the next sandbox there starts warm (docs/design/disk-store.md, 2d): `disk.fetch` with
+	 * its pool's holders and a grant, as `fetchHostStickyDisk` sends it. Only while the version is still the head, where
+	 * the disk's pool syncs, and once the head has its block map's digest, which the fetch checks against (a commit whose
+	 * map took longer is sent once the sweep has it). A host that holds or is fetching it, that is away or draining, or
+	 * that doesn't sync is left out, and nothing waits for the fetches, which progress in the hosts' reports.
+	 */
+	async function prefetchStickyHead(diskId: string, versionId: string): Promise<void> {
+		const fetchDisk = backend.fetchDisk;
+		if (fetchDisk === undefined) return;
+		const disk = await store.stickyDisks.get(diskId);
+		if (disk === undefined || disk.deletedAt !== undefined || disk.head !== versionId || disk.poolId === undefined)
+			return;
+		const since = now() - STICKY_PREFETCH_MS;
+		const recent = Object.entries(disk.ranOn ?? {})
+			.filter(([, at]) => at > since)
+			.map(([hostId]) => hostId);
+		if (recent.length === 0) return;
+		const [version, pool] = await Promise.all([store.stickyDiskVersions.get(versionId), store.pools.get(disk.poolId)]);
+		if (version?.mapDigest === undefined || pool?.sync !== true) return;
+		const hosts = new Map((await ensureHosts()).map((host) => [host.id, host]));
+		const holding = new Set(
+			((await diskHolders.holdersOf("sticky", diskId)).get(versionId) ?? [])
+				.filter((holder) => holder.state !== "deleting")
+				.map((holder) => holder.hostId),
+		);
+		const request = { kind: "sticky", objectId: diskId, version: versionId };
+		await Promise.all(
+			recent.map(async (hostId) => {
+				const host = hosts.get(hostId);
+				if (host?.state !== "online" || host.poolId !== disk.poolId || holding.has(hostId)) return;
+				// One host's refusal (it doesn't sync, it went away, nothing it can reach holds the head) is no other's.
+				try {
+					const location = await diskHolders.locate(hostId, request);
+					if (location.holders.length > 0) await fetchDisk(hostId, { ...request, ...location });
+				} catch {
+					// Its next sandbox starts on the version it has, and fetches the head then.
+				}
+			}),
+		);
 	}
 
 	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
@@ -2638,17 +2926,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 		requireAccountHosts: () => requireAccountHosts(),
 		once: (principal, operation, input, work) => once(principal, operation, input, work),
+		...(runnerSettings === undefined ? {} : { runners: poolRunners }),
 	});
 
 	// Which hosts hold which disk versions, and grants to fetch them from each other (`disk-holders.ts`).
 	const diskHolders = createDiskHolders({
 		store,
 		now,
-		enabled: options.stickyDisks === true,
+		stickyDisks: options.stickyDisks === true,
+		templates: options.templates === true,
 		sealer,
 		hosts: () => ensureHosts(),
 		meshAddress: (hostId) => hostMeshAddress.get(hostId),
 		reportGraceMs: STICKY_REPORT_GRACE_MS,
+		// Connected hosts are told at once; the hosts service's check on their heartbeats makes good a telling missed.
+		keysChanged: () => {
+			if (backend.grantKeysChanged !== undefined) keepGoing(backend.grantKeysChanged());
+		},
 	});
 
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
@@ -2964,7 +3258,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: current.poolId !== from
 							? "The host was moved meanwhile"
 							: undefined;
-			return refused === undefined ? { ...current, poolId: into.id } : undefined;
+			return refused === undefined ? { ...current, poolId: into.id, poolSince: now() } : undefined;
 		});
 		if (refused !== undefined) throw new KantelError("conflict", refused);
 		if (moved === undefined) throw new KantelError("not_found", "No such host");
@@ -4539,7 +4833,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, diskUsage, drainEpoch: _drain, ...rest } = host;
+		const { updating, diskUsage, drainEpoch: _drain, poolSince: _since, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
 		return {
 			...rest,
@@ -5945,6 +6239,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
+		// Its host uses its sticky disks: sent their new heads from now on.
+		if (next.stickyDisks !== undefined && next.stickyDisks.length > 0) keepGoing(noteStickyRuns(next));
 		await emit("sandbox.running", next.accountId, {
 			sandbox: next,
 			data: { previousState: "starting", ...(startup === undefined ? {} : { startup }) },
@@ -6275,6 +6571,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Where hosts reach this control plane: the URL a super-admin set in the console, else the deployment's own
 	 * (`publicUrl`, or the address the call came in at).
 	 */
+	/** The grant keys as the API answers them. */
+	function grantKeysView(keys: GrantKeyring): computeSchema.GrantKeys {
+		return {
+			current: { id: keys.current.id, publicKey: keys.current.publicKey, since: keys.since },
+			...(keys.next === undefined
+				? {}
+				: { next: { id: keys.next.id, publicKey: keys.next.publicKey, from: keys.next.from } }),
+			retired: keys.retired.map((key) => ({ id: key.id, publicKey: key.publicKey, until: key.until })),
+		};
+	}
+
 	async function publicUrlView(request: Request): Promise<computeSchema.PublicUrl> {
 		const deploymentUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
 		const set = await store.settings.get("publicUrl");
@@ -10724,8 +11031,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
 				throw new KantelError("not_found", "The sticky disk was deleted");
 			}
-			// Its host holds it from now; its reports keep that so (`recordStickyHoldings`).
+			// Its host holds it from now; its reports keep that so (`recordHoldings`).
 			await diskHolders.recordCommit("sticky", disk.id, recorded.id, recorded.hostId);
+			// The hosts that use the disk fetch it now, not when their next sandbox asks.
+			keepGoing(prefetchStickyHead(disk.id, recorded.id));
 			return stickyVersionView(recorded);
 		},
 
@@ -10754,10 +11063,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
 			}
 			await importAppKey(body.privateKey);
-			await checkPools(account.id, body.pools);
+			// Its kinds, each in a pool: where its sticky disks are, else where its host labels select (`kindPool`).
+			const kinds = await placedKinds(account.id, await mayShare(principal), unpooled(body.pools ?? []), [], body.name);
+			await checkPools(account.id, kinds);
 			// Its key acts for runners with what a create, a command and a delete need, and a commit where a pool commits,
 			// and no more.
-			const scopes = githubRunnerScopes(body.pools);
+			const scopes = githubRunnerScopes(kinds);
 			requireGrantable(principal, scopes);
 			return once(
 				principal,
@@ -10792,7 +11103,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						scope,
 						...(body.runnerGroupId === undefined ? {} : { runnerGroupId: body.runnerGroupId }),
 						...(body.repositories === undefined ? {} : { repositories: [...body.repositories] }),
-						pools: body.pools.map((pool) => ({ ...pool })),
+						pools: kinds,
 						enabled: true,
 						keyId: key.id,
 						privateKey: sealed.privateKey,
@@ -10816,17 +11127,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		updateGithubRunners: async (principal, { params, body }, request) => {
-			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			const found = await githubRunnersFor(principal, params.githubRunnersId);
 			if (body.privateKey !== undefined) await importAppKey(body.privateKey);
-			if (body.pools !== undefined) await checkPools(record.accountId, body.pools);
+			// Its kinds as runner pools: each it has keeps its pool, and a new one goes where `kindPool` says.
+			const record = body.pools === undefined ? found : await placeRunnerKinds(found);
+			const key = body.pools === undefined ? undefined : await store.apiKeys.get(record.keyId);
+			const kinds =
+				body.pools === undefined
+					? undefined
+					: await placedKinds(
+							record.accountId,
+							key === undefined || (await mayShare(keyPrincipal(key))),
+							unpooled(body.pools),
+							record.pools,
+							record.id,
+						);
+			if (kinds !== undefined) await checkPools(record.accountId, kinds);
 			// Pools that commit need the key to commit: an integration made without that (or before it was granted) has its
 			// key given it, by a caller who may grant it. Before the pools change, so no pool commits with a key that can't.
-			if (body.pools !== undefined && poolsCommit(body.pools)) await grantRunnerCommits(principal, record.keyId);
+			if (kinds !== undefined && poolsCommit(kinds)) await grantRunnerCommits(principal, record.keyId);
 			const resealed =
 				body.privateKey === undefined
 					? undefined
 					: await requireSealer().seal(body.privateKey, sealedAt("githubRunners", record.id, "privateKey"));
 			const updated = await store.githubRunners.update(record.id, (current) => {
+				// Its kinds were placed and checked in the pools they were in then: a kind moved meanwhile (through a pool's
+				// `runners`) isn't moved back, and the call is tried again from where it now is.
+				const was = (pools: readonly RunnerPool[], label: string) => pools.find((kind) => kind.label === label)?.poolId;
+				if (kinds?.some((kind) => was(current.pools, kind.label) !== was(record.pools, kind.label)) === true) {
+					throw new KantelError("conflict", "The integration's runner kinds moved between pools meanwhile: try again");
+				}
 				const scope = body.scope ?? current.scope;
 				const runnerGroupId = body.runnerGroupId === null ? undefined : (body.runnerGroupId ?? current.runnerGroupId);
 				if (scope === "organization" && runnerGroupId === undefined) {
@@ -10844,7 +11174,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(body.name === undefined ? {} : { name: body.name }),
 					...(body.appId === undefined ? {} : { appId: body.appId }),
 					...(body.owner === undefined ? {} : { owner: body.owner }),
-					...(body.pools === undefined ? {} : { pools: body.pools.map((pool) => ({ ...pool })) }),
+					...(kinds === undefined ? {} : { pools: kinds }),
 					...(body.enabled === undefined ? {} : { enabled: body.enabled }),
 					...(resealed === undefined ? {} : { privateKey: resealed }),
 					scope,
@@ -10970,6 +11300,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return publicUrlView(request);
 		},
 
+		getGrantKeys: async (principal) => {
+			requireScope(principal, "hosts:admin");
+			const keys = await diskHolders.keys();
+			if (keys === undefined) {
+				throw new KantelError(
+					"not_supported",
+					options.stickyDisks === true ? GRANT_KEY_UNAVAILABLE : "Sticky disks are off here",
+				);
+			}
+			return grantKeysView(keys);
+		},
+
+		rotateGrantKey: async (principal) => {
+			requireScope(principal, "hosts:admin");
+			return grantKeysView(await diskHolders.rotate(principal.userId));
+		},
+
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
 		getHostUsage: async (principal, { params, query }) =>
@@ -10978,6 +11325,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
 
 		updateHostAgent: async (principal, { params }) => updateHostAgentOf(await hostFor(principal, params.hostId)),
+
+		fetchHostStickyDisk: async (principal, { params, body }) => {
+			const host = await hostFor(principal, params.hostId);
+			if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+			if (backend.fetchDisk === undefined) {
+				throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
+			}
+			const disk = await store.stickyDisks.get(body.stickyDiskId);
+			if (disk === undefined || disk.deletedAt !== undefined) throw notFound("sticky disk");
+			// Where it is, for this host: its pool's holders and a grant naming it, as its own disk.locate would get.
+			const request = { kind: "sticky", objectId: disk.id, version: body.version };
+			const location = await diskHolders.locate(host.id, request);
+			if (location.holders.length === 0) {
+				throw new KantelError("conflict", "No other host in the host's pool holds that version where it can fetch it");
+			}
+			await backend.fetchDisk(host.id, { ...request, ...location });
+			return undefined;
+		},
 
 		checkHostUpdates: async (principal) => {
 			requireScope(principal, "hosts:admin");
@@ -12145,9 +12510,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return (await store.pools.get(poolId))?.sync === true;
 		},
 
-		recordStickyHoldings: (hostId, at, disks) => diskHolders.recordStickyHoldings(hostId, at, disks),
+		recordHoldings: (hostId, at, report) => diskHolders.recordHoldings(hostId, at, report),
 		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),
-		grantPublicKey: () => diskHolders.publicKey(),
+		grantPublicKey: async () => (await diskHolders.keys())?.current.publicKey,
+		grantKeys: async () => {
+			const keys = await diskHolders.keys();
+			return keys === undefined
+				? undefined
+				: [keys.current, ...(keys.next === undefined ? [] : [keys.next]), ...keys.retired];
+		},
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

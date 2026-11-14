@@ -528,7 +528,8 @@ export interface CreateGithubRunnersBody {
 	readonly scope?: "organization" | "repository";
 	readonly runnerGroupId?: number;
 	readonly repositories?: readonly string[];
-	readonly pools: readonly GithubRunnerPool[];
+	/** Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it. */
+	readonly pools?: readonly GithubRunnerPool[];
 }
 
 export interface CreateHostJoinTokenBody {
@@ -958,6 +959,13 @@ export interface ExtractedArchive {
 	readonly bytes: number;
 }
 
+export interface FetchHostStickyDiskBody {
+	/** The sticky disk's ID. */
+	readonly stickyDiskId: string;
+	/** The version to fetch: one a host in the same pool holds. */
+	readonly version: string;
+}
+
 /** A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`. */
 export interface FileContent {
 	readonly path: string;
@@ -1061,7 +1069,35 @@ export interface GithubRunnerJobList {
 	readonly items: readonly GithubRunnerJob[];
 }
 
-/** Runners of one shape, picked by a `runs-on` label. */
+/** Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools. */
+export interface GithubRunnerKind {
+	/** The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`. */
+	readonly integration: string;
+	/** The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. */
+	readonly label: string;
+	/** The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. */
+	readonly template: string;
+	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
+	readonly resources: GithubRunnerResources;
+	/** Of the pool's hosts, run only on those with each of these labels. */
+	readonly hostLabels?: {
+		readonly [key: string]: string;
+	};
+	/** Environments each runner starts with, IDs or names in the account, such as one holding a cache token. */
+	readonly environments?: readonly string[];
+	/** The most runners the pool has at once, starting or running. Default 20. */
+	readonly maxRunners?: number;
+	/** How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. */
+	readonly timeoutMinutes?: number;
+	/** Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). */
+	readonly stickyDisks?: readonly GithubRunnerStickyDisk[];
+	/** The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. */
+	readonly runnerCommand?: string;
+	/** Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. */
+	readonly repositories?: readonly string[];
+}
+
+/** Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool. */
 export interface GithubRunnerPool {
 	/** The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. */
 	readonly label: string;
@@ -1069,7 +1105,7 @@ export interface GithubRunnerPool {
 	readonly template: string;
 	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
 	readonly resources: GithubRunnerResources;
-	/** Run only on hosts with each of these labels. */
+	/** Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select. */
 	readonly hostLabels?: {
 		readonly [key: string]: string;
 	};
@@ -1177,6 +1213,36 @@ export interface GithubRunnersWithSecret {
 	readonly githubRunners: GithubRunners;
 	/** The secret to give the GitHub App's webhook. Shown once. */
 	readonly webhookSecret: string;
+}
+
+export interface GrantKeys {
+	/** The key that signs grants now. */
+	readonly current: {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When it was made, on first use or by a rotation: epoch milliseconds, UTC. */
+		readonly since: number;
+	};
+	/** The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the rotation, once every connected host has it. Absent between rotations. */
+	readonly next?: {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When it begins signing: epoch milliseconds, UTC. */
+		readonly from: number;
+	};
+	/** Keys rotated out that hosts still accept, oldest first. */
+	readonly retired: readonly {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began signing: epoch milliseconds, UTC. */
+		readonly until: number;
+	}[];
 }
 
 export interface GuestAgent {
@@ -1686,6 +1752,8 @@ export interface Pool {
 	readonly hosts: number;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. */
 	readonly sync: boolean;
+	/** Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. */
+	readonly runners?: readonly GithubRunnerKind[];
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 }
@@ -2847,6 +2915,7 @@ export interface UpdateGithubRunnersBody {
 	readonly scope?: "organization" | "repository";
 	readonly runnerGroupId?: number | null;
 	readonly repositories?: readonly string[] | null;
+	/** Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none. */
 	readonly pools?: readonly GithubRunnerPool[];
 	readonly enabled?: boolean;
 }
@@ -2875,6 +2944,8 @@ export interface UpdatePoolBody {
 	readonly default?: true;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
 	readonly sync?: boolean;
+	/** Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. */
+	readonly runners?: readonly GithubRunnerKind[];
 }
 
 export interface UpdateSandboxBody {
@@ -3701,6 +3772,8 @@ export interface KantelClient {
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Fetch a sticky disk version onto a host. Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/sticky-disk-fetches` */
+	fetchHostStickyDisk(hostId: string, body: FetchHostStickyDiskBody, options?: CallOptions): Promise<void>;
 	/** Check for host updates. Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/check-for-updates` */
 	checkHostUpdates(options?: CallOptions): Promise<HostReleaseCheck>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
@@ -3709,6 +3782,10 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
+	/** Get the grant keys. The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/grant-key` */
+	getGrantKeys(options?: CallOptions): Promise<GrantKeys>;
+	/** Rotate the grant key. Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/grant-key/rotate` */
+	rotateGrantKey(options?: CallOptions): Promise<GrantKeys>;
 	/** List the deployment's pools. The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/pools` */
 	listPools(options?: CallOptions): Promise<PoolList>;
 	/** Make a pool of shared hosts. An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`). Idempotent with `options.idempotencyKey`. `POST /admin/pools` */
@@ -4195,12 +4272,20 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		updateHostAgent: (hostId, callOptions) =>
 			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
+		fetchHostStickyDisk: (hostId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/sticky-disk-fetches`, body },
+				callOptions,
+			),
 		checkHostUpdates: (callOptions) =>
 			send(options, { method: "POST", path: "/admin/hosts/check-for-updates" }, callOptions),
 		revokeHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
+		getGrantKeys: (callOptions) => send(options, { method: "GET", path: "/admin/grant-key" }, callOptions),
+		rotateGrantKey: (callOptions) => send(options, { method: "POST", path: "/admin/grant-key/rotate" }, callOptions),
 		listPools: (callOptions) => send(options, { method: "GET", path: "/admin/pools" }, callOptions),
 		createPool: (body, callOptions) =>
 			send(options, { method: "POST", path: "/admin/pools", body, idempotent: true }, callOptions),

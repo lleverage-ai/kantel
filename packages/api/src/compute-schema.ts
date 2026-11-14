@@ -3892,6 +3892,14 @@ export const UpdateHostBody = Type.Object(
 	{ title: "UpdateHostBody" },
 );
 
+export const FetchHostStickyDiskBody = Type.Object(
+	{
+		stickyDiskId: id("The sticky disk's ID."),
+		version: id("The version to fetch: one a host in the same pool holds."),
+	},
+	{ title: "FetchHostStickyDiskBody" },
+);
+
 export const CreateHostJoinTokenBody = Type.Object(
 	{
 		name: Type.Optional(Type.String({ maxLength: 100 })),
@@ -3920,6 +3928,152 @@ export const HostJoinToken = Type.Object(
 /** A pool's name: lower-case letters, digits and dashes, as an environment's. */
 export const POOL_NAME_PATTERN = ENVIRONMENT_NAME_PATTERN;
 
+// GitHub Actions runners: a GitHub App's `workflow_job` webhooks make an ephemeral microVM per job on the account's hosts.
+
+const RunnerLabel = Type.String({
+	pattern: "^[a-z0-9][a-z0-9._-]{0,62}$",
+	description: "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.",
+});
+
+/** What a runner kind is, and the runner pool it was called before kinds lived in pools: `GithubRunnerPool`'s fields. */
+const runnerKindFields = {
+	label: RunnerLabel,
+	template: Type.String({
+		minLength: 1,
+		description:
+			"The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub " +
+			"Actions runner at `runnerCommand`'s path.",
+	}),
+	resources: Type.Object(
+		{
+			vcpus: Type.Integer({ minimum: 1, maximum: 32 }),
+			memoryMb: Type.Integer({ minimum: 512 }),
+			diskGb: Type.Optional(Type.Integer({ minimum: 1, maximum: 4096 })),
+		},
+		{
+			title: "GithubRunnerResources",
+			description:
+				"A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.",
+		},
+	),
+	hostLabels: Type.Optional(
+		Type.Record(Type.String(), Type.String(), {
+			description:
+				"Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in " +
+				"the pool whose hosts they select.",
+		}),
+	),
+	environments: Type.Optional(
+		Type.Array(Type.String(), {
+			maxItems: 10,
+			description:
+				"Environments each runner starts with, IDs or names in the account, such as one holding a cache token.",
+		}),
+	),
+	maxRunners: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			maximum: 500,
+			description: "The most runners the pool has at once, starting or running. Default 20.",
+		}),
+	),
+	timeoutMinutes: Type.Optional(
+		Type.Integer({
+			minimum: 5,
+			maximum: 4320,
+			description:
+				"How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.",
+		}),
+	),
+	stickyDisks: Type.Optional(
+		Type.Array(
+			Type.Object(
+				{
+					disk: Type.String({ minLength: 1, description: "A sticky disk of the account, by ID or name." }),
+					path: Type.String({ pattern: "^/[^\\0]*$", maxLength: 255, description: "Where each runner mounts it." }),
+					commit: Type.Optional(
+						Type.Object(
+							{
+								branches: Type.Array(Type.String({ minLength: 1, maxLength: 255 }), {
+									minItems: 1,
+									maxItems: 20,
+									description:
+										"Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`.",
+								}),
+								beforeCommit: Type.Optional(
+									Type.String({
+										maxLength: 4096,
+										description:
+											"A shell command run as root in the runner before its copy is committed, such as one that prunes the cache " +
+											"and stops Docker. A commit is skipped when it fails.",
+									}),
+								),
+							},
+							{
+								title: "GithubRunnerStickyCommit",
+								description:
+									"When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run " +
+									"GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't " +
+									"commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. " +
+									"Pull requests never commit.",
+							},
+						),
+					),
+				},
+				{ title: "GithubRunnerStickyDisk" },
+			),
+			{ maxItems: 2, description: "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)." },
+		),
+	),
+	runnerCommand: Type.Optional(
+		Type.String({
+			minLength: 1,
+			maxLength: 4096,
+			description:
+				"The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the " +
+				"just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n " +
+				"--preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY " +
+				"runuser -u runner -- " +
+				'/home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.',
+		}),
+	),
+	repositories: Type.Optional(
+		Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), {
+			maxItems: 500,
+			description:
+				"Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its " +
+				"label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners " +
+				"only with `scope: repository`: a runner registered on the organization may take any job with its labels.",
+		}),
+	),
+};
+
+export const GithubRunnerPool = Type.Object(runnerKindFields, {
+	title: "GithubRunnerPool",
+	description:
+		"Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it " +
+		"until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the " +
+		"pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool.",
+});
+
+export const GithubRunnerKind = Type.Object(
+	{
+		integration: id("The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`."),
+		...runnerKindFields,
+		hostLabels: Type.Optional(
+			Type.Record(Type.String(), Type.String(), {
+				description: "Of the pool's hosts, run only on those with each of these labels.",
+			}),
+		),
+	},
+	{
+		title: "GithubRunnerKind",
+		description:
+			"Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of " +
+			"the pool. An integration's labels are unique across its pools.",
+	},
+);
+
 export const Pool = Type.Object(
 	{
 		id: id("The pool's ID, such as `pool_6t5r4e`."),
@@ -3936,6 +4090,13 @@ export const Pool = Type.Object(
 				"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
 				"pool's hosts alone. Off by default.",
 		}),
+		runners: Type.Optional(
+			Type.Array(GithubRunnerKind, {
+				description:
+					"Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the " +
+					"deployment runs GitHub runners.",
+			}),
+		),
 		createdAt: Timestamp,
 	},
 	{
@@ -3977,6 +4138,14 @@ export const UpdatePoolBody = Type.Object(
 			}),
 		),
 		sync: Type.Optional(poolSync),
+		runners: Type.Optional(
+			Type.Array(GithubRunnerKind, {
+				maxItems: 100,
+				description:
+					"Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its " +
+					"label in another pool moves here; runners already made finish where they are.",
+			}),
+		),
 	},
 	{ title: "UpdatePoolBody" },
 );
@@ -4119,6 +4288,53 @@ export const PublicUrl = Type.Object(
 		}),
 	},
 	{ title: "PublicUrl" },
+);
+
+// The control plane's grant keys: what it signs hosts' fetch grants with, for host-to-host sync.
+
+const GrantKeyId = Type.String({ description: "The key's ID, which each grant it signs names as `kid`." });
+const GrantPublicKey = Type.String({ description: "The Ed25519 public key, its 32 raw bytes in base64url." });
+
+export const GrantKeys = Type.Object(
+	{
+		current: Type.Object(
+			{
+				id: GrantKeyId,
+				publicKey: GrantPublicKey,
+				since: Type.Integer({
+					description: "When it was made, on first use or by a rotation: epoch milliseconds, UTC.",
+				}),
+			},
+			{ description: "The key that signs grants now." },
+		),
+		next: Type.Optional(
+			Type.Object(
+				{
+					id: GrantKeyId,
+					publicKey: GrantPublicKey,
+					from: Type.Integer({ description: "When it begins signing: epoch milliseconds, UTC." }),
+				},
+				{
+					description:
+						"The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the " +
+						"rotation, once every connected host has it. Absent between rotations.",
+				},
+			),
+		),
+		retired: Type.Array(
+			Type.Object({
+				id: GrantKeyId,
+				publicKey: GrantPublicKey,
+				until: Type.Integer({
+					description:
+						"When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began " +
+						"signing: epoch milliseconds, UTC.",
+				}),
+			}),
+			{ description: "Keys rotated out that hosts still accept, oldest first." },
+		),
+	},
+	{ title: "GrantKeys" },
 );
 
 export const HostReleaseCheck = Type.Object(
@@ -4422,6 +4638,7 @@ export type CreatePoolBody = Static<typeof CreatePoolBody>;
 export type CreateAccountPoolBody = Static<typeof CreateAccountPoolBody>;
 export type UpdatePoolBody = Static<typeof UpdatePoolBody>;
 export type PublicUrl = Static<typeof PublicUrl>;
+export type GrantKeys = Static<typeof GrantKeys>;
 export type AccountJoinToken = Static<typeof AccountJoinToken>;
 export type DeviceLogin = Static<typeof DeviceLogin>;
 export type DeviceLoginState = Static<typeof DeviceLoginState>;
@@ -4492,124 +4709,6 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"snapshot.saved",
 	"snapshot.deleted",
 ];
-
-// GitHub Actions runners: a GitHub App's `workflow_job` webhooks make an ephemeral microVM per job on the account's hosts.
-
-const RunnerLabel = Type.String({
-	pattern: "^[a-z0-9][a-z0-9._-]{0,62}$",
-	description: "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.",
-});
-
-export const GithubRunnerPool = Type.Object(
-	{
-		label: RunnerLabel,
-		template: Type.String({
-			minLength: 1,
-			description:
-				"The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub " +
-				"Actions runner at `runnerCommand`'s path.",
-		}),
-		resources: Type.Object(
-			{
-				vcpus: Type.Integer({ minimum: 1, maximum: 32 }),
-				memoryMb: Type.Integer({ minimum: 512 }),
-				diskGb: Type.Optional(Type.Integer({ minimum: 1, maximum: 4096 })),
-			},
-			{
-				title: "GithubRunnerResources",
-				description:
-					"A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.",
-			},
-		),
-		hostLabels: Type.Optional(
-			Type.Record(Type.String(), Type.String(), { description: "Run only on hosts with each of these labels." }),
-		),
-		environments: Type.Optional(
-			Type.Array(Type.String(), {
-				maxItems: 10,
-				description:
-					"Environments each runner starts with, IDs or names in the account, such as one holding a cache token.",
-			}),
-		),
-		maxRunners: Type.Optional(
-			Type.Integer({
-				minimum: 1,
-				maximum: 500,
-				description: "The most runners the pool has at once, starting or running. Default 20.",
-			}),
-		),
-		timeoutMinutes: Type.Optional(
-			Type.Integer({
-				minimum: 5,
-				maximum: 4320,
-				description:
-					"How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.",
-			}),
-		),
-		stickyDisks: Type.Optional(
-			Type.Array(
-				Type.Object(
-					{
-						disk: Type.String({ minLength: 1, description: "A sticky disk of the account, by ID or name." }),
-						path: Type.String({ pattern: "^/[^\\0]*$", maxLength: 255, description: "Where each runner mounts it." }),
-						commit: Type.Optional(
-							Type.Object(
-								{
-									branches: Type.Array(Type.String({ minLength: 1, maxLength: 255 }), {
-										minItems: 1,
-										maxItems: 20,
-										description:
-											"Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`.",
-									}),
-									beforeCommit: Type.Optional(
-										Type.String({
-											maxLength: 4096,
-											description:
-												"A shell command run as root in the runner before its copy is committed, such as one that prunes the cache " +
-												"and stops Docker. A commit is skipped when it fails.",
-										}),
-									),
-								},
-								{
-									title: "GithubRunnerStickyCommit",
-									description:
-										"When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run " +
-										"GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't " +
-										"commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. " +
-										"Pull requests never commit.",
-								},
-							),
-						),
-					},
-					{ title: "GithubRunnerStickyDisk" },
-				),
-				{ maxItems: 2, description: "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)." },
-			),
-		),
-		runnerCommand: Type.Optional(
-			Type.String({
-				minLength: 1,
-				maxLength: 4096,
-				description:
-					"The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the " +
-					"just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n " +
-					"--preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY " +
-					"runuser -u runner -- " +
-					'/home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.',
-			}),
-		),
-		repositories: Type.Optional(
-			Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), {
-				maxItems: 500,
-				description:
-					"Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its " +
-					"label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners " +
-					"only with `scope: repository`: a runner registered on the organization may take any job with its labels.",
-			}),
-		),
-	},
-	{ title: "GithubRunnerPool", description: "Runners of one shape, picked by a `runs-on` label." },
-);
 
 export const GithubRunnersScope = Type.Union([Type.Literal("organization"), Type.Literal("repository")], {
 	description:
@@ -4700,7 +4799,13 @@ export const CreateGithubRunnersBody = Type.Object(
 		scope: Type.Optional(GithubRunnersScope),
 		runnerGroupId: Type.Optional(Type.Integer({ minimum: 1 })),
 		repositories: Type.Optional(Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), { maxItems: 500 })),
-		pools: Type.Array(GithubRunnerPool, { minItems: 1, maxItems: 20 }),
+		pools: Type.Optional(
+			Type.Array(GithubRunnerPool, {
+				minItems: 1,
+				maxItems: 20,
+				description: "Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it.",
+			}),
+		),
 	},
 	{ title: "CreateGithubRunnersBody" },
 );
@@ -4716,7 +4821,13 @@ export const UpdateGithubRunnersBody = Type.Object(
 		repositories: Type.Optional(
 			Type.Union([Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), { maxItems: 500 }), Type.Null()]),
 		),
-		pools: Type.Optional(Type.Array(GithubRunnerPool, { minItems: 1, maxItems: 20 })),
+		pools: Type.Optional(
+			Type.Array(GithubRunnerPool, {
+				maxItems: 20,
+				description:
+					"Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none.",
+			}),
+		),
 		enabled: Type.Optional(Type.Boolean()),
 	},
 	{ title: "UpdateGithubRunnersBody" },
@@ -4764,6 +4875,7 @@ export const GithubRunnerJobList = Type.Object(
 );
 
 export type GithubRunnerPool = Static<typeof GithubRunnerPool>;
+export type GithubRunnerKind = Static<typeof GithubRunnerKind>;
 export type GithubRunners = Static<typeof GithubRunners>;
 export type GithubRunnersScope = Static<typeof GithubRunnersScope>;
 export type CreateGithubRunnersBody = Static<typeof CreateGithubRunnersBody>;
