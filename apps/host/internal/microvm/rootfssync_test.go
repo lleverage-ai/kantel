@@ -292,8 +292,25 @@ func TestATemplateBuildFetchesItsRootfsFromAPeerFirst(t *testing.T) {
 			}
 		})
 	}
+	// A build that ends while it waits for the fetch builds nothing, and gives its room back.
+	m, docker, _ := builderManager(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cfg.FetchRootfs = func(ctx context.Context, _ string) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if _, err := m.BuildTemplate(ctx, p); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a build cancelled during its fetch: %v", err)
+	}
+	if len(docker.calls) != 0 || fileExists(m.tpl.rootfs.path(img.key())) {
+		t.Fatalf("built after its cancellation: %v", docker.calls)
+	}
+	if ids, _, _ := m.TemplateBuilds(); len(ids) != 0 {
+		t.Fatalf("builds held after it ended: %v", ids)
+	}
 	// The host's own image is no object to fetch.
-	m, _, _ := builderManager(t)
+	m, _, _ = builderManager(t)
 	m.cfg.FetchRootfs = func(context.Context, string) error { t.Fatal("asked for the host's own image"); return nil }
 	_, _ = m.BuildTemplate(context.Background(), proto.TemplateBuildParams{SnapshotID: "tsn_2", KeyHash: "k2", BaseImage: "kantel/sandbox", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20})
 }

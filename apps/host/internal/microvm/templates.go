@@ -278,7 +278,11 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	if p.Image != nil {
 		// Fetched from a host in the pool that holds it (its record with it, which names its digest), else built or pulled
 		// in a build microVM, under the template's egress with the operator's registries: never on the host's Docker.
-		if m.fetchRootfsFirst(ctx, customImageKey(p.Owner, p.Image, img)) {
+		fetched, err := m.fetchRootfsFirst(ctx, customImageKey(p.Owner, p.Image, img))
+		if err != nil {
+			return proto.TemplateBuildResult{}, err
+		}
+		if fetched {
 			t.step("fetch", &start)
 		}
 		var key string
@@ -295,8 +299,14 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		t.step("image", &start)
 	} else {
 		// A pulled base's, fetched from a host in the pool that holds it, else pulled and made here.
-		if img.BaseDigest != "" && m.fetchRootfsFirst(ctx, img.key()) {
-			t.step("fetch", &start)
+		if img.BaseDigest != "" {
+			fetched, err := m.fetchRootfsFirst(ctx, img.key())
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
+			if fetched {
+				t.step("fetch", &start)
+			}
 		}
 		rootfs, imageDigest, err = m.templateRootfs(ctx, img)
 		if err != nil {

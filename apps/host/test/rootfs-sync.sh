@@ -125,7 +125,7 @@ sum_b=$(docker exec "$b" sha256sum "$file" | cut -d' ' -f1)
 [ "$sum_a" = "$sum_b" ] || fail "the root filesystems differ: A $sum_a, B $sum_b"
 calls=$(docker exec "$b" sh -c 'grep -v "^version" /var/lib/kantel-host/docker.log || true')
 [ -z "$calls" ] || fail "B ran docker: $calls"
-docker logs "$b" 2>&1 | grep -q 'template root filesystem fetched from a peer' || fail "B logged no fetch"
+docker logs "$b" 2>&1 | grep 'template root filesystem fetched from a peer' >/dev/null || fail "B logged no fetch"
 # Stamped with the pool B fetched it in, which its reports carry.
 pool_id=$(api GET /admin/pools | jq -r '.items[] | select(.name == "default") | .id')
 [ "$(docker exec "$b" cat "$templates/$rootfs_key.pool")" = "$pool_id" ] || fail "B's copy isn't stamped with pool $pool_id"
