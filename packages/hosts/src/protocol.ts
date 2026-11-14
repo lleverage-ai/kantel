@@ -427,6 +427,16 @@ export const HOST_FEATURES = {
 	 * exports too, and on the target an import under way. Reported with `snapshotSync`.
 	 */
 	sandboxMove: "sandbox-move",
+	/**
+	 * A running microVM sandbox moves too, with a restart (docs/design/disk-store.md, "Moving a sandbox to another host",
+	 * with a restart). Its host exports it while it runs (`HostSandboxExportParams.live`: its files cloned at once, a
+	 * crash-consistent copy) as a version of its own, which the target fetches and keeps staged
+	 * (`HostSandboxImportParams.stage`); the sandbox is then stopped without its memory and exported again over that first
+	 * version (`base`: its maps made from the first's, `FIEMAP` telling the blocks written since), and the target fetches
+	 * the second version over its staged first (`base`), only the blocks that differ, and makes the sandbox from it.
+	 * Reported with `sandboxMove`.
+	 */
+	sandboxMoveRunning: "sandbox-move-running",
 } as const;
 
 /** A moved sandbox's parts (`HOST_FEATURES.sandboxMove`), in its manifest's order: its disk and its two sticky drives. */
@@ -435,11 +445,21 @@ export const SANDBOX_PARTS = ["disk", "sticky0", "sticky1"] as const;
 /**
  * Kantel to host, `sandbox.export` (`HOST_FEATURES.sandboxMove`): the stopped sandbox's disk and sticky drives cloned as
  * `version` (a valid ID, Kantel's for the move) of the object `sandbox`/`sandboxId`, and mapped. Sent again, it answers
- * the version it made; `conflict` unless the sandbox is stopped.
+ * the version it made; `conflict` unless the sandbox is stopped, or with `live` running or stopped.
  */
 export interface HostSandboxExportParams {
 	readonly sandboxId: string;
 	readonly version: string;
+	/**
+	 * A running sandbox exported too (`HOST_FEATURES.sandboxMoveRunning`): its files cloned at once as it runs, a
+	 * crash-consistent copy.
+	 */
+	readonly live?: boolean;
+	/**
+	 * An earlier version of the sandbox's exports on the host (`HOST_FEATURES.sandboxMoveRunning`): each part's map is
+	 * made from that version's, so only the blocks written since it are read.
+	 */
+	readonly base?: string;
 }
 
 /** What `sandbox.export` made: the version's map digest (its manifest's) and the bytes its files take on the host. */
@@ -467,6 +487,17 @@ export interface HostSandboxImportParams {
 	readonly mapDigest: string;
 	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
 	readonly grant: string;
+	/**
+	 * Fetched and kept staged rather than made the sandbox (`HOST_FEATURES.sandboxMoveRunning`): a running sandbox's
+	 * first copy, for a later version to start from (`base`). Answered `{}` once it is there.
+	 */
+	readonly stage?: boolean;
+	/**
+	 * A version of the sandbox staged on the host (`stage`) that each part's fetch starts from
+	 * (`HOST_FEATURES.sandboxMoveRunning`): only the blocks that differ are fetched. It goes once this version is made
+	 * the sandbox.
+	 */
+	readonly base?: string;
 }
 
 /**

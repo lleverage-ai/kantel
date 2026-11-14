@@ -56,7 +56,7 @@ export class FakeHost {
 	/** Every call's method and params, as sent. */
 	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
 	/** For a test: a call of a method it answers a promise for is answered once that settles (a slow host). */
-	hold?: (method: string) => Promise<void> | undefined;
+	hold?: (method: string, params: { readonly [key: string]: unknown }) => Promise<void> | undefined;
 	/** Files `sandbox.files.open` streams, by path; a write lands here once all of it has arrived. */
 	readonly files = new Map<string, Uint8Array>();
 	/** How many bytes a read's frames carry each. */
@@ -86,7 +86,10 @@ export class FakeHost {
 	/** For a test: the size a create is answered as made, instead of the one asked for (a restore's own size). */
 	madeSize?: string;
 	/** For a test: a call of a method it answers an error for fails with it. */
-	refuse?: (method: string) => { readonly code: string; readonly message: string } | undefined;
+	refuse?: (
+		method: string,
+		params: { readonly [key: string]: unknown },
+	) => { readonly code: string; readonly message: string } | undefined;
 	/** For a test: what a call of a method it answers a result for is answered, instead of the usual. */
 	answer?: (method: string) => unknown;
 	/** Facts it reports beyond the usual: its Firecracker and guest kernel, say. */
@@ -99,6 +102,8 @@ export class FakeHost {
 	readonly exportedBy = new Map<string, string>();
 	/** The moves whose import was cancelled here (`sandbox.import.cancel`), by `<sandboxId>/<version>`. */
 	readonly cancelled = new Set<string>();
+	/** Versions fetched and kept staged here (`sandbox.import` with `stage`), by `<sandboxId>/<version>`: what they hold. */
+	readonly staged = new Map<string, string>();
 	/** Every host made, by ID: a move's target reads its holder's export from it, as from a peer. */
 	static readonly byId = new Map<string, FakeHost>();
 
@@ -203,7 +208,7 @@ export class FakeHost {
 		}
 		if (message.type !== "call") return;
 		this.calls.push({ method: message.method ?? "", params: message.params as { [key: string]: unknown } });
-		const wait = this.hold?.(message.method ?? "");
+		const wait = this.hold?.(message.method ?? "", message.params as { [key: string]: unknown });
 		if (wait !== undefined) {
 			void wait.then(() => this.answerCall(message));
 			return;
@@ -252,7 +257,7 @@ export class FakeHost {
 						mounts: this.mountStatus(params.mounts ?? []),
 						...(this.mountsAt === undefined ? {} : { mountsAt: this.mountsAt }),
 					};
-		const refused = this.refuse?.(message.method ?? "");
+		const refused = this.refuse?.(message.method ?? "", (message.params ?? {}) as { [key: string]: unknown });
 		if (refused !== undefined) return fail(refused.code, refused.message);
 		const answered = this.answer?.(message.method ?? "");
 		if (answered !== undefined) return answer(answered);
@@ -331,10 +336,12 @@ export class FakeHost {
 				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer(sandbox);
 			}
 			case "sandbox.export": {
-				const { version } = message.params as { version: string };
+				const { version, live } = message.params as { version: string; live?: boolean };
 				const sandbox = this.sandboxes.get(params.sandboxId);
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
-				if (sandbox.state !== "stopped") return fail("conflict", `sandbox ${sandbox.id} is ${sandbox.state}`);
+				if (sandbox.state !== "stopped" && !(live === true && sandbox.state === "running")) {
+					return fail("conflict", `sandbox ${sandbox.id} is ${sandbox.state}`);
+				}
 				this.exports.set(`${params.sandboxId}/${version}`, this.disks.get(params.sandboxId) ?? "");
 				this.exportedBy.set(params.sandboxId, version);
 				return answer({ mapDigest: `sha256:${"a".repeat(64)}`, allocatedBytes: 4096 });
@@ -351,19 +358,27 @@ export class FakeHost {
 				return answer({});
 			}
 			case "sandbox.import": {
-				const { version, holders, grant, mapDigest } = message.params as {
+				const { version, holders, grant, mapDigest, stage, base } = message.params as {
 					version: string;
 					holders: { hostId: string; address: string }[];
 					grant: string;
 					mapDigest: string;
+					stage?: boolean;
+					base?: string;
 				};
 				const key = `${params.sandboxId}/${version}`;
 				if (this.cancelled.has(key)) return fail("conflict", "the move was cancelled here");
 				const held = this.sandboxes.get(params.sandboxId);
-				if (held !== undefined) return answer(held);
+				if (held !== undefined) return stage === true ? fail("conflict", "the sandbox is here already") : answer(held);
 				const from = FakeHost.byId.get(holders[0]?.hostId ?? "");
 				const disk = from?.exports.get(key);
 				if (disk === undefined || grant === "" || mapDigest === "") return fail("unavailable", "no holder has it");
+				if (stage === true) {
+					this.staged.set(key, disk);
+					return answer({});
+				}
+				// Its staged base goes once this version is the sandbox here.
+				if (base !== undefined) this.staged.delete(`${params.sandboxId}/${base}`);
 				const sandbox: HostSandbox = {
 					id: params.sandboxId,
 					tier: "microvm",
@@ -378,6 +393,7 @@ export class FakeHost {
 			case "sandbox.import.cancel": {
 				const { version } = message.params as { version: string };
 				this.cancelled.add(`${params.sandboxId}/${version}`);
+				this.staged.delete(`${params.sandboxId}/${version}`);
 				this.sandboxes.delete(params.sandboxId);
 				this.disks.delete(params.sandboxId);
 				return answer({});

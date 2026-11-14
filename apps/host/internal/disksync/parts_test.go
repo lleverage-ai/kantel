@@ -210,6 +210,53 @@ func TestFetchPartsWithAnEmptyPart(t *testing.T) {
 	}
 }
 
+// nearestPartedStore is a partedStore whose parts' fetches start from version base's (PartNearest), as a moved
+// sandbox's second copy starts from its first.
+type nearestPartedStore struct {
+	partedStore
+	base string
+}
+
+func (s nearestPartedStore) ClonePartNearest(_ Ref, part, dst string) (*blockmap.Map, error) {
+	data, err := os.ReadFile(s.part(s.base, part))
+	if err != nil {
+		return nil, nil
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return nil, err
+	}
+	m, _, err := blockmap.ReadFile(s.partMap(s.base, part))
+	return m, err
+}
+
+// A version with parts whose store has a nearest version of each part (a moved sandbox's first copy) is fetched over
+// clones of them: only the blocks whose hashes differ are fetched, and the parts are the version's.
+func TestFetchPartsFromTheNearestVersion(t *testing.T) {
+	f, local, remote := partedFixture(t, 1)
+	first := disk(t, 4, 0)
+	mem := disk(t, 2, 0)
+	local.putParts(t, "v1", first, mem)
+	second := append([]byte(nil), first...)
+	copy(second[2*block:], disk(t, 1, 0))
+	f.digest = remote[0].putParts(t, "v2", second, mem)
+	fetcher := f.fetcher()
+	fetcher.Store = nearestPartedStore{partedStore: local, base: "v1"}
+	st, err := wait(t, fetcher.Start(Request{Ref: snapRef}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(local.part("v2", "disk")); err != nil || !bytes.Equal(got, second) {
+		t.Fatalf("the fetched disk differs (%v)", err)
+	}
+	if got, err := os.ReadFile(local.part("v2", "mem")); err != nil || !bytes.Equal(got, mem) {
+		t.Fatalf("the fetched memory differs (%v)", err)
+	}
+	// One block of six differs: only it is fetched.
+	if st.Blocks != 6 || st.Fetched != 1 || st.FetchedBytes != int64(block) {
+		t.Fatalf("stats %+v", st)
+	}
+}
+
 // A fetch cut short goes on where it stopped, part by part, fetching only what it hadn't.
 func TestFetchPartsResumes(t *testing.T) {
 	f, local, remote := partedFixture(t, 1)

@@ -69,11 +69,17 @@ func stoppedTestSandbox(t *testing.T, m *Manager, id, version string) *sandbox {
 // written with the holder's bytes, then the parts published together.
 func importTestSandbox(t *testing.T, from, to *Manager, id, version string) error {
 	t.Helper()
+	return importTestSandboxWith(t, from, to, id, version, ImportOptions{})
+}
+
+// importTestSandboxWith is importTestSandbox, the import asked for with opts.
+func importTestSandboxWith(t *testing.T, from, to *Manager, id, version string, opts ImportOptions) error {
+	t.Helper()
 	record, err := from.ReadSandboxFile(id, version, proto.SandboxRecordFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := to.PrepareSandboxImport(context.Background(), id, version, to.ImportGeneration(id), record); err != nil {
+	if err := to.PrepareSandboxImport(context.Background(), id, version, to.ImportGeneration(id), record, opts); err != nil {
 		return err
 	}
 	parts := map[string]disksync.FetchedPart{}
@@ -180,7 +186,7 @@ func TestStoppedSandboxMovesToAnotherHost(t *testing.T) {
 		t.Fatalf("left in the imports: %v", left)
 	}
 	// Asked again, it is made already.
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, nil); err != nil {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, nil, ImportOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if src, _ := a.get("sb1"); src.meta.State != proto.StateStopped || !src.meta.Memory {
@@ -216,13 +222,13 @@ func TestSandboxMoveRefusals(t *testing.T) {
 
 	// A size the target doesn't make.
 	b.cfg.Sizes = []proto.Size{{Name: "small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}}
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record); err == nil {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record, ImportOptions{}); err == nil {
 		t.Fatal("made ready for a size the host doesn't make")
 	}
 	b.cfg.Sizes = DefaultSizes
 	// An image version the target can't have.
 	_ = os.Remove(versionFile(b, "old"))
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record); !errors.Is(err, ErrNoSnapshotImage) {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record, ImportOptions{}); !errors.Is(err, ErrNoSnapshotImage) {
 		t.Fatalf("made ready without its image: %v", err)
 	}
 	if fileExists(filepath.Join(b.cfg.Root, sandboxImportsDir, "sb1")) {
@@ -231,7 +237,7 @@ func TestSandboxMoveRefusals(t *testing.T) {
 	// A sandbox of that ID there already.
 	c := moveHost(t)
 	stoppedTestSandbox(t, c, "sb1", "old")
-	if err := c.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+	if err := c.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record, ImportOptions{}); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
 		t.Fatalf("over a sandbox of its ID: %v", err)
 	}
 }
@@ -245,7 +251,7 @@ func TestDeletingASandboxBeingImported(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, _ := a.ReadSandboxFile("sb1", "mov_1", proto.SandboxRecordFile)
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record); err != nil {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record, ImportOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	parts := map[string]disksync.FetchedPart{}
@@ -323,7 +329,7 @@ func TestSandboxImportKeepsItsImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, _ := a.ReadSandboxFile("sb1", "mov_1", proto.SandboxRecordFile)
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record); err != nil {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record, ImportOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	in, err := BasesUnder(b.cfg.Root)
@@ -337,7 +343,7 @@ func TestSandboxImportKeepsItsImage(t *testing.T) {
 func stageTestImport(t *testing.T, from, to *Manager, id, version string) map[string]disksync.FetchedPart {
 	t.Helper()
 	record, _ := from.ReadSandboxFile(id, version, proto.SandboxRecordFile)
-	if err := to.PrepareSandboxImport(context.Background(), id, version, to.ImportGeneration(id), record); err != nil {
+	if err := to.PrepareSandboxImport(context.Background(), id, version, to.ImportGeneration(id), record, ImportOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	parts := map[string]disksync.FetchedPart{}
@@ -401,7 +407,7 @@ func TestCancelledImport(t *testing.T) {
 	}
 	record, _ := a.ReadSandboxFile("sb1", "mov_1", proto.SandboxRecordFile)
 	var pe *proto.Error
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", 0, record, ImportOptions{}); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
 		t.Fatalf("made ready after its cancel: %v", err)
 	}
 	if fileExists(filepath.Join(b.cfg.Root, sandboxImportsDir, "sb1")) {
@@ -492,13 +498,13 @@ func TestADeleteFencesAnImportUnderWay(t *testing.T) {
 		t.Fatal("deleted a sandbox the host hasn't")
 	}
 	var pe *proto.Error
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", since, record); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", since, record, ImportOptions{}); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
 		t.Fatalf("made ready across a delete: %v", err)
 	}
 	if fileExists(filepath.Join(b.cfg.Root, sandboxImportsDir, "sb1")) {
 		t.Fatal("the fenced import left its directory")
 	}
-	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", b.ImportGeneration("sb1"), record); err != nil {
+	if err := b.PrepareSandboxImport(context.Background(), "sb1", "mov_1", b.ImportGeneration("sb1"), record, ImportOptions{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -552,5 +558,130 @@ func TestALateCleanupNeverDeletesALaterMovesCopy(t *testing.T) {
 	}
 	if _, err := a.ImportedSandbox("sb1", "mov_2"); err != nil {
 		t.Fatalf("the later move's copy is gone: %v", err)
+	}
+}
+
+// A running sandbox moves with a restart: its live export is its files as they were while it ran, which another host
+// fetches and keeps staged, making no sandbox. Stopped, its export over the first maps each part from the first's, and
+// the other host's import over its staged first starts each part from a clone of it, then makes the sandbox from the
+// second's files, its staged first gone with the publish.
+func TestRunningSandboxMovesWithARestart(t *testing.T) {
+	a, b := moveHost(t), moveHost(t)
+	s := stoppedTestSandbox(t, a, "sb1", "old")
+	s.meta.State = proto.StateRunning
+	if err := a.writeMeta(s); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var pe *proto.Error
+	if _, err := a.ExportSandbox(ctx, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1"}); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+		t.Fatalf("a running sandbox's export without live: %v", err)
+	}
+	if _, err := a.ExportSandbox(ctx, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1-live", Live: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := importTestSandboxWith(t, a, b, "sb1", "mov_1-live", ImportOptions{Stage: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !b.HoldsSandbox("sb1", "mov_1-live") {
+		t.Fatal("the staged first copy isn't held")
+	}
+	if _, err := b.get("sb1"); err == nil {
+		t.Fatal("a staged copy made the sandbox")
+	}
+
+	// Written since its first copy, then stopped.
+	disk := filepath.Join(s.vmDir(), fc.DiskFile)
+	f, err := os.OpenFile(disk, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt(bytes.Repeat([]byte{9}, 100), blockmap.BlockSize+7); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	s.meta.State = proto.StateStopped
+	if err := a.writeMeta(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ExportSandbox(ctx, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1", Base: "mov_1-live"}); err != nil {
+		t.Fatal(err)
+	}
+	// Its maps, made from the first's, are the files' as they are.
+	for _, part := range SandboxParts {
+		file, raw, err := a.OpenSandboxPart("sb1", "mov_1", part, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		full, _, err := blockmap.Make(ctx, file, nil)
+		file.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := full.MarshalBinary()
+		if !bytes.Equal(raw, want) {
+			t.Fatalf("the %s's map from the first copy's isn't the file's", part)
+		}
+	}
+
+	record, err := a.ReadSandboxFile("sb1", "mov_1", proto.SandboxRecordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PrepareSandboxImport(ctx, "sb1", "mov_1", b.ImportGeneration("sb1"), record, ImportOptions{Base: "mov_1-live"}); err != nil {
+		t.Fatal(err)
+	}
+	// Each part's fetch starts from the staged first copy's: its bytes, and its map.
+	clone := filepath.Join(t.TempDir(), "disk")
+	base, err := b.CloneSandboxPartBase("sb1", "mov_1", proto.SandboxPartDisk, clone)
+	if err != nil || base == nil {
+		t.Fatalf("the base: %v, %v", base, err)
+	}
+	first, _ := os.ReadFile(filepath.Join(a.sandboxExportDir("sb1", "mov_1-live"), fc.DiskFile))
+	if got, _ := os.ReadFile(clone); !bytes.Equal(got, first) {
+		t.Fatal("the clone isn't the first copy's disk")
+	}
+	if base.Hash(0) != blockmap.HashBlock(first[:blockmap.BlockSize]) {
+		t.Fatal("the base's map isn't the first copy's")
+	}
+	if err := importTestSandboxWith(t, a, b, "sb1", "mov_1", ImportOptions{Base: "mov_1-live"}); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := b.get("sb1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(moved.vmDir(), fc.DiskFile))
+	want, _ := os.ReadFile(disk)
+	if !bytes.Equal(got, want) {
+		t.Fatal("the moved disk isn't the stopped sandbox's")
+	}
+	if fileExists(filepath.Join(b.cfg.Root, sandboxImportsDir, "sb1")) {
+		t.Fatal("the staged first copy outlived the publish")
+	}
+}
+
+// An import over a base that isn't staged here (never fetched, or dropped) starts each part from an empty file, and a
+// base of its own version is refused.
+func TestSandboxImportWithoutItsBase(t *testing.T) {
+	a, b := moveHost(t), moveHost(t)
+	stoppedTestSandbox(t, a, "sb1", "old")
+	ctx := context.Background()
+	if _, err := a.ExportSandbox(ctx, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1", Base: "mov_1-live"}); err != nil {
+		t.Fatalf("an export over a base that isn't here: %v", err)
+	}
+	record, err := a.ReadSandboxFile("sb1", "mov_1", proto.SandboxRecordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if err := b.PrepareSandboxImport(ctx, "sb1", "mov_1", 0, record, ImportOptions{Base: "mov_1"}); !errors.As(err, &pe) || pe.Code != proto.ErrInvalid {
+		t.Fatalf("a base of its own version: %v", err)
+	}
+	if err := b.PrepareSandboxImport(ctx, "sb1", "mov_1", 0, record, ImportOptions{Base: "mov_1-live"}); err != nil {
+		t.Fatal(err)
+	}
+	if base, err := b.CloneSandboxPartBase("sb1", "mov_1", proto.SandboxPartDisk, filepath.Join(t.TempDir(), "disk")); base != nil || err != nil {
+		t.Fatalf("a base that isn't staged: %v, %v", base, err)
 	}
 }

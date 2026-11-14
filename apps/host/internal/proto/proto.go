@@ -274,6 +274,15 @@ const FeatureSnapshotSync = "snapshot-sync"
 // exports too, and on the target an import under way. It comes with FeatureSnapshotSync, on the microVM tier.
 const FeatureSandboxMove = "sandbox-move"
 
+// FeatureSandboxMoveRunning: a running microVM sandbox moves too, with a restart (docs/design/disk-store.md, "Moving a
+// sandbox to another host", with a restart). Its host exports it while it runs (SandboxExportParams.Live: its files
+// cloned at once, a crash-consistent copy) as a version of its own, which the target fetches and keeps staged
+// (SandboxImportParams.Stage); the sandbox is then stopped without its memory and exported again over that first version
+// (SandboxExportParams.Base: its maps made from the first's, FIEMAP telling the blocks written since), and the target
+// fetches the second version over its staged first (SandboxImportParams.Base), only the blocks that differ, and makes
+// the sandbox from it. It comes with FeatureSandboxMove.
+const FeatureSandboxMoveRunning = "sandbox-move-running"
+
 // Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
 // filesystem, a template snapshot, a saved snapshot, and a sandbox being moved (FeatureSandboxMove).
 const (
@@ -298,10 +307,16 @@ const SandboxRecordFile = "record"
 
 // SandboxExportParams is sandbox.export (FeatureSandboxMove): the stopped sandbox's disk and sticky drives cloned as
 // version Version (a valid ID, Kantel's for the move) of the object DiskKindSandbox/SandboxID, and mapped. Sent again,
-// it answers the version it made. ErrConflict unless the sandbox is stopped.
+// it answers the version it made. ErrConflict unless the sandbox is stopped, or with Live running or stopped.
 type SandboxExportParams struct {
 	SandboxID string `json:"sandboxId"`
 	Version   string `json:"version"`
+	// Live (FeatureSandboxMoveRunning) exports a running sandbox too: its files cloned at once while it runs, a
+	// crash-consistent copy (where the file system has no reflinks, a copy the next version's maps put right).
+	Live bool `json:"live,omitempty"`
+	// Base (FeatureSandboxMoveRunning) is an earlier version of the sandbox's exports here: each part's map is made from
+	// that version's, so only the blocks written since it are read (FIEMAP).
+	Base string `json:"base,omitempty"`
 }
 
 // SandboxExportResult is what sandbox.export made: the version's map digest (its manifest's) and the bytes its files
@@ -330,6 +345,12 @@ type SandboxImportParams struct {
 	MapDigest string       `json:"mapDigest"`
 	Holders   []DiskHolder `json:"holders"`
 	Grant     string       `json:"grant"`
+	// Stage (FeatureSandboxMoveRunning) fetches the version and keeps it staged rather than making the sandbox: a running
+	// sandbox's first copy, for a later version to start from (Base). Answered {} once it is here.
+	Stage bool `json:"stage,omitempty"`
+	// Base (FeatureSandboxMoveRunning) is a version of the sandbox staged here (Stage) that each part's fetch starts
+	// from: only the blocks that differ are fetched. It goes once this version is made the sandbox.
+	Base string `json:"base,omitempty"`
 }
 
 // A saved snapshot's versions as a disk store object (DiskKindSnapshot): its disk, and its memory.

@@ -21,7 +21,8 @@ type Kinds map[string]Objects
 var (
 	_ Source = Kinds(nil)
 	_ Store  = Kinds(nil)
-	_ Parted = Kinds(nil)
+	_ Parted      = Kinds(nil)
+	_ PartNearest = Kinds(nil)
 )
 
 // Parts are the kind's parts, when its Objects has them (Parted).
@@ -44,6 +45,19 @@ func (k Kinds) PartPartial(r Ref, part string) (string, error) {
 		return "", fs.ErrNotExist
 	}
 	return p.PartPartial(r, part)
+}
+
+// ClonePartNearest passes to the kind's Objects where it has nearest versions of parts (PartNearest): none otherwise.
+func (k Kinds) ClonePartNearest(r Ref, part, dst string) (*blockmap.Map, error) {
+	p, ok := validPart(k[r.Kind], r.Kind, part)
+	if !ok {
+		return nil, nil
+	}
+	n, ok := p.(PartNearest)
+	if !ok {
+		return nil, nil
+	}
+	return n.ClonePartNearest(r, part, dst)
 }
 
 func (k Kinds) PublishParts(r Ref, parts map[string]FetchedPart, files map[string][]byte) error {

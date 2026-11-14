@@ -300,7 +300,8 @@ export const SandboxState = Type.Union(
 		description:
 			"`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. " +
 			"`moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then " +
-			"started there; commands and file calls wait for it as they do for a start. " +
+			"started there; commands and file calls wait for it as they do for a start, except while a running sandbox's " +
+			"first copy is made (`copying`), when it still runs them. " +
 			"`stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like " +
 			"`stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the " +
 			"last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for " +
@@ -1155,11 +1156,16 @@ export const Sandbox = Type.Object(
 		move: Type.Optional(
 			Type.Object(
 				{
-					phase: Type.Union([Type.Literal("copying"), Type.Literal("starting")], {
-						description:
-							"`copying`: its disk and sticky disks are being copied to the new host. `starting`: they are there, and it " +
-							"is starting on it.",
-					}),
+					phase: Type.Union(
+						[Type.Literal("copying"), Type.Literal("stopping"), Type.Literal("final-copy"), Type.Literal("starting")],
+						{
+							description:
+								"`copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it " +
+								"runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes " +
+								"ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are " +
+								"there, and it is starting on it.",
+						},
+					),
 					hostId: Type.Optional(
 						Type.String({ description: "The host it is moving to, where the caller may know it, once chosen." }),
 					),
@@ -1499,8 +1505,10 @@ export const MoveSandboxBody = Type.Object(
 			Type.Boolean({
 				description:
 					"Keep its memory, so it carries on where it left off. Default true, but memory doesn't move yet: a stopped " +
-					"sandbox has none, and a paused one is refused unless this is `false`, when it boots on its disk on the new " +
-					"host and its memory is lost.",
+					"sandbox has none, and a paused or running one is refused unless this is `false`. Then it boots on its " +
+					"disk on the new host and its memory is lost: a running one is copied as it runs, stopped, copied again " +
+					"(only what it wrote since), and started there, so it is unavailable only for that stop, the last copy " +
+					"and its boot.",
 			}),
 		),
 		wait: Type.Optional(

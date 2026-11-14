@@ -669,3 +669,233 @@ describe("moving a stopped sandbox to another host", () => {
 		expect(await service.sandboxes.placement(sandbox.id)).toBeUndefined();
 	});
 });
+
+const MOVES_RUNNING = [...MOVES, HOST_FEATURES.sandboxMoveRunning];
+
+/** A running microVM on `on`, with what is on its disk there, let go of the pin its create on `on` gave it. */
+async function runningOn(
+	root: ReturnType<typeof createKantelClient>,
+	api: ComputeApi,
+	on: FakeHost,
+	disk: string,
+): Promise<{ readonly id: string }> {
+	const made = await root.createSandbox({ type: "microvm", host: on.hostId, wait: true });
+	on.disks.set(made.id, disk);
+	await unpinned(api, made.id);
+	return made;
+}
+
+/** Holds each call `which` picks on `host` until the promise it answers is released. */
+function holding(host: FakeHost, which: (method: string, params: { readonly [key: string]: unknown }) => boolean) {
+	let release: () => void = () => undefined;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const hold = (method: string, params: { readonly [key: string]: unknown }) =>
+		which(method, params) ? held : undefined;
+	host.hold = hold;
+	return () => {
+		if (host.hold === hold) host.hold = undefined;
+		release();
+	};
+}
+
+describe("moving a running sandbox to another host, with a restart", () => {
+	it("copies it as it runs, stops it, copies what it wrote since over that, and starts it on the target", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "written before the move");
+		const staging = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		const moving = root.moveSandbox(sandbox.id, { keepMemory: false });
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		// Copying: it still runs where it was, and runs commands there.
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({
+			state: "moving",
+			hostId: a.hostId,
+			move: { phase: "copying", keepMemory: false },
+		});
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("running");
+		expect(await root.runCommand(sandbox.id, { command: "echo hi" })).toMatchObject({ exitCode: 0 });
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
+		// What it writes as its first copy is fetched goes in its final copy.
+		a.disks.set(sandbox.id, "written as it moved");
+		const finalCopy = holding(b, (method, params) => method === "sandbox.import" && params.stage !== true);
+		staging();
+		await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(2));
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "moving", move: { phase: "final-copy" } });
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("starting");
+		finalCopy();
+		const moved = await moving;
+		expect(moved).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+		expect(b.disks.get(sandbox.id)).toBe("written as it moved");
+		// Its source: its first copy exported as it ran, then stopped without its memory or a snapshot, its final copy
+		// exported over the first, and its copy deleted once the move switched.
+		expect(methodsOf(a, sandbox.id).slice(-4)).toEqual([
+			"sandbox.export",
+			"sandbox.stop",
+			"sandbox.export",
+			"sandbox.delete",
+		]);
+		const sent = (host: FakeHost, method: string) =>
+			host.calls.filter((call) => call.method === method && call.params.sandboxId === sandbox.id).map((c) => c.params);
+		const [first, final] = sent(a, "sandbox.export");
+		expect(first).toMatchObject({ version: expect.stringMatching(/^mov_.*-live$/), live: true });
+		expect(final).toMatchObject({ base: first?.version });
+		expect(final?.version).toBe(String(first?.version).replace(/-live$/, ""));
+		expect(sent(a, "sandbox.stop")[0]).toMatchObject({ memory: false });
+		expect(sent(a, "sandbox.stop")[0]?.snapshotId).toBeUndefined();
+		// Its target: the first copy fetched and kept staged, the final one fetched over it, then started.
+		expect(methodsOf(b, sandbox.id)).toEqual(["sandbox.import", "sandbox.import", "sandbox.start"]);
+		const [staged, over] = sent(b, "sandbox.import");
+		expect(staged).toMatchObject({ version: first?.version, stage: true });
+		expect(over).toMatchObject({ version: final?.version, base: first?.version });
+		expect(b.staged.size).toBe(0);
+		expect(a.exports.size).toBe(0);
+		expect(a.sandboxes.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: b.hostId, state: "running" });
+		expect(placement?.move).toBeUndefined();
+	});
+
+	it("answers its target's disk.locate for its first copy while that is fetched", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		const staging = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		const moving = root.moveSandbox(sandbox.id, { keepMemory: false });
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		const version = String(b.calls.find((call) => call.method === "sandbox.import")?.params.version);
+		const id = "loc_live";
+		b.send({ type: "call", id, method: "disk.locate", params: { kind: "sandbox", objectId: sandbox.id, version } });
+		const found = await vi.waitFor(() => {
+			const answer = b.sent.find((message) => message.type === "result" && message.id === id);
+			if (answer === undefined) throw new Error("not answered yet");
+			return answer;
+		});
+		expect(found).toMatchObject({ result: { holders: [{ hostId: a.hostId }], grant: expect.any(String) } });
+		staging();
+		expect(await moving).toMatchObject({ state: "running", hostId: b.hostId });
+	});
+
+	it("starts it again on its source when the move fails after it was stopped", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.refuse = (method) =>
+			method === "sandbox.start" ? { code: "unavailable", message: "it didn't boot" } : undefined;
+		const error = await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		expect(error.message).toContain("it didn't boot");
+		const after = await root.getSandbox(sandbox.id);
+		expect(after).toMatchObject({ state: "running", hostId: a.hostId });
+		expect(after.move).toBeUndefined();
+		expect(methodsOf(a, sandbox.id).slice(-5)).toEqual([
+			"sandbox.stop",
+			"sandbox.export",
+			"sandbox.export.delete",
+			"sandbox.export.delete",
+			"sandbox.start",
+		]);
+		expect(a.sandboxes.get(sandbox.id)?.state).toBe("running");
+		expect(a.exports.size).toBe(0);
+		// Both copies on its target cancelled: the final one, and the first staged there.
+		expect(b.cancelled.size).toBe(2);
+		expect(b.staged.size).toBe(0);
+		expect(b.sandboxes.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: a.hostId, state: "running" });
+		expect(placement?.move).toBeUndefined();
+	});
+
+	it("leaves it running where it was, never stopped, when its first copy fails", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.refuse = (method) =>
+			method === "sandbox.import" ? { code: "unavailable", message: "the copy failed part way" } : undefined;
+		const error = await failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		expect(error.message).toContain("the copy failed part way");
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "running", hostId: a.hostId });
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
+		expect(a.exports.size).toBe(0);
+		expect(await root.runCommand(sandbox.id, { command: "echo hi" })).toMatchObject({ exitCode: 0 });
+	});
+
+	it("ends the move, never stopping it, when something else stops it while its first copy is made", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		const staging = holding(b, (method, params) => method === "sandbox.import" && params.stage === true);
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		// Stopped on another gateway meanwhile: its record moved on, as that gateway's stop would leave it.
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			state: "stopped",
+			lifecycle: (latest.lifecycle ?? 0) + 1,
+		}));
+		staging();
+		expect((await moving).code).toBe("conflict");
+		const after = await api.store.sandboxes.get(sandbox.id);
+		expect(after).toMatchObject({ state: "stopped", hostId: a.hostId });
+		expect(after?.moving).toBeUndefined();
+		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
+		expect(b.cancelled.size).toBe(2);
+		expect(a.exports.size).toBe(0);
+	});
+
+	it("is refused unless its memory may go, or where a host can't move a running sandbox", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const older = await join(MOVES);
+		const sandbox = await runningOn(root, api, a, "disk");
+		const kept = await failure(root.moveSandbox(sandbox.id, {}));
+		expect(kept.code).toBe("conflict");
+		expect(kept.message).toContain("keepMemory");
+		// Its only other host moves stopped sandboxes alone.
+		expect((await failure(root.moveSandbox(sandbox.id, { keepMemory: false }))).code).toBe("exhausted");
+		expect(older.calls.some((call) => call.method.startsWith("sandbox.import"))).toBe(false);
+		const onOlder = await runningOn(root, api, older, "disk");
+		await join(MOVES_RUNNING);
+		const refused = await failure(root.moveSandbox(onOlder.id, { keepMemory: false }));
+		expect(refused.code).toBe("not_supported");
+		expect(refused.message).toContain("running");
+		for (const id of [sandbox.id, onOlder.id]) {
+			expect(await root.getSandbox(id)).toMatchObject({ state: "running" });
+		}
+	});
+
+	it("settles a move whose target went away after the stop, starting it again on its source", async () => {
+		const clock = { at: Date.now() };
+		const { root, api, join } = await setup({ now: () => clock.at });
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		// Its target goes as it fetches the final copy: whether it imported it isn't known, and it can't be asked yet.
+		b.hold = (method, params) =>
+			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(2));
+		b.connection.closed(1006, "gone");
+		expect((await moving).code).toBe("unavailable");
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "moving", hostId: a.hostId });
+		expect(a.sandboxes.get(sandbox.id)?.state).toBe("stopped");
+		b.hold = undefined;
+		const welcomes = () => b.sent.filter((message) => message.type === "welcome").length;
+		const before = welcomes();
+		b.connect();
+		await vi.waitFor(() => expect(welcomes()).toBeGreaterThan(before));
+		clock.at += 3 * 60_000;
+		await api.service.sweep();
+		await vi.waitFor(async () =>
+			expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "running", hostId: a.hostId }),
+		);
+		expect(a.sandboxes.get(sandbox.id)?.state).toBe("running");
+		expect(b.cancelled.size).toBe(2);
+		expect(a.exports.size).toBe(0);
+	});
+});
