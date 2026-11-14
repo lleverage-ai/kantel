@@ -647,7 +647,7 @@ func (m *Manager) publishSnapshotDisk(id, path string, mapFile []byte) error {
 	if err := fsutil.WriteFileDurably(filepath.Join(staging, "disk.map"), mapFile, 0o600); err != nil {
 		return fail(err)
 	}
-	snap.SizeBytes, snap.UniqueBytes, snap.Shared = snapshotBytes(staging), 0, nil
+	snap.SizeBytes, snap.UniqueBytes, snap.Shared = m.snapshotBytes(staging), 0, nil
 	raw, _ = json.MarshalIndent(snap, "", "  ")
 	if err := fsutil.WriteFileDurably(filepath.Join(staging, "meta.json"), raw, 0o600); err != nil {
 		return fail(err)
@@ -690,7 +690,7 @@ func (m *Manager) publishSnapshotMemory(id, path string, mapFile, state []byte) 
 		return err
 	}
 	snap.Memory, snap.ColdBoot = true, false
-	snap.SizeBytes = snapshotBytes(dir)
+	snap.SizeBytes = m.snapshotBytes(dir)
 	raw, _ := json.MarshalIndent(snap, "", "  ")
 	return fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
 }
@@ -716,7 +716,7 @@ func (m *Manager) publishSnapshotDrive(id, version, path string, mapFile []byte)
 	if err := syncDir(dir); err != nil {
 		return err
 	}
-	snap.SizeBytes = snapshotBytes(dir)
+	snap.SizeBytes = m.snapshotBytes(dir)
 	raw, _ := json.MarshalIndent(snap, "", "  ")
 	return fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
 }

@@ -45,7 +45,6 @@ func (m *Manager) DiskBreakdown(seen *fsutil.Seen) DiskBreakdown {
 	}
 	files := map[fsutil.FileID]*file{}
 	out.SnapshotOwn = map[string]int64{}
-	bundle := func(name string) bool { return strings.HasPrefix(name, "bundle") }
 	for _, snap := range m.snapshotsOf("") {
 		out.SnapshotOwn[snap.ID] = 0
 		fsutil.Each(m.snapshotDir(snap.ID), seen, func(id fsutil.FileID, bytes int64) {
@@ -55,7 +54,7 @@ func (m *Manager) DiskBreakdown(seen *fsutil.Seen) DiskBreakdown {
 				files[id] = f
 			}
 			f.holders = append(f.holders, snap.ID)
-		}, bundle)
+		})
 	}
 	groups := map[string]*proto.SharedBytes{}
 	for id, f := range files {

@@ -662,6 +662,12 @@ func TestSnapshotMemoryWithItsDrives(t *testing.T) {
 	clone := append(bytes.Repeat([]byte{6}, 2*blockmap.BlockSize), bytes.Repeat([]byte{7}, blockmap.BlockSize)...)
 	saveTestSnapshot(t, a, "snap1", "old", true)
 	withTestDrives(t, a, "snap1", digest, image, clone)
+	// A's bundle drive is a link to its cache's image, as a save leaves it.
+	testBundleCache(t, a, digest, image)
+	aBundle := filepath.Join(a.snapshotDir("snap1"), bundleDriveFile(1))
+	if err := os.Remove(aBundle); err != nil || os.Link(a.cfg.Bundles.Image(digest), aBundle) != nil {
+		t.Fatal("linking A's bundle image")
+	}
 	// B's own build of the bundle's image differs in its first block; it holds the sticky disk's version too.
 	testBundleCache(t, b, digest, append(bytes.Repeat([]byte{4}, blockmap.BlockSize), image[blockmap.BlockSize:]...))
 	writeTestStickyVersion(t, b, "disk1", "v1", append(slices.Clone(clone[:2*blockmap.BlockSize]), bytes.Repeat([]byte{9}, blockmap.BlockSize)...))
@@ -778,7 +784,7 @@ func TestSnapshotMemoryWithItsDrives(t *testing.T) {
 	for _, e := range entries {
 		all += diskUsage(filepath.Join(b.snapshotDir("snap1"), e.Name()))
 	}
-	if got := snapshotBytes(b.snapshotDir("snap1")); got != all || copied.SizeBytes != all {
+	if got := b.snapshotBytes(b.snapshotDir("snap1")); got != all || copied.SizeBytes != all {
 		t.Fatalf("the copy's size %d (recorded %d), its files %d", got, copied.SizeBytes, all)
 	}
 	var allA int64
@@ -786,9 +792,20 @@ func TestSnapshotMemoryWithItsDrives(t *testing.T) {
 	for _, e := range entries {
 		allA += diskUsage(filepath.Join(a.snapshotDir("snap1"), e.Name()))
 	}
-	if got := snapshotBytes(a.snapshotDir("snap1")); got != allA-diskUsage(filepath.Join(a.snapshotDir("snap1"), bundleDriveFile(1))) {
+	if got := a.snapshotBytes(a.snapshotDir("snap1")); got != allA-diskUsage(filepath.Join(a.snapshotDir("snap1"), bundleDriveFile(1))) {
 		t.Fatalf("the original's size %d, its files %d", got, allA)
 	}
+	// A snapshot saved from a sandbox made from the copy links its bundle image: still its own bytes, counted.
+	if err := os.MkdirAll(b.snapshotDir("snap2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(b.snapshotDir("snap1"), bundleDriveFile(1)), filepath.Join(b.snapshotDir("snap2"), bundleDriveFile(1))); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.snapshotBytes(b.snapshotDir("snap2")); got == 0 || got != diskUsage(filepath.Join(b.snapshotDir("snap2"), bundleDriveFile(1))) {
+		t.Fatalf("a later snapshot's link to the copy's bundle image counts %d", got)
+	}
+	_ = os.RemoveAll(b.snapshotDir("snap2"))
 	bHeld := b.SnapshotHoldings()
 	for _, version := range []string{SnapshotDisk, SnapshotMemory, "sticky0", "bundle1"} {
 		if got := digestOf(bHeld, "snap1", version); got == "" || got != digestOf(held, "snap1", version) {
