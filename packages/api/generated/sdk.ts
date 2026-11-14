@@ -528,7 +528,8 @@ export interface CreateGithubRunnersBody {
 	readonly scope?: "organization" | "repository";
 	readonly runnerGroupId?: number;
 	readonly repositories?: readonly string[];
-	readonly pools: readonly GithubRunnerPool[];
+	/** Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it. */
+	readonly pools?: readonly GithubRunnerPool[];
 }
 
 export interface CreateHostJoinTokenBody {
@@ -1066,7 +1067,35 @@ export interface GithubRunnerJobList {
 	readonly items: readonly GithubRunnerJob[];
 }
 
-/** Runners of one shape, picked by a `runs-on` label. */
+/** Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools. */
+export interface GithubRunnerKind {
+	/** The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`. */
+	readonly integration: string;
+	/** The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. */
+	readonly label: string;
+	/** The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. */
+	readonly template: string;
+	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
+	readonly resources: GithubRunnerResources;
+	/** Of the pool's hosts, run only on those with each of these labels. */
+	readonly hostLabels?: {
+		readonly [key: string]: string;
+	};
+	/** Environments each runner starts with, IDs or names in the account, such as one holding a cache token. */
+	readonly environments?: readonly string[];
+	/** The most runners the pool has at once, starting or running. Default 20. */
+	readonly maxRunners?: number;
+	/** How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. */
+	readonly timeoutMinutes?: number;
+	/** Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). */
+	readonly stickyDisks?: readonly GithubRunnerStickyDisk[];
+	/** The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. */
+	readonly runnerCommand?: string;
+	/** Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. */
+	readonly repositories?: readonly string[];
+}
+
+/** Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool. */
 export interface GithubRunnerPool {
 	/** The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. */
 	readonly label: string;
@@ -1074,7 +1103,7 @@ export interface GithubRunnerPool {
 	readonly template: string;
 	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
 	readonly resources: GithubRunnerResources;
-	/** Run only on hosts with each of these labels. */
+	/** Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select. */
 	readonly hostLabels?: {
 		readonly [key: string]: string;
 	};
@@ -1691,6 +1720,8 @@ export interface Pool {
 	readonly hosts: number;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. */
 	readonly sync: boolean;
+	/** Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. */
+	readonly runners?: readonly GithubRunnerKind[];
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 }
@@ -2848,6 +2879,7 @@ export interface UpdateGithubRunnersBody {
 	readonly scope?: "organization" | "repository";
 	readonly runnerGroupId?: number | null;
 	readonly repositories?: readonly string[] | null;
+	/** Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none. */
 	readonly pools?: readonly GithubRunnerPool[];
 	readonly enabled?: boolean;
 }
@@ -2876,6 +2908,8 @@ export interface UpdatePoolBody {
 	readonly default?: true;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
 	readonly sync?: boolean;
+	/** Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. */
+	readonly runners?: readonly GithubRunnerKind[];
 }
 
 export interface UpdateSandboxBody {

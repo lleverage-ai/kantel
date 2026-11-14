@@ -76,6 +76,8 @@ A sandbox goes in a pool too: `kantel new --pool ci` (`pool` on create) places i
 
 Data belongs to one pool too. A snapshot is in the pool of the host it was taken on, and a sandbox made or forked from it goes only in that pool. A sticky disk is in the pool its create names (`pool`), else the pool of the first sandbox it's attached to, and it's attached only to sandboxes in that pool: naming no pool, a sandbox with it goes there, and naming another is refused. Each answers its `poolId`. A template stays one definition for the account, and is built once in each pool whose hosts can build it, which that pool's hosts share. Names stay unique across the account, whatever the pool, and nothing is copied between pools.
 
+[GitHub runners](/sandboxes/github-runners/) live in a pool too: a pool's `runners` are its runner kinds, one for each `runs-on` label, whose runners go only on its hosts.
+
 A move is explicit, and only a drained host with no sandboxes moves: drain it, let its sandboxes go, move it, then undrain it. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
 
 A pool's sync is off by default. With it on (`kantel pools sync ci on`, or `sync` on the pool in the API), each of the pool's hosts whose kantel-host runs the mesh joins the pool's mesh: a WireGuard network between that pool's hosts alone, each with an IPv6 address of its own in the pool's range. Kantel hands each host the others' keys, addresses and the endpoints they reported, and tells them at once when a host joins, leaves, is moved or removed. Hosts of different pools never peer. Turning sync off takes the pool's hosts out of the mesh.

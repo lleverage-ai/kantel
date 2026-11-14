@@ -556,11 +556,12 @@ type CreateEnvironmentBody struct {
 
 type CreateGithubRunnersBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
-	Account *string            `json:"account,omitempty"`
-	AppID   int64              `json:"appId"`
-	Name    string             `json:"name"`
-	Owner   string             `json:"owner"`
-	Pools   []GithubRunnerPool `json:"pools"`
+	Account *string `json:"account,omitempty"`
+	AppID   int64   `json:"appId"`
+	Name    string  `json:"name"`
+	Owner   string  `json:"owner"`
+	// Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it.
+	Pools []GithubRunnerPool `json:"pools,omitzero"`
 	// The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered.
 	PrivateKey    string   `json:"privateKey"`
 	Repositories  []string `json:"repositories,omitzero"`
@@ -1199,11 +1200,36 @@ const (
 	GithubRunnerJobStateIgnored    GithubRunnerJobState = "ignored"
 )
 
-// Runners of one shape, picked by a `runs-on` label.
+// Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools.
+type GithubRunnerKind struct {
+	// Environments each runner starts with, IDs or names in the account, such as one holding a cache token.
+	Environments []string `json:"environments,omitzero"`
+	// Of the pool's hosts, run only on those with each of these labels.
+	HostLabels map[string]string `json:"hostLabels,omitzero"`
+	// The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`.
+	Integration string `json:"integration"`
+	// The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.
+	Label string `json:"label"`
+	// The most runners the pool has at once, starting or running. Default 20.
+	MaxRunners *int64 `json:"maxRunners,omitempty"`
+	// Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels.
+	Repositories []string              `json:"repositories,omitzero"`
+	Resources    GithubRunnerResources `json:"resources"`
+	// The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.
+	RunnerCommand *string `json:"runnerCommand,omitempty"`
+	// Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`).
+	StickyDisks []GithubRunnerStickyDisk `json:"stickyDisks,omitzero"`
+	// The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path.
+	Template string `json:"template"`
+	// How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.
+	TimeoutMinutes *int64 `json:"timeoutMinutes,omitempty"`
+}
+
+// Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool.
 type GithubRunnerPool struct {
 	// Environments each runner starts with, IDs or names in the account, such as one holding a cache token.
 	Environments []string `json:"environments,omitzero"`
-	// Run only on hosts with each of these labels.
+	// Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select.
 	HostLabels map[string]string `json:"hostLabels,omitzero"`
 	// The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.
 	Label string `json:"label"`
@@ -1826,6 +1852,8 @@ type Pool struct {
 	ID string `json:"id"`
 	// Its name, unique among its owner's pools.
 	Name string `json:"name"`
+	// Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners.
+	Runners []GithubRunnerKind `json:"runners,omitzero"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default.
 	Sync bool `json:"sync"`
 }
@@ -3047,10 +3075,11 @@ type UpdateEnvironmentBody struct {
 }
 
 type UpdateGithubRunnersBody struct {
-	AppID         *int64             `json:"appId,omitempty"`
-	Enabled       *bool              `json:"enabled,omitempty"`
-	Name          *string            `json:"name,omitempty"`
-	Owner         *string            `json:"owner,omitempty"`
+	AppID   *int64  `json:"appId,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
+	Name    *string `json:"name,omitempty"`
+	Owner   *string `json:"owner,omitempty"`
+	// Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none.
 	Pools         []GithubRunnerPool `json:"pools,omitzero"`
 	PrivateKey    *string            `json:"privateKey,omitempty"`
 	Repositories  Nullable[[]string] `json:"repositories,omitzero"`
@@ -3086,6 +3115,8 @@ type UpdatePoolBody struct {
 	// Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again.
 	Default *bool   `json:"default,omitempty"`
 	Name    *string `json:"name,omitempty"`
+	// Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are.
+	Runners []GithubRunnerKind `json:"runners,omitzero"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
 	Sync *bool `json:"sync,omitempty"`
 }

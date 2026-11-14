@@ -14893,7 +14893,7 @@
 			},
 			"CreateGithubRunnersBody": {
 				"type": "object",
-				"required": ["name", "appId", "privateKey", "owner", "pools"],
+				"required": ["name", "appId", "privateKey", "owner"],
 				"properties": {
 					"account": {
 						"type": "string",
@@ -14950,7 +14950,8 @@
 							"$ref": "#/components/schemas/GithubRunnerPool"
 						},
 						"minItems": 1,
-						"maxItems": 20
+						"maxItems": 20,
+						"description": "Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it."
 					}
 				},
 				"title": "CreateGithubRunnersBody"
@@ -16482,6 +16483,83 @@
 				},
 				"title": "GithubRunnerJobList"
 			},
+			"GithubRunnerKind": {
+				"type": "object",
+				"required": ["integration", "label", "template", "resources"],
+				"properties": {
+					"integration": {
+						"type": "string",
+						"description": "The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`."
+					},
+					"label": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case."
+					},
+					"template": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path."
+					},
+					"resources": {
+						"$ref": "#/components/schemas/GithubRunnerResources"
+					},
+					"hostLabels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Of the pool's hosts, run only on those with each of these labels."
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"maxItems": 10,
+						"description": "Environments each runner starts with, IDs or names in the account, such as one holding a cache token."
+					},
+					"maxRunners": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 500,
+						"description": "The most runners the pool has at once, starting or running. Default 20."
+					},
+					"timeoutMinutes": {
+						"type": "integer",
+						"minimum": 5,
+						"maximum": 4320,
+						"description": "How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360."
+					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerStickyDisk"
+						},
+						"maxItems": 2,
+						"description": "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)."
+					},
+					"runnerCommand": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 4096,
+						"description": "The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig \"$KANTEL_RUNNER_JITCONFIG\"`."
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[^/\\s]+/[^/\\s]+$"
+						},
+						"maxItems": 500,
+						"description": "Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels."
+					}
+				},
+				"title": "GithubRunnerKind",
+				"description": "Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools."
+			},
 			"GithubRunnerPool": {
 				"type": "object",
 				"required": ["label", "template", "resources"],
@@ -16506,7 +16584,7 @@
 								"type": "string"
 							}
 						},
-						"description": "Run only on hosts with each of these labels."
+						"description": "Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select."
 					},
 					"environments": {
 						"type": "array",
@@ -16553,7 +16631,7 @@
 					}
 				},
 				"title": "GithubRunnerPool",
-				"description": "Runners of one shape, picked by a `runs-on` label."
+				"description": "Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool."
 			},
 			"GithubRunnerPoolStatus": {
 				"type": "object",
@@ -17980,6 +18058,13 @@
 					"sync": {
 						"type": "boolean",
 						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default."
+					},
+					"runners": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerKind"
+						},
+						"description": "Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners."
 					},
 					"createdAt": {
 						"type": "integer",
@@ -21024,8 +21109,8 @@
 						"items": {
 							"$ref": "#/components/schemas/GithubRunnerPool"
 						},
-						"minItems": 1,
-						"maxItems": 20
+						"maxItems": 20,
+						"description": "Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none."
 					},
 					"enabled": {
 						"type": "boolean"
@@ -21098,6 +21183,14 @@
 					"sync": {
 						"type": "boolean",
 						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
+					},
+					"runners": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerKind"
+						},
+						"maxItems": 100,
+						"description": "Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are."
 					}
 				},
 				"title": "UpdatePoolBody"
