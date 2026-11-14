@@ -3912,10 +3912,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					}
 					if (live && (reached === "copy" || reached === "stop")) {
 						await input.onStopping?.(target.id);
+						// Fenced on the source by its first copy there: once a rollback has deleted that, a stop sent late (this
+						// gateway stalled as another settled the move and started it again) is refused, never stopping it.
 						await onHost(
 							sourceHost.id,
 							HostMethods.stop,
-							{ sandboxId, memory: false },
+							{ sandboxId, memory: false, export: liveVersion },
 							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 						);
 						await moveOn((move) => ({ ...move, phase: "final-copy" }));

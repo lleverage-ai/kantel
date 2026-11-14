@@ -4051,6 +4051,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if ((await backend.hostConnected(hostId).catch(() => undefined)) === false) throw hostNotConnected();
 	}
 
+	const movingConflict = () =>
+		new KantelError("conflict", "The sandbox is moving to another host; try again once the move ends");
+
 	/**
 	 * Whether a sandbox is moving as the API answers it: a move under way is `starting` here, as a boot is, and `running`
 	 * while a running sandbox's first copy is made.
@@ -6833,6 +6836,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// The record as the move to stopping found it: what is stopped (its type and machine, for its snapshot) and what a
 		// handed-back stop puts back, never the caller's earlier read, which an upgrade may have changed since.
 		let was = sandbox;
+		// Never while it moves (a running sandbox's first copy being made, on any gateway): its move stops it, and it is
+		// stopped once it runs where it went.
 		const began = await transition(
 			sandbox.id,
 			sandbox.state,
@@ -6840,9 +6845,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				was = current;
 				return withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() });
 			},
-			still,
+			(current) => current.moving === undefined && (still?.(current) ?? true),
 		);
-		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+		if (!("moved" in began)) {
+			if (began.lost.moving !== undefined) throw movingConflict();
+			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+		}
 		const work = track([sandbox.id], async () => {
 			try {
 				await killCommandsOf(sandbox.id);
@@ -9883,6 +9891,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (current.state !== "running" && current.state !== "error") {
 					throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 				}
+				if (current.moving !== undefined) throw movingConflict();
 				const hosts = await hostsToBoot(principal, current);
 				const fromSnapshot = await latestRef(current);
 				requireSetupScope(principal, role, current);
@@ -9890,14 +9899,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await provisionedAgain(principal, role, current);
 				// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 				// say, still being retried) never equals it, and loses.
-				const began = await transition(current.id, current.state, (latest) =>
-					withState(latest, "starting", {
-						ports: [],
-						egressRevision: later(latest.egressRevision),
-						...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
-					}),
+				// Never over a move begun since the read above (on another gateway): its stop and publish are its own.
+				const began = await transition(
+					current.id,
+					current.state,
+					(latest) =>
+						withState(latest, "starting", {
+							ports: [],
+							egressRevision: later(latest.egressRevision),
+							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+						}),
+					(latest) => latest.moving === undefined,
 				);
-				if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+				if (!("moved" in began)) {
+					if (began.lost.moving !== undefined) throw movingConflict();
+					throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+				}
 				const starting = began.moved;
 				const provisioning = await provisionedAgain(principal, role, starting, true);
 				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
@@ -12657,6 +12674,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const move = backend.move;
 		if (move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
 		if (current.type !== "microvm") throw new KantelError("not_supported", "Only a microVM moves to another host");
+		if (current.moving !== undefined && current.moving.heartbeatAt + UPGRADE_STALE_MS <= now()) {
+			// A move gone quiet (its gateway gone), left on it in any state: settled first.
+			await settleStuckMove(current).catch(() => undefined);
+			return moveToHost(principal, role, sandboxId, body);
+		}
 		if (current.moving !== undefined || current.upgrading !== undefined) {
 			throw new KantelError("conflict", "The sandbox is being moved or upgraded already");
 		}
@@ -12886,6 +12908,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(latest) =>
 				latest.moving?.operationId === operationId &&
 				latest.moving.from === "running" &&
+				// `starting` only as this move's own stop left it (its phase on from copying), never another's start.
+				(latest.state === "running" || latest.moving.phase !== "copying") &&
 				// Its source revoked meanwhile: not stopped for a move that can only roll back there.
 				!(latest.hostId !== undefined && latest.strandedOn?.includes(latest.hostId) === true),
 		);
@@ -13247,6 +13271,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			// The use this gateway held back goes in first, so its own sweep never stops a sandbox that it saw used.
 			await flushActivity();
+			// A running sandbox's move whose sandbox exited meanwhile (`error`, its move left on it) and whose gateway has gone
+			// quiet: settled as one starting is, its record left as the exit left it.
+			for (const sandbox of await store.sandboxes.list({ state: "error" })) {
+				const moving = sandbox.moving;
+				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
+					await settleStuckMove(sandbox).catch(() => undefined);
+				}
+			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				// A running sandbox's move whose gateway has gone quiet, as for one starting above.
 				const moving = sandbox.moving;

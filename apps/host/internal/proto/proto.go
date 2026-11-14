@@ -1489,6 +1489,10 @@ type StopParams struct {
 	SnapshotID string `json:"snapshotId"`
 	// Memory keeps the memory too, so a resume continues running processes (default true).
 	Memory *bool `json:"memory,omitempty"`
+	// Export (FeatureSandboxMoveRunning) is a running sandbox's move's first copy here (SandboxExportParams.Live): the
+	// stop is that move's, done only while the export is whole (ErrConflict once its rollback has deleted it, so a late
+	// stop never stops the sandbox it started again), and done already when the sandbox is stopped.
+	Export string `json:"export,omitempty"`
 }
 
 // HostImagesParams is host.images's: with SandboxID, the answer's Version is where a rebase of that sandbox lands.

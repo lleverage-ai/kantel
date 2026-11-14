@@ -685,3 +685,34 @@ func TestSandboxImportWithoutItsBase(t *testing.T) {
 		t.Fatalf("a base that isn't staged: %v, %v", base, err)
 	}
 }
+
+// A running sandbox's move's stop is fenced by its first copy: refused once that export is gone (its rollback deleted
+// it), and done already when the sandbox is stopped, its memory let go.
+func TestTheMovesStopIsFencedByItsFirstCopy(t *testing.T) {
+	m := moveHost(t)
+	s := stoppedTestSandbox(t, m, "sb1", "old")
+	ctx := context.Background()
+	off := false
+	var pe *proto.Error
+	if _, err := m.Stop(ctx, proto.StopParams{SandboxID: "sb1", Memory: &off, Export: "mov_1-live"}); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+		t.Fatalf("a stop with no first copy here: %v", err)
+	}
+	if !s.meta.Memory {
+		t.Fatal("a refused stop let its memory go")
+	}
+	if _, err := m.ExportSandbox(ctx, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1-live", Live: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Stop(ctx, proto.StopParams{SandboxID: "sb1", Memory: &off, Export: "mov_1-live"}); err != nil {
+		t.Fatalf("the move's stop of a stopped sandbox: %v", err)
+	}
+	if s.meta.Memory || fileExists(filepath.Join(s.vmDir(), "mem")) {
+		t.Fatal("its memory wasn't let go")
+	}
+	if err := m.DeleteSandboxExport("sb1", "mov_1-live"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Stop(ctx, proto.StopParams{SandboxID: "sb1", Memory: &off, Export: "mov_1-live"}); !errors.As(err, &pe) || pe.Code != proto.ErrConflict {
+		t.Fatalf("a stop after its rollback: %v", err)
+	}
+}

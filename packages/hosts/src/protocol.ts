@@ -436,7 +436,9 @@ export const HOST_FEATURES = {
 	 * crash-consistent copy) as a version of its own, which the target fetches and keeps staged
 	 * (`HostSandboxImportParams.stage`); the sandbox is then stopped without its memory and exported again over that first
 	 * version (`base`: its maps made from the first's, `FIEMAP` telling the blocks written since), and the target fetches
-	 * the second version over its staged first (`base`), only the blocks that differ, and makes the sandbox from it.
+	 * the second version over its staged first (`base`), only the blocks that differ, and makes the sandbox from it. The
+	 * move's `sandbox.stop` names the first copy (`{ sandboxId, memory: false, export }`): it is done only while that
+	 * export is on the host (`conflict` once a rollback has deleted it), and done already when the sandbox is stopped.
 	 * Reported with `sandboxMove`.
 	 */
 	sandboxMoveRunning: "sandbox-move-running",
