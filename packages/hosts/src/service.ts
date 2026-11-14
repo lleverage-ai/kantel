@@ -2803,8 +2803,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (input.template !== undefined && tier !== "microvm") {
 					throw new KantelError("invalid", "A sandbox made from a template is a microVM");
 				}
-				if (input.template?.snapshot !== undefined && only?.size !== 1) {
-					throw new KantelError("invalid", "A sandbox made from a template snapshot goes on the snapshot's host");
+				// A template snapshot is on the hosts named: the one that built it and those with a copy, any of which restores it.
+				if (input.template?.snapshot !== undefined && (only === undefined || only.size === 0)) {
+					throw new KantelError("invalid", "A sandbox made from a template snapshot goes on a host that holds it");
 				}
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);

@@ -13,7 +13,7 @@
 
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { BackendDiskUsage, SandboxTemplateBoot, SnapshotMadeOn } from "./backend.ts";
+import type { BackendDiskUsage, CpuFingerprint, SandboxTemplateBoot, SnapshotMadeOn } from "./backend.ts";
 import type { StoredGithubRunnerJob, StoredGithubRunnerMachine, StoredGithubRunners } from "./github-runners.ts";
 import type { DiskKind } from "./grants.ts";
 import type { SealedValue } from "./secrets.ts";
@@ -330,7 +330,9 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * snapshot: a retry boots fresh. A custom image's (`rootfsKey`) names the hosts holding it (`holders`), the only ones
 	 * a retry may boot it on, among those the sandbox may use then.
 	 */
-	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
+	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot" | "snapshotHosts"> & {
+		readonly holders?: readonly string[];
+	};
 	/**
 	 * An upgrade to a microVM under way (it is `starting`): its operation ID, which its backend does at most once and can
 	 * settle (`SandboxBackend.settleUpgrade`), when it began and when its gateway last said it was at it (`heartbeatAt`:
@@ -1038,7 +1040,7 @@ export interface StoredStickyDiskVersion {
 export interface StoredDiskHolder {
 	readonly id: string;
 	readonly kind: DiskKind;
-	/** The object: a sticky disk's ID, or a template root filesystem's key. */
+	/** The object: a sticky disk's ID, a template root filesystem's key, or a template snapshot's ID. */
 	readonly objectId: string;
 	readonly version: string;
 	readonly hostId: string;
@@ -1050,15 +1052,22 @@ export interface StoredDiskHolder {
 	/** When it reached `state`. */
 	readonly since: number;
 	/**
-	 * The digest of its block map as its host reported it, for a kind whose versions have no record of their own (a
-	 * template's root filesystem); absent for a sticky disk's, whose version has it.
+	 * The digest of its block map as its host reported it, for a kind whose copies may differ (a template's root
+	 * filesystem, a template snapshot: a host that built its own holds other bytes than one that fetched it); absent for
+	 * a sticky disk's, whose version has it.
 	 */
 	readonly mapDigest?: string;
 	/**
-	 * The pool the copy was made in, as its host stamped it, for a kind with no record of its own (a template's root
-	 * filesystem): it is offered only there, so a host moved to another pool doesn't take the old pool's copies with it.
+	 * The pool the copy was made in, as its host stamped it, for a template's root filesystem or snapshot: it is offered
+	 * only there, so a host moved to another pool doesn't take the old pool's copies with it.
 	 */
 	readonly poolId?: string;
+	/**
+	 * What a template snapshot's copy was made on, as its host reported it: its CPU and its runtime fingerprint. Its
+	 * memory restores, and it is offered to fetch, only on a host they match (`memoryRestoresOn`).
+	 */
+	readonly cpu?: CpuFingerprint;
+	readonly runtime?: string;
 }
 
 export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>
