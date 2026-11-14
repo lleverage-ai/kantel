@@ -252,6 +252,11 @@ export interface JoinTokenView {
 
 export interface CreateSandboxInput {
 	readonly sandboxId?: string;
+	/**
+	 * The caller's attempt at making this sandbox (`SandboxSpec.attempt`), kept on its placement (`PlacementRecord.attempt`)
+	 * so a report of it is known to be about this attempt.
+	 */
+	readonly attempt?: number;
 	readonly tier: SandboxTier;
 	/** A microVM's named size, as asked for before shapes. Default `default`; `shape` wins. */
 	readonly size?: string;
@@ -3442,6 +3447,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					state: "starting",
 					createdAt: now,
 					updatedAt: now,
+					...(input.attempt === undefined ? {} : { attempt: input.attempt }),
 				};
 				// Only while its host still takes sandboxes in its pool: a drain or move since the hosts were read refuses it.
 				const admitted = await admit(placement, input.poolId, chosen.host.name);
@@ -3502,8 +3508,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (!SANDBOX_ID.test(newId)) throw new KantelError("invalid", "Not a valid sandbox ID");
 				refuseTaken(await store.getPlacement(newId));
 				const now = clock.now();
+				// Its own placement: no attempt of its source's carries over.
+				const { attempt: _sourceAttempt, ...sourced } = source;
 				const placement: PlacementRecord = {
-					...source,
+					...sourced,
 					sandboxId: newId,
 					state: "starting",
 					createdAt: now,
