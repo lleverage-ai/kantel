@@ -1078,24 +1078,24 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	 * Has `hostId` fetch a saved snapshot's disk from the hosts in its pool that hold it (`disk.fetch`, which the host
 	 * answers once it has started, asking `disk.locate` where it is), and waits until the host reports holding it
 	 * (`HostCapacity.holdings`, each heartbeat), for `SNAPSHOT_FETCH_TIMEOUT_MS` at most. Answers the host's error instead
-	 * once a report since it was asked lists the fetch as `failed` (`HostCapacity.fetches`); a host that doesn't report
+	 * once a report received after the host answered lists the fetch as `failed` (`HostCapacity.fetches`): one received
+	 * before, however late it was kept, is of an earlier fetch, which this one goes on from. A host that doesn't report
 	 * its fetches is waited for until the timeout. Its memory follows on its own where the host restores it; a create
 	 * before then boots on the disk.
 	 */
 	async function fetchSnapshot(hostId: string, snapshotId: string): Promise<string | undefined> {
 		const version = SNAPSHOT_VERSIONS.disk;
-		await hosts.diskFetch(hostId, { kind: "snapshot", objectId: snapshotId, version }).catch((error: unknown) => {
-			throw kantelErrorFromHost(error);
-		});
+		const answered = await hosts
+			.diskFetch(hostId, { kind: "snapshot", objectId: snapshotId, version })
+			.catch((error: unknown) => {
+				throw kantelErrorFromHost(error);
+			});
 		const timeout = options.snapshotFetchTimeoutMs ?? SNAPSHOT_FETCH_TIMEOUT_MS;
 		const until = now() + timeout;
-		// The report kept when the host answered: a failure it lists is an earlier fetch's, which this one goes on from.
-		let asked: number | undefined;
-		for (let first = true; ; first = false) {
+		for (;;) {
 			const state = await hosts.objectFetch(hostId, "snapshot", snapshotId, version);
 			if (state.held) return undefined;
-			if (first) asked = state.at;
-			else if (state.fetch?.state === "failed" && state.at !== undefined && (asked === undefined || state.at > asked)) {
+			if (state.fetch?.state === "failed" && state.at !== undefined && state.at > answered) {
 				return state.fetch.error ?? "its fetch failed";
 			}
 			if (now() >= until) {

@@ -733,9 +733,10 @@ export interface HostsService {
 	stickyReports(): Promise<HostStickyReport[]>;
 	/**
 	 * Has a host fetch a disk version from its peers (`disk.fetch`, `HOST_FEATURES.diskSync`), resolving once the fetch
-	 * has started; `unavailable` if away.
+	 * has started, to when the host answered (the clock a capacity report's `HostObjectFetch.at` is on): a report received
+	 * after says how this fetch goes. `unavailable` if away.
 	 */
-	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<void>;
+	diskFetch(hostId: string, params: HostDiskFetchParams): Promise<number>;
 	/**
 	 * What a host's last capacity report, as kept, says of a version of a disk store object (`HostObjectFetch`): whether
 	 * it holds it (`HostCapacity.holdings`), as a fetch it was told of has arrived once it does, and how its fetch goes
@@ -2748,6 +2749,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		async diskFetch(hostId, params) {
 			// Routed as any call to a host: on this replica's connection or another's.
 			await onHost(hostId, HostMethods.diskFetch, params);
+			return clock.now();
 		},
 		async stickyReports() {
 			// Only hosts connected here: one away (or on another replica) is left to whoever holds it now.

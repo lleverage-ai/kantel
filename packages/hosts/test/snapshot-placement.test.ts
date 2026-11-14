@@ -137,8 +137,8 @@ function fetchesThen(host: FakeHost, then: (host: FakeHost) => void) {
 /** Well under the 15 seconds between a host's heartbeats: one report, not the fetch's timeout. */
 const ONE_REPORT_MS = 5_000;
 
-async function setup(options: { readonly snapshotFetchTimeoutMs?: number } = {}) {
-	const store = createMemoryHostStore();
+async function setup(options: { readonly snapshotFetchTimeoutMs?: number; readonly store?: HostStore } = {}) {
+	const store = options.store ?? createMemoryHostStore();
 	const service = createHostsService({ store, publicUrl: "https://kantel.test", log: () => undefined });
 	services.push(service);
 	const backend: SandboxBackend = createHostBackend({
@@ -504,6 +504,37 @@ describe("a create from a saved snapshot", () => {
 		// An earlier fetch failed; asked again, it goes on from its partial and arrives.
 		reportsFetch(c, "failed", "a holder went away");
 		await new Promise((resolve) => setTimeout(resolve, 20));
+		fetchesThen(c, (host) => setTimeout(() => reportsHolding(host), 1_500));
+		const placed = await backend.create(
+			spec(["host_a", "host_c"], SNAPSHOT, {
+				holders: [{ hostId: "host_a", memory: false }],
+				memory: false,
+				fetch: true,
+			}),
+		);
+		expect(placed.hostId).toBe("host_c");
+	});
+
+	it("doesn't take a failure received before it was asked for this fetch's, though it was kept after", async () => {
+		// The host's reports are kept a while after they are received.
+		const memory = createMemoryHostStore();
+		let keptAfterMs = 0;
+		const store: HostStore = {
+			...memory,
+			async updateHost(hostId, update) {
+				const delay = keptAfterMs;
+				if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+				return memory.updateHost(hostId, update);
+			},
+		};
+		const { service, backend } = await setup({ store });
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		const c = await addHost(store, service, "host_c");
+		// An earlier fetch's failure, received now and kept only once the host has answered this one.
+		keptAfterMs = 300;
+		reportsFetch(c, "failed", "a holder went away");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		keptAfterMs = 0;
 		fetchesThen(c, (host) => setTimeout(() => reportsHolding(host), 1_500));
 		const placed = await backend.create(
 			spec(["host_a", "host_c"], SNAPSHOT, {
