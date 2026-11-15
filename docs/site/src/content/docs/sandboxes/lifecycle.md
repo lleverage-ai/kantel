@@ -201,6 +201,14 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/resume" \
 
 Give `size` to come back bigger or smaller. A start (`POST /v1/sandboxes/{sandboxId}/start`, `startSandbox`) takes the same body but always boots fresh from the newest disk snapshot: a paused sandbox's memory is let go, and its programs start again (the commands it was running are killed, saying so). Use it when a paused sandbox's programs are in a state you don't want back. Starting a sandbox that's already running answers it as it is.
 
+If a start or resume is never seen through (its host's answer is lost, or the Kantel gateway handling it stops), Kantel doesn't guess what happened. The sandbox stays `starting` while the gateway is still at it, and about two minutes after it goes quiet Kantel asks the host what it has:
+
+- **Running**: the sandbox is `running`.
+- **Stopped, still holding the memory it was paused with**: the sandbox is `paused` again, as it was, with `reason` saying why, and a resume carries on from that memory.
+- **Failed, stopped without that memory, or gone**: the sandbox is `error` with the host's reason. If it was paused, the commands it was running are killed, saying their memory was lost. Start it to boot it again.
+
+While the host is away or still booting it, the sandbox stays `starting`, and Kantel asks again later.
+
 ## Auto-stop and extending
 
 A sandbox stops by itself `autoStopMinutes` after each create, start or resume. While it runs, `stopsAt` says when. To give it longer, move its stop time from now:
