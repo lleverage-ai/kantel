@@ -788,14 +788,24 @@ var stickyTrimWait = 20 * time.Second
 // The first trim after a mount covers every free block (ext4 skips only groups trimmed since), so a sandbox's commit
 // from a version committed before this frees what that version kept too.
 //
-// Best effort, within stickyTrimWait: a drive booted without discard (its sandbox's machine, or the template it was
+// Best effort, within stickyTrimWait and what of the call's time (ctx's deadline) leaves the freeze its lease: a drive
+// booted without discard (its sandbox's machine, or the template it was
 // restored from, was made before), a trim still running or a slow or failed one only leaves the version as big as it
 // would have been. The guest's trim isn't stopped when the wait ends; one running on through the freeze discards only
 // blocks the file system doesn't use. Logs the drive file's allocated bytes before and after. Called with s.mu held.
 func (m *Manager) trimSticky(ctx context.Context, s *sandbox, d stickyDisk) {
 	file := filepath.Join(s.vmDir(), stickyDriveFile(d.Slot))
 	before := diskUsage(file)
-	tctx, cancel := context.WithTimeout(ctx, stickyTrimWait)
+	wait := stickyTrimWait
+	if deadline, ok := ctx.Deadline(); ok {
+		// The call's time (a commit queued behind another has spent some): the freeze and clone keep their lease.
+		wait = min(wait, time.Until(deadline)-stickyFreezeLease)
+	}
+	if wait <= 0 {
+		m.log.Info("no trim of a sticky disk before its commit: the call has no time left for it", "sandbox", s.meta.ID, "disk", d.DiskID, "allocatedBytes", before)
+		return
+	}
+	tctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	start := time.Now()
 	trimmed, err := m.guestTrimSticky(tctx, s.guest, d.Path)

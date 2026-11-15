@@ -627,6 +627,28 @@ func TestStickyTrimFallsBackToFstrim(t *testing.T) {
 	}
 }
 
+// A commit's trim takes only what of the call's time leaves its freeze the lease: none, when a commit queued ahead
+// of it has spent that.
+func TestStickyTrimWithinTheCallsTime(t *testing.T) {
+	root, err := os.MkdirTemp("", "sticky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	m := &Manager{cfg: Config{Root: root}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	f := newStickyFixture(t, "sbx_a", m)
+	d := stickyDisk{DiskID: "ci", Path: "/var/lib/ci", Slot: 0, State: proto.StickyMounted}
+	for left, want := range map[time.Duration]int{stickyFreezeLease - time.Second: 0, stickyFreezeLease + 10*time.Second: 1} {
+		ctx, cancel := context.WithTimeout(context.Background(), left)
+		before := f.took("/sticky/trim")
+		m.trimSticky(ctx, f.s, d)
+		cancel()
+		if got := f.took("/sticky/trim") - before; got != want {
+			t.Errorf("with %s left: %d trims, want %d", left, got, want)
+		}
+	}
+}
+
 // punchFreeExtents punches a hole over every free block of the ext4 file system in img (dumpe2fs's "Free blocks"),
 // as Firecracker does for a guest's trim of a drive with discard, and answers the bytes it punched.
 func punchFreeExtents(img string) (int64, error) {

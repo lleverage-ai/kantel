@@ -21,8 +21,9 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/blockmap"
 )
 
-// stickyMapWait is how long a commit waits for its version's map before it answers without its digest: with a commit
-// queued behind another's freeze and clone, and its own, within the control plane's 120 seconds for a call.
+// stickyMapWait is how long a commit waits for its version's map before it answers without its digest, and never past
+// the call's own deadline (the agent's, within the control plane's 120 seconds for a call), which a commit queued
+// behind another's trim, freeze and clone, and its own, has spent some of.
 var stickyMapWait = 45 * time.Second
 
 func (m *Manager) stickyMapFile(diskID, version string) string {
