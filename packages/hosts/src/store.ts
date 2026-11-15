@@ -87,6 +87,12 @@ export interface PlacementRecord {
 	readonly createdAt: number;
 	readonly updatedAt: number;
 	/**
+	 * The create attempt it was admitted for (`CreateSandboxInput.attempt`), which the host's reports of it are about: a
+	 * create's settlement takes only these as word on its own attempt. Absent: none was said (a fork, a placement from
+	 * before it was kept), which settles nothing.
+	 */
+	readonly attempt?: number;
+	/**
 	 * An isolate's upgrade to a microVM under way, kept before anything is sent: its operation ID, the host its microVM
 	 * is (or may be) on and at what size, and whether that host does it itself (`host`) or Kantel copies the files to it
 	 * (`copy`), so one whose answer or gateway is lost is settled, not guessed.

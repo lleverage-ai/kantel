@@ -23,10 +23,15 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-function setUp(stickyDisks = true, wrap: (backend: SandboxBackend) => SandboxBackend = (backend) => backend) {
+function setUp(
+	stickyDisks = true,
+	wrap: (backend: SandboxBackend) => SandboxBackend = (backend) => backend,
+	store?: ComputeStore,
+) {
 	const clock = { now: Date.UTC(2026, 10, 11) };
 	const api = createComputeApi({
 		backend: wrap(createStubBackend()),
+		...(store === undefined ? {} : { store }),
 		stickyDisks,
 		now: () => clock.now,
 		authenticatePerson: async (request) =>
@@ -71,6 +76,33 @@ describe("sticky disks", () => {
 		expect((await tom.getStickyDisk("ci-cache")).versions?.map((item) => item.id)).toEqual([next.id, version.id]);
 		await tom.deleteStickyDisk("ci-cache");
 		expect((await tom.listStickyDisks()).items).toEqual([]);
+	});
+
+	it("ends a create in error, said so, when its disk can't be read for its boot", async () => {
+		const store = createMemoryStore();
+		// Its disk read fine for the create's checks, then not once the sandbox is stored (deleted meanwhile, or the store
+		// failing): its boot is what fails, not the call.
+		let stored = false;
+		const { get } = store.stickyDisks;
+		store.stickyDisks.get = async (id) => {
+			if (stored) throw new Error("The store didn't answer");
+			return get(id);
+		};
+		const { put } = store.sandboxes;
+		store.sandboxes.put = async (sandbox) => {
+			await put(sandbox);
+			stored = true;
+		};
+		const tom = setUp(true, undefined, store);
+		await tom.createStickyDisk({ name: "ci-cache", sizeGb: 10 });
+		const created = await tom.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci" }],
+			wait: true,
+		});
+		expect(created).toMatchObject({ state: "error", reason: expect.stringContaining("didn't answer") });
+		stored = false;
+		expect((await tom.getSandbox(created.id)).state).toBe("error");
 	});
 
 	it("gives a name to one disk at a time, and frees it when the disk is deleted", async () => {
