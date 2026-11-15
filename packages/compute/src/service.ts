@@ -6603,7 +6603,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			timer = setTimeout(() => resolve(undefined), RECONCILE_MS);
 		});
 		const reconciled = await Promise.all(
-			running.map(async (listed) => (await Promise.race([fetchedCommand(listed), budget])) ?? listed),
+			running.map(
+				async (listed) => (await Promise.race([fetchedCommand(listed).catch(() => listed), budget])) ?? listed,
+			),
 		);
 		if (timer !== undefined) clearTimeout(timer);
 		return reconciled;
@@ -7159,7 +7161,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// What it kept: a host that couldn't pause the machine (its Firecracker not answering) stops it cold, and says
 				// so (`memory: false`); it is then stopped, not paused, and its commands ended with it.
 				const kept = keepMemory && taken.memory !== false;
-				if (keepMemory && !kept) await killCommandsOf(sandbox.id, { note: PAUSE_STOPPED_COLD, reconcile: false });
+				// Best effort: its stop records its memory gone (below), so a later read or the sweep kills any not killed now.
+				if (keepMemory && !kept) {
+					await killCommandsOf(sandbox.id, { note: PAUSE_STOPPED_COLD, reconcile: false }).catch(() => undefined);
+				}
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -7184,6 +7189,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await holdSnapshot(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
 					withState(current, kept ? "paused" : "stopped", {
+						// A pause its host turned into a cold stop: its memory, and the processes it kept, are gone, recorded
+						// with the stop, so that the rule kills any of its commands the kill above couldn't write.
+						...(keepMemory && !kept ? droppedMemory(current, PAUSE_STOPPED_COLD) : {}),
 						latestSnapshotId: snapshot.id,
 						latestSnapshotAt: snapshot.createdAt,
 						ports: [],
@@ -12451,11 +12459,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await store.commands.delete(command.id);
 			throw accountClosed();
 		}
-		// Read again last, just before it is sent: a boot that let go of the memory it was read in since then (which a
-		// pause, or a move's stop, had to come before) means it runs in the one after, as it isn't sent yet. One killed
-		// meanwhile (with that memory, or by anyone) never runs. A drop between this read and its sending would need a
-		// whole stop and boot in that time.
-		const generation = (await store.sandboxes.get(current.id))?.memoryDropped?.generation ?? 0;
+		// Read again last, just before it is sent, and only once it runs (a boot under way is waited for, as its start
+		// was): a boot that let go of the memory it was read in since then (which a pause, or a move's stop, had to come
+		// before, and which is recorded as that boot is published) means it runs in the one after, as it isn't sent yet.
+		// One whose sandbox no longer runs is refused as its start would be, and forgotten; one killed meanwhile (with
+		// that memory, or by anyone) never runs. A drop between this read and its sending would need a whole stop and
+		// boot in that time.
+		let running: StoredSandbox;
+		try {
+			running = await requireRunning(principal, current.id);
+		} catch (error) {
+			await store.commands.delete(command.id).catch(() => undefined);
+			throw error;
+		}
+		const generation = running.memoryDropped?.generation ?? 0;
 		let admitted = false;
 		await store.commands.update(command.id, (latest) => {
 			admitted = latest.state === "running";
@@ -14238,15 +14255,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 		};
 		const work = track([current.id], async () => {
-			const resumes = how === "resume" && current.state === "paused";
+			// Resumed (from paused, or from error after a resume that failed): a kill made while it was paused reaches the
+			// command its memory kept, if that memory came back; a guest that doesn't know the command takes it as done.
+			const resumes = how === "resume";
 			return bootProvisioned(
 				current.id,
 				async () => {
 					const placement = await bootAgain(starting, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					);
-					// Resumed from its memory: a kill made while it was paused reaches the command it kept, as soon as it runs
-					// there, before it is published (whatever happens to its publishing).
+					// As soon as it runs, before it is published (whatever happens to its publishing).
 					if (resumes) await sendPendingKills(current.id).catch(() => undefined);
 					return placement;
 				},
