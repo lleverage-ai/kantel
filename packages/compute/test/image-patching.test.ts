@@ -370,6 +370,41 @@ describe("image patching on", () => {
 		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
 	});
 
+	it("kills the commands a paused sandbox kept running when it restarts on the latest base, saying why", async () => {
+		const { api, tom } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const accountId = (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "";
+		// Older than a command its backend doesn't know is taken as lost after: killed all the same, never asked.
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId,
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		// Its kill can't be written: it restarts all the same, and a read of the command then kills it.
+		const update = api.store.commands.update.bind(api.store.commands);
+		api.store.commands.update = async () => {
+			throw new Error("the store went away");
+		};
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		api.store.commands.update = update;
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		expect(await tom.getCommand(sandbox.id, "cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("started afresh from its disk, which let go of the memory it was paused with"),
+		});
+	});
+
 	it("keeps a custom-shape sandbox's vCPUs, memory and disk when it restarts on the latest base", async () => {
 		const { api, tom, starts } = setup(indexed);
 		const sandbox = await tom.createSandbox({ type: "microvm", resources: { vcpus: 3, memoryMb: 6144 }, wait: true });

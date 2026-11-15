@@ -722,6 +722,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		commandId: string,
 		signal: AbortSignal | undefined,
 		unanswered?: unknown,
+		/** Told each time its host answers that the sandbox isn't running there (`conflict`: paused, stopping, starting). */
+		notRunning?: () => void,
 	): Promise<ExecResult> {
 		let backoff = EXEC_RETRY_MIN_MS;
 		for (;;) {
@@ -745,12 +747,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						stderr:
 							"The sandbox's host no longer knows this command (it or the sandbox restarted), so its result is lost\n",
 						timedOut: false,
+						unknown: true,
 					};
 				}
 				// Asked again only while the host is out of reach (`unavailable`), or busy with the sandbox (`conflict`),
 				// or for a peer replica's plain error: any other refusal (`not_supported`, `forbidden`,
 				// `invalid`) is final, and ends the command with it rather than leave it running.
 				if (isKantelError(error) && error.code !== "unavailable" && error.code !== "conflict") throw error;
+				if (isKantelError(error) && error.code === "conflict") notRunning?.();
 				await pause(backoff, signal);
 				backoff = Math.min(backoff * 2, EXEC_RETRY_MAX_MS);
 				continue;
@@ -765,9 +769,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	/**
 	 * A foreground command's end after its host's connection went while it ran, or its sandbox was stopped keeping its
 	 * memory (`lost`, why its call ended): followed by its ID as a detached one is, until its own limit and
-	 * `FOREGROUND_RECONNECT_GRACE_MS` more have passed. A host that doesn't come back by then ends it with `lost`, said
-	 * so; one that no longer knows the command (one from before keeping a foreground command past its connection, or a
-	 * guest from before keeping it past a pause or move) with `forgotten`.
+	 * `FOREGROUND_RECONNECT_GRACE_MS` more have passed since its host last said the sandbox isn't running (a pause, or
+	 * a move, holds the command, and its limit, for as long as it lasts). A host that doesn't come back by then ends it
+	 * with `lost`, said so; one that no longer knows the command (one from before keeping a foreground command past its
+	 * connection, or a guest from before keeping it past a pause or move) with `forgotten`.
 	 */
 	async function foregroundEnd(
 		sandboxId: string,
@@ -777,13 +782,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		forgotten: KantelError = lost,
 	): Promise<ExecResult> {
 		const deadline = new AbortController();
-		const timer = setTimeout(
-			() => deadline.abort(),
-			(request.timeoutMs ?? GUEST_DEFAULT_LIMIT_MS) + FOREGROUND_RECONNECT_GRACE_MS,
-		);
+		const waitMs = (request.timeoutMs ?? GUEST_DEFAULT_LIMIT_MS) + FOREGROUND_RECONNECT_GRACE_MS;
+		let timer = setTimeout(() => deadline.abort(), waitMs);
+		const held = () => {
+			clearTimeout(timer);
+			timer = setTimeout(() => deadline.abort(), waitMs);
+		};
 		const signal = request.signal === undefined ? deadline.signal : AbortSignal.any([request.signal, deadline.signal]);
 		try {
-			return await commandEnd(sandboxId, commandId, signal, forgotten);
+			return await commandEnd(sandboxId, commandId, signal, forgotten, held);
 		} catch (error) {
 			// Stopped waiting by the caller (a kill, the gateway closing): as any aborted call.
 			if (request.signal?.aborted) throw error;

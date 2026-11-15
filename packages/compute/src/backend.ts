@@ -837,6 +837,11 @@ export interface ExecResult {
 	};
 	/** In an isolate: its runtime stopped it for using too much CPU time, memory or wall time. */
 	readonly terminated?: "cpu" | "memory" | "wall";
+	/**
+	 * Made up by the backend, not where the command ran: its sandbox's host no longer knows it (it, or the sandbox,
+	 * restarted), so its result is lost, as `stderr` says.
+	 */
+	readonly unknown?: true;
 }
 
 /** What `upgrade` answers: the microVM's placement, and how its files got there. */

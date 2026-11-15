@@ -128,6 +128,11 @@ export class FakeHost {
 	 */
 	keepsCommands = false;
 	/**
+	 * For a test: a stop asked to keep its sandbox's memory stops it cold instead, as a host whose Firecracker won't
+	 * pause does: its commands end with its machine, and the stop is answered a moment later, `memory: false`.
+	 */
+	stopsCold = false;
+	/**
 	 * The commands each sandbox's guest keeps by ID (`<sandboxId>/<commandId>`), in its memory: every host's, as a
 	 * sandbox moved with its memory has the same guest. A test ends one by setting its result.
 	 */
@@ -321,7 +326,8 @@ export class FakeHost {
 			case "sandbox.stop": {
 				const sandbox = this.sandboxes.get(params.sandboxId);
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
-				const keeps = (message.params as { memory?: boolean }).memory !== false;
+				const cold = this.stopsCold && (message.params as { memory?: boolean }).memory !== false;
+				const keeps = (message.params as { memory?: boolean }).memory !== false && !cold;
 				// Its commands' calls break with its machine: kept in its memory they carry on, else they end with it.
 				for (const [key, end] of this.foreground) {
 					if (!key.startsWith(`${sandbox.id}/`)) continue;
@@ -343,6 +349,10 @@ export class FakeHost {
 				this.processes.delete(sandbox.id);
 				const stopped = { ...sandbox, state: "stopped" as const, memory: keeps };
 				this.sandboxes.set(sandbox.id, stopped);
+				if (cold) {
+					setTimeout(() => answer(stopped), 200);
+					return;
+				}
 				return answer(stopped);
 			}
 			case "sandbox.start":
@@ -353,6 +363,12 @@ export class FakeHost {
 					const kept = message.method === "sandbox.resume" ? this.memories.get(sandbox.id) : undefined;
 					this.processes.set(sandbox.id, kept ?? "booted");
 					this.memories.delete(sandbox.id);
+					// Booted afresh, its guest knows none of the commands its memory ran.
+					if (kept === undefined) {
+						for (const key of FakeHost.guestCommands.keys()) {
+							if (key.startsWith(`${sandbox.id}/`)) FakeHost.guestCommands.delete(key);
+						}
+					}
 				}
 				const running = { ...sandbox, state: "running" as const };
 				this.sandboxes.set(sandbox.id, running);
