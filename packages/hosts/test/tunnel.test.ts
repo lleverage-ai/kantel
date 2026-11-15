@@ -103,7 +103,10 @@ function behaves(open: () => Promise<RelayStore>) {
 		const [otherId = "", otherSecret = ""] = other.split(".");
 		expect(await tickets.verify(`${id}.${otherSecret}`, now)).toBeUndefined();
 		expect(await tickets.verify(`${otherId}.${secret}`, now)).toBeUndefined();
-		expect(await tickets.verify(`${id}.${secret.slice(0, -2)}AA`, now)).toBeUndefined();
+		// Its last two characters changed, to ones they aren't: a random secret ends in "AA" 1 time in 1,024.
+		const altered = `${secret.slice(0, -2)}${secret.endsWith("AA") ? "BB" : "AA"}`;
+		expect(altered).not.toBe(secret);
+		expect(await tickets.verify(`${id}.${altered}`, now)).toBeUndefined();
 		expect(await tickets.verify(`${id}.${"A".repeat(43)}`, now)).toBeUndefined();
 		// A ticket nobody issued, of the right shape.
 		expect(await tickets.verify(`${"B".repeat(16)}.${"A".repeat(43)}`, now)).toBeUndefined();
