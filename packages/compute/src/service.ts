@@ -74,6 +74,7 @@ import {
 	type CommandProgress,
 	type ExecResult,
 	hostNotConnected,
+	isBootDroppedMemory,
 	isCommandProgress,
 	isCreateOutcomeUnknown,
 	isDetachedWaitEnded,
@@ -6860,6 +6861,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Its host was sent it and didn't answer (its connection dropped): it may have made it, so it stays starting
 			// until the sweep settles it from what the host reports (`settleLostCreate`), never failed on a guess.
 			if (isCreateOutcomeUnknown(error)) return undefined;
+			// Failed after its backend let go of the memory it was paused with (a rebase): a drop pending is recorded with
+			// its `error`, as its publishing would have, and the commands that ran in that memory killed, saying why.
+			if (isBootDroppedMemory(error)) {
+				let drops = false;
+				const failed = await fail(sandboxId, error, "starting", undefined, (sandbox) => {
+					drops = sandbox.memoryDropping !== undefined;
+					return sandbox.memoryDropping === undefined ? {} : droppedMemory(sandbox, sandbox.memoryDropping);
+				});
+				if (failed !== undefined && drops) await killDroppedOf(failed).catch(() => undefined);
+				return failed;
+			}
 			return fail(sandboxId, error, "starting");
 		}
 		// Its machine's phases, from this start: none where its backend didn't say, not a previous start's.
@@ -7136,6 +7148,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		error: unknown,
 		from: SandboxState,
 		still?: (current: StoredSandbox) => boolean,
+		/** What else the move to `error` writes, from the sandbox as it is then. */
+		also?: (current: StoredSandbox) => Partial<StoredSandbox>,
 	): Promise<StoredSandbox | undefined> {
 		const reason = messageOf(error);
 		const placementReason = placementReasonOf(error);
@@ -7143,7 +7157,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sandboxId,
 			from,
 			(sandbox) =>
-				withState(sandbox, "error", { reason, ...(placementReason === undefined ? {} : { placementReason }) }),
+				withState(sandbox, "error", {
+					...also?.(sandbox),
+					reason,
+					...(placementReason === undefined ? {} : { placementReason }),
+				}),
 			still,
 		).catch(() => undefined);
 		if (result === undefined || !("moved" in result)) return undefined;

@@ -52,6 +52,12 @@ export interface HostError {
 	 * answered, or the call never left.
 	 */
 	readonly unanswered?: boolean;
+	/**
+	 * A `sandbox.start` that failed after its host let go of the memory the sandbox was stopped with
+	 * (`HOST_FEATURES.startMemoryDropped`): a rebase clears it before it relinks the root filesystem and boots. Absent,
+	 * the memory is where it was.
+	 */
+	readonly memoryDropped?: boolean;
 }
 
 export type SandboxTier = "microvm" | "isolate";
@@ -463,6 +469,13 @@ export const HOST_FEATURES = {
 	 * (`HostMeshPeerHealth.fetchBytesPerSecond`). Reported with `sandboxMoveRunning`.
 	 */
 	sandboxMoveMemory: "sandbox-move-memory",
+	/**
+	 * A `sandbox.start` that fails after its host let go of the memory the sandbox was stopped with (a rebase clears it
+	 * before it relinks the root filesystem and boots) says so in its error (`HostError.memoryDropped`), so Kantel ends
+	 * the commands that ran in that memory; one that fails without it kept the memory. A host from before says neither,
+	 * and its failed start is taken to have kept it. The microVM tier.
+	 */
+	startMemoryDropped: "start-memory-dropped",
 } as const;
 
 /** A moved sandbox's parts (`HOST_FEATURES.sandboxMove`), in its manifest's order: its disk and its two sticky drives. */

@@ -383,6 +383,18 @@ func (h *Host) gatewayUpdate(ctx context.Context, p proto.UpdateParams, update U
 }
 
 func toError(err error) *proto.Error {
+	pe := protoError(err)
+	// A start that let go of the sandbox's memory before it failed says so (FeatureStartMemoryDropped).
+	var dropped *proto.MemoryDroppedError
+	if errors.As(err, &dropped) && !pe.MemoryDropped {
+		out := *pe
+		out.MemoryDropped = true
+		return &out
+	}
+	return pe
+}
+
+func protoError(err error) *proto.Error {
 	var pe *proto.Error
 	if errors.As(err, &pe) {
 		return pe

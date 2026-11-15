@@ -68,6 +68,8 @@ class FakeHost {
 	/** What `snapshot.list` answers, and whether it refuses instead. */
 	listing: { id: string; sizeBytes?: number }[] = [];
 	listRefusal = false;
+	/** An error `sandbox.start` answers instead of booting: one that says its memory went, say. */
+	startRefusal?: { code: string; message: string; memoryDropped?: boolean };
 	receive!: (text: string) => void;
 
 	constructor(
@@ -179,6 +181,9 @@ class FakeHost {
 			case "sandbox.resume":
 			case "sandbox.start":
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				if (message.method === "sandbox.start" && this.startRefusal !== undefined) {
+					return this.receive(JSON.stringify({ type: "result", id: message.id, error: this.startRefusal }));
+				}
 				sandbox.state = "running";
 				return answer(info(sandbox));
 			case "sandbox.delete":
@@ -279,7 +284,7 @@ afterEach(async () => {
 	for (const close of closers.splice(0).reverse()) await close();
 });
 
-function setup(options: { ports?: boolean } = {}) {
+function setup(options: { ports?: boolean; baseImages?: Parameters<typeof createComputeApi>[0]["baseImages"] } = {}) {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
 	const relay = createMemoryRelayStore();
 	const tickets = createTunnelTickets(relay);
@@ -307,6 +312,7 @@ function setup(options: { ports?: boolean } = {}) {
 		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
+		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 	});
 	compute = api;
 	service.useJoinTokens(joinTokenSpender(api.store));
@@ -1164,6 +1170,113 @@ describe("a restart on the latest base, checked with the host first", () => {
 		await expect(prepare()).rejects.toMatchObject({ code: "unavailable" });
 		// No sandbox stopped for any of it.
 		expect(host.calls.filter((method) => method === "sandbox.stop")).toEqual([]);
+	});
+});
+
+describe("a restart on the latest base that fails on its host", () => {
+	const LATEST = "host-images-20261104.812";
+	const baseImages = {
+		indexUrl: "https://example.test/index.json",
+		index: async () => ({
+			version: 1,
+			generatedAt: "2026-11-04T02:00:00.000Z",
+			images: [
+				{
+					name: "host",
+					repository: "https://example.test/host",
+					channels: { stable: `sha256:${"c".repeat(64)}` },
+					versions: [
+						{
+							version: LATEST,
+							digest: `sha256:${"c".repeat(64)}`,
+							builtAt: "2026-11-04T00:00:00.000Z",
+							signed: true,
+						},
+					],
+				},
+			],
+		}),
+	};
+	const KILLED = "started afresh from its disk, which let go of the memory it was paused with";
+
+	/**
+	 * A paused sandbox on a host on the latest images, reporting `features`, with a command its memory kept running,
+	 * whose restart on latest the host refuses with `refusal`.
+	 */
+	async function failedRestart(
+		features: readonly string[],
+		refusal: { code: string; message: string; memoryDropped?: boolean },
+	) {
+		const { service, api, root } = setup({ baseImages });
+		const told = { ...facts, features: [...features] };
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts: told });
+		const host = new FakeHost(service, hostId);
+		host.facts = told;
+		host.images = LATEST;
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("paused");
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		host.startRefusal = refusal;
+		await root.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect(host.params.find((call) => call.method === "sandbox.start")?.params).toMatchObject({
+			rebase: true,
+			rebaseTo: LATEST,
+		});
+		const failed = await api.store.sandboxes.get(sandbox.id);
+		expect(failed?.state).toBe("error");
+		expect(failed?.memoryDropping).toBeUndefined();
+		return { api, root, sandbox, failed };
+	}
+
+	it("kills the commands of the memory its host says it let go of, saying why", async () => {
+		const { api, root, sandbox, failed } = await failedRestart(["image-patching", "start-memory-dropped"], {
+			code: "internal",
+			message: "no free sandbox addresses",
+			memoryDropped: true,
+		});
+		expect(failed?.memoryDropped).toMatchObject({ generation: 1, why: expect.stringContaining(KILLED) });
+		expect(failed?.reason).toContain("no free sandbox addresses");
+		// Killed as it failed, not left for a read to find lost.
+		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining(KILLED),
+		});
+		expect(await root.getCommand(sandbox.id, "cmd_kept")).toMatchObject({ state: "killed" });
+	});
+
+	it("leaves them running when its host failed before letting the memory go", async () => {
+		const { api, failed } = await failedRestart(["image-patching", "start-memory-dropped"], {
+			code: "unavailable",
+			message: "this host hasn't taken host-images-20261104.812",
+		});
+		expect(failed?.memoryDropped).toBeUndefined();
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+	});
+
+	it("leaves them running on a host without the feature, whatever its error says", async () => {
+		const { api, failed } = await failedRestart(["image-patching"], {
+			code: "internal",
+			message: "no free sandbox addresses",
+			memoryDropped: true,
+		});
+		expect(failed?.memoryDropped).toBeUndefined();
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
 	});
 });
 

@@ -342,7 +342,7 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureProcesses)
 	}
 	if _, ok := h.tiers[microvm.Tier]; ok {
-		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps)
+		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps, proto.FeatureStartMemoryDropped)
 	}
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(GuestReporter); ok {

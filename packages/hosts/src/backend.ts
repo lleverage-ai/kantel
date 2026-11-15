@@ -29,6 +29,7 @@ import {
 	type BackendStickyDiskStatus,
 	type BootOptions,
 	type BuiltTemplate,
+	bootDroppedMemory,
 	type CommandProgress,
 	type CreateOutcome,
 	createOutcomeUnknown,
@@ -95,6 +96,7 @@ import {
 	type HostsService,
 	hostWasAway,
 	kantelErrorFromHost,
+	memoryDroppedOnHost,
 	mountHandoff,
 	type SandboxPlacement,
 	suspendedOnHost,
@@ -859,19 +861,34 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const mounts = mountHandoff(wanted === undefined ? undefined : await featuresOf(hostId), wanted);
 		// With a revision the host takes the boot's egress as stated, none being its default (a clear); an update read
 		// before this boot, with an older revision, is refused after it.
-		const sandbox = await call<HostSandbox>(sandboxId, method, {
-			...egressOf(how.egress),
-			...(revision === undefined ? {} : { revision }),
-			// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
-			// to land anywhere else.
-			...(method === "sandbox.start" && how.rebase === true
-				? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
-				: {}),
-			// A recovery: a machine the host has running is reset and booted cold from its disk (`HOST_FEATURES.guestHealth`;
-			// a host without it ignores the field).
-			...(reset ? { reset: true } : {}),
-			...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
-		});
+		let sandbox: HostSandbox;
+		try {
+			sandbox = await call<HostSandbox>(sandboxId, method, {
+				...egressOf(how.egress),
+				...(revision === undefined ? {} : { revision }),
+				// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
+				// to land anywhere else.
+				...(method === "sandbox.start" && how.rebase === true
+					? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
+					: {}),
+				// A recovery: a machine the host has running is reset and booted cold from its disk
+				// (`HOST_FEATURES.guestHealth`; a host without it ignores the field).
+				...(reset ? { reset: true } : {}),
+				...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
+			});
+		} catch (error) {
+			// A start that failed after its host let go of the sandbox's memory, as a host with the feature says: its
+			// commands end with it. A host without the feature never says, and its failed start kept the memory.
+			if (
+				method === "sandbox.start" &&
+				isKantelError(error) &&
+				memoryDroppedOnHost(error) &&
+				(await featuresOf(hostId).catch((): readonly string[] => [])).includes(HOST_FEATURES.startMemoryDropped)
+			) {
+				throw bootDroppedMemory(error);
+			}
+			throw error;
+		}
 		const statuses = mounts.status(sandbox);
 		return placed(sandboxId, sandbox, hostId, statuses === undefined ? {} : { mounts: statuses });
 	}

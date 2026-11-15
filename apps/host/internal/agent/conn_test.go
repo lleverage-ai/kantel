@@ -2,14 +2,18 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -82,5 +86,41 @@ func TestGatewayUpdatesRunOneAtATime(t *testing.T) {
 	}
 	if failed != 4 {
 		t.Fatalf("%d updates failed, want 4: a failed one must still let the others run", failed)
+	}
+}
+
+// A start's error once its tier let go of the sandbox's memory is sent with memoryDropped (FeatureStartMemoryDropped,
+// which a host with the microVM tier reports); any other error is sent as before, without it.
+func TestAStartsErrorSaysItsMemoryWentOnlyWhenItDid(t *testing.T) {
+	refused := &proto.Error{Code: proto.ErrCapacity, Message: "no room"}
+	for name, c := range map[string]struct {
+		err  error
+		want proto.Error
+	}{
+		"its memory gone":            {&proto.MemoryDroppedError{Err: fmt.Errorf("boot: %w", refused)}, proto.Error{Code: proto.ErrCapacity, Message: "no room", MemoryDropped: true}},
+		"a plain error, memory gone": {&proto.MemoryDroppedError{Err: errors.New("no free sandbox addresses")}, proto.Error{Code: proto.ErrInternal, Message: "no free sandbox addresses", MemoryDropped: true}},
+		"its memory kept":            {refused, proto.Error{Code: proto.ErrCapacity, Message: "no room"}},
+	} {
+		got := toError(c.err)
+		if *got != c.want {
+			t.Fatalf("%s: %+v, want %+v", name, *got, c.want)
+		}
+		raw, _ := json.Marshal(got)
+		if strings.Contains(string(raw), "memoryDropped") != c.want.MemoryDropped {
+			t.Fatalf("%s: sent %s", name, raw)
+		}
+	}
+	// The tier's own error is left as it was.
+	if refused.MemoryDropped {
+		t.Fatal("the tier's error was changed")
+	}
+	h := newLifecycleHost(t, newLifecycleTier())
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureStartMemoryDropped) {
+		t.Fatalf("a microVM host doesn't report %s: %v", proto.FeatureStartMemoryDropped, h.makeFacts().Features)
+	}
+	delete(h.tiers, microvm.Tier)
+	h.order = nil
+	if slices.Contains(h.makeFacts().Features, proto.FeatureStartMemoryDropped) {
+		t.Fatal("a host without the microVM tier reports it")
 	}
 }

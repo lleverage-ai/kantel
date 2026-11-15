@@ -2976,7 +2976,10 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 }
 
 // Resume restores a stopped sandbox from its memory snapshot, or boots it from its disk when it has none.
-func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot bool) (proto.SandboxInfo, error) {
+//
+// A start that fails after it let go of the memory the sandbox was stopped with (a rebase clears it) says so, as a
+// proto.MemoryDroppedError (FeatureStartMemoryDropped).
+func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot bool) (_ proto.SandboxInfo, err error) {
 	s, err := m.get(p.SandboxID)
 	if err != nil {
 		return proto.SandboxInfo{}, err
@@ -3042,6 +3045,14 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		s.meta.Egress = p.Egress
 		s.unsaved = true
 	}
+	// Its memory as it was stopped: one this start lets go of, and then fails, is said gone, so Kantel ends the commands
+	// that ran in it rather than wait for them to come back.
+	hadMemory := s.meta.Memory
+	defer func() {
+		if err != nil && hadMemory && !s.meta.Memory {
+			err = &proto.MemoryDroppedError{Err: err}
+		}
+	}()
 	if coldBoot && p.Rebase {
 		if err := m.rebase(s, p.RebaseTo); err != nil {
 			return proto.SandboxInfo{}, err

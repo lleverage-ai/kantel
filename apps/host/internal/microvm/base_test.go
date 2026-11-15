@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"golang.org/x/sys/unix"
 )
@@ -691,4 +692,94 @@ func TestCloseEndsBackgroundBuilds(t *testing.T) {
 	}
 	m.rebuildTemplate(shape{Size: proto.Size{Name: "large"}})
 	time.Sleep(50 * time.Millisecond)
+}
+
+// fullNetwork is a dry-run network with every sandbox address taken: a boot that gets as far as its link fails there.
+func fullNetwork(t *testing.T) *network.Manager {
+	t.Helper()
+	netm, err := network.New("10.231.0.0/22", 3129, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := netm.Add("open"); err != nil {
+			return netm
+		}
+	}
+}
+
+// A rebase start that fails after it let go of the sandbox's memory says so (proto.MemoryDroppedError, sent as
+// Error.MemoryDropped), so Kantel ends the commands that ran in it. One that fails before (refused, or its meta.json
+// can't be written), and an ordinary start that fails, keep the memory and don't say it is gone.
+func TestARebaseStartThatFailsSaysWhetherItLetGoOfTheMemory(t *testing.T) {
+	images := versionedImages(t)
+	setup := func(t *testing.T) (*Manager, *sandbox) {
+		t.Helper()
+		root := t.TempDir()
+		dir := filepath.Join(root, "sandboxes", "sbx_1")
+		linkVM(t, filepath.Join(dir, "vm"), filepath.Join(images, "v", "old", "sandbox.ext4"))
+		s := &sandbox{dir: dir, meta: meta{ID: "sbx_1", State: proto.StateStopped, Memory: true}}
+		m := &Manager{
+			cfg:       Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true, Sizes: DefaultSizes, Network: fullNetwork(t)},
+			log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			sandboxes: map[string]*sandbox{"sbx_1": s},
+		}
+		return m, s
+	}
+	ctx := context.Background()
+	dropped := func(err error) bool {
+		var md *proto.MemoryDroppedError
+		return errors.As(err, &md)
+	}
+
+	t.Run("after the rebase", func(t *testing.T) {
+		m, s := setup(t)
+		_, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "new"}, true)
+		if err == nil || !strings.Contains(err.Error(), "no free sandbox addresses") {
+			t.Fatalf("a rebase start with no address free: %v", err)
+		}
+		if !dropped(err) {
+			t.Fatalf("a start that let go of the memory didn't say so: %v", err)
+		}
+		if s.meta.Memory || baseOf(s.vmDir()) != "new" {
+			t.Fatalf("after: memory %v, base %q", s.meta.Memory, baseOf(s.vmDir()))
+		}
+	})
+
+	t.Run("refused before the rebase", func(t *testing.T) {
+		m, s := setup(t)
+		_, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "newer"}, true)
+		if err == nil || dropped(err) {
+			t.Fatalf("a rebase onto a version the host hasn't taken: %v", err)
+		}
+		if !s.meta.Memory || baseOf(s.vmDir()) != "old" {
+			t.Fatalf("after: memory %v, base %q", s.meta.Memory, baseOf(s.vmDir()))
+		}
+	})
+
+	t.Run("its memory's flag not written", func(t *testing.T) {
+		m, s := setup(t)
+		// meta.json can't be written: a directory is in its place.
+		if err := os.MkdirAll(filepath.Join(s.dir, "meta.json"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "new"}, true)
+		if err == nil || dropped(err) {
+			t.Fatalf("a rebase whose meta.json can't be written: %v", err)
+		}
+		if !s.meta.Memory || baseOf(s.vmDir()) != "old" {
+			t.Fatalf("after: memory %v, base %q", s.meta.Memory, baseOf(s.vmDir()))
+		}
+	})
+
+	t.Run("an ordinary start", func(t *testing.T) {
+		m, s := setup(t)
+		_, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1"}, true)
+		if err == nil || dropped(err) {
+			t.Fatalf("a start with no address free: %v", err)
+		}
+		if !s.meta.Memory {
+			t.Fatal("an ordinary start that failed let go of the memory")
+		}
+	})
 }

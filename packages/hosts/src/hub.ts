@@ -79,12 +79,15 @@ export class HostCallError extends Error {
 	 * left (not connected) is `disconnected` only; one whose host went while it waited is both.
 	 */
 	readonly unanswered: boolean;
+	/** The host said its failed start let go of the sandbox's memory (`HostError.memoryDropped`). */
+	readonly memoryDropped: boolean;
 	constructor(error: HostError, how: { readonly disconnected?: boolean } = {}) {
 		super(error.message);
 		this.name = "HostCallError";
 		this.code = error.code;
 		this.disconnected = how.disconnected === true;
 		this.unanswered = error.unanswered === true;
+		this.memoryDropped = error.memoryDropped === true;
 	}
 }
 
@@ -334,10 +337,11 @@ export function closeQuietly(
 /** A host error as it came, made safe to throw: its code and message strings, or plain ones in their place. */
 function hostError(error: unknown): HostError {
 	if (!isObject(error)) return { code: "internal", message: `The host's call failed: ${typeof error}` };
-	const { code, message } = error as { code?: unknown; message?: unknown };
+	const { code, message, memoryDropped } = error as { code?: unknown; message?: unknown; memoryDropped?: unknown };
 	return {
 		code: typeof code === "string" ? code : "internal",
 		message: typeof message === "string" ? message : "The host's call failed",
+		...(memoryDropped === true ? { memoryDropped: true } : {}),
 	};
 }
 

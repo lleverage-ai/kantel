@@ -90,9 +90,20 @@ const (
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// MemoryDropped says a sandbox.start failed after the host had let go of the memory the sandbox was stopped with
+	// (FeatureStartMemoryDropped): a rebase clears it before it relinks the root filesystem and boots. Absent, the
+	// memory is where it was, and a later resume restores it.
+	MemoryDropped bool `json:"memoryDropped,omitempty"`
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
+
+// MemoryDroppedError is a failed start's error once the host has let go of the sandbox's memory: sent as an Error with
+// MemoryDropped.
+type MemoryDroppedError struct{ Err error }
+
+func (e *MemoryDroppedError) Error() string { return e.Err.Error() }
+func (e *MemoryDroppedError) Unwrap() error { return e.Err }
 
 // Facts are what a host is: they change only with its hardware or software.
 type Facts struct {
@@ -306,6 +317,12 @@ const FeatureSandboxMoveRunning = "sandbox-move-running"
 // state (SandboxStateFile). sandbox.import with Memory fetches that version before the disk's, and makes the sandbox
 // stopped with its memory, so its start restores it. It comes with FeatureSandboxMoveRunning.
 const FeatureSandboxMoveMemory = "sandbox-move-memory"
+
+// FeatureStartMemoryDropped: a sandbox.start that fails after the host let go of the memory the sandbox was stopped
+// with (a rebase clears it before it relinks the root filesystem and boots) says so in its error (Error.MemoryDropped),
+// so Kantel ends the commands that ran in that memory. One that fails without it kept the memory. A host from before
+// says neither: Kantel takes its failed start to have kept it. The microVM tier.
+const FeatureStartMemoryDropped = "start-memory-dropped"
 
 // Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
 // filesystem, a template snapshot, a saved snapshot, and a sandbox being moved (FeatureSandboxMove).

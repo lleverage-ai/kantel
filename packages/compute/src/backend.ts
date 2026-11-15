@@ -97,6 +97,24 @@ export function isCreateOutcomeUnknown(error: unknown): boolean {
 	return error instanceof KantelError && unknownCreates.has(error);
 }
 
+/** What a backend's boot that failed after letting go of the sandbox's memory was refused with (`bootDroppedMemory`). */
+const memoryDroppedBoots = new WeakSet<KantelError>();
+
+/**
+ * A start (`SandboxBackend.start`) that failed after its backend let go of the memory the sandbox was paused with (a
+ * host's rebase clears it before it relinks the root filesystem and boots). Marks `error` and answers it. Its commands,
+ * which ran in that memory, end with it, as after a boot that published.
+ */
+export function bootDroppedMemory(error: KantelError): KantelError {
+	memoryDroppedBoots.add(error);
+	return error;
+}
+
+/** Whether `error` is `bootDroppedMemory`'s. */
+export function isBootDroppedMemory(error: unknown): boolean {
+	return error instanceof KantelError && memoryDroppedBoots.has(error);
+}
+
 /**
  * A create's outcome as `settleCreate` answers it, from what its host reported since its answer was lost: made and
  * running (its placement); made and ended since (its placement, and the host's word on why); not made (`lost`, why);
@@ -993,7 +1011,10 @@ export interface SandboxBackend {
 	 * Absent: a backend whose creates are always answered (the stub).
 	 */
 	settleCreate?(sandboxId: string, attempt: number): Promise<CreateOutcome>;
-	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */
+	/**
+	 * Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. One that
+	 * fails after letting go of it rejects with `bootDroppedMemory`'s error; any other failure kept it.
+	 */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/**
 	 * Image patching: whether a `start` with `rebase` (and `rebaseTo`) can land now, checked before a running sandbox is
