@@ -469,6 +469,42 @@ describe("image patching on", () => {
 		expect((await tom.getCommand(sandbox.id, "cmd_kept")).state).toBe("killed");
 	});
 
+	it("kills them by the sweep when its failed restart's own kill couldn't be written", async () => {
+		const { api, tom, refuseStartWith } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		refuseStartWith((how) =>
+			how.rebase === true ? bootDroppedMemory(new KantelError("unavailable", "no free sandbox addresses")) : undefined,
+		);
+		const update = api.store.commands.update.bind(api.store.commands);
+		api.store.commands.update = async () => {
+			throw new Error("the store went away");
+		};
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		api.store.commands.update = update;
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("error");
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("started afresh from its disk"),
+		});
+	});
+
 	it("leaves a paused sandbox's commands running when its restart on latest fails before its memory went", async () => {
 		const { api, failed } = await failedRestartFromPaused(new KantelError("unavailable", "not on that version yet"));
 		expect(failed?.memoryDropped).toBeUndefined();

@@ -14563,6 +14563,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
 					await settleStuckMove(sandbox).catch(() => undefined);
 				}
+				// A boot that failed after its backend let go of its memory, lately: as for a running one below, in case the
+				// failure's own kill didn't finish.
+				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
+					keepGoing(killDroppedOf(sandbox));
+				}
 			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				// A running sandbox's move whose gateway has gone quiet, as for one starting above.
