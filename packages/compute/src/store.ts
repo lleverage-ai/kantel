@@ -225,6 +225,24 @@ export type StoredSandbox = Omit<
 	 */
 	readonly memoryDropping?: string;
 	/**
+	 * An ordinary boot of a placed sandbox under way (a start, resume, recovery or restart on the latest base; it is
+	 * `starting`): when its gateway last said it was at it (`heartbeatAt`), so one gone quiet (its publish failed, its
+	 * host's answer was lost, or the gateway went) is settled by the sweep from what its host has; and, started from
+	 * paused, what it was paused as (`paused`), which settling it back to `paused` puts back. Written with its move to
+	 * `starting`; any change of its state clears it. A record from before these were kept is given one by the sweep.
+	 */
+	readonly booting?: {
+		readonly heartbeatAt: number;
+		readonly paused?: {
+			readonly stoppedAt?: number;
+			readonly pausedSnapshotId?: string;
+			readonly size?: computeSchema.SandboxSizeName;
+			readonly shape?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };
+			readonly mounts?: StoredSandbox["mounts"];
+			readonly mountsAt?: number;
+		};
+	};
+	/**
 	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
 	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).
 	 */

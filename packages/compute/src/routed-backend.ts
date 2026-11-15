@@ -26,6 +26,7 @@ import type {
 	Placement,
 	SandboxBackend,
 	SandboxSpec,
+	StartOutcome,
 	UpgradeSpec,
 } from "./backend.ts";
 
@@ -248,6 +249,15 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 					async settleCreate(id: string, attempt: number): Promise<CreateOutcome> {
 						const backend = (await options.holds(id)) ? primary : fallback;
 						return (await backend.settleCreate?.(id, attempt)) ?? { state: "pending" };
+					},
+				}),
+		// A start is settled by the backend that holds the sandbox; one that can't say leaves it as it is.
+		...(primary.settleStart === undefined && fallback.settleStart === undefined
+			? {}
+			: {
+					async settleStart(id: string): Promise<StartOutcome> {
+						const backend = await on(id);
+						return (await backend.settleStart?.(id)) ?? { state: "pending" };
 					},
 				}),
 		// A move stays on the backend that holds the sandbox, among its own hosts: its disk is there.

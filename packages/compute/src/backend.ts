@@ -126,6 +126,43 @@ export type CreateOutcome =
 	| { readonly state: "lost"; readonly reason: string; readonly reportedAt: number }
 	| { readonly state: "pending" };
 
+/** What a backend's start, resume or recovery whose outcome isn't known was refused with (`startOutcomeUnknown`). */
+const unknownStarts = new WeakSet<KantelError>();
+
+/**
+ * A start, resume or recovery whose outcome isn't known: its host was sent it and never answered (its connection
+ * dropped, or the call timed out), so it may have booted the machine, and may have let go of the memory it was paused
+ * with. Marks `error` and answers it. Neither booted nor failed: the caller keeps the sandbox `starting` until
+ * `settleStart` says which, from what the host has.
+ */
+export function startOutcomeUnknown(error: KantelError): KantelError {
+	unknownStarts.add(error);
+	return error;
+}
+
+/** Whether `error` is `startOutcomeUnknown`'s. */
+export function isStartOutcomeUnknown(error: unknown): boolean {
+	return error instanceof KantelError && unknownStarts.has(error);
+}
+
+/**
+ * What became of a start, resume or recovery whose gateway went quiet (its publish failed, its answer was lost, or the
+ * gateway itself went), as `settleStart` answers it from what its host has now: its machine running (its placement);
+ * not running (`stopped`, or `error` there), with whether the host still holds the memory it was paused with (`memory`:
+ * `held` where the host has checked its memory image is there to resume, so a stopped one is paused there still;
+ * `gone` where it has none; `unknown` where the host can't say, so neither is assumed) and the host's word on why;
+ * `pending` while the host is still at it (starting or stopping it).
+ */
+export type StartOutcome =
+	| { readonly state: "running"; readonly placement: Placement }
+	| {
+			readonly state: "ended";
+			readonly hostState: "stopped" | "error";
+			readonly memory: "held" | "gone" | "unknown";
+			readonly reason: string;
+	  }
+	| { readonly state: "pending" };
+
 /**
  * A move of a microVM to another host (`SandboxBackend.move`): a boot's options on its new host (its egress, revision,
  * mounts, the hosts it may go to), its account, the host asked for, and whether it runs.
@@ -1013,9 +1050,17 @@ export interface SandboxBackend {
 	settleCreate?(sandboxId: string, attempt: number): Promise<CreateOutcome>;
 	/**
 	 * Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. One that
-	 * fails after letting go of it rejects with `bootDroppedMemory`'s error; any other failure kept it.
+	 * fails after letting go of it rejects with `bootDroppedMemory`'s error; any other failure kept it. One its host was
+	 * sent and never answered rejects with `startOutcomeUnknown`'s (as do `resume` and `recover`): `settleStart` says what
+	 * came of it.
 	 */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
+	/**
+	 * What became of a start, resume or recovery of a placed sandbox whose gateway went quiet, from what its host says of
+	 * the machine now (`sandbox.get`): never guessed. Rejects while its host can't be asked (away, or not answering).
+	 * Absent: a backend that can't say (the stub), whose stuck starts are left as they are.
+	 */
+	settleStart?(sandboxId: string): Promise<StartOutcome>;
 	/**
 	 * Image patching: whether a `start` with `rebase` (and `rebaseTo`) can land now, checked before a running sandbox is
 	 * stopped for it. Rejects when it can't: the machine its disk is on isn't among `eligibleHosts`, doesn't patch

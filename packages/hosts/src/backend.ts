@@ -45,6 +45,8 @@ import {
 	type SandboxTemplateBoot,
 	type SnapshotCopies,
 	type SnapshotMadeOn,
+	type StartOutcome,
+	startOutcomeUnknown,
 	type TakenSnapshot,
 	type TemplateRuntime,
 	type UpgradedPlacement,
@@ -83,6 +85,7 @@ import {
 	type HostMountsRefresh,
 	type HostProcessList,
 	type HostSandbox,
+	type HostSandboxMemory,
 	type HostSnapshotKeep,
 	type HostStickyCommitResult,
 	type HostStickyDiskStatus,
@@ -130,6 +133,8 @@ export const CREATE_LOST =
 /** What a create whose answer was lost is failed with when its host made it and it ended since (`settleCreate`). */
 const CREATE_ENDED =
 	"Its host's connection dropped before it answered the create, and the sandbox it made has ended since";
+/** What a start whose gateway went quiet begins with when its host has it ended (`settleStart`). */
+export const START_ENDED = "Its start was never seen through (its gateway went, or its host's answer was lost)";
 
 /** How long each `sandbox.exec.get` of a detached command asks the host to hold its answer for the command to end. */
 export const EXEC_WAIT_MS = 30_000;
@@ -660,6 +665,54 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		};
 	}
 
+	/**
+	 * A machine its host reports running, which no boot's answer published (a create or start settled from what the host
+	 * has): placed as a boot's answer is, with its mounts and its guest's health as the host has them. An unresponsive
+	 * guest stays so, stamped, rather than taken for a fresh boot's.
+	 */
+	async function reportedRunning(
+		sandboxId: string,
+		sandbox: HostSandbox,
+		placement: NonNullable<SandboxPlacement["placement"]>,
+	): Promise<Placement> {
+		const mounts = parseMountStatuses(sandbox.mounts);
+		const healthAt =
+			typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
+				? sandbox.healthAt
+				: undefined;
+		const reason =
+			typeof sandbox.healthReason === "string" && sandbox.healthReason !== ""
+				? sandbox.healthReason.slice(0, 1000)
+				: undefined;
+		return {
+			...(await placed(sandboxId, sandbox, placement.hostId, {
+				placement,
+				...(mounts === undefined ? {} : { mounts }),
+			})),
+			reportedHealth: {
+				unresponsive: sandbox.health === "unresponsive",
+				...(reason === undefined ? {} : { reason }),
+				...(healthAt === undefined ? {} : { healthAt }),
+			},
+		};
+	}
+
+	/**
+	 * Whether a stopped sandbox's host holds the memory image it was paused with, there to resume, as the host checks it
+	 * (`sandbox.memory`, `HOST_FEATURES.sandboxMoveMemory`): `unknown` where the host can't check it.
+	 */
+	async function memoryHeld(sandboxId: string, hostId: string): Promise<"held" | "gone" | "unknown"> {
+		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.sandboxMoveMemory)) return "unknown";
+		try {
+			const told = await call<HostSandboxMemory>(sandboxId, HostMethods.sandboxMemory, { sandboxId });
+			return told.memory ? "held" : "gone";
+		} catch (error) {
+			// One configured not to move memory refuses it: it can't check.
+			if (isKantelError(error, "not_supported")) return "unknown";
+			throw error;
+		}
+	}
+
 	/** A host's sticky disk statuses, those shaped as statuses. */
 	const stickyStatuses = (statuses: readonly HostStickyDiskStatus[]): BackendStickyDiskStatus[] =>
 		statuses
@@ -887,6 +940,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			) {
 				throw bootDroppedMemory(error);
 			}
+			// Sent and never answered: its host may have booted it, or let its memory go, so it is settled from what the host
+			// says (`settleStart`), never failed on a guess.
+			if (isKantelError(error) && unanswered(error)) throw startOutcomeUnknown(error);
 			throw error;
 		}
 		const statuses = mounts.status(sandbox);
@@ -1290,31 +1346,44 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					reportedAt,
 				};
 			}
-			const mounts = parseMountStatuses(sandbox.mounts);
-			// Its guest's health as the host has it (its hello's report was before the compute plane had it running): an
-			// unresponsive guest stays so, stamped, rather than taken for a fresh boot's.
-			const healthAt =
-				typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
-					? sandbox.healthAt
-					: undefined;
-			const reason =
-				typeof sandbox.healthReason === "string" && sandbox.healthReason !== ""
-					? sandbox.healthReason.slice(0, 1000)
-					: undefined;
+			return { state: "running", placement: await reportedRunning(sandboxId, sandbox, placement), reportedAt };
+		},
+		async settleStart(sandboxId): Promise<StartOutcome> {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			// No host has it: nothing runs it, and nothing holds its memory.
+			if (placement === undefined) {
+				return { state: "ended", hostState: "error", memory: "gone", reason: `${START_ENDED}, and no host has it` };
+			}
+			// As its host has it now. A host still booting it answers once it is done (kantel-host holds the sandbox for the
+			// whole boot); one away, or not answering, is asked again by a later sweep.
+			let sandbox: HostSandbox;
+			try {
+				sandbox = await call<HostSandbox>(sandboxId, HostMethods.get);
+			} catch (error) {
+				if (!isKantelError(error, "not_found")) throw error;
+				return {
+					state: "ended",
+					hostState: "error",
+					memory: "gone",
+					reason: `${START_ENDED}, and its host has it no more`,
+				};
+			}
+			if (sandbox.state === "running") {
+				return { state: "running", placement: await reportedRunning(sandboxId, sandbox, placement) };
+			}
+			if (sandbox.state !== "stopped" && sandbox.state !== "error" && sandbox.state !== "deleted") {
+				return { state: "pending" };
+			}
+			const error =
+				typeof sandbox.error === "string" && sandbox.error !== "" ? `: ${sandbox.error.slice(0, 1000)}` : "";
+			const stopped = sandbox.state === "stopped";
 			return {
-				state: "running",
-				placement: {
-					...(await placed(sandboxId, sandbox, placement.hostId, {
-						placement,
-						...(mounts === undefined ? {} : { mounts }),
-					})),
-					reportedHealth: {
-						unresponsive: sandbox.health === "unresponsive",
-						...(reason === undefined ? {} : { reason }),
-						...(healthAt === undefined ? {} : { healthAt }),
-					},
-				},
-				reportedAt,
+				state: "ended",
+				hostState: stopped ? "stopped" : "error",
+				// A boot that let its memory go, or a machine that exited, cleared its flag (`HostSandbox.memory`). One still set
+				// is only the record's word: its memory image may be gone since (a reboot empties the spool it is in).
+				memory: sandbox.memory !== true ? "gone" : stopped ? await memoryHeld(sandboxId, placement.hostId) : "unknown",
+				reason: `${START_ENDED}, and its host has it ${String(sandbox.state)}${error}`,
 			};
 		},
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),

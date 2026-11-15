@@ -78,6 +78,7 @@ import {
 	isCommandProgress,
 	isCreateOutcomeUnknown,
 	isDetachedWaitEnded,
+	isStartOutcomeUnknown,
 	isUpgradeOutcomeUnknown,
 	type MoveOutcome,
 	type Placement,
@@ -532,7 +533,10 @@ export interface ReportedEgress {
 /** What someone kept off the shared hosts is told about a sandbox on one. */
 /** How often an upgrade under way says it is (`upgrading.heartbeatAt`). */
 export const UPGRADE_HEARTBEAT_MS = 20_000;
-/** How long an upgrade may go without saying so before the sweep settles it with its backend. */
+/**
+ * How long an upgrade may go without saying so before the sweep settles it with its backend. An ordinary boot's lease
+ * (`booting.heartbeatAt`), which its gateway moves on as often, goes quiet after as long.
+ */
 export const UPGRADE_STALE_MS = 2 * 60_000;
 /**
  * How long after its host reported a create whose answer was lost (made, or not) the sweep settles it
@@ -5537,6 +5541,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(sandbox.health === "unresponsive" && extra.health === undefined && !stillUnresponsive
 				? { health: "ok" as const }
 				: {}),
+			// An ordinary boot's lease only in the `starting` its boot wrote (`bootLease`).
+			booting: extra.booting,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 			// A drop of its memory pending only while it starts: its boot's publishing makes it `memoryDropped`, and any
@@ -5948,6 +5954,62 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	function requireSetupScope(principal: Principal, role: MemberRole, sandbox: StoredSandbox): void {
 		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.templateBoot?.setup === undefined) return;
 		requireScope(principal, "exec", role);
+	}
+
+	/**
+	 * An ordinary boot's lease (`StoredSandbox.booting`), written with its move to `starting` from `latest`: said now, and,
+	 * from paused, what it was paused as, for its settling to put back.
+	 */
+	const bootLease = (latest: StoredSandbox): Pick<StoredSandbox, "booting"> => ({
+		booting: {
+			heartbeatAt: now(),
+			...(latest.state === "paused"
+				? {
+						paused: {
+							...(latest.stoppedAt === undefined ? {} : { stoppedAt: latest.stoppedAt }),
+							...(latest.pausedSnapshotId === undefined ? {} : { pausedSnapshotId: latest.pausedSnapshotId }),
+							...(latest.size === undefined ? {} : { size: latest.size }),
+							...(latest.shape === undefined ? {} : { shape: latest.shape }),
+							...(latest.mounts === undefined ? {} : { mounts: latest.mounts }),
+							...(latest.mountsAt === undefined ? {} : { mountsAt: latest.mountsAt }),
+						},
+					}
+				: {}),
+		},
+	});
+
+	/**
+	 * The heartbeat of the ordinary boot of `starting` (as its move to `starting` wrote it, with its lease): begun as soon
+	 * as that move is made, its lease moved on every `UPGRADE_HEARTBEAT_MS` through the boot's preparation, queueing and
+	 * publishing, until `end`, or the boot `over` it settles. So the sweep, on any gateway, never settles a boot this
+	 * gateway is still at. Once it ends with the sandbox still `starting` (its preparation or publish failed, its host's
+	 * answer was lost), the lease goes quiet, and the sweep settles it from what its host has (`settleStuckStart`).
+	 */
+	function bootHeartbeat(starting: StoredSandbox): {
+		readonly over: <T>(work: () => Promise<T>) => Promise<T>;
+		readonly end: () => void;
+	} {
+		const lifecycle = starting.lifecycle ?? 0;
+		const beat = () =>
+			patchSandbox(starting.id, (latest) =>
+				latest.state === "starting" && (latest.lifecycle ?? 0) === lifecycle && latest.booting !== undefined
+					? { ...latest, booting: { ...latest.booting, heartbeatAt: Math.max(now(), latest.booting.heartbeatAt) } }
+					: undefined,
+			).catch(() => undefined);
+		const heartbeat = setInterval(() => void beat(), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		const end = () => clearInterval(heartbeat);
+		return {
+			end,
+			over: <T>(work: () => Promise<T>) => {
+				try {
+					return work().finally(end);
+				} catch (error) {
+					end();
+					throw error;
+				}
+			},
+		};
 	}
 
 	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
@@ -6861,6 +6923,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Its host was sent it and didn't answer (its connection dropped): it may have made it, so it stays starting
 			// until the sweep settles it from what the host reports (`settleLostCreate`), never failed on a guess.
 			if (isCreateOutcomeUnknown(error)) return undefined;
+			// An ordinary boot (one with a lease, `booting`) its host was sent and never answered: it may have booted, or let
+			// go of the memory it was paused with, so it stays starting until the sweep settles it from what its host has
+			// (`settleStuckStart`), never failed on a guess. One with no lease (a move's start again) fails, as ever.
+			if (isStartOutcomeUnknown(error)) {
+				return fail(sandboxId, error, "starting", (current) => current.booting === undefined);
+			}
 			// Failed after its backend let go of the memory it was paused with (a rebase): the drop is recorded with its
 			// `error`, as its publishing would have, and the commands that ran in that memory killed, saying why. So too for
 			// a retry from `error` of a start that failed before the drop (which cleared the pending one): the backend's
@@ -10308,6 +10376,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							ports: [],
 							egressRevision: later(latest.egressRevision),
 							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+							...bootLease(latest),
 						}),
 					(latest) => latest.moving === undefined,
 				);
@@ -10316,28 +10385,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 				}
 				const starting = began.moved;
-				const provisioning = await provisionedAgain(principal, role, starting, true);
-				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-				const egress = await egressFor(starting.accountId, starting);
+				// Its lease is kept fresh from now, through its preparation, to its end.
+				const heartbeat = bootHeartbeat(starting);
+				let provisioning: Provisioning | undefined;
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					provisioning = await provisionedAgain(principal, role, starting, true);
+					// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					heartbeat.end();
+					throw error;
+				}
 				keepGoing(
-					track([current.id], () =>
-						bootProvisioned(
-							current.id,
-							() =>
-								bootAgain(
-									starting,
-									{
-										fromSnapshot,
-										env: starting.env,
-										eligibleHosts: hosts,
-										...sizingOf(starting),
-										...egress,
-										...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-									},
-									(options) => backend.recover(current.id, options),
-								),
-							provisioning,
-							{ egressRevision: starting.egressRevision },
+					heartbeat.over(() =>
+						track([current.id], () =>
+							bootProvisioned(
+								current.id,
+								() =>
+									bootAgain(
+										starting,
+										{
+											fromSnapshot,
+											env: starting.env,
+											eligibleHosts: hosts,
+											...sizingOf(starting),
+											...egress,
+											...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+										},
+										(options) => backend.recover(current.id, options),
+									),
+								provisioning,
+								{ egressRevision: starting.egressRevision },
+							),
 						),
 					),
 				);
@@ -10436,6 +10516,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							...(latest.state === "paused"
 								? { memoryDropping: pausedMemoryGone("started afresh from its disk") }
 								: {}),
+							...bootLease(latest),
 						}),
 					unmoved(current),
 				);
@@ -10443,32 +10524,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
-				// An environment attached while it was stopped: its files and repositories, once it runs.
-				const provisioning = await provisionedAgain(principal, role, starting, true);
-				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-				const egress = await egressFor(starting.accountId, starting);
+				// Its lease is kept fresh from now, through its preparation, to its end.
+				const heartbeat = bootHeartbeat(starting);
+				let provisioning: Provisioning | undefined;
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					// An environment attached while it was stopped: its files and repositories, once it runs.
+					provisioning = await provisionedAgain(principal, role, starting, true);
+					// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					heartbeat.end();
+					throw error;
+				}
 				keepGoing(
-					track([stopped.id], () =>
-						bootProvisioned(
-							stopped.id,
-							() =>
-								bootAgain(
-									stopped,
-									{
-										fromSnapshot,
-										env: starting.env,
-										eligibleHosts: hosts,
-										// Its size and shape as recorded, as a start keeps them: only its base changes.
-										...sizingOf(stopped),
-										...egress,
-										...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-										rebase: true,
-										...(rebaseTo === undefined ? {} : { rebaseTo }),
-									},
-									(options) => backend.start(stopped.id, options),
-								),
-							provisioning,
-							{ egressRevision: starting.egressRevision },
+					heartbeat.over(() =>
+						track([stopped.id], () =>
+							bootProvisioned(
+								stopped.id,
+								() =>
+									bootAgain(
+										stopped,
+										{
+											fromSnapshot,
+											env: starting.env,
+											eligibleHosts: hosts,
+											// Its size and shape as recorded, as a start keeps them: only its base changes.
+											...sizingOf(stopped),
+											...egress,
+											...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+											rebase: true,
+											...(rebaseTo === undefined ? {} : { rebaseTo }),
+										},
+										(options) => backend.start(stopped.id, options),
+									),
+								provisioning,
+								{ egressRevision: starting.egressRevision },
+							),
 						),
 					),
 				);
@@ -13176,6 +13268,167 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		});
 	}
 
+	/** What the commands a paused sandbox's memory kept running say once a start of it, never seen through, lost that memory. */
+	const START_LOST_MEMORY =
+		"kantel: killed: the sandbox's start was never seen through, and its host let go of the memory it was paused with, and its processes with it\n";
+
+	/**
+	 * An ordinary boot the sweep may settle (a start, resume, recovery or restart on the latest base): `starting`, placed
+	 * before (never a create, `unsettledCreate`), and no move, upgrade or stop of its own under way.
+	 */
+	const unsettledStart = (sandbox: StoredSandbox): boolean =>
+		sandbox.state === "starting" &&
+		!neverPlaced(sandbox) &&
+		sandbox.moving === undefined &&
+		sandbox.upgrading === undefined &&
+		sandbox.stopFor === undefined;
+
+	/**
+	 * An ordinary boot left `starting` with no lease (`booting`): one begun by a gateway from before leases were kept,
+	 * which may still be at it. Given one, said now, so it is settled only once it has gone as long quiet as a boot with
+	 * a lease would have (`settleStuckStart`).
+	 */
+	async function leaseStart(sandbox: StoredSandbox, at: number): Promise<void> {
+		const lifecycle = sandbox.lifecycle ?? 0;
+		await patchSandbox(sandbox.id, (latest) =>
+			unsettledStart(latest) && (latest.lifecycle ?? 0) === lifecycle && latest.booting === undefined
+				? { ...latest, booting: { heartbeatAt: at } }
+				: undefined,
+		);
+	}
+
+	/**
+	 * The sweep's settling of an ordinary boot whose gateway has gone quiet (`booting.heartbeatAt`): its publish failed,
+	 * its host's answer was lost (`isStartOutcomeUnknown`), or the gateway went, leaving it `starting`. Taken from what its
+	 * host has now (`SandboxBackend.settleStart`), never by acting on the host:
+	 *
+	 * - running there, it runs, published as its boot would have (`boot`: its egress sent again, a memory drop it was due
+	 *   recorded and its commands killed, its `sandbox.running` event, its pending set-up);
+	 * - stopped there, still holding the memory it was paused with, it is `paused` again, as it was before (its pause's
+	 *   time, snapshot, size and mounts), with the host's word on why;
+	 * - otherwise (failed there, stopped without that memory, or no longer there) it is `error` with the host's reason, and
+	 *   one started from paused that lost that memory has the drop recorded and the commands it ran killed, saying why.
+	 *
+	 * One whose host can't say yet (starting or stopping it, away, not answering) is left `starting`, quiet again, for a
+	 * later sweep.
+	 *
+	 * Taken on first, as a stuck upgrade is: its lease moved on from the quiet one this sweep read, and kept moving while
+	 * its host is asked, so another gateway's sweep leaves it. Each outcome is one write conditional on the boot it read
+	 * (its `lifecycle`) and on the lease being this sweep's still, so it never lands over a publish or stop that got there
+	 * first, a later boot, the original gateway coming back to it (whose heartbeat moves the lease on), or another
+	 * gateway's settling once this one's hold lapsed.
+	 */
+	async function settleStuckStart(sandbox: StoredSandbox): Promise<void> {
+		const settleStart = backend.settleStart;
+		const booting = sandbox.booting;
+		if (settleStart === undefined || booting === undefined) return;
+		const lifecycle = sandbox.lifecycle ?? 0;
+		const attempt = (current: StoredSandbox) =>
+			unsettledStart(current) && (current.lifecycle ?? 0) === lifecycle && current.booting !== undefined;
+		// The lease this gateway last wrote: moved on only from it, so a write by anyone else ends this one's hold.
+		let mine = booting.heartbeatAt;
+		const beat = async (to: number) => {
+			const from = mine;
+			const written = await patchSandbox(sandbox.id, (latest) =>
+				attempt(latest) && latest.booting?.heartbeatAt === from
+					? { ...latest, booting: { ...latest.booting, heartbeatAt: to } }
+					: undefined,
+			);
+			if (written !== undefined) mine = to;
+			return written !== undefined;
+		};
+		if (!(await beat(now()))) return;
+		const heartbeat = setInterval(() => beat(now()).catch(() => undefined), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		// Written only while the lease is the one this sweep holds: the heartbeat stops first, so it stays put.
+		const held = (current: StoredSandbox) => attempt(current) && current.booting?.heartbeatAt === mine;
+		let settled = false;
+		try {
+			await track([sandbox.id], async () => {
+				const outcome = await settleStart.call(backend, sandbox.id);
+				if (outcome.state === "pending") return;
+				settled = true;
+				clearInterval(heartbeat);
+				const read = await store.sandboxes.get(sandbox.id);
+				if (read === undefined || !held(read)) return;
+				if (outcome.state === "running") {
+					// Resumed: a kill made while it was paused reaches the command its memory kept, as its boot would have sent it.
+					if (read.memoryDropping === undefined) await sendPendingKills(sandbox.id).catch(() => undefined);
+					// What egress its boot sent isn't known: its boot sends what it has now before it runs.
+					const booted = await boot(
+						sandbox.id,
+						async () => outcome.placement,
+						undefined,
+						{ egressRevision: undefined },
+						undefined,
+						held,
+					);
+					// Its environments' files now it runs; their repositories wait for a start by someone who may clone them.
+					if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+					return;
+				}
+				const { reason } = outcome;
+				// Paused again only where its host has checked the memory it was paused with is there to resume.
+				if (outcome.hostState === "stopped" && outcome.memory === "held") {
+					const result = await transition(
+						sandbox.id,
+						"starting",
+						(current) => {
+							const paused = current.booting?.paused;
+							const restored = withState(current, "paused", {
+								reason,
+								ports: [],
+								...(paused === undefined
+									? {}
+									: {
+											pausedSnapshotId: paused.pausedSnapshotId,
+											size: paused.size,
+											shape: paused.shape,
+											mounts: paused.mounts,
+											mountsAt: paused.mountsAt,
+										}),
+							});
+							// Paused when it was, not now: its machine has been as its pause left it since.
+							const stoppedAt = paused?.stoppedAt ?? current.stoppedAt;
+							return stoppedAt === undefined ? restored : { ...restored, stoppedAt };
+						},
+						held,
+					);
+					if (!("moved" in result)) return;
+					await emit("sandbox.paused", result.moved.accountId, {
+						sandbox: result.moved,
+						data: { previousState: "starting", reason },
+					});
+					return;
+				}
+				// Started from paused and its memory gone with it: the drop recorded with its `error`, as a boot's would be. A boot
+				// begun by an older gateway didn't say it was paused: commands still running say so, as only a pause keeps them.
+				const wasPaused =
+					read.memoryDropping !== undefined ||
+					read.booting?.paused !== undefined ||
+					(await store.commands.list({ sandboxId: sandbox.id, state: "running" })).length > 0;
+				// Only where its host says that memory is gone: one it can't check is neither promised nor written off, and a
+				// resume finds out.
+				const lostMemory = (current: StoredSandbox) =>
+					outcome.memory === "gone" &&
+					(wasPaused || current.memoryDropping !== undefined || current.booting?.paused !== undefined);
+				const failed = await fail(sandbox.id, new KantelError("unavailable", reason), "starting", held, (current) =>
+					lostMemory(current) ? droppedMemory(current, current.memoryDropping ?? START_LOST_MEMORY) : {},
+				);
+				if (
+					failed?.memoryDropped !== undefined &&
+					failed.memoryDropped.generation > (read.memoryDropped?.generation ?? 0)
+				) {
+					await killDroppedOf(failed).catch(() => undefined);
+				}
+			});
+		} finally {
+			clearInterval(heartbeat);
+			// Not settled (its host can't say yet): let go, quiet as it was, for the next sweep on any gateway.
+			if (!settled) await beat(booting.heartbeatAt).catch(() => undefined);
+		}
+	}
+
 	/**
 	 * The sweep's settling of an upgrade whose gateway has gone quiet (`upgrading.heartbeatAt`), or whose outcome its
 	 * backend couldn't tell: done, published; failed, put back. One its backend still can't tell is left for next time.
@@ -14385,6 +14638,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
 				egressRevision: later(latest.egressRevision),
+				...bootLease(latest),
 			}),
 		);
 		if (!("moved" in began)) {
@@ -14393,34 +14647,45 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
-		const provisioning = await provisionedAgain(principal, role, starting, true);
-		const bootOptions = {
-			fromSnapshot,
-			...sizingOf(starting),
-			env: starting.env,
-			eligibleHosts: hosts,
-			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-			...(await egressFor(starting.accountId, starting)),
-			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-		};
-		const work = track([current.id], async () => {
-			// Resumed (from paused, or from error after a resume that failed): a kill made while it was paused reaches the
-			// command its memory kept, if that memory came back; a guest that doesn't know the command takes it as done.
-			const resumes = how === "resume";
-			return bootProvisioned(
-				current.id,
-				async () => {
-					const placement = await bootAgain(starting, bootOptions, (options) =>
-						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
-					);
-					// As soon as it runs, before it is published (whatever happens to its publishing).
-					if (resumes) await sendPendingKills(current.id).catch(() => undefined);
-					return placement;
-				},
-				provisioning,
-				{ egressRevision: starting.egressRevision },
-			);
-		});
+		// Its lease is kept fresh from now, through its preparation, to its end.
+		const heartbeat = bootHeartbeat(starting);
+		let provisioning: Provisioning | undefined;
+		let bootOptions: BootOptions;
+		try {
+			provisioning = await provisionedAgain(principal, role, starting, true);
+			bootOptions = {
+				fromSnapshot,
+				...sizingOf(starting),
+				env: starting.env,
+				eligibleHosts: hosts,
+				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+				...(await egressFor(starting.accountId, starting)),
+				...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+			};
+		} catch (error) {
+			heartbeat.end();
+			throw error;
+		}
+		const work = heartbeat.over(() =>
+			track([current.id], async () => {
+				// Resumed (from paused, or from error after a resume that failed): a kill made while it was paused reaches the
+				// command its memory kept, if that memory came back; a guest that doesn't know the command takes it as done.
+				const resumes = how === "resume";
+				return bootProvisioned(
+					current.id,
+					async () => {
+						const placement = await bootAgain(starting, bootOptions, (options) =>
+							how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
+						);
+						// As soon as it runs, before it is published (whatever happens to its publishing).
+						if (resumes) await sendPendingKills(current.id).catch(() => undefined);
+						return placement;
+					},
+					provisioning,
+					{ egressRevision: starting.egressRevision },
+				);
+			}),
+		);
 		if (body.wait === true) await work;
 		else keepGoing(work);
 		return sandboxView(await mustGetSandbox(current.id), principal);
@@ -14532,6 +14797,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							state: "running",
 							stopsAt: at,
 							stopClaimedAt: undefined,
+							// Its boot is over: running, its lease gone with it.
+							booting: undefined,
 							// The same machine: its guest agent's health (and why) as the stop found it.
 							reason: current.health === "unresponsive" ? current.reason : undefined,
 						}),
@@ -14544,6 +14811,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// each may ask its host.
 			for (const sandbox of await store.sandboxes.list({ state: "starting" })) {
 				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) keepGoing(settleLostCreate(sandbox.id));
+				// Ordinary boots (starts, resumes, recoveries) whose gateway has gone quiet: settled from what their host has,
+				// in the background, as each may wait on its host. One with no lease (begun before leases were kept) gets one.
+				if (backend.settleStart !== undefined && !pending.has(sandbox.id) && unsettledStart(sandbox)) {
+					if (sandbox.booting === undefined) await leaseStart(sandbox, at).catch(() => undefined);
+					else if (sandbox.booting.heartbeatAt + UPGRADE_STALE_MS <= at) {
+						keepGoing(settleStuckStart(sandbox).catch(() => undefined));
+					}
+				}
 				// Moves likewise.
 				const moving = sandbox.moving;
 				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
