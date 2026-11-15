@@ -6861,15 +6861,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Its host was sent it and didn't answer (its connection dropped): it may have made it, so it stays starting
 			// until the sweep settles it from what the host reports (`settleLostCreate`), never failed on a guess.
 			if (isCreateOutcomeUnknown(error)) return undefined;
-			// Failed after its backend let go of the memory it was paused with (a rebase): a drop pending is recorded with
-			// its `error`, as its publishing would have, and the commands that ran in that memory killed, saying why.
+			// Failed after its backend let go of the memory it was paused with (a rebase): the drop is recorded with its
+			// `error`, as its publishing would have, and the commands that ran in that memory killed, saying why. So too for
+			// a retry from `error` of a start that failed before the drop (which cleared the pending one): the backend's
+			// word is that the memory went.
 			if (isBootDroppedMemory(error)) {
-				let drops = false;
-				const failed = await fail(sandboxId, error, "starting", undefined, (sandbox) => {
-					drops = sandbox.memoryDropping !== undefined;
-					return sandbox.memoryDropping === undefined ? {} : droppedMemory(sandbox, sandbox.memoryDropping);
-				});
-				if (failed !== undefined && drops) await killDroppedOf(failed).catch(() => undefined);
+				const failed = await fail(sandboxId, error, "starting", undefined, (sandbox) =>
+					droppedMemory(sandbox, sandbox.memoryDropping ?? pausedMemoryGone("started afresh from its disk")),
+				);
+				if (failed !== undefined) await killDroppedOf(failed).catch(() => undefined);
 				return failed;
 			}
 			return fail(sandboxId, error, "starting");

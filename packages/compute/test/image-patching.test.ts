@@ -505,6 +505,42 @@ describe("image patching on", () => {
 		});
 	});
 
+	it("kills them when a retry from error, after a restart that failed before the drop, fails after it", async () => {
+		const { api, tom, refuseStartWith } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		// First refused before the host let the memory go: still running, nothing pending.
+		refuseStartWith(() => new KantelError("exhausted", "no room"));
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "error", memoryDropping: undefined });
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		// Retried from error, it fails after the drop.
+		refuseStartWith(() => bootDroppedMemory(new KantelError("unavailable", "no free sandbox addresses")));
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		refuseStartWith(undefined);
+		const failed = await api.store.sandboxes.get(sandbox.id);
+		expect(failed?.state).toBe("error");
+		expect(failed?.memoryDropped?.generation).toBe(1);
+		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("started afresh from its disk"),
+		});
+	});
+
 	it("leaves a paused sandbox's commands running when its restart on latest fails before its memory went", async () => {
 		const { api, failed } = await failedRestartFromPaused(new KantelError("unavailable", "not on that version yet"));
 		expect(failed?.memoryDropped).toBeUndefined();
