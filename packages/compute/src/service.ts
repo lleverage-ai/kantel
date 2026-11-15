@@ -5979,12 +5979,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	});
 
 	/**
-	 * `work`, the ordinary boot of `starting` (as its move to `starting` wrote it, with its lease), its lease moved on every
-	 * `UPGRADE_HEARTBEAT_MS` until it ends: so the sweep, on any gateway, never settles a boot this gateway is still at,
-	 * queued or under way. Once it ends with the sandbox still `starting` (its publish failed, its host's answer was
-	 * lost), the lease goes quiet, and the sweep settles it from what its host has (`settleStuckStart`).
+	 * The heartbeat of the ordinary boot of `starting` (as its move to `starting` wrote it, with its lease): begun as soon
+	 * as that move is made, its lease moved on every `UPGRADE_HEARTBEAT_MS` through the boot's preparation, queueing and
+	 * publishing, until `end`, or the boot `over` it settles. So the sweep, on any gateway, never settles a boot this
+	 * gateway is still at. Once it ends with the sandbox still `starting` (its preparation or publish failed, its host's
+	 * answer was lost), the lease goes quiet, and the sweep settles it from what its host has (`settleStuckStart`).
 	 */
-	function leased<T>(starting: StoredSandbox, work: Promise<T>): Promise<T> {
+	function bootHeartbeat(starting: StoredSandbox): {
+		readonly over: <T>(work: () => Promise<T>) => Promise<T>;
+		readonly end: () => void;
+	} {
 		const lifecycle = starting.lifecycle ?? 0;
 		const beat = () =>
 			patchSandbox(starting.id, (latest) =>
@@ -5994,7 +5998,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			).catch(() => undefined);
 		const heartbeat = setInterval(() => void beat(), UPGRADE_HEARTBEAT_MS);
 		(heartbeat as { unref?: () => void }).unref?.();
-		return work.finally(() => clearInterval(heartbeat));
+		const end = () => clearInterval(heartbeat);
+		return {
+			end,
+			over: <T>(work: () => Promise<T>) => {
+				try {
+					return work().finally(end);
+				} catch (error) {
+					end();
+					throw error;
+				}
+			},
+		};
 	}
 
 	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
@@ -10370,12 +10385,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 				}
 				const starting = began.moved;
-				const provisioning = await provisionedAgain(principal, role, starting, true);
-				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-				const egress = await egressFor(starting.accountId, starting);
+				// Its lease is kept fresh from now, through its preparation, to its end.
+				const heartbeat = bootHeartbeat(starting);
+				let provisioning: Provisioning | undefined;
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					provisioning = await provisionedAgain(principal, role, starting, true);
+					// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					heartbeat.end();
+					throw error;
+				}
 				keepGoing(
-					leased(
-						starting,
+					heartbeat.over(() =>
 						track([current.id], () =>
 							bootProvisioned(
 								current.id,
@@ -10501,13 +10524,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
-				// An environment attached while it was stopped: its files and repositories, once it runs.
-				const provisioning = await provisionedAgain(principal, role, starting, true);
-				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-				const egress = await egressFor(starting.accountId, starting);
+				// Its lease is kept fresh from now, through its preparation, to its end.
+				const heartbeat = bootHeartbeat(starting);
+				let provisioning: Provisioning | undefined;
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					// An environment attached while it was stopped: its files and repositories, once it runs.
+					provisioning = await provisionedAgain(principal, role, starting, true);
+					// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					heartbeat.end();
+					throw error;
+				}
 				keepGoing(
-					leased(
-						starting,
+					heartbeat.over(() =>
 						track([stopped.id], () =>
 							bootProvisioned(
 								stopped.id,
@@ -13337,7 +13368,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					return;
 				}
 				const { reason } = outcome;
-				if (outcome.hostState === "stopped" && outcome.memory) {
+				// Paused again only where its host has checked the memory it was paused with is there to resume.
+				if (outcome.hostState === "stopped" && outcome.memory === "held") {
 					const result = await transition(
 						sandbox.id,
 						"starting",
@@ -13375,8 +13407,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					read.memoryDropping !== undefined ||
 					read.booting?.paused !== undefined ||
 					(await store.commands.list({ sandboxId: sandbox.id, state: "running" })).length > 0;
+				// Only where its host says that memory is gone: one it can't check is neither promised nor written off, and a
+				// resume finds out.
 				const lostMemory = (current: StoredSandbox) =>
-					!outcome.memory &&
+					outcome.memory === "gone" &&
 					(wasPaused || current.memoryDropping !== undefined || current.booting?.paused !== undefined);
 				const failed = await fail(sandbox.id, new KantelError("unavailable", reason), "starting", held, (current) =>
 					lostMemory(current) ? droppedMemory(current, current.memoryDropping ?? START_LOST_MEMORY) : {},
@@ -14613,18 +14647,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
-		const provisioning = await provisionedAgain(principal, role, starting, true);
-		const bootOptions = {
-			fromSnapshot,
-			...sizingOf(starting),
-			env: starting.env,
-			eligibleHosts: hosts,
-			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-			...(await egressFor(starting.accountId, starting)),
-			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-		};
-		const work = leased(
-			starting,
+		// Its lease is kept fresh from now, through its preparation, to its end.
+		const heartbeat = bootHeartbeat(starting);
+		let provisioning: Provisioning | undefined;
+		let bootOptions: BootOptions;
+		try {
+			provisioning = await provisionedAgain(principal, role, starting, true);
+			bootOptions = {
+				fromSnapshot,
+				...sizingOf(starting),
+				env: starting.env,
+				eligibleHosts: hosts,
+				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+				...(await egressFor(starting.accountId, starting)),
+				...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+			};
+		} catch (error) {
+			heartbeat.end();
+			throw error;
+		}
+		const work = heartbeat.over(() =>
 			track([current.id], async () => {
 				// Resumed (from paused, or from error after a resume that failed): a kill made while it was paused reaches the
 				// command its memory kept, if that memory came back; a guest that doesn't know the command takes it as done.

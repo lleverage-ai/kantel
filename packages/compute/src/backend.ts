@@ -149,14 +149,16 @@ export function isStartOutcomeUnknown(error: unknown): boolean {
  * What became of a start, resume or recovery whose gateway went quiet (its publish failed, its answer was lost, or the
  * gateway itself went), as `settleStart` answers it from what its host has now: its machine running (its placement);
  * not running (`stopped`, or `error` there), with whether the host still holds the memory it was paused with (`memory`:
- * a stopped one that does is paused there still) and the host's word on why; `pending` while the host is still at it (starting or stopping it).
+ * `held` where the host has checked its memory image is there to resume, so a stopped one is paused there still;
+ * `gone` where it has none; `unknown` where the host can't say, so neither is assumed) and the host's word on why;
+ * `pending` while the host is still at it (starting or stopping it).
  */
 export type StartOutcome =
 	| { readonly state: "running"; readonly placement: Placement }
 	| {
 			readonly state: "ended";
 			readonly hostState: "stopped" | "error";
-			readonly memory: boolean;
+			readonly memory: "held" | "gone" | "unknown";
 			readonly reason: string;
 	  }
 	| { readonly state: "pending" };

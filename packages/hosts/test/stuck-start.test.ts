@@ -15,7 +15,7 @@ import {
 } from "@kantel/compute";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend, START_ENDED } from "../src/backend.ts";
-import type { HostSandbox } from "../src/protocol.ts";
+import { HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -56,7 +56,7 @@ const failingPublish =
 	});
 
 /** The compute API over one host, on a clock the test moves on, with a running microVM on it. */
-async function setup() {
+async function setup(features?: readonly string[]) {
 	let skew = 0;
 	const service = createHostsService({
 		store: createMemoryHostStore(),
@@ -95,13 +95,14 @@ async function setup() {
 	service.useJoinTokens(joinTokenSpender(api.store));
 	service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
 	const { hostId } = await service.register({ token: (await root.createHostJoinToken({ name: "box" })).token });
-	const host = new FakeHost(service, hostId);
+	const host = new FakeHost(service, hostId, features);
 	host.connect();
 	await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 	const { id } = await root.createSandbox({ type: "microvm", wait: true });
 	/** The host back, holding `held`. */
-	const reconnect = async (held: HostSandbox[]) => {
-		const back = new FakeHost(service, hostId);
+	const reconnect = async (held: HostSandbox[], memories: readonly string[] = []) => {
+		const back = new FakeHost(service, hostId, features);
+		for (const sandboxId of memories) back.memories.set(sandboxId, "booted");
 		back.connect(held);
 		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
 		return back;
@@ -207,8 +208,49 @@ describe("a start whose gateway went quiet", () => {
 		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
 	});
 
+	/** A paused sandbox with a command its memory kept, whose resume its host was sent and never answered. */
+	async function lostResume(features?: readonly string[]) {
+		const set = await setup(features);
+		const { api, root, host, id, stored, keptCommand } = set;
+		await root.stopSandbox(id, { keepMemory: true, wait: true });
+		const paused = await stored();
+		expect(paused.state).toBe("paused");
+		await keptCommand("cmd_kept");
+		host.hold = (method) => (method === "sandbox.resume" ? never() : undefined);
+		await root.resumeSandbox(id);
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.resume")).toBe(true));
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		return { ...set, paused };
+	}
+
+	it("fails, killing the commands its memory ran, when its host's memory image is gone though its record says kept", async () => {
+		const { api, id, reconnect, sweepPastLeases, stored } = await lostResume([HOST_FEATURES.sandboxMoveMemory]);
+		// Its record still says it kept its memory, and the image is gone (a reboot emptied the spool).
+		const back = await reconnect([as(id, "stopped", { memory: true })]);
+		await sweepPastLeases();
+		expect(back.calls.some((call) => call.method === "sandbox.memory")).toBe(true);
+		expect(await stored()).toMatchObject({
+			state: "error",
+			memoryDropped: { generation: 1, why: expect.stringContaining("start was never seen through") },
+		});
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("killed");
+	});
+
+	it("fails without promising or writing off its memory when its host can't check it", async () => {
+		const { api, id, reconnect, sweepPastLeases, stored } = await lostResume();
+		await reconnect([as(id, "stopped", { memory: true })], [id]);
+		await sweepPastLeases();
+		const settled = await stored();
+		expect(settled).toMatchObject({ state: "error", reason: expect.stringContaining(START_ENDED) });
+		expect(settled.memoryDropped).toBeUndefined();
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+	});
+
 	it("is paused again, as it was, when its host still has it stopped with its memory", async () => {
-		const { api, root, host, id, reconnect, sweepPastLeases, stored, keptCommand } = await setup();
+		const { api, root, host, id, reconnect, sweepPastLeases, stored, keptCommand } = await setup([
+			HOST_FEATURES.sandboxMoveMemory,
+		]);
 		await root.stopSandbox(id, { keepMemory: true, wait: true });
 		const paused = await stored();
 		expect(paused.state).toBe("paused");
@@ -219,7 +261,7 @@ describe("a start whose gateway went quiet", () => {
 		host.connection.closed(1006, "gone");
 		await api.service.idle();
 		// The resume never reached the machine: still stopped there, holding its memory.
-		await reconnect([as(id, "stopped", { memory: true })]);
+		await reconnect([as(id, "stopped", { memory: true })], [id]);
 		await sweepPastLeases();
 		const settled = await stored();
 		expect(settled).toMatchObject({
@@ -328,6 +370,49 @@ describe("a start whose gateway went quiet", () => {
 		release();
 		await api.service.idle();
 		expect((await stored()).state).toBe("running");
+	});
+
+	it("is never settled while its gateway is still preparing it, past the lease it began with", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const { api, root, host, id, gateway, skip, stored } = await setup();
+		await root.stopSandbox(id, { wait: true });
+		// Its gateway's read of its egress, once it is starting, stalls.
+		let release: () => void = () => undefined;
+		let stalled = false;
+		const stalling = (shared: ComputeStore): ComputeStore => ({
+			...shared,
+			proxies: {
+				...shared.proxies,
+				get: async (accountId) => {
+					if (!stalled && (await shared.sandboxes.get(id))?.state === "starting") {
+						stalled = true;
+						await new Promise<void>((resolve) => {
+							release = resolve;
+						});
+					}
+					return shared.proxies.get(accountId);
+				},
+			},
+		});
+		const preparing = gateway(stalling(api.store));
+		const started = preparing.root.startSandbox(id);
+		await vi.waitFor(() => expect(stalled).toBe(true));
+		const other = gateway(api.store);
+		for (let beat = 0; beat < 3; beat++) {
+			skip(UPGRADE_HEARTBEAT_MS * 3);
+			await vi.advanceTimersByTimeAsync(UPGRADE_HEARTBEAT_MS);
+			await vi.waitFor(async () => expect((await stored()).booting?.heartbeatAt).toBeGreaterThan(Date.now()));
+			await other.api.service.sweep();
+			await other.api.service.idle();
+			expect((await stored()).state).toBe("starting");
+		}
+		// Past the lease it began with, and never asked of its host by another gateway.
+		expect(host.calls.some((call) => call.method === "sandbox.get" && call.params.sandboxId === id)).toBe(false);
+		release();
+		await started;
+		await preparing.api.service.idle();
+		expect((await stored()).state).toBe("running");
+		expect(host.sandboxes.get(id)?.state).toBe("running");
 	});
 
 	it("gives a lease to a start begun before leases were kept, and settles it once that goes quiet", async () => {

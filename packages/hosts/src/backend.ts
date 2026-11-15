@@ -85,6 +85,7 @@ import {
 	type HostMountsRefresh,
 	type HostProcessList,
 	type HostSandbox,
+	type HostSandboxMemory,
 	type HostSnapshotKeep,
 	type HostStickyCommitResult,
 	type HostStickyDiskStatus,
@@ -694,6 +695,22 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(healthAt === undefined ? {} : { healthAt }),
 			},
 		};
+	}
+
+	/**
+	 * Whether a stopped sandbox's host holds the memory image it was paused with, there to resume, as the host checks it
+	 * (`sandbox.memory`, `HOST_FEATURES.sandboxMoveMemory`): `unknown` where the host can't check it.
+	 */
+	async function memoryHeld(sandboxId: string, hostId: string): Promise<"held" | "gone" | "unknown"> {
+		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.sandboxMoveMemory)) return "unknown";
+		try {
+			const told = await call<HostSandboxMemory>(sandboxId, HostMethods.sandboxMemory, { sandboxId });
+			return told.memory ? "held" : "gone";
+		} catch (error) {
+			// One configured not to move memory refuses it: it can't check.
+			if (isKantelError(error, "not_supported")) return "unknown";
+			throw error;
+		}
 	}
 
 	/** A host's sticky disk statuses, those shaped as statuses. */
@@ -1335,7 +1352,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const placement = await hosts.sandboxes.placement(sandboxId);
 			// No host has it: nothing runs it, and nothing holds its memory.
 			if (placement === undefined) {
-				return { state: "ended", hostState: "error", memory: false, reason: `${START_ENDED}, and no host has it` };
+				return { state: "ended", hostState: "error", memory: "gone", reason: `${START_ENDED}, and no host has it` };
 			}
 			// As its host has it now. A host still booting it answers once it is done (kantel-host holds the sandbox for the
 			// whole boot); one away, or not answering, is asked again by a later sweep.
@@ -1347,7 +1364,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				return {
 					state: "ended",
 					hostState: "error",
-					memory: false,
+					memory: "gone",
 					reason: `${START_ENDED}, and its host has it no more`,
 				};
 			}
@@ -1359,12 +1376,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			const error =
 				typeof sandbox.error === "string" && sandbox.error !== "" ? `: ${sandbox.error.slice(0, 1000)}` : "";
+			const stopped = sandbox.state === "stopped";
 			return {
 				state: "ended",
-				hostState: sandbox.state === "stopped" ? "stopped" : "error",
-				// Whether it still holds the memory it was paused with (`HostSandbox.memory`): a boot that let it go, or a machine
-				// that exited, cleared it.
-				memory: sandbox.memory === true,
+				hostState: stopped ? "stopped" : "error",
+				// A boot that let its memory go, or a machine that exited, cleared its flag (`HostSandbox.memory`). One still set
+				// is only the record's word: its memory image may be gone since (a reboot empties the spool it is in).
+				memory: sandbox.memory !== true ? "gone" : stopped ? await memoryHeld(sandboxId, placement.hostId) : "unknown",
 				reason: `${START_ENDED}, and its host has it ${String(sandbox.state)}${error}`,
 			};
 		},

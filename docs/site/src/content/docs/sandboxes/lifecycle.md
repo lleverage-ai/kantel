@@ -204,8 +204,11 @@ Give `size` to come back bigger or smaller. A start (`POST /v1/sandboxes/{sandbo
 If a start or resume is never seen through (its host's answer is lost, or the Kantel gateway handling it stops), Kantel doesn't guess what happened. The sandbox stays `starting` while the gateway is still at it, and about two minutes after it goes quiet Kantel asks the host what it has:
 
 - **Running**: the sandbox is `running`.
-- **Stopped, still holding the memory it was paused with**: the sandbox is `paused` again, as it was, with `reason` saying why, and a resume carries on from that memory.
+- **Stopped, and the host has checked that the memory it was paused with is still there**: the sandbox is `paused` again, as it was, with `reason` saying why, and a resume carries on from that memory.
 - **Failed, stopped without that memory, or gone**: the sandbox is `error` with the host's reason. If it was paused, the commands it was running are killed, saying their memory was lost. Start it to boot it again.
+- **Stopped on a host too old to check its memory**: the sandbox is `error` with the host's reason, and its commands are left as they were. A resume carries on from that memory if the host still has it, and boots it fresh if not.
+
+The sandbox's gateway keeps it marked as being worked on from the moment it becomes `starting`, through any preparation, until the host answers, so another gateway never settles a start that is still under way.
 
 While the host is away or still booting it, the sandbox stays `starting`, and Kantel asks again later.
 
