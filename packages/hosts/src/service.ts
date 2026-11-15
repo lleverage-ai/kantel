@@ -1136,6 +1136,17 @@ export function suspendedOnHost(error: unknown): boolean {
 	return typeof error === "object" && error !== null && suspendedErrors.has(error);
 }
 
+/** Kantel's errors for starts whose host said it let go of the sandbox's memory before they failed. */
+const memoryDroppedErrors = new WeakSet<object>();
+
+/**
+ * Whether `error` is a host's answer that a failed start let go of the memory the sandbox was stopped with
+ * (`HostError.memoryDropped`, `HOST_FEATURES.startMemoryDropped`).
+ */
+export function memoryDroppedOnHost(error: unknown): boolean {
+	return typeof error === "object" && error !== null && memoryDroppedErrors.has(error);
+}
+
 /** A host's error as Kantel's: the codes line up where they can. */
 export function kantelErrorFromHost(error: unknown): unknown {
 	if (!(error instanceof HostCallError)) return error;
@@ -1143,6 +1154,7 @@ export function kantelErrorFromHost(error: unknown): unknown {
 	if (error.unanswered) unansweredErrors.add(mapped);
 	if (error.disconnected) awayErrors.add(mapped);
 	if (error.code === "suspended") suspendedErrors.add(mapped);
+	if (error.memoryDropped) memoryDroppedErrors.add(mapped);
 	return mapped;
 }
 

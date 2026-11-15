@@ -148,7 +148,13 @@ export function createPeerTransport(options: {
 					const message = JSON.parse(line) as {
 						event?: HostEvent;
 						result?: unknown;
-						error?: { code: string; message: string; unanswered?: boolean; disconnected?: boolean };
+						error?: {
+							code: string;
+							message: string;
+							unanswered?: boolean;
+							disconnected?: boolean;
+							memoryDropped?: boolean;
+						};
 					};
 					if (message.event !== undefined) callOptions.onEvent?.(message.event);
 					else if (message.error !== undefined) {
@@ -339,6 +345,8 @@ export async function createGatewayCluster(options: {
 													...(error.unanswered ? { unanswered: true } : {}),
 													// Whether the host wasn't there (gone while it waited), for a stop to wait for it.
 													...(error.disconnected ? { disconnected: true } : {}),
+													// Whether a failed start let go of the sandbox's memory, for its commands to end with it.
+													...(error.memoryDropped ? { memoryDropped: true } : {}),
 												}
 											: { code: "internal", message: "The call failed on the replica holding the host" },
 								}),

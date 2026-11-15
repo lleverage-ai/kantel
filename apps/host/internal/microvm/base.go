@@ -472,9 +472,13 @@ func (m *Manager) rebase(s *sandbox, to string) error {
 		return nil
 	}
 	// A template's report was of the image it was built on: on the new one, its version's is the sandbox's (guestOf).
+	// Its memory goes too, as it can't run on another root filesystem: kept, as it was, if that can't be written, so a
+	// rebase that fails here leaves it to resume.
 	if s.meta.Memory || s.meta.Guest != nil {
+		memory, guest := s.meta.Memory, s.meta.Guest
 		s.meta.Memory, s.meta.Guest = false, nil
 		if err := m.writeMeta(s); err != nil {
+			s.meta.Memory, s.meta.Guest = memory, guest
 			return err
 		}
 	}
