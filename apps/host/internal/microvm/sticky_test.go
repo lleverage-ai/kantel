@@ -25,6 +25,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
+	"golang.org/x/sys/unix"
 )
 
 func TestValidateStickyDisks(t *testing.T) {
@@ -68,6 +69,19 @@ func TestStickyDrivesInBootAndFingerprints(t *testing.T) {
 	}
 	if !strings.Contains(m.templateFingerprint(shape{}), " sticky=2") || !strings.Contains(m.runtimeFingerprint(""), "+sticky=2") {
 		t.Fatal("templates made before the sticky drives must be made again")
+	}
+	// With discard, the sticky drives (not the read-only bundle drives) have it, and a template made before has to be
+	// made again: its snapshot restores sticky drives without it.
+	if drives[2].Discard || strings.Contains(m.templateFingerprint(shape{}), "sticky-discard") {
+		t.Fatalf("discard without the host's: %+v", drives)
+	}
+	on := &Manager{cfg: Config{Discard: true}}
+	drives = on.bootConfig(shape{}, "vmlinux", "", "", 3, 2, StickyDrives).Drives
+	if !drives[2].Discard || !drives[3].Discard || drives[0].Discard {
+		t.Fatalf("drives with discard on: %+v", drives)
+	}
+	if !strings.Contains(on.templateFingerprint(shape{}), ",sticky-discard") {
+		t.Fatalf("a template made before discard on its sticky drives is current: %q", on.templateFingerprint(shape{}))
 	}
 }
 
@@ -435,6 +449,229 @@ func TestValidateEffectiveSticky(t *testing.T) {
 			t.Errorf("%s: %v, want invalid", name, err)
 		}
 	}
+}
+
+// A commit has the guest trim the disk before it freezes it, so the blocks its file system freed, holes in the drive's
+// file once Firecracker's discard punches them, aren't in the version: its allocated bytes fall and its files are as
+// they were. A guest that can't trim (a drive without discard: 501) still commits, the freed blocks kept. The fake
+// guest's trim does what Firecracker does for a trim in the guest: it punches a hole over each free extent of the
+// file system (as dumpe2fs lists them) in the drive's file.
+func TestStickyCommitTrimsFreedBlocks(t *testing.T) {
+	for _, tool := range []string{"mkfs.ext4", "debugfs", "dumpe2fs", "e2fsck"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("no %s", tool)
+		}
+	}
+	// Short, for the sockets in it.
+	root, err := os.MkdirTemp("", "sticky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	m := &Manager{cfg: Config{Root: root}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx := context.Background()
+	f := newStickyFixture(t, "sbx_a", m)
+	var discard atomic.Bool
+	f.s.guest = guest.NewClient(fakeGuest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sticky/trim" {
+			f.mu.Lock()
+			f.calls = append(f.calls, r.URL.Path)
+			f.mu.Unlock()
+			if !discard.Load() {
+				w.WriteHeader(http.StatusNotImplemented)
+				_, _ = io.WriteString(w, `{"error":"operation not supported"}`)
+				return
+			}
+			trimmed, err := punchFreeExtents(filepath.Join(f.s.vmDir(), stickyDriveFile(0)))
+			if err != nil {
+				w.WriteHeader(500)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]int64{"trimmed": trimmed})
+			return
+		}
+		f.agent(w, r)
+	}))
+	m.attachSticky(ctx, f.s, []proto.StickyDisk{{DiskID: "ci", Path: "/var/lib/ci", SizeGiB: 1}})
+	m.mountSticky(ctx, f.s)
+	if st := stickyStatus(f.s.meta.StickyDisks); len(st) != 1 || st[0].State != proto.StickyMounted {
+		t.Fatalf("%+v", st)
+	}
+
+	// A cache's churn: a 64 MiB file written and deleted, beside a file kept. Deleted, its blocks are free in the file
+	// system and still allocated, with its bytes, in the drive's file, as a guest without discard leaves them.
+	drive := filepath.Join(f.s.vmDir(), stickyDriveFile(0))
+	src := t.TempDir()
+	kept := []byte("a cache entry the next job reuses\n")
+	big := make([]byte, 64<<20)
+	for i := range big {
+		big[i] = byte(i*7 + i>>13)
+	}
+	if err := os.WriteFile(filepath.Join(src, "kept"), kept, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "big"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	debugfs := func(img string, write bool, req string) string {
+		t.Helper()
+		args := []string{"-R", req, img}
+		if write {
+			args = append([]string{"-w"}, args...)
+		}
+		out, err := exec.Command("debugfs", args...).Output()
+		if err != nil {
+			t.Fatalf("debugfs %s: %v", req, err)
+		}
+		return string(out)
+	}
+	debugfs(drive, true, "write "+filepath.Join(src, "kept")+" kept")
+	debugfs(drive, true, "write "+filepath.Join(src, "big")+" big")
+	debugfs(drive, true, "rm big")
+	if got := diskUsage(drive); got < 64<<20 {
+		t.Fatalf("the drive's file has %d bytes allocated with the deleted file's blocks", got)
+	}
+
+	commit := func(version string) proto.StickyCommitResult {
+		t.Helper()
+		res, err := m.CommitSticky(ctx, proto.StickyCommitParams{SandboxID: "sbx_a", DiskID: "ci", Version: version})
+		if err != nil {
+			t.Fatalf("commit %s: %v", version, err)
+		}
+		m.StickyMapDigest(ctx, "ci", version)
+		return res
+	}
+	untrimmed := commit("v1")
+	discard.Store(true)
+	trimmed := commit("v2")
+	t.Logf("allocated: %d MiB untrimmed, %d MiB trimmed", untrimmed.AllocatedBytes>>20, trimmed.AllocatedBytes>>20)
+	if untrimmed.AllocatedBytes < 64<<20 {
+		t.Fatalf("the version without a trim has %d bytes allocated: the freed blocks should be in it", untrimmed.AllocatedBytes)
+	}
+	if trimmed.AllocatedBytes > untrimmed.AllocatedBytes-60<<20 {
+		t.Fatalf("the trimmed version has %d bytes allocated, the untrimmed %d: the freed blocks are still in it", trimmed.AllocatedBytes, untrimmed.AllocatedBytes)
+	}
+	if trimmed.SizeBytes != untrimmed.SizeBytes {
+		t.Fatalf("the trimmed version is %d bytes long, not %d", trimmed.SizeBytes, untrimmed.SizeBytes)
+	}
+	// Each commit trims before it freezes.
+	f.mu.Lock()
+	var order []string
+	for _, c := range f.calls {
+		if c == "/sticky/trim" || c == "/sticky/freeze" {
+			order = append(order, c)
+		}
+	}
+	f.mu.Unlock()
+	if strings.Join(order, ",") != "/sticky/trim,/sticky/freeze,/sticky/trim,/sticky/freeze" {
+		t.Fatalf("calls %v", order)
+	}
+	// Its files are as they were, and its file system checks clean.
+	version := m.stickyVersionFile("ci", "v2")
+	if got := debugfs(version, false, "cat kept"); got != string(kept) {
+		t.Fatalf("kept reads %q", got)
+	}
+	if out, err := exec.Command("e2fsck", "-fn", version).CombinedOutput(); err != nil {
+		t.Fatalf("e2fsck: %v: %s", err, out)
+	}
+}
+
+// An agent from before POST /sticky/trim (404) has the host run fstrim on the mount as root instead; fstrim's "not
+// supported" (a drive without discard) is no discard, as the new agent's 501 is.
+func TestStickyTrimFallsBackToFstrim(t *testing.T) {
+	m := &Manager{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		answer func(w http.ResponseWriter, r *http.Request)
+		want   error
+		execs  int
+	}{
+		{"new agent", func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `{"trimmed":4096}`) }, nil, 0},
+		{"new agent, no discard", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(501)
+			_, _ = io.WriteString(w, `{"error":"no"}`)
+		}, errStickyNoDiscard, 0},
+		{"old agent", nil, nil, 1},
+		{"old agent, no discard", nil, errStickyNoDiscard, 1},
+	} {
+		var execs []guest.ExecRequest
+		client := guest.NewClient(fakeGuest(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/sticky/trim" && tc.answer != nil:
+				tc.answer(w, r)
+			case r.URL.Path == "/exec":
+				var req guest.ExecRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				execs = append(execs, req)
+				res := guest.ExecResult{}
+				if tc.want != nil {
+					res.ExitCode, res.Stderr = 1, "fstrim: /var/lib/ci: the discard operation is not supported\n"
+				}
+				_ = json.NewEncoder(w).Encode(res)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		_, err := m.guestTrimSticky(ctx, client, "/var/lib/ci")
+		if !errors.Is(err, tc.want) && !(err == nil && tc.want == nil) {
+			t.Errorf("%s: %v, want %v", tc.name, err, tc.want)
+		}
+		if len(execs) != tc.execs {
+			t.Fatalf("%s: %d execs", tc.name, len(execs))
+		}
+		if tc.execs > 0 && (strings.Join(execs[0].Argv, " ") != "fstrim /var/lib/ci" || execs[0].User != "root" || execs[0].TimeoutMs <= 0) {
+			t.Errorf("%s: exec %+v", tc.name, execs[0])
+		}
+	}
+}
+
+// punchFreeExtents punches a hole over every free block of the ext4 file system in img (dumpe2fs's "Free blocks"),
+// as Firecracker does for a guest's trim of a drive with discard, and answers the bytes it punched.
+func punchFreeExtents(img string) (int64, error) {
+	out, err := exec.Command("dumpe2fs", img).Output()
+	if err != nil {
+		return 0, err
+	}
+	var blockSize int64
+	var extents [][2]int64
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "Block size:"); ok {
+			fmt.Sscan(v, &blockSize)
+		}
+		v, ok := strings.CutPrefix(line, "Free blocks: ")
+		if !ok {
+			continue
+		}
+		for _, r := range strings.Split(v, ", ") {
+			var a, b int64
+			if n, _ := fmt.Sscanf(r, "%d-%d", &a, &b); n == 1 {
+				b = a
+			} else if n == 0 {
+				continue
+			}
+			extents = append(extents, [2]int64{a, b})
+		}
+	}
+	if blockSize == 0 {
+		return 0, fmt.Errorf("no block size in dumpe2fs's output")
+	}
+	file, err := os.OpenFile(img, os.O_RDWR, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	var punched int64
+	for _, e := range extents {
+		off, n := e[0]*blockSize, (e[1]-e[0]+1)*blockSize
+		if err := unix.Fallocate(int(file.Fd()), unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE, off, n); err != nil {
+			return 0, err
+		}
+		punched += n
+	}
+	return punched, nil
 }
 
 // Two commits of one version: the second is refused while the first holds it, and a publish never replaces a version

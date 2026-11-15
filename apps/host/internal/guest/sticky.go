@@ -3,7 +3,9 @@ package guest
 // Sticky disks: an organisation's named ext4 disks (caches a job warms and the next reuses), each sandbox with its own
 // copy-on-write clone of one on a writable drive after its bundle drives (docs/design/disk-store.md). The host points
 // the drive at the clone; the agent mounts it read-write (POST /sticky), and for a commit writes it back and freezes
-// it (POST /sticky/freeze) while the host clones the drive's file, then thaws it (POST /sticky/thaw).
+// it (POST /sticky/freeze) while the host clones the drive's file, then thaws it (POST /sticky/thaw). Before the freeze
+// the host has it trim the disk (POST /sticky/trim), so the blocks its file system freed are holes in the drive's file
+// (Firecracker's discard) and the version doesn't keep them.
 
 import (
 	"encoding/binary"
@@ -201,6 +203,43 @@ func (s *Server) stickyIoctl(w http.ResponseWriter, r *http.Request, freeze bool
 	})
 	writeFrozen()
 	writeJSON(w, 200, map[string]any{"ok": true, "leaseMs": lease.Milliseconds()})
+}
+
+// trimSticky discards the free blocks of the sticky disk mounted at the request's path (FITRIM, as fstrim does), and
+// answers how many bytes the kernel trimmed: with discard on the drive (Firecracker's, from v1.17) the host punches
+// holes in the drive's file where they are. A path no sticky disk is mounted at answers 404, a drive without discard
+// 501 (EOPNOTSUPP), and an older agent 404 too. One trim at a time: the ioctl runs on after the host stops waiting
+// for it, and another asked for meanwhile answers 409 at once rather than queue behind it. It doesn't take stickyMu,
+// so a long trim holds up no freeze or thaw: a freeze while it runs is safe, as a trim only discards free blocks.
+func (s *Server) trimSticky(w http.ResponseWriter, r *http.Request) {
+	var req stickyFreezeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if err := CheckMountPath(req.Path); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if !s.stickyTrimming.TryLock() {
+		fail(w, 409, errors.New("a trim of a sticky disk is already running"))
+		return
+	}
+	defer s.stickyTrimming.Unlock()
+	if source := mountPoints()[req.Path]; !strings.HasPrefix(source, "/dev/vd") {
+		fail(w, 404, fmt.Errorf("no sticky disk is mounted at %s", req.Path))
+		return
+	}
+	trimmed, err := trimMount(req.Path)
+	if errors.Is(err, unix.EOPNOTSUPP) {
+		fail(w, 501, err)
+		return
+	}
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]uint64{"trimmed": trimmed})
 }
 
 // thawLocked thaws path and ends its lease. Called with stickyMu held.

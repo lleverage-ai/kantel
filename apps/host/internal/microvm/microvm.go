@@ -266,7 +266,9 @@ type Config struct {
 	HostImage func(ctx context.Context, version string) (string, error)
 	// Discard boots every microVM with discard on its writable disk (fc.BootConfig.Discard), for a Firecracker that
 	// can (fc.DiscardSupported): blocks the guest frees, and those a trim before a save frees (trimDisk), are holes in
-	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. It is in the templates' fingerprint.
+	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. Its sticky drives have it too, and a
+	// commit trims the disk first (trimSticky), so a version keeps none of the blocks its file system freed. It is in
+	// the templates' fingerprint.
 	Discard bool
 }
 
@@ -487,7 +489,7 @@ const (
 func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, drives, sticky int) fc.BootConfig {
 	cfg := fc.BootConfig{
 		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
-		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: append(bundleDrives(drives), stickyDrives(sticky)...),
+		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: append(bundleDrives(drives), stickyDrives(sticky, m.cfg.Discard)...),
 		Discard: m.cfg.Discard, FreePageReporting: m.cfg.FreePageReporting,
 	}
 	if m.cfg.Initrd != "" {
@@ -1513,8 +1515,10 @@ func (m *Manager) templateFingerprint(sh shape) string {
 	}
 	devices := templateDevices
 	if m.cfg.Discard {
-		// A template from before keeps a disk without discard, and so would every sandbox restored from it.
-		devices += ",discard"
+		// A template from before keeps a disk without discard, and so would every sandbox restored from it; and one
+		// from before discard on its sticky drives keeps those without it, so a sticky disk's freed blocks would stay
+		// in every version committed from it.
+		devices += ",discard,sticky-discard"
 	}
 	if m.cfg.FreePageReporting {
 		// The balloon is a device the snapshot keeps: one made without reporting never reports.

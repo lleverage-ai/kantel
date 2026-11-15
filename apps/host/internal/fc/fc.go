@@ -241,6 +241,21 @@ type Drive struct {
 	ID       string
 	Path     string
 	ReadOnly bool
+	// Discard, on a writable drive, lets the guest discard (trim) its blocks, as BootConfig.Discard does for the disk:
+	// Firecracker punches holes in the drive's file for them. Off on a read-only drive whatever it says (Firecracker
+	// takes discard only on a writable one). A snapshot keeps the device as it was booted, and so does a PATCH of its
+	// file.
+	Discard bool
+}
+
+// body is the drive's PUT /drives body: with discard (and the Sync engine it needs, said outright) when asked on a
+// writable drive.
+func (d Drive) body() map[string]any {
+	drive := map[string]any{"drive_id": d.ID, "path_on_host": d.Path, "is_root_device": false, "is_read_only": d.ReadOnly}
+	if d.Discard && !d.ReadOnly {
+		drive["io_engine"], drive["discard"] = DiskEngine, true
+	}
+	return drive
 }
 
 // balloon is the balloon BootConfig.BalloonStatsSeconds asks for: a target of 0, so it only reports, and with free page
@@ -288,7 +303,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 	}
 	// Block devices are attached in the order they're configured, so these are vdc, vdd, ... after vda and vdb.
 	for _, d := range cfg.Drives {
-		steps = append(steps, step{"/drives/" + d.ID, map[string]any{"drive_id": d.ID, "path_on_host": d.Path, "is_root_device": false, "is_read_only": d.ReadOnly}})
+		steps = append(steps, step{"/drives/" + d.ID, d.body()})
 	}
 	steps = append(steps,
 		step{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},

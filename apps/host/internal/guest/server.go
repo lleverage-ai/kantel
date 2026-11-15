@@ -60,8 +60,10 @@ type Server struct {
 	upstream atomic.Value
 	// commands are those run with an ID (commands.go).
 	commands commands
-	// trimming is held while a trim of the disk runs (trimDisk): one at a time.
-	trimming sync.Mutex
+	// trimming is held while a trim of the disk runs (trimDisk): one at a time. stickyTrimming is held while a trim of a
+	// sticky disk runs (trimSticky), likewise.
+	trimming       sync.Mutex
+	stickyTrimming sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {
@@ -93,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sticky", s.mountSticky)
 	mux.HandleFunc("POST /sticky/freeze", s.freezeSticky)
 	mux.HandleFunc("POST /sticky/thaw", s.thawSticky)
+	mux.HandleFunc("POST /sticky/trim", s.trimSticky)
 	return mux
 }
 
