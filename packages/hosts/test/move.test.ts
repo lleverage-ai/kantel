@@ -38,13 +38,16 @@ const meshOf = (byte: number): HostMeshFacts => ({
 
 const MOVES = [HOST_FEATURES.mesh, HOST_FEATURES.sandboxMove, HOST_FEATURES.egressPolicy];
 
-async function setup(options: { readonly now?: () => number; readonly stickyDisks?: boolean } = {}) {
+async function setup(
+	options: { readonly now?: () => number; readonly stickyDisks?: boolean; readonly moveReconnectWaitMs?: number } = {},
+) {
 	const store = createMemoryHostStore();
 	const service = createHostsService({
 		store,
 		publicUrl: "https://kantel.test",
 		log: () => undefined,
 		...(options.now === undefined ? {} : { clock: { now: options.now } }),
+		...(options.moveReconnectWaitMs === undefined ? {} : { moveReconnectWaitMs: options.moveReconnectWaitMs }),
 	});
 	const backend = createHostBackend({
 		hosts: service,
@@ -293,12 +296,13 @@ describe("moving a stopped sandbox to another host", () => {
 
 	it("settles a move whose target went away mid-copy once it is back, rolling it back", async () => {
 		const clock = { at: Date.now() };
-		const { root, api, join } = await setup({ now: () => clock.at });
+		const { root, api, join } = await setup({ now: () => clock.at, moveReconnectWaitMs: 0 });
 		const a = await join();
 		const b = await join();
 		const sandbox = await stoppedOn(root, a, "disk");
 		await unpinned(api, sandbox.id);
-		// Its target goes as it copies: whether it imported it isn't known, and it can't be asked yet.
+		// Its target goes as it copies, and isn't back within the move's wait for it (none here): whether it imported it
+		// isn't known, and it can't be asked yet.
 		b.hold = (method) => (method === "sandbox.import" ? new Promise(() => undefined) : undefined);
 		const moving = failure(root.moveSandbox(sandbox.id, {}));
 		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
@@ -858,6 +862,92 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		expect(await root.runCommand(sandbox.id, { command: "echo hi" })).toMatchObject({ exitCode: 0 });
 	});
 
+	it("sends a copy again when its host's connection goes as it waits, and moves it", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "written before the move");
+		// Each copy's first send is never answered: the target's connection goes as it waits, as a gateway's link reset
+		// does (live: every 5 minutes on Cloudflare), while the host carries the copy on.
+		const lost = new Set<string>();
+		b.hold = (method, params) => {
+			const key = `${method}/${String(params.version)}`;
+			if (method !== "sandbox.import" || lost.has(key)) return undefined;
+			lost.add(key);
+			return new Promise<void>(() => undefined);
+		};
+		const welcomes = () => b.sent.filter((message) => message.type === "welcome").length;
+		const dropAndReconnect = async (imports: number) => {
+			await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(imports));
+			const before = welcomes();
+			b.connection.closed(1006, "gone");
+			b.connect([...b.sandboxes.values()]);
+			await vi.waitFor(() => expect(welcomes()).toBe(before + 1));
+		};
+		const moving = root.moveSandbox(sandbox.id, { keepMemory: false });
+		// The first copy, made as it runs: sent again once the target is back, and the move goes on.
+		await dropAndReconnect(1);
+		// The final copy, after the stop: likewise.
+		await dropAndReconnect(3);
+		const moved = await moving;
+		expect(moved).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+		expect(b.disks.get(sandbox.id)).toBe("written before the move");
+		const imports = b.calls.filter((call) => call.method === "sandbox.import").map((call) => call.params);
+		expect(imports.map((params) => params.stage === true)).toEqual([true, true, false, false]);
+		expect(imports[1]?.version).toBe(imports[0]?.version);
+		expect(imports[3]?.version).toBe(imports[2]?.version);
+		// Nothing rolled back: nothing cancelled on the target, and the source's copy deleted once it switched.
+		expect(b.cancelled.size).toBe(0);
+		expect(a.sandboxes.has(sandbox.id)).toBe(false);
+		expect((await service.sandboxes.placement(sandbox.id))?.move).toBeUndefined();
+	});
+
+	it("sends its source's export and stop again when the source's connection goes as they wait", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "written before the move");
+		const lost = new Set<string>();
+		a.hold = (method, params) => {
+			const key = `${method}/${String(params.version ?? "")}`;
+			if ((method !== "sandbox.export" && method !== "sandbox.stop") || lost.has(key)) return undefined;
+			lost.add(key);
+			return new Promise<void>(() => undefined);
+		};
+		const welcomes = () => a.sent.filter((message) => message.type === "welcome").length;
+		const dropAndReconnect = async (method: string, sends: number) => {
+			await vi.waitFor(() => expect(a.calls.filter((call) => call.method === method)).toHaveLength(sends));
+			const before = welcomes();
+			a.connection.closed(1006, "gone");
+			a.connect([...a.sandboxes.values()]);
+			await vi.waitFor(() => expect(welcomes()).toBe(before + 1));
+		};
+		const moving = root.moveSandbox(sandbox.id, { keepMemory: false });
+		await dropAndReconnect("sandbox.export", 1);
+		await dropAndReconnect("sandbox.stop", 1);
+		await dropAndReconnect("sandbox.export", 3);
+		expect(await moving).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+		expect(
+			methodsOf(a, sandbox.id).filter((method) => method === "sandbox.export" || method === "sandbox.stop"),
+		).toEqual(["sandbox.export", "sandbox.export", "sandbox.stop", "sandbox.stop", "sandbox.export", "sandbox.export"]);
+		expect(b.cancelled.size).toBe(0);
+	});
+
+	it("stops waiting for a host whose connection went once the service closes", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.hold = (method) => (method === "sandbox.import" ? new Promise<void>(() => undefined) : undefined);
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		b.connection.closed(1006, "gone");
+		service.close();
+		// Answered at once, not after the 2 minutes it would wait for the host: the move is settled later, as before.
+		expect((await moving).code).toBe("unavailable");
+		expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(1);
+	});
+
 	it("ends the move, never stopping it, when it exits while its first copy is made", async () => {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_RUNNING);
@@ -926,11 +1016,12 @@ describe("moving a running sandbox to another host, with a restart", () => {
 
 	it("settles a move whose target went away after the stop, starting it again on its source", async () => {
 		const clock = { at: Date.now() };
-		const { root, api, join } = await setup({ now: () => clock.at });
+		const { root, api, join } = await setup({ now: () => clock.at, moveReconnectWaitMs: 0 });
 		const a = await join(MOVES_RUNNING);
 		const b = await join(MOVES_RUNNING);
 		const sandbox = await runningOn(root, api, a, "disk");
-		// Its target goes as it fetches the final copy: whether it imported it isn't known, and it can't be asked yet.
+		// Its target goes as it fetches the final copy, and isn't back within the move's wait for it (none here): whether it
+		// imported it isn't known, and it can't be asked yet.
 		b.hold = (method, params) =>
 			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
 		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
@@ -956,10 +1047,11 @@ describe("moving a running sandbox to another host, with a restart", () => {
 
 	it("refuses a move again, after one try at settling it, while a quiet move can't be settled", async () => {
 		const clock = { at: Date.now() };
-		const { root, api, join, service } = await setup({ now: () => clock.at });
+		const { root, api, join, service } = await setup({ now: () => clock.at, moveReconnectWaitMs: 0 });
 		const a = await join(MOVES_RUNNING);
 		const b = await join(MOVES_RUNNING);
 		const sandbox = await runningOn(root, api, a, "disk");
+		// Its target goes as it fetches the final copy, and isn't back within the move's wait for it (none here).
 		b.hold = (method, params) =>
 			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
 		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
