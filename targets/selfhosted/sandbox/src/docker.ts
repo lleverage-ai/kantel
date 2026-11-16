@@ -12,13 +12,22 @@ import { concatBytes } from "./tar.ts";
 
 export const DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * Creating, starting and removing a container can wait on dockerd's kill path: when a forced removal's container dies
+ * without dockerd registering the exit, it waits 10 s, falls back to a direct SIGKILL and waits again, and meanwhile
+ * it neither removes nor starts any container on the host (17-31 s seen under runsc-kvm). Retrying doesn't help (a
+ * DELETE gets 409 "removal already in progress", a create can leave an orphan), so these calls wait that out instead.
+ */
+const DEFAULT_LIFECYCLE_TIMEOUT_MS = 90_000;
 const decoder = new TextDecoder();
 
 export interface DockerClientOptions {
 	/** Default /var/run/docker.sock. */
 	readonly socketPath?: string;
-	/** Deadline for an ordinary API request (not an exec); default 30 s. */
+	/** Deadline for an ordinary API request (not an exec or a container lifecycle call); default 30 s. */
 	readonly requestTimeoutMs?: number;
+	/** Deadline for creating, starting and removing a container; default 90 s. */
+	readonly lifecycleTimeoutMs?: number;
 }
 
 export interface DockerRequest {
@@ -132,11 +141,13 @@ const filters = (value: Readonly<Record<string, readonly string[]>>) => encodeUR
 export class DockerClient {
 	readonly socketPath: string;
 	readonly #requestTimeoutMs: number;
+	readonly #lifecycleTimeoutMs: number;
 	readonly #agent = new Agent({ keepAlive: true, maxSockets: 32 });
 
 	constructor(options: DockerClientOptions = {}) {
 		this.socketPath = options.socketPath ?? DEFAULT_DOCKER_SOCKET;
 		this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+		this.#lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? DEFAULT_LIFECYCLE_TIMEOUT_MS;
 	}
 
 	/** Sends a request and buffers the response body. */
@@ -159,12 +170,22 @@ export class DockerClient {
 
 	async createContainer(body: unknown, name?: string): Promise<string> {
 		const query = name === undefined ? "" : `?name=${encodeURIComponent(name)}`;
-		const created = await this.json<{ Id: string }>({ method: "POST", path: `/containers/create${query}`, json: body });
+		const created = await this.json<{ Id: string }>({
+			method: "POST",
+			path: `/containers/create${query}`,
+			json: body,
+			timeoutMs: this.#lifecycleTimeoutMs,
+		});
 		return created.Id;
 	}
 
 	async startContainer(id: string): Promise<void> {
-		await this.request({ method: "POST", path: `/containers/${encodeURIComponent(id)}/start`, allow: [304] });
+		await this.request({
+			method: "POST",
+			path: `/containers/${encodeURIComponent(id)}/start`,
+			allow: [304],
+			timeoutMs: this.#lifecycleTimeoutMs,
+		});
 	}
 
 	/** Removes a container, killing it if it runs, with its anonymous volumes. False when it was already gone. */
@@ -173,6 +194,7 @@ export class DockerClient {
 			method: "DELETE",
 			path: `/containers/${encodeURIComponent(id)}?force=1&v=1`,
 			allow: [404],
+			timeoutMs: this.#lifecycleTimeoutMs,
 		});
 		return response.status !== 404;
 	}
