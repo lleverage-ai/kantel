@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,11 +69,13 @@ func stickyDriveFile(k int) string { return fmt.Sprintf("sticky%d.ext4", k) }
 
 func stickyDriveID(k int) string { return fmt.Sprintf("sticky%d", k) }
 
-// stickyDrives is the writable drives a VM with n sticky drives boots with, after its bundle drives.
-func stickyDrives(n int) []fc.Drive {
+// stickyDrives is the writable drives a VM with n sticky drives boots with, after its bundle drives: with discard when
+// the host's Firecracker can (Config.Discard), so a trim in the guest punches the blocks its file system freed out of
+// the drive's file, and a commit's clone of it doesn't keep them.
+func stickyDrives(n int, discard bool) []fc.Drive {
 	out := make([]fc.Drive, n)
 	for k := range out {
-		out[k] = fc.Drive{ID: stickyDriveID(k), Path: stickyDriveFile(k)}
+		out[k] = fc.Drive{ID: stickyDriveID(k), Path: stickyDriveFile(k), Discard: discard}
 	}
 	return out
 }
@@ -643,7 +646,7 @@ var (
 )
 
 // CommitSticky (sticky.commit) makes a running sandbox's copy of a sticky disk the disk's version p.Version on this
-// host: the version is reserved, the guest writes the disk back and freezes it under a lease, the drive's file is
+// host: the version is reserved, the guest trims the disk (trimSticky), writes it back and freezes it under a lease, the drive's file is
 // cloned to a temporary file of this commit's own within the lease, the guest thaws it, and the clone is published
 // under the version's name only if no other commit has it (link, never a rename over it). Then the host keeps only the
 // disk's stickyKeep last published versions. A thaw that fails is reported in the answer (ThawError): the guest thaws
@@ -700,6 +703,7 @@ func (m *Manager) commitSticky(ctx context.Context, p proto.StickyCommitParams) 
 	tmpFile.Close()
 	// This commit's own file, removed whatever happens: once published, the version is a link to it.
 	defer os.Remove(tmp)
+	m.trimSticky(ctx, s, *disk)
 	thawErr, err := m.cloneFrozen(ctx, s, *disk, tmp)
 	if err != nil {
 		return proto.StickyCommitResult{}, "", err
@@ -771,6 +775,87 @@ func (m *Manager) publishSticky(diskID, version, tmp string) error {
 	m.pinStickyAnswer(diskID, version)
 	m.pruneStickyLocked(diskID)
 	return nil
+}
+
+// stickyTrimWait bounds a commit's trim of its disk: past it the commit goes ahead with whatever was trimmed by then.
+// Within the control plane's 120 seconds for the call, beside the freeze's lease and stickyMapWait.
+var stickyTrimWait = 20 * time.Second
+
+// trimSticky has s's guest discard the free blocks of its sticky disk d (fstrim) before a commit freezes it, so that
+// with discard on the drive (stickyDrives) the blocks its file system freed are holes in the drive's file, and the
+// version keeps none of them. Without it every block the disk ever used stays allocated in each version: Firecracker
+// passes no discard through on a drive booted without it, and the guest's fstrim says the operation isn't supported.
+// The first trim after a mount covers every free block (ext4 skips only groups trimmed since), so a sandbox's commit
+// from a version committed before this frees what that version kept too.
+//
+// Best effort, within stickyTrimWait and what of the call's time (ctx's deadline) leaves the freeze its lease: a drive
+// booted without discard (its sandbox's machine, or the template it was
+// restored from, was made before), a trim still running or a slow or failed one only leaves the version as big as it
+// would have been. The guest's trim isn't stopped when the wait ends; one running on through the freeze discards only
+// blocks the file system doesn't use. Logs the drive file's allocated bytes before and after. Called with s.mu held.
+func (m *Manager) trimSticky(ctx context.Context, s *sandbox, d stickyDisk) {
+	file := filepath.Join(s.vmDir(), stickyDriveFile(d.Slot))
+	before := diskUsage(file)
+	wait := stickyTrimWait
+	if deadline, ok := ctx.Deadline(); ok {
+		// The call's time (a commit queued behind another has spent some): the freeze and clone keep their lease.
+		wait = min(wait, time.Until(deadline)-stickyFreezeLease)
+	}
+	if wait <= 0 {
+		m.log.Info("no trim of a sticky disk before its commit: the call has no time left for it", "sandbox", s.meta.ID, "disk", d.DiskID, "allocatedBytes", before)
+		return
+	}
+	tctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	start := time.Now()
+	trimmed, err := m.guestTrimSticky(tctx, s.guest, d.Path)
+	switch {
+	case err == nil:
+		m.log.Info("trimmed a sticky disk before its commit", "sandbox", s.meta.ID, "disk", d.DiskID, "trimmedBytes", trimmed,
+			"allocatedBefore", before, "allocatedAfter", diskUsage(file), "ms", time.Since(start).Milliseconds())
+	case errors.Is(err, errStickyNoDiscard):
+		m.log.Info("a sticky disk can't be trimmed before its commit: its drive has no discard, so the version keeps the blocks its file system freed",
+			"sandbox", s.meta.ID, "disk", d.DiskID, "allocatedBytes", before)
+	case guest.StatusOf(err) == http.StatusConflict:
+		m.log.Debug("no trim of a sticky disk before its commit: one is still running", "sandbox", s.meta.ID, "disk", d.DiskID)
+	default:
+		m.log.Warn("trimming a sticky disk before its commit", "sandbox", s.meta.ID, "disk", d.DiskID, "error", err, "ms", time.Since(start).Milliseconds())
+	}
+}
+
+// errStickyNoDiscard is a trim of a sticky disk whose drive has no discard.
+var errStickyNoDiscard = errors.New("the sticky disk's drive has no discard")
+
+// guestTrimSticky trims the sticky disk at path (POST /sticky/trim) and answers the bytes the guest trimmed. The agent
+// ships in the sandbox image (host-images), not with the host, so for a while a host talks to agents from before POST
+// /sticky/trim: their 404 has the host run fstrim on the mount as root instead (util-linux, in every image), which
+// trims the same, without a count. A drive without discard is errStickyNoDiscard either way (501, or fstrim's "not
+// supported").
+func (m *Manager) guestTrimSticky(ctx context.Context, client *guest.Client, path string) (uint64, error) {
+	trimmed, err := client.TrimSticky(ctx, path)
+	switch {
+	case err == nil:
+		return trimmed, nil
+	case guest.StatusOf(err) == http.StatusNotImplemented:
+		return 0, errStickyNoDiscard
+	case !guest.IsNotFound(err):
+		return 0, err
+	}
+	timeout := stickyTrimWait
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	res, err := client.Exec(ctx, guest.ExecRequest{Argv: []string{"fstrim", path}, User: "root", TimeoutMs: max(timeout.Milliseconds(), 1)})
+	switch {
+	case err != nil:
+		return 0, fmt.Errorf("fstrim: %w", err)
+	case res.ExitCode == 0:
+		return 0, nil
+	case strings.Contains(res.Stderr, "not supported"):
+		return 0, errStickyNoDiscard
+	default:
+		return 0, fmt.Errorf("fstrim exited %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
 }
 
 // cloneFrozen clones the drive file of s's sticky disk d to dst while its guest has the disk's file system frozen

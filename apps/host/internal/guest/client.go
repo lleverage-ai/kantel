@@ -495,6 +495,17 @@ func (c *Client) FreezeSticky(ctx context.Context, path string, lease time.Durat
 	return err
 }
 
+// TrimSticky discards the free blocks of the sticky disk mounted at path (fstrim) and answers how many bytes the guest
+// trimmed. An older agent, or a path with no sticky disk, answers 404 (IsNotFound), a drive without discard 501, and
+// 409 while an earlier trim of a sticky disk still runs.
+func (c *Client) TrimSticky(ctx context.Context, path string) (uint64, error) {
+	var out struct {
+		Trimmed uint64 `json:"trimmed"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/sticky/trim", jsonBody(map[string]string{"path": path}), &out)
+	return out.Trimmed, err
+}
+
 // ThawSticky thaws (FITHAW) the sticky disk mounted at path; one that isn't frozen is fine.
 func (c *Client) ThawSticky(ctx context.Context, path string) error {
 	_, err := c.do(ctx, http.MethodPost, "/sticky/thaw", jsonBody(map[string]string{"path": path}), &map[string]any{})

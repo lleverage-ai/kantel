@@ -65,6 +65,25 @@ func TestFreezeOnlyAStickyMount(t *testing.T) {
 	}
 }
 
+// A trim is only ever of a sticky disk's mount, one at a time: another asked for while one runs answers 409 at once.
+func TestTrimOnlyAStickyMountOneAtATime(t *testing.T) {
+	s := &Server{}
+	for body, want := range map[string]int{`{"path":"/"}`: 400, `{"path":"/proc"}`: 400, `{"path":"relative"}`: 400, `{"path":"/no/sticky/disk/here"}`: 404} {
+		rec := httptest.NewRecorder()
+		s.trimSticky(rec, httptest.NewRequest(http.MethodPost, "/sticky/trim", strings.NewReader(body)))
+		if rec.Code != want {
+			t.Errorf("%s: %d %s, want %d", body, rec.Code, rec.Body, want)
+		}
+	}
+	s.stickyTrimming.Lock()
+	defer s.stickyTrimming.Unlock()
+	rec := httptest.NewRecorder()
+	s.trimSticky(rec, httptest.NewRequest(http.MethodPost, "/sticky/trim", strings.NewReader(`{"path":"/cache"}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("a trim beside a running one answered %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // A sticky disk replacing a restored snapshot's bucket mount (at its path, above or under it) has that bucket mount
 // released before it is mounted, so the host's later bucket cleanup can't unmount the sticky disk; a bucket mount
 // elsewhere stays, and an invalid path releases nothing.

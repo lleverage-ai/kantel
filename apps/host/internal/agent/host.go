@@ -1207,6 +1207,10 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		// The whole call, queued behind another commit of the sandbox's or not, within the control plane's time for
+		// it: its trim takes only what leaves the freeze its lease, and its map's wait what is left.
+		ctx, cancel := context.WithTimeout(ctx, stickyCommitAnswerWait)
+		defer cancel()
 		var sticky StickyDisks
 		res, err := func() (proto.StickyCommitResult, error) {
 			// With the lifecycle calls: a stop waits for the commit's freeze, clone and thaw.
@@ -1305,3 +1309,8 @@ var _ StickyDisks = (*microvm.Manager)(nil)
 type SnapshotMeasurer interface {
 	MeasuredSnapshots(sandboxID string) ([]proto.SnapshotInfo, []proto.SharedBytes)
 }
+
+// stickyCommitAnswerWait is how long a sticky.commit has, from its arrival to its answer: within the control plane's
+// 120 seconds for a call, with room for the answer to reach it. A commit queued behind another of its sandbox's (the
+// lifecycle lock) spends its wait there too.
+const stickyCommitAnswerWait = 110 * time.Second
