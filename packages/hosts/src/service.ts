@@ -579,6 +579,14 @@ export const TEMPLATE_IMAGE_BUILD_TIMEOUT_MS = 100 * 60_000;
  * the default call timeout the sandbox was put in `error` while its host went on and started it.
  */
 export const DISK_COPY_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long a move's call whose host's connection went as it waited waits for the host to connect again, to be sent
+ * again (`HostsServiceOptions.moveReconnectWaitMs`). A host's connection to the control plane drops now and then (a
+ * gateway's link reset, an update), and the copy it was making carries on past it.
+ */
+export const MOVE_RECONNECT_WAIT_MS = 2 * 60_000;
+/** How long a move waiting for its host to connect again waits between looks. */
+const MOVE_RECONNECT_POLL_MS = 1_000;
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
@@ -767,6 +775,8 @@ export interface HostsServiceOptions {
 	readonly callTimeoutMs?: number;
 	/** How long an upgrade's call to its isolate's host waits for its answer (default `DISK_COPY_TIMEOUT_MS`). */
 	readonly upgradeTimeoutMs?: number;
+	/** How long a move's call whose host's connection went waits for it to connect again (default `MOVE_RECONNECT_WAIT_MS`). */
+	readonly moveReconnectWaitMs?: number;
 	/** What an upgrade moves between hosts at most (default `UPGRADE_MOVE_LIMITS`). */
 	readonly upgradeMoveLimits?: { readonly files: number; readonly bytes: number };
 	readonly log?: (message: string) => void;
@@ -1177,6 +1187,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const clock = options.clock ?? systemClock;
 	const log = options.log ?? ((message: string) => console.error(message));
 	const upgradeTimeoutMs = options.upgradeTimeoutMs ?? DISK_COPY_TIMEOUT_MS;
+	const moveReconnectWaitMs = options.moveReconnectWaitMs ?? MOVE_RECONNECT_WAIT_MS;
 	/**
 	 * How long a gateway's claim on rolling back an upgrade lasts (`upgrade.settling`): past its two calls' time and some,
 	 * so a gateway still at it is never taken for gone.
@@ -4013,11 +4024,56 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					if (written === undefined) throw new KantelError("conflict", "The move was undone meanwhile");
 					return written;
 				};
+				/**
+				 * One of the move's copies, or its source's stop, on `host`: sent again, with its params made afresh (a grant
+				 * renewed), when its host's connection goes as it waits (`hostWasAway`). The host carries the copy on past its
+				 * connection, and the same call again answers it: an export the version it made, an import its fetch under way
+				 * or done, a stop fenced on the first copy the sandbox stopped. Only while the host is back within
+				 * `moveReconnectWaitMs`, within the call's own `DISK_COPY_TIMEOUT_MS` from its first send, and the move is still
+				 * this one with no rollback begun (`moveOn`'s test); any other failure is the call's own.
+				 */
+				const copyCall = async <T>(
+					hostId: string,
+					method: string,
+					params: () => Promise<object>,
+					known?: HostRecord,
+				): Promise<T> => {
+					const until = clock.now() + DISK_COPY_TIMEOUT_MS;
+					for (;;) {
+						try {
+							return await onHost<T>(
+								hostId,
+								method,
+								await params(),
+								{ timeoutMs: Math.max(1, until - clock.now()) },
+								known,
+							);
+						} catch (error) {
+							if (!hostWasAway(error)) throw error;
+							const back = Math.min(until, clock.now() + moveReconnectWaitMs);
+							do {
+								if (clock.now() >= back) throw error;
+								await new Promise((resolve) => setTimeout(resolve, MOVE_RECONNECT_POLL_MS));
+							} while (!hub.connected(hostId));
+							const latest = await store.getPlacement(sandboxId);
+							if (
+								!movingBy(latest, operationId) ||
+								latest?.move?.rollingBack === true ||
+								latest?.move?.settling !== undefined
+							) {
+								throw new KantelError("conflict", "The move was undone meanwhile");
+							}
+							log(`[hosts] the move of ${sandboxId}'s ${method} on host ${hostId} lost its answer; sent again`);
+						}
+					}
+				};
 				/** A version of the sandbox exported on its source, and its map digests (its memory's too, with `memory`). */
 				const exportOf = async (params: HostSandboxExportParams): Promise<HostSandboxExportResult> => {
-					const exported = await onHost<HostSandboxExportResult>(sourceHost.id, HostMethods.sandboxExport, params, {
-						timeoutMs: DISK_COPY_TIMEOUT_MS,
-					});
+					const exported = await copyCall<HostSandboxExportResult>(
+						sourceHost.id,
+						HostMethods.sandboxExport,
+						async () => params,
+					);
 					const digest = (value: unknown) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
 					if (!digest(exported.mapDigest)) {
 						throw new KantelError("unavailable", "The sandbox's host answered its export without a map digest");
@@ -4040,16 +4096,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						// staged there; its map digest kept for the target's own `disk.locate`.
 						const { mapDigest: first } = await exportOf({ sandboxId, version: liveVersion, live: true });
 						const copying = await moveOn((move) => ({ ...move, liveDigest: first }));
-						await onHost(
+						await copyCall(
 							target.id,
 							HostMethods.sandboxImport,
-							{
+							async () => ({
 								sandboxId,
 								version: liveVersion,
 								...(await grantMove(copying, target.id, first, liveVersion)),
 								stage: true,
-							},
-							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
+							}),
 							target,
 						);
 						// Then stopped, its memory let go or kept: recorded first, so a rollback from here knows it may have stopped it.
@@ -4060,12 +4115,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						// Fenced on the source by its first copy there: once a rollback has deleted that, a stop sent late (this
 						// gateway stalled as another settled the move and started it again) is refused, never stopping it.
 						// Kept, its memory is what its final export copies; a rollback resumes it from that where it was.
-						await onHost(
-							sourceHost.id,
-							HostMethods.stop,
-							{ sandboxId, memory: intended.move.memory === true, export: liveVersion },
-							{ timeoutMs: DISK_COPY_TIMEOUT_MS },
-						);
+						await copyCall(sourceHost.id, HostMethods.stop, async () => ({
+							sandboxId,
+							memory: intended.move.memory === true,
+							export: liveVersion,
+						}));
 						await moveOn((move) => ({ ...move, phase: "final-copy" }));
 						input.onFinalCopy?.(target.id);
 					}
@@ -4084,30 +4138,31 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						mapDigest,
 						...(keeps && memoryDigest !== undefined ? { memoryDigest } : {}),
 					}));
-					const location = await grantMove(recorded, target.id, mapDigest, operationId);
-					const memoryAt =
-						keeps && memoryDigest !== undefined
-							? await grantMove(recorded, target.id, memoryDigest, operationId, true)
-							: undefined;
-					await onHost(
+					await copyCall(
 						target.id,
 						HostMethods.sandboxImport,
-						{
-							sandboxId,
-							version: operationId,
-							...location,
-							...(live ? { base: liveVersion } : {}),
-							...(memoryAt === undefined
-								? {}
-								: {
-										memory: {
-											mapDigest: memoryAt.mapDigest ?? memoryDigest,
-											holders: memoryAt.holders,
-											grant: memoryAt.grant,
-										},
-									}),
+						async () => {
+							const location = await grantMove(recorded, target.id, mapDigest, operationId);
+							const memoryAt =
+								keeps && memoryDigest !== undefined
+									? await grantMove(recorded, target.id, memoryDigest, operationId, true)
+									: undefined;
+							return {
+								sandboxId,
+								version: operationId,
+								...location,
+								...(live ? { base: liveVersion } : {}),
+								...(memoryAt === undefined
+									? {}
+									: {
+											memory: {
+												mapDigest: memoryAt.mapDigest ?? memoryDigest,
+												holders: memoryAt.holders,
+												grant: memoryAt.grant,
+											},
+										}),
+							};
 						},
-						{ timeoutMs: DISK_COPY_TIMEOUT_MS },
 						target,
 					);
 					await moveOn((move) => ({ ...move, phase: "start" }));
