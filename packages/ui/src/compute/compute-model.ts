@@ -663,11 +663,12 @@ export const STICKY_DISK_MAX_GB = 2048;
 /** A committed version of a sticky disk, on the host it was committed on. */
 export interface StickyDiskVersion {
 	readonly id: string;
+	/** The host it was committed on. Other hosts in its pool may have fetched a copy since; the API doesn't list them. */
 	readonly hostId: string;
 	/** The host's name; absent where the viewer may not see the host (a shared one, for anyone but a super-admin). */
 	readonly hostName?: string;
 	readonly sizeBytes: number;
-	/** What it takes on its host's disk, the blocks it shares with other versions there included. */
+	/** What it took on the host it was committed on, the blocks it shares with other versions there included. */
 	readonly allocatedBytes: number;
 	readonly createdAt: number;
 }

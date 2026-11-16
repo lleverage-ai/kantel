@@ -1,11 +1,14 @@
 // The Disks page (compute console, under Settings, experimental): an account's sticky disks, the named, versioned
 // caches microVMs get a copy-on-write copy of and that a commit makes the next version of. Grouped by the pool each is
-// in, as Hosts groups hosts; a row has the disk's name, size, versions, the hosts with a version and what they take,
-// and how old its head is, and opening it lists each host. New disk names it, sizes it and puts it in a pool; Delete
-// removes it and its versions on every host. Shown only where the deployment has turned sticky disks on. Every call
-// goes through the `StickyDisksSource` the host binds; stories bind it to fixtures.
+// in, as Hosts groups hosts; a row has the disk's name, size, versions, the hosts they were committed on and what they
+// took there, and how old its last commit is, and opening it lists each of those hosts (a version names only its commit
+// host: copies other hosts fetched aren't listed by the API). New disk names it, sizes it and puts it in a pool; Delete
+// removes it and its versions on every host. A disk made or deleted here shows at once, until a read begun after the
+// change shows it instead; a dialog's request, finishing late, closes only the dialog that sent it. Shown only where the
+// deployment has turned sticky disks on. Every call goes through the `StickyDisksSource` the host binds; stories bind
+// it to fixtures.
 
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -24,12 +27,16 @@ import { SettingsPageHeader } from "./settings-nav.tsx";
 import {
 	allocatedText,
 	allocatedTotal,
-	defaultPoolId,
+	chosenPool,
+	commitHosts,
+	type DialogSession,
+	endSession,
 	groupTitle,
 	headVersion,
 	hostLabel,
 	hostsText,
 	hostsTitle,
+	type LocalChange,
 	orderedPools,
 	poolChoiceLabel,
 	type StickyDiskGroup,
@@ -37,9 +44,9 @@ import {
 	sizeGbError,
 	sizeGbText,
 	stickyDiskGroups,
-	stickyDiskHosts,
 	stickyDiskNameError,
 	versionsText,
+	withLocalChanges,
 } from "./sticky-disks.ts";
 
 export interface StickyDisksPageProps {
@@ -66,37 +73,45 @@ export function StickyDisksPage({
 	creating = false,
 	opened = [],
 }: StickyDisksPageProps) {
-	const disksRead = useLoad(() => source.list(account.id), [source, account.id]);
+	// The number of the last change made here when each read begins: the read shows that change and those before it.
+	const changed = useRef(0);
+	const disksRead = useLoad(() => {
+		const readAt = changed.current;
+		return source.list(account.id).then((disks) => ({ disks, readAt }));
+	}, [source, account.id]);
 	const poolsRead = useLoad(() => source.pools(account.id), [source, account.id]);
-	// Disks made or deleted here, ahead of the next read: null for one deleted.
-	const [local, setLocal] = useState<ReadonlyMap<string, StickyDisk | null>>(new Map());
-	const [newOpen, setNewOpen] = useState(creating);
-	const [deleting, setDeleting] = useState<StickyDisk>();
+	// Disks made or deleted here (null), by the number of the change, ahead of a read that shows them.
+	const [changes, setChanges] = useState<ReadonlyMap<string, LocalChange>>(new Map());
+	// Each dialog opened is a session of its own: a request from one that's gone closes nothing.
+	const sessions = useRef(1);
+	const [newDialog, setNewDialog] = useState<DialogSession | undefined>(creating ? { session: 1 } : undefined);
+	const [deleting, setDeleting] = useState<DialogSession & { readonly disk: StickyDisk }>();
+	const nextSession = () => {
+		sessions.current += 1;
+		return sessions.current;
+	};
 	const [notice, setNotice] = useState<string>();
 	const now = fixedNow ?? Date.now();
 
-	const listed = disksRead.state.status === "ready" ? disksRead.state.value : undefined;
+	const read = disksRead.state.status === "ready" ? disksRead.state.value : undefined;
 	// Pools that can't be read leave the disks grouped by what the page can tell, and New disk without a choice.
 	const pools = poolsRead.state.status === "ready" ? poolsRead.state.value : [];
 	const poolsFailed = poolsRead.state.status === "error";
-	const disks = useMemo(() => {
-		if (listed === undefined) return undefined;
-		const byId = new Map(listed.map((disk) => [disk.id, disk]));
-		for (const [id, disk] of local) {
-			if (disk === null) byId.delete(id);
-			else byId.set(id, disk);
-		}
-		return [...byId.values()];
-	}, [listed, local]);
+	const disks = useMemo(
+		() => (read === undefined ? undefined : withLocalChanges(read.disks, read.readAt, changes)),
+		[read, changes],
+	);
 	const groups = useMemo(() => (disks === undefined ? undefined : stickyDiskGroups(disks, pools)), [disks, pools]);
 
 	const keep = (id: string, disk: StickyDisk | null) => {
-		setLocal((current) => new Map(current).set(id, disk));
+		changed.current += 1;
+		const seq = changed.current;
+		setChanges((current) => new Map(current).set(id, { disk, seq }));
 		disksRead.reload();
 	};
 
 	const newDisk = (
-		<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setNewOpen(true)}>
+		<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setNewDialog({ session: nextSession() })}>
 			New disk
 		</Button>
 	);
@@ -154,29 +169,38 @@ export function StickyDisksPage({
 					now={now}
 					narrow={narrow}
 					opened={opened}
-					onDelete={setDeleting}
+					onDelete={(disk) => setDeleting({ disk, session: nextSession() })}
 				/>
 			)}
-			{newOpen ? (
+			{newDialog === undefined ? null : (
 				<NewDiskDialog
+					key={newDialog.session}
 					pools={pools}
-					onClose={() => setNewOpen(false)}
+					poolsLoading={poolsRead.state.status === "loading"}
+					onClose={() => setNewDialog(undefined)}
 					onCreate={async (input) => {
+						const { session } = newDialog;
 						const made = await source.create({ accountId: account.id, ...input });
-						setNewOpen(false);
+						// The list shows it whether or not its dialog is still open; only that dialog closes.
 						keep(made.id, made);
+						setNewDialog((current) => endSession(current, session));
 					}}
 				/>
-			) : null}
-			<DeleteDialog
-				disk={deleting}
-				onClose={() => setDeleting(undefined)}
-				onDelete={async (disk) => {
-					await source.remove(disk.id);
-					keep(disk.id, null);
-					setNotice(`Deleted ${disk.name}.`);
-				}}
-			/>
+			)}
+			{deleting === undefined ? null : (
+				<DeleteDialog
+					key={deleting.session}
+					disk={deleting.disk}
+					onClose={() => setDeleting(undefined)}
+					onDelete={async (disk) => {
+						const { session } = deleting;
+						await source.remove(disk.id);
+						keep(disk.id, null);
+						setNotice(`Deleted ${disk.name}.`);
+						setDeleting((current) => endSession(current, session));
+					}}
+				/>
+			)}
 		</div>
 	);
 }
@@ -276,7 +300,7 @@ function DiskList({
 							Versions
 						</th>
 						<th className={head} scope="col">
-							Hosts
+							Committed on
 						</th>
 						<th className={`${head} text-right`} scope="col">
 							Allocated
@@ -355,7 +379,7 @@ function HeadAge({ disk, now, phone = false }: { disk: StickyDisk; now: number; 
 
 function DiskRow({ disk, now, opened, onDelete }: RowProps) {
 	const [open, setOpen] = useState(opened);
-	const hosts = stickyDiskHosts(disk);
+	const hosts = commitHosts(disk);
 	const allocated = allocatedText(allocatedTotal(disk));
 	const detailsId = useId();
 	const at = open ? cellOpen : cell;
@@ -422,7 +446,7 @@ function DiskRow({ disk, now, opened, onDelete }: RowProps) {
 /** A phone's row: the name and ⋯, then its size, versions, what it takes and its head's age. Tapping lists its hosts. */
 function DiskPhoneRow({ disk, now, opened, onDelete }: RowProps) {
 	const [open, setOpen] = useState(opened);
-	const hosts = stickyDiskHosts(disk);
+	const hosts = commitHosts(disk);
 	const allocated = allocatedText(allocatedTotal(disk));
 	const detailsId = useId();
 	return (
@@ -457,7 +481,7 @@ function DiskPhoneRow({ disk, now, opened, onDelete }: RowProps) {
 	);
 }
 
-/** An opened disk: each host with a version, how many it has and what they take there. */
+/** An opened disk: each host its listed versions were committed on, how many, and what they took there. */
 function DiskHosts({ hosts }: { hosts: readonly StickyDiskHost[] }) {
 	if (hosts.length === 0) {
 		return <p className="m-0 text-sm text-muted">No versions yet. A sandbox's commit makes the first.</p>;
@@ -481,7 +505,9 @@ function DiskHosts({ hosts }: { hosts: readonly StickyDiskHost[] }) {
 					</li>
 				))}
 			</ul>
-			<p className="m-0 text-sm text-muted">Versions share unchanged blocks, so a host may use less.</p>
+			<p className="m-0 text-sm text-muted">
+				Where each version was committed and what it took there. Copies other hosts fetched aren't listed.
+			</p>
 		</div>
 	);
 }
@@ -489,16 +515,21 @@ function DiskHosts({ hosts }: { hosts: readonly StickyDiskHost[] }) {
 /** New disk: its name, size and pool, and what it's for. */
 function NewDiskDialog({
 	pools,
+	poolsLoading,
 	onClose,
 	onCreate,
 }: {
 	pools: readonly StickyDiskPool[];
+	/** The pools are still being read: Create waits, so the disk goes in the pool the form shows. */
+	poolsLoading: boolean;
 	onClose: () => void;
 	onCreate: (input: { name: string; sizeGb: number; poolId?: string; description?: string }) => Promise<void>;
 }) {
 	const [name, setName] = useState("");
 	const [size, setSize] = useState("");
-	const [pool, setPool] = useState(() => defaultPoolId(pools));
+	// The pool picked, if any: until then, and should it go, the default of the pools read so far, as the picker shows.
+	const [picked, setPicked] = useState<string>();
+	const pool = chosenPool(picked, pools);
 	const [description, setDescription] = useState("");
 	const [busy, setBusy] = useState(false);
 	// The API's refusal: a name already taken goes under the name, anything else under the form.
@@ -507,7 +538,8 @@ function NewDiskDialog({
 	const trimmed = name.trim();
 	const nameError = stickyDiskNameError(trimmed) ?? taken;
 	const sizeError = sizeGbError(size);
-	const valid = trimmed !== "" && size.trim() !== "" && nameError === undefined && sizeError === undefined;
+	const valid =
+		!poolsLoading && trimmed !== "" && size.trim() !== "" && nameError === undefined && sizeError === undefined;
 
 	const submit = () => {
 		if (!valid || busy) return;
@@ -577,7 +609,7 @@ function NewDiskDialog({
 						label="Pool"
 						hint="Only sandboxes in this pool can attach it."
 						value={pool}
-						onChange={(event) => setPool(event.currentTarget.value)}
+						onChange={(event) => setPicked(event.currentTarget.value)}
 						options={orderedPools(pools).map((each) => ({ value: each.id, label: poolChoiceLabel(each) }))}
 					/>
 				)}
@@ -599,8 +631,9 @@ function DeleteDialog({
 	onClose,
 	onDelete,
 }: {
-	disk: StickyDisk | undefined;
+	disk: StickyDisk;
 	onClose: () => void;
+	/** Deletes it, and closes this dialog if it's still the one showing. */
 	onDelete: (disk: StickyDisk) => Promise<void>;
 }) {
 	const [busy, setBusy] = useState(false);
@@ -611,7 +644,7 @@ function DeleteDialog({
 	};
 	return (
 		<Dialog
-			open={disk !== undefined}
+			open
 			title="Delete this disk?"
 			onClose={close}
 			actions={
@@ -621,13 +654,10 @@ function DeleteDialog({
 						variant="danger"
 						busy={busy}
 						onClick={() => {
-							if (disk === undefined) return;
 							setBusy(true);
+							setFailure(undefined);
 							onDelete(disk).then(
-								() => {
-									setBusy(false);
-									close();
-								},
+								() => setBusy(false),
 								(caught: unknown) => {
 									setBusy(false);
 									setFailure(messageOf(caught, "Kantel couldn't delete it. Try again."));
@@ -641,7 +671,7 @@ function DeleteDialog({
 			}
 		>
 			<p>
-				<strong>{disk?.name}</strong> and its versions go from every host. Sandboxes with a copy keep it until they're
+				<strong>{disk.name}</strong> and its versions go from every host. Sandboxes with a copy keep it until they're
 				deleted.
 			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}

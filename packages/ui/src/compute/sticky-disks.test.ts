@@ -4,7 +4,10 @@ import { FIXTURE_NOW, LLEVERAGE, STICKY_DISKS } from "./fixtures.ts";
 import {
 	allocatedText,
 	allocatedTotal,
+	chosenPool,
+	commitHosts,
 	defaultPoolId,
+	endSession,
 	groupTitle,
 	headVersion,
 	hostsText,
@@ -14,9 +17,9 @@ import {
 	sizeGbError,
 	sizeGbText,
 	stickyDiskGroups,
-	stickyDiskHosts,
 	stickyDiskNameError,
 	versionsText,
+	withLocalChanges,
 } from "./sticky-disks.ts";
 
 const GIB = 1024 ** 3;
@@ -111,7 +114,7 @@ describe("sticky disks by pool", () => {
 	});
 });
 
-describe("a sticky disk's hosts", () => {
+describe("the hosts a sticky disk's versions were committed on", () => {
 	const ciCache = disk("ci-cache", "pool_ci", [
 		version("sdv_4", "hst_1", 9, "hetzner-fsn1-01"),
 		version("sdv_3", "hst_2", 8, "hetzner-fsn1-02"),
@@ -119,17 +122,17 @@ describe("a sticky disk's hosts", () => {
 		version("sdv_1", "hst_shared", 30),
 	]);
 
-	it("adds up each host's versions, the one taking most first", () => {
-		expect(stickyDiskHosts(ciCache)).toEqual([
+	it("counts each listed version once, on the host it was committed on, the one taking most first", () => {
+		expect(commitHosts(ciCache)).toEqual([
 			{ hostId: "hst_shared", versions: 1, allocatedBytes: 30 * GIB },
 			{ hostId: "hst_1", hostName: "hetzner-fsn1-01", versions: 2, allocatedBytes: 17.5 * GIB },
 			{ hostId: "hst_2", hostName: "hetzner-fsn1-02", versions: 1, allocatedBytes: 8 * GIB },
 		]);
-		expect(stickyDiskHosts(disk("empty"))).toEqual([]);
+		expect(commitHosts(disk("empty"))).toEqual([]);
 	});
 
 	it("names a row's hosts in one line, a shared one as such, with each host's space on hover", () => {
-		const hosts = stickyDiskHosts(ciCache);
+		const hosts = commitHosts(ciCache);
 		expect(hostsText(hosts)).toBe("Shared host and 2 more");
 		expect(hostsText(hosts.slice(1, 2))).toBe("hetzner-fsn1-01");
 		expect(hostsText([])).toBeUndefined();
@@ -188,5 +191,60 @@ describe("a new sticky disk", () => {
 		expect(orderedPools(POOLS).map(poolChoiceLabel)).toEqual(["default", "agents", "ci", "default (shared)"]);
 		expect(poolChoiceLabel(pool("pool_ci", "ci", { default: true }))).toBe("ci (default)");
 		expect(poolChoiceLabel(pool("pool_ci", "ci", { default: true, shared: true }))).toBe("ci (shared, default)");
+	});
+});
+
+describe("the pool a new disk goes in", () => {
+	it("is the default of the pools read so far, so pools read after the form opens are what it shows and sends", () => {
+		expect(chosenPool(undefined, [])).toBe("");
+		expect(chosenPool(undefined, POOLS)).toBe("pool_default");
+	});
+
+	it("keeps a pool picked, a shared one too, across a later read, until it's no longer a choice", () => {
+		expect(chosenPool("pool_shared", POOLS)).toBe("pool_shared");
+		expect(chosenPool("pool_shared", [...POOLS])).toBe("pool_shared");
+		expect(chosenPool("pool_gone", POOLS)).toBe("pool_default");
+		expect(chosenPool("pool_ci", [])).toBe("");
+	});
+});
+
+describe("the page's own changes beside a read", () => {
+	const made = disk("ci-cache", "pool_ci");
+	const committed = disk("ci-cache", "pool_ci", [version("sdv_1", "hst_1", 9, "hetzner-fsn1-01")]);
+	const pnpm = disk("pnpm-store", "pool_default");
+
+	it("shows a disk made here while the read under way began before it", () => {
+		const changes = new Map([[made.id, { disk: made, seq: 1 }]]);
+		expect(withLocalChanges([pnpm], 0, changes)).toEqual([pnpm, made]);
+	});
+
+	it("shows a read begun after the change instead: its newer record, or no disk where it has gone", () => {
+		const changes = new Map([[made.id, { disk: made, seq: 1 }]]);
+		expect(withLocalChanges([pnpm, committed], 1, changes)).toEqual([pnpm, committed]);
+		expect(withLocalChanges([pnpm], 1, changes)).toEqual([pnpm]);
+		expect(withLocalChanges([pnpm], 4, changes)).toEqual([pnpm]);
+	});
+
+	it("hides a disk deleted here while a read begun before the delete still lists it", () => {
+		const changes = new Map([[pnpm.id, { disk: null, seq: 2 }]]);
+		expect(withLocalChanges([pnpm, committed], 1, changes)).toEqual([committed]);
+		expect(withLocalChanges([pnpm, committed], 2, changes)).toEqual([pnpm, committed]);
+	});
+
+	it("keeps changes newer than the read while it shows the ones it covers", () => {
+		const changes = new Map<string, { disk: StickyDisk | null; seq: number }>([
+			[made.id, { disk: made, seq: 1 }],
+			[pnpm.id, { disk: null, seq: 2 }],
+		]);
+		expect(withLocalChanges([pnpm, committed], 1, changes)).toEqual([committed]);
+	});
+});
+
+describe("a dialog's late request", () => {
+	it("closes its own dialog, and leaves one opened since, or none, as it is", () => {
+		expect(endSession({ session: 2 }, 2)).toBeUndefined();
+		const newer = { session: 3, disk: "pnpm-store" };
+		expect(endSession(newer, 2)).toBe(newer);
+		expect(endSession(undefined, 2)).toBeUndefined();
 	});
 });

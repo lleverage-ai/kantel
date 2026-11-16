@@ -1,6 +1,9 @@
-// Sticky disks' words and sums (compute console, Disks): the disks grouped by the pool they are in, what each disk's
-// versions take on each host, and why a new disk's name or size won't do. Kept apart from the page so they're tested
-// on their own.
+// Sticky disks' words and sums (compute console, Disks): the disks grouped by the pool they are in, the hosts each
+// disk's versions were committed on and what they took there, why a new disk's name or size won't do, and the rules the
+// page keeps its own changes and dialogs by. Kept apart from the page so they're tested on their own.
+//
+// A version names only the host it was committed on. The API lists no host's copies (a pool's hosts fetch versions
+// from one another), so the page reports where versions were committed, not every host that has one.
 
 import { bytesText } from "../primitives/format.ts";
 import {
@@ -68,18 +71,22 @@ export function groupTitle(group: Pick<StickyDiskGroup, "id" | "pool">, poolsRea
 	return poolsRead ? "Shared pool" : group.id;
 }
 
-/** One host's share of a disk: how many of its versions it has and what they take there. */
+/** A host that committed versions of a disk: how many of the listed versions, and what they took there. */
 export interface StickyDiskHost {
 	readonly hostId: string;
 	/** Absent where the viewer may not see the host. */
 	readonly hostName?: string;
+	/** How many of the listed versions were committed on it. */
 	readonly versions: number;
-	/** Every version's allocated bytes added up. Versions share unchanged blocks, so the disk takes at most this. */
+	/** Those versions' allocated bytes added up. Versions share unchanged blocks, so they take at most this. */
 	readonly allocatedBytes: number;
 }
 
-/** The hosts that hold a version of the disk, the one with most allocated first, then by name. */
-export function stickyDiskHosts(disk: Pick<StickyDisk, "versions">): readonly StickyDiskHost[] {
+/**
+ * The hosts the disk's listed versions were committed on (each version's `hostId`), the one with most allocated first,
+ * then by name. Not every host with a copy: one fetched from another host isn't a version of its own.
+ */
+export function commitHosts(disk: Pick<StickyDisk, "versions">): readonly StickyDiskHost[] {
 	const hosts = new Map<string, StickyDiskHost>();
 	for (const version of disk.versions) {
 		const seen = hosts.get(version.hostId);
@@ -101,7 +108,7 @@ export function stickyDiskHosts(disk: Pick<StickyDisk, "versions">): readonly St
 /** A host as a row names it: its name, or "Shared host" for one the viewer can't see. */
 export const hostLabel = (host: Pick<StickyDiskHost, "hostName">): string => host.hostName ?? "Shared host";
 
-/** Every version's allocated bytes, on every host, added up: at most what the disk takes. */
+/** Every listed version's allocated bytes, as committed, added up. */
 export const allocatedTotal = (disk: Pick<StickyDisk, "versions">): number =>
 	disk.versions.reduce((sum, version) => sum + version.allocatedBytes, 0);
 
@@ -168,3 +175,41 @@ export function poolChoiceLabel(pool: StickyDiskPool): string {
 
 /** Pools in the order a choice lists them: the account's own (default first), then shared ones. */
 export const orderedPools = (pools: readonly StickyDiskPool[]): readonly StickyDiskPool[] => [...pools].sort(byPool);
+
+/** The pool a new disk is made in: the one picked, while it's still a choice, else the default (empty for none). */
+export function chosenPool(picked: string | undefined, pools: readonly StickyDiskPool[]): string {
+	return picked !== undefined && pools.some((pool) => pool.id === picked) ? picked : defaultPoolId(pools);
+}
+
+/** A disk made (the disk) or deleted (null) on the page, numbered in the order the changes completed. */
+export interface LocalChange {
+	readonly disk: StickyDisk | null;
+	readonly seq: number;
+}
+
+/**
+ * The disks a read answered, with the page's own changes it can't have seen: only those numbered after `readAt`, the
+ * last change's number when the read began. A read begun after a change saw it, so it, not the change, is shown.
+ */
+export function withLocalChanges(
+	listed: readonly StickyDisk[],
+	readAt: number,
+	changes: ReadonlyMap<string, LocalChange>,
+): readonly StickyDisk[] {
+	const byId = new Map(listed.map((disk) => [disk.id, disk]));
+	for (const [id, change] of changes) {
+		if (change.seq <= readAt) continue;
+		if (change.disk === null) byId.delete(id);
+		else byId.set(id, change.disk);
+	}
+	return [...byId.values()];
+}
+
+/** A dialog opened on the page, numbered so a request it started can tell whether it is still the one showing. */
+export interface DialogSession {
+	readonly session: number;
+}
+
+/** The dialog showing once `session`'s request has finished: closed if it's still that one, else left as it is. */
+export const endSession = <T extends DialogSession>(current: T | undefined, session: number): T | undefined =>
+	current?.session === session ? undefined : current;
