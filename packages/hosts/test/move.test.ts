@@ -296,12 +296,13 @@ describe("moving a stopped sandbox to another host", () => {
 
 	it("settles a move whose target went away mid-copy once it is back, rolling it back", async () => {
 		const clock = { at: Date.now() };
-		const { root, api, join } = await setup({ now: () => clock.at });
+		const { root, api, join } = await setup({ now: () => clock.at, moveReconnectWaitMs: 0 });
 		const a = await join();
 		const b = await join();
 		const sandbox = await stoppedOn(root, a, "disk");
 		await unpinned(api, sandbox.id);
-		// Its target goes as it copies: whether it imported it isn't known, and it can't be asked yet.
+		// Its target goes as it copies, and isn't back within the move's wait for it (none here): whether it imported it
+		// isn't known, and it can't be asked yet.
 		b.hold = (method) => (method === "sandbox.import" ? new Promise(() => undefined) : undefined);
 		const moving = failure(root.moveSandbox(sandbox.id, {}));
 		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
@@ -901,23 +902,6 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		expect((await service.sandboxes.placement(sandbox.id))?.move).toBeUndefined();
 	});
 
-	it("rolls back as before when its target isn't back in time after its connection went", async () => {
-		const { root, api, service, join } = await setup({ moveReconnectWaitMs: 0 });
-		const a = await join(MOVES_RUNNING);
-		const b = await join(MOVES_RUNNING);
-		const sandbox = await runningOn(root, api, a, "disk");
-		b.hold = (method) => (method === "sandbox.import" ? new Promise<void>(() => undefined) : undefined);
-		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
-		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
-		b.connection.closed(1006, "gone");
-		expect((await moving).code).toBe("unavailable");
-		expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(1);
-		// Still on its source, running, never stopped; its move left to be settled once the target is back.
-		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "running", hostId: a.hostId });
-		expect(methodsOf(a, sandbox.id)).not.toContain("sandbox.stop");
-		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(a.hostId);
-	});
-
 	it("ends the move, never stopping it, when it exits while its first copy is made", async () => {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_RUNNING);
@@ -986,11 +970,12 @@ describe("moving a running sandbox to another host, with a restart", () => {
 
 	it("settles a move whose target went away after the stop, starting it again on its source", async () => {
 		const clock = { at: Date.now() };
-		const { root, api, join } = await setup({ now: () => clock.at });
+		const { root, api, join } = await setup({ now: () => clock.at, moveReconnectWaitMs: 0 });
 		const a = await join(MOVES_RUNNING);
 		const b = await join(MOVES_RUNNING);
 		const sandbox = await runningOn(root, api, a, "disk");
-		// Its target goes as it fetches the final copy: whether it imported it isn't known, and it can't be asked yet.
+		// Its target goes as it fetches the final copy, and isn't back within the move's wait for it (none here): whether it
+		// imported it isn't known, and it can't be asked yet.
 		b.hold = (method, params) =>
 			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
 		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
@@ -1016,10 +1001,11 @@ describe("moving a running sandbox to another host, with a restart", () => {
 
 	it("refuses a move again, after one try at settling it, while a quiet move can't be settled", async () => {
 		const clock = { at: Date.now() };
-		const { root, api, join, service } = await setup({ now: () => clock.at });
+		const { root, api, join, service } = await setup({ now: () => clock.at, moveReconnectWaitMs: 0 });
 		const a = await join(MOVES_RUNNING);
 		const b = await join(MOVES_RUNNING);
 		const sandbox = await runningOn(root, api, a, "disk");
+		// Its target goes as it fetches the final copy, and isn't back within the move's wait for it (none here).
 		b.hold = (method, params) =>
 			method === "sandbox.import" && params.stage !== true ? new Promise(() => undefined) : undefined;
 		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
