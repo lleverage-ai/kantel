@@ -11,7 +11,8 @@
  * existing disks are. For those calls the service passes every qualifying host the account may use (online, the
  * type, the labels), and the backend that answers gets the ones among them that are its own. A sandbox neither holds
  * (its create failed, say) isn't sent to `fallback` to be answered as if it were there: it is refused (`NOT_HELD`), and
- * the service makes it again with `create`, which places it as any new sandbox.
+ * the service makes it again with `create`, which places it as any new sandbox. Its destroy has nothing to do, and
+ * succeeds.
  *
  * Templates are each backend's own too: their runtimes are both backends' hosts', a build goes to the backend whose host
  * it names, and a template snapshot is answered by the backend its reference is of (`holdsSnapshot`).
@@ -282,10 +283,18 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						return backend.planMove(id, await affine(backend, spec));
 					},
 				}),
-		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.
+		// A sandbox neither holds has nothing to destroy, so its destroy is done. Asking `fallback` would be wrong: a stub
+		// refuses one whose record names an account's host. A delete racing another that has already destroyed the
+		// sandbox on its host (and forgotten the placement) would fail, leaving it `error` with its machine gone. Without
+		// `fallbackHolds`, `fallback` holds everything `primary` doesn't, and answers it.
 		async destroy(id) {
+			if (await options.holds(id)) {
+				madeOnFallback.delete(id);
+				return primary.destroy(id);
+			}
+			if (fallbackHolds !== undefined && !madeOnFallback.has(id) && !(await fallbackHolds(id))) return;
 			madeOnFallback.delete(id);
-			return ((await options.holds(id)) ? primary : fallback).destroy(id);
+			return fallback.destroy(id);
 		},
 		exec: async (id, request) => (await on(id)).exec(id, request),
 		async killCommand(id, commandId) {

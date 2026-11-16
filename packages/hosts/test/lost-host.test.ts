@@ -13,7 +13,7 @@ import {
 	type SandboxBackend,
 	STUB_HOST_ID,
 } from "@kantel/compute";
-import { isKantelError, placementReasonOf } from "@kantel/contracts";
+import { isKantelError, KantelError, placementReasonOf } from "@kantel/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CREATE_LOST, createHostBackend } from "../src/backend.ts";
 import type { HostSandbox } from "../src/protocol.ts";
@@ -277,18 +277,24 @@ describe("a host lost mid-call", () => {
 
 describe("a create made again over two backends", () => {
 	/** An account's host as `primary` and the stub as `fallback`, routed as a hosted deployment does. */
-	async function routed() {
+	async function routed(
+		extra: {
+			readonly fallback?: SandboxBackend;
+			readonly fallbackHolds?: (sandboxId: string) => Promise<boolean>;
+		} = {},
+	) {
 		const { store, service, hostId, host } = await setup();
 		const primary = createHostBackend({
 			hosts: service,
 			publicUrl: "https://kantel.test",
 			tickets: createTunnelTickets(createMemoryRelayStore()),
 		});
-		const fallback = createStubBackend();
+		const fallback = extra.fallback ?? createStubBackend();
 		const backend = createRoutedBackend({
 			primary,
 			fallback,
 			holds: async (sandboxId) => (await service.sandboxes.placement(sandboxId)) !== undefined,
+			...(extra.fallbackHolds === undefined ? {} : { fallbackHolds: extra.fallbackHolds }),
 			holdsSnapshot: (ref) => ref.startsWith(`${hostId}/`),
 		});
 		const spec = (sandboxId: string, eligibleHosts: readonly string[]) => ({
@@ -307,8 +313,30 @@ describe("a create made again over two backends", () => {
 			host.connection.closed(1006, "gone");
 			await expect(creating).rejects.toSatisfy(unanswered);
 		};
-		return { store, service, hostId, backend, spec, fallback, unansweredCreate };
+		return { store, service, hostId, host, backend, spec, fallback, unansweredCreate };
 	}
+
+	it("deletes a sandbox its host has already deleted, without asking a fallback that refuses the host's sandboxes", async () => {
+		// The hosted stub refuses to destroy a sandbox its record says is on an account's host (`revivingStub`).
+		const stub = createStubBackend();
+		const refused: string[] = [];
+		const fallback: SandboxBackend = {
+			...stub,
+			async destroy(sandboxId) {
+				refused.push(sandboxId);
+				throw new KantelError("unavailable", "It is on one of an account's own hosts");
+			},
+		};
+		const { store, hostId, host, backend, spec } = await routed({ fallback, fallbackHolds: async () => false });
+		await backend.create(spec("sbx-twice", [hostId, STUB_HOST_ID]));
+		// Two deletes at once, as a runner's end and a sweep can make: the first destroys it on its host and forgets its
+		// placement, and the second finds no backend holding it.
+		await backend.destroy("sbx-twice");
+		expect(await store.getPlacement("sbx-twice")).toBeUndefined();
+		await backend.destroy("sbx-twice");
+		expect(host.calls.filter((call) => call.method === "sandbox.delete")).toHaveLength(1);
+		expect(refused).toEqual([]);
+	});
 
 	it("never makes on the fallback a sandbox the account's host still holds", async () => {
 		const { store, backend, spec, fallback, unansweredCreate } = await routed();

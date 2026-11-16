@@ -127,9 +127,19 @@ describe("createRoutedBackend", () => {
 	it("refuses a sandbox neither holds rather than ask the fallback for it, and places it again only with create", async () => {
 		const primary = fake([host("host_own", "acc_a")]);
 		const fallback = fake([host("host_stub")]);
+		const destroyed: string[] = [];
+		const destroying = (name: string, backend: SandboxBackend): SandboxBackend =>
+			new Proxy(backend, {
+				get: (target, method: string) =>
+					method === "destroy"
+						? async (id: string) => {
+								destroyed.push(`${name}:${id}`);
+							}
+						: Reflect.get(target, method),
+			});
 		const routed = createRoutedBackend({
-			primary: primary.backend,
-			fallback: fallback.backend,
+			primary: destroying("primary", primary.backend),
+			fallback: destroying("fallback", fallback.backend),
 			holds: async (id) => id.startsWith("sbx_p"),
 			fallbackHolds: async (id) => id.startsWith("sbx_f"),
 			holdsSnapshot: (ref) => ref.startsWith("host_"),
@@ -149,9 +159,13 @@ describe("createRoutedBackend", () => {
 			});
 		}
 		expect([...primary.seen, ...fallback.seen]).toEqual([]);
-		// What the fallback holds still goes there, a destroy of one neither holds too (it has nothing to destroy).
+		// What the fallback holds still goes there. A destroy of one neither holds is done, and asks neither: there is
+		// nothing to destroy, and the fallback may refuse one it never held.
 		await routed.start("sbx_f1", { env: {}, eligibleHosts: eligible });
 		await routed.destroy("sbx_lost");
+		expect(destroyed).toEqual([]);
+		await routed.destroy("sbx_f1");
+		expect(destroyed).toEqual(["fallback:sbx_f1"]);
 		// Made again as a create, it goes where a new sandbox goes: the account's own host.
 		await routed.create(spec("sbx_lost", eligible));
 		expect(fallback.seen).toEqual([{ method: "start", eligible: ["host_stub"] }]);
