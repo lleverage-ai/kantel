@@ -59,6 +59,9 @@ import type {
 	SavedSnapshot,
 	SnapshotEntry,
 	SnapshotHost,
+	StickyDisk,
+	StickyDiskPool,
+	StickyDiskVersion,
 	TelemetrySettings,
 	UsageRange,
 	UsageSeries,
@@ -1519,6 +1522,83 @@ export const HOSTS: readonly Host[] = [
 	},
 ];
 
+const GIB = 1024 ** 3;
+
+/** A sample sticky disk version, named by its host as Kantel's source names it. */
+const diskVersion = (id: string, hostId: string, allocatedGb: number, age: number): StickyDiskVersion => {
+	const hostName = HOSTS.find((host) => host.id === hostId)?.name;
+	return {
+		id,
+		hostId,
+		...(hostName === undefined ? {} : { hostName }),
+		sizeBytes: 150 * GIB,
+		allocatedBytes: Math.round(allocatedGb * GIB),
+		createdAt: FIXTURE_NOW - age,
+	};
+};
+
+/**
+ * Lleverage's sticky disks: CI's cache and Docker images in the `ci` pool, committed on both Hetzner hosts; a pnpm store
+ * in the default pool on the home server and the MacBook; a git mirror there with no commit yet; and a scratch disk in no
+ * pool, never attached.
+ */
+export const STICKY_DISKS: readonly StickyDisk[] = [
+	{
+		id: "sdk_ci_cache",
+		accountId: LLEVERAGE.id,
+		name: "ci-cache",
+		description: "pnpm store, Turbo cache and Docker layers for Lleverage CI",
+		sizeGb: 150,
+		head: "sdv_ci4",
+		versions: [
+			diskVersion("sdv_ci4", "hst_hetzner_1", 9.4, 40 * MINUTE),
+			diskVersion("sdv_ci3", "hst_hetzner_2", 8.8, 2 * HOUR),
+			diskVersion("sdv_ci2", "hst_hetzner_1", 8.9, 3 * HOUR),
+			diskVersion("sdv_ci1", "hst_hetzner_2", 7.6, 5 * HOUR),
+		],
+		poolId: "pool_ci",
+		createdAt: FIXTURE_NOW - 12 * DAY,
+	},
+	{
+		id: "sdk_docker",
+		accountId: LLEVERAGE.id,
+		name: "docker-images",
+		sizeGb: 200,
+		head: "sdv_dk1",
+		versions: [diskVersion("sdv_dk1", "hst_hetzner_1", 31.2, 2 * DAY)],
+		poolId: "pool_ci",
+		createdAt: FIXTURE_NOW - 9 * DAY,
+	},
+	{
+		id: "sdk_pnpm",
+		accountId: LLEVERAGE.id,
+		name: "pnpm-store",
+		description: "Shared pnpm store for agent sandboxes",
+		sizeGb: 40,
+		head: "sdv_pn2",
+		versions: [diskVersion("sdv_pn2", "hst_home", 2.1, 6 * HOUR), diskVersion("sdv_pn1", "hst_mac", 1.8, 3 * DAY)],
+		poolId: "pool_default",
+		createdAt: FIXTURE_NOW - 20 * DAY,
+	},
+	{
+		id: "sdk_git",
+		accountId: LLEVERAGE.id,
+		name: "git-mirror",
+		sizeGb: 20,
+		versions: [],
+		poolId: "pool_default",
+		createdAt: FIXTURE_NOW - HOUR,
+	},
+	{
+		id: "sdk_scratch",
+		accountId: LLEVERAGE.id,
+		name: "scratch",
+		sizeGb: 10,
+		versions: [],
+		createdAt: FIXTURE_NOW - 2 * DAY,
+	},
+];
+
 /** A sample image digest: `sha256:` and 64 hex digits, the same for the same seed. Not a real image's. */
 export function sampleDigest(seed: string): string {
 	let hash = 2_166_136_261;
@@ -1816,6 +1896,8 @@ export interface ComputeFixtureOptions {
 	readonly empty?: boolean;
 	/** The deployment hasn't turned mounts on: no Mounts page, and no sandbox mounts anything. */
 	readonly noMounts?: boolean;
+	/** The deployment hasn't turned sticky disks on: no Disks page. */
+	readonly noStickyDisks?: boolean;
 	/** How long a sandbox takes to start or stop, in milliseconds. Default 1200. */
 	readonly settleMs?: number;
 	/** The viewer is not a super-admin. */
@@ -1928,6 +2010,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	};
 	const empty = options.empty === true;
 	const mountsOn = options.noMounts !== true;
+	const stickyOn = options.noStickyDisks !== true;
 
 	const moved = <T extends object>(record: T, keys: readonly (keyof T)[]): T => {
 		const copy = { ...record } as Record<string, unknown>;
@@ -1985,6 +2068,12 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		(empty || !mountsOn ? [] : BUNDLES).map((bundle) => [
 			bundleKey(bundle.accountId, bundle.digest),
 			moved(bundle, ["createdAt"]),
+		]),
+	);
+	const stickyDisks = new Map<string, StickyDisk>(
+		(empty || !stickyOn ? [] : STICKY_DISKS).map((disk) => [
+			disk.id,
+			{ ...moved(disk, ["createdAt"]), versions: disk.versions.map((version) => moved(version, ["createdAt"])) },
 		]),
 	);
 	const bucketSources = new Map<string, BucketSource>(
@@ -3261,6 +3350,49 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								const bucket = find(bucketSources, id, "bucket source");
 								requireUnmounted(mountCount(bucket.accountId, bucketUses(id)));
 								bucketSources.delete(id);
+							}),
+					},
+				}
+			: {}),
+		...(stickyOn
+			? {
+					stickyDisks: {
+						list: (accountId) => gate(() => [...stickyDisks.values()].filter((disk) => disk.accountId === accountId)),
+						// The account's pools, as the Hosts page has them: `fail` can't be read, `none` has none.
+						pools: () =>
+							gate((): StickyDiskPool[] => {
+								if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
+								return [...pools.values()].map(poolView);
+							}),
+						create: (input) =>
+							gate(() => {
+								if (
+									[...stickyDisks.values()].some(
+										(disk) => disk.accountId === input.accountId && disk.name === input.name,
+									)
+								) {
+									throw Object.assign(new Error(`The account has a sticky disk named ${input.name}`), {
+										code: "conflict",
+									});
+								}
+								if (input.poolId !== undefined) find(pools, input.poolId, "pool");
+								const disk: StickyDisk = {
+									id: nextId("sdk"),
+									accountId: input.accountId,
+									name: input.name,
+									...(input.description === undefined ? {} : { description: input.description }),
+									sizeGb: input.sizeGb,
+									versions: [],
+									...(input.poolId === undefined ? {} : { poolId: input.poolId }),
+									createdAt: now(),
+								};
+								stickyDisks.set(disk.id, disk);
+								return disk;
+							}),
+						remove: (id) =>
+							gate(() => {
+								find(stickyDisks, id, "sticky disk");
+								stickyDisks.delete(id);
 							}),
 					},
 				}

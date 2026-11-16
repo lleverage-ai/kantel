@@ -40,6 +40,7 @@ import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
 import type { FilesAt } from "./snapshot-files.tsx";
 import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
+import { StickyDisksPage } from "./sticky-disks-page.tsx";
 import { TelemetryPage } from "./telemetry-page.tsx";
 import { TemplatePage, TemplatesPage } from "./templates-page.tsx";
 import { UserMenu } from "./user-menu.tsx";
@@ -67,6 +68,7 @@ export type ComputePage =
 	| "billing"
 	| "hosts"
 	| "mounts"
+	| "disks"
 	| "install"
 	| "images"
 	| "device";
@@ -85,6 +87,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"billing",
 	"hosts",
 	"mounts",
+	"disks",
 	"install",
 	"images",
 	"device",
@@ -295,6 +298,7 @@ const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set([
 	"webhooks",
 	"telemetry",
 	"mounts",
+	"disks",
 	"billing",
 ]);
 
@@ -387,6 +391,8 @@ export function ComputeConsole({
 	const imagesShown = superAdmin && source.images !== undefined;
 	// Read-only mounts' bundles and bucket sources, where the deployment has turned mounts on (experimental).
 	const mountsShown = source.mounts !== undefined;
+	// Sticky disks, where the deployment has turned them on (experimental).
+	const disksShown = source.stickyDisks !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
 	// a terminal running `kantel login` opens it.
 	// Install, the deployment's public URL, is a super-admin's, where the API can set it.
@@ -397,6 +403,7 @@ export function ComputeConsole({
 		(route.page === "images" && me !== undefined && !imagesShown) ||
 		(route.page === "billing" && !billingShown) ||
 		(route.page === "mounts" && !mountsShown) ||
+		(route.page === "disks" && !disksShown) ||
 		(route.page === "device" && source.devices === undefined) ||
 		(route.page === "templates" && source.templates === undefined)
 			? "sandboxes"
@@ -428,6 +435,7 @@ export function ComputeConsole({
 		{ id: "webhooks", label: "Webhooks" },
 		{ id: "telemetry", label: "OpenTelemetry" },
 		...(mountsShown ? [{ id: "mounts", label: "Mounts" }] : []),
+		...(disksShown ? [{ id: "disks", label: "Disks" }] : []),
 		...(ownHostsShown ? [{ id: "hosts", label: "Hosts" }] : []),
 		...(billingShown ? [{ id: "billing", label: "Plan and billing" }] : []),
 	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
@@ -1047,6 +1055,10 @@ function PageFor({
 		case "mounts":
 			return source.mounts === undefined ? null : (
 				<MountsPage key={account.id} source={source.mounts} account={account} {...timing} />
+			);
+		case "disks":
+			return source.stickyDisks === undefined ? null : (
+				<StickyDisksPage key={account.id} source={source.stickyDisks} account={account} narrow={narrow} {...timing} />
 			);
 		case "hosts":
 			return hosts === undefined ? null : (
