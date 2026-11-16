@@ -506,7 +506,8 @@ function DiskHosts({ hosts }: { hosts: readonly StickyDiskHost[] }) {
 				))}
 			</ul>
 			<p className="m-0 text-sm text-muted">
-				Where each version was committed and what it took there. Versions share unchanged blocks, so the space used can be less. Copies other hosts fetched aren't listed.
+				Where each version was committed and what it took there. Versions share unchanged blocks, so the space used can
+				be less. Copies other hosts fetched aren't listed.
 			</p>
 		</div>
 	);
