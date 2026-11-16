@@ -4115,11 +4115,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						// Fenced on the source by its first copy there: once a rollback has deleted that, a stop sent late (this
 						// gateway stalled as another settled the move and started it again) is refused, never stopping it.
 						// Kept, its memory is what its final export copies; a rollback resumes it from that where it was.
-						await copyCall(sourceHost.id, HostMethods.stop, async () => ({
-							sandboxId,
-							memory: intended.move.memory === true,
-							export: liveVersion,
-						}));
+						const stop = { sandboxId, memory: intended.move.memory === true, export: liveVersion };
+						await copyCall(sourceHost.id, HostMethods.stop, async () => stop);
 						await moveOn((move) => ({ ...move, phase: "final-copy" }));
 						input.onFinalCopy?.(target.id);
 					}
