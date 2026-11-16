@@ -41,11 +41,13 @@ import {
 } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import {
+	type AnyOf,
 	type ComputeStore,
 	createMemoryStore,
 	fenceClosedAccounts,
 	joinTokenSpender,
 	type StoredCommand,
+	type StoredSandbox,
 } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
@@ -5718,5 +5720,41 @@ describe.each(STORES)("saves at once against a host's limit, stored $name", sqlT
 		// Each refused one's new bytes went again, and its record with them.
 		expect(released).toHaveLength(refused.length);
 		expect(await store.snapshots.list({ state: "deleting" })).toEqual([]);
+	});
+});
+
+describe("listing sandboxes", () => {
+	it("reads the states it shows from the store in one read, never the account's deleted sandboxes, newest first", async () => {
+		const store = createMemoryStore();
+		const asked: { where: Partial<StoredSandbox>; anyOf?: AnyOf<StoredSandbox> }[] = [];
+		const watched: ComputeStore = {
+			...store,
+			sandboxes: {
+				...store.sandboxes,
+				list: (where, anyOf) => {
+					asked.push({ where: { ...where }, ...(anyOf === undefined ? {} : { anyOf }) });
+					return store.sandboxes.list(where, anyOf);
+				},
+			},
+		};
+		const { tom } = setup(createStubBackend(), { store: watched });
+		const gone = await tom.createSandbox({ wait: true, name: "gone" });
+		await tom.deleteSandbox(gone.id);
+		const stopped = await tom.createSandbox({ wait: true, name: "stopped" });
+		await tom.stopSandbox(stopped.id, { wait: true });
+		const running = await tom.createSandbox({ wait: true, name: "running" });
+		expect((await store.sandboxes.get(gone.id))?.state).toBe("deleted");
+
+		asked.splice(0);
+		expect((await tom.listSandboxes()).items.map((item) => item.id)).toEqual([running.id]);
+		expect((await tom.listSandboxes({ all: true })).items.map((item) => item.id)).toEqual([running.id, stopped.id]);
+		expect((await tom.listSandboxes({ state: "stopped" })).items.map((item) => item.id)).toEqual([stopped.id]);
+		// One read per list, each naming the states it shows, never `deleted`.
+		const lists = asked.filter(({ where }) => where.accountId !== undefined && where.ownerUserId === undefined);
+		expect(lists).toHaveLength(3);
+		for (const { anyOf } of lists) {
+			expect(anyOf?.state?.length).toBeGreaterThan(0);
+			expect(anyOf?.state).not.toContain("deleted");
+		}
 	});
 });

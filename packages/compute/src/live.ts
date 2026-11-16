@@ -178,7 +178,7 @@ export function watchSandboxes(
 		});
 	return {
 		get: (id) => sandboxes.get(id),
-		list: (where) => sandboxes.list(where),
+		list: (where, anyOf) => sandboxes.list(where, anyOf),
 		// A put is how a sandbox is made (a create, a fork, each with a new ID): it is published as made, without reading
 		// first, which a create would pay for in a statement. Changes go through `update`.
 		async put(record) {

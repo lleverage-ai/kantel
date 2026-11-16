@@ -263,6 +263,12 @@ interface Context {
 /** The most pages a list follows before it stops: 20 of the API's default 50 is 1000 records. */
 const MAX_PAGES = 20;
 
+/**
+ * The most a sandbox list asks for at once, the API's longest page: each page is a request of its own, read in turn, so
+ * an organisation with hundreds of sandboxes loads in one rather than one per 50.
+ */
+const LIST_PAGE = 500;
+
 /** Every page of a list, following `nextCursor` up to `MAX_PAGES` pages. */
 async function allPages<T>(
 	read: (cursor: string | undefined) => Promise<{ readonly items: readonly T[]; readonly nextCursor?: string }>,
@@ -730,7 +736,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 		watch: (accountId, changed) => context.live.watch(accountId, changed),
 		list: async (accountId) => {
 			const sandboxes = await allPages((cursor) =>
-				api.listSandboxes({ account: accountId, all: true, ...after(cursor) }),
+				api.listSandboxes({ account: accountId, all: true, limit: LIST_PAGE, ...after(cursor) }),
 			);
 			await Promise.all([
 				learnEnvironmentNames(context, accountId, sandboxes),
@@ -1092,7 +1098,7 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 			// The API names a snapshot's sandbox by ID; the account's sandboxes give the names.
 			const [snapshots, sandboxes] = await Promise.all([
 				allPages((cursor) => api.listSnapshots({ account: accountId, kind: "saved", ...after(cursor) })),
-				allPages((cursor) => api.listSandboxes({ account: accountId, all: true, ...after(cursor) })),
+				allPages((cursor) => api.listSandboxes({ account: accountId, all: true, limit: LIST_PAGE, ...after(cursor) })),
 			]);
 			const names = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox.name]));
 			return snapshots.map((snapshot) =>

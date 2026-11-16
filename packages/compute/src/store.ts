@@ -58,9 +58,15 @@ export interface Collection<T extends { readonly id: string }> {
 	 * answers whether it did. `should` may run more than once.
 	 */
 	deleteIf(id: string, should: (current: T) => boolean): Promise<boolean>;
-	/** The records whose fields equal each defined field of `where`, oldest first. */
-	list(where?: Partial<T>): Promise<T[]>;
+	/**
+	 * The records whose fields equal each defined field of `where` and are one of each defined field's values in
+	 * `anyOf`, oldest first: one read, so a record that changes between two of the values is answered once.
+	 */
+	list(where?: Partial<T>, anyOf?: AnyOf<T>): Promise<T[]>;
 }
+
+/** For a list, the values a field may have: a record with any one of them. An empty list matches nothing. */
+export type AnyOf<T> = { readonly [K in keyof T]?: readonly T[K][] };
 
 export interface StoredUser {
 	readonly id: string;
@@ -1099,10 +1105,15 @@ export interface ComputeStore {
  * Whether each defined field of `where` is `===` the record's top-level field of that name: what `list` answers by. The
  * SQL store (`sql-store.ts`) checks every row with it too, so both answer the same.
  */
-export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
-	if (where === undefined) return true;
+export function matches<T>(record: T, where: Partial<T> | undefined, anyOf?: AnyOf<T>): boolean {
 	const fields = record as { readonly [key: string]: unknown };
-	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);
+	const equal = Object.entries(where ?? {}).every(([key, value]) => value === undefined || fields[key] === value);
+	return (
+		equal &&
+		Object.entries(anyOf ?? {}).every(
+			([key, values]) => values === undefined || (values as readonly unknown[]).includes(fields[key]),
+		)
+	);
 }
 
 /** A sticky disk: an account's named, versioned disk (docs/design/disk-store.md). */
@@ -1372,8 +1383,10 @@ function memoryTable<T extends { readonly id: string }>(unique?: (record: T) => 
 			if (current === undefined || !should(structuredClone(current))) return false;
 			return records.delete(id);
 		},
-		async list(where) {
-			return [...records.values()].filter((record) => matches(record, where)).map((record) => structuredClone(record));
+		async list(where, anyOf) {
+			return [...records.values()]
+				.filter((record) => matches(record, where, anyOf))
+				.map((record) => structuredClone(record));
 		},
 	};
 	return { collection, records, check };
@@ -1659,7 +1672,7 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		};
 		return {
 			get: (id) => collection.get(id),
-			list: (where) => collection.list(where),
+			list: (where, anyOf) => collection.list(where, anyOf),
 			delete: (id) => collection.delete(id),
 			deleteIf: (id, should) => collection.deleteIf(id, should),
 			async put(record) {
