@@ -119,6 +119,11 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders ON compute_api_records (((data::jsonb ->> 'hostId')), seq) WHERE kind = 'diskHolders'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_host ON compute_api_records (kind, json_extract(data, '$.hostId'), seq)",
+		// An account's sandboxes in a state (`list({ accountId, state })`), as a sandbox list reads each state it shows:
+		// without it every list read and parsed every sandbox the deployment ever made, deleted ones too, on each page.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_account ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'state')), seq) WHERE kind = 'sandboxes'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_account_state ON compute_api_records (kind, json_extract(data, '$.accountId'), json_extract(data, '$.state'), seq)",
 		// An object's copies (`list({ objectId })`): a template snapshot's, read as a create from it is placed.
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders_object ON compute_api_records (((data::jsonb ->> 'objectId')), seq) WHERE kind = 'diskHolders'"
