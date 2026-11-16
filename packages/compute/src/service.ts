@@ -2353,6 +2353,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				})),
 		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
 		...(runnerSettings?.log === undefined ? {} : { log: runnerSettings.log }),
+		// A webhook's pass runs after its answer, tracked, so `idle()` waits for it.
+		background: keepGoing,
 		place: (record) => placeRunnerKinds(record),
 		sandboxes: {
 			async create(principal, body) {

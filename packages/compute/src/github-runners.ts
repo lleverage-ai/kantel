@@ -18,12 +18,13 @@
  * The rules that keep runners from leaking or doubling up:
  *
  * - One gateway at a time runs an integration's pass: it holds a lease on the integration record (`lease`), taken and
- *   renewed with a conditional update, and on one gateway passes run one after another. So two never count the same
- *   queue and both make its runners, nor register one sandbox twice.
+ *   renewed with a conditional update, and on one gateway passes run one after another, merged (`serialPass`). So two
+ *   never count the same queue and both make its runners, nor register one sandbox twice. A webhook only records, and
+ *   answers without waiting for the pass it starts.
  * - A runner's record goes only once its sandbox is confirmed gone and its runner on GitHub is confirmed gone or never
- *   made (`end`). A step that fails leaves the record `ending`, and the next pass tries again. A runner that GitHub may
- *   have registered without the broker learning its ID (`registering`, then a failure or a crash) is looked up by its
- *   name, which is its sandbox's ID.
+ *   made (`end`). A step that fails leaves the record `ending`, and a later pass tries again, after a wait that doubles
+ *   with each failure (`endRetryDelay`). A runner that GitHub may have registered without the broker learning its ID
+ *   (`registering`, then a failure or a crash) is looked up by its name, which is its sandbox's ID.
  * - Ending a runner uses the integration's key whether or not it is still live (`cleanupPrincipalOf`): revoking the key
  *   stops new runners, never the deletion of the ones it made.
  * - A sandbox read that fails for any reason but its absence changes nothing: the runner is looked at again next pass.
@@ -80,6 +81,10 @@ export const END_GIVE_UP_MS = 24 * 3_600_000;
 export const ACTIVE_TICK_MS = 5_000;
 /** How long a pass leaves between them when nothing is waiting: runners running jobs are checked on this often. */
 export const IDLE_TICK_MS = 60_000;
+/** How long a runner's end waits after its first failed step (its sandbox's delete, say) before it is tried again. */
+export const END_RETRY_FIRST_MS = 30_000;
+/** The longest an end waits between tries: each failure doubles the wait, up to this. */
+export const END_RETRY_MAX_MS = 30 * 60_000;
 /** How long a pass's lease on an integration lasts: longer than any pass (GitHub's calls time out at 15 s each). */
 export const LEASE_MS = 2 * 60_000;
 /** The largest webhook body read: a `workflow_job` delivery is a few kilobytes. */
@@ -284,6 +289,12 @@ export interface StoredGithubRunnerMachine {
 	/** Ending: since when, why, whether its runner is gone from GitHub, and whether the pool keeps its backoff. */
 	readonly endingAt?: number;
 	readonly endReason?: string;
+	/**
+	 * Ending, and a step of it failed (its sandbox on a host that can't be reached, say): how many times in a row, and
+	 * when it is tried again. Passes leave it until then (`endRetryDelay`).
+	 */
+	readonly endFailures?: number;
+	readonly endRetryAt?: number;
 	readonly unregistered?: boolean;
 	readonly keepBackoff?: boolean;
 	readonly expiresAt: number;
@@ -354,10 +365,18 @@ export interface GithubRunnersOptions {
 	readonly place?: (record: StoredGithubRunners) => Promise<StoredGithubRunners>;
 	/** This gateway's name in leases. Default a random one per process. */
 	readonly gatewayId?: string;
+	/**
+	 * Keeps work going after the request that started it has been answered (a webhook's pass). Default: it runs
+	 * untracked, its failure logged.
+	 */
+	readonly background?: (work: Promise<unknown>) => void;
 }
 
 export interface GithubRunners {
-	/** Answers a webhook to `/github-runners/{id}/webhook`: checks its signature, records the job, and runs a pass. */
+	/**
+	 * Answers a webhook to `/github-runners/{id}/webhook`: checks its signature and records the job, then answers, with a
+	 * pass started (or joined) in the background (`serialPass`) and the deployment woken soon for another.
+	 */
 	receive(integrationId: string, request: Request): Promise<Response>;
 	/** One pass over every integration; answers when the next is due. */
 	tick(): Promise<number | undefined>;
@@ -403,6 +422,10 @@ export const runnerLabels = (pool: RunnerPool): string[] => [...DEFAULT_RUNNER_L
 
 const jobRecordId = (integrationId: string, jobId: number) => `${integrationId}:${jobId}`;
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** How long an end waits before its next try, after `failures` failed tries in a row: doubling, up to a limit. */
+export const endRetryDelay = (failures: number): number =>
+	Math.min(END_RETRY_MAX_MS, END_RETRY_FIRST_MS * 2 ** Math.max(0, Math.min(failures - 1, 16)));
 
 /**
  * What a runner is counted against: its pool, and for a repository-scoped integration its repository too, as a runner
@@ -471,6 +494,12 @@ function parseWorkflowJob(body: unknown): WorkflowJobEvent | undefined {
 	};
 }
 
+/** A runner without the wait of an end it is no longer in: a new end starts with its first try. */
+function withoutEndWait(machine: StoredGithubRunnerMachine): StoredGithubRunnerMachine {
+	const { endFailures: _failures, endRetryAt: _retry, ...rest } = machine;
+	return rest;
+}
+
 /** A pass's hold on an integration: its token is its own, and is what every effect renews. */
 interface Lease {
 	readonly integrationId: string;
@@ -537,9 +566,17 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	const { store, now } = options;
 	const log = options.log ?? (() => {});
 	const gatewayId = options.gatewayId ?? randomId("gw");
+	const background =
+		options.background ??
+		((work: Promise<unknown>) => {
+			work.catch((error: unknown) => log(`[github-runners] background work failed: ${messageOf(error)}`));
+		});
 	const apps = new Map<string, { readonly appId: number; readonly sealed: string; readonly app: GithubApp }>();
-	/** Each integration's pass under way on this gateway: a webhook's pass and the sweep's run one after the other. */
-	const passing = new Map<string, Promise<boolean>>();
+	/**
+	 * Each integration's passes on this gateway: the one running, and at most one waiting for it to finish. Every caller
+	 * while one waits joins it, as it starts after their work was recorded and so does it too (`serialPass`).
+	 */
+	const passing = new Map<string, { running: Promise<boolean>; queued?: Promise<boolean> }>();
 
 	/** The integration's GitHub App, made again when its App or key changes. */
 	async function appOf(record: StoredGithubRunners): Promise<GithubApp> {
@@ -611,7 +648,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 						extra.unused === true && current.state !== "idle"
 						? undefined
 						: {
-								...current,
+								...withoutEndWait(current),
 								state: "ending",
 								endingAt: t,
 								endReason: why,
@@ -644,6 +681,8 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		// Not ending after all: it took a job before it could be ended for want of one.
 		if (machine.state !== "ending") return false;
 		if (machine.endingAt === t) log(`[github-runners] ending runner ${machine.id}: ${why}`);
+		// A step failed lately: left until its next try is due.
+		if (machine.endRetryAt !== undefined && machine.endRetryAt > t) return false;
 		// Its sticky disks first, while its sandbox runs: once, whatever the outcome, and only while this pass holds the
 		// lease (a pass that lost it stops before it publishes or records anything).
 		if (machine.commit !== undefined && machine.commit.done !== true) {
@@ -655,12 +694,16 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		}
 		// Its runner on GitHub: one that took a job, GitHub removes once the job ends.
 		if (machine.unregistered !== true && machine.tookJob !== true) {
+			let failure: unknown;
 			const removed = await unregister(lease, record, machine).catch((error: unknown) => {
 				if (error instanceof LeaseLost) throw error;
-				log(`[github-runners] runner ${machine.id} not taken off GitHub yet: ${messageOf(error)}`);
+				failure = error;
 				return false;
 			});
-			if (!removed && t - (machine.endingAt ?? t) <= END_GIVE_UP_MS) return false;
+			if (!removed && t - (machine.endingAt ?? t) <= END_GIVE_UP_MS) {
+				await endFailed(machine, `not taken off GitHub yet: ${messageOf(failure)}`);
+				return false;
+			}
 			if (!removed) await noteError(record, `left runner ${machine.id} for GitHub to remove: it never ran a job`);
 			const unregistered = await store.githubRunnerMachines.update(machine.id, (current) => ({
 				...current,
@@ -676,7 +719,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				await options.sandboxes.delete(principal, machine.id);
 			} catch (error) {
 				if (!isKantelError(error, "not_found")) {
-					log(`[github-runners] sandbox ${machine.id} not deleted yet: ${messageOf(error)}`);
+					await endFailed(machine, `sandbox not deleted yet: ${messageOf(error)}`);
 					return false;
 				}
 			}
@@ -688,6 +731,24 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			await setBackoff(record.id, demandKey(record, machine.pool, machine.repository), undefined);
 		}
 		return true;
+	}
+
+	/**
+	 * Notes that a step of a runner's end failed: it is tried again after `endRetryDelay`, which grows with each failure
+	 * in a row, so a runner whose host can't be reached isn't tried (and logged) on every pass.
+	 */
+	async function endFailed(machine: StoredGithubRunnerMachine, why: string): Promise<void> {
+		const t = now();
+		const updated = await store.githubRunnerMachines
+			.update(machine.id, (current) => {
+				if (current.state !== "ending") return undefined;
+				const failures = (current.endFailures ?? 0) + 1;
+				return { ...current, endFailures: failures, endRetryAt: t + endRetryDelay(failures) };
+			})
+			.catch(() => undefined);
+		const wait =
+			updated?.endRetryAt === undefined ? "" : `; trying again in ${Math.round((updated.endRetryAt - t) / 1000)} s`;
+		log(`[github-runners] runner ${machine.id} ${why}${wait}`);
 	}
 
 	/**
@@ -980,6 +1041,8 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			// Its own pool as it was made (one from before runners kept it: the pool of that label now).
 			const pool = machine.poolConfig ?? record.pools.find((candidate) => candidate.label === machine.pool);
 			if (machine.state === "ending") {
+				// Waiting out a failed step: the idle pass tries it again once it is due, without keeping passes frequent.
+				if (machine.endRetryAt !== undefined && machine.endRetryAt > t) continue;
 				if (!(await end(lease, record, machine, machine.endReason ?? "ending"))) active = true;
 				continue;
 			}
@@ -1368,9 +1431,16 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			await store.githubRunnerMachines.update(machine.id, (current) => {
 				const busy = { state: "busy" as const, tookJob: true, jobId: event.job.id, busyAt: t, updatedAt: t };
 				if (current.state !== "ending") return { ...current, ...busy };
-				// Being ended only for want of a job, and not yet off GitHub: the job keeps it.
+				// Being ended only for want of a job, and not yet off GitHub: the job keeps it, and the end's waits go with it.
 				if (current.unused === true && current.unregistered !== true) {
-					const { unused: _unused, endingAt: _at, endReason: _why, ...rest } = current;
+					const {
+						unused: _unused,
+						endingAt: _at,
+						endReason: _why,
+						endFailures: _failures,
+						endRetryAt: _retry,
+						...rest
+					} = current;
 					return { ...rest, ...busy };
 				}
 				return { ...current, tookJob: true };
@@ -1414,15 +1484,39 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	const answer = (status: number, message: string) =>
 		new Response(JSON.stringify({ message }), { status, headers: { "content-type": "application/json" } });
 
+	/**
+	 * A pass over the integration, one at a time on this gateway, merged: with none running it starts at once; with one
+	 * running, the caller gets the pass queued to start once that one ends, made by the first such caller and joined by
+	 * the rest. A queued pass reads the jobs and runners when it starts, after every caller's work was recorded, so it
+	 * does all of theirs: a burst of webhooks makes at most one pass running and one waiting, not one each.
+	 */
 	function serialPass(integrationId: string): Promise<boolean> {
-		const before = passing.get(integrationId) ?? Promise.resolve(false);
-		const next = before.catch(() => false).then(() => pass(integrationId));
-		passing.set(integrationId, next);
-		const clear = () => {
-			if (passing.get(integrationId) === next) passing.delete(integrationId);
+		const slot = passing.get(integrationId);
+		if (slot === undefined) {
+			const fresh: { running: Promise<boolean>; queued?: Promise<boolean> } = { running: Promise.resolve(false) };
+			passing.set(integrationId, fresh);
+			return runIn(fresh, integrationId);
+		}
+		slot.queued ??= slot.running
+			.catch(() => false)
+			.then(() => {
+				slot.queued = undefined;
+				return runIn(slot, integrationId);
+			});
+		return slot.queued;
+	}
+
+	/** Starts a pass as `slot`'s running one, and forgets the slot once it ends with none queued after it. */
+	function runIn(slot: { running: Promise<boolean>; queued?: Promise<boolean> }, integrationId: string) {
+		const running = pass(integrationId);
+		slot.running = running;
+		const settle = () => {
+			if (slot.running === running && slot.queued === undefined && passing.get(integrationId) === slot) {
+				passing.delete(integrationId);
+			}
 		};
-		next.then(clear, clear);
-		return next;
+		running.then(settle, settle);
+		return running;
 	}
 
 	/** Ends every runner of an integration once, and forgets it when they have all gone. */
@@ -1480,15 +1574,16 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				if (after === undefined) await store.githubRunnerJobs.delete(jobRecordId(record.id, parsed.job.id));
 				return answer(404, "No such integration");
 			}
-			// A pass now, so a queued job's runner starts at once: a create only places the sandbox, well inside
-			// GitHub's 10 s.
-			let active = true;
-			try {
-				active = await serialPass(record.id);
-			} catch (error) {
-				await noteError(current, `a pass after a webhook failed: ${messageOf(error)}`);
-			}
-			await options.wakeAt?.(now() + (active ? ACTIVE_TICK_MS : IDLE_TICK_MS));
+			// The job is recorded: a pass now, so a queued job's runner starts at once, but in the background, as GitHub
+			// waits only 10 s and a pass may take longer. One under way or waiting already is joined, not added to, so a
+			// burst of deliveries makes a pass or two, not one each. The deployment is woken soon too, for a pass should
+			// this one never run (the gateway went first).
+			background(
+				serialPass(record.id).catch((error: unknown) =>
+					noteError(current, `a pass after a webhook failed: ${messageOf(error)}`),
+				),
+			);
+			await options.wakeAt?.(now() + ACTIVE_TICK_MS);
 			return answer(200, "ok");
 		},
 

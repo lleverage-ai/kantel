@@ -29,7 +29,9 @@ jobs:
 
 A runner is deleted after the kind's `timeoutMinutes` (360 by default), whatever it is doing. If GitHub's `completed` webhook goes missing, Kantel asks GitHub about each busy runner's job every five minutes. Webhooks may come in any order: a job only ever moves forward, from queued to in progress to completed.
 
-A runner is forgotten only once its sandbox has gone and GitHub no longer has it registered. If either can't be done (a host or GitHub is away), Kantel tries again on its next pass, for up to a day. With several control plane replicas, one at a time runs an integration's pass.
+Kantel answers a webhook once the job is recorded, and makes runners in a pass after it. Webhooks that arrive while a pass runs share the one pass that follows it, so a burst of them doesn't make a pass each.
+
+A runner is forgotten only once its sandbox has gone and GitHub no longer has it registered. If either can't be done (a host or GitHub is away), Kantel tries again after 30 seconds, then waits twice as long after each failure, up to 30 minutes. It keeps trying to delete the sandbox, and to remove the runner from GitHub for up to a day. With several control plane replicas, one at a time runs an integration's pass.
 
 ## When there's no room
 
