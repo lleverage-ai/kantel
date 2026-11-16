@@ -8,6 +8,9 @@ import { importAppKey } from "../src/github-app.ts";
 import {
 	CAPACITY_BACKOFF_MS,
 	createGithubRunners,
+	END_RETRY_FIRST_MS,
+	END_RETRY_MAX_MS,
+	endRetryDelay,
 	IDLE_GRACE_MS,
 	JOB_CHECK_EVERY_MS,
 	LEASE_MS,
@@ -210,6 +213,15 @@ async function setUp(
 			},
 		},
 	};
+	/** Work a broker left running after its answer (a webhook's pass), until `settled` waits for it. */
+	const pending = new Set<Promise<unknown>>();
+	const settled = async () => {
+		while (pending.size > 0) {
+			const waiting = [...pending];
+			pending.clear();
+			await Promise.allSettled(waiting);
+		}
+	};
 	const broker = (gatewayId: string) =>
 		createGithubRunners({
 			store: watched,
@@ -220,6 +232,9 @@ async function setUp(
 			cleanupPrincipalOf: async (keyId) => (keyId === PRINCIPAL.keyId ? PRINCIPAL : undefined),
 			github: github.app,
 			gatewayId,
+			background: (work) => {
+				pending.add(work);
+			},
 		});
 	const runners = broker("gw_one");
 	const sealed = await runners.seal("ghr_one", "unused in these tests: the App is a stand-in");
@@ -241,7 +256,8 @@ async function setUp(
 		updatedAt: clock.now,
 	};
 	await store.githubRunners.put(record);
-	const deliver = async (event: string, payload: object, secret = sealed.secret) => {
+	/** A delivery as GitHub sends it, signed with `secret`. */
+	const signed = async (event: string, payload: object, secret = sealed.secret) => {
 		const body = JSON.stringify(payload);
 		const key = await crypto.subtle.importKey(
 			"raw",
@@ -252,28 +268,48 @@ async function setUp(
 		);
 		const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
 		const signature = `sha256=${[...mac].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-		return runners.receive(
-			"ghr_one",
-			new Request("https://kantel.example/v1/github-runners/ghr_one/webhook", {
-				method: "POST",
-				headers: { "x-github-event": event, "x-hub-signature-256": signature },
-				body,
-			}),
-		);
-	};
-	const job = (action: string, id: number, extra: object = {}, repository = "octo-org/app") =>
-		deliver("workflow_job", {
-			action,
-			installation: { id: 42 },
-			repository: { full_name: repository },
-			workflow_job: { id, run_id: 900, name: `job ${id}`, labels: ["kantel-8vcpu"], ...extra },
+		return new Request("https://kantel.example/v1/github-runners/ghr_one/webhook", {
+			method: "POST",
+			headers: { "x-github-event": event, "x-hub-signature-256": signature },
+			body,
 		});
+	};
+	/** Delivers a signed request, then waits for the pass it started: as a test reads it, the delivery's work is done. */
+	const deliver = async (event: string, payload: object, secret = sealed.secret) => {
+		const response = await runners.receive("ghr_one", await signed(event, payload, secret));
+		await settled();
+		return response;
+	};
+	const jobPayload = (action: string, id: number, extra: object = {}, repository = "octo-org/app") => ({
+		action,
+		installation: { id: 42 },
+		repository: { full_name: repository },
+		workflow_job: { id, run_id: 900, name: `job ${id}`, labels: ["kantel-8vcpu"], ...extra },
+	});
+	const job = (action: string, id: number, extra: object = {}, repository = "octo-org/app") =>
+		deliver("workflow_job", jobPayload(action, id, extra, repository));
 	const status = async () => {
 		const record = await store.githubRunners.get("ghr_one");
 		if (record === undefined) throw new Error("gone");
 		return (await runners.view(record, "https://kantel.example/hook", true)).status?.[0];
 	};
-	return { store, clock, room, sandboxes, github, runners, broker, key, deliver, job, status, afterListing };
+	return {
+		store,
+		clock,
+		room,
+		sandboxes,
+		github,
+		runners,
+		broker,
+		key,
+		deliver,
+		job,
+		status,
+		afterListing,
+		signed,
+		jobPayload,
+		settled,
+	};
 }
 
 describe("GitHub runners", () => {
@@ -422,8 +458,88 @@ describe("GitHub runners", () => {
 		expect(sandboxes.sandboxes.size).toBe(1);
 	});
 
+	it("merges a burst of webhooks into one pass running and one waiting, and answers each without waiting", async () => {
+		const { runners, sandboxes, store, afterListing, signed, jobPayload, settled } = await setUp({
+			room: 100,
+			pool: { maxRunners: 100 },
+		});
+		// Every pass sweeps for orphaned sandboxes once: how passes are counted.
+		let passes = 0;
+		const listMadeBy = sandboxes.api.listMadeBy;
+		sandboxes.api.listMadeBy = (...args) => {
+			passes++;
+			return listMadeBy(...args);
+		};
+		// The first delivery's pass stalls once it has read the runners, as one calling a slow host would.
+		let release = () => {};
+		const stalled = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let stalling = true;
+		afterListing.hook = async () => {
+			if (!stalling) return;
+			stalling = false;
+			await stalled;
+		};
+		const first = await runners.receive("ghr_one", await signed("workflow_job", jobPayload("queued", 1)));
+		expect(first.status).toBe(200);
+		// A burst while that pass runs, and the deployment's own pass among it: each answered at once, with its job kept.
+		const burst = Array.from({ length: 40 }, (_, index) => index + 2);
+		const answers = await Promise.all(
+			burst.map(async (id) => runners.receive("ghr_one", await signed("workflow_job", jobPayload("queued", id)))),
+		);
+		const ticked = runners.tick();
+		expect(answers.map((response) => response.status)).toEqual(burst.map(() => 200));
+		expect((await store.githubRunnerJobs.list({ integrationId: "ghr_one" })).length).toBe(41);
+		release();
+		await settled();
+		await ticked;
+		// The stalled pass, then one more for everything that came during it: not one for each of the 42 callers.
+		expect(passes).toBe(2);
+		// No job was lost: every one is still queued, and runners come for all of them, a pass's worth at a time.
+		expect(await runners.jobs("ghr_one")).toHaveLength(41);
+		for (let pass = 0; pass < 5 && sandboxes.sandboxes.size < 41; pass++) await runners.tick();
+		expect(sandboxes.sandboxes.size).toBe(41);
+		expect(await store.githubRunnerJobs.list({ integrationId: "ghr_one", state: "queued" })).toHaveLength(41);
+	});
+
+	it("backs off a runner's end while its sandbox can't be deleted, rather than trying on every pass", async () => {
+		const { job, sandboxes, runners, store, clock } = await setUp();
+		await job("queued", 1);
+		const [sandboxId = ""] = [...sandboxes.sandboxes.keys()];
+		sandboxes.boot();
+		await runners.tick();
+		let deletes = 0;
+		const remove = sandboxes.api.delete;
+		sandboxes.api.delete = (...args) => {
+			deletes++;
+			return remove(...args);
+		};
+		// Its host can't be reached: the delete fails however often it is tried.
+		sandboxes.fail.add("delete");
+		await job("in_progress", 1, { runner_name: sandboxId });
+		await job("completed", 1, { runner_name: sandboxId, conclusion: "success" });
+		expect(deletes).toBe(1);
+		// Ten minutes of passes, one every 5 s: tried after 30 s, 1, 2 and 4 minutes, not 120 times.
+		for (let tick = 0; tick < 120; tick++) {
+			clock.now += 5_000;
+			await runners.tick();
+		}
+		expect(deletes).toBe(5);
+		expect(await store.githubRunnerMachines.get(sandboxId)).toMatchObject({ state: "ending", endFailures: 5 });
+		// The wait doubles up to a limit.
+		expect([1, 2, 3, 4].map(endRetryDelay)).toEqual([30_000, 60_000, 120_000, 240_000]);
+		expect(endRetryDelay(50)).toBe(END_RETRY_MAX_MS);
+		// Once its host is back, the next try deletes it.
+		sandboxes.fail.delete("delete");
+		clock.now += END_RETRY_MAX_MS;
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+		expect(await store.githubRunnerMachines.get(sandboxId)).toBeUndefined();
+	});
+
 	it("takes a runner it registered off GitHub when it can't start it, and keeps trying while GitHub fails", async () => {
-		const { job, sandboxes, runners, github, store } = await setUp();
+		const { job, sandboxes, runners, github, store, clock } = await setUp();
 		await job("queued", 1);
 		sandboxes.boot();
 		sandboxes.fail.add("run");
@@ -438,6 +554,10 @@ describe("GitHub runners", () => {
 		expect(sandboxes.sandboxes.has("sbx_1")).toBe(true);
 		github.state.failRemove = false;
 		sandboxes.fail.delete("run");
+		// Tried again only once its wait is over, not on the next pass.
+		await runners.tick();
+		expect(github.removed).toEqual([]);
+		clock.now += END_RETRY_FIRST_MS;
 		await runners.tick();
 		expect(github.removed).toContain(1);
 		expect(await store.githubRunnerMachines.list({ state: "ending" })).toEqual([]);
@@ -472,13 +592,14 @@ describe("GitHub runners", () => {
 	});
 
 	it("keeps a deleted integration, hidden, until its runners have gone", async () => {
-		const { job, sandboxes, runners, store, deliver } = await setUp();
+		const { job, sandboxes, runners, store, deliver, clock } = await setUp();
 		await job("queued", 1);
 		sandboxes.fail.add("delete");
 		expect(await runners.retire("ghr_one")).toBe(false);
 		expect((await deliver("ping", {})).status).toBe(404);
 		expect((await store.githubRunners.get("ghr_one"))?.retiringAt).toBeDefined();
 		sandboxes.fail.delete("delete");
+		clock.now += END_RETRY_FIRST_MS;
 		await runners.tick();
 		expect(await store.githubRunners.get("ghr_one")).toBeUndefined();
 		expect(sandboxes.sandboxes.size).toBe(0);
@@ -1127,6 +1248,8 @@ describe("GitHub runners through the API", () => {
 				}),
 			);
 			expect(response?.status).toBe(200);
+			// The delivery is answered before its pass, which runs in the background.
+			await api.service.idle();
 			const [runner] = (await tom.listSandboxes()).items;
 			expect(runner).toMatchObject({
 				type: "microvm",
