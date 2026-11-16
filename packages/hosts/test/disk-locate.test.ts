@@ -198,7 +198,15 @@ describe("the disk store on the host link", () => {
 	it("passes each report's fetches on, with their progress, and none from a report not shaped as kantel-host sends it", async () => {
 		const recordHoldings = vi.fn(async () => undefined);
 		const { host, hostId } = await setup({ recordHoldings });
-		const running = { kind: "sticky", objectId: "sdk_1", version: "sdv_1", state: "running", blocks: 10, inPlace: 4 };
+		const running = {
+			kind: "sticky",
+			objectId: "sdk_1",
+			version: "sdv_1",
+			state: "running",
+			blocks: 10,
+			inPlace: 4,
+			bytes: 18_000_000,
+		};
 		const failed = {
 			kind: "template",
 			objectId: "tsn_1",

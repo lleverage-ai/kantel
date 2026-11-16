@@ -708,6 +708,158 @@ describe("moving a stopped sandbox to another host", () => {
 	});
 });
 
+/** Hosts that report their fetches' bytes, so a move's copy to them is waited for while it moves. */
+const MOVES_BYTES = [...MOVES, HOST_FEATURES.fetchBytes];
+
+/** Timers and the date are faked for these, so a copy can run for an hour in a moment. */
+const FAKED: ("setTimeout" | "clearTimeout" | "setInterval" | "clearInterval" | "Date")[] = [
+	"setTimeout",
+	"clearTimeout",
+	"setInterval",
+	"clearInterval",
+	"Date",
+];
+
+describe("a move's copy over a slow link", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** A heartbeat from `host` reporting one fetch of a sandbox's version, `bytes` of it read and no block whole yet. */
+	const beat = (host: FakeHost, sandboxId: string, version: string, bytes: number) =>
+		host.send({
+			type: "heartbeat",
+			heartbeat: {
+				capacity: {
+					freeMemoryMiB: 20_000,
+					freeDiskGiB: 400,
+					running: 0,
+					stopped: 0,
+					load1: 0.1,
+					fetches: [
+						{ kind: "sandbox", objectId: sandboxId, version, state: "running", blocks: 1500, inPlace: 0, bytes },
+					],
+				},
+			},
+		});
+
+	/**
+	 * A stopped sandbox on `a` moving to `b`, whose import is answered only once `release` is called; with timers faked
+	 * from the move on. `outcome` is the move's answer or error, and `version` the import's.
+	 */
+	const moving = async (features: readonly string[]) => {
+		const { root, api, join } = await setup();
+		const a = await join(features);
+		const b = await join(features);
+		const sandbox = await stoppedOn(root, a, "disk");
+		await unpinned(api, sandbox.id);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		b.hold = (method) => (method === "sandbox.import" ? held : undefined);
+		vi.useFakeTimers({ toFake: FAKED });
+		let settled: { readonly result?: unknown; readonly error?: unknown } | undefined;
+		const outcome = root.moveSandbox(sandbox.id, { hostId: b.hostId }).then(
+			(result) => {
+				settled = { result };
+				return settled;
+			},
+			(error: unknown) => {
+				settled = { error };
+				return settled;
+			},
+		);
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		const version = String(b.calls.find((call) => call.method === "sandbox.import")?.params.version);
+		return { root, a, b, sandbox, version, release, outcome, settled: () => settled };
+	};
+
+	it("waits while its bytes arrive, past the 30 minutes a copy was given, though no block is whole yet", async () => {
+		const { b, sandbox, version, release, outcome, settled } = await moving(MOVES_BYTES);
+		// 300 MiB at 40 KB/s: an hour and more, each 4 MiB block taking minutes over its run.
+		for (let minute = 1; minute <= 60; minute++) {
+			beat(b, sandbox.id, version, minute * 2_400_000);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(settled()).toBeUndefined();
+		expect(b.calls.some((call) => call.method === "sandbox.import.cancel")).toBe(false);
+		release();
+		expect((await outcome).result).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+	});
+
+	it("keeps waiting for a copy sent again after its target's connection drops, past the 30 minutes", async () => {
+		const { b, sandbox, version, release, outcome, settled } = await moving(MOVES_BYTES);
+		for (let minute = 1; minute <= 35; minute++) {
+			beat(b, sandbox.id, version, minute * 2_400_000);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		// Its connection drops and comes back: the import is sent again, and its fetch goes on.
+		const imports = () => b.calls.filter((call) => call.method === "sandbox.import").length;
+		b.connection.closed(1006, "gone");
+		b.connect();
+		// Each look moves the faked timers on too: the move looks for its host every second.
+		await vi.waitFor(() => expect(imports()).toBe(2), { timeout: 10_000, interval: 100 });
+		for (let minute = 36; minute <= 50; minute++) {
+			beat(b, sandbox.id, version, minute * 2_400_000);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(settled()).toBeUndefined();
+		release();
+		expect((await outcome).result).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+	});
+
+	it("gives up a copy that stops moving, and rolls the move back", async () => {
+		const { root, a, b, sandbox, version, outcome, settled } = await moving(MOVES_BYTES);
+		// It moves for 40 minutes, then stalls: given up once 10 minutes have gone without a byte.
+		for (let minute = 1; minute <= 40; minute++) {
+			beat(b, sandbox.id, version, minute * 2_400_000);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		for (let minute = 41; minute <= 49; minute++) {
+			beat(b, sandbox.id, version, 40 * 2_400_000);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(settled()).toBeUndefined();
+		for (let minute = 50; minute <= 52; minute++) {
+			beat(b, sandbox.id, version, 40 * 2_400_000);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		const { error, result } = await outcome;
+		console.log("OUT", JSON.stringify(result), String(error));
+		expect(error).toBeInstanceOf(KantelApiError);
+		expect((error as KantelApiError).message).toContain("made no progress for 10 minutes");
+		vi.useRealTimers();
+		await vi.waitFor(async () =>
+			expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "stopped", hostId: a.hostId }),
+		);
+		expect(b.cancelled.size).toBe(1);
+		expect(a.exports.size).toBe(0);
+	});
+
+	it("gives up a copy that never moves after the 30 minutes a copy was given", async () => {
+		const { b, sandbox, version, outcome, settled } = await moving(MOVES_BYTES);
+		for (let minute = 1; minute <= 29; minute++) {
+			beat(b, sandbox.id, version, 0);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(settled()).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(2 * 60_000);
+		expect(((await outcome).error as KantelApiError).message).toContain("made no progress for 30 minutes");
+	});
+
+	it("gives a host that doesn't report its fetches' bytes the 30 minutes, however its copy moves", async () => {
+		const { b, sandbox, version, outcome, settled } = await moving(MOVES);
+		for (let minute = 1; minute <= 29; minute++) {
+			beat(b, sandbox.id, version, minute * 2_400_000);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(settled()).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(2 * 60_000);
+		expect(((await outcome).error as KantelApiError).message).toContain("took longer than");
+	});
+});
+
 const MOVES_RUNNING = [...MOVES, HOST_FEATURES.sandboxMoveRunning];
 
 /** A running microVM on `on`, with what is on its disk there, let go of the pin its create on `on` gave it. */
@@ -878,7 +1030,10 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		};
 		const welcomes = () => b.sent.filter((message) => message.type === "welcome").length;
 		const dropAndReconnect = async (imports: number) => {
-			await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(imports));
+			// A resend comes after the move's next look for its host, a second apart, and the copies before it.
+			await vi.waitFor(() => expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(imports), {
+				timeout: 10_000,
+			});
 			const before = welcomes();
 			b.connection.closed(1006, "gone");
 			b.connect([...b.sandboxes.values()]);
@@ -916,7 +1071,10 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		};
 		const welcomes = () => a.sent.filter((message) => message.type === "welcome").length;
 		const dropAndReconnect = async (method: string, sends: number) => {
-			await vi.waitFor(() => expect(a.calls.filter((call) => call.method === method)).toHaveLength(sends));
+			// A resend comes after the move's next look for its host, a second apart, and the copies before it.
+			await vi.waitFor(() => expect(a.calls.filter((call) => call.method === method)).toHaveLength(sends), {
+				timeout: 10_000,
+			});
 			const before = welcomes();
 			a.connection.closed(1006, "gone");
 			a.connect([...a.sandboxes.values()]);

@@ -473,6 +473,7 @@ function fetchProgress(value: unknown): { fetches?: HostFetchProgress[] } {
 			state: entry.state as HostFetchProgress["state"],
 			blocks: entry.blocks,
 			inPlace: Math.min(entry.inPlace, entry.blocks),
+			...(blockCount(entry.bytes) && entry.bytes > 0 ? { bytes: entry.bytes } : {}),
 			...(typeof entry.error === "string" && entry.error !== ""
 				? { error: entry.error.slice(0, MAX_FETCH_ERROR) }
 				: {}),

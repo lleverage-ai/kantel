@@ -470,6 +470,13 @@ export const HOST_FEATURES = {
 	 */
 	sandboxMoveMemory: "sandbox-move-memory",
 	/**
+	 * Each fetch the host reports (`HostCapacity.fetches`) has the bytes it has read so far (`HostFetchProgress.bytes`),
+	 * which move on as a block's bytes arrive, before it is whole. A move's `sandbox.import` on such a host waits while
+	 * its fetch moves, and is given up only once it stalls (`MOVE_COPY_STALL_MS`), within `MOVE_COPY_CEILING_MS`; on a
+	 * host without it, after `DISK_COPY_TIMEOUT_MS`. Reported with `sandboxMove`.
+	 */
+	fetchBytes: "fetch-bytes",
+	/**
 	 * A `sandbox.start` that fails after its host let go of the memory the sandbox was stopped with (a rebase clears it
 	 * before it relinks the root filesystem and boots) says so in its error (`HostError.memoryDropped`), so Kantel ends
 	 * the commands that ran in that memory; one that fails without it kept the memory. A host from before says neither,
@@ -975,7 +982,8 @@ export interface HostObjectVersionHolding {
  * host's other fetches, or being prepared for (a saved snapshot's disk, while its record is read and its root image got)
  * (`queued`), under way (`running`), or stopped by an error with its partial left to go on when it is asked for again
  * (`failed`); its blocks (every part's, for a kind with parts), 0 until its map has been read; how many of them are in
- * place; and the last error it met, while it is tried again or has failed.
+ * place; the bytes of blocks it has read from its holders (`HOST_FEATURES.fetchBytes`); and the last error it met, while
+ * it is tried again or has failed.
  */
 export interface HostFetchProgress {
 	readonly kind: string;
@@ -984,6 +992,12 @@ export interface HostFetchProgress {
 	readonly state: "queued" | "running" | "failed";
 	readonly blocks: number;
 	readonly inPlace: number;
+	/**
+	 * The bytes of blocks it has read from its holders (`HOST_FEATURES.fetchBytes`), counted as they arrive, before their
+	 * block is whole, and carried on by a fetch that goes on from a failed one. Absent from a host without the feature,
+	 * and while it has read none.
+	 */
+	readonly bytes?: number;
 	readonly error?: string;
 }
 

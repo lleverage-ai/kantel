@@ -587,6 +587,47 @@ export const DISK_COPY_TIMEOUT_MS = 30 * 60_000;
 export const MOVE_RECONNECT_WAIT_MS = 2 * 60_000;
 /** How long a move waiting for its host to connect again waits between looks. */
 const MOVE_RECONNECT_POLL_MS = 1_000;
+/**
+ * How long a move's copy to a host that reports its fetches' bytes (`HOST_FEATURES.fetchBytes`) may go without its
+ * fetch moving before it is given up, once `DISK_COPY_TIMEOUT_MS` from its first send have passed: a copy over a slow
+ * link goes on for as long as its bytes keep arriving. The host gives up a request to a holder after 2 minutes
+ * without a byte, and tries each holder again.
+ */
+export const MOVE_COPY_STALL_MS = 10 * 60_000;
+/** The most a move's copy to a host that reports its fetches' bytes is waited for, however it moves. */
+export const MOVE_COPY_CEILING_MS = 24 * 60 * 60_000;
+/** How often a move's copy's progress is looked at: as often as its target reports it, on its heartbeat. */
+const MOVE_COPY_POLL_MS = 15_000;
+
+/** How far each fetch had got at a move's last look at its target's (`copyMoved`): its bytes and blocks in place. */
+type FetchesSeen = ReadonlyMap<string, { readonly bytes: number; readonly inPlace: number }>;
+
+/**
+ * Whether a move's copy of `sandboxId` moved since `seen`, by its target's fetches as it last reported them
+ * (`HostCapacity.fetches`), and how far they have got now. A fetch of the sandbox's (its disk's, or its memory's) moved
+ * when its bytes or blocks in place went up. With none of its own under way, any of the host's moving is: its own
+ * waits its turn behind them, or for the root image its disk is over.
+ */
+function copyMoved(
+	fetches: readonly HostFetchProgress[],
+	sandboxId: string,
+	seen: FetchesSeen,
+): { readonly moved: boolean; readonly seen: FetchesSeen } {
+	const running = fetches.filter((fetch) => fetch.state === "running");
+	const own = running.filter(
+		(fetch) => fetch.objectId === sandboxId && (fetch.kind === "sandbox" || fetch.kind === SANDBOX_MEMORY_KIND),
+	);
+	const now = new Map<string, { bytes: number; inPlace: number }>();
+	let moved = false;
+	for (const fetch of own.length > 0 ? own : running) {
+		const key = `${fetch.kind}/${fetch.objectId}/${fetch.version}`;
+		const at = { bytes: fetch.bytes ?? 0, inPlace: fetch.inPlace };
+		const before = seen.get(key) ?? { bytes: 0, inPlace: 0 };
+		if (at.bytes > before.bytes || at.inPlace > before.inPlace) moved = true;
+		now.set(key, at);
+	}
+	return { moved, seen: now };
+}
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
@@ -4039,13 +4080,55 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					return written;
 				};
 				/**
+				 * Watches a move's copy to `hostId`, sent first at `first`, by the fetches its host reports
+				 * (`HOST_FEATURES.fetchBytes`), every `MOVE_COPY_POLL_MS`: its `signal` aborts once the copy hasn't moved
+				 * (`copyMoved`) for `MOVE_COPY_STALL_MS`, and not before `DISK_COPY_TIMEOUT_MS` from `first`. Through the
+				 * call's every send, so a copy sent again keeps when it last moved. A read of the host that fails is tried at
+				 * the next look.
+				 */
+				const watchCopy = (hostId: string, first: number) => {
+					const controller = new AbortController();
+					let seen: FetchesSeen = new Map();
+					let movedAt = first;
+					let stopped = false;
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const look = async () => {
+						try {
+							const host = await store.getHost(hostId);
+							const now = clock.now();
+							const looked = copyMoved(host?.capacity?.fetches ?? [], sandboxId, seen);
+							seen = looked.seen;
+							if (looked.moved) movedAt = now;
+							if (now >= Math.max(first + DISK_COPY_TIMEOUT_MS, movedAt + MOVE_COPY_STALL_MS)) {
+								controller.abort();
+								return;
+							}
+						} catch {
+							// Looked at again next time.
+						}
+						if (!stopped) timer = setTimeout(() => void look(), MOVE_COPY_POLL_MS);
+					};
+					timer = setTimeout(() => void look(), MOVE_COPY_POLL_MS);
+					return {
+						signal: controller.signal,
+						/** How long the copy had gone without moving. */
+						stalledMs: () => clock.now() - movedAt,
+						stop: () => {
+							stopped = true;
+							if (timer !== undefined) clearTimeout(timer);
+						},
+					};
+				};
+				/**
 				 * One of the move's copies, or its source's stop, on `host`: sent again, with its params made afresh (a grant
 				 * renewed), when its host's connection goes as it waits (`hostWasAway`). The host carries the copy on past its
 				 * connection, and the same call again answers it: an export the version it made, an import its fetch under way
 				 * or done, a stop fenced on the first copy the sandbox stopped. Only while the host is back within
-				 * `moveReconnectWaitMs`, within the call's own `DISK_COPY_TIMEOUT_MS` from its first send, and the move is still
-				 * this one with no rollback begun (`moveOn`'s test), and never once the service closes; any other failure is
-				 * the call's own.
+				 * `moveReconnectWaitMs`, within the call's own time from its first send, and the move is still this one with no
+				 * rollback begun (`moveOn`'s test), and never once the service closes; any other failure is the call's own.
+				 * The call's time is `DISK_COPY_TIMEOUT_MS`, but an import on a host that reports its fetches' bytes
+				 * (`HOST_FEATURES.fetchBytes`), which goes on while its fetch moves (`watchCopy`), within
+				 * `MOVE_COPY_CEILING_MS`.
 				 */
 				const copyCall = async <T>(
 					hostId: string,
@@ -4053,33 +4136,53 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					params: () => Promise<object>,
 					known?: HostRecord,
 				): Promise<T> => {
-					const until = clock.now() + DISK_COPY_TIMEOUT_MS;
-					for (;;) {
-						try {
-							return await onHost<T>(
-								hostId,
-								method,
-								await params(),
-								{ timeoutMs: Math.max(1, until - clock.now()) },
-								known,
-							);
-						} catch (error) {
-							if (!hostWasAway(error)) throw error;
-							const back = Math.min(until, clock.now() + moveReconnectWaitMs);
-							do {
-								if (clock.now() >= back || closing.signal.aborted) throw error;
-								await pauseUnlessClosed(MOVE_RECONNECT_POLL_MS);
-							} while (!hub.connected(hostId));
-							const latest = await store.getPlacement(sandboxId);
-							if (
-								!movingBy(latest, operationId) ||
-								latest?.move?.rollingBack === true ||
-								latest?.move?.settling !== undefined
-							) {
-								throw new KantelError("conflict", "The move was undone meanwhile");
+					const first = clock.now();
+					// An import on a host that reports its fetches' bytes is waited for while its fetch moves.
+					const watched =
+						method === HostMethods.sandboxImport && known?.facts?.features?.includes(HOST_FEATURES.fetchBytes) === true;
+					const until = first + (watched ? MOVE_COPY_CEILING_MS : DISK_COPY_TIMEOUT_MS);
+					const stall = watched ? watchCopy(hostId, first) : undefined;
+					/** Whether the copy was given up as stalled (a function: its signal aborts as the call waits). */
+					const stalled = () => stall?.signal.aborted === true;
+					try {
+						for (;;) {
+							try {
+								return await onHost<T>(
+									hostId,
+									method,
+									await params(),
+									{
+										timeoutMs: Math.max(1, until - clock.now()),
+										...(stall === undefined ? {} : { signal: stall.signal }),
+									},
+									known,
+								);
+							} catch (error) {
+								if (stall !== undefined && stalled()) {
+									throw new KantelError(
+										"unavailable",
+										`The sandbox's copy to its new host made no progress for ${Math.round(stall.stalledMs() / 60_000)} minutes`,
+									);
+								}
+								if (!hostWasAway(error)) throw error;
+								const back = Math.min(until, clock.now() + moveReconnectWaitMs);
+								do {
+									if (clock.now() >= back || closing.signal.aborted || stalled()) throw error;
+									await pauseUnlessClosed(MOVE_RECONNECT_POLL_MS);
+								} while (!hub.connected(hostId));
+								const latest = await store.getPlacement(sandboxId);
+								if (
+									!movingBy(latest, operationId) ||
+									latest?.move?.rollingBack === true ||
+									latest?.move?.settling !== undefined
+								) {
+									throw new KantelError("conflict", "The move was undone meanwhile");
+								}
+								log(`[hosts] the move of ${sandboxId}'s ${method} on host ${hostId} lost its answer; sent again`);
 							}
-							log(`[hosts] the move of ${sandboxId}'s ${method} on host ${hostId} lost its answer; sent again`);
 						}
+					} finally {
+						stall?.stop();
 					}
 				};
 				/** A version of the sandbox exported on its source, and its map digests (its memory's too, with `memory`). */

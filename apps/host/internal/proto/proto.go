@@ -318,6 +318,12 @@ const FeatureSandboxMoveRunning = "sandbox-move-running"
 // stopped with its memory, so its start restores it. It comes with FeatureSandboxMoveRunning.
 const FeatureSandboxMoveMemory = "sandbox-move-memory"
 
+// FeatureFetchBytes: each fetch the host reports (Capacity.Fetches) has the bytes it has read so far (FetchProgress.Bytes),
+// which move on as a block's bytes arrive, before it is whole. A move's sandbox.import waits while its target's fetch
+// moves, and is given up only once it stalls, where without it the import is given up after a fixed time. It comes
+// with FeatureSandboxMove.
+const FeatureFetchBytes = "fetch-bytes"
+
 // FeatureStartMemoryDropped: a sandbox.start that fails after the host let go of the memory the sandbox was stopped
 // with (a rebase clears it before it relinks the root filesystem and boots) says so in its error (Error.MemoryDropped),
 // so Kantel ends the commands that ran in that memory. One that fails without it kept the memory. A host from before
@@ -1416,8 +1422,9 @@ const (
 )
 
 // FetchProgress is one version a host is fetching (Capacity.Fetches): its state; its blocks (every part's, for a kind
-// with parts), 0 until its map has been read; how many of them are in place; and the last error it met, while it is
-// tried again or has failed.
+// with parts), 0 until its map has been read; how many of them are in place; the bytes of blocks it has read from its
+// holders (FeatureFetchBytes), counted as they arrive, before their block is whole, and carried on by a fetch that
+// goes on from a failed one; and the last error it met, while it is tried again or has failed.
 type FetchProgress struct {
 	Kind     string `json:"kind"`
 	ObjectID string `json:"objectId"`
@@ -1425,6 +1432,7 @@ type FetchProgress struct {
 	State    string `json:"state"`
 	Blocks   int64  `json:"blocks"`
 	InPlace  int64  `json:"inPlace"`
+	Bytes    int64  `json:"bytes,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
 

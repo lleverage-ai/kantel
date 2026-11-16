@@ -86,8 +86,8 @@ func TestSandboxMove(t *testing.T) {
 	tier.made = map[string]string{"sb4": "mov_4"}
 	without := newLifecycleHost(t, tier.lifecycleTier)
 	without.tiers[microvm.Tier] = tier
-	if slices.Contains(without.makeFacts().Features, proto.FeatureSandboxMove) {
-		t.Fatal("sandbox-move without the mesh")
+	if f := without.makeFacts().Features; slices.Contains(f, proto.FeatureSandboxMove) || slices.Contains(f, proto.FeatureFetchBytes) {
+		t.Fatalf("sandbox-move or fetch-bytes without the mesh: %v", f)
 	}
 	var pe *proto.Error
 	if err := call(t, without, proto.MethodSandboxExport, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1"}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
@@ -103,8 +103,8 @@ func TestSandboxMove(t *testing.T) {
 	}
 	h.startPeerSync()
 	defer h.syncStop()
-	if !slices.Contains(h.makeFacts().Features, proto.FeatureSandboxMove) {
-		t.Fatal("sandbox-move not reported")
+	if f := h.makeFacts().Features; !slices.Contains(f, proto.FeatureSandboxMove) || !slices.Contains(f, proto.FeatureFetchBytes) {
+		t.Fatalf("sandbox-move or fetch-bytes not reported: %v", f)
 	}
 	if got := h.syncKinds().Parts(proto.DiskKindSandbox); !slices.Equal(got, microvm.SandboxParts) {
 		t.Fatalf("a moved sandbox's parts %v", got)

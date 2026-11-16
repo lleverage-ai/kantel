@@ -3,8 +3,10 @@ package disksync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -356,5 +358,54 @@ func TestFetchProgressOfPreparation(t *testing.T) {
 	}
 	if _, ok := progressOf(fetcher, "v6"); ok {
 		t.Fatal("a preparation the host's stop ended is reported")
+	}
+}
+
+// A fetch reports the bytes it has read as they arrive, before their block is whole, so a slow fetch is seen to move.
+func TestFetchProgressBytes(t *testing.T) {
+	runBlocks = 1
+	retryWait = time.Millisecond
+	t.Cleanup(func() { runBlocks, retryWait = 16, time.Second })
+	f := newFixture(t, 1)
+	data := disk(t, 1, 0)
+	f.put("v2", data)
+	h := f.holders[0]
+	// The first data request is answered with half of its block, then held until release; the rest are served.
+	release := make(chan struct{})
+	var first atomic.Bool
+	h.fail = func(w http.ResponseWriter, r *http.Request) bool {
+		if !first.CompareAndSwap(false, true) {
+			return false
+		}
+		var start, end int64
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			t.Errorf("range %q: %v", r.Header.Get("Range"), err)
+			return false
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(data[start : start+block/2])
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		return true
+	}
+	fetcher := f.fetcher()
+	j := fetcher.Start(Request{Ref: Ref{Kind: "sticky", ObjectID: "sdk_1", Version: "v2"}})
+	p := eventually(t, fetcher, "v2", func(p proto.FetchProgress, _ bool) bool { return p.Bytes >= block/2 })
+	if p.State != proto.FetchRunning || p.Blocks != 1 || p.InPlace != 0 || p.Bytes != block/2 {
+		t.Fatalf("half a block read %+v", p)
+	}
+	// Cut short, the block is fetched again: its bytes count again, as they move the fetch on.
+	close(release)
+	if _, err := wait(t, j); err != nil {
+		t.Fatal(err)
+	}
+	f.checkHeld("v2", data)
+	if got := fetcher.Progress(); len(got) != 0 {
+		t.Fatalf("after the fetch has done: %+v", got)
 	}
 }
