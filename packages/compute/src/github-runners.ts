@@ -494,6 +494,12 @@ function parseWorkflowJob(body: unknown): WorkflowJobEvent | undefined {
 	};
 }
 
+/** A runner without the wait of an end it is no longer in: a new end starts with its first try. */
+function withoutEndWait(machine: StoredGithubRunnerMachine): StoredGithubRunnerMachine {
+	const { endFailures: _failures, endRetryAt: _retry, ...rest } = machine;
+	return rest;
+}
+
 /** A pass's hold on an integration: its token is its own, and is what every effect renews. */
 interface Lease {
 	readonly integrationId: string;
@@ -642,7 +648,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 						extra.unused === true && current.state !== "idle"
 						? undefined
 						: {
-								...current,
+								...withoutEndWait(current),
 								state: "ending",
 								endingAt: t,
 								endReason: why,
@@ -1425,9 +1431,16 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			await store.githubRunnerMachines.update(machine.id, (current) => {
 				const busy = { state: "busy" as const, tookJob: true, jobId: event.job.id, busyAt: t, updatedAt: t };
 				if (current.state !== "ending") return { ...current, ...busy };
-				// Being ended only for want of a job, and not yet off GitHub: the job keeps it.
+				// Being ended only for want of a job, and not yet off GitHub: the job keeps it, and the end's waits go with it.
 				if (current.unused === true && current.unregistered !== true) {
-					const { unused: _unused, endingAt: _at, endReason: _why, ...rest } = current;
+					const {
+						unused: _unused,
+						endingAt: _at,
+						endReason: _why,
+						endFailures: _failures,
+						endRetryAt: _retry,
+						...rest
+					} = current;
 					return { ...rest, ...busy };
 				}
 				return { ...current, tookJob: true };

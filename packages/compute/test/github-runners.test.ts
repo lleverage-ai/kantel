@@ -459,48 +459,56 @@ describe("GitHub runners", () => {
 	});
 
 	it("merges a burst of webhooks into one pass running and one waiting, and answers each without waiting", async () => {
-		const { runners, sandboxes, store, afterListing, signed, jobPayload, settled } = await setUp({
+		const { runners, sandboxes, store, signed, jobPayload, settled } = await setUp({
 			room: 100,
 			pool: { maxRunners: 100 },
 		});
-		// Every pass sweeps for orphaned sandboxes once: how passes are counted.
+		// Every pass ends by sweeping for orphaned sandboxes, once, after it has read the jobs and made runners: passes
+		// are counted there, and the first two stall there, as a pass calling a slow host would.
 		let passes = 0;
+		const gate = () => {
+			let resolve = () => {};
+			const promise = new Promise<void>((done) => {
+				resolve = done;
+			});
+			return { promise, resolve };
+		};
+		const gates = [gate(), gate()];
 		const listMadeBy = sandboxes.api.listMadeBy;
-		sandboxes.api.listMadeBy = (...args) => {
-			passes++;
+		sandboxes.api.listMadeBy = async (...args) => {
+			const gate = gates[passes++];
+			await gate?.promise;
 			return listMadeBy(...args);
 		};
-		// The first delivery's pass stalls once it has read the runners, as one calling a slow host would.
-		let release = () => {};
-		const stalled = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		let stalling = true;
-		afterListing.hook = async () => {
-			if (!stalling) return;
-			stalling = false;
-			await stalled;
+		const deliver = async (ids: readonly number[]) => {
+			const answers = await Promise.all(
+				ids.map(async (id) => runners.receive("ghr_one", await signed("workflow_job", jobPayload("queued", id)))),
+			);
+			expect(answers.map((response) => response.status)).toEqual(ids.map(() => 200));
 		};
-		const first = await runners.receive("ghr_one", await signed("workflow_job", jobPayload("queued", 1)));
-		expect(first.status).toBe(200);
-		// A burst while that pass runs, and the deployment's own pass among it: each answered at once, with its job kept.
-		const burst = Array.from({ length: 40 }, (_, index) => index + 2);
-		const answers = await Promise.all(
-			burst.map(async (id) => runners.receive("ghr_one", await signed("workflow_job", jobPayload("queued", id)))),
-		);
+		const range = (from: number, count: number) => Array.from({ length: count }, (_, index) => from + index);
+		// The first delivery's pass reads its job, makes its runner and stalls. It answered without waiting for it.
+		await deliver([1]);
+		await vi.waitFor(() => expect(passes).toBe(1));
+		expect(sandboxes.sandboxes.size).toBe(1);
+		// A burst while it runs, the deployment's own pass among it: each answered at once, its job kept.
+		await deliver(range(2, 40));
 		const ticked = runners.tick();
-		expect(answers.map((response) => response.status)).toEqual(burst.map(() => 200));
-		expect((await store.githubRunnerJobs.list({ integrationId: "ghr_one" })).length).toBe(41);
-		release();
+		expect(await store.githubRunnerJobs.list({ integrationId: "ghr_one" })).toHaveLength(41);
+		// The one pass that waited for it reads the burst's jobs, and stalls in its turn; another burst comes meanwhile.
+		gates[0]?.resolve();
+		await vi.waitFor(() => expect(passes).toBe(2));
+		expect(sandboxes.sandboxes.size).toBe(11);
+		await deliver(range(42, 10));
+		gates[1]?.resolve();
 		await settled();
 		await ticked;
-		// The stalled pass, then one more for everything that came during it: not one for each of the 42 callers.
-		expect(passes).toBe(2);
-		// No job was lost: every one is still queued, and runners come for all of them, a pass's worth at a time.
-		expect(await runners.jobs("ghr_one")).toHaveLength(41);
-		for (let pass = 0; pass < 5 && sandboxes.sandboxes.size < 41; pass++) await runners.tick();
-		expect(sandboxes.sandboxes.size).toBe(41);
-		expect(await store.githubRunnerJobs.list({ integrationId: "ghr_one", state: "queued" })).toHaveLength(41);
+		// One pass for each stall and one after it: three for the 52 callers, not one each.
+		expect(passes).toBe(3);
+		// No job was lost: every one is queued, and runners come for all of them, a pass's worth at a time.
+		expect(await store.githubRunnerJobs.list({ integrationId: "ghr_one", state: "queued" })).toHaveLength(51);
+		for (let pass = 0; pass < 5 && sandboxes.sandboxes.size < 51; pass++) await runners.tick();
+		expect(sandboxes.sandboxes.size).toBe(51);
 	});
 
 	it("backs off a runner's end while its sandbox can't be deleted, rather than trying on every pass", async () => {
@@ -754,6 +762,10 @@ describe("GitHub runners", () => {
 		await runners.tick();
 		expect((await store.githubRunnerMachines.get(sandboxId))?.state).toBe("busy");
 		expect(sandboxes.sandboxes.has(sandboxId)).toBe(true);
+		// The failed removal's wait went with that end: the job's end deletes it at once.
+		await job("completed", 2, { runner_name: sandboxId, conclusion: "success" });
+		expect(sandboxes.sandboxes.has(sandboxId)).toBe(false);
+		expect(await store.githubRunnerMachines.get(sandboxId)).toBeUndefined();
 	});
 
 	it("lets a runner finish its job when its pool is renamed", async () => {
