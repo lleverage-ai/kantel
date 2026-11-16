@@ -393,7 +393,7 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureSnapshotSync)
 	}
 	if h.movesSandboxes() {
-		features = append(features, proto.FeatureSandboxMove, proto.FeatureSandboxMoveRunning)
+		features = append(features, proto.FeatureSandboxMove, proto.FeatureSandboxMoveRunning, proto.FeatureFetchBytes)
 	}
 	if h.movesMemory() {
 		features = append(features, proto.FeatureSandboxMoveMemory)

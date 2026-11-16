@@ -191,11 +191,12 @@ func (f *Fetcher) noteRate(src *holders, fetched int64, took time.Duration) {
 	f.rates[list[0]] = Rate{BytesPerSecond: int64(float64(fetched) / took.Seconds()), At: time.Now()}
 }
 
-// failure is how a failed fetch stood when it ended: its blocks, how many were in place, its error and when.
+// failure is how a failed fetch stood when it ended: its blocks, how many were in place, the bytes it had fetched, its
+// error and when.
 type failure struct {
-	blocks, inPlace int64
-	err             string
-	at              time.Time
+	blocks, inPlace, bytes int64
+	err                    string
+	at                     time.Time
 }
 
 // Job is a fetch under way, or queued.
@@ -207,11 +208,12 @@ type Job struct {
 	again bool
 
 	// running is set once it has its turn. blocks are its version's (every part's), once its map is read, and inPlace
-	// how many of them are in place. lastErr is the last error it met: a holder that failed it, or the failure of the
+	// how many of them are in place. bytes are the bytes of blocks it has read from its holders, counted as they arrive,
+	// before their block is whole. lastErr is the last error it met: a holder that failed it, or the failure of the
 	// fetch it goes on from.
-	running         atomic.Bool
-	blocks, inPlace atomic.Int64
-	lastErr         atomic.Pointer[string]
+	running                atomic.Bool
+	blocks, inPlace, bytes atomic.Int64
+	lastErr                atomic.Pointer[string]
 }
 
 // noteError records err as the last error the fetch met.
@@ -267,6 +269,7 @@ func (f *Fetcher) Start(req Request) *Job {
 		// It goes on from where the failed fetch stopped, which it reports until it has its own.
 		j.blocks.Store(failed.blocks)
 		j.inPlace.Store(failed.inPlace)
+		j.bytes.Store(failed.bytes)
 		j.lastErr.Store(&failed.err)
 		delete(f.failed, req.Ref)
 	}
@@ -279,7 +282,7 @@ func (f *Fetcher) Start(req Request) *Job {
 			// A failure is reported until the fetch is asked for again: not one the host's stop or the control plane's
 			// not_found (its partial discarded) ended.
 			if j.err != nil && f.Context.Err() == nil && !IsNotFound(j.err) {
-				f.failed[req.Ref] = failure{blocks: j.blocks.Load(), inPlace: j.inPlace.Load(), err: j.err.Error(), at: time.Now()}
+				f.failed[req.Ref] = failure{blocks: j.blocks.Load(), inPlace: j.inPlace.Load(), bytes: j.bytes.Load(), err: j.err.Error(), at: time.Now()}
 			}
 			again := j.again && j.err != nil && f.Context.Err() == nil
 			f.mu.Unlock()
@@ -336,7 +339,7 @@ func (f *Fetcher) Progress() []proto.FetchProgress {
 			state = proto.FetchRunning
 		}
 		p := proto.FetchProgress{Kind: r.Kind, ObjectID: r.ObjectID, Version: r.Version, State: state,
-			Blocks: j.blocks.Load(), InPlace: j.inPlace.Load()}
+			Blocks: j.blocks.Load(), InPlace: j.inPlace.Load(), Bytes: j.bytes.Load()}
 		if msg := j.lastErr.Load(); msg != nil {
 			p.Error = *msg
 		}
@@ -365,7 +368,7 @@ func (f *Fetcher) Progress() []proto.FetchProgress {
 				continue
 			}
 			out = append(out, proto.FetchProgress{Kind: r.Kind, ObjectID: r.ObjectID, Version: r.Version,
-				State: proto.FetchFailed, Blocks: fl.blocks, InPlace: fl.inPlace, Error: fl.err})
+				State: proto.FetchFailed, Blocks: fl.blocks, InPlace: fl.inPlace, Bytes: fl.bytes, Error: fl.err})
 		}
 		f.mu.Lock()
 		for _, r := range gone {
@@ -1163,7 +1166,10 @@ func (f *Fetcher) fetchFrom(ctx context.Context, src *holders, p *partial, addr 
 		return 0, err
 	}
 	defer res.Body.Close()
-	body := limitedReader{ctx: ctx, r: progress{res.Body, func() { stalled.Reset(stallTimeout) }}, l: f.Limit}
+	body := limitedReader{ctx: ctx, r: progress{res.Body, func(n int) {
+		stalled.Reset(stallTimeout)
+		src.job.bytes.Add(int64(n))
+	}}, l: f.Limit}
 	var fetched int64
 	for *next <= last {
 		i := *next
@@ -1187,16 +1193,16 @@ func (f *Fetcher) fetchFrom(ctx context.Context, src *holders, p *partial, addr 
 	return fetched, nil
 }
 
-// progress calls moved each time a read gets bytes.
+// progress calls moved with the bytes each time a read gets some.
 type progress struct {
 	r     io.Reader
-	moved func()
+	moved func(n int)
 }
 
 func (p progress) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
 	if n > 0 {
-		p.moved()
+		p.moved(n)
 	}
 	return n, err
 }
