@@ -235,7 +235,7 @@ func TestApplyAsDesiredState(t *testing.T) {
 		t.Fatalf("firewall: %v", h.firewall.up)
 	}
 	if !slices.Contains(h.commands, "ip -6 addr add fd12:3456:789a::1/128 dev kmesh0 nodad") ||
-		!slices.Contains(h.commands, "ip -6 route replace fd12:3456:789a::/48 dev kmesh0") {
+		!slices.Contains(h.commands, "ip -6 route replace fd12:3456:789a::/48 dev kmesh0 mtu 1200 advmss 1140") {
 		t.Fatalf("link: %v", h.commands)
 	}
 	d := h.device()

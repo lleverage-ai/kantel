@@ -51,6 +51,13 @@ func TestMeshBetweenTwoHosts(t *testing.T) {
 		}
 		return
 	}
+	runOuter(t, namespaceArgs(t))
+}
+
+// namespaceArgs are unshare's arguments for the test's own namespace, or skip the test on a machine (or CI runner)
+// that can't make one in which TUN, veth and ip6tables work.
+func namespaceArgs(t *testing.T) []string {
+	t.Helper()
 	if err := Available(); err != nil {
 		t.Skip(err)
 	}
@@ -72,14 +79,20 @@ func TestMeshBetweenTwoHosts(t *testing.T) {
 	if args == nil {
 		t.Skip("needs unshare with a network namespace (and a user namespace, without root) in which TUN, veth and ip6tables work")
 	}
-	cmd := exec.Command("unshare", append(args, os.Args[0], "-test.run", "^TestMeshBetweenTwoHosts$", "-test.v")...)
+	return args
+}
+
+// runOuter runs t's test again as its outer part, in a namespace unshare makes with args.
+func runOuter(t *testing.T, args []string) {
+	t.Helper()
+	cmd := exec.Command("unshare", append(args, os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.v")...)
 	cmd.Env = append(os.Environ(), roleEnv+"=outer")
 	out, err := cmd.CombinedOutput()
 	t.Log(string(out))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "--- PASS: TestMeshBetweenTwoHosts") {
+	if !strings.Contains(string(out), "--- PASS: "+t.Name()) {
 		t.Fatal("the test didn't run in its namespace")
 	}
 }
@@ -101,6 +114,8 @@ type request struct {
 	Port     int    `json:"port,omitempty"`
 	// Wait is how long a dial keeps trying, in seconds.
 	Wait int `json:"wait,omitempty"`
+	// Bulk is, for a welcome, how many bytes the sync port sends each connection instead of the host's name.
+	Bulk int64 `json:"bulk,omitempty"`
 }
 
 type reply struct {
@@ -108,6 +123,9 @@ type reply struct {
 	Facts  *proto.MeshFacts  `json:"facts,omitempty"`
 	Health *proto.MeshHealth `json:"health,omitempty"`
 	Said   string            `json:"said,omitempty"`
+	// Bytes and Took are a fetch's: what it read, and how long that took.
+	Bytes int64         `json:"bytes,omitempty"`
+	Took  time.Duration `json:"took,omitempty"`
 }
 
 func (c *child) do(t *testing.T, r request) reply {
@@ -128,7 +146,7 @@ func (c *child) do(t *testing.T, r request) reply {
 
 func startChild(t *testing.T, role string) *child {
 	t.Helper()
-	cmd := exec.Command("unshare", "-n", os.Args[0], "-test.run", "^TestMeshBetweenTwoHosts$")
+	cmd := exec.Command("unshare", "-n", os.Args[0], "-test.run", "^"+t.Name()+"$")
 	cmd.Env = append(os.Environ(), roleEnv+"="+role)
 	cmd.Stderr = os.Stderr
 	in, _ := cmd.StdinPipe()
@@ -284,6 +302,63 @@ func outerRole(t *testing.T) {
 	}
 }
 
+// Bulk transfer between two hosts whose only path to each other has an MTU of 1280 (as over Tailscale): a host's
+// sync port sends 64 MiB over the mesh, and the other reads it all within seconds (without RouteMTU and AdvMSS, about
+// 0.4 MB/s: WireGuard's batches of full-size packets are turned away).
+func TestMeshBulkOverSmallMTU(t *testing.T) {
+	switch os.Getenv(roleEnv) {
+	case "a", "b":
+		hostRole(t)
+		return
+	case "outer":
+		bulkOuterRole(t)
+		return
+	}
+	runOuter(t, namespaceArgs(t))
+}
+
+func bulkOuterRole(t *testing.T) {
+	sh(t, "ip", "link", "set", "lo", "up")
+	a, b := startChild(t, "a"), startChild(t, "b")
+	sh(t, "ip", "link", "add", "va", "mtu", "1280", "type", "veth", "peer", "name", "vb", "mtu", "1280")
+	sh(t, "ip", "link", "set", "va", "netns", fmt.Sprint(a.cmd.Process.Pid))
+	sh(t, "ip", "link", "set", "vb", "netns", fmt.Sprint(b.cmd.Process.Pid))
+	factsA := a.do(t, request{Op: "start", Address: "192.0.2.1/24", Address6: "2001:db8:1::1/64"})
+	factsB := b.do(t, request{Op: "start", Address: "192.0.2.2/24", Address6: "2001:db8:1::2/64"})
+	if factsA.Error != "" || factsB.Error != "" {
+		t.Fatal(factsA.Error, factsB.Error)
+	}
+	peerA := proto.MeshPeer{HostID: "host_a", PublicKey: factsA.Facts.PublicKey, Address: addrA, Endpoints: factsA.Facts.Endpoints}
+	peerB := proto.MeshPeer{HostID: "host_b", PublicKey: factsB.Facts.PublicKey, Address: addrB, Endpoints: factsB.Facts.Endpoints}
+	const size = 64 << 20
+	if r := a.do(t, request{Op: "welcome", Mesh: &proto.WelcomeMesh{Address: addrA, Prefix: meshPrefix, Peers: []proto.MeshPeer{peerB}}}); r.Error != "" {
+		t.Fatal(r.Error)
+	}
+	if r := b.do(t, request{Op: "welcome", Bulk: size, Mesh: &proto.WelcomeMesh{Address: addrB, Prefix: meshPrefix, Peers: []proto.MeshPeer{peerA}}}); r.Error != "" {
+		t.Fatal(r.Error)
+	}
+	fetchFrom := func(why string) {
+		t.Helper()
+		r := a.do(t, request{Op: "fetch", Address: addrB, Port: SyncPort, Wait: 30})
+		t.Logf("%s: fetched %d of %d bytes in %s (%.1f MB/s) %s", why, r.Bytes, size, r.Took, float64(r.Bytes)/r.Took.Seconds()/1e6, r.Error)
+		if r.Error != "" || r.Bytes != size {
+			t.Fatalf("%s: a fetched %d of %d bytes from b in 30 s: %s", why, r.Bytes, size, r.Error)
+		}
+	}
+	fetchFrom("both hosts")
+	// One host's route as a host's was before it had RouteMTU and AdvMSS: the other's cover both ways, whichever it is.
+	for _, old := range []*child{a, b} {
+		sh(t, "nsenter", "-t", fmt.Sprint(old.cmd.Process.Pid), "-n", "ip", "-6", "route", "replace", meshPrefix, "dev", "kmesh0")
+		if old == a {
+			fetchFrom("the sender's alone")
+		} else {
+			fetchFrom("the receiver's alone")
+		}
+		sh(t, "nsenter", "-t", fmt.Sprint(old.cmd.Process.Pid), "-n", "ip", "-6", "route", "replace", meshPrefix, "dev", "kmesh0",
+			"mtu", fmt.Sprint(RouteMTU), "advmss", fmt.Sprint(AdvMSS))
+	}
+}
+
 // hostRole is one host: a mesh on a real device and firewall in its own namespace, driven by the outer part.
 func hostRole(t *testing.T) {
 	role := os.Getenv(roleEnv)
@@ -340,7 +415,9 @@ func hostRole(t *testing.T) {
 				rep.Facts = m.Facts()
 			}
 		case "welcome":
-			if err = m.Apply(req.Mesh); err == nil && req.Mesh != nil {
+			if err = m.Apply(req.Mesh); err == nil && req.Mesh != nil && req.Bulk > 0 {
+				listeners, err = serveBulk(listeners, req.Mesh.Address, SyncPort, req.Bulk)
+			} else if err == nil && req.Mesh != nil {
 				// What a peer may reach (the sync port) and what it mayn't (the next one).
 				for _, port := range []int{SyncPort, SyncPort + 1} {
 					if err == nil {
@@ -362,6 +439,10 @@ func hostRole(t *testing.T) {
 				}
 				time.Sleep(500 * time.Millisecond)
 			}
+		case "fetch":
+			// Everything a bulk sync port sends, read within Wait seconds; dialled until the peer is reached.
+			deadline := time.Now().Add(time.Duration(req.Wait) * time.Second)
+			rep.Bytes, rep.Took, err = fetch(req.Address, req.Port, deadline)
 		case "sandbox":
 			// Sandboxes' rules as kantel-host makes them, then the link on its side as a sandbox's would be with IPv6
 			// on, and forwarding on (as Docker leaves it).
@@ -394,19 +475,7 @@ func hostRole(t *testing.T) {
 
 // serve answers every connection to address:port with what, then closes it; its listener is added to listeners.
 func serve(listeners []net.Listener, address string, port int, what string) ([]net.Listener, error) {
-	addr, err := netip.ParseAddr(address)
-	if err != nil {
-		return listeners, err
-	}
-	var l net.Listener
-	// The address takes a moment to be usable after it is added.
-	for range 50 {
-		var lc net.ListenConfig
-		if l, err = lc.Listen(context.Background(), "tcp", netip.AddrPortFrom(addr, uint16(port)).String()); err == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	l, err := listen(address, port)
 	if err != nil {
 		return listeners, err
 	}
@@ -421,4 +490,72 @@ func serve(listeners []net.Listener, address string, port int, what string) ([]n
 		}
 	}()
 	return append(listeners, l), nil
+}
+
+// listen listens on address:port, an address just added to a link.
+func listen(address string, port int) (net.Listener, error) {
+	addr, err := netip.ParseAddr(address)
+	if err != nil {
+		return nil, err
+	}
+	var l net.Listener
+	// The address takes a moment to be usable after it is added.
+	for range 50 {
+		var lc net.ListenConfig
+		if l, err = lc.Listen(context.Background(), "tcp", netip.AddrPortFrom(addr, uint16(port)).String()); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return l, err
+}
+
+// serveBulk sends n bytes to every connection to address:port, then closes it; its listener is added to listeners.
+func serveBulk(listeners []net.Listener, address string, port int, n int64) ([]net.Listener, error) {
+	l, err := listen(address, port)
+	if err != nil {
+		return listeners, err
+	}
+	block := make([]byte, 1<<20)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				for left := n; left > 0; {
+					w, err := c.Write(block[:min(left, int64(len(block)))])
+					if err != nil {
+						return
+					}
+					left -= int64(w)
+				}
+			}()
+		}
+	}()
+	return append(listeners, l), nil
+}
+
+// fetch reads everything address:port sends, dialling until it answers, all before deadline: the bytes read and how
+// long the read took from the connection on.
+func fetch(address string, port int, deadline time.Time) (int64, time.Duration, error) {
+	var c net.Conn
+	var err error
+	for {
+		c, err = net.DialTimeout("tcp", net.JoinHostPort(address, fmt.Sprint(port)), 2*time.Second)
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(deadline)
+	start := time.Now()
+	n, err := io.Copy(io.Discard, c)
+	return n, time.Since(start), err
 }

@@ -377,7 +377,7 @@ func parseMesh(address, prefix string) (netip.Addr, netip.Prefix, error) {
 }
 
 // upLocked brings the device up: the firewall first, so nothing reaches it before its rules, then WireGuard, then the
-// link's address and route to the pool's prefix.
+// link's address and route to the pool's prefix, with RouteMTU and AdvMSS.
 func (m *Mesh) upLocked(addr netip.Addr, prefix netip.Prefix) error {
 	name := m.cfg.Device
 	if err := m.cfg.Firewall.Up(name, prefix, m.cfg.SyncPort, m.cfg.Port); err != nil {
@@ -394,7 +394,7 @@ func (m *Mesh) upLocked(addr netip.Addr, prefix netip.Prefix) error {
 	for _, args := range [][]string{
 		{"ip", "-6", "addr", "add", netip.PrefixFrom(addr, 128).String(), "dev", name, "nodad"},
 		{"ip", "link", "set", name, "up"},
-		{"ip", "-6", "route", "replace", prefix.String(), "dev", name},
+		{"ip", "-6", "route", "replace", prefix.String(), "dev", name, "mtu", fmt.Sprint(RouteMTU), "advmss", fmt.Sprint(AdvMSS)},
 	} {
 		if err := m.cfg.Run(args...); err != nil {
 			dev.Close()

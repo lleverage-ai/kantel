@@ -47,6 +47,18 @@ type Opener func(name string, private Key, port int, log *slog.Logger) (Device, 
 // MTU is the mesh device's: 1500 less WireGuard's overhead over IPv6 (80 bytes).
 const MTU = 1420
 
+// RouteMTU is the MTU of the route to the pool's prefix over the device: what fits IPv6's smallest MTU, 1280, once
+// WireGuard's 80 bytes are added. A path between two hosts can be that small (Tailscale's is), and WireGuard's packets
+// mustn't be larger than the path: wireguard-go sends them in batches (UDP segmentation offload), and the kernel turns a
+// batch away whole when its packets don't fit the route to the peer's endpoint (EMSGSIZE), so bulk TCP over the mesh
+// would get only its retransmits through. The device keeps MTU: IPv6 wants at least 1280 on a link, which is too big.
+const RouteMTU = 1280 - 80
+
+// AdvMSS is the largest TCP segment a host asks its peers to send it over the mesh: RouteMTU less the inner IPv6 and
+// TCP headers. The kernel's own is never below 1220 for IPv6, too big for RouteMTU, so the route says it. With RouteMTU
+// (what the host sends) and AdvMSS (what it is sent), one host covers both ways of its connections, whatever its peer.
+const AdvMSS = RouteMTU - 40 - 20
+
 // keepalive is each peer's persistent keepalive, in seconds: it keeps NAT and firewall state open, and starts a
 // handshake when there is none, so a peer is reached before anything is sent to it.
 const keepalive = 25
