@@ -725,8 +725,18 @@ describe("a move's copy over a slow link", () => {
 		vi.useRealTimers();
 	});
 
-	/** A heartbeat from `host` reporting one fetch of a sandbox's version, `bytes` of it read and no block whole yet. */
-	const beat = (host: FakeHost, sandboxId: string, version: string, bytes: number) =>
+	/**
+	 * A heartbeat from `host` reporting one fetch of a sandbox's version, `bytes` of it read and no block whole yet, in
+	 * `state`; and the fetches in `others` beside it.
+	 */
+	const beat = (
+		host: FakeHost,
+		sandboxId: string,
+		version: string,
+		bytes: number,
+		state = "running",
+		others: readonly object[] = [],
+	) =>
 		host.send({
 			type: "heartbeat",
 			heartbeat: {
@@ -737,11 +747,22 @@ describe("a move's copy over a slow link", () => {
 					stopped: 0,
 					load1: 0.1,
 					fetches: [
-						{ kind: "sandbox", objectId: sandboxId, version, state: "running", blocks: 1500, inPlace: 0, bytes },
+						{ kind: "sandbox", objectId: sandboxId, version, state, blocks: 1500, inPlace: 0, bytes },
+						...others,
 					],
 				},
 			},
 		});
+	/** Another fetch on the host, of a sticky disk's version, `bytes` of it read. */
+	const sticky = (bytes: number) => ({
+		kind: "sticky",
+		objectId: "sdk_other",
+		version: "sdv_other",
+		state: "running",
+		blocks: 5000,
+		inPlace: 0,
+		bytes,
+	});
 
 	/**
 	 * A stopped sandbox on `a` moving to `b`, whose import is answered only once `release` is called; with timers faked
@@ -846,6 +867,31 @@ describe("a move's copy over a slow link", () => {
 		expect(settled()).toBeUndefined();
 		await vi.advanceTimersByTimeAsync(2 * 60_000);
 		expect(((await outcome).error as KantelApiError).message).toContain("made no progress for 30 minutes");
+	});
+
+	it("waits for a copy whose turn hasn't come while the host's other fetches move", async () => {
+		const { b, sandbox, version, release, outcome, settled } = await moving(MOVES_BYTES);
+		for (let minute = 1; minute <= 45; minute++) {
+			beat(b, sandbox.id, version, 0, "queued", [sticky(minute * 2_400_000)]);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(settled()).toBeUndefined();
+		release();
+		expect((await outcome).result).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+	});
+
+	it("gives up a copy under way that stalls, however the host's other fetches move", async () => {
+		const { b, sandbox, version, outcome, settled } = await moving(MOVES_BYTES);
+		for (let minute = 1; minute <= 29; minute++) {
+			beat(b, sandbox.id, version, 2_400_000, "running", [sticky(minute * 2_400_000)]);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(settled()).toBeUndefined();
+		for (let minute = 30; minute <= 31; minute++) {
+			beat(b, sandbox.id, version, 2_400_000, "running", [sticky(minute * 2_400_000)]);
+			await vi.advanceTimersByTimeAsync(60_000);
+		}
+		expect(((await outcome).error as KantelApiError).message).toContain("made no progress");
 	});
 
 	it("gives a host that doesn't report its fetches' bytes the 30 minutes, however its copy moves", async () => {
