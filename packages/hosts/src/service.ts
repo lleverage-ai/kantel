@@ -1188,6 +1188,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const log = options.log ?? ((message: string) => console.error(message));
 	const upgradeTimeoutMs = options.upgradeTimeoutMs ?? DISK_COPY_TIMEOUT_MS;
 	const moveReconnectWaitMs = options.moveReconnectWaitMs ?? MOVE_RECONNECT_WAIT_MS;
+	/** Aborted by `close`: a move waiting for its host to connect again stops waiting. */
+	const closing = new AbortController();
+	/** Resolves after `ms`, or at once when the service closes. */
+	const pauseUnlessClosed = (ms: number) =>
+		new Promise<void>((resolve) => {
+			if (closing.signal.aborted) return resolve();
+			const done = () => {
+				clearTimeout(timer);
+				closing.signal.removeEventListener("abort", done);
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			closing.signal.addEventListener("abort", done, { once: true });
+		});
 	/**
 	 * How long a gateway's claim on rolling back an upgrade lasts (`upgrade.settling`): past its two calls' time and some,
 	 * so a gateway still at it is never taken for gone.
@@ -4030,7 +4044,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				 * connection, and the same call again answers it: an export the version it made, an import its fetch under way
 				 * or done, a stop fenced on the first copy the sandbox stopped. Only while the host is back within
 				 * `moveReconnectWaitMs`, within the call's own `DISK_COPY_TIMEOUT_MS` from its first send, and the move is still
-				 * this one with no rollback begun (`moveOn`'s test); any other failure is the call's own.
+				 * this one with no rollback begun (`moveOn`'s test), and never once the service closes; any other failure is
+				 * the call's own.
 				 */
 				const copyCall = async <T>(
 					hostId: string,
@@ -4052,8 +4067,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							if (!hostWasAway(error)) throw error;
 							const back = Math.min(until, clock.now() + moveReconnectWaitMs);
 							do {
-								if (clock.now() >= back) throw error;
-								await new Promise((resolve) => setTimeout(resolve, MOVE_RECONNECT_POLL_MS));
+								if (clock.now() >= back || closing.signal.aborted) throw error;
+								await pauseUnlessClosed(MOVE_RECONNECT_POLL_MS);
 							} while (!hub.connected(hostId));
 							const latest = await store.getPlacement(sandboxId);
 							if (
@@ -4471,6 +4486,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			},
 		},
 		close() {
+			closing.abort();
 			hub.closeAll(1001, "The control plane is stopping");
 		},
 	};

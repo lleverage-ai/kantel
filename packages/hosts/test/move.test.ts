@@ -902,6 +902,52 @@ describe("moving a running sandbox to another host, with a restart", () => {
 		expect((await service.sandboxes.placement(sandbox.id))?.move).toBeUndefined();
 	});
 
+	it("sends its source's export and stop again when the source's connection goes as they wait", async () => {
+		const { root, api, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "written before the move");
+		const lost = new Set<string>();
+		a.hold = (method, params) => {
+			const key = `${method}/${String(params.version ?? "")}`;
+			if ((method !== "sandbox.export" && method !== "sandbox.stop") || lost.has(key)) return undefined;
+			lost.add(key);
+			return new Promise<void>(() => undefined);
+		};
+		const welcomes = () => a.sent.filter((message) => message.type === "welcome").length;
+		const dropAndReconnect = async (method: string, sends: number) => {
+			await vi.waitFor(() => expect(a.calls.filter((call) => call.method === method)).toHaveLength(sends));
+			const before = welcomes();
+			a.connection.closed(1006, "gone");
+			a.connect([...a.sandboxes.values()]);
+			await vi.waitFor(() => expect(welcomes()).toBe(before + 1));
+		};
+		const moving = root.moveSandbox(sandbox.id, { keepMemory: false });
+		await dropAndReconnect("sandbox.export", 1);
+		await dropAndReconnect("sandbox.stop", 1);
+		await dropAndReconnect("sandbox.export", 3);
+		expect(await moving).toMatchObject({ id: sandbox.id, state: "running", hostId: b.hostId });
+		expect(
+			methodsOf(a, sandbox.id).filter((method) => method === "sandbox.export" || method === "sandbox.stop"),
+		).toEqual(["sandbox.export", "sandbox.export", "sandbox.stop", "sandbox.stop", "sandbox.export", "sandbox.export"]);
+		expect(b.cancelled.size).toBe(0);
+	});
+
+	it("stops waiting for a host whose connection went once the service closes", async () => {
+		const { root, api, service, join } = await setup();
+		const a = await join(MOVES_RUNNING);
+		const b = await join(MOVES_RUNNING);
+		const sandbox = await runningOn(root, api, a, "disk");
+		b.hold = (method) => (method === "sandbox.import" ? new Promise<void>(() => undefined) : undefined);
+		const moving = failure(root.moveSandbox(sandbox.id, { keepMemory: false }));
+		await vi.waitFor(() => expect(b.calls.some((call) => call.method === "sandbox.import")).toBe(true));
+		b.connection.closed(1006, "gone");
+		service.close();
+		// Answered at once, not after the 2 minutes it would wait for the host: the move is settled later, as before.
+		expect((await moving).code).toBe("unavailable");
+		expect(b.calls.filter((call) => call.method === "sandbox.import")).toHaveLength(1);
+	});
+
 	it("ends the move, never stopping it, when it exits while its first copy is made", async () => {
 		const { root, api, join } = await setup();
 		const a = await join(MOVES_RUNNING);
