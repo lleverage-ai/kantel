@@ -22,7 +22,14 @@ import {
 	repoCredential,
 } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore, type StoredEnvironment, UniqueViolation } from "../src/store.ts";
+import {
+	type AnyOf,
+	type ComputeStore,
+	createMemoryStore,
+	type StoredEnvironment,
+	type StoredSandbox,
+	UniqueViolation,
+} from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
@@ -2408,5 +2415,47 @@ describe("a sandbox with several environments", () => {
 		const source = await tom.createSandbox({ environments: ["npm", "backend"], wait: true });
 		const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
 		expect(fork?.environmentIds).toEqual([npm.id, github.id]);
+	});
+});
+
+describe("listing environments", () => {
+	it("reads the account's sandboxes once for every environment's count, never its deleted ones", async () => {
+		const store = createMemoryStore();
+		const reads: { readonly where: Partial<StoredSandbox>; readonly anyOf?: AnyOf<StoredSandbox> }[] = [];
+		const watched: ComputeStore = {
+			...store,
+			sandboxes: {
+				...store.sandboxes,
+				list: (where, anyOf) => {
+					reads.push({ where: { ...where }, ...(anyOf === undefined ? {} : { anyOf }) });
+					return store.sandboxes.list(where, anyOf);
+				},
+			},
+		};
+		const { tom } = setup({ store: watched });
+		const first = await tom.createEnvironment({ name: "first" });
+		const second = await tom.createEnvironment({ name: "second" });
+		await tom.createEnvironment({ name: "third" });
+		await tom.createSandbox({ environments: ["first", "second"], wait: true });
+		await tom.createSandbox({ environment: "first", wait: true });
+		const gone = await tom.createSandbox({ environment: "second", wait: true });
+		await tom.deleteSandbox(gone.id);
+		expect((await store.sandboxes.get(gone.id))?.state).toBe("deleted");
+
+		reads.splice(0);
+		const counts = Object.fromEntries(
+			(await tom.listEnvironments()).items.map((each) => [each.name, each.sandboxCount]),
+		);
+		expect(counts).toEqual({ first: 2, second: 1, third: 0 });
+		// One read of the account's sandboxes for all three, naming the states it wants, never `deleted`.
+		expect(reads.filter(({ where }) => where.accountId !== undefined)).toEqual([
+			{ where: { accountId: first.accountId }, anyOf: { state: expect.not.arrayContaining(["deleted"]) } },
+		]);
+
+		// One environment's count reads the same way.
+		reads.splice(0);
+		expect((await tom.getEnvironment(second.id)).sandboxCount).toBe(1);
+		expect(reads).toHaveLength(1);
+		expect(reads[0]?.anyOf?.state).not.toContain("deleted");
 	});
 });

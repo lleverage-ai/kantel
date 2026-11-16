@@ -1600,6 +1600,10 @@ const LISTED_STATES = Object.keys({
 	error: true,
 	deleting: true,
 } satisfies Record<Exclude<computeSchema.SandboxState, "deleted">, true>) as readonly computeSchema.SandboxState[];
+/** The states a host's sandbox is in while it still counts as the host's (`sandboxRecordsOn`): every one but deleting. */
+const PLACED_STATES = LISTED_STATES.filter((state) => state !== "deleting");
+/** The states a sandbox counts against an account's concurrent sandboxes in (`requireCapacity`). */
+const ACTIVE_STATES: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping"];
 /** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
 const STRANDABLE: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping", "stopped", "paused"];
 /**
@@ -2141,6 +2145,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		...options.store,
 		sandboxes: watchSandboxes(options.store.sandboxes, (change) => live.publish(change), now),
 	};
+	/**
+	 * The sandboxes `where` names but deleted ones, in one read that names the states it wants, so the store never reads
+	 * the deleted ones: they are kept, and in a busy account (a GitHub runner pool's) outnumber the rest many times over.
+	 * Read whole and parsed, they are enough to run the stack object out of memory.
+	 */
+	const undeleted = (where: Partial<StoredSandbox>) => store.sandboxes.list(where, { state: LISTED_STATES });
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
@@ -2425,7 +2435,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			},
 			async listMadeBy(accountId, keyId, labels) {
-				return (await store.sandboxes.list({ accountId }))
+				return (await undeleted({ accountId }))
 					.filter(
 						(sandbox) =>
 							sandbox.state !== "deleted" &&
@@ -4561,9 +4571,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	};
 
-	/** The sandboxes that have an environment, but deleted ones. Environments and their sandboxes share an account. */
-	const sandboxesWith = async (environment: Pick<StoredEnvironment, "id" | "accountId">) =>
-		(await store.sandboxes.list({ accountId: environment.accountId })).filter(
+	/**
+	 * The sandboxes that have an environment, but deleted ones. Environments and their sandboxes share an account:
+	 * `account`, the account's sandboxes as `undeleted` read them, when the caller has them already.
+	 */
+	const sandboxesWith = async (
+		environment: Pick<StoredEnvironment, "id" | "accountId">,
+		account?: readonly StoredSandbox[],
+	) =>
+		(account ?? (await undeleted({ accountId: environment.accountId }))).filter(
 			(sandbox) => sandbox.state !== "deleted" && environmentIdsOf(sandbox).includes(environment.id),
 		);
 
@@ -4660,8 +4676,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updatedAt: file.updatedAt,
 	});
 
-	async function environmentView(environment: StoredEnvironment): Promise<computeSchema.Environment> {
-		const made = await sandboxesWith(environment);
+	/** An environment as the API answers it; `account`, its account's sandboxes as `undeleted` read them, if read already. */
+	async function environmentView(
+		environment: StoredEnvironment,
+		account?: readonly StoredSandbox[],
+	): Promise<computeSchema.Environment> {
+		const made = await sandboxesWith(environment, account);
 		return {
 			id: environment.id,
 			accountId: environment.accountId,
@@ -5779,8 +5799,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {
 		if (limits.concurrentSandboxes === undefined) return;
-		const active = (await store.sandboxes.list({ accountId })).filter(
-			(sandbox) => sandbox.state === "starting" || sandbox.state === "running" || sandbox.state === "stopping",
+		const active = (await store.sandboxes.list({ accountId }, { state: ACTIVE_STATES })).filter((sandbox) =>
+			ACTIVE_STATES.includes(sandbox.state),
 		).length;
 		if (active + adding > limits.concurrentSandboxes) {
 			throw placementError(
@@ -8752,19 +8772,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (reports.length > 0 && now() - settledAt >= SETTLE_EVERY_MS) await settleTaken();
 	}
 
-	/** The sandboxes placed on a host and not deleted, by ID. */
+	/**
+	 * The sandboxes placed on a host and not deleted, by ID: read every tick, so only in the states wanted, never the
+	 * host's deleted sandboxes, of which a GitHub runner pool's host has thousands.
+	 */
 	async function sandboxRecordsOn(hostId: string): Promise<ReadonlyMap<string, StoredSandbox>> {
 		return new Map(
-			(await store.sandboxes.list({ hostId }))
+			(await store.sandboxes.list({ hostId }, { state: PLACED_STATES }))
 				.filter((sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting")
 				.map((sandbox) => [sandbox.id, sandbox]),
 		);
 	}
 
-	/** The sandboxes placed on a host and not deleted. */
+	/** The sandboxes placed on a host and not deleted, read as `sandboxRecordsOn` reads them. */
 	async function sandboxesOn(hostId: string): Promise<ReadonlySet<string>> {
 		return new Set(
-			(await store.sandboxes.list({ hostId }))
+			(await store.sandboxes.list({ hostId }, { state: PLACED_STATES }))
 				.filter((sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting")
 				.map((sandbox) => sandbox.id),
 		);
@@ -11562,7 +11585,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const environments = await store.environments.list({ accountId: account.id });
-			return { items: await Promise.all(environments.map(environmentView)) };
+			// The account's sandboxes once for every environment's count, not once each, all at once.
+			const sandboxes = environments.length === 0 ? [] : await undeleted({ accountId: account.id });
+			return { items: await Promise.all(environments.map((environment) => environmentView(environment, sandboxes))) };
 		},
 
 		createEnvironment: async (principal, { body, idempotencyKey }) => {
