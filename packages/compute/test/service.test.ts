@@ -41,6 +41,7 @@ import {
 } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import {
+	type AnyOf,
 	type ComputeStore,
 	createMemoryStore,
 	fenceClosedAccounts,
@@ -5723,16 +5724,16 @@ describe.each(STORES)("saves at once against a host's limit, stored $name", sqlT
 });
 
 describe("listing sandboxes", () => {
-	it("reads each state it shows from the store, never the account's deleted sandboxes, newest first", async () => {
+	it("reads the states it shows from the store in one read, never the account's deleted sandboxes, newest first", async () => {
 		const store = createMemoryStore();
-		const asked: Partial<StoredSandbox>[] = [];
+		const asked: { where: Partial<StoredSandbox>; anyOf?: AnyOf<StoredSandbox> }[] = [];
 		const watched: ComputeStore = {
 			...store,
 			sandboxes: {
 				...store.sandboxes,
-				list: (where) => {
-					asked.push({ ...where });
-					return store.sandboxes.list(where);
+				list: (where, anyOf) => {
+					asked.push({ where: { ...where }, ...(anyOf === undefined ? {} : { anyOf }) });
+					return store.sandboxes.list(where, anyOf);
 				},
 			},
 		};
@@ -5748,11 +5749,12 @@ describe("listing sandboxes", () => {
 		expect((await tom.listSandboxes()).items.map((item) => item.id)).toEqual([running.id]);
 		expect((await tom.listSandboxes({ all: true })).items.map((item) => item.id)).toEqual([running.id, stopped.id]);
 		expect((await tom.listSandboxes({ state: "stopped" })).items.map((item) => item.id)).toEqual([stopped.id]);
-		const lists = asked.filter((where) => where.accountId !== undefined && where.ownerUserId === undefined);
-		expect(lists.length).toBeGreaterThan(0);
-		for (const where of lists) {
-			expect(where.state).toBeDefined();
-			expect(where.state).not.toBe("deleted");
+		// One read per list, each naming the states it shows, never `deleted`.
+		const lists = asked.filter(({ where }) => where.accountId !== undefined && where.ownerUserId === undefined);
+		expect(lists).toHaveLength(3);
+		for (const { anyOf } of lists) {
+			expect(anyOf?.state?.length).toBeGreaterThan(0);
+			expect(anyOf?.state).not.toContain("deleted");
 		}
 	});
 });

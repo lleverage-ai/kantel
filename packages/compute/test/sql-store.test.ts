@@ -81,6 +81,22 @@ function behaves(open: () => Promise<Opened>, sql: boolean) {
 		expect(ids(await items.list({ group: "b" }))).toEqual(["plain"]);
 	});
 
+	it("lists records with any of a field's values in one read, beside equal fields", async () => {
+		const { items } = await open();
+		const odd: Item = { ...item("odd", "c"), tags: ["a\u0000b", "\ud800"] };
+		await items.put(item("i1", "a"));
+		await items.put(item("i2", "b", true));
+		await items.put(odd);
+		await items.put(item("i4", "d", true));
+		expect(ids(await items.list({}, { group: ["a", "c"] }))).toEqual(["i1", "odd"]);
+		expect(await items.list({}, { group: ["c"] })).toEqual([odd]);
+		expect(ids(await items.list({ done: true }, { group: ["b", "c", "d"] }))).toEqual(["i2", "i4"]);
+		expect(ids(await items.list({ group: "a" }, { group: ["a", "b"] }))).toEqual(["i1"]);
+		expect(ids(await items.list(undefined, { group: undefined }))).toEqual(["i1", "i2", "odd", "i4"]);
+		expect(await items.list({}, { group: [] })).toEqual([]);
+		expect(ids(await items.list({}, { done: [true] }))).toEqual(["i2", "i4"]);
+	});
+
 	it("lists in first-insertion order after replaces, updates and a delete", async () => {
 		const { items } = await open();
 		for (const id of ["x", "y", "z"]) await items.put(item(id));

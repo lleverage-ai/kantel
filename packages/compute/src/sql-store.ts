@@ -119,11 +119,15 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders ON compute_api_records (((data::jsonb ->> 'hostId')), seq) WHERE kind = 'diskHolders'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_host ON compute_api_records (kind, json_extract(data, '$.hostId'), seq)",
-		// An account's sandboxes in a state (`list({ accountId, state })`), as a sandbox list reads each state it shows:
-		// without it every list read and parsed every sandbox the deployment ever made, deleted ones too, on each page.
-		dialect === "postgres"
-			? "CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_account ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'state')), seq) WHERE kind = 'sandboxes'"
-			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_account_state ON compute_api_records (kind, json_extract(data, '$.accountId'), json_extract(data, '$.state'), seq)",
+		// An account's sandboxes in the states a sandbox list shows (`list({ accountId }, { state })`): without it every
+		// list read and parsed every sandbox the deployment ever made, deleted ones too, on each page. SQLite only:
+		// Postgres can't index a JSON field of a record whose text it can't cast (an escaped NUL in a label fails `->>` on
+		// `json` and `jsonb` alike), so there the list reads as it did.
+		...(dialect === "postgres"
+			? []
+			: [
+					"CREATE INDEX IF NOT EXISTS compute_api_records_by_account_state ON compute_api_records (kind, json_extract(data, '$.accountId'), json_extract(data, '$.state'), seq)",
+				]),
 		// An object's copies (`list({ objectId })`): a template snapshot's, read as a create from it is placed.
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders_object ON compute_api_records (((data::jsonb ->> 'objectId')), seq) WHERE kind = 'diskHolders'"
@@ -234,7 +238,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 			}
 			throw new Error(`The ${kind} record kept changing while it was deleted; gave up after ${UPDATE_ATTEMPTS} tries`);
 		},
-		async list(where) {
+		async list(where, anyOf) {
 			// String fields narrow the rows in SQL; the rest (booleans, numbers) only in the check below, which every row
 			// passes through so the answer is the memory store's.
 			const clauses = ["kind = ?"];
@@ -246,6 +250,14 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 				clauses.push(`${column} = ?`);
 				params.push(value);
 			}
+			for (const [name, values] of Object.entries(anyOf ?? {}) as [string, readonly unknown[] | undefined][]) {
+				if (values === undefined) continue;
+				if (values.length === 0) return [];
+				const column = field(name);
+				if (!values.every((value): value is string => typeof value === "string")) continue;
+				clauses.push(`${column} IN (${values.map(() => "?").join(", ")})`);
+				params.push(...values);
+			}
 			// Postgres's `jsonb` refuses some JSON that JavaScript writes (a `\u0000` escape, as a command's binary output may
 			// hold, or a lone surrogate), and one such row fails the whole query: then the kind is read whole and checked
 			// below alone.
@@ -253,7 +265,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 				clauses.length === 1
 					? await select(clauses, params)
 					: await select(clauses, params).catch(() => select(clauses.slice(0, 1), params.slice(0, 1)));
-			return rows.map((row) => parse<T>(row)).filter((record) => matches(record, where));
+			return rows.map((row) => parse<T>(row)).filter((record) => matches(record, where, anyOf));
 		},
 	};
 }

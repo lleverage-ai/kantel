@@ -1587,7 +1587,7 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
 	"deleting",
 ];
 /**
- * Every state a sandbox list may show, each a stored record may hold but `deleted`: the list reads them one by one
+ * Every state a sandbox list may show, each a stored record may hold but `deleted`: the list reads only these
  * (`listSandboxes`). A record, so a new state can't be left out of it.
  */
 const LISTED_STATES = Object.keys({
@@ -9540,13 +9540,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: pinnableHost(principal, account.id, await ensureHosts(), query.host, { revoked: true }).id;
 			const visible: StoredSandbox[] = [];
 			const owned = query.mine === true ? { ownerUserId: principal.userId } : {};
-			// Each state it may show read alone, so the store never reads the account's deleted sandboxes, which are kept and
-			// in a busy account outnumber the rest many times over. Checked again below as before.
+			// Only the states it may show, in one read, so the store never reads the account's deleted sandboxes, which are
+			// kept and in a busy account outnumber the rest many times over, and a sandbox changing state as it reads is
+			// answered once. Checked again below as before.
 			const states = query.all === true || query.state !== undefined ? LISTED_STATES : active;
-			const stored = await Promise.all(
-				states.map((state) => store.sandboxes.list({ accountId: account.id, state, ...owned })),
-			);
-			for (const sandbox of stored.flat()) {
+			for (const sandbox of await store.sandboxes.list({ accountId: account.id, ...owned }, { state: states })) {
 				if (sandbox.state === "deleted") continue;
 				if (onHost !== undefined && sandbox.hostId !== onHost) continue;
 				const wanted =
