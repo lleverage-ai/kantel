@@ -49,6 +49,7 @@ function setup(
 		backend?: SandboxBackend;
 		baseImages?: Parameters<typeof createComputeApi>[0]["baseImages"];
 		sandboxDomain?: string;
+		stickyDisks?: boolean;
 		templates?: boolean;
 	} = {},
 ) {
@@ -1670,6 +1671,90 @@ describe("pools", () => {
 		const { fetchApi } = setup();
 		const bob = await open(fetchApi, "person-bob");
 		expect(await bob.sandboxes.pools?.(await personalAccount(bob))).toEqual([]);
+	});
+});
+
+describe("sticky disks", () => {
+	it("has none where the deployment has sticky disks off", async () => {
+		const { fetchApi } = setup();
+		expect((await open(fetchApi)).stickyDisks).toBeUndefined();
+		expect((await open(fetchApi, "person-bob")).stickyDisks).toBeUndefined();
+	});
+
+	it("has none behind a gateway from before sticky disks, which answers 404", async () => {
+		const { fetchApi } = setup({ stickyDisks: true });
+		const older: typeof fetch = async (input, init) => {
+			const url = new URL(input instanceof Request ? input.url : input, ORIGIN);
+			return url.pathname.startsWith("/v1/sticky-disks") ? notFound() : fetchApi(input, init);
+		};
+		expect((await open(older)).stickyDisks).toBeUndefined();
+	});
+
+	it("makes one in a shared pool, refuses a name taken, names its versions' hosts and deletes it", async () => {
+		const { fetchApi } = setup({ stickyDisks: true });
+		// The API lists versions only once a sandbox commits, which the stub can't: a read of one gains two here, on the
+		// stub's host and on a host the caller can't see.
+		const withVersions: typeof fetch = async (input, init) => {
+			const response = await fetchApi(input, init);
+			const request = input instanceof Request ? input : new Request(new URL(input, ORIGIN), init);
+			if (request.method !== "GET" || !/^\/v1\/sticky-disks\/sdk_/.test(new URL(request.url).pathname)) return response;
+			const disk = (await response.json()) as Record<string, unknown>;
+			const version = (id: string, hostId: string, allocatedBytes: number) => ({
+				id,
+				hostId,
+				sandboxId: "sbx_ci",
+				sizeBytes: 150 * 1024 ** 3,
+				allocatedBytes,
+				createdAt: 1_000,
+			});
+			return new Response(
+				JSON.stringify({
+					...disk,
+					head: "sdv_2",
+					versions: [version("sdv_2", STUB_HOST_ID, 9_000), version("sdv_1", "hst_elsewhere", 8_000)],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const ada = await open(withVersions);
+		const disks = ada.stickyDisks;
+		const pools = ada.hosts?.pools;
+		if (disks === undefined || pools === undefined) throw new Error("No sticky disks with them on");
+		const accountId = await personalAccount(ada);
+		// A super-admin may make one in the deployment's shared pools, marked so.
+		const ci = await pools.create("ci");
+		const choices = await disks.pools(accountId);
+		expect(choices.find((pool) => pool.id === ci.id)).toMatchObject({ name: "ci", shared: true, default: false });
+
+		const made = await disks.create({ accountId, name: "ci-cache", sizeGb: 150, poolId: ci.id, description: "CI" });
+		expect(made).toMatchObject({ name: "ci-cache", sizeGb: 150, poolId: ci.id, description: "CI", versions: [] });
+		await expect(disks.create({ accountId, name: "ci-cache", sizeGb: 10 })).rejects.toMatchObject({ code: "conflict" });
+
+		const [listed] = await disks.list(accountId);
+		expect(listed?.versions.map((each) => [each.hostId, each.hostName, each.allocatedBytes])).toEqual([
+			[STUB_HOST_ID, expect.any(String), 9_000],
+			["hst_elsewhere", undefined, 8_000],
+		]);
+		expect(listed?.head).toBe("sdv_2");
+
+		await disks.remove(made.id);
+		expect(await disks.list(accountId)).toEqual([]);
+	});
+
+	it("offers someone else only their account's own pools, none with account hosts off", async () => {
+		const { fetchApi } = setup({ stickyDisks: true });
+		const bob = await open(fetchApi, "person-bob");
+		const disks = bob.stickyDisks;
+		if (disks === undefined) throw new Error("No sticky disks with them on");
+		const accountId = await personalAccount(bob);
+		expect(await disks.pools(accountId)).toEqual([]);
+		// Naming no pool, it joins the first sandbox's it is attached to.
+		expect((await disks.create({ accountId, name: "pnpm-store", sizeGb: 20 })).poolId).toBeUndefined();
+
+		const own = setup({ stickyDisks: true, accountHosts: true });
+		const bobOwn = await open(own.fetchApi, "person-bob");
+		const pools = await bobOwn.stickyDisks?.pools(await personalAccount(bobOwn));
+		expect(pools?.map((pool) => [pool.name, pool.default, pool.shared])).toEqual([["default", true, undefined]]);
 	});
 });
 

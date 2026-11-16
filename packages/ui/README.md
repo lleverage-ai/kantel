@@ -101,7 +101,7 @@ centred on their text within 1px, and a story for every required state; `--only`
 | Icons | 16px line icons in currentColor | Decoration |
 
 The compute console (`ComputeConsole` and its pages: sandboxes, snapshots, keys, the egress proxy, webhooks,
-OpenTelemetry, the organisation, billing, hosts, base images and the device page) is in `src/compute/`. A sandbox or
+OpenTelemetry, the organisation, billing, hosts, sticky disks, base images and the device page) is in `src/compute/`. A sandbox or
 saved snapshot on an outdated base image shows `BaseOutdatedBadge` (`src/compute/base-outdated.tsx`) wherever it's
 listed. An opened host shows its memory with `HostMemoryUsage` (`src/compute/host-memory.tsx`), what takes its disk with
 `HostDiskUsage` (`src/compute/host-disk.tsx`), its mesh peers with `HostPeers` (`src/compute/host-peers.tsx`), and its

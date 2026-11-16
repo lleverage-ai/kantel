@@ -652,6 +652,70 @@ export interface MountsSource {
 	removeBucketSource(id: string): Promise<void>;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Sticky disks (experimental)
+
+/** A sticky disk's name as the API takes it: lower-case letters, digits and hyphens, starting with a letter or digit. */
+export const STICKY_DISK_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/** The largest size a sticky disk may have, in GB, as the API takes it. */
+export const STICKY_DISK_MAX_GB = 2048;
+
+/** A committed version of a sticky disk, on the host it was committed on. */
+export interface StickyDiskVersion {
+	readonly id: string;
+	/** The host it was committed on. Other hosts in its pool may have fetched a copy since; the API doesn't list them. */
+	readonly hostId: string;
+	/** The host's name; absent where the viewer may not see the host (a shared one, for anyone but a super-admin). */
+	readonly hostName?: string;
+	readonly sizeBytes: number;
+	/** What it took on the host it was committed on, the blocks it shares with other versions there included. */
+	readonly allocatedBytes: number;
+	readonly createdAt: number;
+}
+
+/**
+ * A named, versioned disk that microVMs get a copy-on-write copy of, kept warm between them: a cache such as a pnpm
+ * store or Docker's images. A commit makes a sandbox's copy its next version.
+ */
+export interface StickyDisk {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	/** Each copy's size: what a sandbox can fill. */
+	readonly sizeGb: number;
+	/** The newest committed version's ID; absent until one is. */
+	readonly head?: string;
+	/** The newest 20, newest first. */
+	readonly versions: readonly StickyDiskVersion[];
+	/** The pool it belongs to; absent until it is made in one or first attached. */
+	readonly poolId?: string;
+	readonly createdAt: number;
+}
+
+/** A pool a sticky disk may be in: the account's own, or, for a super-admin, one of the deployment's shared pools. */
+export interface StickyDiskPool extends Pool {
+	readonly shared?: boolean;
+}
+
+export interface StickyDisksSource {
+	/** The account's sticky disks, each with its versions. */
+	list(accountId: string): Promise<readonly StickyDisk[]>;
+	/** The pools a disk may be made in. None: a new disk joins the pool of the first sandbox it's attached to. */
+	pools(accountId: string): Promise<readonly StickyDiskPool[]>;
+	/** Refused (`conflict`) when the account has a disk of that name. */
+	create(input: {
+		readonly accountId: string;
+		readonly name: string;
+		readonly sizeGb: number;
+		readonly description?: string;
+		/** The pool's ID. Absent: the pool of the first sandbox it's attached to. */
+		readonly poolId?: string;
+	}): Promise<StickyDisk>;
+	/** Deletes it and its versions on every host. Sandboxes with a copy keep it until they're deleted. */
+	remove(id: string): Promise<void>;
+}
+
 /** One thing an image has or lacks: what the guest agent found, or why it isn't there. */
 export interface SandboxFeature {
 	readonly available: boolean;
@@ -2314,6 +2378,8 @@ export interface ComputeSource {
 	readonly ownHosts?: (accountId: string) => HostsSource;
 	/** Read-only mounts' bundles and bucket sources (experimental). Absent, the deployment hasn't turned mounts on. */
 	readonly mounts?: MountsSource;
+	/** Sticky disks (experimental). Absent, the deployment hasn't turned them on. */
+	readonly stickyDisks?: StickyDisksSource;
 	/** Only when hosted. */
 	readonly billing?: BillingSource;
 	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */

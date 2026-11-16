@@ -31,6 +31,7 @@ import {
 	type SandboxMount as ApiSandboxMount,
 	type SandboxProcess as ApiSandboxProcess,
 	type SandboxShapes as ApiSandboxShapes,
+	type StickyDisk as ApiStickyDisk,
 	type Template as ApiTemplate,
 	type TemplateSnapshot as ApiTemplateSnapshot,
 	type TemplateSpec as ApiTemplateSpec,
@@ -2395,6 +2396,116 @@ async function offersMounts({ api }: Context): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Sticky disks (experimental): an account's named, versioned disks. The list answers no versions, so each disk is read
+// as well; versions name their host by ID, named here from the hosts the caller may see (a super-admin's every host,
+// anyone else's their account's own). A shared host they can't see is left unnamed, as a saved snapshot's is.
+
+type UiStickyDisks = NonNullable<ComputeSource["stickyDisks"]>;
+type UiStickyDisk = Awaited<ReturnType<UiStickyDisks["list"]>>[number];
+type UiStickyDiskPool = Awaited<ReturnType<UiStickyDisks["pools"]>>[number];
+
+/** Answers `fallback` where the deployment has the feature off (`not_supported`) or the caller may not (`forbidden`). */
+async function unlessRefused<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+	try {
+		return await read();
+	} catch (caught) {
+		if (caught instanceof KantelApiError && (caught.code === "not_supported" || caught.code === "forbidden")) {
+			return fallback;
+		}
+		throw caught;
+	}
+}
+
+/** The names of the hosts the caller may see, by ID, kept in `hostNames` too. */
+async function readHostNames(context: Context, accountId: string): Promise<ReadonlyMap<string, string>> {
+	const { api, caller } = context;
+	const hosts = await unlessRefused(
+		async () => (caller.superAdmin ? await api.listHosts() : await api.listAccountHosts({ account: accountId })).items,
+		[] as readonly Host[],
+	);
+	for (const host of hosts) context.hostNames.set(host.id, host.name);
+	return new Map(hosts.map((host) => [host.id, host.name]));
+}
+
+const stickyDiskOf = (disk: ApiStickyDisk, names: ReadonlyMap<string, string>): UiStickyDisk => ({
+	id: disk.id,
+	accountId: disk.accountId,
+	name: disk.name,
+	...(disk.description === undefined || disk.description === "" ? {} : { description: disk.description }),
+	sizeGb: disk.sizeGb,
+	...(disk.head === undefined ? {} : { head: disk.head }),
+	versions: (disk.versions ?? []).map((version) => {
+		const hostName = names.get(version.hostId);
+		return {
+			id: version.id,
+			hostId: version.hostId,
+			...(hostName === undefined ? {} : { hostName }),
+			sizeBytes: version.sizeBytes,
+			allocatedBytes: version.allocatedBytes,
+			createdAt: version.createdAt,
+		};
+	}),
+	...(disk.poolId === undefined ? {} : { poolId: disk.poolId }),
+	createdAt: disk.createdAt,
+});
+
+function stickyDisksSource(context: Context): UiStickyDisks {
+	const { api, caller } = context;
+	return {
+		list: async (accountId) => {
+			const [{ items }, names] = await Promise.all([
+				api.listStickyDisks({ account: accountId }),
+				readHostNames(context, accountId),
+			]);
+			// A disk deleted between the list and its read is gone.
+			const read = await Promise.all(
+				items.map((disk) =>
+					api.getStickyDisk(disk.id).catch((caught: unknown) => {
+						if (caught instanceof KantelApiError && caught.code === "not_found") return undefined;
+						throw caught;
+					}),
+				),
+			);
+			return read.flatMap((disk) => (disk === undefined ? [] : [stickyDiskOf(disk, names)]));
+		},
+		// The account's own pools, and a super-admin's the deployment's shared ones too: a create names either.
+		pools: async (accountId) => {
+			const [own, shared] = await Promise.all([
+				unlessRefused(async () => (await api.listAccountPools({ account: accountId })).items, [] as readonly Pool[]),
+				caller.superAdmin ? unlessRefused(async () => (await api.listPools()).items, [] as readonly Pool[]) : [],
+			]);
+			return [...own.map(poolOf), ...shared.map((pool): UiStickyDiskPool => ({ ...poolOf(pool), shared: true }))];
+		},
+		// A new disk has no versions, so no host to name.
+		create: async (input) =>
+			stickyDiskOf(
+				await api.createStickyDisk({
+					account: input.accountId,
+					name: input.name,
+					sizeGb: input.sizeGb,
+					...(input.description === undefined ? {} : { description: input.description }),
+					...(input.poolId === undefined ? {} : { pool: input.poolId }),
+				}),
+				context.hostNames,
+			),
+		remove: (id) => api.deleteStickyDisk(id),
+	};
+}
+
+/**
+ * Whether the deployment has turned sticky disks on: it answers `not_supported` when it hasn't, and a gateway from
+ * before them answers 404. Any other answer leaves them on, as with mounts.
+ */
+async function offersStickyDisks({ api }: Context): Promise<boolean> {
+	try {
+		await api.listStickyDisks({});
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && (caught.code === "not_supported" || caught.status === 404));
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Everything
 
 /** The page's own host, outside a browser none. */
@@ -2448,10 +2559,11 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		live: liveSandboxes(api),
 	};
 	// What the deployment offers beyond the core, each asked once: an account's own hosts, for anyone but a super-admin,
-	// and read-only mounts.
-	const [ownHostsOffered, mountsOffered] = await Promise.all([
+	// read-only mounts and sticky disks.
+	const [ownHostsOffered, mountsOffered, stickyDisksOffered] = await Promise.all([
 		caller.superAdmin ? false : offersOwnHosts(context),
 		offersMounts(context),
+		offersStickyDisks(context),
 	]);
 	// The live graphs' reads, all in live-usage.ts.
 	const usage = liveUsage(api);
@@ -2482,6 +2594,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 			: {}),
 		// Bundles and bucket sources, where the deployment has turned mounts on; absent, nothing about mounts is shown.
 		...(mountsOffered ? { mounts: mountsSource(context) } : {}),
+		// Sticky disks, where the deployment has turned them on; absent, there is no Disks page.
+		...(stickyDisksOffered ? { stickyDisks: stickyDisksSource(context) } : {}),
 		// Only a person approves a device; a console signed in with a key or a personal token has nothing to approve with.
 		...(caller.apiKey === undefined && caller.personalToken === undefined ? { devices: devicesSource(context) } : {}),
 		// A person's own tokens, which a key has none of.
