@@ -1758,6 +1758,79 @@ describe("disk holders", () => {
 		]);
 	});
 
+	it("has every host of a synced pool fetch its disks' heads in the background, whether or not it ran them", async () => {
+		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];
+		const syncs = { features: ["disk-sync"] };
+		const tom = setUp({
+			fetchDisk: async (hostId, fetch) => {
+				fetches.push({ hostId, fetch });
+			},
+			mapDigest: () => DIGEST,
+			facts: Object.fromEntries(
+				[STUB_HOST_ID, "host_b", "host_c", "host_d", "host_e", "host_f", "host_g"].map((id) => [id, syncs]),
+			),
+		});
+		const { disk, version } = await tom.committed();
+		await tom.api.service.idle();
+		await tom.pool();
+		// Nothing has run on b or g; the sweep finds both missing the head the stub's host holds. c is in another pool, d
+		// away, e revoked, and f another account's.
+		tom.clock.now += 61_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches.map((sent) => sent.hostId).sort()).toEqual(["host_b", "host_g"]);
+		expect(fetches[0]?.fetch).toMatchObject({
+			kind: "sticky",
+			objectId: disk.id,
+			version: version.id,
+			mapDigest: DIGEST,
+			holders: [{ hostId: STUB_HOST_ID, address: "fd00:a::1" }],
+		});
+
+		// The next pass doesn't tell them again while their fetches may be under way.
+		fetches.length = 0;
+		tom.clock.now += 61_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches).toEqual([]);
+
+		// b now holds it; g, drained meanwhile, is passed over while it drains, and told once it is undrained.
+		await tom.api.service.recordHoldings("host_b", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
+		await tom.api.store.hosts.update("host_g", (host) => ({ ...host, state: "draining" }));
+		tom.clock.now += 11 * 60_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches).toEqual([]);
+		await tom.api.store.hosts.update("host_g", (host) => ({ ...host, state: "online" }));
+		tom.clock.now += 61_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches.map((sent) => sent.hostId)).toEqual(["host_g"]);
+
+		// A new head goes to every host of the pool at once, ran there or not; with the pool's sync off, nothing is sent.
+		fetches.length = 0;
+		await tom.api.service.recordHoldings("host_g", tom.clock.now, {
+			stickyDisks: [{ diskId: disk.id, versions: [{ version: version.id }] }],
+		});
+		const [sandbox] = await tom.api.store.sandboxes.list({ state: "running" });
+		if (sandbox === undefined) throw new Error("no sandbox");
+		await tom.api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, poolId: "pool_a" }));
+		const next = await tom.commitStickyDisk(sandbox.id, disk.id);
+		await tom.api.service.idle();
+		expect(fetches.map((sent) => [sent.hostId, sent.fetch.version]).sort()).toEqual([
+			["host_b", next.id],
+			["host_g", next.id],
+		]);
+		fetches.length = 0;
+		await tom.api.store.pools.update("pool_a", ({ sync: _sync, ...pool }) => pool);
+		tom.clock.now += 11 * 60_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		expect(fetches).toEqual([]);
+	});
+
 	it("never forgets a version another host still holds", async () => {
 		let reports: BackendStickyHoldings[] = [];
 		const tom = setUp({ holdings: () => reports });
