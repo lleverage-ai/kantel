@@ -405,6 +405,12 @@ describe("place", () => {
 		// ...but the restore at 0.09 is more than a twentieth over the emptiest of all (0.03), so it boots fresh.
 		expect(restore.fullness).toBe(0.09);
 		expect(bootsFreshInstead(restore, fresh)).toBe(true);
+		// Never onto a fresh host as full as the restore's or fuller, whatever the emptiest: one the owner's isolates
+		// drew the fresh group's choice to (0.90, its emptiest 0.10) leaves the 0.20 restore where it is.
+		const at = (fullness: number, emptiest: number) =>
+			({ ...restore, fullness, emptiest, balanced: true }) as Placement;
+		expect(bootsFreshInstead(at(0.2, 0.2), at(0.9, 0.1))).toBe(false);
+		expect(bootsFreshInstead(at(0.2, 0.2), at(0.2, 0.1))).toBe(false);
 		// A holder within a twentieth of that emptiest still restores.
 		const near = place(request, [host("holder", 1, false)]);
 		if (isRefusal(near)) throw new Error("refused");

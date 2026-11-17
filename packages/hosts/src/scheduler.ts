@@ -452,7 +452,9 @@ export const muchFuller = (fuller: number, emptier: number): boolean =>
  */
 export const bootsFreshInstead = (restore: Placement, fresh: Placement): boolean =>
 	restore.balanced === true
-		? !nearEmptiest(restore.fullness, Math.min(restore.emptiest ?? restore.fullness, fresh.emptiest ?? fresh.fullness))
+		? // Never onto a host as full as the restore's or fuller (one an owner's isolates drew the fresh boot to, say).
+			fresh.fullness < restore.fullness &&
+			!nearEmptiest(restore.fullness, Math.min(restore.emptiest ?? restore.fullness, fresh.emptiest ?? fresh.fullness))
 		: muchFuller(restore.fullness, fresh.fullness);
 
 /**
