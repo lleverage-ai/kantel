@@ -12787,10 +12787,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const items: computeSchema.Host[] = [];
-			let backfill: ReadonlyMap<string, HostBackfill> | undefined;
-			for (const host of await ensureHosts()) {
-				if (host.accountId === account.id) items.push(await hostView(host, (backfill ??= await backfillByHost())));
-			}
+			const own = (await ensureHosts()).filter((host) => host.accountId === account.id);
+			const backfill = own.length === 0 ? new Map<string, HostBackfill>() : await backfillByHost();
+			for (const host of own) items.push(await hostView(host, backfill));
 			return { items };
 		},
 
