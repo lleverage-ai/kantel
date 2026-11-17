@@ -2,7 +2,7 @@
 // on a wide screen, after boat.dev's (Tom, 5 Nov 2026): the name (renamed in place) with its address under it, its ID
 // to copy, state, when it was made, its type, a countdown to its auto-stop, its latest snapshot, its cost (hosted) and
 // its CPU, RAM, disk and IO as one small chart, which opens its metrics dialog. A search over names, addresses and IDs,
-// and State, Snapshot, Type and Created by filters, sit over it. In an organisation, or where more than one person or
+// and State, Snapshot, Type, Created by, Pool, Host and Label filters, sit over it. In an organisation, or where more than one person or
 // API key made them, each row says who made it under when ("You" for the viewer). Rows on a phone; each row opens the
 // sandbox's page. Browser and Desktop show on a running microVM's row under the pointer and open in the console,
 // Recover on a failed one's, and ⋯ has Stop, Fork, Save snapshot, Auto-stop, Restart on latest base (beside the state,
@@ -87,7 +87,10 @@ import {
 	creatorText,
 	filterCounts,
 	filtered,
+	hostFilters,
+	labelFilters,
 	NO_FILTERS,
+	poolFilters,
 	type SandboxFilters,
 	SNAPSHOT_FILTERS,
 	STATE_FILTERS,
@@ -224,6 +227,12 @@ export function SandboxesPage({
 	firstRun,
 }: SandboxesPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
+	// The account's pools, only to name them in the Pool filter: without them it goes by ID.
+	const poolsRead = useLoad(() => source.pools?.(account.id) ?? Promise.resolve([]), [source, account.id]);
+	const poolNames = useMemo(
+		() => new Map(poolsRead.state.status === "ready" ? poolsRead.state.value.map((each) => [each.id, each.name]) : []),
+		[poolsRead.state],
+	);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New is pressed.
 	const [local, setLocal] = useState<ReadonlyMap<string, Sandbox | null>>(new Map());
 	const [filters, setFilters] = useState<SandboxFilters>(initialFilters ?? NO_FILTERS);
@@ -416,6 +425,7 @@ export function SandboxesPage({
 							sandboxes={sandboxes}
 							filters={filters}
 							viewerId={viewerId}
+							poolNames={poolNames}
 							now={now}
 							narrow={narrow}
 							onChange={setFilters}
@@ -505,13 +515,14 @@ function FilterMenu<V extends string>({
 }
 
 /**
- * Over the table: the search, then the State, Snapshot, Type and Created by filters, and Clear while any narrows the
- * list.
+ * Over the table: the search, then the State, Snapshot, Type, Created by, Pool, Host and Label filters, and Clear while
+ * any narrows the list.
  */
 function SandboxToolbar({
 	sandboxes,
 	filters,
 	viewerId,
+	poolNames,
 	now,
 	narrow,
 	onChange,
@@ -519,11 +530,13 @@ function SandboxToolbar({
 	sandboxes: readonly Sandbox[];
 	filters: SandboxFilters;
 	viewerId: string | undefined;
+	/** Each pool's name, by ID. */
+	poolNames: ReadonlyMap<string, string>;
 	now: number;
 	narrow: boolean;
 	onChange: (filters: SandboxFilters) => void;
 }) {
-	const counts = <K extends "state" | "snapshot" | "type" | "creator">(
+	const counts = <K extends "state" | "snapshot" | "type" | "creator" | "pool" | "host" | "label">(
 		key: K,
 		options: readonly { value: NonNullable<SandboxFilters[K]> }[],
 	) => filterCounts(sandboxes, filters, key, options, now);
@@ -531,6 +544,14 @@ function SandboxToolbar({
 	const types = new Set(sandboxes.map((box) => box.kind)).size > 1;
 	const creator = filters.creator ?? "all";
 	const creators = creatorCount(sandboxes) > 1 || creator !== "all" ? creatorFilters(sandboxes, viewerId) : undefined;
+	// Pool and Host tell apart only where the sandboxes are in more than one, and Label where any has a label. Each stays
+	// while it's chosen, so it can be cleared.
+	const pool = filters.pool ?? "all";
+	const host = filters.host ?? "all";
+	const label = filters.label ?? "all";
+	const pools = poolFilters(sandboxes, poolNames, pool);
+	const hosts = hostFilters(sandboxes, host);
+	const labels = labelFilters(sandboxes, label);
 	return (
 		<div className="kt-sandbox-toolbar flex flex-wrap items-center gap-2">
 			<div className={narrow ? "w-full" : "min-w-48 grow basis-48 max-w-(--kt-popover-width)"}>
@@ -575,12 +596,35 @@ function SandboxToolbar({
 					onChange={(value) => onChange({ ...filters, creator: value })}
 				/>
 			)}
+			{pools.length > 2 || pool !== "all" ? (
+				<FilterMenu
+					name="Pool"
+					value={pool}
+					options={pools}
+					counts={counts("pool", pools)}
+					onChange={(value) => onChange({ ...filters, pool: value })}
+				/>
+			) : null}
+			{hosts.length > 2 || host !== "all" ? (
+				<FilterMenu
+					name="Host"
+					value={host}
+					options={hosts}
+					counts={counts("host", hosts)}
+					onChange={(value) => onChange({ ...filters, host: value })}
+				/>
+			) : null}
+			{labels.length > 1 || label !== "all" ? (
+				<FilterMenu
+					name="Label"
+					value={label}
+					options={labels}
+					counts={counts("label", labels)}
+					onChange={(value) => onChange({ ...filters, label: value })}
+				/>
+			) : null}
 			{filtered({ ...filters, search: "" }) ? (
-				<Button
-					size="sm"
-					variant="ghost"
-					onClick={() => onChange({ ...filters, state: "all", snapshot: "all", type: "all", creator: "all" })}
-				>
+				<Button size="sm" variant="ghost" onClick={() => onChange({ ...NO_FILTERS, search: filters.search })}>
 					Clear filters
 				</Button>
 			) : null}

@@ -402,6 +402,10 @@ export interface Sandbox {
 	readonly hostId?: string;
 	/** That host's name, with `hostId`. */
 	readonly hostName?: string;
+	/** The pool it was placed in, by ID; absent for one made before pools, or where the source doesn't say. */
+	readonly poolId?: string;
+	/** The labels it was given (`ticket=PROJ-12`); absent or empty with none. */
+	readonly labels?: Readonly<Record<string, string>>;
 	/** How far its move to another host has got, while it's `moving`. */
 	readonly move?: SandboxMove;
 	/** What went wrong, when it's in `error`. */
