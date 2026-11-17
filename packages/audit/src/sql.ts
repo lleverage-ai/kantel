@@ -49,6 +49,8 @@ const MAX_PAGE_LIMIT = 500;
 const ROWS_PER_INSERT: Readonly<Record<SqlDialect, number>> = { postgres: 200, sqlite: 6 };
 /** The advisory lock key every Postgres append takes, so rows commit in `seq` order. */
 const APPEND_LOCK = "SELECT pg_advisory_xact_lock(7316102018)";
+/** The advisory lock a Postgres migration takes, so gateways starting at once don't race to create the tables. */
+const MIGRATE_LOCK = "SELECT pg_advisory_xact_lock(7316102022)";
 
 /**
  * The vault record of `kind` a row is about, read from its stored event as `eventItemId` and `eventGrantId` read it: the
@@ -118,9 +120,13 @@ export function auditSchema(dialect: SqlDialect): readonly string[] {
 	];
 }
 
-/** Creates the audit tables if they are missing. */
+/**
+ * Creates the audit tables if they are missing, in one batch. On Postgres the batch takes an advisory lock first: two
+ * `CREATE ... IF NOT EXISTS` at once can still both try to create, and one fail.
+ */
 export async function migrateAudit(driver: SqlDriver): Promise<void> {
-	await driver.batch(auditSchema(driver.dialect).map((text) => ({ sql: text })));
+	const statements = auditSchema(driver.dialect).map((text) => ({ sql: text }));
+	await driver.batch(driver.dialect === "postgres" ? [{ sql: MIGRATE_LOCK }, ...statements] : statements);
 }
 
 /** An actor as the columns the store filters on: kind, ID and (for a key or an agent's session) scope. */
