@@ -438,6 +438,7 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `name` | string | yes |  |
 | `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
+| `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
 
 ### CreateApiKeyBody
 
@@ -536,6 +537,7 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | --- | --- | --- | --- |
 | `name` | string | yes |  |
 | `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
+| `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
 
 ### CreateSandboxBody
 
@@ -1566,6 +1568,7 @@ A set of an account's hosts (or of the deployment's shared hosts), each host in 
 | `default` | boolean | yes | Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. |
 | `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
 | `sync` | boolean | yes | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. |
+| `vcpusPerCpu` | number | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest. |
 | `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
@@ -2693,6 +2696,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  |
 | `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
 | `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
+| `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
 | `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. (at most 100 items) |
 
 ### UpdateSandboxBody

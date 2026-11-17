@@ -4402,6 +4402,15 @@ export const Pool = Type.Object(
 				"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
 				"pool's hosts alone. Off by default.",
 		}),
+		vcpusPerCpu: Type.Optional(
+			Type.Number({
+				description:
+					"The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs " +
+					"than threads: a microVM that would take a host past it goes on another, or waits for room, as one that " +
+					"doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs " +
+					"only decide which host is emptiest.",
+			}),
+		),
 		runners: Type.Optional(
 			Type.Array(GithubRunnerKind, {
 				description:
@@ -4423,6 +4432,13 @@ export const PoolList = Type.Object({ items: Type.Array(Pool) }, { title: "PoolL
 
 export const PoolPath = Type.Object({ poolId: id("The pool's ID or name.") }, { title: "PoolPath" });
 
+const poolVcpusPerCpu = Type.Union([Type.Number({ minimum: 0.25, maximum: 16 }), Type.Null()], {
+	description:
+		"The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: " +
+		"`1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or " +
+		"waits for room. `null` removes the cap.",
+});
+
 const poolSync = Type.Boolean({
 	description:
 		"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
@@ -4430,12 +4446,21 @@ const poolSync = Type.Boolean({
 });
 
 export const CreatePoolBody = Type.Object(
-	{ name: Type.String({ pattern: POOL_NAME_PATTERN }), sync: Type.Optional(poolSync) },
+	{
+		name: Type.String({ pattern: POOL_NAME_PATTERN }),
+		sync: Type.Optional(poolSync),
+		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+	},
 	{ title: "CreatePoolBody" },
 );
 
 export const CreateAccountPoolBody = Type.Object(
-	{ account: accountQuery, name: Type.String({ pattern: POOL_NAME_PATTERN }), sync: Type.Optional(poolSync) },
+	{
+		account: accountQuery,
+		name: Type.String({ pattern: POOL_NAME_PATTERN }),
+		sync: Type.Optional(poolSync),
+		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+	},
 	{ title: "CreateAccountPoolBody" },
 );
 
@@ -4450,6 +4475,7 @@ export const UpdatePoolBody = Type.Object(
 			}),
 		),
 		sync: Type.Optional(poolSync),
+		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
 		runners: Type.Optional(
 			Type.Array(GithubRunnerKind, {
 				maxItems: 100,

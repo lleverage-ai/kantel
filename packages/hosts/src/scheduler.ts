@@ -93,6 +93,11 @@ export interface Candidate {
 	 * placements are shared). Absent, none are counted: the host ranks by memory alone.
 	 */
 	readonly bookedVcpus?: number;
+	/**
+	 * The most vCPUs its pool lets a host book for each of its CPUs (`vcpusFit`): a host that would go past it with this
+	 * sandbox is full. Absent, vCPUs only rank hosts and never refuse one.
+	 */
+	readonly vcpusPerCpu?: number;
 }
 
 export interface Placement {
@@ -345,6 +350,10 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			turnedAway(`${Math.max(0, freeDisk)} GiB of disk free`, "insufficient_capacity");
 			continue;
 		}
+		if (!vcpusFit(candidate, size.vcpus)) {
+			turnedAway("its vCPUs booked", "insufficient_capacity");
+			continue;
+		}
 		fits.push({
 			candidate,
 			size,
@@ -436,6 +445,20 @@ export function fullness(candidate: Candidate, size: HostSize, freeMemoryMiB: nu
 	const cpus = host.facts?.cpus ?? 0;
 	const vcpus = cpus > 0 && candidate.bookedVcpus !== undefined ? (candidate.bookedVcpus + size.vcpus) / cpus : 0;
 	return Math.round(Math.max(memory, vcpus, 0) * 100) / 100;
+}
+
+/**
+ * Whether `vcpus` more fit on a candidate under its pool's cap (`Candidate.vcpusPerCpu`): its booked vCPUs and these at
+ * most the cap times its CPUs. A host with nothing booked always takes one, so a sandbox larger than the cap allows
+ * still runs alone. Without a cap, a report of its CPUs or a count of what is booked, it fits.
+ */
+export function vcpusFit(candidate: Candidate, vcpus: number): boolean {
+	const cpus = candidate.host.facts?.cpus ?? 0;
+	const limit = candidate.vcpusPerCpu;
+	const booked = candidate.bookedVcpus;
+	if (limit === undefined || cpus <= 0 || booked === undefined || booked === 0 || vcpus <= 0) return true;
+	// In hundredths of a vCPU, so 0.7 of 10 CPUs admits 7 without a float falling short of it.
+	return Math.round((booked + vcpus) * 100) <= Math.round(limit * cpus * 100);
 }
 
 /** A host's one-minute load for each of its CPUs. */

@@ -827,6 +827,8 @@ export interface ComputeService {
 	 * has gone.
 	 */
 	poolSync(poolId: string): Promise<boolean>;
+	/** A pool's vCPU cap (`Pool.vcpusPerCpu`): undefined for none, or a pool that has gone. */
+	poolVcpusPerCpu(poolId: string): Promise<number | undefined>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
@@ -15162,6 +15164,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async poolSync(poolId) {
 			return (await store.pools.get(poolId))?.sync === true;
+		},
+
+		async poolVcpusPerCpu(poolId) {
+			return (await store.pools.get(poolId))?.vcpusPerCpu;
 		},
 
 		recordHoldings: (hostId, at, report) => diskHolders.recordHoldings(hostId, at, report),

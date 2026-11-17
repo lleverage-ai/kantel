@@ -764,6 +764,11 @@ export interface HostComputeLink {
 	 */
 	poolSync?(poolId: string): Promise<boolean>;
 	/**
+	 * The most vCPUs a pool lets each of its hosts book for each of its CPUs (`ComputeService.poolVcpusPerCpu`):
+	 * placement counts a host past it as full. Undefined, or absent, no pool caps them.
+	 */
+	poolVcpusPerCpu?(poolId: string): Promise<number | undefined>;
+	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
 	 */
@@ -2368,6 +2373,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		throw new KantelError("conflict", "A sandbox with that ID exists");
 	};
 
+	const vcpuCap = (vcpusPerCpu: number | undefined) => (vcpusPerCpu === undefined ? {} : { vcpusPerCpu });
+
 	/**
 	 * Where a create goes (`place`) among the hosts `input` may use (`hostIds`, of `listed`): its tier and shape checked,
 	 * then only hosts that run what it needs (templates, egress policy, sticky disks), and among them the one placement
@@ -2445,6 +2452,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		// Every candidate's placements in one read: the owners' isolates there, and the vCPUs booked.
 		const placed = await store.placementsOnHosts(hosts.map((host) => host.id));
+		// Each pool's vCPU cap, read once for its hosts.
+		const caps = new Map<string, number | undefined>();
+		if (tier === "microvm" && compute?.poolVcpusPerCpu !== undefined) {
+			for (const poolId of new Set(hosts.flatMap((host) => (host.poolId === undefined ? [] : [host.poolId])))) {
+				caps.set(poolId, await compute.poolVcpusPerCpu(poolId));
+			}
+		}
 		const candidates: Candidate[] = await Promise.all(
 			hosts.map(async (host) => {
 				const placements = placed.get(host.id) ?? [];
@@ -2461,6 +2475,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							.map((placement) => placement.owner as string),
 					),
 					bookedVcpus: bookedVcpus(placements),
+					...vcpuCap(host.poolId === undefined ? undefined : caps.get(host.poolId)),
 				};
 			}),
 		);
