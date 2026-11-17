@@ -14,7 +14,7 @@ export type CreatorFilter = string;
 export type PoolFilter = string;
 /** `all`, or a host's ID. */
 export type HostFilter = string;
-/** `all`, or one label as `key=value`. */
+/** `all`, or one label as `labelValue` encodes it: its key and value, which `key=value` can't tell apart. */
 export type LabelFilter = string;
 
 export interface SandboxFilters {
@@ -27,7 +27,7 @@ export interface SandboxFilters {
 	readonly pool?: PoolFilter;
 	/** The host it runs on (or last ran on); absent is any, as `all` is. */
 	readonly host?: HostFilter;
-	/** A label it has, as `key=value`; absent is any, as `all` is. */
+	/** A label it has, as `labelValue` encodes it; absent is any, as `all` is. */
 	readonly label?: LabelFilter;
 	readonly search: string;
 }
@@ -50,12 +50,32 @@ type OptionalFilter = "creator" | "pool" | "host" | "label";
 export const anyOf = (filters: SandboxFilters, key: OptionalFilter): boolean =>
 	filters[key] === undefined || filters[key] === "all";
 
-/** A label as the Label filter and the API's `label.key=value` say it. */
+/** A label as the Label filter's menu says it, as the API's `label.key=value` does. */
 export const labelText = (key: string, value: string): string => `${key}=${value}`;
 
-/** Whether a sandbox has the label `key=value`. */
-function hasLabel(box: Pick<Sandbox, "labels">, label: string): boolean {
-	return Object.entries(box.labels ?? {}).some(([key, value]) => labelText(key, value) === label);
+/**
+ * A label as the Label filter keeps it: its key and value as JSON, since `key=value` alone can't tell `a=b` with `c`
+ * from `a` with `b=c`, and keys and values may hold any character.
+ */
+export const labelValue = (key: string, value: string): LabelFilter => JSON.stringify([key, value]);
+
+/** The menu's text for a label `labelValue` made; anything else as given. */
+function labelValueText(label: LabelFilter): string {
+	try {
+		const pair: unknown = JSON.parse(label);
+		if (Array.isArray(pair) && pair.length === 2) {
+			const [key, value]: unknown[] = pair;
+			if (typeof key === "string" && typeof value === "string") return labelText(key, value);
+		}
+	} catch {
+		// Not one `labelValue` made: shown as it is.
+	}
+	return label;
+}
+
+/** Whether a sandbox has the label, as `labelValue` encodes it. */
+function hasLabel(box: Pick<Sandbox, "labels">, label: LabelFilter): boolean {
+	return Object.entries(box.labels ?? {}).some(([key, value]) => labelValue(key, value) === label);
 }
 
 /** Each filter's options, the first being "any". The label is the menu's row; `short`, the trigger's once chosen. */
@@ -196,15 +216,20 @@ export function poolFilters(
 	];
 }
 
-/** The Host filter's options: Any host, then each host a listed sandbox is on (and the chosen one), by name. */
+/**
+ * The Host filter's options: Any host, then each host a listed sandbox is on (and the chosen one), by name. The chosen
+ * one, where no listed sandbox is on it any more, takes its name from `known` (the names seen before), else its ID.
+ */
 export function hostFilters(
 	sandboxes: readonly Pick<Sandbox, "hostId" | "hostName">[],
 	chosen: HostFilter = "all",
+	known: ReadonlyMap<string, string> = new Map(),
 ): readonly { value: HostFilter; label: string }[] {
-	const hosts = new Map<string, string>(chosen === "all" ? [] : [[chosen, chosen]]);
+	const hosts = new Map<string, string>(chosen === "all" ? [] : [[chosen, known.get(chosen) ?? chosen]]);
 	for (const box of sandboxes) {
 		if (box.hostId === undefined) continue;
-		if (!hosts.has(box.hostId) || box.hostName !== undefined) hosts.set(box.hostId, box.hostName ?? box.hostId);
+		if (box.hostName !== undefined) hosts.set(box.hostId, box.hostName);
+		else if (!hosts.has(box.hostId)) hosts.set(box.hostId, known.get(box.hostId) ?? box.hostId);
 	}
 	return [
 		{ value: "all", label: "Any host" },
@@ -212,17 +237,24 @@ export function hostFilters(
 	];
 }
 
-/** The Label filter's options: Any label, then each `key=value` a listed sandbox has (and the chosen one), in order. */
+/**
+ * The Label filter's options: Any label, then each label a listed sandbox has (and the chosen one), as `key=value` in
+ * order, each kept as `labelValue` encodes it.
+ */
 export function labelFilters(
 	sandboxes: readonly Pick<Sandbox, "labels">[],
 	chosen: LabelFilter = "all",
 ): readonly { value: LabelFilter; label: string }[] {
-	const labels = new Set(
-		sandboxes.flatMap((box) => Object.entries(box.labels ?? {}).map(([key, value]) => labelText(key, value))),
-	);
-	if (chosen !== "all") labels.add(chosen);
+	const labels = new Map<LabelFilter, string>();
+	for (const box of sandboxes) {
+		for (const [key, value] of Object.entries(box.labels ?? {}))
+			labels.set(labelValue(key, value), labelText(key, value));
+	}
+	if (chosen !== "all" && !labels.has(chosen)) labels.set(chosen, labelValueText(chosen));
 	return [
 		{ value: "all", label: "Any label" },
-		...[...labels].sort((a, b) => a.localeCompare(b)).map((label) => ({ value: label, label })),
+		...[...labels]
+			.map(([value, label]) => ({ value, label }))
+			.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value)),
 	];
 }

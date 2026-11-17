@@ -229,6 +229,8 @@ export function SandboxesPage({
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// The account's pools, only to name them in the Pool filter: without them it goes by ID.
 	const poolsRead = useLoad(() => source.pools?.(account.id) ?? Promise.resolve([]), [source, account.id]);
+	// Every host name the list has said, so a chosen host keeps its name once no sandbox is on it.
+	const hostNames = useRef(new Map<string, string>()).current;
 	const poolNames = useMemo(
 		() => new Map(poolsRead.state.status === "ready" ? poolsRead.state.value.map((each) => [each.id, each.name]) : []),
 		[poolsRead.state],
@@ -426,6 +428,7 @@ export function SandboxesPage({
 							filters={filters}
 							viewerId={viewerId}
 							poolNames={poolNames}
+							hostNames={hostNames}
 							now={now}
 							narrow={narrow}
 							onChange={setFilters}
@@ -523,6 +526,7 @@ function SandboxToolbar({
 	filters,
 	viewerId,
 	poolNames,
+	hostNames,
 	now,
 	narrow,
 	onChange,
@@ -532,6 +536,8 @@ function SandboxToolbar({
 	viewerId: string | undefined;
 	/** Each pool's name, by ID. */
 	poolNames: ReadonlyMap<string, string>;
+	/** Every host name the list has said, by ID: added to as it renders. */
+	hostNames: Map<string, string>;
 	now: number;
 	narrow: boolean;
 	onChange: (filters: SandboxFilters) => void;
@@ -550,7 +556,9 @@ function SandboxToolbar({
 	const host = filters.host ?? "all";
 	const label = filters.label ?? "all";
 	const pools = poolFilters(sandboxes, poolNames, pool);
-	const hosts = hostFilters(sandboxes, host);
+	for (const box of sandboxes)
+		if (box.hostId !== undefined && box.hostName !== undefined) hostNames.set(box.hostId, box.hostName);
+	const hosts = hostFilters(sandboxes, host, hostNames);
 	const labels = labelFilters(sandboxes, label);
 	return (
 		<div className="kt-sandbox-toolbar flex flex-wrap items-center gap-2">

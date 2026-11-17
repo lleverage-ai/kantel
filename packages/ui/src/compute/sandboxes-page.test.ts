@@ -26,6 +26,7 @@ import {
 	filtered,
 	hostFilters,
 	labelFilters,
+	labelValue,
 	NO_FILTERS,
 	poolFilters,
 	type SandboxFilters,
@@ -354,11 +355,12 @@ describe("the sandboxes list", () => {
 			sandboxesShown(all, { ...NO_FILTERS, ...filters }, 0).map((each) => each.name);
 		expect(names({ pool: "pool_ci" })).toEqual(["a", "b"]);
 		expect(names({ host: "hst_home" })).toEqual(["c"]);
-		expect(names({ label: "team=platform" })).toEqual(["a", "d"]);
-		expect(names({ pool: "pool_ci", label: "team=platform" })).toEqual(["a"]);
+		const platform = labelValue("team", "platform");
+		expect(names({ label: platform })).toEqual(["a", "d"]);
+		expect(names({ pool: "pool_ci", label: platform })).toEqual(["a"]);
 		// A label's key alone, or a value under another key, isn't the label.
 		expect(names({ label: "team" })).toEqual([]);
-		expect(names({ label: "ticket=platform" })).toEqual([]);
+		expect(names({ label: labelValue("ticket", "platform") })).toEqual([]);
 		expect(filtered({ ...NO_FILTERS, host: "hst_home" })).toBe(true);
 		// Filters from before these leave them out: any.
 		const { pool: _p, host: _h, label: _l, ...older } = NO_FILTERS;
@@ -378,19 +380,37 @@ describe("the sandboxes list", () => {
 			["pool_default", 1],
 		]);
 		expect(hostFilters(all).map((option) => option.label)).toEqual(["Any host", "ci_1", "ci_2", "home"]);
-		expect(labelFilters(all).map((option) => option.value)).toEqual([
-			"all",
-			"team=platform",
-			"team=research",
-			"ticket=LLE-1",
+		expect(labelFilters(all)).toEqual([
+			{ value: "all", label: "Any label" },
+			{ value: platform, label: "team=platform" },
+			{ value: labelValue("team", "research"), label: "team=research" },
+			{ value: labelValue("ticket", "LLE-1"), label: "ticket=LLE-1" },
 		]);
+		// Labels that read the same as key=value stay apart, and each matches only its own sandbox.
+		const lookalikes = [
+			placed("x", undefined, undefined, { "a=b": "c" }),
+			placed("y", undefined, undefined, { a: "b=c" }),
+		];
+		const options = labelFilters(lookalikes);
+		expect(options.map((option) => option.label)).toEqual(["Any label", "a=b=c", "a=b=c"]);
+		expect(
+			options.slice(1).map((option) => sandboxesShown(lookalikes, { ...NO_FILTERS, label: option.value }, 0).length),
+		).toEqual([1, 1]);
 		// The chosen one stays an option when no sandbox has it any more, so the menu still says what it filters by.
 		expect(poolFilters([], new Map([["pool_gone", "gone"]]), "pool_gone").map((option) => option.label)).toEqual([
 			"Any pool",
 			"gone",
 		]);
-		expect(hostFilters([], "hst_gone").map((option) => option.value)).toEqual(["all", "hst_gone"]);
-		expect(labelFilters([], "team=gone").map((option) => option.value)).toEqual(["all", "team=gone"]);
+		expect(hostFilters([], "hst_gone").map((option) => option.label)).toEqual(["Any host", "hst_gone"]);
+		// A host's name, once seen, outlasts its last sandbox.
+		expect(hostFilters([], "hst_gone", new Map([["hst_gone", "old-box"]])).map((option) => option.label)).toEqual([
+			"Any host",
+			"old-box",
+		]);
+		expect(labelFilters([], labelValue("team", "gone"))).toEqual([
+			{ value: "all", label: "Any label" },
+			{ value: labelValue("team", "gone"), label: "team=gone" },
+		]);
 	});
 
 	it("counts down to auto-stop in minutes, and in minutes and seconds for its last 10", () => {
