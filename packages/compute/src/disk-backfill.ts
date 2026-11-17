@@ -23,6 +23,9 @@ import {
 /** The host feature of a host that fetches disk versions from its peers (`HOST_FEATURES.diskSync`). */
 export const DISK_SYNC_FEATURE = "disk-sync";
 
+/** The size of a block in a version's block map: a host reports its fetches' progress in blocks of it. */
+export const DISK_BLOCK_BYTES = 4 * 1024 ** 2;
+
 /** How often the sweep goes over every synced pool for heads its hosts are missing. */
 export const BACKFILL_EVERY_MS = 60_000;
 

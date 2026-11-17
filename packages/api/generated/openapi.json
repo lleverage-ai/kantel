@@ -18070,6 +18070,9 @@
 					"mesh": {
 						"$ref": "#/components/schemas/HostMesh"
 					},
+					"sync": {
+						"$ref": "#/components/schemas/HostSync"
+					},
 					"evacuation": {
 						"$ref": "#/components/schemas/HostEvacuationProgress"
 					},
@@ -18584,6 +18587,16 @@
 						"type": "number",
 						"minimum": 0,
 						"description": "The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer."
+					},
+					"fetchBytesPerSecond": {
+						"type": "number",
+						"minimum": 0,
+						"description": "The rate of its last fetch of at least 16 MiB from this peer alone, in bytes a second: what syncing from it gets. Absent before one since the host agent started."
+					},
+					"fetchRateAt": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "When that fetch ended, epoch milliseconds, UTC."
 					}
 				},
 				"title": "HostMeshPeer",
@@ -18625,6 +18638,164 @@
 				],
 				"title": "HostState",
 				"description": "`online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked."
+			},
+			"HostSync": {
+				"type": "object",
+				"required": ["disks", "fetches"],
+				"properties": {
+					"paused": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "draining"
+							},
+							{
+								"type": "string",
+								"const": "away"
+							},
+							{
+								"type": "string",
+								"const": "no-sync"
+							}
+						],
+						"description": "Why it isn't being sent anything now, where it isn't: `draining`, `away` (not connected), `no-sync` (its host agent doesn't sync, or its mesh isn't up yet)."
+					},
+					"disks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/HostSyncDisk"
+						},
+						"description": "The head of each sticky disk its pool used in the last 7 days, newest commit first, for a host whose pool syncs; empty otherwise."
+					},
+					"fetches": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/HostSyncFetch"
+						},
+						"description": "Its fetches under way or failed, of every kind, from its last report while it is connected."
+					}
+				},
+				"title": "HostSync",
+				"description": "How far a host is in syncing its pool's disks from its peers: each sticky disk head it should hold, and its fetches. Template snapshots it should hold are fetched as their builds; their fetches are listed here too. Absent from a host whose pool doesn't sync and that has no fetches."
+			},
+			"HostSyncDisk": {
+				"type": "object",
+				"required": ["stickyDiskId", "version", "state", "allocatedBytes", "committedAt"],
+				"properties": {
+					"stickyDiskId": {
+						"type": "string",
+						"description": "The sticky disk."
+					},
+					"version": {
+						"type": "string",
+						"description": "Its head, which the host should hold."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "held"
+							},
+							{
+								"type": "string",
+								"const": "fetching"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							},
+							{
+								"type": "string",
+								"const": "missing"
+							},
+							{
+								"type": "string",
+								"const": "waiting"
+							},
+							{
+								"type": "string",
+								"const": "no-room"
+							},
+							{
+								"type": "string",
+								"const": "no-source"
+							}
+						],
+						"description": "`held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it."
+					},
+					"allocatedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "What the head takes on the host it was committed on."
+					},
+					"committedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "HostSyncDisk",
+				"description": "A sticky disk head a host of a synced pool should hold, and where it stands."
+			},
+			"HostSyncFetch": {
+				"type": "object",
+				"required": ["kind", "objectId", "version", "state", "blocks", "blocksInPlace", "totalBytes"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"description": "What it fetches: `sticky` (a sticky disk's version), `template` (a template's snapshot), `rootfs` (a template's root filesystem), `snapshot` (a saved snapshot), `sandbox` or `sandbox-memory` (a move's copy). A newer host may say another."
+					},
+					"objectId": {
+						"type": "string",
+						"description": "The object's ID: the sticky disk's, the template snapshot's, and so on."
+					},
+					"version": {
+						"type": "string",
+						"description": "The object's version: a sticky disk version's ID, `1`, `disk` or `memory`."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "queued"
+							},
+							{
+								"type": "string",
+								"const": "running"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							}
+						],
+						"description": "`queued`: waiting for one of the fetches it runs at once. `running`. `failed`: it stopped, with `error`; it goes on from where it got to when it is asked again."
+					},
+					"blocks": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The version's blocks of 4 MiB, every part's."
+					},
+					"blocksInPlace": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many of them it has: those it already had from the version it started from, and those fetched."
+					},
+					"bytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The bytes it has read from its peers so far. Only blocks that differ from the version it started from travel, so this may stay well under the version's size. Absent from an older host, and before the first."
+					},
+					"totalBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The blocks' size: `blocks` of 4 MiB."
+					},
+					"error": {
+						"type": "string",
+						"description": "The last error it met."
+					}
+				},
+				"title": "HostSyncFetch",
+				"description": "A fetch from the host's peers, as it last reported it (every heartbeat)."
 			},
 			"HostUpdate": {
 				"type": "object",
@@ -21521,6 +21692,13 @@
 						},
 						"description": "The newest 20, newest first, on a get."
 					},
+					"hosts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/StickyDiskHost"
+						},
+						"description": "On a get, each host of its pool that isn't revoked, and what it holds of the disk, as hosts last reported."
+					},
 					"poolId": {
 						"type": "string",
 						"description": "The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then."
@@ -21536,6 +21714,43 @@
 				},
 				"title": "StickyDisk",
 				"description": "A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental."
+			},
+			"StickyDiskHost": {
+				"type": "object",
+				"required": ["hostId", "state"],
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "A host of the disk's pool."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "head"
+							},
+							{
+								"type": "string",
+								"const": "fetching"
+							},
+							{
+								"type": "string",
+								"const": "older"
+							},
+							{
+								"type": "string",
+								"const": "none"
+							}
+						],
+						"description": "`head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions (a sandbox there starts from the newest of them). `none`: it holds none."
+					},
+					"version": {
+						"type": "string",
+						"description": "The newest version it holds, where it holds one (the head, for `head`)."
+					}
+				},
+				"title": "StickyDiskHost",
+				"description": "Which of a sticky disk's versions a host of its pool holds."
 			},
 			"StickyDiskList": {
 				"type": "object",
