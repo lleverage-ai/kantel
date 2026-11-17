@@ -240,6 +240,10 @@ const sandbox = (
 		...(rest.kind === "microvm" && rest.resources === undefined && rest.size !== undefined
 			? { resources: sampleResources(rest.size) }
 			: {}),
+		// Its host's pool, as `HOSTS` puts them: the Hetzner machines in ci, the rest in default.
+		...(rest.hostId === undefined
+			? {}
+			: { poolId: rest.hostId.startsWith("hst_hetzner") ? "pool_ci" : "pool_default" }),
 		...rest,
 		hostname: `${rest.name}.${slug}.kantel.example.com`,
 	};
@@ -326,6 +330,7 @@ export const DEBIAN_DOCKER_IMAGE: SandboxImage = {
 export const API_SERVER = sandbox({
 	id: "sbx_7f3k2m9qa1",
 	name: "api-server",
+	labels: { team: "platform" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "microvm",
@@ -430,6 +435,7 @@ export const ALPINE_WORKER = sandbox({
 export const DEBIAN_CI = sandbox({
 	id: "sbx_2m6v9r3kd4",
 	name: "ci-docker",
+	labels: { team: "platform", ticket: "LLE-412" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "microvm",
@@ -510,6 +516,7 @@ export const BROWSER_AGENT = sandbox({
 export const EVAL_RUNNER = sandbox({
 	id: "sbx_1o9p4a7se6",
 	name: "eval-runner-12",
+	labels: { team: "research" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "microvm",
@@ -528,6 +535,7 @@ export const EVAL_RUNNER = sandbox({
 export const NEW_ONE = sandbox({
 	id: "sbx_8f2g5h3jd7",
 	name: "preview-pr-412",
+	labels: { ticket: "LLE-412" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "isolate",
@@ -2564,10 +2572,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
 					return [...pools.values()].map(poolView);
 				}),
+			// Each in its host's pool as the `pools` option puts the hosts.
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
 						.filter((box) => box.accountId === accountId)
+						.map((box) => {
+							const poolId = box.hostId === undefined ? undefined : hosts.get(box.hostId)?.poolId;
+							return poolId === undefined || poolId === box.poolId ? box : { ...box, poolId };
+						})
 						.sort((a, b) => b.createdAt - a.createdAt),
 				),
 			create: (input: CreateSandboxInput) =>

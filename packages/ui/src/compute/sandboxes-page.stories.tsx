@@ -9,7 +9,7 @@ import {
 	PERSONAL,
 	VIEWER,
 } from "./fixtures.ts";
-import type { SandboxFilters } from "./sandbox-filters.ts";
+import { labelValue, NO_FILTERS, type SandboxFilters } from "./sandbox-filters.ts";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 
 export default { title: "Compute/Sandboxes page" } satisfies StoryDefault;
@@ -100,6 +100,19 @@ export const Filtered: Story = () => (
 export const CreatedByYou: Story = () => (
 	<Scenario filters={{ state: "all", snapshot: "all", type: "all", creator: VIEWER.id, search: "" }} />
 );
+
+/** Only the ci pool's sandboxes with the label team=platform: the Pool, Host and Label filters, and Clear filters. */
+export const ByPoolAndLabel: Story = () => (
+	<Scenario filters={{ ...NO_FILTERS, pool: "pool_ci", label: labelValue("team", "platform") }} />
+);
+
+/** On a phone, filtered by pool and label: the filters wrap under the search. */
+export const ByPoolAndLabelMobile: Story = () => (
+	<Scenario narrow filters={{ ...NO_FILTERS, pool: "pool_ci", label: labelValue("team", "platform") }} />
+);
+
+/** On one host: the Host filter, the other hosts' sandboxes left out. */
+export const OnOneHost: Story = () => <Scenario filters={{ ...NO_FILTERS, host: "hst_home" }} />;
 
 /** Filters that leave nothing: says so, and offers to clear them. */
 export const NoMatch: Story = () => <Scenario filters={{ state: "error", snapshot: "day", type: "all", search: "" }} />;

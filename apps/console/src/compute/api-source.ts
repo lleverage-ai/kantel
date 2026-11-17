@@ -672,6 +672,8 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		usage: sandbox.usage.recentCpu,
 		...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
 		...(sandbox.hostName === undefined ? {} : { hostName: sandbox.hostName }),
+		...(sandbox.poolId === undefined ? {} : { poolId: sandbox.poolId }),
+		...(Object.keys(sandbox.labels).length === 0 ? {} : { labels: sandbox.labels }),
 		...moveOf(sandbox, context),
 		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
 		// Running, but its guest agent doesn't answer: why, for the page's notice and its Recover.
