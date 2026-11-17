@@ -75,6 +75,17 @@ else
 		cp "$MODULE/dist/kantel-isolate-$arch" "$OUT/kantel-isolate-$arch"
 		tar -C "$MODULE/dist/isolate-assets-$arch" --owner=0 --group=0 --numeric-owner -cf - . | gzip -n -6 >"$OUT/isolate-assets-$arch.tar.gz"
 	done
+	# Each sandbox image holds the browser asked for, read from the image itself: Chrome for Testing is in
+	# /opt/chrome-for-testing, and only a cft build may have it.
+	for arch in $ARCHES; do
+		cft=no
+		debugfs -R 'ls /opt' "$OUT/sandbox-$arch.ext4" 2>/dev/null | tr -s ' ' '\n' | grep -qx chrome-for-testing && cft=yes
+		case "$BROWSER/$cft" in debian/no | cft/yes) ;; *)
+			echo "$OUT/sandbox-$arch.ext4 isn't a $BROWSER build (Chrome for Testing in it: $cft)" >&2
+			exit 1
+			;;
+		esac
+	done
 	# The GPL sources come from the images as built, so they're read before the images are gzipped.
 	set --
 	for arch in $ARCHES; do set -- "$@" "$OUT/sandbox-$arch.ext4"; done

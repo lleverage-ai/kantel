@@ -52,11 +52,16 @@ if [ "${KANTEL_NO_CACHE:-}" = 1 ]; then NO_CACHE=--no-cache; fi
 # The browser is the default sandbox image's choice alone; a custom image inherits whichever it is built on.
 BROWSER_ARG=
 if [ "$KIND" = sandbox ] && [ -z "${KANTEL_GUEST_DOCKERFILE:-}" ]; then BROWSER_ARG="--build-arg KANTEL_BROWSER=$BROWSER"; fi
+# The ext4 is made from the image this build made, by its ID, not from $TAG: a build of the other browser at the same
+# time retags it, and a Debian build must never export a Chrome for Testing image (or the other way round). The tag is
+# still set, for a custom image's FROM.
+IID=$(mktemp)
+CID=
+trap 'rm -f "$IID"; [ -z "$CID" ] || docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
 # shellcheck disable=SC2086 # NO_CACHE and BROWSER_ARG are an option or none.
-docker build $NO_CACHE $BROWSER_ARG --platform "linux/$ARCH" \
+docker build $NO_CACHE $BROWSER_ARG --platform "linux/$ARCH" --iidfile "$IID" \
 	--build-arg KANTEL_SECURITY_REFRESH="${KANTEL_SECURITY_REFRESH:-unset}" -f "$DOCKERFILE" -t "$TAG" "$MODULE"
-CID=$(docker create --platform "linux/$ARCH" "$TAG" /bin/true)
-trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
+CID=$(docker create --platform "linux/$ARCH" "$(cat "$IID")" /bin/true)
 IMAGE="${IMAGE_NAME:-$KIND}-$ARCH.ext4"
 # Export the container's filesystem and make an ext4 image of it, as root in a helper container so ownership and
 # modes are kept. Docker leaves /etc/hosts, /etc/resolv.conf and /etc/hostname as empty files; the guest agent
