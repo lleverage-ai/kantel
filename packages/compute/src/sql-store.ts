@@ -21,6 +21,8 @@ import {
 	type Collection,
 	type ComputeStore,
 	type DiskHolderWrites,
+	type EventWrites,
+	eventOutboxOf,
 	matches,
 	type PersonWrites,
 	type StickyDiskWrites,
@@ -158,13 +160,7 @@ function uniqueOf(kind: string, error: unknown): never {
  */
 export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriver, kind: string): Collection<T> {
 	const postgres = driver.dialect === "postgres";
-	const insert = postgres
-		? `INSERT INTO compute_api_records (kind, id, seq, version, data)
-			VALUES (?, ?, nextval('compute_api_records_seq'), 1, ?)
-			ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`
-		: `INSERT INTO compute_api_records (kind, id, seq, version, data)
-			VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?), 1, ?)
-			ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`;
+	const insert = upsertSql(driver.dialect);
 	// The same insert, but a row already there is left alone and no row comes back: one statement, so of two writers at
 	// once exactly one gets its row back.
 	const insertNew = postgres
@@ -266,6 +262,70 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 					? await select(clauses, params)
 					: await select(clauses, params).catch(() => select(clauses.slice(0, 1), params.slice(0, 1)));
 			return rows.map((row) => parse<T>(row)).filter((record) => matches(record, where, anyOf));
+		},
+	};
+}
+
+/** `Collection.put`'s statement: inserts the record, or replaces the one with its ID (keeping its `seq`). */
+function upsertSql(dialect: SqlDriver["dialect"]): string {
+	return dialect === "postgres"
+		? `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			VALUES (?, ?, nextval('compute_api_records_seq'), 1, ?)
+			ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`
+		: `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?), 1, ?)
+			ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`;
+}
+
+/** The kinds `sqlEventWrites` writes, as `createSqlComputeStore` names their collections. */
+const EVENTS = "events";
+const EVENT_OUTBOX = "eventOutbox";
+const WEBHOOKS = "webhooks";
+
+/** `text` as a `LIKE` pattern that matches it literally, with `!` as the escape character. */
+const likeLiteral = (text: string) => text.replace(/[!%_]/g, (char) => `!${char}`);
+
+/**
+ * `EventWrites` in SQL: the event's upsert and its outbox record's in one batch (one transaction), so one round trip.
+ * The outbox record's is conditional on a webhook that wants the event (`webhookWants`), matched in the same statement
+ * on the webhooks' JSON as text: `"accountId":"<account>"`, `"enabled":true` and `"<type>"` (its events list). A string
+ * field's quotes are escaped in JSON, so none of these appears inside one; and SQLite's `LIKE` ignores ASCII case, so it
+ * may match a webhook it shouldn't, which costs a record and never loses one. As text, not `jsonb`: Postgres can't cast
+ * every JSON JavaScript writes (`list`), and one such webhook would fail every event's write.
+ */
+function sqlEventWrites(driver: SqlDriver): EventWrites {
+	const postgres = driver.dialect === "postgres";
+	const upsert = upsertSql(driver.dialect);
+	const seq = postgres
+		? "nextval('compute_api_records_seq')"
+		: "(SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?)";
+	const upsertWanted = `INSERT INTO compute_api_records (kind, id, seq, version, data)
+		SELECT ?, ?, ${seq}, 1, ?
+		WHERE EXISTS (
+			SELECT 1 FROM compute_api_records
+			WHERE kind = ? AND data LIKE ? ESCAPE '!' AND data LIKE ? ESCAPE '!' AND data LIKE ? ESCAPE '!'
+		)
+		ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`;
+	return {
+		async put(event) {
+			const data = JSON.stringify(event);
+			const outbox = eventOutboxOf(event);
+			await driver.batch([
+				{ sql: upsert, params: postgres ? [EVENTS, event.id, data] : [EVENTS, event.id, EVENTS, data] },
+				{
+					sql: upsertWanted,
+					params: [
+						EVENT_OUTBOX,
+						outbox.id,
+						...(postgres ? [] : [EVENT_OUTBOX]),
+						JSON.stringify(outbox),
+						WEBHOOKS,
+						`%${likeLiteral(`"accountId":${JSON.stringify(event.accountId)}`)}%`,
+						'%"enabled":true%',
+						`%${likeLiteral(JSON.stringify(event.type))}%`,
+					],
+				},
+			]);
 		},
 	};
 }
@@ -706,14 +766,16 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		snapshots: sqlCollection(driver, "snapshots"),
 		apiKeys: sqlCollection(driver, "apiKeys"),
 		personalTokens: sqlCollection(driver, "personalTokens"),
-		webhooks: sqlCollection(driver, "webhooks"),
+		webhooks: sqlCollection(driver, WEBHOOKS),
 		deliveries: sqlCollection(driver, "deliveries"),
 		telemetry: sqlCollection(driver, "telemetry"),
 		proxies: sqlCollection(driver, "proxies"),
 		hosts: sqlCollection(driver, "hosts"),
 		joinTokens: sqlCollection(driver, "joinTokens"),
 		pools: sqlCollection(driver, "pools"),
-		events: sqlCollection(driver, "events"),
+		events: sqlCollection(driver, EVENTS),
+		eventOutbox: sqlCollection(driver, EVENT_OUTBOX),
+		eventWrites: sqlEventWrites(driver),
 		idempotency: sqlCollection(driver, "idempotency"),
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
 		environments: sqlCollection(driver, "environments"),

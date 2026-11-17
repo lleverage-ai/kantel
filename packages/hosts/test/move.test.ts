@@ -2307,13 +2307,13 @@ describe("pausing a sandbox keeps its commands running", () => {
 		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
 		expect(await root.killCommand(sandbox.id, doomed.id)).toMatchObject({ state: "killed" });
 		// Its running event can't be stored: the resume fails once it is running.
-		const put = api.store.events.put.bind(api.store.events);
-		api.store.events.put = async (event) => {
+		const put = api.store.eventWrites.put.bind(api.store.eventWrites);
+		api.store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.running") throw new Error("the store went away");
 			return put(event);
 		};
 		await root.resumeSandbox(sandbox.id, { wait: true }).catch(() => undefined);
-		api.store.events.put = put;
+		api.store.eventWrites.put = put;
 		expect(FakeHost.guestCommands.get(`${sandbox.id}/${doomed.id}`)?.result?.exitCode).toBe(137);
 		expect((await api.store.commands.get(doomed.id))?.killPending).toBeUndefined();
 	}, 20_000);
@@ -2404,8 +2404,8 @@ describe("pausing a sandbox keeps its commands running", () => {
 		// Its publication held after it is running: meanwhile another gateway starts a command on its new machine.
 		const other = gateway();
 		let started: string | undefined;
-		const put = api.store.events.put.bind(api.store.events);
-		api.store.events.put = async (event) => {
+		const put = api.store.eventWrites.put.bind(api.store.eventWrites);
+		api.store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.running" && event.sandboxId === sandbox.id && started === undefined) {
 				started = (await other.root.runCommand(sandbox.id, { command: "./serve", detached: true })).id;
 			}
@@ -2546,8 +2546,8 @@ describe("pausing a sandbox keeps its commands running", () => {
 			}
 			return list(filter);
 		};
-		const put = api.store.events.put.bind(api.store.events);
-		api.store.events.put = async (event) => {
+		const put = api.store.eventWrites.put.bind(api.store.eventWrites);
+		api.store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.running" && event.sandboxId === sandbox.id && started === undefined) {
 				started = (await other.root.runCommand(sandbox.id, { command: "./serve", detached: true })).id;
 				published();

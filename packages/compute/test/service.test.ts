@@ -2885,6 +2885,56 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		await vi.waitFor(async () => expect(await store.events.list({ accountId: account.id })).toEqual([]));
 	});
 
+	it("takes out an event and its outbox record whose write was under way as its account closed and went", async () => {
+		const store = await make();
+		const fenced = fenceClosedAccounts(store);
+		const account = {
+			id: "acc_o",
+			kind: "personal" as const,
+			name: "O",
+			defaultVisibility: "private" as const,
+			createdAt: 0,
+		};
+		await store.accounts.put(account);
+		// A webhook that wants the event, so its outbox record is written with it.
+		await store.webhooks.put({
+			id: "whk_o",
+			accountId: account.id,
+			name: "hook",
+			url: "https://hooks.example/in",
+			events: ["sandbox.running"],
+			enabled: true,
+			createdAt: 0,
+			secret: "whsec_AAAA",
+			consecutiveFailures: 0,
+		});
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const put = store.eventWrites.put.bind(store.eventWrites);
+		store.eventWrites.put = async (event) => {
+			await held;
+			return put(event);
+		};
+		const event = {
+			id: "evt_late",
+			type: "sandbox.running",
+			accountId: account.id,
+			createdAt: 0,
+			data: {},
+		} as Parameters<typeof store.eventWrites.put>[0];
+		const writing = fenced.eventWrites.put(event);
+		await close(store, account.id);
+		await store.accounts.delete(account.id);
+		release();
+		await writing;
+		await vi.waitFor(async () => {
+			expect(await store.events.list({ accountId: account.id })).toEqual([]);
+			expect(await store.eventOutbox.list({ accountId: account.id })).toEqual([]);
+		});
+	});
+
 	it("keeps its last pass for when it is due, and asks the deployment to wake for it", async () => {
 		const store = await make();
 		const wakes: number[] = [];

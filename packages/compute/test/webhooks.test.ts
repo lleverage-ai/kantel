@@ -1,14 +1,25 @@
 import type { computeSchema } from "@kantel/api";
-import { describe, expect, it } from "vitest";
-import { createMemoryStore, type StoredWebhook } from "../src/store.ts";
+import type { SqlDriver } from "@kantel/sql";
+import { type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
+import { afterEach, describe, expect, it } from "vitest";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
+import { type ComputeStore, createMemoryStore, type StoredWebhook } from "../src/store.ts";
 import {
 	createWebhookDispatcher,
 	DISABLE_AFTER_FAILURES,
+	deliveryId,
 	newWebhookSecret,
+	OUTBOX_GRACE_MS,
 	RETRY_DELAYS_MS,
 	signWebhook,
 	verifyWebhook,
+	type WebhookDispatcher,
 } from "../src/webhooks.ts";
+
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0)) await cleanup();
+});
 
 const NOW = Date.UTC(2026, 10, 3, 12);
 const TIMESTAMP = Math.floor(NOW / 1000);
@@ -206,3 +217,194 @@ describe("the dispatcher", () => {
 		expect(await dispatcher.enqueue({ ...event, id: "evt_after" })).toEqual([]);
 	});
 });
+
+/**
+ * A fresh SQL store over `kind`; with `interrupt.next` set, its next batch fails after its own statements have run, so
+ * the transaction rolls them back (as `sticky-disks.test.ts`'s).
+ */
+async function sqlStore(kind: TestDatabaseKind, interrupt: { next: boolean }): Promise<ComputeStore> {
+	const database = await kind.open();
+	cleanups.push(() => database.close());
+	await migrateComputeStore(database.driver);
+	const driver: SqlDriver = {
+		dialect: database.driver.dialect,
+		query: (text, params) => database.driver.query(text, params),
+		async batch(statements) {
+			if (!interrupt.next) return database.driver.batch(statements);
+			interrupt.next = false;
+			await database.driver.batch([...statements, { sql: "SELECT no_such_column FROM no_such_table" }]);
+		},
+	};
+	return createSqlComputeStore(driver);
+}
+
+/**
+ * A gateway over `store` that dies at `dies`: after the event's write has landed, or after its deliveries are queued
+ * and before its outbox record is cleared. From then on, everything it writes fails.
+ */
+function dyingGateway(store: ComputeStore, dies: "after the event" | "after its deliveries"): ComputeStore {
+	let dead = false;
+	const died = async (): Promise<never> => {
+		throw new Error("the gateway died");
+	};
+	return {
+		...store,
+		eventWrites: {
+			async put(event) {
+				await store.eventWrites.put(event);
+				if (dies === "after the event") dead = true;
+			},
+		},
+		deliveries: {
+			...store.deliveries,
+			insert: async (delivery) => (dead ? died() : store.deliveries.insert(delivery)),
+		},
+		eventOutbox: {
+			...store.eventOutbox,
+			delete: async (id) => (dead || dies === "after its deliveries" ? died() : store.eventOutbox.delete(id)),
+		},
+	};
+}
+
+/** What `emit` in `service.ts` does with an event: its write, with its deliveries queued once it has landed. */
+async function emit(store: ComputeStore, dispatcher: WebhookDispatcher, stored = event) {
+	const written = store.eventWrites.put(stored);
+	await Promise.all([written, dispatcher.enqueue(stored, written).catch(() => undefined)]);
+}
+
+const STORES: readonly { readonly name: string; readonly kind?: TestDatabaseKind }[] = [
+	{ name: "the memory store" },
+	// Postgres too, where KANTEL_TEST_POSTGRES_URL names one.
+	...testDatabaseKinds().map((kind) => ({ name: `a SQL store on ${kind.name}`, kind })),
+];
+
+for (const each of STORES) {
+	const timeout = each.kind?.testTimeoutMs === undefined ? {} : { timeout: each.kind.testTimeoutMs };
+	const interrupt = { next: false };
+	const open = (): Promise<ComputeStore> =>
+		each.kind === undefined ? Promise.resolve(createMemoryStore()) : sqlStore(each.kind, interrupt);
+
+	/** A store with two webhooks that take `sandbox.running`, and dispatchers sending to a fake endpoint. */
+	async function setUp() {
+		const store = await open();
+		const clock = { now: NOW };
+		const secret = newWebhookSecret();
+		const hook = (id: string): StoredWebhook => ({
+			id,
+			accountId: "acc_1",
+			name: id,
+			url: `https://hooks.example/${id}`,
+			events: ["sandbox.running"],
+			enabled: true,
+			createdAt: NOW,
+			secret,
+			consecutiveFailures: 0,
+		});
+		await store.webhooks.put(hook("whk_1"));
+		await store.webhooks.put(hook("whk_2"));
+		const sent: Sent[] = [];
+		const fakeFetch: typeof fetch = async (input, init) => {
+			const request = new Request(input, init);
+			sent.push({ url: request.url, headers: request.headers, body: await request.text() });
+			return new Response("", { status: 200 });
+		};
+		const dispatcherOver = (over: ComputeStore) =>
+			createWebhookDispatcher({ store: over, fetch: fakeFetch, now: () => clock.now });
+		return { store, clock, secret, sent, hook, dispatcherOver };
+	}
+
+	describe(`an event's webhooks in ${each.name}`, timeout, () => {
+		it("are delivered by a fresh dispatcher when the gateway died between storing the event and queueing them", async () => {
+			const { store, clock, secret, sent, dispatcherOver } = await setUp();
+			const gateway = dyingGateway(store, "after the event");
+			await emit(gateway, dispatcherOver(gateway));
+			expect(await store.events.get(event.id)).toEqual(event);
+			expect(await store.deliveries.list()).toEqual([]);
+			expect(await store.eventOutbox.get(event.id)).toMatchObject({ id: event.id, accountId: "acc_1" });
+
+			// Two fresh gateways leave it to the one that stored it for the grace period, then queue it once between them.
+			const [b, c] = [dispatcherOver(store), dispatcherOver(store)];
+			await Promise.all([b.drain(), c.drain()]);
+			expect(sent).toEqual([]);
+			clock.now += OUTBOX_GRACE_MS;
+			await Promise.all([b.drain(), c.drain()]);
+			expect(sent.map((one) => one.url).sort()).toEqual(["https://hooks.example/whk_1", "https://hooks.example/whk_2"]);
+			expect(await store.eventOutbox.get(event.id)).toBeUndefined();
+			// Signed with the event's ID as `webhook-id`, as before the crash, so a receiver drops a duplicate by it.
+			for (const one of sent) {
+				expect(one.headers.get("webhook-id")).toBe(event.id);
+				expect(JSON.parse(one.body)).toEqual(event);
+				expect(await verifyWebhook(secret, one.headers, one.body, { now: clock.now })).toBe(true);
+			}
+			const delivered = await store.deliveries.list({ eventId: event.id });
+			expect(delivered.map((delivery) => delivery.state)).toEqual(["delivered", "delivered"]);
+
+			// Nothing more later, or when it is queued again.
+			clock.now += OUTBOX_GRACE_MS;
+			expect(await b.enqueue(event)).toEqual([]);
+			await Promise.all([b.drain(), c.drain()]);
+			expect(sent).toHaveLength(2);
+		});
+
+		it("are queued once when the gateway died after queueing them, before clearing the outbox", async () => {
+			const { store, clock, sent, dispatcherOver } = await setUp();
+			const gateway = dyingGateway(store, "after its deliveries");
+			await emit(gateway, dispatcherOver(gateway));
+			expect(await store.deliveries.list({ eventId: event.id })).toHaveLength(2);
+			expect(await store.eventOutbox.get(event.id)).toBeDefined();
+			clock.now += OUTBOX_GRACE_MS;
+			await dispatcherOver(store).drain();
+			expect(await store.eventOutbox.get(event.id)).toBeUndefined();
+			expect(await store.deliveries.list({ eventId: event.id })).toHaveLength(2);
+			expect(sent).toHaveLength(2);
+		});
+
+		it("are queued once for an event stored again under its ID", async () => {
+			const { store, sent, dispatcherOver } = await setUp();
+			const dispatcher = dispatcherOver(store);
+			await emit(store, dispatcher);
+			await emit(store, dispatcher, { ...event, createdAt: NOW + 1 });
+			const queued = await store.deliveries.list({ eventId: event.id });
+			expect(queued.map((delivery) => delivery.id).sort()).toEqual(
+				[await deliveryId(event.id, "whk_1"), await deliveryId(event.id, "whk_2")].sort(),
+			);
+			expect(await store.eventOutbox.get(event.id)).toBeUndefined();
+			await dispatcher.drain();
+			await dispatcher.drain();
+			expect(sent).toHaveLength(2);
+		});
+
+		it("are recorded in the outbox only for an event a webhook wants", async () => {
+			const { store, hook, dispatcherOver } = await setUp();
+			// An account whose ID starts with this one's, and a disabled webhook: neither wants the events below.
+			await store.webhooks.put({ ...hook("whk_3"), accountId: "acc_10", events: ["sandbox.stopped"] });
+			await store.webhooks.put({ ...hook("whk_4"), events: ["sandbox.paused"], enabled: false });
+			for (const unwanted of [
+				{ ...event, id: "evt_stopped", type: "sandbox.stopped" as const },
+				{ ...event, id: "evt_paused", type: "sandbox.paused" as const },
+				{ ...event, id: "evt_other", accountId: "acc_2" },
+			]) {
+				await store.eventWrites.put(unwanted);
+				expect(await store.events.get(unwanted.id)).toEqual(unwanted);
+				expect(await store.eventOutbox.get(unwanted.id), unwanted.id).toBeUndefined();
+			}
+			await emit(store, dispatcherOver(store));
+			expect(await store.deliveries.list({ eventId: event.id })).toHaveLength(2);
+			expect(await store.eventOutbox.list()).toEqual([]);
+		});
+
+		if (each.kind !== undefined) {
+			it("are recorded with the event, or neither is stored", async () => {
+				const { store, dispatcherOver } = await setUp();
+				interrupt.next = true;
+				const written = store.eventWrites.put(event);
+				const queued = dispatcherOver(store).enqueue(event, written);
+				await expect(written).rejects.toThrow();
+				await expect(queued).rejects.toThrow();
+				expect(await store.events.get(event.id)).toBeUndefined();
+				expect(await store.eventOutbox.get(event.id)).toBeUndefined();
+				expect(await store.deliveries.list()).toEqual([]);
+			});
+		}
+	});
+}

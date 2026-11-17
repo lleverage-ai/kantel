@@ -761,11 +761,11 @@ describe("usage ticks across gateway replicas over one store", () => {
 			clock += USAGE_INTERVAL_MS;
 			await a.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
 		};
-		const put = store.events.put.bind(store.events);
+		const put = store.eventWrites.put.bind(store.eventWrites);
 		await on(0);
 		// The event's write fails: the kill stays pending, and the tick is still taken.
 		let failing = 1;
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("store unavailable");
 			return put(event);
 		};
@@ -781,7 +781,7 @@ describe("usage ticks across gateway replicas over one store", () => {
 		await on(2);
 		expect(await oomEvents(tom, id)).toEqual([1, 1]);
 		// Written, but its answer lost: stored again under the same ID, so still one event.
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			await put(event);
 			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("answer lost");
 		};
@@ -800,10 +800,10 @@ describe("usage ticks across gateway replicas over one store", () => {
 			clock += USAGE_INTERVAL_MS;
 			await a.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
 		};
-		const put = store.events.put.bind(store.events);
+		const put = store.eventWrites.put.bind(store.eventWrites);
 		await on(0);
 		let failing = 3;
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("store unavailable");
 			return put(event);
 		};
@@ -827,13 +827,13 @@ describe("usage ticks across gateway replicas over one store", () => {
 		};
 		await on(a, 0);
 		// A's write of its event is slow; meanwhile the host moves to B, which stores it too and counts a kill since.
-		const put = store.events.put.bind(store.events);
+		const put = store.eventWrites.put.bind(store.eventWrites);
 		let release: () => void = () => undefined;
 		const slow = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		let first = true;
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.oom_kill" && first) {
 				first = false;
 				await slow;

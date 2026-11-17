@@ -802,6 +802,50 @@ export const poolNameKey = (pool: { readonly owner: string; readonly name: strin
 export type StoredEvent = computeSchema.Event;
 
 /**
+ * An event whose webhook deliveries may not be queued yet: its outbox record, whose ID is the event's. It is written with
+ * the event (`EventWrites.put`) and deleted once the event's deliveries are queued, so one still there after a while is
+ * an event a gateway stored and then died (or failed to queue) before queueing them. A dispatcher's `drain()` queues
+ * those (`webhooks.ts`).
+ */
+export interface StoredEventOutbox {
+	readonly id: string;
+	readonly accountId: string;
+	/** The event's `createdAt`: a dispatcher leaves the record to the gateway that wrote it for a grace period from it. */
+	readonly createdAt: number;
+	/** Until when a dispatcher queueing its deliveries holds it, so others leave it; absent, nobody does. */
+	readonly claimedUntil?: number;
+}
+
+/** The outbox record written with `event`. */
+export const eventOutboxOf = (event: StoredEvent): StoredEventOutbox => ({
+	id: event.id,
+	accountId: event.accountId,
+	createdAt: event.createdAt,
+});
+
+/**
+ * Whether `webhook` takes `event`: its account's, enabled, and subscribed to its type. What a dispatcher queues a
+ * delivery for, and what `EventWrites.put` writes an outbox record for.
+ */
+export const webhookWants = (webhook: StoredWebhook, event: StoredEvent): boolean =>
+	webhook.accountId === event.accountId && webhook.enabled && webhook.events.includes(event.type);
+
+/**
+ * An event's write: the event and its outbox record (`StoredEventOutbox`) together or not at all, so no event is stored
+ * that nothing will queue the deliveries of.
+ */
+export interface EventWrites {
+	/**
+	 * Stores the event, replacing one with its ID, and in the same write its outbox record (unclaimed), when a webhook
+	 * wants it then (`webhookWants`): an event no webhook wants has no delivery to queue, and costs no record. A store may
+	 * write the record for an event no webhook wants (the SQL store matches webhooks' JSON as text, and may match too
+	 * much), never skip it for one a webhook wants. Storing an event again under its ID adds no delivery: deliveries' IDs
+	 * come from the event's and the webhook's.
+	 */
+	put(event: StoredEvent): Promise<void>;
+}
+
+/**
  * A delete's claim on a record (mounts): while it is fresh, a create mounting the source refuses, so the delete's count
  * of sandboxes mounting it can't miss one. A claim older than a minute is a delete that never finished, and ignored.
  */
@@ -1061,6 +1105,10 @@ export interface ComputeStore {
 	/** No two with one owner and name (`poolNameKey`): a write that would make two throws. */
 	readonly pools: Collection<StoredPool>;
 	readonly events: Collection<StoredEvent>;
+	/** Events whose webhook deliveries may not be queued yet. An event is written with its record through `eventWrites`. */
+	readonly eventOutbox: Collection<StoredEventOutbox>;
+	/** An event and its outbox record, written together. */
+	readonly eventWrites: EventWrites;
 	readonly idempotency: Collection<StoredIdempotency>;
 	readonly deviceLogins: Collection<StoredDeviceLogin>;
 	/** No two with one account and name (`environmentNameKey`): a write that would make two throws. */
@@ -1494,6 +1542,22 @@ function memoryStickyDiskWrites(
 	};
 }
 
+/** `EventWrites` over memory tables: the event and its outbox record in one turn, so nothing reads one without the other. */
+function memoryEventWrites(
+	events: MemoryTable<StoredEvent>,
+	outbox: MemoryTable<StoredEventOutbox>,
+	webhooks: MemoryTable<StoredWebhook>,
+): EventWrites {
+	return {
+		async put(event) {
+			events.records.set(event.id, structuredClone(event));
+			if ([...webhooks.records.values()].some((webhook) => webhookWants(webhook, event))) {
+				outbox.records.set(event.id, eventOutboxOf(event));
+			}
+		},
+	};
+}
+
 /** A sticky version's holders in a memory table. */
 const memoryHoldersOf = (holders: MemoryTable<StoredDiskHolder>, version: StoredStickyDiskVersion) =>
 	[...holders.records.values()]
@@ -1540,6 +1604,9 @@ export function createMemoryStore(): ComputeStore {
 	const stickyDiskVersions = memoryTable<StoredStickyDiskVersion>();
 	const diskHolders = memoryTable<StoredDiskHolder>();
 	const diskReports = memoryTable<StoredDiskReport>();
+	const events = memoryTable<StoredEvent>();
+	const eventOutbox = memoryTable<StoredEventOutbox>();
+	const webhooks = memoryTable<StoredWebhook>();
 	// Read and written with no await between, so nothing else runs in the middle.
 	const active = (userId: string) => {
 		const user = users.records.get(userId);
@@ -1567,14 +1634,16 @@ export function createMemoryStore(): ComputeStore {
 		snapshots: memoryCollection(),
 		apiKeys: memoryCollection(),
 		personalTokens: memoryCollection(),
-		webhooks: memoryCollection(),
+		webhooks: webhooks.collection,
 		deliveries: memoryCollection(),
 		telemetry: memoryCollection(),
 		proxies: memoryCollection(),
 		hosts: memoryCollection(),
 		joinTokens: memoryCollection(),
 		pools: memoryCollection<StoredPool>(poolNameKey),
-		events: memoryCollection(),
+		events: events.collection,
+		eventOutbox: eventOutbox.collection,
+		eventWrites: memoryEventWrites(events, eventOutbox, webhooks),
 		idempotency: memoryCollection(),
 		deviceLogins: memoryCollection(),
 		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
@@ -1645,7 +1714,7 @@ export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
 
 /**
  * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
- * deliveries, telemetry, proxy settings, join tokens, pools, events, GitHub runner integrations and their jobs, new sticky disks) fenced against its deletion: a write is checked once it
+ * deliveries, telemetry, proxy settings, join tokens, pools, events and their outbox, GitHub runner integrations and their jobs, new sticky disks) fenced against its deletion: a write is checked once it
  * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
  * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
  * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
@@ -1717,6 +1786,21 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		pools: fenced(store.pools, (pool) => (pool.owner === OPERATOR_POOLS ? undefined : pool.owner)),
 		// Written on every sandbox's change, so checked behind the write: one read more, no round trip more for the caller.
 		events: fenced(store.events, byAccount, true),
+		eventOutbox: fenced(store.eventOutbox, byAccount),
+		// The same, for an event written with its outbox record: one that landed in a closed account is taken out again, its
+		// outbox record first, behind the write.
+		eventWrites: {
+			async put(event) {
+				await store.eventWrites.put(event);
+				open(event.accountId)
+					.then(async (yes) => {
+						if (yes) return;
+						await store.eventOutbox.delete(event.id);
+						await store.events.delete(event.id);
+					})
+					.catch(() => undefined);
+			},
+		},
 		// Keyed by their account.
 		telemetry: fenced(store.telemetry, isAccount),
 		proxies: fenced(store.proxies, isAccount),
