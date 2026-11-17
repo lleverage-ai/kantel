@@ -1158,6 +1158,28 @@ describe("GitHub runners", () => {
 		);
 	});
 
+	it("deletes a busy runner's sandbox once it is in error, without waiting for GitHub to give up on its job", async () => {
+		const { job, sandboxes, runners, clock, store } = await setUp();
+		await job("queued", 1);
+		const [sandboxId] = [...sandboxes.sandboxes.keys()];
+		sandboxes.boot();
+		await runners.tick();
+		await job("in_progress", 1, { runner_name: sandboxId });
+		const sandbox = sandboxes.sandboxes.get(sandboxId ?? "");
+		if (sandbox === undefined) throw new Error("no sandbox");
+		sandbox.state = "error";
+		// Looked at with its job, every few minutes.
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId ?? "")).toBe(true);
+		clock.now += JOB_CHECK_EVERY_MS + 1;
+		await runners.tick();
+		expect(sandboxes.sandboxes.has(sandboxId ?? "")).toBe(false);
+		expect(await store.githubRunnerMachines.list()).toEqual([]);
+		expect((await store.githubRunners.get("ghr_one"))?.lastError?.message).toMatch(
+			/failed while busy: its sandbox is in error/,
+		);
+	});
+
 	it("reads an App's PKCS #1 key as GitHub gives it", async () => {
 		const pair = await crypto.subtle.generateKey(
 			{ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },

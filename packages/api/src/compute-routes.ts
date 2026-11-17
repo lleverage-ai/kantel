@@ -711,7 +711,7 @@ export const deleteSandbox = defineRoute({
 	tag: "sandboxes",
 	summary: "Delete a sandbox permanently",
 	description: describe(
-		"Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone.",
+		"Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. One on an account's own host is deleted there, even after the host has lost track of it (its earlier delete's answer lost): while that host is offline the delete is refused (`unavailable`) and the sandbox is kept, and once the host is revoked the sandbox is written off.",
 		scope("sandboxes:delete"),
 	),
 	params: SandboxPath,

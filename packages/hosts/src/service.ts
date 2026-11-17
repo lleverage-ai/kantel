@@ -1042,7 +1042,13 @@ export interface HostsService {
 		>;
 		/** Any other method of a sandbox, on its host: stop, resume, exec, files, snapshots. */
 		call<T = unknown>(sandboxId: string, method: string, params?: object, options?: CallOptions): Promise<T>;
-		delete(sandboxId: string): Promise<void>;
+		/**
+		 * Deletes it where it is placed. With no placement, `not_found`, unless `options.hostId` names the host the compute
+		 * plane's record says it is on: then it is settled by that host. Written off when the host is revoked or gone; deleted
+		 * there when the host answers (one it no longer has is gone already); refused (`unavailable`) while the host can't be
+		 * reached, so a disk that may still be on it isn't forgotten.
+		 */
+		delete(sandboxId: string, options?: { readonly hostId?: string }): Promise<void>;
 		placement(sandboxId: string): Promise<PlacementRecord | undefined>;
 		openPort(sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
 		/**
@@ -1580,6 +1586,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			: undefined;
 	/** Each host's events here whose exit report is still being taken (`onEvent`), which its next hello waits for. */
 	const exitsReporting = new Map<string, Set<Promise<void>>>();
+	/**
+	 * Hosts' `deleted` events still being applied, by sandbox: a delete whose answer was lost waits for them before it
+	 * judges, from the placement, whether its host said it was done (`sandboxes.delete`).
+	 */
+	const deletionsApplying = new Map<string, Promise<void>>();
 	/** When it last changed, when the host says. */
 	const healthAtOf = (sandbox: { healthAt?: unknown }): number | undefined =>
 		typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
@@ -1954,6 +1965,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const exit = exitOf(sandbox);
 				if (exit !== undefined) await compute?.reportExit?.(hostId, sandbox.id, exit, healthAtOf(sandbox));
 			})();
+			if (sandbox.state === "deleted") {
+				const before = deletionsApplying.get(sandbox.id);
+				const applying = (before === undefined ? work : Promise.allSettled([before, work]).then(() => undefined)).catch(
+					() => undefined,
+				);
+				deletionsApplying.set(sandbox.id, applying);
+				void applying.finally(() => {
+					if (deletionsApplying.get(sandbox.id) === applying) deletionsApplying.delete(sandbox.id);
+				});
+			}
 			// An exit's, until it is taken: the host's next hello here waits for it (`hello`).
 			if (exitOf(sandbox) !== undefined) {
 				const reporting = exitsReporting.get(hostId) ?? new Set<Promise<void>>();
@@ -4417,8 +4438,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				}
 				return result;
 			},
-			async delete(sandboxId) {
-				let placement = await placementOf(sandboxId);
+			async delete(sandboxId, deleteOptions) {
+				const placed = await store.getPlacement(sandboxId);
+				if (placed === undefined) {
+					const hostId = deleteOptions?.hostId;
+					if (hostId === undefined) throw new KantelError("not_found", "No such sandbox");
+					// No placement, while the compute plane's record has it on this host: its host deleted it and its placement
+					// went (its `deleted` event came before the delete's answer, which was lost), or it was never recorded. The
+					// host is asked again, so nothing of it is left there; a revoked one never answers, and it is written off.
+					const host = await store.getHost(hostId);
+					if (host === undefined || host.revoked) {
+						log(`[hosts] sandbox ${sandboxId} written off: it has no placement, and its host ${hostId} is revoked`);
+						return;
+					}
+					try {
+						await onHost(hostId, HostMethods.delete, { sandboxId }, undefined, host);
+					} catch (error) {
+						if (!(error instanceof KantelError && error.code === "not_found")) throw error;
+					}
+					log(`[hosts] sandbox ${sandboxId} deleted on host ${hostId}, where it had no placement`);
+					return;
+				}
+				let placement = placed;
 				// A move under way leaves nothing on its target. It is fenced first, in the store (its rollback begun, so it
 				// never switches from here), then its copy there cancelled, and the delete goes on against the placement as it
 				// is then: on the target, if the move switched before the fence. While the target can't be told, the delete
@@ -4462,7 +4503,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					await onHost(placement.hostId, HostMethods.delete, { sandboxId });
 				} catch (error) {
 					// Gone on the host already is gone.
-					if (!(error instanceof KantelError && error.code === "not_found")) throw error;
+					if (!(error instanceof KantelError && error.code === "not_found")) {
+						// Its host said it deleted it (its `deleted` event, which a host sends before its answer, forgot the
+						// placement), and then its link dropped before the answer: done, not failed. Failing it would leave the
+						// sandbox in error with no placement, which only its host's word can settle.
+						// A `deleted` event that arrived before the link dropped is applied first: its placement's removal may still be
+						// on its way to the store. (One a host sent to another gateway replica isn't seen here: the delete fails, and
+						// deleting it again settles it by its host, `deleteOptions.hostId`.)
+						if (unanswered(error)) await deletionsApplying.get(sandboxId);
+						if (unanswered(error) && (await store.getPlacement(sandboxId)) === undefined) {
+							log(`[hosts] sandbox ${sandboxId} deleted: its host said so before its answer was lost`);
+							return;
+						}
+						throw error;
+					}
 				}
 				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
 				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);

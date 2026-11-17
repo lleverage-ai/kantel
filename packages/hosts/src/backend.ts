@@ -1578,10 +1578,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { sandbox, hostId, ...known } = outcome.moved;
 			return { state: "done", placement: await placed(sandboxId, sandbox, hostId, known) };
 		},
-		async destroy(sandboxId) {
+		async destroy(sandboxId, destroyOptions) {
 			await options.ports?.forget(sandboxId);
 			try {
-				await hosts.sandboxes.delete(sandboxId);
+				await hosts.sandboxes.delete(
+					sandboxId,
+					destroyOptions?.hostId === undefined ? undefined : { hostId: destroyOptions.hostId },
+				);
 			} catch (error) {
 				if (!(error instanceof KantelError && error.code === "not_found")) throw error;
 			}
