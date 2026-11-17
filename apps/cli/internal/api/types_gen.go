@@ -531,6 +531,8 @@ type CreateAccountPoolBody struct {
 	Name    string  `json:"name"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
 	Sync *bool `json:"sync,omitempty"`
+	// The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap.
+	VCPUsPerCPU Nullable[float64] `json:"vcpusPerCpu,omitzero"`
 }
 
 type CreateBucketSourceBody struct {
@@ -617,6 +619,8 @@ type CreatePoolBody struct {
 	Name string `json:"name"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
 	Sync *bool `json:"sync,omitempty"`
+	// The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap.
+	VCPUsPerCPU Nullable[float64] `json:"vcpusPerCpu,omitzero"`
 }
 
 // Any other field is refused as `invalid`.
@@ -2006,6 +2010,8 @@ type Pool struct {
 	Runners []GithubRunnerKind `json:"runners,omitzero"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default.
 	Sync bool `json:"sync"`
+	// The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest.
+	VCPUsPerCPU *float64 `json:"vcpusPerCpu,omitempty"`
 }
 
 type PoolList struct {
@@ -3361,6 +3367,8 @@ type UpdatePoolBody struct {
 	Runners []GithubRunnerKind `json:"runners,omitzero"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
 	Sync *bool `json:"sync,omitempty"`
+	// The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap.
+	VCPUsPerCPU Nullable[float64] `json:"vcpusPerCpu,omitzero"`
 }
 
 type UpdateSandboxBody struct {

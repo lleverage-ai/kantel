@@ -148,9 +148,13 @@ func poolTable(c *cli.Context, pools []api.Pool) string {
 		if p.Sync {
 			sync = "on"
 		}
-		rows = append(rows, []string{p.ID, p.Name, def, sync, fmt.Sprint(p.Hosts)})
+		vcpus := ""
+		if p.VCPUsPerCPU != nil {
+			vcpus = strconv.FormatFloat(*p.VCPUsPerCPU, 'f', -1, 64)
+		}
+		rows = append(rows, []string{p.ID, p.Name, def, sync, vcpus, fmt.Sprint(p.Hosts)})
 	}
-	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "SYNC", "HOSTS"}, rows)
+	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "SYNC", "VCPUS/CPU", "HOSTS"}, rows)
 }
 
 // poolCommand runs a call that answers a pool on the pool its first argument names, and prints it.
@@ -436,6 +440,33 @@ func ownHosts() cli.Section {
 						return fmt.Sprintf("%s (%s) syncs: its hosts join its mesh.", p.Name, p.ID)
 					}
 					return fmt.Sprintf("%s (%s) doesn't sync.", p.Name, p.ID)
+				})
+			},
+		},
+		{
+			Name: "pools vcpus", Summary: "Cap the vCPUs each host in one of your pools may book for each of its CPUs, or remove the cap",
+			Args: []cli.Arg{{Name: "pool"}, {Name: "vcpus-per-cpu|off"}},
+			Details: "A microVM that would take a host past the cap goes on another host of the pool, or waits for room, as one " +
+				"that doesn't fit its memory does: a GitHub runner's job waits for it. A host with no microVM booked always " +
+				"takes one. 1 books no more vCPUs than a host has threads; from 0.25 to 16. Off by default: vCPUs then only " +
+				"decide which host is emptiest.",
+			Run: func(c *cli.Context) error {
+				limit := api.Null[float64]()
+				if c.Arg(1) != "off" {
+					v, err := strconv.ParseFloat(c.Arg(1), 64)
+					if err != nil || v < 0.25 || v > 16 {
+						return cli.Fail("vcpus-per-cpu is a number from 0.25 to 16, or off, not " + c.Arg(1))
+					}
+					limit = api.Of(v)
+				}
+				return poolCommand(c, func(client *api.Client, id string, raw *json.RawMessage) (*api.Pool, error) {
+					return client.UpdateAccountPool(c.Ctx, id, api.UpdatePoolBody{VCPUsPerCPU: limit}, api.Raw(raw))
+				}, func(p api.Pool) string {
+					if p.VCPUsPerCPU == nil {
+						return fmt.Sprintf("%s (%s) has no vCPU cap.", p.Name, p.ID)
+					}
+					return fmt.Sprintf("%s (%s) books at most %s vCPUs for each CPU of a host.", p.Name, p.ID,
+						strconv.FormatFloat(*p.VCPUsPerCPU, 'f', -1, 64))
 				})
 			},
 		},

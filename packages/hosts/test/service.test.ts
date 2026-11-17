@@ -703,6 +703,73 @@ describe("hosts service", () => {
 		expect(isKantelError(other, "unavailable") && other.details).toBeUndefined();
 	});
 
+	it("places microVMs on a host of a pool with a vCPU cap only while its booked vCPUs stay within it", async () => {
+		const { service, join } = await setup();
+		const asked: string[] = [];
+		const caps: { [poolId: string]: number | undefined } = { pool_ci: 0.5 };
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			poolVcpusPerCpu: async (poolId) => {
+				asked.push(poolId);
+				return caps[poolId];
+			},
+		});
+		const a = await join("a");
+		await service.update(a.hostId, { poolId: "pool_ci" });
+		const host = new FakeHost(service, a.hostId);
+		host.freeMemoryMiB = 64_000;
+		host.connect();
+		await tick();
+		// 16 CPUs at half a vCPU each: four 2-vCPU microVMs, then the host is full though its memory isn't.
+		for (let n = 0; n < 4; n++) await service.sandboxes.create({ tier: "microvm" });
+		const refusal = await service.sandboxes.create({ tier: "microvm" }).then(
+			() => "placed",
+			(error: unknown) => (isKantelError(error) ? `${error.code} ${String(error.details?.reason)}` : String(error)),
+		);
+		expect(refusal).toBe("exhausted insufficient_capacity");
+		// The pool's cap is read for each create, once for the pool.
+		expect(asked.every((poolId) => poolId === "pool_ci")).toBe(true);
+		expect(asked).toHaveLength(5);
+		// An isolate books no vCPUs, so it still goes there; with the cap removed, so does a microVM.
+		expect((await service.sandboxes.create({ tier: "isolate", owner: "acc_1" })).hostId).toBe(a.hostId);
+		caps.pool_ci = undefined;
+		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(a.hostId);
+	});
+
+	it("lets creates at once on a host of a capped pool book no more vCPUs than its cap, placing the rest elsewhere", async () => {
+		const { service, join } = await setup();
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			poolVcpusPerCpu: async () => 0.5,
+		});
+		const hosts = [];
+		for (const name of ["a", "b"]) {
+			const joined = await join(name);
+			await service.update(joined.hostId, { poolId: "pool_ci" });
+			const host = new FakeHost(service, joined.hostId);
+			host.freeMemoryMiB = 64_000;
+			host.connect();
+			hosts.push(joined.hostId);
+		}
+		await tick();
+		// Two hosts of 16 CPUs at half a vCPU each: eight 2-vCPU microVMs in all, four on each, whatever each read first.
+		const answers = await Promise.allSettled(
+			Array.from({ length: 10 }, () => service.sandboxes.create({ tier: "microvm" })),
+		);
+		const placed = answers.flatMap((answer) => (answer.status === "fulfilled" ? [answer.value.hostId] : []));
+		expect(placed).toHaveLength(8);
+		for (const hostId of hosts) expect(placed.filter((id) => id === hostId)).toHaveLength(4);
+		for (const answer of answers) {
+			if (answer.status === "rejected") {
+				expect(isKantelError(answer.reason, "exhausted") && answer.reason.details?.reason).toBe(
+					"insufficient_capacity",
+				);
+			}
+		}
+	});
+
 	it("sends a custom shape as its numbers, only to a host that makes them, and a named one by its name", async () => {
 		const { service, join } = await setup();
 		const old = await join("old");

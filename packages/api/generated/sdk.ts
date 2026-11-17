@@ -471,6 +471,8 @@ export interface CreateAccountPoolBody {
 	readonly name: string;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
 	readonly sync?: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
+	readonly vcpusPerCpu?: number | null;
 }
 
 /** Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks. */
@@ -576,6 +578,8 @@ export interface CreatePoolBody {
 	readonly name: string;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
 	readonly sync?: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
+	readonly vcpusPerCpu?: number | null;
 }
 
 /** Any other field is refused as `invalid`. */
@@ -1838,6 +1842,8 @@ export interface Pool {
 	readonly hosts: number;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. */
 	readonly sync: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest. */
+	readonly vcpusPerCpu?: number;
 	/** Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. */
 	readonly runners?: readonly GithubRunnerKind[];
 	/** Epoch milliseconds, UTC. */
@@ -3102,6 +3108,8 @@ export interface UpdatePoolBody {
 	readonly default?: true;
 	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
 	readonly sync?: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
+	readonly vcpusPerCpu?: number | null;
 	/** Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. */
 	readonly runners?: readonly GithubRunnerKind[];
 }

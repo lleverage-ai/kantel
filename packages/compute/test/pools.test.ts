@@ -250,6 +250,39 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		expect(pools.at(-1)).toEqual({ poolId: own.id, sync: false });
 	});
 
+	it("keeps a pool's vCPU cap, none by default, until a call sets another or removes it", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { api, root, tom } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		expect(ci.vcpusPerCpu).toBeUndefined();
+		expect(await api.service.poolVcpusPerCpu(ci.id)).toBeUndefined();
+		const capped = await root.createPool({ name: "builds", vcpusPerCpu: 1.5 });
+		expect(capped.vcpusPerCpu).toBe(1.5);
+		expect(await api.service.poolVcpusPerCpu(capped.id)).toBe(1.5);
+
+		expect(await root.updatePool("ci", { vcpusPerCpu: 1 })).toMatchObject({ vcpusPerCpu: 1 });
+		// Another change keeps it.
+		expect(await root.updatePool("ci", { name: "web", sync: true })).toMatchObject({ name: "web", vcpusPerCpu: 1 });
+		expect(await api.service.poolVcpusPerCpu(ci.id)).toBe(1);
+		// null removes it.
+		const removed = await root.updatePool("web", { vcpusPerCpu: null });
+		expect(removed.vcpusPerCpu).toBeUndefined();
+		expect(await api.service.poolVcpusPerCpu(ci.id)).toBeUndefined();
+		// Outside 0.25 to 16 it is refused, and nothing changes.
+		for (const vcpusPerCpu of [0.2, 16.5]) {
+			expect((await failure(root.updatePool("builds", { vcpusPerCpu }))).code).toBe("invalid");
+		}
+		expect(await api.service.poolVcpusPerCpu(capped.id)).toBe(1.5);
+		expect(await api.service.poolVcpusPerCpu("pool_gone")).toBeUndefined();
+
+		// An account's pools too.
+		const own = await tom.createAccountPool({ name: "ci", vcpusPerCpu: 2 });
+		expect(own.vcpusPerCpu).toBe(2);
+		expect(await tom.updateAccountPool(own.id, { vcpusPerCpu: 0.75 })).toMatchObject({ vcpusPerCpu: 0.75 });
+		expect((await tom.listAccountPools()).items.find((pool) => pool.id === own.id)?.vcpusPerCpu).toBe(0.75);
+	});
+
 	it("keeps an account's pools to the account", async () => {
 		const store = await make();
 		const { backend } = hostsBackend();

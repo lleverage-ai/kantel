@@ -15580,6 +15580,19 @@
 					"sync": {
 						"type": "boolean",
 						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
+					},
+					"vcpusPerCpu": {
+						"anyOf": [
+							{
+								"type": "number",
+								"minimum": 0.25,
+								"maximum": 16
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
 					}
 				},
 				"title": "CreateAccountPoolBody"
@@ -15886,6 +15899,19 @@
 					"sync": {
 						"type": "boolean",
 						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
+					},
+					"vcpusPerCpu": {
+						"anyOf": [
+							{
+								"type": "number",
+								"minimum": 0.25,
+								"maximum": 16
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
 					}
 				},
 				"title": "CreatePoolBody"
@@ -19177,6 +19203,10 @@
 					"sync": {
 						"type": "boolean",
 						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default."
+					},
+					"vcpusPerCpu": {
+						"type": "number",
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest."
 					},
 					"runners": {
 						"type": "array",
@@ -22489,6 +22519,19 @@
 					"sync": {
 						"type": "boolean",
 						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
+					},
+					"vcpusPerCpu": {
+						"anyOf": [
+							{
+								"type": "number",
+								"minimum": 0.25,
+								"maximum": 16
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
 					},
 					"runners": {
 						"type": "array",

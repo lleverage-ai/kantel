@@ -71,6 +71,7 @@ kantel hosts move host_… ci            # once it has no sandboxes: it stays dr
 kantel hosts drain host_… --off        # take sandboxes again, in ci
 kantel pools default ci                # where hosts join, naming no pool
 kantel pools sync ci on                # its hosts join the pool's mesh (off by default)
+kantel pools vcpus ci 1                # each host books at most 1 vCPU per CPU thread (off by default)
 kantel pools rm ci                     # only an empty pool that isn't the default
 ```
 
@@ -83,6 +84,8 @@ Data belongs to one pool too. A snapshot is in the pool of the host it was taken
 A move is explicit, and only a drained host with no sandboxes moves: drain it, let its sandboxes go, move it, then undrain it. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
 
 A pool's sync is off by default. With it on (`kantel pools sync ci on`, or `sync` on the pool in the API), each of the pool's hosts whose kantel-host runs the mesh joins the pool's mesh: a WireGuard network between that pool's hosts alone, each with an IPv6 address of its own in the pool's range. Kantel hands each host the others' keys, addresses and the endpoints they reported, and tells them at once when a host joins, leaves, is moved or removed. Hosts of different pools never peer. Turning sync off takes the pool's hosts out of the mesh.
+
+A pool has no vCPU cap by default: placement ranks its hosts by how full they would be, the larger of their memory and their vCPUs booked against their CPUs, and a host whose memory has room takes a microVM however many vCPUs it has booked. A cap (`kantel pools vcpus ci 1.5`, or `vcpusPerCpu` on the pool in the API, from 0.25 to 16) makes a host that would book more than that many vCPUs per CPU thread full: the microVM goes on another of the pool's hosts, or waits for room, as one that doesn't fit a host's memory does. A GitHub runner's job waits for a runner, and a create says `insufficient_capacity`. A host with nothing booked always takes one. Use it for CPU-bound work such as CI, where a runner that shares its host's CPUs with more runners takes longer, and its tests' timeouts can fail: `1` books no more vCPUs than a host has threads. `kantel pools vcpus ci off` removes it. MicroVMs already running stay where they are.
 
 ## Turn it on
 

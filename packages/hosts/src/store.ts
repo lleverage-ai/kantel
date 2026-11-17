@@ -50,6 +50,22 @@ export interface HostRecord {
 	readonly drainEpoch?: number;
 }
 
+/** States in which a placement's microVM books its host's CPUs. */
+export const BOOKING_STATES: readonly string[] = ["starting", "running", "stopping"];
+
+/** The vCPUs `placements`' live microVMs book on `hostId`, but `except`'s (a create placed again under its ID). */
+export function bookedOn(placements: readonly PlacementRecord[], hostId: string, except?: string): number {
+	return placements
+		.filter(
+			(placement) =>
+				placement.hostId === hostId &&
+				placement.sandboxId !== except &&
+				placement.tier === "microvm" &&
+				BOOKING_STATES.includes(placement.state),
+		)
+		.reduce((sum, placement) => sum + placement.vcpus, 0);
+}
+
 /**
  * Whether `host` admits a new placement (a create, a snapshot's restore, a fork) or an upgrade's microVM: there, neither
  * draining nor revoked, and, kept to `poolId`, in that pool where its pool is known here (a host the compute plane hasn't
@@ -189,9 +205,15 @@ export interface HostStore {
 	 * `poolId` where that is given and the host's pool is known), as one write. A create that read its host before a
 	 * drain is refused here, so a host drained, found empty and moved to another pool never takes one after (the compute
 	 * plane's move). Answers the pool its host was in as it admitted it (absent where it has none yet), or undefined,
-	 * writing nothing, when it didn't.
+	 * writing nothing, when it didn't. With `maxVcpus` (its pool's vCPU cap, `Placement.maxVcpus`), a microVM is put only
+	 * while the host's live microVMs' vCPUs (`bookedOn`) and its own are at most that, or the host has none booked, checked
+	 * in the same write: else it answers "vcpus", writing nothing, so creates at once can't both take the last of it.
 	 */
-	placeOnTakingHost(placement: PlacementRecord, poolId?: string): Promise<{ readonly poolId?: string } | undefined>;
+	placeOnTakingHost(
+		placement: PlacementRecord,
+		poolId?: string,
+		maxVcpus?: number,
+	): Promise<{ readonly poolId?: string } | "vcpus" | undefined>;
 	/**
 	 * Everything that has something on `hostId`, in one read: its own placements (a lost one not), and placements on
 	 * other hosts with an upgrade under way whose microVM is (or may be) there, or an upgraded isolate there still to be
@@ -304,9 +326,13 @@ export function createMemoryHostStore(): HostStore {
 		async occupying(hostId) {
 			return [...placements.values()].filter((placement) => occupies(placement, hostId)).map(copy);
 		},
-		async placeOnTakingHost(placement, poolId) {
+		async placeOnTakingHost(placement, poolId, maxVcpus) {
 			const host = hosts.get(placement.hostId);
 			if (!admits(host, poolId)) return undefined;
+			if (maxVcpus !== undefined && placement.tier === "microvm") {
+				const booked = bookedOn([...placements.values()], placement.hostId, placement.sandboxId);
+				if (booked > 0 && booked + placement.vcpus > maxVcpus) return "vcpus";
+			}
 			placements.set(placement.sandboxId, copy(placement));
 			return host.poolId === undefined ? {} : { poolId: host.poolId };
 		},
@@ -406,6 +432,66 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			values,
 		);
 	};
+	/**
+	 * A capped microVM's admission (`placeOnTakingHost` with `maxVcpus`): the placement is inserted only while its host
+	 * admits it and the vCPUs its live microVMs book (`bookedOn`, but its own ID's), with its own, are at most `maxVcpus`,
+	 * or it has none booked. On Postgres the host's row is locked first, in the same transaction, so the insert's own read
+	 * (a new snapshot under read committed) sees every placement admitted before it there; SQLite (D1 too) has one writer
+	 * at a time. Whether it went in is read back: its row as written.
+	 */
+	const placeWithinVcpus = async (
+		placement: PlacementRecord,
+		poolId: string | undefined,
+		maxVcpus: number,
+	): Promise<{ readonly poolId?: string } | "vcpus" | undefined> => {
+		const postgres = driver.dialect === "postgres";
+		const field = (name: string, table: string) =>
+			postgres ? `(${table}.data::jsonb ->> '${name}')` : `json_extract(${table}.data, '$.${name}')`;
+		const vcpus = postgres ? `(${field("vcpus", "p")})::integer` : field("vcpus", "p");
+		const states = BOOKING_STATES.map(() => "?").join(", ");
+		const booked = `(SELECT COALESCE(SUM(${vcpus}), 0) FROM compute_placements p WHERE p.host_id = h.id AND p.sandbox_id <> ? AND ${field("tier", "p")} = 'microvm' AND ${field("state", "p")} IN (${states}))`;
+		const pooled = poolId === undefined ? "" : ` AND (${field("poolId", "h")} IS NULL OR ${field("poolId", "h")} = ?)`;
+		const data = JSON.stringify(placement);
+		const insert = {
+			sql: `INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
+				SELECT ?, ?, ?, ? FROM compute_hosts h
+				WHERE h.id = ? AND h.data NOT LIKE ? AND h.data NOT LIKE ?${pooled}
+					AND (${booked} = 0 OR ${booked} + ? <= ?)
+				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
+					data = excluded.data`,
+			params: [
+				placement.sandboxId,
+				placement.hostId,
+				placement.createdAt,
+				data,
+				placement.hostId,
+				DRAINING_PATTERN,
+				REVOKED_PATTERN,
+				...(poolId === undefined ? [] : [poolId]),
+				placement.sandboxId,
+				...BOOKING_STATES,
+				placement.sandboxId,
+				...BOOKING_STATES,
+				placement.vcpus,
+				maxVcpus,
+			] satisfies SqlValue[],
+		};
+		await driver.batch([
+			...(postgres
+				? [{ sql: "SELECT id FROM compute_hosts WHERE id = ? FOR UPDATE", params: [placement.hostId] }]
+				: []),
+			insert,
+		]);
+		const [[row], [hostRow]] = await Promise.all([
+			driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [placement.sandboxId]),
+			driver.query("SELECT data FROM compute_hosts WHERE id = ?", [placement.hostId]),
+		]);
+		const host = hostRow === undefined ? undefined : parse<HostRecord>(hostRow);
+		if (row !== undefined && String(row.data) === data)
+			return host?.poolId === undefined ? {} : { poolId: host.poolId };
+		return admits(host, poolId) ? "vcpus" : undefined;
+	};
+
 	return {
 		async insertJoinToken(token) {
 			await driver.query(
@@ -488,7 +574,8 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
 			);
 		},
-		async placeOnTakingHost(placement, poolId) {
+		async placeOnTakingHost(placement, poolId, maxVcpus) {
+			if (maxVcpus !== undefined && placement.tier === "microvm") return placeWithinVcpus(placement, poolId, maxVcpus);
 			// The host's row is read locked on Postgres (`FOR UPDATE`), so a drain writing it waits for this placement, and
 			// one already writing it is waited for and read as it then is (draining, and refused): a move's check, made after
 			// its drain, sees every placement that got in. SQLite (D1 too) has one writer at a time, so needs no lock.

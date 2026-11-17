@@ -123,6 +123,58 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBeUndefined();
 	});
 
+	it("places a capped microVM only while its host's booked vCPUs and its own stay within the cap, in one write", async () => {
+		const store = await open();
+		await store.insertHost({ ...host("host_a", 1), poolId: "pool_a" });
+		const vm = (id: string, vcpus: number, change: Partial<PlacementRecord> = {}): PlacementRecord => ({
+			...placement(id, "host_a", 1),
+			vcpus,
+			state: "starting",
+			...change,
+		});
+		// Nothing booked: one larger than the cap still goes in, alone.
+		expect(await store.placeOnTakingHost(vm("big", 12), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s1", 2), "pool_a", 8)).toBe("vcpus");
+		expect(await store.getPlacement("s1")).toBeUndefined();
+		// Stopped, lost or deleting ones book nothing; isolates book nothing; another host's don't count.
+		await store.putPlacement({ ...vm("big", 12), state: "stopped" });
+		await store.putPlacement(vm("lost", 8, { state: "lost" }));
+		await store.putPlacement(vm("iso", 0, { tier: "isolate" }));
+		await store.putPlacement({ ...placement("other", "host_b", 1), vcpus: 64 });
+		expect(await store.placeOnTakingHost(vm("s2", 4), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s3", 4), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s4", 2), "pool_a", 8)).toBe("vcpus");
+		// Without a cap, or for an isolate, it goes in as before.
+		expect(await store.placeOnTakingHost(vm("s5", 2), "pool_a")).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s6", 0, { tier: "isolate" }), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		// A create placed again under its ID doesn't count its own earlier placement.
+		expect(await store.placeOnTakingHost(vm("s2", 4), "pool_a", 10)).toEqual({ poolId: "pool_a" });
+		// A host that doesn't admit it is still refused as such, not for its vCPUs.
+		await store.updateHost("host_a", (current) => ({ ...current, draining: true }));
+		expect(await store.placeOnTakingHost(vm("s7", 2), "pool_a", 64)).toBeUndefined();
+	});
+
+	it("lets only one of the creates at once take a host's last vCPUs, or its empty-host exception", async () => {
+		const store = await open();
+		await store.insertHost(host("host_a", 1));
+		const vm = (id: string, vcpus: number): PlacementRecord => ({
+			...placement(id, "host_a", 1),
+			vcpus,
+			state: "starting",
+		});
+		// Empty: of three larger than the cap at once, one goes in.
+		const empty = await Promise.all(["e1", "e2", "e3"].map((id) => store.placeOnTakingHost(vm(id, 16), undefined, 8)));
+		expect(empty.filter((answer) => answer !== "vcpus")).toHaveLength(1);
+		for (const id of ["e1", "e2", "e3"]) await store.removePlacement(id);
+		// 4 of 8 booked: of four 2-vCPU creates at once, two go in.
+		await store.putPlacement(vm("held", 4));
+		const last = await Promise.all(
+			["l1", "l2", "l3", "l4"].map((id) => store.placeOnTakingHost(vm(id, 2), undefined, 8)),
+		);
+		expect(last.filter((answer) => answer !== "vcpus")).toHaveLength(2);
+		expect((await store.placementsOn("host_a")).reduce((sum, p) => sum + p.vcpus, 0)).toBe(8);
+	});
+
 	it("places a new sandbox kept to a pool only on a host in that pool, where the host's pool is known", async () => {
 		const store = await open();
 		await store.insertHost({ ...host("host_a", 1), poolId: "pool_a" });
@@ -368,5 +420,26 @@ describe.skipIf(postgresUrl === undefined || postgresUrl === "")("Postgres, two 
 		expect(await kept).toBeUndefined();
 		expect(await loose).toEqual({ poolId: "pool_b" });
 		expect((await store.placementsOn("host_b")).map((p) => p.sandboxId)).toEqual(["s4"]);
+
+		// A capped create while another holds the host and books its vCPUs (not yet committed): it waits, then sees them.
+		await store.putHost(host("host_c", 3));
+		await store.putPlacement({ ...placement("c1", "host_c", 1), vcpus: 2, state: "running" });
+		await other.query("BEGIN");
+		await other.query("SELECT id FROM compute_hosts WHERE id = $1 FOR UPDATE", ["host_c"]);
+		await other.query(
+			"INSERT INTO compute_placements (sandbox_id, host_id, created_at, data) VALUES ($1, $2, $3, $4)",
+			["c2", "host_c", 2, JSON.stringify({ ...placement("c2", "host_c", 2), vcpus: 4, state: "starting" })],
+		);
+		let cappedSettled = false;
+		const capped = store
+			.placeOnTakingHost({ ...placement("c3", "host_c", 3), vcpus: 4, state: "starting" }, undefined, 8)
+			.finally(() => {
+				cappedSettled = true;
+			});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(cappedSettled).toBe(false);
+		await other.query("COMMIT");
+		expect(await capped).toBe("vcpus");
+		expect((await store.placementsOn("host_c")).map((p) => p.sandboxId)).toEqual(["c1", "c2"]);
 	});
 });

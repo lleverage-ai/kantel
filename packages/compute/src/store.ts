@@ -784,6 +784,11 @@ export interface StoredPool {
 	 * "2a. The mesh"). Off (absent) by default.
 	 */
 	readonly sync?: boolean;
+	/**
+	 * The most vCPUs each of its hosts may book for each of its CPUs: placement counts a host past it as full
+	 * (`Pool.vcpusPerCpu`). Absent: no cap.
+	 */
+	readonly vcpusPerCpu?: number;
 }
 
 /** The key no two pools may share: an owner's and a name, so the store refuses a second pool of a name in an owner. */

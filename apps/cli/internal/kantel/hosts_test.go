@@ -88,6 +88,9 @@ func TestPoolsAndHostsMove(t *testing.T) {
 		"PATCH /v1/pools/pool_ci": func(c call) any {
 			p := pool("pool_ci", "builds", c.Body["default"] == true)
 			p["sync"] = c.Body["sync"] == true
+			if v, ok := c.Body["vcpusPerCpu"].(float64); ok {
+				p["vcpusPerCpu"] = v
+			}
 			return p
 		},
 		"DELETE /v1/pools/pool_ci": func(call) any { return nil },
@@ -122,6 +125,17 @@ func TestPoolsAndHostsMove(t *testing.T) {
 	wrong := run(t, []string{"pools", "sync", "pool_ci", "yes"}, opts{routes: r})
 	eq(t, "wrong exit", wrong.Code, 1)
 	eq(t, "wrong calls", len(wrong.Calls), 0)
+	capped := run(t, []string{"pools", "vcpus", "pool_ci", "1.5"}, opts{routes: r})
+	jsonEq(t, "vcpus", capped.Calls[0].Body, `{"vcpusPerCpu":1.5}`)
+	eq(t, "vcpus out", capped.Stdout, "builds (pool_ci) books at most 1.5 vCPUs for each CPU of a host.\n")
+	uncapped := run(t, []string{"pools", "vcpus", "pool_ci", "off"}, opts{routes: r})
+	jsonEq(t, "vcpus off", uncapped.Calls[0].Body, `{"vcpusPerCpu":null}`)
+	eq(t, "vcpus off out", uncapped.Stdout, "builds (pool_ci) has no vCPU cap.\n")
+	for _, bad := range []string{"0.1", "17", "lots"} {
+		refused := run(t, []string{"pools", "vcpus", "pool_ci", bad}, opts{routes: r})
+		eq(t, "vcpus "+bad+" exit", refused.Code, 1)
+		eq(t, "vcpus "+bad+" calls", len(refused.Calls), 0)
+	}
 	removed := run(t, []string{"pools", "rm", "pool_ci"}, opts{routes: r})
 	eq(t, "rm calls", strings.Join(lines(removed.Calls), ", "), "DELETE /v1/pools/pool_ci")
 	missing := run(t, []string{"pools", "rm", "nowhere", "--account", "acc_org"}, opts{routes: r})

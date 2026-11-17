@@ -14,6 +14,7 @@ import {
 	SPREAD_FULLNESS,
 	SPREAD_MARGIN,
 	shapeOn,
+	vcpusFit,
 } from "../src/scheduler.ts";
 import type { HostRecord } from "../src/store.ts";
 
@@ -95,9 +96,42 @@ describe("place", () => {
 		const idle = candidate("idle", capacity(16_000), { bookedVcpus: 0 });
 		const byCpu = place({ tier: "microvm", size: "large" }, [booked, idle]);
 		expect(isRefusal(byCpu) ? byCpu.reason : byCpu.host.id).toBe("idle");
-		// vCPUs rank but never refuse: a host booked past its CPUs still takes a sandbox that fits its memory.
+		// Without a pool cap, vCPUs rank but never refuse: a host booked past its CPUs still takes a sandbox that fits its memory.
 		const only = place({ tier: "microvm", size: "large" }, [candidate("only", capacity(16_000), { bookedVcpus: 40 })]);
 		expect(isRefusal(only) ? only.reason : only.host.id).toBe("only");
+	});
+
+	it("turns a host away as full past its pool's vCPU cap, and places on another or refuses for want of room", () => {
+		// 16 CPUs capped at 1 vCPU each: 12 booked takes a 4-vCPU microVM, 14 booked doesn't.
+		const full = candidate("full", capacity(30_000), { bookedVcpus: 14, vcpusPerCpu: 1 });
+		const room = candidate("room", capacity(10_000), { bookedVcpus: 12, vcpusPerCpu: 1 });
+		const chosen = place({ tier: "microvm", size: "large" }, [full, room]);
+		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("room");
+		const refused = place({ tier: "microvm", size: "large" }, [full]);
+		expect(isRefusal(refused) && refused.code).toBe("insufficient_capacity");
+		expect(isRefusal(refused) && refused.reason).toContain("its vCPUs booked");
+		// Without a cap the same host takes it, as before.
+		const uncapped = place({ tier: "microvm", size: "large" }, [{ ...full, vcpusPerCpu: undefined }]);
+		expect(isRefusal(uncapped) ? uncapped.reason : uncapped.host.id).toBe("full");
+		// Isolates book no vCPUs, so a capped host still takes them.
+		const isolate = place({ tier: "isolate" }, [full]);
+		expect(isRefusal(isolate) ? isolate.reason : isolate.host.id).toBe("full");
+	});
+
+	it("caps vCPUs exactly at the cap times a host's CPUs, and lets an empty host take one larger than the cap", () => {
+		const on = (bookedVcpus: number, vcpusPerCpu: number) =>
+			candidate("h", {}, { bookedVcpus, ...(vcpusPerCpu > 0 ? { vcpusPerCpu } : {}) });
+		// 16 CPUs at 1.5: 24 vCPUs.
+		expect(vcpusFit(on(16, 1.5), 8)).toBe(true);
+		expect(vcpusFit(on(17, 1.5), 8)).toBe(false);
+		// 0.7 of 10 CPUs is 7, though 0.7 * 10 is 7.000000000000001 in floats.
+		expect(vcpusFit({ ...on(5, 0.7), host: { ...on(5, 0.7).host, facts: { ...facts, cpus: 10 } } }, 2)).toBe(true);
+		// Nothing booked: a 32-vCPU microVM on a 16-CPU host capped at 1 still runs, alone.
+		expect(vcpusFit(on(0, 1), 32)).toBe(true);
+		expect(vcpusFit(on(1, 1), 32)).toBe(false);
+		// No cap, or no count of what is booked: it fits.
+		expect(vcpusFit(on(100, 0), 8)).toBe(true);
+		expect(vcpusFit(candidate("h", {}, { vcpusPerCpu: 1 }), 64)).toBe(true);
 	});
 
 	it("measures memory as reserved over capacity, not as the free memory over-commit admits", () => {

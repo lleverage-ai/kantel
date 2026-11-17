@@ -764,6 +764,11 @@ export interface HostComputeLink {
 	 */
 	poolSync?(poolId: string): Promise<boolean>;
 	/**
+	 * The most vCPUs a pool lets each of its hosts book for each of its CPUs (`ComputeService.poolVcpusPerCpu`):
+	 * placement counts a host past it as full. Undefined, or absent, no pool caps them.
+	 */
+	poolVcpusPerCpu?(poolId: string): Promise<number | undefined>;
+	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
 	 */
@@ -1094,6 +1099,8 @@ export async function hashSecret(value: string): Promise<string> {
 const DEFAULT_JOIN_COMMAND =
 	"curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}";
 const LABEL_KEY = /^[a-z0-9][a-z0-9._/-]{0,62}$/i;
+/** How many times a create places itself when creates at once take the vCPUs its pool lets the host chosen book. */
+const VCPU_PLACE_ATTEMPTS = 3;
 /** States that hold the sandbox's vCPUs and memory on its host; a stopped one holds only its disk. */
 const LIVE = new Set(["starting", "running", "stopping"]);
 /** How long a host has to fetch and check a new kantel-host before an update is given up on: 5 minutes. */
@@ -2305,6 +2312,18 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return settled;
 	};
 
+	/** Refusals because another create took the last of a host's vCPUs under its pool's cap first (`vcpusTaken`). */
+	const vcpusTakenErrors = new WeakSet<object>();
+	const vcpusTaken = (hostName: string) => {
+		const error = placementError(
+			"exhausted",
+			"insufficient_capacity",
+			`The host ${hostName} booked the vCPUs its pool allows to another sandbox first`,
+		);
+		vcpusTakenErrors.add(error);
+		return error;
+	};
+
 	/**
 	 * Admits a new placement (a create, a snapshot's restore, a never-placed start, a fork) on its host: the one rule
 	 * every one is put under (`admits`), in one write (`placeOnTakingHost`). Answers the pool its host was in as it took
@@ -2315,8 +2334,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		placement: PlacementRecord,
 		poolId: string | undefined,
 		hostName: string,
+		maxVcpus?: number,
 	): Promise<{ readonly poolId?: string }> => {
-		const admitted = await store.placeOnTakingHost(placement, poolId);
+		const admitted = await store.placeOnTakingHost(placement, poolId, maxVcpus);
+		if (admitted === "vcpus") throw vcpusTaken(hostName);
 		if (admitted === undefined) {
 			throw placementError(
 				"unavailable",
@@ -2367,6 +2388,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		throw new KantelError("conflict", "A sandbox with that ID exists");
 	};
+
+	const vcpuCap = (vcpusPerCpu: number | undefined) => (vcpusPerCpu === undefined ? {} : { vcpusPerCpu });
 
 	/**
 	 * Where a create goes (`place`) among the hosts `input` may use (`hostIds`, of `listed`): its tier and shape checked,
@@ -2445,6 +2468,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		// Every candidate's placements in one read: the owners' isolates there, and the vCPUs booked.
 		const placed = await store.placementsOnHosts(hosts.map((host) => host.id));
+		// Each pool's vCPU cap, read once for its hosts.
+		const caps = new Map<string, number | undefined>();
+		if (tier === "microvm" && compute?.poolVcpusPerCpu !== undefined) {
+			for (const poolId of new Set(hosts.flatMap((host) => (host.poolId === undefined ? [] : [host.poolId])))) {
+				caps.set(poolId, await compute.poolVcpusPerCpu(poolId));
+			}
+		}
 		const candidates: Candidate[] = await Promise.all(
 			hosts.map(async (host) => {
 				const placements = placed.get(host.id) ?? [];
@@ -2461,6 +2491,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							.map((placement) => placement.owner as string),
 					),
 					bookedVcpus: bookedVcpus(placements),
+					...vcpuCap(host.poolId === undefined ? undefined : caps.get(host.poolId)),
 				};
 			}),
 		);
@@ -3531,25 +3562,39 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
 				refuseTaken(existing);
-				const { tier, shape, chosen, template } = await placeAmong(input, listed);
 				const sticky = (input.stickyDisks?.length ?? 0) > 0;
-				const now = clock.now();
-				const placement: PlacementRecord = {
-					sandboxId,
-					hostId: chosen.host.id,
-					tier,
-					size: chosen.size.name,
-					...(input.owner === undefined ? {} : { owner: input.owner }),
-					vcpus: chosen.size.vcpus,
-					memoryMiB: chosen.size.memoryMiB,
-					diskGiB: chosen.size.diskGiB,
-					state: "starting",
-					createdAt: now,
-					updatedAt: now,
-					...(input.attempt === undefined ? {} : { attempt: input.attempt }),
+				const placed = async () => {
+					const { tier, shape, chosen, template } = await placeAmong(input, listed);
+					const now = clock.now();
+					const placement: PlacementRecord = {
+						sandboxId,
+						hostId: chosen.host.id,
+						tier,
+						size: chosen.size.name,
+						...(input.owner === undefined ? {} : { owner: input.owner }),
+						vcpus: chosen.size.vcpus,
+						memoryMiB: chosen.size.memoryMiB,
+						diskGiB: chosen.size.diskGiB,
+						state: "starting",
+						createdAt: now,
+						updatedAt: now,
+						...(input.attempt === undefined ? {} : { attempt: input.attempt }),
+					};
+					// Only while its host still takes sandboxes in its pool, and, under its pool's vCPU cap, still has the vCPUs: a
+					// drain or move since the hosts were read refuses it, and so do creates at once that took the last vCPUs.
+					const admitted = await admit(placement, input.poolId, chosen.host.name, chosen.maxVcpus);
+					return { tier, shape, chosen, template, placement, admitted };
 				};
-				// Only while its host still takes sandboxes in its pool: a drain or move since the hosts were read refuses it.
-				const admitted = await admit(placement, input.poolId, chosen.host.name);
+				// A create another took the vCPUs from places again, on what is booked now: another host, or none.
+				let attempt: Awaited<ReturnType<typeof placed>> | undefined;
+				for (let tries = 1; attempt === undefined; tries++) {
+					try {
+						attempt = await placed();
+					} catch (error) {
+						if (!(error instanceof Object && vcpusTakenErrors.has(error)) || tries >= VCPU_PLACE_ATTEMPTS) throw error;
+					}
+				}
+				const { tier, shape, chosen, template, placement, admitted } = attempt;
 				reserve(chosen.host.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				const mounts = mountHandoff(chosen.host.facts?.features, input.mounts);
 				try {

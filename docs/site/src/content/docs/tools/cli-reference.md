@@ -20,7 +20,7 @@ Every command of `kantel` as `kantel help <command>` shows it. [Command line](/t
 - **API keys and personal tokens:** [`key list`](#kantel-key-list), [`key create`](#kantel-key-create), [`key rotate`](#kantel-key-rotate), [`key revoke`](#kantel-key-revoke), [`token list`](#kantel-token-list), [`token create`](#kantel-token-create), [`token revoke`](#kantel-token-revoke)
 - **Accounts and organisations:** [`org list`](#kantel-org-list), [`org use`](#kantel-org-use), [`org show`](#kantel-org-show), [`org create`](#kantel-org-create), [`org join`](#kantel-org-join), [`org set`](#kantel-org-set), [`org usage`](#kantel-org-usage), [`org leave`](#kantel-org-leave), [`org delete`](#kantel-org-delete), [`member list`](#kantel-member-list), [`member role`](#kantel-member-role), [`member rm`](#kantel-member-rm), [`invite list`](#kantel-invite-list), [`invite create`](#kantel-invite-create), [`invite revoke`](#kantel-invite-revoke)
 - **Webhooks, events and telemetry:** [`webhook list`](#kantel-webhook-list), [`webhook create`](#kantel-webhook-create), [`webhook rm`](#kantel-webhook-rm), [`webhook test`](#kantel-webhook-test), [`events`](#kantel-events), [`telemetry get`](#kantel-telemetry-get), [`telemetry set`](#kantel-telemetry-set), [`telemetry rm`](#kantel-telemetry-rm)
-- **Your own hosts (experimental):** [`hosts add`](#kantel-hosts-add), [`hosts list`](#kantel-hosts-list), [`hosts info`](#kantel-hosts-info), [`hosts drain`](#kantel-hosts-drain), [`hosts move`](#kantel-hosts-move), [`hosts rm`](#kantel-hosts-rm), [`pools list`](#kantel-pools-list), [`pools add`](#kantel-pools-add), [`pools rename`](#kantel-pools-rename), [`pools default`](#kantel-pools-default), [`pools sync`](#kantel-pools-sync), [`pools rm`](#kantel-pools-rm)
+- **Your own hosts (experimental):** [`hosts add`](#kantel-hosts-add), [`hosts list`](#kantel-hosts-list), [`hosts info`](#kantel-hosts-info), [`hosts drain`](#kantel-hosts-drain), [`hosts move`](#kantel-hosts-move), [`hosts rm`](#kantel-hosts-rm), [`pools list`](#kantel-pools-list), [`pools add`](#kantel-pools-add), [`pools rename`](#kantel-pools-rename), [`pools default`](#kantel-pools-default), [`pools sync`](#kantel-pools-sync), [`pools vcpus`](#kantel-pools-vcpus), [`pools rm`](#kantel-pools-rm)
 - **Coding agents:** [`init`](#kantel-init), [`mcp`](#kantel-mcp), [`agents`](#kantel-agents), [`agent setup`](#kantel-agent-setup)
 - **Help:** [`help`](#kantel-help), [`version`](#kantel-version), [`completion`](#kantel-completion), [`update`](#kantel-update)
 
@@ -1517,6 +1517,16 @@ kantel pools sync <pool> <on|off> [flags]
 ```
 
 The mesh is a WireGuard network between a pool's hosts alone. Off by default; turned off, its hosts leave it.
+
+### kantel pools vcpus
+
+Cap the vCPUs each host in one of your pools may book for each of its CPUs, or remove the cap.
+
+```sh
+kantel pools vcpus <pool> <vcpus-per-cpu|off> [flags]
+```
+
+A microVM that would take a host past the cap goes on another host of the pool, or waits for room, as one that doesn't fit its memory does: a GitHub runner's job waits for it. A host with no microVM booked always takes one. 1 books no more vCPUs than a host has threads; from 0.25 to 16. Off by default: vCPUs then only decide which host is emptiest.
 
 ### kantel pools rm
 
