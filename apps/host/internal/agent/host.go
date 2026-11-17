@@ -279,6 +279,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	}
 	if cfg.ImagePatching {
 		h.startImagePatching(kvm)
+	} else if cfg.ImageSource != nil {
+		log.Warn("imageSource is ignored: it needs imagePatching on")
 	}
 	h.facts = h.withRuntime(h.makeFacts())
 	h.startMemoryPlan()
