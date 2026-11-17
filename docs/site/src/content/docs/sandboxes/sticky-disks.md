@@ -11,7 +11,7 @@ sidebar:
 Sticky disks are off unless the deployment turns them on with `KANTEL_STICKY_DISKS=experimental`, and they need hosts that run them. For now a disk's versions stay on the host that committed them: a sandbox on another host starts from an empty disk. Keeping an organisation's hosts in step is the next step (see the design in `docs/design/disk-store.md`).
 :::
 
-A sticky disk is for what jobs and agents warm up and want next time: a pnpm or npm store, Docker's images and build cache, a git mirror, compiled tools. It is an ext4 disk of a size you choose, mounted at a path you choose in a microVM.
+A sticky disk is for what jobs and agents warm up and want next time: a pnpm or npm store, Docker's images and build cache, a git mirror, compiled tools. It is an ext4 disk of a size you choose, mounted at a path you choose in a microVM, without access times (`noatime`): reading its files writes nothing.
 
 - Each sandbox gets its own copy of the newest version its host holds, made in an instant whatever the disk's size. It can write anything, Docker's data directory included, because no other sandbox shares that copy.
 - What a sandbox writes is thrown away when it is deleted, unless you **commit** its copy: then that copy is the disk's next version, and later sandboxes start from it.
