@@ -65,6 +65,13 @@ func (s *Server) mountSticky(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"mounts": results})
 }
 
+// stickyMountFlags are a sticky disk's mount flags: noatime, as the sandbox's own disk (/dev/vdb) is mounted. A sticky
+// disk is a cache whose files are older than a day (a pnpm store, a git mirror), so relatime would write each file's
+// inode again the first time a job reads it: reading half of a CI job's node_modules from one wrote 21,912 blocks
+// (85 MiB) of access times, which the job then waits behind on a drive that serves one request at a time. Nothing
+// reads a cache's access times.
+const stickyMountFlags = unix.MS_NOATIME
+
 // mountStickyDisk mounts the sticky disk on drive m.Drive read-write at m.Path, making the directory if it's missing.
 // One already mounted there from that drive (a resume, or a sandbox restored from a snapshot's memory) is kept.
 func mountStickyDisk(m StickyMount) error {
@@ -101,7 +108,7 @@ func mountStickyDisk(m StickyMount) error {
 	if err := os.MkdirAll(m.Path, 0o755); err != nil {
 		return err
 	}
-	if err := unix.Mount(dev, m.Path, "ext4", 0, ""); err != nil {
+	if err := unix.Mount(dev, m.Path, "ext4", stickyMountFlags, ""); err != nil {
 		return fmt.Errorf("mount %s at %s: %w", dev, m.Path, err)
 	}
 	return nil

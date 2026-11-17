@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // The guest mounts a sticky drive only when its file system is ext4 with the host's label.
@@ -106,5 +108,15 @@ func TestMountStickyReleasesOverlappingBucketMounts(t *testing.T) {
 	sort.Strings(left)
 	if want := []string{"/cache", "/srv", "/var/lib/cid"}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("left %v, want %v", left, want)
+	}
+}
+
+// A sticky disk is mounted read-write without access times, so reading a cache's files writes nothing.
+func TestStickyMountIsNoatime(t *testing.T) {
+	if stickyMountFlags&unix.MS_NOATIME == 0 {
+		t.Fatal("a sticky disk is mounted with access times")
+	}
+	if stickyMountFlags&(unix.MS_RDONLY|unix.MS_STRICTATIME|unix.MS_RELATIME) != 0 {
+		t.Fatalf("a sticky disk's mount flags %#x are read-only or keep access times", stickyMountFlags)
 	}
 }
