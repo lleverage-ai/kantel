@@ -5437,8 +5437,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...fields.data,
 			},
 		};
-		// The webhooks are looked up while the event is written, but a delivery is queued only once the event is stored.
-		const written = store.events.put(event);
+		// The webhooks are looked up while the event is written, but a delivery is queued only once the event is stored. The
+		// event's outbox record is written with it, and deleted once its deliveries are queued: should queueing fail, or this
+		// gateway die first, a dispatcher's `drain()` queues them from the record (`webhooks.ts`).
+		const written = store.eventWrites.put(event);
 		await Promise.all([written, dispatcher.enqueue(event, written).catch(() => undefined)]);
 		exporter.record({ event, sandboxType: sandbox?.type });
 	}
@@ -8013,6 +8015,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const environment of await store.environments.list({ accountId })) {
 			await store.environments.delete(environment.id);
 		}
+		for (const pending of await store.eventOutbox.list({ accountId })) await store.eventOutbox.delete(pending.id);
 		for (const event of await store.events.list({ accountId })) await store.events.delete(event.id);
 		for (const entry of await store.egress.list({ accountId })) await store.egress.delete(entry.id);
 		await store.telemetry.delete(accountId);

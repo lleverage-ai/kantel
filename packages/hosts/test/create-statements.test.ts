@@ -40,7 +40,7 @@ function counting(inner: SqlDriver) {
 			return inner.query<Row>(sql, params).finally(end);
 		},
 		batch(batch) {
-			begin(batch.map((statement) => statement.sql).join("; "));
+			begin(batch.map((statement) => statement.sql).join("; "), batch[0]?.params?.[0]);
 			return inner.batch(batch).finally(end);
 		},
 	};
@@ -81,7 +81,10 @@ describe("a create on a gateway with shared state", () => {
 	// (`holdAccount`), each a round the create waits on as each needs what comes before it; and each event's account,
 	// checked behind its write (`fenceClosedAccounts`), two rounds counted here that the create doesn't wait for. One
 	// statement and one round are placement's read of every candidate host's placements, for the vCPUs booked there: one
-	// read for all of them however many hosts, after the hosts' own read, which names them.
+	// read for all of them however many hosts, after the hosts' own read, which names them. Each event's write carries its
+	// outbox record's insert (LLE-19603), conditional on a webhook that wants the event, in one request: a batch here (D1
+	// sends one as one request), one statement in Postgres (`webhooks.test.ts` counts both). This account has no webhook,
+	// so nothing clears a record afterwards.
 	it("answers a wait: true create in 22 statements and 15 rounds", async () => {
 		const database = await nodeSqliteDatabase.open();
 		closers.push(async () => {
