@@ -66,6 +66,9 @@ func (s Source) Validate() error {
 	if s.URL == "" {
 		return errors.New("the image source has no url")
 	}
+	if isURL(s.URL) && originOf(s.URL) == "" {
+		return fmt.Errorf("the image source's url %s has no ASCII host: write an internationalised name in its xn-- form", s.URL)
+	}
 	if len(s.Headers) > 0 {
 		if !isURL(s.URL) {
 			return errors.New("the image source is a directory, so it takes no headers")
@@ -199,7 +202,7 @@ func (s Source) release(ctx context.Context, u string) (context.Context, proto.I
 
 // authorize adds the source's headers to a request for its origin; a request anywhere else goes without them.
 func (r *remote) authorize(req *http.Request) {
-	if originOf(req.URL.String()) != r.origin {
+	if !r.sameOrigin(req.URL.String()) {
 		return
 	}
 	for name, values := range r.headers {
@@ -219,7 +222,7 @@ func (r *remote) client() *http.Client {
 		if len(via) >= 10 {
 			return errors.New("stopped after 10 redirects")
 		}
-		if originOf(req.URL.String()) != r.origin {
+		if !r.sameOrigin(req.URL.String()) {
 			for name := range r.headers {
 				req.Header.Del(name)
 			}
@@ -229,13 +232,37 @@ func (r *remote) client() *http.Client {
 	}}
 }
 
-// originOf is a URL's scheme and host (with its port), lower case: "" for one that doesn't parse.
+// sameOrigin says whether a URL is the source's origin, which its headers may go to. A URL without one never is.
+func (r *remote) sameOrigin(raw string) bool {
+	o := originOf(raw)
+	return o != "" && o == r.origin
+}
+
+// originOf is a URL's scheme and host (with its port), lower case: "" for one that doesn't parse, and for a host
+// that isn't printable ASCII. Unicode case folding could make two hosts the HTTP transport resolves as different
+// names (by IDNA) compare equal, such as one with U+0130 for an i, so only ASCII is folded, and a Unicode host is no
+// origin headers go to.
 func originOf(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return ""
 	}
-	return strings.ToLower(u.Scheme + "://" + u.Host)
+	for _, c := range u.Scheme + u.Host {
+		if c <= ' ' || c > '~' {
+			return ""
+		}
+	}
+	return asciiLower(u.Scheme + "://" + u.Host)
+}
+
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // withoutQuery is a URL without its query and fragment, which may hold a signature.
@@ -268,7 +295,7 @@ func loopbackURL(raw string) bool {
 
 // ReadHeaders reads an image source's headers file: one `Name: value` per line, with blank lines and lines starting
 // with # skipped. It holds credentials, so it must belong to the user the host runs as and be readable by it alone
-// (chmod 600); otherwise it is refused and nothing in it is used. No error repeats anything the file holds.
+// (chmod 600, or 400); otherwise it is refused and nothing in it is used. No error repeats anything the file holds.
 func ReadHeaders(path string) (http.Header, error) {
 	f, err := os.Open(path)
 	if err != nil {

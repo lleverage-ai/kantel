@@ -169,7 +169,7 @@ type ImageSourceConfig struct {
 	Type string `json:"type,omitempty"`
 	URL  string `json:"url"`
 	// HeadersFile holds the headers every request to URL's origin carries (`Name: value` lines), such as
-	// `Authorization: Bearer …` or a Cloudflare Access service token. It must be mode 600 and belong to the user the
+	// `Authorization: Bearer …` or a Cloudflare Access service token. Only its owner may read it (mode 600 or 400), and it must belong to the user the
 	// host runs as; otherwise the source isn't followed. Its values are never logged.
 	HeadersFile string `json:"headersFile,omitempty"`
 	// IntervalMinutes is how often the host asks the source for its version (default 60, at least 5).

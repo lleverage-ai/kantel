@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,6 +92,103 @@ func TestSourceValidate(t *testing.T) {
 			t.Errorf("%+v: Validate() = %v, want ok %v", tc.src, err, tc.ok)
 		}
 	}
+}
+
+// Origins compare as the HTTP transport resolves them: ASCII case is folded, and a host that isn't ASCII (one the
+// transport would resolve by IDNA, such as a U+0130 lookalike) is no origin at all, so it never matches.
+func TestOrigins(t *testing.T) {
+	r := &remote{origin: originOf("https://images.private.example")}
+	for raw, want := range map[string]bool{
+		"https://images.private.example/kantel/channel.json": true,
+		"HTTPS://Images.Private.Example/x":                   true,
+		"https://images.pr\u0130vate.example/x":              false,
+		"https://images.pr\u0131vate.example/x":              false,
+		"https://images.private.example:8443/x":              false,
+		"http://images.private.example/x":                    false,
+		"https://xn--images-lookalike.example/x":             false,
+		"/relative":                                          false,
+	} {
+		if got := r.sameOrigin(raw); got != want {
+			t.Errorf("sameOrigin(%s) = %v, want %v", raw, got, want)
+		}
+	}
+	// A source whose own host isn't ASCII is refused, and matches nothing were it used: "" is no origin.
+	if err := (Source{URL: "https://images.pr\u0130vate.example", Headers: http.Header{"X-A": {"b"}}}).Validate(); err == nil {
+		t.Error("a source with a Unicode host was taken")
+	}
+	unicode := &remote{origin: originOf("https://images.pr\u0130vate.example")}
+	if unicode.sameOrigin("https://images.pr\u0130vate.example/x") || unicode.sameOrigin("https://other.example/x") {
+		t.Error("a remote without an origin matched a URL")
+	}
+}
+
+// Each redirect hop is checked on its own: Go copies the first request's headers onto every hop, and the source's go
+// only on a hop to its own origin, not to an intermediate elsewhere nor to a lookalike of the source after it.
+func TestEveryRedirectHopDropsTheSourcesHeadersOffItsOrigin(t *testing.T) {
+	headers := http.Header{"Cf-Access-Client-Secret": {secret}, "Authorization": {"Bearer " + secret}}
+	var third, second requests
+	thirdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		third.add(r)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer thirdSrv.Close()
+	secondSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		second.add(r)
+		http.Redirect(w, r, thirdSrv.URL+"/blob", http.StatusFound)
+	}))
+	defer secondSrv.Close()
+	var own requests
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		own.add(r)
+		if r.URL.Path == "/plain" {
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		http.Redirect(w, r, secondSrv.URL+"/hop", http.StatusFound)
+	}))
+	defer src.Close()
+	r := &remote{origin: originOf(src.URL), headers: headers}
+	ctx := withRemote(context.Background(), r)
+	for _, path := range []string{"/plain", "/redirected"} {
+		in, err := httpGet(ctx, src.URL+path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.Close()
+	}
+	if own.count() != 2 || !own.carried(secret) {
+		t.Fatalf("the source got %d requests, with its headers: %v", own.count(), own.carried(secret))
+	}
+	if second.count() != 1 || second.carried(secret) || third.count() != 1 || third.carried(secret) {
+		t.Fatalf("off-origin hops: %d and %d requests, headers %v and %v", second.count(), third.count(), second.carried(secret), third.carried(secret))
+	}
+
+	// A hop to a U+0130 lookalike of the source (which can't be served here): its request, as Go makes it with the
+	// first request's headers, has them taken off before it goes.
+	via := []*http.Request{{URL: mustURL(t, src.URL)}, {URL: mustURL(t, secondSrv.URL)}}
+	for _, host := range []string{"https://images.pr\u0130vate.example/x", "HTTPS://IMAGES.PR\u0130VATE.EXAMPLE/x"} {
+		lookalike := &remote{origin: originOf("https://images.private.example"), headers: headers}
+		req, err := http.NewRequest(http.MethodGet, host, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header = headers.Clone()
+		if err := lookalike.client().CheckRedirect(req, via); err != nil {
+			t.Fatal(err)
+		}
+		if req.Header.Get("Authorization") != "" || req.Header.Get("Cf-Access-Client-Secret") != "" {
+			t.Fatalf("a redirect to %s kept the source's headers", host)
+		}
+	}
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }
 
 // requests records what each request a test server answered carried.

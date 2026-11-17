@@ -225,7 +225,7 @@ Build the whole set with `release.sh`, never with `--publish` (which refuses a `
 runtime), writes `manifest.json` with each file's SHA-256, and `SHA256SUMS`:
 
 ```sh
-VERSION=cft-157.0.8103.78-1   # letters, digits, . _ and - only; a new one for every build
+VERSION=host-images-20261117.cft-157.0.8103.78   # release.sh wants host-images-<yyyymmdd>; a new one for every build
 KANTEL_BROWSER=cft apps/host/guest/release.sh out "$VERSION"
 apps/host/guest/boot-check-arm64.sh out
 (cd out && sha256sum -c SHA256SUMS)
@@ -253,9 +253,9 @@ Then upload it where only your hosts can read it. Either:
   the hosts take. Assets are fetched through the API by name, with `Accept: application/octet-stream`.
 
 `headersFile` names a file of `Name: value` lines sent with every request to the source's own origin, and nowhere
-else (a redirect to another origin, such as a release asset's storage, goes without them). It must be mode 600 and
-belong to the user kantel-host runs as (root); a file the group or anyone else can read is refused, the reason is
-logged, and the host stays on its images until it's fixed. The values are never logged. The file is read again at
+else (a redirect to another origin, such as a release asset's storage, goes without them). Only its owner may read
+it (mode 600 or 400), and it must belong to the user kantel-host runs as (root); a file the group or anyone else can
+read is refused, the reason is logged, and the host stays on its images until it's fixed. The values are never logged. The file is read again at
 every check, so a rotated token needs no restart. Headers need an `https://` URL.
 
 ```sh
