@@ -152,9 +152,9 @@ func poolTable(c *cli.Context, pools []api.Pool) string {
 		if p.VCPUsPerCPU != nil {
 			vcpus = strconv.FormatFloat(*p.VCPUsPerCPU, 'f', -1, 64)
 		}
-		rows = append(rows, []string{p.ID, p.Name, def, sync, vcpus, fmt.Sprint(p.Hosts)})
+		rows = append(rows, []string{p.ID, p.Name, def, sync, string(p.Placement), vcpus, fmt.Sprint(p.Hosts)})
 	}
-	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "SYNC", "VCPUS/CPU", "HOSTS"}, rows)
+	return cli.Table(c.Style, []string{"ID", "NAME", "DEFAULT", "SYNC", "PLACEMENT", "VCPUS/CPU", "HOSTS"}, rows)
 }
 
 // poolCommand runs a call that answers a pool on the pool its first argument names, and prints it.
@@ -440,6 +440,28 @@ func ownHosts() cli.Section {
 						return fmt.Sprintf("%s (%s) syncs: its hosts join its mesh.", p.Name, p.ID)
 					}
 					return fmt.Sprintf("%s (%s) doesn't sync.", p.Name, p.ID)
+				})
+			},
+		},
+		{
+			Name: "pools placement", Summary: "Choose how one of your pools places sandboxes: warm (the default) or balanced",
+			Args: []cli.Arg{{Name: "pool"}, {Name: "warm|balanced"}},
+			Details: "warm prefers a host that already holds what a create needs (its sticky disks' newest versions, its " +
+				"template's snapshot) until it is half full and a quarter fuller than the emptiest. balanced spreads sandboxes " +
+				"evenly over the pool's hosts: such a host wins only over hosts as full as it. Choose balanced for work whose " +
+				"time is set by the CPUs it shares more than by a warm cache.",
+			Run: func(c *cli.Context) error {
+				mode := api.UpdatePoolBodyPlacement(c.Arg(1))
+				if mode != "warm" && mode != "balanced" {
+					return cli.Fail("placement is warm or balanced, not " + c.Arg(1))
+				}
+				return poolCommand(c, func(client *api.Client, id string, raw *json.RawMessage) (*api.Pool, error) {
+					return client.UpdateAccountPool(c.Ctx, id, api.UpdatePoolBody{Placement: &mode}, api.Raw(raw))
+				}, func(p api.Pool) string {
+					if p.Placement == "balanced" {
+						return fmt.Sprintf("%s (%s) balances its sandboxes evenly over its hosts.", p.Name, p.ID)
+					}
+					return fmt.Sprintf("%s (%s) prefers hosts that already hold what a sandbox needs.", p.Name, p.ID)
 				})
 			},
 		},

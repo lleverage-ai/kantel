@@ -15593,6 +15593,19 @@
 							}
 						],
 						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache."
 					}
 				},
 				"title": "CreateAccountPoolBody"
@@ -15912,6 +15925,19 @@
 							}
 						],
 						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache."
 					}
 				},
 				"title": "CreatePoolBody"
@@ -19176,7 +19202,7 @@
 			},
 			"Pool": {
 				"type": "object",
-				"required": ["id", "name", "default", "hosts", "sync", "createdAt"],
+				"required": ["id", "name", "default", "hosts", "sync", "placement", "createdAt"],
 				"properties": {
 					"id": {
 						"type": "string",
@@ -19207,6 +19233,19 @@
 					"vcpusPerCpu": {
 						"type": "number",
 						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds."
 					},
 					"runners": {
 						"type": "array",
@@ -22532,6 +22571,19 @@
 							}
 						],
 						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache."
 					},
 					"runners": {
 						"type": "array",

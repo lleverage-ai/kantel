@@ -473,6 +473,8 @@ export interface CreateAccountPoolBody {
 	readonly sync?: boolean;
 	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
 	readonly vcpusPerCpu?: number | null;
+	/** How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. */
+	readonly placement?: "warm" | "balanced";
 }
 
 /** Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks. */
@@ -580,6 +582,8 @@ export interface CreatePoolBody {
 	readonly sync?: boolean;
 	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
 	readonly vcpusPerCpu?: number | null;
+	/** How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. */
+	readonly placement?: "warm" | "balanced";
 }
 
 /** Any other field is refused as `invalid`. */
@@ -1844,6 +1848,8 @@ export interface Pool {
 	readonly sync: boolean;
 	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest. */
 	readonly vcpusPerCpu?: number;
+	/** How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds. */
+	readonly placement: "warm" | "balanced";
 	/** Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. */
 	readonly runners?: readonly GithubRunnerKind[];
 	/** Epoch milliseconds, UTC. */
@@ -3110,6 +3116,8 @@ export interface UpdatePoolBody {
 	readonly sync?: boolean;
 	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
 	readonly vcpusPerCpu?: number | null;
+	/** How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. */
+	readonly placement?: "warm" | "balanced";
 	/** Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. */
 	readonly runners?: readonly GithubRunnerKind[];
 }

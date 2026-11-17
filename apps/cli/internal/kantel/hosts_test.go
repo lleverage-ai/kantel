@@ -88,6 +88,10 @@ func TestPoolsAndHostsMove(t *testing.T) {
 		"PATCH /v1/pools/pool_ci": func(c call) any {
 			p := pool("pool_ci", "builds", c.Body["default"] == true)
 			p["sync"] = c.Body["sync"] == true
+			p["placement"] = "warm"
+			if v, ok := c.Body["placement"].(string); ok {
+				p["placement"] = v
+			}
 			if v, ok := c.Body["vcpusPerCpu"].(float64); ok {
 				p["vcpusPerCpu"] = v
 			}
@@ -125,6 +129,15 @@ func TestPoolsAndHostsMove(t *testing.T) {
 	wrong := run(t, []string{"pools", "sync", "pool_ci", "yes"}, opts{routes: r})
 	eq(t, "wrong exit", wrong.Code, 1)
 	eq(t, "wrong calls", len(wrong.Calls), 0)
+	balanced := run(t, []string{"pools", "placement", "pool_ci", "balanced"}, opts{routes: r})
+	jsonEq(t, "placement", balanced.Calls[0].Body, `{"placement":"balanced"}`)
+	eq(t, "placement out", balanced.Stdout, "builds (pool_ci) balances its sandboxes evenly over its hosts.\n")
+	warm := run(t, []string{"pools", "placement", "pool_ci", "warm"}, opts{routes: r})
+	jsonEq(t, "placement warm", warm.Calls[0].Body, `{"placement":"warm"}`)
+	eq(t, "placement warm out", warm.Stdout, "builds (pool_ci) prefers hosts that already hold what a sandbox needs.\n")
+	wrongMode := run(t, []string{"pools", "placement", "pool_ci", "spread"}, opts{routes: r})
+	eq(t, "placement wrong", wrongMode.Code, 1)
+	eq(t, "placement wrong calls", len(wrongMode.Calls), 0)
 	capped := run(t, []string{"pools", "vcpus", "pool_ci", "1.5"}, opts{routes: r})
 	jsonEq(t, "vcpus", capped.Calls[0].Body, `{"vcpusPerCpu":1.5}`)
 	eq(t, "vcpus out", capped.Stdout, "builds (pool_ci) books at most 1.5 vCPUs for each CPU of a host.\n")

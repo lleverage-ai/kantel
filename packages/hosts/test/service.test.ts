@@ -710,9 +710,10 @@ describe("hosts service", () => {
 		service.useCompute({
 			secrets: async () => undefined,
 			recordEgress: async () => undefined,
-			poolVcpusPerCpu: async (poolId) => {
+			poolPlacement: async (poolId) => {
 				asked.push(poolId);
-				return caps[poolId];
+				const vcpusPerCpu = caps[poolId];
+				return vcpusPerCpu === undefined ? {} : { vcpusPerCpu };
 			},
 		});
 		const a = await join("a");
@@ -742,7 +743,7 @@ describe("hosts service", () => {
 		service.useCompute({
 			secrets: async () => undefined,
 			recordEgress: async () => undefined,
-			poolVcpusPerCpu: async () => 0.5,
+			poolPlacement: async () => ({ vcpusPerCpu: 0.5 }),
 		});
 		const hosts = [];
 		for (const name of ["a", "b"]) {

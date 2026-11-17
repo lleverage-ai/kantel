@@ -789,6 +789,11 @@ export interface StoredPool {
 	 * (`Pool.vcpusPerCpu`). Absent: no cap.
 	 */
 	readonly vcpusPerCpu?: number;
+	/**
+	 * How placement chooses among its hosts (`Pool.placement`): `balanced` spreads its sandboxes evenly, a sticky disk's
+	 * head or a template's snapshot only deciding between hosts as full. Absent: `warm`, the default.
+	 */
+	readonly placement?: "balanced";
 }
 
 /** The key no two pools may share: an owner's and a name, so the store refuses a second pool of a name in an owner. */

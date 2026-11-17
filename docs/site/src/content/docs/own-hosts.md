@@ -72,6 +72,7 @@ kantel hosts drain host_… --off        # take sandboxes again, in ci
 kantel pools default ci                # where hosts join, naming no pool
 kantel pools sync ci on                # its hosts join the pool's mesh (off by default)
 kantel pools vcpus ci 1                # each host books at most 1 vCPU per CPU thread (off by default)
+kantel pools placement ci balanced     # spread sandboxes evenly over its hosts (default warm)
 kantel pools rm ci                     # only an empty pool that isn't the default
 ```
 
@@ -86,6 +87,8 @@ A move is explicit, and only a drained host with no sandboxes moves: drain it, l
 A pool's sync is off by default. With it on (`kantel pools sync ci on`, or `sync` on the pool in the API), each of the pool's hosts whose kantel-host runs the mesh joins the pool's mesh: a WireGuard network between that pool's hosts alone, each with an IPv6 address of its own in the pool's range. Kantel hands each host the others' keys, addresses and the endpoints they reported, and tells them at once when a host joins, leaves, is moved or removed. Hosts of different pools never peer. Turning sync off takes the pool's hosts out of the mesh.
 
 A pool has no vCPU cap by default: placement ranks its hosts by how full they would be, the larger of their memory and their vCPUs booked against their CPUs, and a host whose memory has room takes a microVM however many vCPUs it has booked. A cap (`kantel pools vcpus ci 1.5`, or `vcpusPerCpu` on the pool in the API, from 0.25 to 16) makes a host that would book more than that many vCPUs per CPU thread full: the microVM goes on another of the pool's hosts, or waits for room, as one that doesn't fit a host's memory does. A GitHub runner's job waits for a runner, and a create says `insufficient_capacity`. A host with nothing booked always takes one. Use it for CPU-bound work such as CI, where a runner that shares its host's CPUs with more runners takes longer, and its tests' timeouts can fail: `1` books no more vCPUs than a host has threads. `kantel pools vcpus ci off` removes it. MicroVMs already running stay where they are.
+
+A pool's placement says how a host is chosen among its hosts. With `warm`, the default, placement prefers a host that already holds what a create needs: the newest version (head) of each sticky disk it attaches, or its template's snapshot, which restores in a few seconds where another host boots the template fresh. That host wins until it would be half full and a quarter fuller than the emptiest. With `balanced` (`kantel pools placement ci balanced`, or `placement` on the pool in the API), such a host wins only over hosts as full as it, within a twentieth of a host, so sandboxes spread evenly over the pool's hosts and the others start from the version of the disk they have, or boot the template fresh. Choose it for work whose time is set by the CPUs it shares more than by a warm cache, such as CI runners.
 
 ## Turn it on
 

@@ -256,31 +256,57 @@ describe.each(STORES)("pools, stored $name", sqlTimeout, ({ make }) => {
 		const { api, root, tom } = setup(store, backend);
 		const ci = await root.createPool({ name: "ci" });
 		expect(ci.vcpusPerCpu).toBeUndefined();
-		expect(await api.service.poolVcpusPerCpu(ci.id)).toBeUndefined();
+		expect((await api.service.poolPlacement(ci.id))?.vcpusPerCpu).toBeUndefined();
 		const capped = await root.createPool({ name: "builds", vcpusPerCpu: 1.5 });
 		expect(capped.vcpusPerCpu).toBe(1.5);
-		expect(await api.service.poolVcpusPerCpu(capped.id)).toBe(1.5);
+		expect((await api.service.poolPlacement(capped.id))?.vcpusPerCpu).toBe(1.5);
 
 		expect(await root.updatePool("ci", { vcpusPerCpu: 1 })).toMatchObject({ vcpusPerCpu: 1 });
 		// Another change keeps it.
 		expect(await root.updatePool("ci", { name: "web", sync: true })).toMatchObject({ name: "web", vcpusPerCpu: 1 });
-		expect(await api.service.poolVcpusPerCpu(ci.id)).toBe(1);
+		expect((await api.service.poolPlacement(ci.id))?.vcpusPerCpu).toBe(1);
 		// null removes it.
 		const removed = await root.updatePool("web", { vcpusPerCpu: null });
 		expect(removed.vcpusPerCpu).toBeUndefined();
-		expect(await api.service.poolVcpusPerCpu(ci.id)).toBeUndefined();
+		expect((await api.service.poolPlacement(ci.id))?.vcpusPerCpu).toBeUndefined();
 		// Outside 0.25 to 16 it is refused, and nothing changes.
 		for (const vcpusPerCpu of [0.2, 16.5]) {
 			expect((await failure(root.updatePool("builds", { vcpusPerCpu }))).code).toBe("invalid");
 		}
-		expect(await api.service.poolVcpusPerCpu(capped.id)).toBe(1.5);
-		expect(await api.service.poolVcpusPerCpu("pool_gone")).toBeUndefined();
+		expect((await api.service.poolPlacement(capped.id))?.vcpusPerCpu).toBe(1.5);
+		expect(await api.service.poolPlacement("pool_gone")).toBeUndefined();
 
 		// An account's pools too.
 		const own = await tom.createAccountPool({ name: "ci", vcpusPerCpu: 2 });
 		expect(own.vcpusPerCpu).toBe(2);
 		expect(await tom.updateAccountPool(own.id, { vcpusPerCpu: 0.75 })).toMatchObject({ vcpusPerCpu: 0.75 });
 		expect((await tom.listAccountPools()).items.find((pool) => pool.id === own.id)?.vcpusPerCpu).toBe(0.75);
+	});
+
+	it("keeps a pool's placement, warm by default, until a call sets the other", async () => {
+		const store = await make();
+		const { backend } = hostsBackend();
+		const { api, root, tom } = setup(store, backend);
+		const ci = await root.createPool({ name: "ci" });
+		expect(ci.placement).toBe("warm");
+		expect(await api.service.poolPlacement(ci.id)).toEqual({});
+		const balanced = await root.createPool({ name: "builds", placement: "balanced", vcpusPerCpu: 1 });
+		expect(balanced).toMatchObject({ placement: "balanced", vcpusPerCpu: 1 });
+		expect(await api.service.poolPlacement(balanced.id)).toEqual({ balanced: true, vcpusPerCpu: 1 });
+		expect(await root.updatePool("ci", { placement: "balanced" })).toMatchObject({ placement: "balanced" });
+		// Another change keeps it, and going back to warm keeps the cap.
+		expect(await root.updatePool("ci", { name: "web", vcpusPerCpu: 2 })).toMatchObject({
+			placement: "balanced",
+			vcpusPerCpu: 2,
+		});
+		expect(await root.updatePool("web", { placement: "warm" })).toMatchObject({ placement: "warm", vcpusPerCpu: 2 });
+		expect(await api.service.poolPlacement(ci.id)).toEqual({ vcpusPerCpu: 2 });
+		// Only the two modes.
+		expect((await failure(root.updatePool("web", { placement: "spread" as "warm" }))).code).toBe("invalid");
+		// An account's pools too.
+		const own = await tom.createAccountPool({ name: "ci", placement: "balanced" });
+		expect(own.placement).toBe("balanced");
+		expect(await tom.updateAccountPool(own.id, { placement: "warm" })).toMatchObject({ placement: "warm" });
 	});
 
 	it("keeps an account's pools to the account", async () => {
