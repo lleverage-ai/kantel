@@ -1508,6 +1508,7 @@ type Host struct {
 	// The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit.
 	SavedSnapshotBytesLimit *int64    `json:"savedSnapshotBytesLimit,omitempty"`
 	State                   HostState `json:"state"`
+	Sync                    *HostSync `json:"sync,omitempty"`
 	// The sandbox types it runs.
 	Tiers []SandboxType `json:"tiers"`
 	// True when it runs an older version than `latestVersion` (any other, when the deployment sets `KANTEL_HOST_VERSION`), so it can be updated. Absent otherwise.
@@ -1733,6 +1734,10 @@ type HostMesh struct {
 type HostMeshPeer struct {
 	// The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`.
 	Endpoint *string `json:"endpoint,omitempty"`
+	// The rate of its last fetch of at least 16 MiB from this peer alone, in bytes a second: what syncing from it gets. Absent before one since the host agent started.
+	FetchBytesPerSecond *float64 `json:"fetchBytesPerSecond,omitempty"`
+	// When that fetch ended, epoch milliseconds, UTC.
+	FetchRateAt *int64 `json:"fetchRateAt,omitempty"`
 	// The peer's host ID: another host of the same pool.
 	HostID string `json:"hostId"`
 	// When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first.
@@ -1758,6 +1763,85 @@ const (
 	HostStateUnreachable HostState = "unreachable"
 	HostStateDraining    HostState = "draining"
 	HostStateRevoked     HostState = "revoked"
+)
+
+// How far a host is in syncing its pool's disks from its peers: each sticky disk head it should hold, and its fetches. Template snapshots it should hold are fetched as their builds; their fetches are listed here too. Absent from a host whose pool doesn't sync and that has no fetches.
+type HostSync struct {
+	// The head of each sticky disk its pool used in the last 7 days, newest commit first, for a host whose pool syncs; empty otherwise.
+	Disks []HostSyncDisk `json:"disks"`
+	// Its fetches under way or failed, of every kind, from its last report while it is connected.
+	Fetches []HostSyncFetch `json:"fetches"`
+	// Why it isn't being sent anything now, where it isn't: `draining`, `away` (not connected), `no-sync` (its host agent doesn't sync, or its mesh isn't up yet).
+	Paused *HostSyncPaused `json:"paused,omitempty"`
+}
+
+// A sticky disk head a host of a synced pool should hold, and where it stands.
+type HostSyncDisk struct {
+	// What the head takes on the host it was committed on.
+	AllocatedBytes int64 `json:"allocatedBytes"`
+	// Epoch milliseconds, UTC.
+	CommittedAt int64 `json:"committedAt"`
+	// The sticky disk's name.
+	Name string `json:"name"`
+	// `held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it.
+	State HostSyncDiskState `json:"state"`
+	// The sticky disk.
+	StickyDiskID string `json:"stickyDiskId"`
+	// Its head, which the host should hold.
+	Version string `json:"version"`
+}
+
+// `held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it.
+type HostSyncDiskState string
+
+const (
+	HostSyncDiskStateHeld     HostSyncDiskState = "held"
+	HostSyncDiskStateFetching HostSyncDiskState = "fetching"
+	HostSyncDiskStateFailed   HostSyncDiskState = "failed"
+	HostSyncDiskStateMissing  HostSyncDiskState = "missing"
+	HostSyncDiskStateWaiting  HostSyncDiskState = "waiting"
+	HostSyncDiskStateNoRoom   HostSyncDiskState = "no-room"
+	HostSyncDiskStateNoSource HostSyncDiskState = "no-source"
+)
+
+// A fetch from the host's peers, as it last reported it (every heartbeat).
+type HostSyncFetch struct {
+	// The version's blocks of 4 MiB, every part's.
+	Blocks int64 `json:"blocks"`
+	// How many of them it has: those it already had from the version it started from, and those fetched.
+	BlocksInPlace int64 `json:"blocksInPlace"`
+	// The bytes it has read from its peers so far. Only blocks that differ from the version it started from travel, so this may stay well under the version's size. Absent from an older host, and before the first.
+	Bytes *int64 `json:"bytes,omitempty"`
+	// The last error it met.
+	Error *string `json:"error,omitempty"`
+	// What it fetches: `sticky` (a sticky disk's version), `template` (a template's snapshot), `rootfs` (a template's root filesystem), `snapshot` (a saved snapshot), `sandbox` or `sandbox-memory` (a move's copy). A newer host may say another.
+	Kind string `json:"kind"`
+	// The object's ID: the sticky disk's, the template snapshot's, and so on.
+	ObjectID string `json:"objectId"`
+	// `queued`: waiting for one of the fetches it runs at once. `running`. `failed`: it stopped, with `error`; it goes on from where it got to when it is asked again.
+	State HostSyncFetchState `json:"state"`
+	// The blocks' size: `blocks` of 4 MiB.
+	TotalBytes int64 `json:"totalBytes"`
+	// The object's version: a sticky disk version's ID, `1`, `disk` or `memory`.
+	Version string `json:"version"`
+}
+
+// `queued`: waiting for one of the fetches it runs at once. `running`. `failed`: it stopped, with `error`; it goes on from where it got to when it is asked again.
+type HostSyncFetchState string
+
+const (
+	HostSyncFetchStateQueued  HostSyncFetchState = "queued"
+	HostSyncFetchStateRunning HostSyncFetchState = "running"
+	HostSyncFetchStateFailed  HostSyncFetchState = "failed"
+)
+
+// Why it isn't being sent anything now, where it isn't: `draining`, `away` (not connected), `no-sync` (its host agent doesn't sync, or its mesh isn't up yet).
+type HostSyncPaused string
+
+const (
+	HostSyncPausedDraining HostSyncPaused = "draining"
+	HostSyncPausedAway     HostSyncPaused = "away"
+	HostSyncPausedNoSync   HostSyncPaused = "no-sync"
 )
 
 // An update asked for in the last 10 minutes that the host hasn't connected on yet. Absent once it has, or after 10 minutes, when it didn't take.
@@ -2957,6 +3041,8 @@ type StickyDisk struct {
 	Description *string `json:"description,omitempty"`
 	// The newest committed version; absent until one is.
 	Head *string `json:"head,omitempty"`
+	// On a get, each host of its pool that isn't revoked, and what it holds of the disk, as hosts last reported.
+	Hosts []StickyDiskHost `json:"hosts,omitzero"`
 	// The sticky disk's ID, such as `sdk_3m4n5b`.
 	ID string `json:"id"`
 	// Lower-case letters, digits and hyphens, unique in the account.
@@ -2970,6 +3056,28 @@ type StickyDisk struct {
 	// The newest 20, newest first, on a get.
 	Versions []StickyDiskVersion `json:"versions,omitzero"`
 }
+
+// Which of a sticky disk's versions a host of its pool holds.
+type StickyDiskHost struct {
+	// A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared host, for anyone but a super-admin.
+	HostID *string `json:"hostId,omitempty"`
+	// The host's name, with its ID.
+	HostName *string `json:"hostName,omitempty"`
+	// `head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions (a sandbox there starts from the newest of them). `none`: it holds none.
+	State StickyDiskHostState `json:"state"`
+	// The newest version it holds, where it holds one (the head, for `head`).
+	Version *string `json:"version,omitempty"`
+}
+
+// `head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions (a sandbox there starts from the newest of them). `none`: it holds none.
+type StickyDiskHostState string
+
+const (
+	StickyDiskHostStateHead     StickyDiskHostState = "head"
+	StickyDiskHostStateFetching StickyDiskHostState = "fetching"
+	StickyDiskHostStateOlder    StickyDiskHostState = "older"
+	StickyDiskHostStateNone     StickyDiskHostState = "none"
+)
 
 type StickyDiskList struct {
 	Items []StickyDisk `json:"items"`
