@@ -485,6 +485,31 @@ func TestAnOOMKilledExitIsReportedAsSuch(t *testing.T) {
 	}
 }
 
+// An exit the kernel's log explains still counts against the counted causes (ExitCause, over-commit's kills counted
+// by its group), so that kill doesn't explain another VM's exit after; and a counted cause alone still explains one.
+func TestAnOOMKilledExitIsCountedAsExplained(t *testing.T) {
+	fastHealth(t)
+	for _, named := range []bool{true, false} {
+		ev := &events{}
+		m, s, _, machine := runningSandbox(t, ev)
+		counted := 0
+		m.cfg.OOMKilled = func(int) bool { return named }
+		m.cfg.ExitCause = func() string {
+			counted++
+			return "counted"
+		}
+		s.mu.Lock()
+		m.watch(s, machine)
+		s.mu.Unlock()
+		machine.Kill()
+		waitFor(t, "the exit's event", func() bool { return len(ev.all()) == 1 })
+		want := map[bool]string{true: OOMExit, false: "counted"}[named]
+		if got := ev.all()[0].Error; got != want || counted != 1 {
+			t.Fatalf("named %v: error %q, counted %d; want %q, counted once", named, got, counted, want)
+		}
+	}
+}
+
 // A sandbox a restart of the host finds gone, whose Firecracker the kernel's log says it killed for memory, is stopped
 // with that cause rather than the restart; one it doesn't name keeps the restart's error.
 func TestARestartReportsAnOOMKilledSandboxAsSuch(t *testing.T) {

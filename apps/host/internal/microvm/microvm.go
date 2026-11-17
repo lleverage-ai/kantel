@@ -1257,11 +1257,17 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 		s.meta.Error = "the VM exited"
 		if killedFor != "" {
 			s.meta.Error = killedFor
-		} else if m.oomKilled(machine.Pid()) {
-			s.meta.Error = OOMExit
-		} else if m.cfg.ExitCause != nil {
-			if why := m.cfg.ExitCause(); why != "" {
-				s.meta.Error = why
+		} else {
+			// The counted cause is read for every exit the host didn't cause, so a kill the kernel's log names for this VM
+			// is also counted as explained, and doesn't explain another VM's exit later.
+			counted := ""
+			if m.cfg.ExitCause != nil {
+				counted = m.cfg.ExitCause()
+			}
+			if m.oomKilled(machine.Pid()) {
+				s.meta.Error = OOMExit
+			} else if counted != "" {
+				s.meta.Error = counted
 			}
 		}
 		s.meta.Pid = 0
