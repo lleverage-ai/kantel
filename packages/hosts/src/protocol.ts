@@ -23,6 +23,11 @@ export const HOST_CLOSE_REVOKED = 4003;
 export const HOST_CLOSE_REPLACED = 4008;
 /** The host spoke out of turn, or a version Kantel doesn't speak. */
 export const HOST_CLOSE_PROTOCOL = 4002;
+/**
+ * Nothing came from the host for longer than the heartbeat deadline (`HostHubOptions.heartbeatDeadlineMs`): the link is
+ * taken as lost. The host reconnects, as after any close but a revocation.
+ */
+export const HOST_CLOSE_SILENT = 4009;
 
 export const HOST_MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
 

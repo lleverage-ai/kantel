@@ -56,6 +56,9 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 
 	const health = await fetch(url("/healthz"));
 	check("healthz answers without credentials", health.ok, await body(health));
+	const ready = await fetch(url("/readyz"));
+	const readyBody = await body(ready);
+	check("readyz answers ready without credentials", ready.ok && (readyBody as { ok?: unknown }).ok === true, readyBody);
 
 	for (const path of [
 		"/v1/audit/events",

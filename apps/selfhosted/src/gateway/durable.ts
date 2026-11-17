@@ -142,6 +142,19 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		});
 		closers.push(async () => liveRelay.stop());
 
+		// One check at a time, on the pool every call uses, so it fails when calls would: a database that is down, or a
+		// pool with no connection to give. The pool has no timeouts of its own, so `/readyz` bounds the wait, and a check
+		// still waiting is shared by those after it rather than piling more on the pool.
+		let checking: Promise<void> | undefined;
+		const ready = () => {
+			checking ??= (async () => {
+				await pool.query("SELECT 1");
+			})().finally(() => {
+				checking = undefined;
+			});
+			return checking;
+		};
+
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
 		const identity = createSqlIdentity({ driver, audit });
@@ -164,6 +177,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 					? {}
 					: { computeHosts: "postgres", computeRelay: "postgres", computeCluster: "postgres" }),
 			},
+			ready,
 			close,
 		};
 	} catch (error) {

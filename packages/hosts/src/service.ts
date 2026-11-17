@@ -825,6 +825,11 @@ export interface HostsServiceOptions {
 	 */
 	readonly releases?: HostReleases;
 	readonly heartbeatSeconds?: number;
+	/**
+	 * How long a host's connection may carry nothing before it is closed and the host taken as disconnected (default three
+	 * heartbeats, `HostHubOptions.heartbeatDeadlineMs`).
+	 */
+	readonly heartbeatDeadlineMs?: number;
 	readonly callTimeoutMs?: number;
 	/** How long an upgrade's call to its isolate's host waits for its answer (default `DISK_COPY_TIMEOUT_MS`). */
 	readonly upgradeTimeoutMs?: number;
@@ -2091,6 +2096,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (compute?.hostConnection !== undefined) report(compute.hostConnection(hostId, true));
 		},
 		...(options.callTimeoutMs === undefined ? {} : { callTimeoutMs: options.callTimeoutMs }),
+		...(options.heartbeatDeadlineMs === undefined ? {} : { heartbeatDeadlineMs: options.heartbeatDeadlineMs }),
 	});
 	const hub = cluster === undefined ? local : cluster.route(local);
 	// A host another replica gained or lost: this one's answer for it changed only now, perhaps after a console here read

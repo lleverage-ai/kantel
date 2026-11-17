@@ -7,6 +7,10 @@
  * One connection per host: a newer one takes over, and the older is closed with 4008. Only the current connection's
  * close marks the host gone, so a takeover never reads as a disconnect.
  *
+ * A welcomed connection that carries nothing from the host for longer than the heartbeat deadline (three heartbeats by
+ * default) is closed with 4009, so a host cut off without a close (a silent partition) is marked gone within it, rather
+ * than whenever the runtime's socket or TCP notices (about two minutes under Bun, longer elsewhere).
+ *
  * A welcomed host may call Kantel for `secrets.fetch`, `env.fetch`, `bucket.fetch` and `disk.locate`: the hub answers
  * them through `secrets`, `env`, `bucketSource` and `diskLocate`, naming the host the connection was checked against,
  * never one the host names, so a host is given only its own sandboxes' values and bucket sources, and grants naming it. Its egress proxy's `egress` events go to
@@ -27,6 +31,7 @@ import {
 	FILE_STREAM_WINDOW_BYTES,
 	HOST_CLOSE_PROTOCOL,
 	HOST_CLOSE_REPLACED,
+	HOST_CLOSE_SILENT,
 	HOST_EVENT_MOUNTS,
 	HOST_PROTOCOL_VERSION,
 	type HostBucketSource,
@@ -229,6 +234,12 @@ export interface HostHubOptions {
 	readonly callTimeoutMs?: number;
 	/** How long a host may take to say hello. Default 30 s. */
 	readonly helloTimeoutMs?: number;
+	/**
+	 * How long a welcomed connection may carry nothing from the host (no heartbeat, nor any other message or frame)
+	 * before it is closed as lost (4009, `HOST_CLOSE_SILENT`). Default three heartbeats: 3 × the welcome's
+	 * `heartbeatSeconds`, 45 s at the default 15 s. `0` turns it off.
+	 */
+	readonly heartbeatDeadlineMs?: number;
 }
 
 export interface HostHub {
@@ -282,10 +293,18 @@ interface Connection {
 	usageAcks: boolean;
 	/** The newest `seq` acknowledged on it, so acks only go forward. */
 	usageAcked: number;
+	/** When the last frame from the host arrived (`Date.now()`). */
+	heardAt: number;
+	/** Closes it once it has been silent for longer than the heartbeat deadline; set once it is welcomed. */
+	silence?: ReturnType<typeof setTimeout>;
 }
 
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
+/** What kantel-host beats at when its welcome names no interval (apps/host/internal/agent/conn.go). */
+const DEFAULT_HEARTBEAT_SECONDS = 15;
+/** Heartbeats a welcomed connection may miss in a row before it is taken as lost: the default deadline. */
+const HEARTBEATS_MISSED = 3;
 
 /** A payload a host sent that is an object, which is all its type claims until it's checked further. */
 const isObject = <T>(value: T): value is NonNullable<T> & object => typeof value === "object" && value !== null;
@@ -404,6 +423,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 	const teardown = (connection: Connection, reason: string) => {
 		if (connection.closed) return;
 		connection.closed = true;
+		if (connection.silence !== undefined) clearTimeout(connection.silence);
 		for (const [id, pending] of connection.pending) {
 			clearTimeout(pending.timer);
 			pending.reject(
@@ -422,6 +442,28 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			held.delete(connection.hostId);
 			options.onDisconnected?.(connection.hostId);
 		}
+	};
+
+	/**
+	 * Closes a welcomed connection that carries nothing from the host for longer than the heartbeat deadline: by default
+	 * three of the heartbeats its welcome asked for, which the host beats at for as long as the connection lasts.
+	 */
+	const watchSilence = (connection: Connection, welcome: HostWelcome) => {
+		const beat = welcome.heartbeatSeconds > 0 ? welcome.heartbeatSeconds : DEFAULT_HEARTBEAT_SECONDS;
+		const deadline = options.heartbeatDeadlineMs ?? HEARTBEATS_MISSED * beat * 1000;
+		if (!(deadline > 0) || !Number.isFinite(deadline)) return;
+		connection.heardAt = Date.now();
+		const check = () => {
+			connection.silence = undefined;
+			if (connection.closed) return;
+			const quiet = Date.now() - connection.heardAt;
+			if (quiet < deadline) {
+				connection.silence = setTimeout(check, deadline - quiet);
+				return;
+			}
+			shut(connection, HOST_CLOSE_SILENT, `Nothing from the host for ${Math.round(quiet / 1000)} s`);
+		};
+		connection.silence = setTimeout(check, deadline);
 	};
 
 	const current = (hostId: string): Connection => {
@@ -680,6 +722,8 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			// replica, without it, changes nothing.
 			connection.usageAcks = welcome.usageAcks === true;
 			send(connection, { type: "welcome", welcome });
+			// The host beats at its first welcome's interval for as long as the connection lasts.
+			watchSilence(connection, welcome);
 			options.onWelcomed?.(connection.hostId);
 			const later = connection.later;
 			connection.later = undefined;
@@ -702,6 +746,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				acks: new Map(),
 				usageAcks: false,
 				usageAcked: 0,
+				heardAt: Date.now(),
 			};
 			const older = held.get(hostId);
 			held.set(hostId, connection);
@@ -818,6 +863,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				 */
 				receive(frame) {
 					if (connection.closed) return;
+					connection.heardAt = Date.now();
 					try {
 						handle(frame);
 					} catch (error) {
