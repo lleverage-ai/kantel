@@ -154,6 +154,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			hosts: hosts.filter((host) => host.poolId === pool.id && host.state !== "revoked").length,
 			sync: pool.sync === true,
 			...(pool.vcpusPerCpu === undefined ? {} : { vcpusPerCpu: pool.vcpusPerCpu }),
+			placement: pool.placement ?? "warm",
 			...(runners === undefined ? {} : { runners: runners.get(pool.id) ?? [] }),
 			createdAt: pool.createdAt,
 		}));
@@ -171,6 +172,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		name: string,
 		sync: boolean | undefined,
 		vcpusPerCpu: number | null | undefined,
+		placement: "warm" | "balanced" | undefined,
 	): Promise<computeSchema.Pool> {
 		// The default first, so an owner's first pool made by hand is never its default by accident.
 		await poolsOf(owner);
@@ -182,6 +184,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			createdAt: now(),
 			...(sync === true ? { sync } : {}),
 			...(typeof vcpusPerCpu === "number" ? { vcpusPerCpu } : {}),
+			...(placement === "balanced" ? { placement } : {}),
 		};
 		await naming(owner, name, () => store.pools.insert(pool));
 		return viewOf(pool);
@@ -216,7 +219,8 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		const latest = Math.max(now(), ...(await poolsOf(pool.owner)).map((other) => (other.defaultAt ?? 0) + 1));
 		const changed = await naming(pool.owner, body.name ?? pool.name, () =>
 			store.pools.update(pool.id, (current) => {
-				const { sync: _was, vcpusPerCpu: _cap, ...rest } = current;
+				const { sync: _was, vcpusPerCpu: _cap, placement: _placement, ...rest } = current;
+				const placement = body.placement ?? current.placement ?? "warm";
 				const sync = body.sync ?? current.sync === true;
 				// null removes the cap; absent keeps it.
 				const vcpusPerCpu = body.vcpusPerCpu === undefined ? current.vcpusPerCpu : (body.vcpusPerCpu ?? undefined);
@@ -226,6 +230,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 					...(body.default === true ? { defaultAt: latest } : {}),
 					...(sync ? { sync: true } : {}),
 					...(vcpusPerCpu === undefined ? {} : { vcpusPerCpu }),
+					...(placement === "balanced" ? { placement } : {}),
 				};
 			}),
 		);
@@ -326,7 +331,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 		createPool: async (principal, { body, idempotencyKey }) => {
 			requireScope(principal, "hosts:admin");
 			return options.once(principal, "createPool", { body, idempotencyKey }, () =>
-				create(OPERATOR_POOLS, body.name, body.sync, body.vcpusPerCpu),
+				create(OPERATOR_POOLS, body.name, body.sync, body.vcpusPerCpu, body.placement),
 			);
 		},
 		updatePool: async (principal, { params, body }) => {
@@ -348,7 +353,7 @@ export function createPoolService(options: PoolServiceOptions): PoolService {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
 			return options.once(principal, "createAccountPool", { body, idempotencyKey }, () =>
-				create(account.id, body.name, body.sync, body.vcpusPerCpu),
+				create(account.id, body.name, body.sync, body.vcpusPerCpu, body.placement),
 			);
 		},
 		updateAccountPool: async (principal, { params, body }) =>

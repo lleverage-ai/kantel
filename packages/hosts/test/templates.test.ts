@@ -512,6 +512,33 @@ describe("host backend templates", () => {
 			]);
 			expect(other.calls.filter((call) => call.method === "sandbox.create").length).toBe(4);
 		});
+
+		it("alternates between the hosts from the first create when its pool's placement is balanced", async () => {
+			const order = async (balanced: boolean) => {
+				const { store, service, backend } = await setup();
+				service.useCompute({
+					secrets: async () => undefined,
+					recordEgress: async () => undefined,
+					poolPlacement: async () => (balanced ? { balanced: true } : {}),
+				});
+				const holder = await addHost(store, service, "host_b", { freeMemoryMiB: 32_768 });
+				await addHost(store, service, "host_a", { freeMemoryMiB: 32_768 });
+				for (const id of ["host_a", "host_b"]) await service.update(id, { poolId: "pool_ci" });
+				holder.createSource = "snapshot";
+				const where: string[] = [];
+				for (let i = 0; i < 6; i++) {
+					// 2 vCPU of 16 CPUs: an eighth of a host each.
+					const spec = { ...specOf(`sbx_balanced_${i}`), shape: { vcpus: 2, memoryMb: 2048 } };
+					const placement = await backend.create(spec);
+					where.push(`${placement.hostId}${placement.bootedFresh === true ? " fresh" : ""}`);
+				}
+				return where;
+			};
+			// By default the holder restores until it would be half full and a quarter fuller than the other.
+			expect(await order(false)).toEqual(["host_b", "host_b", "host_b", "host_a fresh", "host_a fresh", "host_b"]);
+			// Balanced, it restores only while it is as empty as the other: by turns from the first.
+			expect(await order(true)).toEqual(["host_b", "host_a fresh", "host_b", "host_a fresh", "host_b", "host_a fresh"]);
+		});
 	});
 
 	it("boots the template fresh on another host when its snapshot's host has no room, or on it when it misses the snapshot, but a sandbox's own snapshot waits", async () => {

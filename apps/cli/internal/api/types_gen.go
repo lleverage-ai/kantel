@@ -529,11 +529,21 @@ type CreateAccountPoolBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account *string `json:"account,omitempty"`
 	Name    string  `json:"name"`
+	// How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.
+	Placement *CreateAccountPoolBodyPlacement `json:"placement,omitempty"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
 	Sync *bool `json:"sync,omitempty"`
 	// The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap.
 	VCPUsPerCPU Nullable[float64] `json:"vcpusPerCpu,omitzero"`
 }
+
+// How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.
+type CreateAccountPoolBodyPlacement string
+
+const (
+	CreateAccountPoolBodyPlacementWarm     CreateAccountPoolBodyPlacement = "warm"
+	CreateAccountPoolBodyPlacementBalanced CreateAccountPoolBodyPlacement = "balanced"
+)
 
 type CreateBucketSourceBody struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
@@ -617,11 +627,21 @@ type CreatePersonalTokenBody struct {
 
 type CreatePoolBody struct {
 	Name string `json:"name"`
+	// How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.
+	Placement *CreatePoolBodyPlacement `json:"placement,omitempty"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
 	Sync *bool `json:"sync,omitempty"`
 	// The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap.
 	VCPUsPerCPU Nullable[float64] `json:"vcpusPerCpu,omitzero"`
 }
+
+// How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.
+type CreatePoolBodyPlacement string
+
+const (
+	CreatePoolBodyPlacementWarm     CreatePoolBodyPlacement = "warm"
+	CreatePoolBodyPlacementBalanced CreatePoolBodyPlacement = "balanced"
+)
 
 // Any other field is refused as `invalid`.
 type CreateProjectBody struct {
@@ -2006,6 +2026,8 @@ type Pool struct {
 	ID string `json:"id"`
 	// Its name, unique among its owner's pools.
 	Name string `json:"name"`
+	// How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds.
+	Placement PoolPlacement `json:"placement"`
 	// Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners.
 	Runners []GithubRunnerKind `json:"runners,omitzero"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default.
@@ -2017,6 +2039,14 @@ type Pool struct {
 type PoolList struct {
 	Items []Pool `json:"items"`
 }
+
+// How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds.
+type PoolPlacement string
+
+const (
+	PoolPlacementWarm     PoolPlacement = "warm"
+	PoolPlacementBalanced PoolPlacement = "balanced"
+)
 
 type Project struct {
 	// Epoch milliseconds, UTC.
@@ -3363,6 +3393,8 @@ type UpdatePoolBody struct {
 	// Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again.
 	Default *bool   `json:"default,omitempty"`
 	Name    *string `json:"name,omitempty"`
+	// How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.
+	Placement *UpdatePoolBodyPlacement `json:"placement,omitempty"`
 	// Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are.
 	Runners []GithubRunnerKind `json:"runners,omitzero"`
 	// Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it.
@@ -3370,6 +3402,14 @@ type UpdatePoolBody struct {
 	// The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap.
 	VCPUsPerCPU Nullable[float64] `json:"vcpusPerCpu,omitzero"`
 }
+
+// How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.
+type UpdatePoolBodyPlacement string
+
+const (
+	UpdatePoolBodyPlacementWarm     UpdatePoolBodyPlacement = "warm"
+	UpdatePoolBodyPlacementBalanced UpdatePoolBodyPlacement = "balanced"
+)
 
 type UpdateSandboxBody struct {
 	AutoStopMinutes Nullable[int64] `json:"autoStopMinutes,omitzero"`

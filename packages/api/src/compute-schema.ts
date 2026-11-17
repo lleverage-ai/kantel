@@ -4411,6 +4411,13 @@ export const Pool = Type.Object(
 					"only decide which host is emptiest.",
 			}),
 		),
+		placement: Type.Union([Type.Literal("warm"), Type.Literal("balanced")], {
+			description:
+				"How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs " +
+				"(the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be " +
+				"half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, " +
+				"so sandboxes spread evenly over the pool's hosts whatever each holds.",
+		}),
 		runners: Type.Optional(
 			Type.Array(GithubRunnerKind, {
 				description:
@@ -4439,6 +4446,14 @@ const poolVcpusPerCpu = Type.Union([Type.Number({ minimum: 0.25, maximum: 16 }),
 		"waits for room. `null` removes the cap.",
 });
 
+const poolPlacementMode = Type.Union([Type.Literal("warm"), Type.Literal("balanced")], {
+	description:
+		"How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create " +
+		"needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller " +
+		"than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within " +
+		"a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.",
+});
+
 const poolSync = Type.Boolean({
 	description:
 		"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
@@ -4450,6 +4465,7 @@ export const CreatePoolBody = Type.Object(
 		name: Type.String({ pattern: POOL_NAME_PATTERN }),
 		sync: Type.Optional(poolSync),
 		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+		placement: Type.Optional(poolPlacementMode),
 	},
 	{ title: "CreatePoolBody" },
 );
@@ -4460,6 +4476,7 @@ export const CreateAccountPoolBody = Type.Object(
 		name: Type.String({ pattern: POOL_NAME_PATTERN }),
 		sync: Type.Optional(poolSync),
 		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+		placement: Type.Optional(poolPlacementMode),
 	},
 	{ title: "CreateAccountPoolBody" },
 );
@@ -4476,6 +4493,7 @@ export const UpdatePoolBody = Type.Object(
 		),
 		sync: Type.Optional(poolSync),
 		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+		placement: Type.Optional(poolPlacementMode),
 		runners: Type.Optional(
 			Type.Array(GithubRunnerKind, {
 				maxItems: 100,

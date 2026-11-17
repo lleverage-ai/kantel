@@ -9,6 +9,7 @@ import {
 	freeMemoryOn,
 	holdsHeads,
 	isRefusal,
+	nearEmptiest,
 	type Placement,
 	place,
 	SPREAD_FULLNESS,
@@ -325,6 +326,139 @@ describe("place", () => {
 		expect(isRefusal(plain) ? plain.reason : plain.host.id).toBe("older");
 		const fresh = place({ ...request, stickyDisks: [{ diskId: "sdk_new" }] }, [warm, older]);
 		expect(isRefusal(fresh) ? fresh.reason : fresh.host.id).toBe("older");
+	});
+
+	it("spreads CI runners evenly over a balanced pool's 4 hosts, whichever hold the heads or the template's snapshot", () => {
+		// Lleverage's pool on 17 Nov: four hosts of 32 CPUs and 128 GiB, runners attaching one sticky disk. ci-5 holds its
+		// head; ci-1 and ci-6 hold the runner template's snapshot, which the others boot fresh without.
+		const stickyDisks = [{ diskId: "sdk_ci", version: "sdv_head" }];
+		const run = (balanced: boolean, vcpus: number, creates: number) => {
+			const runner = { vcpus, memoryMiB: vcpus * 2048 };
+			const big = { ...facts, cpus: 32, memoryMiB: 131_072, sizes: [{ name: "runner", ...runner, diskGiB: 100 }] };
+			const request = { tier: "microvm", size: "runner", stickyDisks } as const;
+			const booked = new Map<string, number>(["ci-1", "ci-4", "ci-5", "ci-6"].map((id) => [id, 0]));
+			const host = (id: string): Candidate =>
+				candidate(
+					id,
+					{
+						facts: big,
+						capacity: {
+							...capacity(131_072 - (booked.get(id) ?? 0) * runner.memoryMiB).capacity,
+							stickyDisks:
+								id === "ci-5"
+									? [{ diskId: "sdk_ci", versions: [{ version: "sdv_head", allocatedBytes: 1, at: 1 }] }]
+									: [],
+						},
+					},
+					{ bookedVcpus: (booked.get(id) ?? 0) * runner.vcpus, ...(balanced ? { balanced: true } : {}) },
+				);
+			let widest = 0;
+			for (let n = 0; n < creates; n++) {
+				// As the hosts service places a create from a template snapshot: a restore on a host with it, unless an
+				// emptier host without it should boot it fresh instead (`bootsFreshInstead`).
+				let chosen = place(request, [host("ci-1"), host("ci-6")]);
+				const instead = place(request, [host("ci-4"), host("ci-5")]);
+				if (isRefusal(chosen) || (!isRefusal(instead) && bootsFreshInstead(chosen, instead))) chosen = instead;
+				if (isRefusal(chosen)) throw new Error(chosen.reason);
+				booked.set(chosen.host.id, (booked.get(chosen.host.id) ?? 0) + 1);
+				widest = Math.max(widest, Math.max(...booked.values()) - Math.min(...booked.values()));
+			}
+			return { counts: Object.fromEntries(booked), widest };
+		};
+		// Balanced, 8-vCPU runners: never more than one apart, and four on each after sixteen.
+		expect(run(true, 8, 16)).toEqual({ counts: { "ci-1": 4, "ci-4": 4, "ci-5": 4, "ci-6": 4 }, widest: 1 });
+		// 4-vCPU runners, an eighth of a host each: preferring warm hosts (the default) lets the snapshot's and the head's
+		// hosts run two or more ahead; balanced keeps them within one, eight on each after thirty-two.
+		expect(run(false, 4, 32).widest).toBeGreaterThanOrEqual(2);
+		expect(run(true, 4, 32)).toEqual({ counts: { "ci-1": 8, "ci-4": 8, "ci-5": 8, "ci-6": 8 }, widest: 1 });
+	});
+
+	it("holds a balanced pool's restore to the emptiest of every host, not to the fresh boot's host the heads chose", () => {
+		// Cerbie's case: a 1-vCPU create on three 32-CPU hosts with memory to spare. The snapshot's holder has 2 vCPUs
+		// booked (0.09 with it placed), a host without it holding the sticky head 1 (0.06), and another nothing (0.03).
+		const big = {
+			...facts,
+			cpus: 32,
+			memoryMiB: 131_072,
+			sizes: [{ name: "one", vcpus: 1, memoryMiB: 512, diskGiB: 10 }],
+		};
+		const request = { tier: "microvm", size: "one", stickyDisks: [{ diskId: "sdk_ci", version: "sdv_2" }] } as const;
+		const host = (id: string, booked: number, heads: boolean) =>
+			candidate(
+				id,
+				{
+					facts: big,
+					capacity: {
+						...capacity(131_000).capacity,
+						stickyDisks: heads
+							? [{ diskId: "sdk_ci", versions: [{ version: "sdv_2", allocatedBytes: 1, at: 1 }] }]
+							: [],
+					},
+				},
+				{ bookedVcpus: booked, balanced: true },
+			);
+		const restore = place(request, [host("holder", 2, false)]);
+		const fresh = place(request, [host("heads", 1, true), host("empty", 0, false)]);
+		if (isRefusal(restore) || isRefusal(fresh)) throw new Error("refused");
+		// Within its own group the heads win (0.06 against 0.03, inside a twentieth)...
+		expect([fresh.host.id, fresh.fullness, fresh.emptiest]).toEqual(["heads", 0.06, 0.03]);
+		// ...but the restore at 0.09 is more than a twentieth over the emptiest of all (0.03), so it boots fresh.
+		expect(restore.fullness).toBe(0.09);
+		expect(bootsFreshInstead(restore, fresh)).toBe(true);
+		// Never onto a fresh host as full as the restore's or fuller, whatever the emptiest: one the owner's isolates
+		// drew the fresh group's choice to (0.90, its emptiest 0.10) leaves the 0.20 restore where it is.
+		const at = (fullness: number, emptiest: number) =>
+			({ ...restore, fullness, emptiest, balanced: true }) as Placement;
+		expect(bootsFreshInstead(at(0.2, 0.2), at(0.9, 0.1))).toBe(false);
+		expect(bootsFreshInstead(at(0.2, 0.2), at(0.2, 0.1))).toBe(false);
+		// A holder within a twentieth of that emptiest still restores.
+		const near = place(request, [host("holder", 1, false)]);
+		if (isRefusal(near)) throw new Error("refused");
+		expect(bootsFreshInstead(near, fresh)).toBe(false);
+	});
+
+	it("lets a balanced pool's heads win only between hosts within a twentieth of the emptiest", () => {
+		const holding = (id: string, free: number, balanced: boolean) =>
+			candidate(
+				id,
+				{
+					capacity: {
+						...capacity(free).capacity,
+						stickyDisks: [{ diskId: "sdk_ci", versions: [{ version: "sdv_2", allocatedBytes: 1, at: 1 }] }],
+					},
+				},
+				balanced ? { balanced: true } : {},
+			);
+		const plain = (id: string, free: number, balanced: boolean) =>
+			candidate(id, capacity(free), balanced ? { balanced: true } : {});
+		const request = {
+			tier: "microvm",
+			size: "default",
+			stickyDisks: [{ diskId: "sdk_ci", version: "sdv_2" }],
+		} as const;
+		const pick = (...candidates: Candidate[]) => {
+			const chosen = place(request, candidates);
+			return isRefusal(chosen) ? chosen.reason : chosen.host.id;
+		};
+		// 0.45 against 0.15 full: the heads win by default (under half full), not when the pool is balanced.
+		expect(pick(holding("warm", 20_000, false), plain("empty", 30_000, false))).toBe("warm");
+		expect(pick(holding("warm", 20_000, true), plain("empty", 30_000, true))).toBe("empty");
+		// As full as the emptiest, within a twentieth: the heads still decide.
+		expect(pick(holding("warm", 29_000, true), plain("empty", 30_000, true))).toBe("warm");
+		expect(nearEmptiest(0.3, 0.25)).toBe(true);
+		expect(nearEmptiest(0.31, 0.25)).toBe(false);
+		// A template's restore likewise wins over an emptier fresh boot only within a twentieth.
+		const at = (fullness: number, balanced: boolean) =>
+			({
+				host: plain("h", 1, balanced).host,
+				size: facts.sizes[0],
+				custom: false,
+				fullness,
+				...(balanced ? { balanced } : {}),
+			}) as Placement;
+		expect(bootsFreshInstead(at(0.45, true), at(0.15, true))).toBe(true);
+		expect(bootsFreshInstead(at(0.45, false), at(0.15, false))).toBe(false);
+		expect(bootsFreshInstead(at(0.2, true), at(0.15, true))).toBe(false);
 	});
 
 	it("says a host holds the heads only of what it reports, every disk with a head", () => {

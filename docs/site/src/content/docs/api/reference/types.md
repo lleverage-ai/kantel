@@ -439,6 +439,7 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | `name` | string | yes |  |
 | `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 | `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
+| `placement` | `"warm"` or `"balanced"` | no | How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. |
 
 ### CreateApiKeyBody
 
@@ -538,6 +539,7 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `name` | string | yes |  |
 | `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 | `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
+| `placement` | `"warm"` or `"balanced"` | no | How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. |
 
 ### CreateSandboxBody
 
@@ -1569,6 +1571,7 @@ A set of an account's hosts (or of the deployment's shared hosts), each host in 
 | `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
 | `sync` | boolean | yes | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. |
 | `vcpusPerCpu` | number | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest. |
+| `placement` | `"warm"` or `"balanced"` | yes | How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds. |
 | `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
@@ -2697,6 +2700,7 @@ A template version's definition, never changed once made. Answered with every de
 | `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
 | `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
 | `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
+| `placement` | `"warm"` or `"balanced"` | no | How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. |
 | `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. (at most 100 items) |
 
 ### UpdateSandboxBody

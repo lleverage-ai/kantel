@@ -14,8 +14,9 @@
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
  * VM); then a host that holds the head of every sticky disk the sandbox attaches (`holdsHeads`), so it starts with a
  * warm cache rather than its host's older version or an empty disk (docs/design/disk-store.md, 2d). That is a preference
- * only, and only while that host wouldn't be much fuller than the emptiest (`muchFuller`): a host without the heads
- * starts from what it has and fetches them in the background. Then the least full once
+ * only, and only while that host wouldn't be much fuller than the emptiest (`muchFuller`), or in a pool whose placement is
+ * balanced (`Candidate.balanced`), only while it would be as full as the emptiest (`nearEmptiest`): a host without the
+ * heads starts from what it has and fetches them in the background. Then the least full once
  * it is placed (`fullness`): the larger of the share of its memory taken and the share of
  * its vCPUs booked, so sandboxes spread over hosts of different sizes in proportion, and a host whose CPUs are all booked
  * by a few large sandboxes isn't picked for having memory left; then the least loaded for its CPUs. vCPUs are only
@@ -98,6 +99,12 @@ export interface Candidate {
 	 * sandbox is full. Absent, vCPUs only rank hosts and never refuse one.
 	 */
 	readonly vcpusPerCpu?: number;
+	/**
+	 * Its pool's placement is balanced (`Pool.placement`): a host holding a create's sticky disk heads, or its template's
+	 * snapshot, wins only over hosts as full as it, within `BALANCED_TIE` of the emptiest (`nearEmptiest`), rather than
+	 * until it is much fuller (`muchFuller`).
+	 */
+	readonly balanced?: boolean;
 }
 
 export interface Placement {
@@ -113,6 +120,13 @@ export interface Placement {
 	 * placement (`HostStore.placeOnTakingHost`), so creates at once can't both take the last of it. Absent: no cap.
 	 */
 	readonly maxVcpus?: number;
+	/** Its host's pool's placement is balanced (`Candidate.balanced`), as `bootsFreshInstead` reads it. */
+	readonly balanced?: boolean;
+	/**
+	 * How full the emptiest host that could take it would be with it placed, of the hosts this placement chose among:
+	 * `bootsFreshInstead` holds a balanced pool's restore to the emptiest of both its groups.
+	 */
+	readonly emptiest?: number;
 }
 
 /** No host can take it: why, in words, and as a `PlacementReason`. */
@@ -376,7 +390,9 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	// The heads are a warm cache, so they count only on a host not much fuller than the emptiest that fits (`muchFuller`):
 	// creates that attach the same disk spread over the hosts rather than fill the one holding its head first.
 	const emptiest = Math.min(...fits.map((fit) => fit.fullness));
-	const warm = (fit: (typeof fits)[number]) => fit.heads && !muchFuller(fit.fullness, emptiest);
+	const warm = (fit: (typeof fits)[number]) =>
+		fit.heads &&
+		(fit.candidate.balanced === true ? nearEmptiest(fit.fullness, emptiest) : !muchFuller(fit.fullness, emptiest));
 	fits.sort(
 		(a, b) =>
 			Number(b.owner) - Number(a.owner) ||
@@ -395,6 +411,8 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		custom: best.custom,
 		fullness: best.fullness,
 		...(maxVcpus === undefined ? {} : { maxVcpus }),
+		...(best.candidate.balanced === true ? { balanced: true } : {}),
+		emptiest,
 	};
 }
 
@@ -433,7 +451,21 @@ export const muchFuller = (fuller: number, emptier: number): boolean =>
  * runtime building its own), this keeps the one host with it from filling while the others sit empty.
  */
 export const bootsFreshInstead = (restore: Placement, fresh: Placement): boolean =>
-	muchFuller(restore.fullness, fresh.fullness);
+	restore.balanced === true
+		? // Never onto a host as full as the restore's or fuller (one an owner's isolates drew the fresh boot to, say).
+			fresh.fullness < restore.fullness &&
+			!nearEmptiest(restore.fullness, Math.min(restore.emptiest ?? restore.fullness, fresh.emptiest ?? fresh.fullness))
+		: muchFuller(restore.fullness, fresh.fullness);
+
+/**
+ * How much fuller than the emptiest host a host may be and still count as as full as it, in a pool whose placement is
+ * balanced (`Candidate.balanced`): a twentieth of a host, less than one sandbox of 8 vCPUs on 32 threads (a quarter).
+ */
+export const BALANCED_TIE = 0.05;
+
+/** Whether a host `fullness` full is as full as the emptiest, `emptiest` full, within `BALANCED_TIE` (in hundredths). */
+export const nearEmptiest = (fullness: number, emptiest: number): boolean =>
+	Math.round((fullness - emptiest) * 100) <= Math.round(BALANCED_TIE * 100);
 
 /**
  * How full a host would be with `size` placed on it, from 0 (more than 1 when over-booked): the larger of the share of
