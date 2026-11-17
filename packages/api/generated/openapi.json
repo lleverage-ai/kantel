@@ -10195,7 +10195,7 @@
 			"get": {
 				"operationId": "listGithubRunnerJobs",
 				"summary": "List a GitHub runner integration's jobs",
-				"description": "The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`.",
+				"description": "The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits. A key needs `account:admin`.",
 				"tags": ["github-runners"],
 				"parameters": [
 					{

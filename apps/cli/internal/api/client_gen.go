@@ -1223,7 +1223,7 @@ func (c *Client) UpdateGithubRunners(ctx context.Context, githubRunnersID string
 	return &out, nil
 }
 
-// ListGithubRunnerJobs GET /github-runners/{githubRunnersId}/jobs: List a GitHub runner integration's jobs. The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`.
+// ListGithubRunnerJobs GET /github-runners/{githubRunnersId}/jobs: List a GitHub runner integration's jobs. The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits. A key needs `account:admin`.
 func (c *Client) ListGithubRunnerJobs(ctx context.Context, githubRunnersID string, opts ...CallOption) (*GithubRunnerJobList, error) {
 	var out GithubRunnerJobList
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/github-runners/%s/jobs", url.PathEscape(githubRunnersID)), Query: nil, Out: &out}, opts...); err != nil {

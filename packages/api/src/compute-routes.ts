@@ -2236,7 +2236,7 @@ export const listGithubRunnerJobs = defineRoute({
 	tag: "github-runners",
 	summary: "List a GitHub runner integration's jobs",
 	description: describe(
-		"The jobs its webhook told it of, newest first, and why any still waits.",
+		"The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits.",
 		scope("account:admin"),
 	),
 	params: GithubRunnersPath,

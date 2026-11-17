@@ -42,6 +42,12 @@ GitHub sends a job's `queued` webhook once, and keeps the job waiting for up to 
 - A kind never has more runners than its `maxRunners` (20 by default), starting or running. Jobs beyond that wait their turn.
 - Jobs wait in the order they were queued.
 
+## When a webhook goes missing
+
+A `queued` webhook can go missing: GitHub may send it while the control plane is restarting or busy, or while no kind has the job's labels, such as when you move a kind from one pool to another by taking it out of one and then adding it to the other. So every five minutes Kantel compares its queue with GitHub's. It lists the queued jobs of each repository the integration serves, using the App installation's token, and records any job one of its kinds takes that it hasn't heard of. That job gets a runner as if its webhook had arrived. Before the first webhook, Kantel finds the App's installation on the integration's owner itself. The comparison runs alongside runner passes, so a slow one doesn't hold up runners. `GET /v1/github-runners/{id}/jobs` lists it with the reason "No webhook told of it: found queued on GitHub" until it starts.
+
+Kantel stays within GitHub's rate limits. It reads each list conditionally, so a list that hasn't changed doesn't count against the installation's rate limit. It stops comparing while fewer than a quarter of the installation's hourly requests are left, until the limit resets, so registering and removing runners still have room. It also asks GitHub to resend each of the App's failed `workflow_job` deliveries from the last day, once.
+
 `GET /v1/github-runners/{id}` answers each kind's queue: how many jobs are queued, how many runners are starting, idle or busy, when the oldest queued job was queued, and why it is still waiting.
 
 ## Where runners go
@@ -59,7 +65,7 @@ Kantel places each microVM on the host that will be least full once it is there.
 Make an App on your GitHub organisation (**Settings > Developer settings > GitHub Apps > New GitHub App**):
 
 - **Webhook**: on. Leave the URL and secret for now; Kantel gives you both in step 3.
-- **Permissions**: Organization **Self-hosted runners**: read and write. Repository **Actions**: read-only, so Kantel can check a job whose `completed` webhook went missing.
+- **Permissions**: Organization **Self-hosted runners**: read and write. Repository **Actions**: read-only, so Kantel can list queued jobs and check a job whose webhook went missing.
 - **Subscribe to events**: **Workflow job**.
 
 Make a private key on the App's page, and install the App on the organisation, for the repositories that will use it.
@@ -144,7 +150,7 @@ This keeps one repository's jobs off another's runners only with `scope: reposit
 
 ### 5. Use it
 
-Change a job's `runs-on` to the kind's label. `GET /v1/github-runners/{id}/jobs` lists the jobs the webhook told Kantel of, newest first, with the sandbox that ran each.
+Change a job's `runs-on` to the kind's label. `GET /v1/github-runners/{id}/jobs` lists the jobs Kantel knows of, newest first, with the sandbox that ran each: those the webhook told it of, and those it found queued on GitHub.
 
 ## The runner template
 

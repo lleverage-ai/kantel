@@ -111,7 +111,7 @@ Deletes its runners' sandboxes, whatever they are running, and revokes its API k
 
 `GET /v1/github-runners/{githubRunnersId}/jobs` (SDK method `listGithubRunnerJobs`)
 
-The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`.
+The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits. A key needs `account:admin`.
 
 **Path parameters**
 

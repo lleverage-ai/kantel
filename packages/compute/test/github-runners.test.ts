@@ -4,7 +4,7 @@ import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { KeyPrincipal } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
-import { importAppKey } from "../src/github-app.ts";
+import { type FailedDelivery, importAppKey, type QueuedJob } from "../src/github-app.ts";
 import {
 	CAPACITY_BACKOFF_MS,
 	createGithubRunners,
@@ -16,6 +16,7 @@ import {
 	LEASE_MS,
 	LEASE_RENEW_MS,
 	poolFor,
+	RECONCILE_EVERY_MS,
 	RUNNER_LABEL,
 	type RunnerPool,
 	type RunnerSandboxes,
@@ -145,6 +146,19 @@ function fakeGithub() {
 	const runs = new Map<number, { event: string; headBranch?: string; headRepository?: string }>();
 	/** What GitHub says of a job when it is asked (polling); absent, it is in progress. */
 	const jobs = new Map<number, { status: string; conclusion?: string; runId?: number; runnerId?: number }>();
+	/** The installation's repositories, and the jobs GitHub has queued in each, as reconciling reads them. */
+	const repositories = ["octo-org/app"];
+	const queued = new Map<string, QueuedJob[]>();
+	/** Each repository whose queued jobs were read, in order. */
+	const listed: string[] = [];
+	/** The App's failed deliveries, and those it was asked to send again. */
+	const deliveries: FailedDelivery[] = [];
+	const redelivered: number[] = [];
+	/** The App's installations, by owner. */
+	const installations = new Map<string, number>();
+	/** Deliveries whose redelivery GitHub refuses; and what a lookup of an installation waits for first. */
+	const failRedelivery = new Set<number>();
+	const lookups: { wait?: Promise<void> } = {};
 	return {
 		registered,
 		removed,
@@ -152,7 +166,33 @@ function fakeGithub() {
 		state,
 		runs,
 		jobs,
+		repositories,
+		queued,
+		listed,
+		deliveries,
+		redelivered,
+		installations,
+		failRedelivery,
+		lookups,
 		app: () => ({
+			async findInstallation(owner: string) {
+				await lookups.wait;
+				return installations.get(owner);
+			},
+			async listRepositories(_installation: number) {
+				return [...repositories];
+			},
+			async queuedJobs(_installation: number, repository: string) {
+				listed.push(repository);
+				return queued.get(repository) ?? [];
+			},
+			async failedDeliveries(since: number) {
+				return deliveries.filter((delivery) => delivery.deliveredAt >= since);
+			},
+			async redeliver(deliveryId: number) {
+				if (failRedelivery.has(deliveryId)) throw new KantelError("unavailable", "GitHub answered 502");
+				redelivered.push(deliveryId);
+			},
 			async generateJitConfig(
 				_installation: number,
 				scope: unknown,
@@ -230,7 +270,7 @@ async function setUp(
 			sandboxes: sandboxes.api,
 			principalOf: async (keyId) => (keyId === PRINCIPAL.keyId && !key.revoked ? PRINCIPAL : undefined),
 			cleanupPrincipalOf: async (keyId) => (keyId === PRINCIPAL.keyId ? PRINCIPAL : undefined),
-			github: github.app,
+			github: () => github.app(),
 			gatewayId,
 			background: (work) => {
 				pending.add(work);
@@ -1156,6 +1196,192 @@ describe("GitHub runners", () => {
 				expect.objectContaining({ id: "3", pool: "kantel-public-8vcpu", state: "queued" }),
 			]),
 		);
+	});
+
+	it("records a job queued on GitHub that no webhook told of, and makes its runner", async () => {
+		const { job, sandboxes, runners, github, clock, store, status, settled } = await setUp();
+		// A delivery binds the installation; reconciling finds nothing new yet.
+		await job("queued", 1);
+		expect(github.listed).toEqual(["octo-org/app"]);
+		expect(sandboxes.sandboxes.size).toBe(1);
+		// Job 2's `queued` delivery never came (the control plane was busy, say): GitHub still has it queued.
+		github.queued.set("octo-org/app", [
+			{ id: 1, runId: 900, name: "job 1", labels: ["kantel-8vcpu"] },
+			{ id: 2, runId: 901, name: "job 2", labels: ["self-hosted", "kantel-8vcpu"], createdAt: clock.now - 60_000 },
+			// No kind has these labels, and GitHub's own runners take it.
+			{ id: 3, runId: 901, name: "job 3", labels: ["ubuntu-latest"] },
+		]);
+		// Not before it is due: an unchanged list isn't read again on every pass.
+		clock.now += RECONCILE_EVERY_MS - 1;
+		await runners.tick();
+		await settled();
+		expect(github.listed).toHaveLength(1);
+		clock.now += 1;
+		await runners.tick();
+		await settled();
+		expect(github.listed).toHaveLength(2);
+		expect(await store.githubRunnerJobs.get("ghr_one:2")).toMatchObject({
+			state: "queued",
+			pool: "kantel-8vcpu",
+			installationId: 42,
+			runId: 901,
+			queuedAt: clock.now - RECONCILE_EVERY_MS - 60_000,
+			reason: expect.stringContaining("No webhook"),
+		});
+		expect(await store.githubRunnerJobs.get("ghr_one:3")).toBeUndefined();
+		// A job recorded asks for a pass at once, which makes its runner, as for any queued job.
+		expect(sandboxes.sandboxes.size).toBe(2);
+		expect(await status()).toMatchObject({ queued: 2, starting: 2 });
+		// Its later webhooks move it on as usual, and the reason goes.
+		const second = [...sandboxes.sandboxes.keys()][1];
+		sandboxes.boot();
+		await runners.tick();
+		await job("in_progress", 2, { runner_name: second });
+		expect(await store.githubRunnerJobs.get("ghr_one:2")).not.toHaveProperty("reason");
+	});
+
+	it("finds the App's installation when no webhook has come, and records the jobs the first one would have", async () => {
+		const { runners, github, store, settled, sandboxes } = await setUp();
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBeUndefined();
+		github.queued.set("octo-org/app", [{ id: 5, runId: 900, name: "job 5", labels: ["kantel-8vcpu"] }]);
+		// Not installed on the owner: nothing to read.
+		await runners.tick();
+		await settled();
+		expect(github.listed).toEqual([]);
+		github.installations.set("octo-org", 42);
+		await store.githubRunners.update("ghr_one", ({ reconcileAt: _due, ...current }) => current);
+		await runners.tick();
+		await settled();
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBe(42);
+		expect(await store.githubRunnerJobs.get("ghr_one:5")).toMatchObject({ state: "queued", installationId: 42 });
+		expect(sandboxes.sandboxes.size).toBe(1);
+	});
+
+	it("reconciles only repositories the integration and a kind serve, and the configured owner's", async () => {
+		const { job, runners, github, clock, store, settled } = await setUp({
+			pool: { repositories: ["octo-org/app", "octo-org/other"] },
+		});
+		github.repositories.push("octo-org/other", "octo-org/unserved", "someone-else/app");
+		await job("queued", 1);
+		expect(github.listed).toEqual(["octo-org/app", "octo-org/other"]);
+		// With the integration's own list, only its repositories are read, and the installation's aren't listed.
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, repositories: ["octo-org/other"] }));
+		clock.now += RECONCILE_EVERY_MS;
+		await runners.tick();
+		await settled();
+		expect(github.listed.slice(2)).toEqual(["octo-org/other"]);
+	});
+
+	it("records a job queued while its kind was moving between pools, once the kind is back", async () => {
+		const { job, runners, github, clock, store, sandboxes, settled } = await setUp();
+		await job("queued", 1);
+		// Moved by taking it out of one pool, then adding it to another: for a moment the integration has no such kind,
+		// and a `queued` delivery then matches none and records nothing.
+		const kinds = (await store.githubRunners.get("ghr_one"))?.pools ?? [];
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, pools: [] }));
+		await job("queued", 2);
+		expect(await store.githubRunnerJobs.get("ghr_one:2")).toBeUndefined();
+		await store.githubRunners.update("ghr_one", (current) => ({
+			...current,
+			pools: kinds.map((kind) => ({ ...kind, poolId: "pool_new" })),
+		}));
+		github.queued.set("octo-org/app", [{ id: 2, runId: 900, name: "job 2", labels: ["kantel-8vcpu"] }]);
+		clock.now += RECONCILE_EVERY_MS;
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:2")).toMatchObject({ state: "queued" });
+		// Job 1 kept its record and its runner through the move.
+		expect(await store.githubRunnerJobs.get("ghr_one:1")).toMatchObject({ state: "queued" });
+		expect(sandboxes.sandboxes.size).toBe(2);
+	});
+
+	it("asks GitHub to send its installation's failed workflow_job deliveries again, each once", async () => {
+		const { job, github, clock, runners, settled, store } = await setUp();
+		github.deliveries.push(
+			{ id: 11, guid: "g-1", event: "workflow_job", action: "queued", installationId: 42, deliveredAt: clock.now },
+			{ id: 12, guid: "g-2", event: "workflow_job", action: "queued", installationId: 99, deliveredAt: clock.now },
+			{ id: 13, guid: "g-3", event: "ping", installationId: 42, deliveredAt: clock.now },
+			{ id: 14, guid: "g-4", event: "workflow_job", installationId: 42, deliveredAt: clock.now - 2 * 86_400_000 },
+		);
+		await job("queued", 1);
+		expect(github.redelivered).toEqual([11]);
+		// Its redelivery failed too: GitHub lists it as failed again, and it isn't asked for a third time.
+		github.deliveries[0] = { ...github.deliveries[0], id: 21 } as FailedDelivery;
+		clock.now += RECONCILE_EVERY_MS;
+		await runners.tick();
+		await settled();
+		expect(github.redelivered).toEqual([11]);
+		expect((await store.githubRunners.get("ghr_one"))?.redelivered).toEqual({ "g-1": expect.any(Number) });
+	});
+
+	it("leaves a failed delivery it never got to ask for due, when an earlier ask fails", async () => {
+		const { job, github, clock, runners, settled, store } = await setUp();
+		github.deliveries.push(
+			{ id: 11, guid: "g-1", event: "workflow_job", installationId: 42, deliveredAt: clock.now },
+			{ id: 15, guid: "g-5", event: "workflow_job", installationId: 42, deliveredAt: clock.now },
+		);
+		github.failRedelivery.add(11);
+		await job("queued", 1);
+		expect(github.redelivered).toEqual([]);
+		// The one asked for is spent; the one after it was never asked, and is asked next time.
+		expect(Object.keys((await store.githubRunners.get("ghr_one"))?.redelivered ?? {})).toEqual(["g-1"]);
+		clock.now += RECONCILE_EVERY_MS;
+		await runners.tick();
+		await settled();
+		expect(github.redelivered).toEqual([15]);
+	});
+
+	it("binds an installation it looked up only while the App and owner are still those it looked up", async () => {
+		const { runners, github, store, settled } = await setUp();
+		github.installations.set("octo-org", 42);
+		let found: () => void = () => undefined;
+		github.lookups.wait = new Promise<void>((resolve) => {
+			found = resolve;
+		});
+		await runners.tick();
+		// The owner changes while GitHub is asked.
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "new-org" }));
+		found();
+		await settled();
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBeUndefined();
+		expect(github.listed).toEqual([]);
+		// A webhook of the same owner binds it meanwhile: that binding stands.
+		await store.githubRunners.update("ghr_one", ({ reconcileAt: _due, ...current }) => ({
+			...current,
+			owner: "octo-org",
+		}));
+		github.lookups.wait = new Promise<void>((resolve) => {
+			found = resolve;
+		});
+		await runners.tick();
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, installationId: 77 }));
+		found();
+		await settled();
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBe(77);
+		expect(github.listed).toEqual(["octo-org/app"]);
+	});
+
+	it("keeps going when reconciling fails, and tries again when it is next due", async () => {
+		const { job, github, clock, runners, sandboxes, settled } = await setUp();
+		const app = github.app;
+		let failing = true;
+		github.app = () => ({
+			...app(),
+			async queuedJobs() {
+				if (failing) throw new KantelError("exhausted", "GitHub's rate limit is low");
+				return [{ id: 2, runId: 900, name: "job 2", labels: ["kantel-8vcpu"] }];
+			},
+		});
+		await job("queued", 1);
+		expect(sandboxes.sandboxes.size).toBe(1);
+		failing = false;
+		await runners.tick();
+		await settled();
+		expect(sandboxes.sandboxes.size).toBe(1);
+		clock.now += RECONCILE_EVERY_MS;
+		await runners.tick();
+		await settled();
+		expect(sandboxes.sandboxes.size).toBe(2);
 	});
 
 	it("deletes a busy runner's sandbox once it is in error, without waiting for GitHub to give up on its job", async () => {
