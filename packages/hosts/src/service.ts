@@ -1586,6 +1586,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			: undefined;
 	/** Each host's events here whose exit report is still being taken (`onEvent`), which its next hello waits for. */
 	const exitsReporting = new Map<string, Set<Promise<void>>>();
+	/**
+	 * Hosts' `deleted` events still being applied, by sandbox: a delete whose answer was lost waits for them before it
+	 * judges, from the placement, whether its host said it was done (`sandboxes.delete`).
+	 */
+	const deletionsApplying = new Map<string, Promise<void>>();
 	/** When it last changed, when the host says. */
 	const healthAtOf = (sandbox: { healthAt?: unknown }): number | undefined =>
 		typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
@@ -1960,6 +1965,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const exit = exitOf(sandbox);
 				if (exit !== undefined) await compute?.reportExit?.(hostId, sandbox.id, exit, healthAtOf(sandbox));
 			})();
+			if (sandbox.state === "deleted") {
+				const before = deletionsApplying.get(sandbox.id);
+				const applying = (before === undefined ? work : Promise.allSettled([before, work]).then(() => undefined)).catch(
+					() => undefined,
+				);
+				deletionsApplying.set(sandbox.id, applying);
+				void applying.finally(() => {
+					if (deletionsApplying.get(sandbox.id) === applying) deletionsApplying.delete(sandbox.id);
+				});
+			}
 			// An exit's, until it is taken: the host's next hello here waits for it (`hello`).
 			if (exitOf(sandbox) !== undefined) {
 				const reporting = exitsReporting.get(hostId) ?? new Set<Promise<void>>();
@@ -4492,6 +4507,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						// Its host said it deleted it (its `deleted` event, which a host sends before its answer, forgot the
 						// placement), and then its link dropped before the answer: done, not failed. Failing it would leave the
 						// sandbox in error with no placement, which only its host's word can settle.
+						// A `deleted` event that arrived before the link dropped is applied first: its placement's removal may still be
+						// on its way to the store. (One a host sent to another gateway replica isn't seen here: the delete fails, and
+						// deleting it again settles it by its host, `deleteOptions.hostId`.)
+						if (unanswered(error)) await deletionsApplying.get(sandboxId);
 						if (unanswered(error) && (await store.getPlacement(sandboxId)) === undefined) {
 							log(`[hosts] sandbox ${sandboxId} deleted: its host said so before its answer was lost`);
 							return;

@@ -724,8 +724,24 @@ describe("a sandbox whose host deleted it and forgot its placement", () => {
 	 */
 	async function deleteSetup() {
 		const store = createMemoryHostStore();
+		/** While set, removing a placement waits for it: a store slower than the host's link. */
+		const removals: { gate?: Promise<void> } = {};
+		const slowed = new Proxy(store, {
+			get: (target, name, receiver) => {
+				const value = Reflect.get(target, name, receiver);
+				if (name !== "removePlacementIf" || typeof value !== "function") return value;
+				return async (...args: unknown[]) => {
+					await removals.gate;
+					return value.apply(target, args);
+				};
+			},
+		});
 		const logs: string[] = [];
-		const service = createHostsService({ store, publicUrl: "https://kantel.test", log: (line) => logs.push(line) });
+		const service = createHostsService({
+			store: slowed,
+			publicUrl: "https://kantel.test",
+			log: (line) => logs.push(line),
+		});
 		services.push(service);
 		const stub = createStubBackend();
 		const refused: string[] = [];
@@ -784,7 +800,7 @@ describe("a sandbox whose host deleted it and forgot its placement", () => {
 				event: { kind: "sandbox", sandbox: { id, tier: "microvm", size: "default", state: "deleted", createdAt: 1 } },
 			});
 		};
-		return { api, root, service, store, logs, hostId, host, id, refused, hostDeletes };
+		return { api, root, service, store, logs, hostId, host, id, refused, hostDeletes, removals };
 	}
 
 	it("is deleted by a delete whose answer was lost after the host's deleted event", async () => {
@@ -802,6 +818,41 @@ describe("a sandbox whose host deleted it and forgot its placement", () => {
 		await api.service.idle();
 		expect((await root.getSandbox(id)).state).toBe("deleted");
 		expect(refused).toEqual([]);
+	});
+
+	it("is deleted when the link drops while the host's deleted event is still being applied", async () => {
+		const { api, root, store, host, id, refused, hostDeletes, removals } = await deleteSetup();
+		let release: () => void = () => undefined;
+		removals.gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		host.hold = (method) => {
+			if (method !== "sandbox.delete") return undefined;
+			hostDeletes();
+			// The link drops at once, before the event's placement removal reaches the store.
+			queueMicrotask(() => host.connection.closed(1006, "gone"));
+			return never();
+		};
+		const deleting = root.deleteSandbox(id).catch((caught: unknown) => caught);
+		await tick();
+		expect(await store.getPlacement(id)).toBeDefined();
+		release();
+		expect(codeOf(await deleting)).toBeUndefined();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("deleted");
+		expect(refused).toEqual([]);
+	});
+
+	it("still fails a delete whose link dropped with no word from its host, and keeps the sandbox", async () => {
+		const { api, root, store, host, id } = await deleteSetup();
+		host.hold = (method) => (method === "sandbox.delete" ? never() : undefined);
+		const deleting = root.deleteSandbox(id).catch((caught: unknown) => caught);
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true));
+		host.connection.closed(1006, "gone");
+		expect(codeOf(await deleting)).toBe("unavailable");
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("error");
+		expect(await store.getPlacement(id)).toBeDefined();
 	});
 
 	it("is deleted, its host asked again, rather than refused by the stub; and kept while its host is offline", async () => {
