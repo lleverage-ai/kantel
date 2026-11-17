@@ -1183,6 +1183,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
 | `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
 | `mesh` | [HostMesh](/api/reference/types/#hostmesh) | no |  |
+| `sync` | [HostSync](/api/reference/types/#hostsync) | no |  |
 | `evacuation` | [HostEvacuationProgress](/api/reference/types/#hostevacuationprogress) | no |  |
 | `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
@@ -1330,6 +1331,8 @@ One mesh peer as a host reaches it, as the host last reported it.
 | `endpoint` | string | no | The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`. |
 | `lastHandshake` | integer | no | When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first. (minimum 0) |
 | `rttMs` | number | no | The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. (minimum 0) |
+| `fetchBytesPerSecond` | number | no | The rate of its last fetch of at least 16 MiB from this peer alone, in bytes a second: what syncing from it gets. Absent before one since the host agent started. (minimum 0) |
+| `fetchRateAt` | integer | no | When that fetch ended, epoch milliseconds, UTC. (minimum 0) |
 
 ### HostReleaseCheck
 
@@ -1343,6 +1346,45 @@ One mesh peer as a host reaches it, as the host last reported it.
 `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked.
 
 One of: `"online"` or `"unreachable"` or `"draining"` or `"revoked"`.
+
+### HostSync
+
+How far a host is in syncing its pool's disks from its peers: each sticky disk head it should hold, and its fetches. Template snapshots it should hold are fetched as their builds; their fetches are listed here too. Absent from a host whose pool doesn't sync and that has no fetches.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `paused` | `"draining"` or `"away"` or `"no-sync"` | no | Why it isn't being sent anything now, where it isn't: `draining`, `away` (not connected), `no-sync` (its host agent doesn't sync, or its mesh isn't up yet). |
+| `disks` | [HostSyncDisk](/api/reference/types/#hostsyncdisk)[] | yes | The head of each sticky disk its pool used in the last 7 days, newest commit first, for a host whose pool syncs; empty otherwise. |
+| `fetches` | [HostSyncFetch](/api/reference/types/#hostsyncfetch)[] | yes | Its fetches under way or failed, of every kind, from its last report while it is connected. |
+
+### HostSyncDisk
+
+A sticky disk head a host of a synced pool should hold, and where it stands.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stickyDiskId` | string | yes | The sticky disk. |
+| `name` | string | yes | The sticky disk's name. |
+| `version` | string | yes | Its head, which the host should hold. |
+| `state` | `"held"` or `"fetching"` or `"failed"` or `"missing"` or `"waiting"` or `"no-room"` or `"no-source"` | yes | `held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it. |
+| `allocatedBytes` | integer | yes | What the head takes on the host it was committed on. (minimum 0) |
+| `committedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### HostSyncFetch
+
+A fetch from the host's peers, as it last reported it (every heartbeat).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | string | yes | What it fetches: `sticky` (a sticky disk's version), `template` (a template's snapshot), `rootfs` (a template's root filesystem), `snapshot` (a saved snapshot), `sandbox` or `sandbox-memory` (a move's copy). A newer host may say another. |
+| `objectId` | string | yes | The object's ID: the sticky disk's, the template snapshot's, and so on. |
+| `version` | string | yes | The object's version: a sticky disk version's ID, `1`, `disk` or `memory`. |
+| `state` | `"queued"` or `"running"` or `"failed"` | yes | `queued`: waiting for one of the fetches it runs at once. `running`. `failed`: it stopped, with `error`; it goes on from where it got to when it is asked again. |
+| `blocks` | integer | yes | The version's blocks of 4 MiB, every part's. (minimum 0) |
+| `blocksInPlace` | integer | yes | How many of them it has: those it already had from the version it started from, and those fetched. (minimum 0) |
+| `bytes` | integer | no | The bytes it has read from its peers so far. Only blocks that differ from the version it started from travel, so this may stay well under the version's size. Absent from an older host, and before the first. (minimum 0) |
+| `totalBytes` | integer | yes | The blocks' size: `blocks` of 4 MiB. (minimum 0) |
+| `error` | string | no | The last error it met. |
 
 ### HostUpdate
 
@@ -2330,9 +2372,21 @@ A named, versioned disk, attached to microVMs at a path. Each sandbox gets its o
 | `sizeGb` | integer | yes | Each copy's size: what a sandbox can fill. |
 | `head` | string | no | The newest committed version; absent until one is. |
 | `versions` | [StickyDiskVersion](/api/reference/types/#stickydiskversion)[] | no | The newest 20, newest first, on a get. |
+| `hosts` | [StickyDiskHost](/api/reference/types/#stickydiskhost)[] | no | On a get, each host of its pool that isn't revoked, and what it holds of the disk, as hosts last reported. |
 | `poolId` | string | no | The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### StickyDiskHost
+
+Which of a sticky disk's versions a host of its pool holds.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | no | A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared host, for anyone but a super-admin. |
+| `hostName` | string | no | The host's name, with its ID. |
+| `state` | `"head"` or `"fetching"` or `"older"` or `"none"` | yes | `head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions (a sandbox there starts from the newest of them). `none`: it holds none. |
+| `version` | string | no | The newest version it holds, where it holds one (the head, for `head`). |
 
 ### StickyDiskList
 

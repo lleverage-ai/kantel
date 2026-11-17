@@ -1367,6 +1367,8 @@ export interface Host {
 	readonly memory?: HostMemory;
 	/** How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected. */
 	readonly mesh?: HostMesh;
+	/** How far a host is in syncing its pool's disks from its peers: each sticky disk head it should hold, and its fetches. Template snapshots it should hold are fetched as their builds; their fetches are listed here too. Absent from a host whose pool doesn't sync and that has no fetches. */
+	readonly sync?: HostSync;
 	/** How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got. */
 	readonly evacuation?: HostEvacuationProgress;
 	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
@@ -1546,6 +1548,10 @@ export interface HostMeshPeer {
 	readonly lastHandshake?: number;
 	/** The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. */
 	readonly rttMs?: number;
+	/** The rate of its last fetch of at least 16 MiB from this peer alone, in bytes a second: what syncing from it gets. Absent before one since the host agent started. */
+	readonly fetchBytesPerSecond?: number;
+	/** When that fetch ended, epoch milliseconds, UTC. */
+	readonly fetchRateAt?: number;
 }
 
 export interface HostReleaseCheck {
@@ -1557,6 +1563,54 @@ export interface HostReleaseCheck {
 
 /** `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked. */
 export type HostState = "online" | "unreachable" | "draining" | "revoked";
+
+/** How far a host is in syncing its pool's disks from its peers: each sticky disk head it should hold, and its fetches. Template snapshots it should hold are fetched as their builds; their fetches are listed here too. Absent from a host whose pool doesn't sync and that has no fetches. */
+export interface HostSync {
+	/** Why it isn't being sent anything now, where it isn't: `draining`, `away` (not connected), `no-sync` (its host agent doesn't sync, or its mesh isn't up yet). */
+	readonly paused?: "draining" | "away" | "no-sync";
+	/** The head of each sticky disk its pool used in the last 7 days, newest commit first, for a host whose pool syncs; empty otherwise. */
+	readonly disks: readonly HostSyncDisk[];
+	/** Its fetches under way or failed, of every kind, from its last report while it is connected. */
+	readonly fetches: readonly HostSyncFetch[];
+}
+
+/** A sticky disk head a host of a synced pool should hold, and where it stands. */
+export interface HostSyncDisk {
+	/** The sticky disk. */
+	readonly stickyDiskId: string;
+	/** The sticky disk's name. */
+	readonly name: string;
+	/** Its head, which the host should hold. */
+	readonly version: string;
+	/** `held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it. */
+	readonly state: "held" | "fetching" | "failed" | "missing" | "waiting" | "no-room" | "no-source";
+	/** What the head takes on the host it was committed on. */
+	readonly allocatedBytes: number;
+	/** Epoch milliseconds, UTC. */
+	readonly committedAt: number;
+}
+
+/** A fetch from the host's peers, as it last reported it (every heartbeat). */
+export interface HostSyncFetch {
+	/** What it fetches: `sticky` (a sticky disk's version), `template` (a template's snapshot), `rootfs` (a template's root filesystem), `snapshot` (a saved snapshot), `sandbox` or `sandbox-memory` (a move's copy). A newer host may say another. */
+	readonly kind: string;
+	/** The object's ID: the sticky disk's, the template snapshot's, and so on. */
+	readonly objectId: string;
+	/** The object's version: a sticky disk version's ID, `1`, `disk` or `memory`. */
+	readonly version: string;
+	/** `queued`: waiting for one of the fetches it runs at once. `running`. `failed`: it stopped, with `error`; it goes on from where it got to when it is asked again. */
+	readonly state: "queued" | "running" | "failed";
+	/** The version's blocks of 4 MiB, every part's. */
+	readonly blocks: number;
+	/** How many of them it has: those it already had from the version it started from, and those fetched. */
+	readonly blocksInPlace: number;
+	/** The bytes it has read from its peers so far. Only blocks that differ from the version it started from travel, so this may stay well under the version's size. Absent from an older host, and before the first. */
+	readonly bytes?: number;
+	/** The blocks' size: `blocks` of 4 MiB. */
+	readonly totalBytes: number;
+	/** The last error it met. */
+	readonly error?: string;
+}
 
 /** An update asked for in the last 10 minutes that the host hasn't connected on yet. Absent once it has, or after 10 minutes, when it didn't take. */
 export interface HostUpdate {
@@ -2745,12 +2799,26 @@ export interface StickyDisk {
 	readonly head?: string;
 	/** The newest 20, newest first, on a get. */
 	readonly versions?: readonly StickyDiskVersion[];
+	/** On a get, each host of its pool that isn't revoked, and what it holds of the disk, as hosts last reported. */
+	readonly hosts?: readonly StickyDiskHost[];
 	/** The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then. */
 	readonly poolId?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
+}
+
+/** Which of a sticky disk's versions a host of its pool holds. */
+export interface StickyDiskHost {
+	/** A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared host, for anyone but a super-admin. */
+	readonly hostId?: string;
+	/** The host's name, with its ID. */
+	readonly hostName?: string;
+	/** `head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions (a sandbox there starts from the newest of them). `none`: it holds none. */
+	readonly state: "head" | "fetching" | "older" | "none";
+	/** The newest version it holds, where it holds one (the head, for `head`). */
+	readonly version?: string;
 }
 
 export interface StickyDiskList {

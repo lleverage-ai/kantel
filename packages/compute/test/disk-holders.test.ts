@@ -1758,6 +1758,104 @@ describe("disk holders", () => {
 		]);
 	});
 
+	it("says how far each host of a synced pool is in syncing, and which hosts hold a disk", async () => {
+		const syncs = { features: ["disk-sync"] };
+		// b doesn't sync sticky disks, and reports a template copy that failed.
+		const failed = {
+			kind: "template",
+			objectId: "tsn_1",
+			version: "1",
+			state: "failed",
+			blocks: 10,
+			inPlace: 3,
+			bytes: 1000,
+			error: "no peer answered",
+		} as const;
+		const options: { superAdmin?: boolean } & Parameters<typeof setUp>[0] = {
+			fetchDisk: async () => undefined,
+			mapDigest: () => DIGEST,
+			facts: {
+				...Object.fromEntries(
+					[STUB_HOST_ID, "host_c", "host_d", "host_e", "host_f", "host_g"].map((id) => [id, syncs]),
+				),
+				host_b: { features: ["template-sync"], fetches: [failed] },
+			},
+		};
+		const tom = setUp(options);
+		const { disk, version } = await tom.committed();
+		await tom.api.service.idle();
+		await tom.pool();
+		expect((await tom.getHost("host_b")).sync).toEqual({
+			paused: "no-sync",
+			disks: [expect.objectContaining({ stickyDiskId: disk.id, state: "missing" })],
+			fetches: [
+				{
+					kind: "template",
+					objectId: "tsn_1",
+					version: "1",
+					state: "failed",
+					blocks: 10,
+					blocksInPlace: 3,
+					bytes: 1000,
+					totalBytes: 10 * 4 * 1024 ** 2,
+					error: "no peer answered",
+				},
+			],
+		});
+		// g is told the head, and reports it under way; the stub's host holds it.
+		tom.clock.now += 61_000;
+		await tom.api.service.sweep();
+		await tom.api.service.idle();
+		const g = await tom.getHost("host_g");
+		expect(g.sync?.disks).toEqual([
+			{
+				stickyDiskId: disk.id,
+				name: "cache",
+				version: version.id,
+				state: "missing",
+				allocatedBytes: version.allocatedBytes,
+				committedAt: version.createdAt,
+			},
+		]);
+		expect((await tom.getHost(STUB_HOST_ID)).sync?.disks.map((each) => each.state)).toEqual(["held"]);
+		await tom.api.service.recordHoldings("host_g", tom.clock.now, {
+			fetches: [{ kind: "sticky", objectId: disk.id, version: version.id }],
+		});
+		expect((await tom.getHost("host_g")).sync?.disks.map((each) => each.state)).toEqual(["fetching"]);
+		// c is in another pool, so has none of pool A's disks; with no fetches and its pool syncing, it says so.
+		expect((await tom.getHost("host_c")).sync).toEqual({ disks: [], fetches: [] });
+		// A revoked host says nothing.
+		expect((await tom.getHost("host_e")).sync).toBeUndefined();
+
+		// The disk: each host of its pool that isn't revoked and may hold the account's data, and what it holds.
+		const listed = await tom.getStickyDisk(disk.id);
+		expect(listed.hosts).toEqual([
+			{ hostId: STUB_HOST_ID, hostName: "stub", state: "head", version: version.id },
+			{ hostId: "host_b", hostName: "host_b", state: "none" },
+			{ hostId: "host_d", hostName: "host_d", state: "none" },
+			{ hostId: "host_g", hostName: "host_g", state: "fetching" },
+		]);
+		// Someone who isn't a super-admin may not be told of the deployment's shared hosts: they are listed unnamed.
+		options.superAdmin = false;
+		expect((await tom.getStickyDisk(disk.id)).hosts).toEqual([
+			{ state: "head", version: version.id },
+			{ state: "none" },
+			{ state: "none" },
+			{ state: "fetching" },
+		]);
+		// A list says nothing of hosts.
+		expect((await tom.listStickyDisks()).items[0]?.hosts).toBeUndefined();
+
+		// One host's view plans its own pool alone, and a pool without sync reads no disks at all.
+		options.superAdmin = true;
+		await tom.api.store.pools.update("pool_b", ({ sync: _sync, ...pool }) => pool);
+		const disksRead = vi.spyOn(tom.api.store.stickyDisks, "list");
+		expect((await tom.getHost("host_c")).sync).toBeUndefined();
+		expect(disksRead).not.toHaveBeenCalled();
+		expect((await tom.getHost("host_g")).sync?.disks).toHaveLength(1);
+		expect(disksRead).toHaveBeenCalledTimes(1);
+	});
+
 	it("has every host of a synced pool fetch its disks' heads in the background, whether or not it ran them", async () => {
 		const fetches: { readonly hostId: string; readonly fetch: BackendDiskFetch }[] = [];
 		const syncs = { features: ["disk-sync"] };

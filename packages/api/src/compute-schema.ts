@@ -3911,6 +3911,17 @@ export const HostMeshPeer = Type.Object(
 					"The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer.",
 			}),
 		),
+		fetchBytesPerSecond: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				description:
+					"The rate of its last fetch of at least 16 MiB from this peer alone, in bytes a second: what syncing from it " +
+					"gets. Absent before one since the host agent started.",
+			}),
+		),
+		fetchRateAt: Type.Optional(
+			Type.Integer({ minimum: 0, description: "When that fetch ended, epoch milliseconds, UTC." }),
+		),
 	},
 	{ title: "HostMeshPeer", description: "One mesh peer as a host reaches it, as the host last reported it." },
 );
@@ -3926,6 +3937,99 @@ export const HostMesh = Type.Object(
 			"How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every " +
 			"heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one " +
 			"that isn't connected.",
+	},
+);
+
+export const HostSyncFetch = Type.Object(
+	{
+		kind: Type.String({
+			description:
+				"What it fetches: `sticky` (a sticky disk's version), `template` (a template's snapshot), `rootfs` (a template's " +
+				"root filesystem), `snapshot` (a saved snapshot), `sandbox` or `sandbox-memory` (a move's copy). A newer host " +
+				"may say another.",
+		}),
+		objectId: Type.String({ description: "The object's ID: the sticky disk's, the template snapshot's, and so on." }),
+		version: Type.String({ description: "The object's version: a sticky disk version's ID, `1`, `disk` or `memory`." }),
+		state: Type.Union([Type.Literal("queued"), Type.Literal("running"), Type.Literal("failed")], {
+			description:
+				"`queued`: waiting for one of the fetches it runs at once. `running`. `failed`: it stopped, with `error`; it " +
+				"goes on from where it got to when it is asked again.",
+		}),
+		blocks: Type.Integer({ minimum: 0, description: "The version's blocks of 4 MiB, every part's." }),
+		blocksInPlace: Type.Integer({
+			minimum: 0,
+			description: "How many of them it has: those it already had from the version it started from, and those fetched.",
+		}),
+		bytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"The bytes it has read from its peers so far. Only blocks that differ from the version it started from " +
+					"travel, so this may stay well under the version's size. Absent from an older host, and before the first.",
+			}),
+		),
+		totalBytes: Type.Integer({ minimum: 0, description: "The blocks' size: `blocks` of 4 MiB." }),
+		error: Type.Optional(Type.String({ description: "The last error it met." })),
+	},
+	{ title: "HostSyncFetch", description: "A fetch from the host's peers, as it last reported it (every heartbeat)." },
+);
+
+export const HostSyncDisk = Type.Object(
+	{
+		stickyDiskId: Type.String({ description: "The sticky disk." }),
+		name: Type.String({ description: "The sticky disk's name." }),
+		version: Type.String({ description: "Its head, which the host should hold." }),
+		state: Type.Union(
+			[
+				Type.Literal("held"),
+				Type.Literal("fetching"),
+				Type.Literal("failed"),
+				Type.Literal("missing"),
+				Type.Literal("waiting"),
+				Type.Literal("no-room"),
+				Type.Literal("no-source"),
+			],
+			{
+				description:
+					"`held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` " +
+					"for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it " +
+					"on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk " +
+					"free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it.",
+			},
+		),
+		allocatedBytes: Type.Integer({ minimum: 0, description: "What the head takes on the host it was committed on." }),
+		committedAt: Timestamp,
+	},
+	{
+		title: "HostSyncDisk",
+		description: "A sticky disk head a host of a synced pool should hold, and where it stands.",
+	},
+);
+
+export const HostSync = Type.Object(
+	{
+		paused: Type.Optional(
+			Type.Union([Type.Literal("draining"), Type.Literal("away"), Type.Literal("no-sync")], {
+				description:
+					"Why it isn't being sent anything now, where it isn't: `draining`, `away` (not connected), `no-sync` (its " +
+					"host agent doesn't sync, or its mesh isn't up yet).",
+			}),
+		),
+		disks: Type.Array(HostSyncDisk, {
+			description:
+				"The head of each sticky disk its pool used in the last 7 days, newest commit first, for a host whose pool " +
+				"syncs; empty otherwise.",
+		}),
+		fetches: Type.Array(HostSyncFetch, {
+			description: "Its fetches under way or failed, of every kind, from its last report while it is connected.",
+		}),
+	},
+	{
+		title: "HostSync",
+		description:
+			"How far a host is in syncing its pool's disks from its peers: each sticky disk head it should hold, and its " +
+			"fetches. Template snapshots it should hold are fetched as their builds; their fetches are listed here too. " +
+			"Absent from a host whose pool doesn't sync and that has no fetches.",
 	},
 );
 
@@ -4110,6 +4214,7 @@ export const Host = Type.Object(
 		diskUsage: Type.Optional(HostDiskUsage),
 		memory: Type.Optional(HostMemory),
 		mesh: Type.Optional(HostMesh),
+		sync: Type.Optional(HostSync),
 		evacuation: Type.Optional(HostEvacuationProgress),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Integer({
@@ -4938,6 +5043,9 @@ export type HostEvacuationProgress = Static<typeof HostEvacuationProgress>;
 export type HostEvacuationSandbox = Static<typeof HostEvacuationSandbox>;
 export type HostEvacuationState = Static<typeof HostEvacuationState>;
 export type HostMeshPeer = Static<typeof HostMeshPeer>;
+export type HostSync = Static<typeof HostSync>;
+export type HostSyncDisk = Static<typeof HostSyncDisk>;
+export type HostSyncFetch = Static<typeof HostSyncFetch>;
 export type HostDiskUsage = Static<typeof HostDiskUsage>;
 export type HostMemory = Static<typeof HostMemory>;
 export type HostUsage = Static<typeof HostUsage>;
@@ -5223,6 +5331,28 @@ export const StickyDiskVersion = Type.Object(
 	{ title: "StickyDiskVersion" },
 );
 
+export const StickyDiskHost = Type.Object(
+	{
+		hostId: Type.Optional(
+			Type.String({
+				description:
+					"A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared " +
+					"host, for anyone but a super-admin.",
+			}),
+		),
+		hostName: Type.Optional(Type.String({ description: "The host's name, with its ID." })),
+		state: Type.Union([Type.Literal("head"), Type.Literal("fetching"), Type.Literal("older"), Type.Literal("none")], {
+			description:
+				"`head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions " +
+				"(a sandbox there starts from the newest of them). `none`: it holds none.",
+		}),
+		version: Type.Optional(
+			Type.String({ description: "The newest version it holds, where it holds one (the head, for `head`)." }),
+		),
+	},
+	{ title: "StickyDiskHost", description: "Which of a sticky disk's versions a host of its pool holds." },
+);
+
 export const StickyDisk = Type.Object(
 	{
 		id: id("The sticky disk's ID, such as `sdk_3m4n5b`."),
@@ -5232,6 +5362,12 @@ export const StickyDisk = Type.Object(
 		sizeGb: Type.Integer({ description: "Each copy's size: what a sandbox can fill." }),
 		head: Type.Optional(Type.String({ description: "The newest committed version; absent until one is." })),
 		versions: Type.Optional(Type.Array(StickyDiskVersion, { description: "The newest 20, newest first, on a get." })),
+		hosts: Type.Optional(
+			Type.Array(StickyDiskHost, {
+				description:
+					"On a get, each host of its pool that isn't revoked, and what it holds of the disk, as hosts last reported.",
+			}),
+		),
 		poolId: Type.Optional(
 			Type.String({
 				description:
@@ -5284,5 +5420,6 @@ export const CommitStickyDiskPath = Type.Object(
 
 export type StickyDisk = Static<typeof StickyDisk>;
 export type StickyDiskVersion = Static<typeof StickyDiskVersion>;
+export type StickyDiskHost = Static<typeof StickyDiskHost>;
 export type SandboxStickyDisk = Static<typeof SandboxStickyDisk>;
 export type SandboxStickyDiskInput = Static<typeof SandboxStickyDiskInput>;

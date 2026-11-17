@@ -23,6 +23,9 @@ import {
 /** The host feature of a host that fetches disk versions from its peers (`HOST_FEATURES.diskSync`). */
 export const DISK_SYNC_FEATURE = "disk-sync";
 
+/** The size of a block in a version's block map: a host reports its fetches' progress in blocks of it. */
+export const DISK_BLOCK_BYTES = 4 * 1024 ** 2;
+
 /** How often the sweep goes over every synced pool for heads its hosts are missing. */
 export const BACKFILL_EVERY_MS = 60_000;
 
@@ -72,6 +75,7 @@ export type BackfillState = "held" | "fetching" | "failed" | "missing" | "waitin
 
 export interface BackfillItem {
 	readonly diskId: string;
+	readonly diskName: string;
 	readonly accountId: string;
 	readonly version: string;
 	/** The version's allocated bytes on the host that committed it: about what a fetch from nothing moves. */
@@ -230,6 +234,7 @@ export function planStickyBackfill(input: BackfillInput): HostBackfill[] {
 			const own = holders.find((holder) => holder.hostId === host.id && holder.state !== "deleting");
 			const item = {
 				diskId: disk.id,
+				diskName: disk.name,
 				accountId: disk.accountId,
 				version: head.id,
 				allocatedBytes: head.allocatedBytes,
