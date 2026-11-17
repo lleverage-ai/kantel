@@ -1,0 +1,1 @@
+This build is not one Kantel publishes: its sandbox image bundles Google Chrome for Testing, which may not be redistributed ("Google Chrome for Testing", below). Everything else in it is free and open-source software.

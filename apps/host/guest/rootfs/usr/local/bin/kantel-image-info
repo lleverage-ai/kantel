@@ -2,6 +2,13 @@
 # Prints the image's components and their versions as JSON (the build writes it to /etc/kantel/image.json).
 v() { "$@" 2>/dev/null | head -n1 | tr -d '"\\' ; }
 pkg() { dpkg-query -W -f '${Version}' "$1" 2>/dev/null; }
+# Chrome for Testing, in an image built with KANTEL_BROWSER=cft (guest/Dockerfile): apt doesn't manage it, so its
+# version is the binary's own. Only such an image has the key.
+cft=
+if [ -x /opt/chrome-for-testing/chrome ]; then
+	cft="  \"chromeForTesting\": \"$(v /opt/chrome-for-testing/chrome --version | grep -oE '[0-9]+(\.[0-9]+){3}')\",
+"
+fi
 . /etc/os-release
 cat <<EOF
 {
@@ -15,7 +22,7 @@ cat <<EOF
   "git": "$(v git --version)",
   "chromium": "$(pkg chromium)",
   "chrome": "$(pkg google-chrome-stable)",
-  "selkies": "$(pkg selkies)",
+${cft}  "selkies": "$(pkg selkies)",
   "tigervnc": "$(pkg tigervnc-standalone-server)",
   "openbox": "$(pkg openbox)",
   "tint2": "$(pkg tint2)",

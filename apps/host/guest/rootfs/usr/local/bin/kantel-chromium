@@ -17,7 +17,8 @@ browser=$(command -v chromium || command -v google-chrome-stable || command -v c
 	exit 1
 }
 if [ "$(cat /run/kantel-browser/display 2>/dev/null)" = "${DISPLAY:-:1}" ]; then
-	window=$(xdotool search --onlyvisible --class '^(chromium|Chromium|google-chrome|Google-chrome)$' 2>/dev/null | head -n 1)
+	# Chromium-browser is Chrome for Testing's class (a KANTEL_BROWSER=cft build).
+	window=$(xdotool search --onlyvisible --class '^(chromium|Chromium|chromium-browser|Chromium-browser|google-chrome|Google-chrome)$' 2>/dev/null | head -n 1)
 	if [ -n "$window" ]; then
 		if [ $# -eq 0 ]; then exec xdotool windowactivate "$window"; fi
 		# The same browser kantel-browser picks (Chrome first, in an image that has it), since only it shares the profile.
