@@ -7862,7 +7862,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function forgetSandbox(sandbox: StoredSandbox): Promise<void> {
 		if (sandbox.state !== "deleted") {
 			await killCommandsOf(sandbox.id);
-			await backend.destroy(sandbox.id);
+			await backend.destroy(sandbox.id, sandbox.hostId === undefined ? undefined : { hostId: sandbox.hostId });
 		}
 		for (const snapshot of await store.snapshots.list({ sandboxId: sandbox.id })) {
 			await forgetSnapshot(snapshot);
@@ -10663,7 +10663,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							current.id,
 							was === "paused" ? { note: pausedMemoryGone("deleted"), reconcile: false } : {},
 						);
-						await backend.destroy(current.id);
+						// With the host its record names: a backend whose placement of it went (its host deleted it, and the answer was
+						// lost) settles it by that host, rather than leave it in error with nothing to delete.
+						await backend.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId });
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
 								await forgetSnapshot(snapshot);

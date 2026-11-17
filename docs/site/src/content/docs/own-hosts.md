@@ -55,6 +55,8 @@ kantel hosts drain host_… --off # take new sandboxes again
 kantel hosts rm host_…          # revoke its credential and close its connection
 ```
 
+Deleting a sandbox on one of your hosts deletes it there. While its host is offline, the delete fails with `unavailable` and the sandbox is kept, since its disk may still be on the host: delete it again once the host is back, or remove the host first, after which deleting the sandbox writes it off. A sandbox whose delete failed after its host had already deleted it (the host's connection dropped before it answered, say) is left in `error`; deleting it again asks its host once more and finishes, so the host can then move to another pool.
+
 Asking for a host in another account gives `not_found`, so nobody can learn whether a host exists. Once a host is removed, `kantel-host` stops and doesn't retry. `kantel host <id> <port>` (singular) is a different command: it gives a sandbox's port a URL.
 
 ## Pools
