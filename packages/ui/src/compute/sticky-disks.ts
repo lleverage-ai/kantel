@@ -2,14 +2,15 @@
 // disk's versions were committed on and what they took there, why a new disk's name or size won't do, and the rules the
 // page keeps its own changes and dialogs by. Kept apart from the page so they're tested on their own.
 //
-// A version names only the host it was committed on. The API lists no host's copies (a pool's hosts fetch versions
-// from one another), so the page reports where versions were committed, not every host that has one.
+// A version names the host it was committed on; a disk's hosts (`StickyDisk.hosts`) say what each host of its pool
+// holds of it, copies fetched from a peer included.
 
 import { bytesText } from "../primitives/format.ts";
 import {
 	STICKY_DISK_MAX_GB,
 	STICKY_DISK_NAME_PATTERN,
 	type StickyDisk,
+	type StickyDiskCoverage,
 	type StickyDiskPool,
 	type StickyDiskVersion,
 } from "./compute-model.ts";
@@ -125,6 +126,50 @@ export function hostsText(hosts: readonly Pick<StickyDiskHost, "hostName">[]): s
 /** Each host on a line with what it takes, for a row's hover text. */
 export const hostsTitle = (hosts: readonly StickyDiskHost[]): string =>
 	hosts.map((host) => `${hostLabel(host)}: ${bytesText(host.allocatedBytes)}`).join("\n");
+
+/**
+ * "3 of 4 hosts have the head", "All 4 hosts", "1 of 4, 2 fetching": how many of the hosts of the disk's pool hold its
+ * newest version. Undefined where the deployment doesn't say, the disk has no pool yet, or no head.
+ */
+export function coverageText(disk: Pick<StickyDisk, "head" | "hosts">): string | undefined {
+	const hosts = disk.hosts;
+	if (hosts === undefined || hosts.length === 0 || disk.head === undefined) return undefined;
+	const held = hosts.filter((host) => host.state === "head").length;
+	const fetching = hosts.filter((host) => host.state === "fetching").length;
+	const total = hosts.length;
+	const head =
+		held === total
+			? total === 1
+				? "Its 1 host"
+				: `All ${total.toLocaleString("en-GB")} hosts`
+			: `${held} of ${total}`;
+	return fetching === 0 ? head : `${head}, ${fetching.toLocaleString("en-GB")} fetching`;
+}
+
+/** What a host holds of a disk, in words. */
+export function coverageStateText(host: Pick<StickyDiskCoverage, "state">): string {
+	switch (host.state) {
+		case "head":
+			return "Has the newest version";
+		case "fetching":
+			return "Fetching the newest version";
+		case "older":
+			return "Has an older version";
+		case "none":
+			return "Has none";
+	}
+}
+
+/**
+ * The hosts of a disk's pool as its open row lists them: those without the newest version first (they're what's still
+ * to come), then by name, the hosts the viewer can't see last.
+ */
+export function orderedCoverage(hosts: readonly StickyDiskCoverage[]): readonly StickyDiskCoverage[] {
+	const rank = { none: 0, older: 1, fetching: 2, head: 3 } as const;
+	return [...hosts].sort(
+		(a, b) => rank[a.state] - rank[b.state] || (a.hostName ?? "￿").localeCompare(b.hostName ?? "￿", "en-GB"),
+	);
+}
 
 /** "3", or "20+" where the API listed as many as it lists. */
 export const versionsText = (count: number): string => (count >= VERSIONS_LISTED ? `${VERSIONS_LISTED}+` : `${count}`);

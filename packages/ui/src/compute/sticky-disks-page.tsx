@@ -1,8 +1,9 @@
 // The Disks page (compute console, under Settings, experimental): an account's sticky disks, the named, versioned
 // caches microVMs get a copy-on-write copy of and that a commit makes the next version of. Grouped by the pool each is
-// in, as Hosts groups hosts; a row has the disk's name, size, versions, the hosts they were committed on and what they
-// took there, and how old its last commit is, and opening it lists each of those hosts (a version names only its commit
-// host: copies other hosts fetched aren't listed by the API). New disk names it, sizes it and puts it in a pool; Delete
+// in, as Hosts groups hosts; a row has the disk's name, size, versions, how many of its pool's hosts have its newest
+// version, the hosts they were committed on and what they took there, and how old its last commit is, and opening it
+// lists what each host of its pool holds of it (copies fetched from a peer included), then the hosts its versions were
+// committed on. New disk names it, sizes it and puts it in a pool; Delete
 // removes it and its versions on every host. A disk made or deleted here shows at once, until a read begun after the
 // change shows it instead; a dialog's request, finishing late, closes only the dialog that sent it. Shown only where the
 // deployment has turned sticky disks on. Every call goes through the `StickyDisksSource` the host binds; stories bind
@@ -19,7 +20,7 @@ import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu } from "../primitives/menu.tsx";
 import { SideScroll } from "../primitives/side-scroll.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
-import { Badge } from "../primitives/status.tsx";
+import { Badge, StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import type { ComputeAccount, StickyDisk, StickyDiskPool, StickyDisksSource } from "./compute-model.ts";
 import { computePage, messageOf, None, table, tableFrame } from "./parts.tsx";
@@ -29,6 +30,8 @@ import {
 	allocatedTotal,
 	chosenPool,
 	commitHosts,
+	coverageStateText,
+	coverageText,
 	type DialogSession,
 	endSession,
 	groupTitle,
@@ -37,6 +40,7 @@ import {
 	hostsText,
 	hostsTitle,
 	type LocalChange,
+	orderedCoverage,
 	orderedPools,
 	poolChoiceLabel,
 	type StickyDiskGroup,
@@ -219,7 +223,7 @@ function DisksSkeleton() {
 const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 const cellOpen = "px-2 py-2.5 align-middle whitespace-nowrap";
-const COLUMNS = 7;
+const COLUMNS = 8;
 
 const count = (n: number, one: string, many: string): string => `${n.toLocaleString("en-GB")} ${n === 1 ? one : many}`;
 
@@ -298,6 +302,9 @@ function DiskList({
 						</th>
 						<th className={`${head} text-right`} scope="col">
 							Versions
+						</th>
+						<th className={head} scope="col">
+							Newest on
 						</th>
 						<th className={head} scope="col">
 							Committed on
@@ -410,6 +417,9 @@ function DiskRow({ disk, now, opened, onDelete }: RowProps) {
 				<td className={`${at} text-right tabular-nums`}>{sizeGbText(disk.sizeGb)}</td>
 				<td className={`${at} text-right tabular-nums`}>{versionsText(disk.versions.length)}</td>
 				<td className={at}>
+					<Coverage disk={disk} />
+				</td>
+				<td className={at}>
 					{hosts.length === 0 ? (
 						<None className="text-faint" />
 					) : (
@@ -435,7 +445,10 @@ function DiskRow({ disk, now, opened, onDelete }: RowProps) {
 			{open ? (
 				<tr className="bg-hover" id={detailsId}>
 					<td className={`${cell} pt-1 pb-4 pl-8`} colSpan={COLUMNS}>
-						<DiskHosts hosts={hosts} />
+						<div className="flex min-w-0 flex-col gap-6">
+							<DiskCoverage disk={disk} />
+							<DiskHosts hosts={hosts} />
+						</div>
 					</td>
 				</tr>
 			) : null}
@@ -466,6 +479,7 @@ function DiskPhoneRow({ disk, now, opened, onDelete }: RowProps) {
 							{versionsText(disk.versions.length)} {disk.versions.length === 1 ? "version" : "versions"}
 						</span>
 						{allocated === undefined ? null : <span>{allocated} allocated</span>}
+						{coverageText(disk) === undefined ? null : <span>Newest on {coverageText(disk)?.toLowerCase()}</span>}
 						<HeadAge disk={disk} now={now} phone />
 					</span>
 				</button>
@@ -474,10 +488,71 @@ function DiskPhoneRow({ disk, now, opened, onDelete }: RowProps) {
 			{open ? (
 				<div id={detailsId} className="flex min-w-0 flex-col gap-2">
 					{disk.description === undefined ? null : <p className="m-0 text-sm text-muted">{disk.description}</p>}
+					<DiskCoverage disk={disk} />
 					<DiskHosts hosts={hosts} />
 				</div>
 			) : null}
 		</li>
+	);
+}
+
+/** How many of the hosts of the disk's pool have its newest version, in a row's cell. */
+function Coverage({ disk }: { disk: StickyDisk }) {
+	const text = coverageText(disk);
+	if (text === undefined) return <None className="text-faint" />;
+	const all = disk.hosts?.every((host) => host.state === "head") === true;
+	return (
+		<span
+			className={`block max-w-(--kt-popover-width) truncate ${all ? "text-muted" : "text-fg"}`}
+			title={orderedCoverage(disk.hosts ?? [])
+				.map((host) => `${host.hostName ?? "Shared host"}: ${coverageStateText(host).toLowerCase()}`)
+				.join("\n")}
+		>
+			{text}
+		</span>
+	);
+}
+
+const COVERAGE_STATUS = { head: "done", fetching: "working", older: "idle", none: "waiting" } as const;
+
+/** An opened disk: what each host of its pool holds of it, as the hosts last reported. */
+function DiskCoverage({ disk }: { disk: StickyDisk }) {
+	const hosts = disk.hosts;
+	if (hosts === undefined) return null;
+	return (
+		<section className="flex min-w-0 flex-col gap-2" aria-label={`Hosts of ${disk.name}'s pool`} data-disk-coverage>
+			<h3 className="m-0 text-sm font-medium text-fg">In its pool</h3>
+			{hosts.length === 0 ? (
+				<p className="m-0 text-sm text-muted">Its pool has no hosts.</p>
+			) : (
+				<ul className="m-0 flex max-w-(--kt-card-width) min-w-0 list-none flex-col p-0">
+					{orderedCoverage(hosts).map((host, index) => (
+						<li
+							key={host.hostId ?? `shared-${index}`}
+							className="flex min-w-0 items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-b-0"
+							data-coverage-host={host.hostId ?? "shared"}
+						>
+							<span
+								className={`min-w-0 truncate ${host.hostName === undefined ? "text-muted" : "font-medium text-fg"}`}
+							>
+								{host.hostName ?? "Shared host"}
+							</span>
+							<span title={host.version}>
+								<StatusLabel status={COVERAGE_STATUS[host.state]} quiet={host.state === "head"}>
+									{coverageStateText(host)}
+								</StatusLabel>
+							</span>
+						</li>
+					))}
+				</ul>
+			)}
+			{disk.head === undefined ? null : (
+				<p className="m-0 text-sm text-muted">
+					A sandbox starts on the newest version its host has. Where its pool syncs, each host fetches the newest in the
+					background.
+				</p>
+			)}
+		</section>
 	);
 }
 
@@ -488,6 +563,7 @@ function DiskHosts({ hosts }: { hosts: readonly StickyDiskHost[] }) {
 	}
 	return (
 		<div className="flex min-w-0 flex-col gap-2">
+			<h3 className="m-0 text-sm font-medium text-fg">Committed on</h3>
 			<ul className="m-0 flex max-w-(--kt-card-width) min-w-0 list-none flex-col p-0">
 				{hosts.map((host) => (
 					<li
@@ -507,7 +583,7 @@ function DiskHosts({ hosts }: { hosts: readonly StickyDiskHost[] }) {
 			</ul>
 			<p className="m-0 text-sm text-muted">
 				Where each version was committed and what it took there. Versions share unchanged blocks, so the space used can
-				be less. Copies other hosts fetched aren't listed.
+				be less.
 			</p>
 		</div>
 	);

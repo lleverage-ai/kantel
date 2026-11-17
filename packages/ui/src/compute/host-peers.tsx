@@ -1,6 +1,6 @@
 // A host's mesh peers, under its disk when its row on the Hosts page is opened: each other host of its pool, by name,
-// whether the host reaches it, the path and endpoint it uses, its last handshake and the round trip of its last probe,
-// as the host last reported them (every heartbeat). So a link that's down shows before a sync across it fails. A host
+// whether the host reaches it, the path and endpoint it uses, its last handshake, the round trip of its last probe and
+// the rate of its last sizeable fetch from it, as the host last reported them (every heartbeat). So a link that's down shows before a sync across it fails. A host
 // without a mesh (its pool's sync off, or an older host agent), or that isn't connected, says so instead.
 
 import { compactAge } from "../primitives/format.ts";
@@ -36,6 +36,17 @@ export function handshakeText(at: number | undefined, now: number): string {
 export function roundTripText(ms: number | undefined): string {
 	if (ms === undefined) return "No answer";
 	return ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms).toLocaleString("en-GB")} ms`;
+}
+
+/**
+ * The rate of the host's last fetch of at least 16 MiB from the peer, in bits a second as links are rated: "940 Mbit/s",
+ * "3.2 Mbit/s"; "Not measured" before one.
+ */
+export function fetchRateText(bytesPerSecond: number | undefined): string {
+	if (bytesPerSecond === undefined) return "Not measured";
+	const mbit = (bytesPerSecond * 8) / 1_000_000;
+	if (mbit >= 1000) return `${(mbit / 1000).toFixed(1)} Gbit/s`;
+	return mbit < 10 ? `${mbit.toFixed(1)} Mbit/s` : `${Math.round(mbit).toLocaleString("en-GB")} Mbit/s`;
 }
 
 /** Unreachable peers first, then by name. */
@@ -122,6 +133,9 @@ export function HostPeers({ host, names, now, narrow = false }: HostPeersProps) 
 										: `Handshake ${handshakeText(peer.lastHandshake, now).toLowerCase()}`}
 								</span>
 								<span className="tabular-nums">{roundTripText(peer.rttMs)}</span>
+								{peer.fetchBytesPerSecond === undefined ? null : (
+									<span className="tabular-nums">Fetched at {fetchRateText(peer.fetchBytesPerSecond)}</span>
+								)}
 							</span>
 						</li>
 					))}
@@ -148,6 +162,9 @@ export function HostPeers({ host, names, now, narrow = false }: HostPeersProps) 
 								</th>
 								<th className={`${th} text-right`} scope="col">
 									Round trip
+								</th>
+								<th className={`${th} text-right`} scope="col">
+									Fetch rate
 								</th>
 							</tr>
 						</thead>
@@ -179,6 +196,13 @@ export function HostPeers({ host, names, now, narrow = false }: HostPeersProps) 
 										{handshakeText(peer.lastHandshake, now)}
 									</td>
 									<td className={`${td} text-right tabular-nums`}>{roundTripText(peer.rttMs)}</td>
+									<td className={`${td} text-right tabular-nums`}>
+										{peer.fetchBytesPerSecond === undefined ? (
+											<span className="text-muted">{fetchRateText(undefined)}</span>
+										) : (
+											fetchRateText(peer.fetchBytesPerSecond)
+										)}
+									</td>
 								</tr>
 							))}
 						</tbody>

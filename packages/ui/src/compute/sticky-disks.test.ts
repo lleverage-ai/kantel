@@ -6,12 +6,15 @@ import {
 	allocatedTotal,
 	chosenPool,
 	commitHosts,
+	coverageStateText,
+	coverageText,
 	defaultPoolId,
 	endSession,
 	groupTitle,
 	headVersion,
 	hostsText,
 	hostsTitle,
+	orderedCoverage,
 	orderedPools,
 	poolChoiceLabel,
 	sizeGbError,
@@ -246,5 +249,52 @@ describe("a dialog's late request", () => {
 		const newer = { session: 3, disk: "pnpm-store" };
 		expect(endSession(newer, 2)).toBe(newer);
 		expect(endSession(undefined, 2)).toBeUndefined();
+	});
+});
+
+describe("which of a disk's pool's hosts have its newest version", () => {
+	const disk = (hosts: StickyDisk["hosts"]): Pick<StickyDisk, "head" | "hosts"> => ({
+		head: "sdv_2",
+		...(hosts === undefined ? {} : { hosts }),
+	});
+	it("counts them, and those fetching it", () => {
+		expect(coverageText(disk(undefined))).toBeUndefined();
+		expect(coverageText(disk([]))).toBeUndefined();
+		expect(coverageText({ hosts: [{ hostId: "a", state: "none" }] })).toBeUndefined();
+		expect(coverageText(disk([{ hostId: "a", state: "head" }]))).toBe("Its 1 host");
+		expect(
+			coverageText(
+				disk([
+					{ hostId: "a", state: "head" },
+					{ hostId: "b", state: "head" },
+				]),
+			),
+		).toBe("All 2 hosts");
+		expect(
+			coverageText(
+				disk([
+					{ hostId: "a", state: "head" },
+					{ hostId: "b", state: "fetching" },
+					{ hostId: "c", state: "older", version: "sdv_1" },
+					{ state: "none" },
+				]),
+			),
+		).toBe("1 of 4, 1 fetching");
+	});
+
+	it("lists those without it first, then by name, unnamed hosts last", () => {
+		const ordered = orderedCoverage([
+			{ hostId: "a", hostName: "beta", state: "head" },
+			{ state: "none" },
+			{ hostId: "b", hostName: "alpha", state: "head" },
+			{ hostId: "c", hostName: "gamma", state: "none" },
+			{ hostId: "d", hostName: "delta", state: "fetching" },
+		]);
+		expect(ordered.map((host) => host.hostName ?? "shared")).toEqual(["gamma", "shared", "delta", "alpha", "beta"]);
+		expect(coverageStateText({ state: "older" })).toBe("Has an older version");
+	});
+
+	it("is in the sample disks", () => {
+		expect(coverageText(STICKY_DISKS[0] as StickyDisk)).toBe("1 of 2, 1 fetching");
 	});
 });

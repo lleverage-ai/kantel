@@ -14,6 +14,7 @@ import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { HOST_STATE_LABELS, type Host, POOL_NAME_PATTERN, type Pool } from "./compute-model.ts";
+import { syncedUp } from "./host-sync.tsx";
 import { messageOf } from "./parts.tsx";
 
 /** A pool and the hosts in it, as the Hosts page lists them. */
@@ -55,6 +56,33 @@ export function poolSummaryText(hosts: readonly Host[]): string {
 		`${number(online)} online`,
 		`${number(used)} of ${number(vcpus)} vCPU in use`,
 		sandboxes === 1 ? "1 sandbox" : `${number(sandboxes)} sandboxes`,
+	].join(", ");
+}
+
+/**
+ * Where a synced pool's hosts are in holding its disks: "All 4 hosts in sync", "3 of 4 hosts in sync, 1 fetching". Hosts
+ * that don't say (an older control plane) aren't counted; none that say, and nothing is said.
+ */
+export function poolSyncText(hosts: readonly Host[]): string | undefined {
+	const known = hosts.filter((host) => host.sync !== undefined);
+	if (known.length === 0) return undefined;
+	const synced = known.filter(syncedUp).length;
+	const fetching = known.filter((host) =>
+		host.sync?.disks.some((disk) => disk.state === "fetching" || disk.state === "missing"),
+	).length;
+	const failing = known.filter((host) =>
+		host.sync?.disks.some((disk) => disk.state === "failed" || disk.state === "no-room" || disk.state === "no-source"),
+	).length;
+	const head =
+		synced === known.length
+			? known.length === 1
+				? "Its host is in sync"
+				: `All ${number(known.length)} hosts in sync`
+			: `${number(synced)} of ${number(known.length)} hosts in sync`;
+	return [
+		head,
+		...(fetching === 0 ? [] : [`${number(fetching)} fetching`]),
+		...(failing === 0 ? [] : [`${number(failing)} stuck`]),
 	].join(", ");
 }
 
@@ -138,8 +166,14 @@ export function PoolHeading({ group, actions }: { group: PoolGroup; actions: Poo
 				<span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
 					<span className="min-w-0 font-medium wrap-anywhere text-fg">{group.pool.name}</span>
 					{group.pool.default ? <Badge tone="accent">Default</Badge> : null}
+					{group.pool.sync === true ? <Badge>Sync on</Badge> : null}
 				</span>
 				<span className="text-sm font-regular text-muted">{poolSummaryText(group.hosts)}</span>
+				{group.pool.sync === true && poolSyncText(group.hosts) !== undefined ? (
+					<span className="text-sm font-regular text-muted" data-pool-sync>
+						{poolSyncText(group.hosts)}
+					</span>
+				) : null}
 			</div>
 			{poolMenu(group, actions)}
 		</div>

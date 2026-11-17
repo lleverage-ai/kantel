@@ -479,6 +479,42 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 	);
 }
 
+/**
+ * How far something has got, as a thin bar with an accessible name and its values: a fetch's blocks, an evacuation's
+ * sandboxes. Its width is static (set from the value, never animated), as a live row's must be. `failed` turns it red.
+ */
+export function ProgressBar({
+	label,
+	value,
+	max,
+	failed = false,
+	className = "w-24",
+}: {
+	label: string;
+	value: number;
+	max: number;
+	failed?: boolean;
+	/** Its width. */
+	className?: string;
+}) {
+	const share = max <= 0 ? 1 : Math.min(1, Math.max(0, value / max));
+	return (
+		<span
+			className={`block h-1 overflow-hidden rounded-full bg-active ${className}`}
+			role="progressbar"
+			aria-label={label}
+			aria-valuemin={0}
+			aria-valuemax={max}
+			aria-valuenow={Math.min(value, max)}
+		>
+			<span
+				className={`block h-full rounded-full ${failed ? "bg-status-error" : "bg-status-working"}`}
+				style={{ width: `${Math.round(share * 100)}%` }}
+			/>
+		</span>
+	);
+}
+
 /** A heading over a section of a page, with its own actions on the right. */
 /**
  * A label and its value side by side, in a `<dl>`: a phone card's facts, each named, two or so to a line rather than
