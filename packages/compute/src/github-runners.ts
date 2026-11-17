@@ -15,6 +15,14 @@
  * of its runners goes before it tries again, one runner at a time. GitHub keeps a job queued for a day and sends its
  * webhook once, so this queue is what remembers that the job needs a runner.
  *
+ * A webhook can still go missing: the control plane was restarting or busy when GitHub sent it, or no kind had the job's
+ * labels at that moment (a kind moved between pools by removing it from one and then adding it to another). So every
+ * `RECONCILE_EVERY_MS`, in the background after a pass, the broker reconciles with GitHub (`startReconcile`): it lists
+ * the queued jobs of each repository the integration serves, through the App installation's token, and records any a
+ * kind takes that it doesn't know of yet, as the `queued` webhook would have. It reads conditionally, so a list that
+ * hasn't changed costs no rate limit, and it leaves a quarter of the installation's hourly limit for registering and
+ * removing runners. It also asks GitHub to send again, once each, the App's failed `workflow_job` deliveries.
+ *
  * The rules that keep runners from leaking or doubling up:
  *
  * - One gateway at a time runs an integration's pass: it holds a lease on the integration record (`lease`), taken and
@@ -83,6 +91,10 @@ export const ACTIVE_TICK_MS = 5_000;
 export const IDLE_TICK_MS = 60_000;
 /** How long a runner's end waits after its first failed step (its sandbox's delete, say) before it is tried again. */
 export const END_RETRY_FIRST_MS = 30_000;
+/** How often a pass reconciles the integration's queue with GitHub's (`reconcile`). */
+export const RECONCILE_EVERY_MS = 5 * 60_000;
+/** The most failed deliveries one reconcile asks GitHub to send again. */
+const REDELIVERIES_PER_RECONCILE = 20;
 /** The longest an end waits between tries: each failure doubles the wait, up to this. */
 export const END_RETRY_MAX_MS = 30 * 60_000;
 /** How long a pass's lease on an integration lasts: longer than any pass (GitHub's calls time out at 15 s each). */
@@ -213,6 +225,10 @@ export interface StoredGithubRunners {
 	readonly backoff?: { readonly [key: string]: { readonly until: number; readonly reason: string } };
 	/** The gateway running its pass, until when. */
 	readonly lease?: { readonly owner: string; readonly until: number };
+	/** When its queue is next reconciled with GitHub's (`startReconcile`); absent, after the next pass. */
+	readonly reconcileAt?: number;
+	/** Failed deliveries a reconcile asked GitHub to send again, by GUID, with when: each is asked once. */
+	readonly redelivered?: { readonly [guid: string]: number };
 	/** When it was deleted: hidden from then, and kept until its runners have ended. */
 	readonly retiringAt?: number;
 	readonly createdAt: number;
@@ -577,6 +593,8 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 	 * while one waits joins it, as it starts after their work was recorded and so does it too (`serialPass`).
 	 */
 	const passing = new Map<string, { running: Promise<boolean>; queued?: Promise<boolean> }>();
+	/** Integrations whose reconcile with GitHub runs on this gateway now (`startReconcile`). */
+	const reconciling = new Set<string>();
 
 	/** The integration's GitHub App, made again when its App or key changes. */
 	async function appOf(record: StoredGithubRunners): Promise<GithubApp> {
@@ -1185,7 +1203,145 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		}
 
 		await sweepOrphans(lease, record, 60_000);
+		if (fresh !== undefined && principal !== undefined) await startReconcile(fresh);
 		return active;
+	}
+
+	/**
+	 * Starts a reconcile of the integration's queue with GitHub's (`reconcileNow`) in the background, when one is due: at
+	 * most one every `RECONCILE_EVERY_MS` across gateways (claimed on the record, `reconcileAt`), and one at a time here.
+	 * It holds no lease and never delays a pass: it only records jobs, as a webhook does, then asks for a pass.
+	 */
+	async function startReconcile(record: StoredGithubRunners): Promise<void> {
+		if (!record.enabled || record.retiringAt !== undefined || record.pools.length === 0) return;
+		if (reconciling.has(record.id)) return;
+		const t = now();
+		if ((record.reconcileAt ?? 0) > t) return;
+		// Due again in `RECONCILE_EVERY_MS` however this one ends, so a failing one isn't tried on every pass.
+		const claimed = await store.githubRunners
+			.update(record.id, (current) =>
+				(current.reconcileAt ?? 0) > t ? undefined : { ...current, reconcileAt: t + RECONCILE_EVERY_MS },
+			)
+			.catch(() => undefined);
+		if (claimed === undefined) return;
+		reconciling.add(record.id);
+		background(
+			reconcileNow(claimed)
+				.then(async (recorded) => {
+					if (recorded === 0) return;
+					await options.wakeAt?.(now() + ACTIVE_TICK_MS);
+					await serialPass(record.id);
+				})
+				.catch((error: unknown) =>
+					log(`[github-runners] ${record.id}: reconciling with GitHub failed: ${messageOf(error)}`),
+				)
+				.finally(() => reconciling.delete(record.id)),
+		);
+	}
+
+	/**
+	 * Reconciles the integration's queue with GitHub's: records each job GitHub has queued in a repository it serves, that
+	 * one of its kinds takes, and that it has no record of, as the job's `queued` webhook would have; then asks GitHub to
+	 * send again the App's failed `workflow_job` deliveries of its installation, each once. The installation, until a
+	 * webhook has bound it, is the configured owner's, as GitHub's App API says. Answers how many jobs it recorded. A
+	 * failure (GitHub away, its rate limit low) is logged, and waits for the next.
+	 */
+	async function reconcileNow(record: StoredGithubRunners): Promise<number> {
+		const app = await appOf(record);
+		let installationId = record.installationId;
+		if (installationId === undefined) {
+			const found = await app.findInstallation(record.owner);
+			if (found === undefined) return 0;
+			// Bound as the owner's own delivery binds it, unless one did meanwhile.
+			const bound = await store.githubRunners.update(record.id, (current) =>
+				current.installationId === undefined && current.retiringAt === undefined
+					? { ...current, installationId: found }
+					: undefined,
+			);
+			installationId = bound?.installationId ?? (await store.githubRunners.get(record.id))?.installationId;
+			if (installationId === undefined) return 0;
+			log(`[github-runners] ${record.id}: its App's installation on ${record.owner} is ${installationId}`);
+		}
+		const installation = installationId;
+		let recorded = 0;
+		try {
+			const served = (repository: string) =>
+				ownedBy(record, repository) &&
+				(record.repositories === undefined ||
+					record.repositories.some((name) => name.toLowerCase() === repository.toLowerCase())) &&
+				record.pools.some((kind) => poolServes(kind, repository));
+			const repositories = (record.repositories ?? (await app.listRepositories(installation))).filter(served);
+			for (const repository of repositories) {
+				for (const job of await app.queuedJobs(installation, repository)) {
+					// As a `queued` delivery is judged: a kind with its labels that serves its repository.
+					const kind = poolFor(record.pools, job.labels);
+					if (kind === undefined || !poolServes(kind, repository)) continue;
+					const id = jobRecordId(record.id, job.id);
+					if ((await store.githubRunnerJobs.get(id)) !== undefined) continue;
+					const at = now();
+					const inserted = await store.githubRunnerJobs.insert({
+						id,
+						integrationId: record.id,
+						accountId: record.accountId,
+						jobId: job.id,
+						runId: job.runId,
+						repository,
+						name: job.name,
+						labels: job.labels,
+						pool: kind.label,
+						installationId: installation,
+						state: "queued",
+						reason: "No webhook told of it: found queued on GitHub",
+						// When GitHub queued it, so it is served in its turn and given up on when GitHub gives up on it.
+						queuedAt: Math.min(at, job.createdAt ?? at),
+						updatedAt: at,
+					});
+					if (!inserted) continue;
+					// Retired while it was recorded: its retirement may have deleted the jobs before this one landed.
+					const after = await store.githubRunners.get(record.id);
+					if (after === undefined || after.retiringAt !== undefined) {
+						await store.githubRunnerJobs.delete(id);
+						return recorded;
+					}
+					recorded++;
+					log(
+						`[github-runners] ${record.id}: job ${job.id} of ${repository} is queued on GitHub with no webhook; recorded`,
+					);
+				}
+			}
+		} catch (error) {
+			log(`[github-runners] ${record.id}: reconciling with GitHub stopped: ${messageOf(error)}`);
+		}
+		try {
+			const t = now();
+			const asked = record.redelivered ?? {};
+			const failed = (await app.failedDeliveries(t - QUEUED_JOB_TTL_MS))
+				.filter(
+					(delivery) =>
+						delivery.event === "workflow_job" &&
+						delivery.installationId === installation &&
+						asked[delivery.guid] === undefined,
+				)
+				.slice(0, REDELIVERIES_PER_RECONCILE);
+			if (failed.length > 0) {
+				// Noted before it is asked, so each is sent again once: a redelivery that fails too is left, and its job is found
+				// queued on GitHub instead.
+				await store.githubRunners.update(record.id, (current) => {
+					const kept = Object.fromEntries(
+						Object.entries(current.redelivered ?? {}).filter(([, at]) => t - at < QUEUED_JOB_TTL_MS),
+					);
+					for (const delivery of failed) kept[delivery.guid] = t;
+					return { ...current, redelivered: kept };
+				});
+				for (const delivery of failed) {
+					await app.redeliver(delivery.id);
+					log(`[github-runners] ${record.id}: asked GitHub to send failed delivery ${delivery.guid} again`);
+				}
+			}
+		} catch (error) {
+			log(`[github-runners] ${record.id}: sending failed deliveries again stopped: ${messageOf(error)}`);
+		}
+		return recorded;
 	}
 
 	/**

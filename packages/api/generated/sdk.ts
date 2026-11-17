@@ -3902,7 +3902,7 @@ export interface KantelClient {
 	): Promise<GithubRunners>;
 	/** Disconnect a GitHub App. Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub wait there for another runner. A key needs `account:admin`. `DELETE /github-runners/{githubRunnersId}` */
 	deleteGithubRunners(githubRunnersId: string, options?: CallOptions): Promise<void>;
-	/** List a GitHub runner integration's jobs. The jobs its webhook told it of, newest first, and why any still waits. A key needs `account:admin`. `GET /github-runners/{githubRunnersId}/jobs` */
+	/** List a GitHub runner integration's jobs. The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits. A key needs `account:admin`. `GET /github-runners/{githubRunnersId}/jobs` */
 	listGithubRunnerJobs(githubRunnersId: string, options?: CallOptions): Promise<GithubRunnerJobList>;
 	/** List sticky disks. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:read`. `GET /sticky-disks` */
 	listStickyDisks(query?: AccountScopedQuery, options?: CallOptions): Promise<StickyDiskList>;

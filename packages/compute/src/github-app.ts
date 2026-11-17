@@ -1,6 +1,7 @@
 /**
  * A GitHub App, as the runner broker (`github-runners.ts`) uses it: its JWT, an installation's access token, a
- * just-in-time runner configuration, a runner's removal, and a webhook's signature. Web Crypto and `fetch` only, so it
+ * just-in-time runner configuration, a runner's removal, a webhook's signature, and what reconciling with GitHub reads
+ * (an installation's repositories, their queued jobs, the App's failed deliveries). Web Crypto and `fetch` only, so it
  * runs on every gateway (Node and Workers).
  */
 import { KantelError } from "@kantel/contracts";
@@ -16,6 +17,21 @@ const JWT_TTL_SECONDS = 9 * 60;
 const TOKEN_MARGIN_MS = 5 * 60_000;
 /** How long a call to GitHub may take: a broker's pass holds its integration's lease while it waits. */
 const CALL_TIMEOUT_MS = 15_000;
+/**
+ * The share of an installation's hourly rate limit that reconciling leaves for everything else: it stops (`exhausted`)
+ * once fewer requests than this remain, until the limit resets. Registering and removing runners never stop for it.
+ */
+const RECONCILE_RESERVE = 0.25;
+/** The fewest requests reconciling leaves, however small the installation's limit. */
+const RECONCILE_RESERVE_MIN = 500;
+/** How many pages of an installation's repositories are read, 100 each. */
+const REPOSITORY_PAGES = 10;
+/** How many conditional reads' answers are kept for their ETags (`If-None-Match`): a 304 costs no rate limit. */
+const ETAG_CACHE_SIZE = 1000;
+/** How many pages of a repository's runs of one status, and of a run's jobs, are read, 100 each. */
+const RUN_PAGES = 5;
+/** How many pages of the App's installations are read, 100 each, to find an owner's. */
+const INSTALLATION_PAGES = 5;
 
 export interface GithubAppCredentials {
 	readonly appId: number;
@@ -32,6 +48,27 @@ export interface JitRunner {
 export type RunnerScope =
 	| { readonly kind: "organization"; readonly org: string; readonly runnerGroupId: number }
 	| { readonly kind: "repository"; readonly repository: string };
+
+/** A job GitHub has queued, as reconciling finds it. */
+export interface QueuedJob {
+	readonly id: number;
+	readonly runId: number;
+	readonly name: string;
+	readonly labels: readonly string[];
+	/** When GitHub made it, in milliseconds; undefined when GitHub didn't say. */
+	readonly createdAt?: number;
+}
+
+/** An App webhook delivery that never got a 2xx answer. */
+export interface FailedDelivery {
+	/** Its latest attempt's ID: what a redelivery names. */
+	readonly id: number;
+	readonly guid: string;
+	readonly event: string;
+	readonly action?: string;
+	readonly installationId?: number;
+	readonly deliveredAt: number;
+}
 
 export interface GithubApp {
 	/** Registers a just-in-time runner that takes one job with every one of `labels`, and answers its configuration. */
@@ -68,6 +105,26 @@ export interface GithubApp {
 		  }
 		| undefined
 	>;
+	/**
+	 * The installation's repositories (`owner/name`), archived ones left out: up to `REPOSITORY_PAGES` pages. Read for
+	 * reconciling, so it stops with `exhausted` when the installation's rate limit is low.
+	 */
+	listRepositories(installationId: number): Promise<string[]>;
+	/**
+	 * `repository`'s queued jobs: those of its queued and in-progress runs (a run's later job waits queued while its
+	 * earlier ones run), the latest attempt of each. Conditional reads, so an unchanged list costs no rate limit; it
+	 * stops with `exhausted` when the installation's rate limit is low.
+	 */
+	queuedJobs(installationId: number, repository: string): Promise<QueuedJob[]>;
+	/**
+	 * The App's recent webhook deliveries (its latest 100) that no attempt got a 2xx for, delivered at or after `since`:
+	 * each event's latest attempt.
+	 */
+	failedDeliveries(since: number): Promise<FailedDelivery[]>;
+	/** The App's installation on `owner` (an organisation or a user, compared without case), or undefined. */
+	findInstallation(owner: string): Promise<number | undefined>;
+	/** Asks GitHub to send a delivery again. */
+	redeliver(deliveryId: number): Promise<void>;
 }
 
 /** The DER of a PKCS #8 RSA key around a PKCS #1 one: what Web Crypto imports. */
@@ -202,6 +259,109 @@ export function createGithubApp(options: GithubAppOptions): GithubApp {
 		return body.token;
 	}
 
+	/** Each installation's rate limit as its latest answer gave it. */
+	const limits = new Map<number, { readonly remaining: number; readonly limit: number; readonly resetAt: number }>();
+	/** Conditional reads' last answers by URL and installation, oldest first. */
+	const etags = new Map<string, { readonly etag: string; readonly body: unknown }>();
+
+	/** Refuses a reconciling read while the installation's rate limit is low, until it resets. */
+	function spare(installationId: number): void {
+		const known = limits.get(installationId);
+		if (known === undefined || known.resetAt <= now()) return;
+		const reserve = Math.max(RECONCILE_RESERVE_MIN, known.limit * RECONCILE_RESERVE);
+		if (known.remaining < reserve) {
+			throw new KantelError(
+				"exhausted",
+				`GitHub's rate limit for installation ${installationId} is low (${known.remaining} of ${known.limit} left); reconciling waits until it resets`,
+				{ resetAt: known.resetAt },
+			);
+		}
+	}
+
+	function noteLimit(installationId: number, response: Response): void {
+		const remaining = Number(response.headers.get("x-ratelimit-remaining"));
+		const limit = Number(response.headers.get("x-ratelimit-limit"));
+		const reset = Number(response.headers.get("x-ratelimit-reset"));
+		if (response.headers.get("x-ratelimit-remaining") === null || !Number.isFinite(remaining)) return;
+		limits.set(installationId, {
+			remaining,
+			limit: Number.isFinite(limit) && limit > 0 ? limit : 5000,
+			resetAt: Number.isFinite(reset) && reset > 0 ? reset * 1000 : now() + 3_600_000,
+		});
+	}
+
+	/** A reconciling read's body, from the cache when GitHub answers 304; undefined for a 404. */
+	async function read(installationId: number, path: string, what: string): Promise<unknown> {
+		spare(installationId);
+		const token = await installationToken(installationId);
+		const key = `${installationId} ${path}`;
+		const cached = etags.get(key);
+		const response = await doFetch(`${api}${path}`, {
+			headers: { ...headers(token), ...(cached === undefined ? {} : { "if-none-match": cached.etag }) },
+		});
+		noteLimit(installationId, response);
+		if (response.status === 304 && cached !== undefined) {
+			etags.delete(key);
+			etags.set(key, cached);
+			return cached.body;
+		}
+		if (response.status === 404) return undefined;
+		if (!response.ok) throw await githubError(response, what);
+		const body: unknown = await response.json();
+		const etag = response.headers.get("etag");
+		etags.delete(key);
+		if (etag !== null) {
+			etags.set(key, { etag, body });
+			while (etags.size > ETAG_CACHE_SIZE) {
+				const oldest = etags.keys().next().value;
+				if (oldest === undefined) break;
+				etags.delete(oldest);
+			}
+		}
+		return body;
+	}
+
+	const repoPath = (repository: string) => `/repos/${repository.split("/").map(encodeURIComponent).join("/")}`;
+
+	/** A page of a run's jobs (the latest attempt of each): its queued ones, and how many the page had. */
+	async function runJobs(
+		installationId: number,
+		repository: string,
+		runId: number,
+		page: number,
+	): Promise<{ readonly queued: QueuedJob[]; readonly count: number }> {
+		const body = (await read(
+			installationId,
+			`${repoPath(repository)}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`,
+			`run ${runId}'s jobs`,
+		)) as
+			| {
+					jobs?: {
+						id?: unknown;
+						run_id?: unknown;
+						status?: unknown;
+						name?: unknown;
+						labels?: unknown;
+						created_at?: unknown;
+					}[];
+			  }
+			| undefined;
+		const jobs = body?.jobs ?? [];
+		const queued: QueuedJob[] = [];
+		for (const job of jobs) {
+			if (job.status !== "queued" || typeof job.id !== "number" || !Array.isArray(job.labels)) continue;
+			const createdAt = typeof job.created_at === "string" ? Date.parse(job.created_at) : Number.NaN;
+			queued.push({
+				id: job.id,
+				runId: typeof job.run_id === "number" ? job.run_id : runId,
+				name: typeof job.name === "string" ? job.name : "",
+				labels: job.labels.filter((label): label is string => typeof label === "string"),
+				...(Number.isNaN(createdAt) ? {} : { createdAt }),
+			});
+		}
+		return { queued, count: jobs.length };
+	}
+
 	const runnersPath = (scope: RunnerScope) =>
 		scope.kind === "organization"
 			? `/orgs/${encodeURIComponent(scope.org)}/actions/runners`
@@ -290,6 +450,116 @@ export function createGithubApp(options: GithubAppOptions): GithubApp {
 				...(typeof body.runner_id === "number" && body.runner_id > 0 ? { runnerId: body.runner_id } : {}),
 				...(typeof body.runner_name === "string" && body.runner_name !== "" ? { runnerName: body.runner_name } : {}),
 			};
+		},
+		async listRepositories(installationId) {
+			const names: string[] = [];
+			for (let page = 1; page <= REPOSITORY_PAGES; page++) {
+				const body = (await read(
+					installationId,
+					`/installation/repositories?per_page=100&page=${page}`,
+					"the installation's repositories",
+				)) as { repositories?: { full_name?: unknown; archived?: unknown }[] } | undefined;
+				const repositories = body?.repositories ?? [];
+				for (const repository of repositories) {
+					if (typeof repository.full_name === "string" && repository.archived !== true)
+						names.push(repository.full_name);
+				}
+				if (repositories.length < 100) break;
+			}
+			return names;
+		},
+		async queuedJobs(installationId, repository) {
+			const runs = new Set<number>();
+			for (const status of ["queued", "in_progress"]) {
+				for (let page = 1; page <= RUN_PAGES; page++) {
+					const body = (await read(
+						installationId,
+						`${repoPath(repository)}/actions/runs?status=${status}&per_page=100&page=${page}`,
+						`${repository}'s ${status} runs`,
+					)) as { workflow_runs?: { id?: unknown }[] } | undefined;
+					const listed = body?.workflow_runs ?? [];
+					for (const run of listed) if (typeof run.id === "number") runs.add(run.id);
+					if (listed.length < 100) break;
+				}
+			}
+			const queued: QueuedJob[] = [];
+			for (const runId of runs) {
+				for (let page = 1; page <= RUN_PAGES; page++) {
+					const listed = await runJobs(installationId, repository, runId, page);
+					queued.push(...listed.queued);
+					if (listed.count < 100) break;
+				}
+			}
+			return queued;
+		},
+		async failedDeliveries(since) {
+			key ??= importAppKey(options.privateKey);
+			const jwt = await appJwt(options.appId, await key, now());
+			const response = await doFetch(`${api}/app/hook/deliveries?per_page=100`, { headers: headers(jwt) });
+			if (!response.ok) throw await githubError(response, "the App's webhook deliveries");
+			const deliveries = (await response.json()) as {
+				id?: unknown;
+				guid?: unknown;
+				delivered_at?: unknown;
+				status_code?: unknown;
+				event?: unknown;
+				action?: unknown;
+				installation_id?: unknown;
+			}[];
+			// Attempts of one event share its GUID; the list is newest first, so the first seen is its latest.
+			const byGuid = new Map<string, { latest: FailedDelivery; delivered: boolean }>();
+			for (const delivery of Array.isArray(deliveries) ? deliveries : []) {
+				if (typeof delivery.id !== "number" || typeof delivery.guid !== "string") continue;
+				const deliveredAt = typeof delivery.delivered_at === "string" ? Date.parse(delivery.delivered_at) : Number.NaN;
+				const ok =
+					typeof delivery.status_code === "number" && delivery.status_code >= 200 && delivery.status_code < 300;
+				const seen = byGuid.get(delivery.guid);
+				if (seen !== undefined) {
+					seen.delivered ||= ok;
+					continue;
+				}
+				byGuid.set(delivery.guid, {
+					latest: {
+						id: delivery.id,
+						guid: delivery.guid,
+						event: typeof delivery.event === "string" ? delivery.event : "",
+						...(typeof delivery.action === "string" ? { action: delivery.action } : {}),
+						...(typeof delivery.installation_id === "number" ? { installationId: delivery.installation_id } : {}),
+						deliveredAt: Number.isNaN(deliveredAt) ? 0 : deliveredAt,
+					},
+					delivered: ok,
+				});
+			}
+			return [...byGuid.values()]
+				.filter(({ latest, delivered }) => !delivered && latest.deliveredAt >= since)
+				.map(({ latest }) => latest);
+		},
+		async findInstallation(owner) {
+			key ??= importAppKey(options.privateKey);
+			const jwt = await appJwt(options.appId, await key, now());
+			for (let page = 1; page <= INSTALLATION_PAGES; page++) {
+				const response = await doFetch(`${api}/app/installations?per_page=100&page=${page}`, { headers: headers(jwt) });
+				if (!response.ok) throw await githubError(response, "the App's installations");
+				const installations = (await response.json()) as { id?: unknown; account?: { login?: unknown } }[];
+				const listed = Array.isArray(installations) ? installations : [];
+				const found = listed.find(
+					(installation) =>
+						typeof installation.account?.login === "string" &&
+						installation.account.login.toLowerCase() === owner.toLowerCase(),
+				);
+				if (typeof found?.id === "number") return found.id;
+				if (listed.length < 100) break;
+			}
+			return undefined;
+		},
+		async redeliver(deliveryId) {
+			key ??= importAppKey(options.privateKey);
+			const jwt = await appJwt(options.appId, await key, now());
+			const response = await doFetch(`${api}/app/hook/deliveries/${deliveryId}/attempts`, {
+				method: "POST",
+				headers: headers(jwt),
+			});
+			if (!response.ok) throw await githubError(response, "a webhook's redelivery");
 		},
 	};
 }
