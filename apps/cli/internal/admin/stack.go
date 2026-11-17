@@ -160,10 +160,28 @@ func changeSettings(c *cli.Context, sys System, changes Changes) error {
 	return nil
 }
 
-// compose runs docker compose with the stack's compose.yaml, its stdout captured or ours.
+// compose runs docker compose with the stack's files, its stdout captured or ours.
 func compose(c *cli.Context, sys System, capture bool, args ...string) (Ran, error) {
-	file := filepath.Join(composeDir(c), "compose.yaml")
-	return sys.Spawn(c.Ctx, "docker", append([]string{"compose", "-f", file}, args...), SpawnOptions{Capture: capture})
+	return sys.Spawn(c.Ctx, "docker", append(append([]string{"compose"}, composeFiles(c)...), args...),
+		SpawnOptions{Capture: capture})
+}
+
+// composeFiles are the -f flags for the stack's files, as the installer gives them: compose.yaml, and
+// external-postgres.yaml with a Postgres of the operator's own, KANTEL_DATABASE_URL in the environment (which Compose
+// reads first) or .env. Without it, Compose would start the bundled Postgres beside it.
+func composeFiles(c *cli.Context) []string {
+	dir := composeDir(c)
+	files := []string{"-f", filepath.Join(dir, "compose.yaml")}
+	url := c.IO.Env.Get("KANTEL_DATABASE_URL")
+	if url == "" {
+		if raw, err := os.ReadFile(filepath.Join(dir, ".env")); err == nil {
+			url, _ = ParseEnvFile(string(raw)).Get("KANTEL_DATABASE_URL")
+		}
+	}
+	if strings.TrimSpace(url) != "" {
+		files = append(files, "-f", filepath.Join(dir, "external-postgres.yaml"))
+	}
+	return files
 }
 
 // applySettings starts the stack with its settings as they are: Compose recreates the containers whose settings changed.

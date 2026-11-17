@@ -30,6 +30,11 @@ name: harbour
 services:
   # Every long-running service restarts with the Docker daemon, so the stack
   # comes back whole after the machine reboots (#231).
+  #
+  # The bundled database: one container, no standby, no backups. For a Postgres
+  # of your own, such as a managed one, add external-postgres.yaml (the
+  # installer and kantel-admin do when KANTEL_DATABASE_URL is set), and this
+  # one doesn't start.
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
