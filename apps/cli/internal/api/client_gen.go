@@ -1426,7 +1426,7 @@ func (c *Client) CreateSandbox(ctx context.Context, body CreateSandboxBody, opts
 	return &out, nil
 }
 
-// DeleteSandbox DELETE /sandboxes/{sandboxId}: Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`.
+// DeleteSandbox DELETE /sandboxes/{sandboxId}: Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. One on an account's own host is deleted there, even after the host has lost track of it (its earlier delete's answer lost): while that host is offline the delete is refused (`unavailable`) and the sandbox is kept, and once the host is revoked the sandbox is written off. A key needs `sandboxes:delete`.
 func (c *Client) DeleteSandbox(ctx context.Context, sandboxID string, opts ...CallOption) (*Sandbox, error) {
 	var out Sandbox
 	if err := c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/sandboxes/%s", url.PathEscape(sandboxID)), Query: nil, Idempotent: true, Out: &out}, opts...); err != nil {
