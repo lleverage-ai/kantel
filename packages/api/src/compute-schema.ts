@@ -5333,7 +5333,14 @@ export const StickyDiskVersion = Type.Object(
 
 export const StickyDiskHost = Type.Object(
 	{
-		hostId: Type.String({ description: "A host of the disk's pool." }),
+		hostId: Type.Optional(
+			Type.String({
+				description:
+					"A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared " +
+					"host, for anyone but a super-admin.",
+			}),
+		),
+		hostName: Type.Optional(Type.String({ description: "The host's name, with its ID." })),
 		state: Type.Union([Type.Literal("head"), Type.Literal("fetching"), Type.Literal("older"), Type.Literal("none")], {
 			description:
 				"`head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions " +

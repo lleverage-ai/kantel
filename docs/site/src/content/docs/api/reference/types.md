@@ -2383,7 +2383,8 @@ Which of a sticky disk's versions a host of its pool holds.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `hostId` | string | yes | A host of the disk's pool. |
+| `hostId` | string | no | A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared host, for anyone but a super-admin. |
+| `hostName` | string | no | The host's name, with its ID. |
 | `state` | `"head"` or `"fetching"` or `"older"` or `"none"` | yes | `head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions (a sandbox there starts from the newest of them). `none`: it holds none. |
 | `version` | string | no | The newest version it holds, where it holds one (the head, for `head`). |
 

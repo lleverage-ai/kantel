@@ -2831,12 +2831,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		allocatedBytes: version.allocatedBytes,
 		createdAt: version.createdAt,
 	});
-	async function stickyDiskView(disk: StoredStickyDisk, withVersions: boolean): Promise<computeSchema.StickyDisk> {
+	/** A sticky disk as `principal` is answered it: with its versions and its pool's hosts on a get (`withVersions`). */
+	async function stickyDiskView(
+		disk: StoredStickyDisk,
+		withVersions: boolean,
+		principal?: Principal,
+	): Promise<computeSchema.StickyDisk> {
 		const all = withVersions
 			? (await store.stickyDiskVersions.list({ diskId: disk.id })).sort((a, b) => b.seq - a.seq)
 			: undefined;
 		const versions = all?.slice(0, STICKY_VERSIONS_LISTED).map(stickyVersionView);
-		const hosts = all === undefined ? undefined : await stickyDiskHosts(disk, all);
+		const hosts =
+			all === undefined || principal === undefined ? undefined : await stickyDiskHosts(disk, all, principal);
 		return {
 			id: disk.id,
 			accountId: disk.accountId,
@@ -2854,11 +2860,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Each host of a disk's pool that isn't revoked (and may hold the disk's account's data), with what it holds of the
 	 * disk as the catalogue's holders say: its head, the head being fetched, only older versions, or none. `versions` is
-	 * every version, newest first. None for a disk with no pool yet.
+	 * every version, newest first. A host `principal` may not be told of (`mayKnowHost`: a shared host, for anyone but a
+	 * super-admin) is listed without its ID or name, as a saved snapshot's hosts are. None for a disk with no pool yet.
 	 */
 	async function stickyDiskHosts(
 		disk: StoredStickyDisk,
 		versions: readonly StoredStickyDiskVersion[],
+		principal: Principal,
 	): Promise<computeSchema.StickyDiskHost[] | undefined> {
 		if (disk.poolId === undefined) return undefined;
 		const [hosts, holders] = await Promise.all([ensureHosts(), diskHolders.holdersOf("sticky", disk.id)]);
@@ -2873,14 +2881,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					.map(([version]) => version)
 					.sort((a, b) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER));
 			const held = own("held");
+			const named = mayKnowHost(principal, host, disk.accountId) ? { hostId: host.id, hostName: host.name } : {};
 			if (disk.head !== undefined && held.includes(disk.head)) {
-				answer.push({ hostId: host.id, state: "head", version: disk.head });
+				answer.push({ ...named, state: "head", version: disk.head });
 			} else if (disk.head !== undefined && own("fetching").includes(disk.head)) {
-				answer.push({ hostId: host.id, state: "fetching", ...(held[0] === undefined ? {} : { version: held[0] }) });
+				answer.push({ ...named, state: "fetching", ...(held[0] === undefined ? {} : { version: held[0] }) });
 			} else if (held[0] !== undefined) {
-				answer.push({ hostId: host.id, state: "older", version: held[0] });
+				answer.push({ ...named, state: "older", version: held[0] });
 			} else {
-				answer.push({ hostId: host.id, state: "none" });
+				answer.push({ ...named, state: "none" });
 			}
 		}
 		return answer;
@@ -3118,18 +3127,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function stickyBackfillPlan(poolId?: string): Promise<HostBackfill[]> {
 		if (options.stickyDisks !== true) return [];
-		const [copy, allPools, disks, holders] = await Promise.all([
-			copyHosts(),
-			store.pools.list(),
-			store.stickyDisks.list(),
-			store.diskHolders.list(),
-		]);
+		// The pools first: with none syncing (one host's pool, or every pool) nothing else is read.
 		const syncing = new Set(
-			allPools
-				.filter((pool) => pool.sync === true && (poolId === undefined || pool.id === poolId))
-				.map((pool) => pool.id),
+			(poolId === undefined ? await store.pools.list() : [await store.pools.get(poolId)])
+				.filter((pool) => pool?.sync === true)
+				.map((pool) => pool?.id ?? ""),
 		);
 		if (syncing.size === 0) return [];
+		const [copy, disks, holders] = await Promise.all([copyHosts(), store.stickyDisks.list(), store.diskHolders.list()]);
 		const at = now();
 		const live = disks.filter(
 			(disk) =>
@@ -5523,9 +5528,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			: { mesh: { address: mesh.address, peers: mesh.peers.map((peer) => ({ ...peer })) } };
 	}
 
-	/** Every synced pool's hosts' backfill (`stickyBackfillPlan`), by host ID, for the hosts' views. */
-	async function backfillByHost(): Promise<ReadonlyMap<string, HostBackfill>> {
-		return new Map((await stickyBackfillPlan()).map((plan) => [plan.hostId, plan]));
+	/**
+	 * Every synced pool's hosts' backfill (`stickyBackfillPlan`), by host ID, for the hosts' views: only `poolId`'s, where
+	 * given (one host's view).
+	 */
+	async function backfillByHost(poolId?: string): Promise<ReadonlyMap<string, HostBackfill>> {
+		return new Map((await stickyBackfillPlan(poolId)).map((plan) => [plan.hostId, plan]));
 	}
 
 	/**
@@ -5589,7 +5597,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...hostMemoryOf(host.id),
 			// A revoked or dropped host's last report says nothing about now (a revoke answers before the next read).
 			...(host.state === "revoked" || host.state === "unreachable" ? {} : hostMeshOf(host.id)),
-			...(host.state === "revoked" ? {} : hostSyncOf(host.id, backfill ?? (await backfillByHost()))),
+			...(host.state === "revoked"
+				? {}
+				: hostSyncOf(
+						host.id,
+						backfill ??
+							(host.poolId === undefined ? new Map<string, HostBackfill>() : await backfillByHost(host.poolId)),
+					)),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),
@@ -12311,14 +12325,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (!(await store.stickyDiskWrites.create(disk))) {
 					throw new KantelError("conflict", `The account has a sticky disk named ${body.name}`);
 				}
-				return stickyDiskView(disk, true);
+				return stickyDiskView(disk, true, principal);
 			});
 		},
 
 		getStickyDisk: async (principal, { params }) => {
 			requireSticky();
 			const disk = await stickyDiskFor(principal, params.stickyDiskId, "account:read");
-			return stickyDiskView(disk, true);
+			return stickyDiskView(disk, true, principal);
 		},
 
 		deleteStickyDisk: async (principal, { params }) => {

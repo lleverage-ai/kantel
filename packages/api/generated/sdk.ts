@@ -2811,8 +2811,10 @@ export interface StickyDisk {
 
 /** Which of a sticky disk's versions a host of its pool holds. */
 export interface StickyDiskHost {
-	/** A host of the disk's pool. */
-	readonly hostId: string;
+	/** A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared host, for anyone but a super-admin. */
+	readonly hostId?: string;
+	/** The host's name, with its ID. */
+	readonly hostName?: string;
 	/** `head`: it holds the disk's head. `fetching`: it is fetching the head. `older`: it holds only older versions (a sandbox there starts from the newest of them). `none`: it holds none. */
 	readonly state: "head" | "fetching" | "older" | "none";
 	/** The newest version it holds, where it holds one (the head, for `head`). */

@@ -1771,7 +1771,7 @@ describe("disk holders", () => {
 			bytes: 1000,
 			error: "no peer answered",
 		} as const;
-		const tom = setUp({
+		const options: { superAdmin?: boolean } & Parameters<typeof setUp>[0] = {
 			fetchDisk: async () => undefined,
 			mapDigest: () => DIGEST,
 			facts: {
@@ -1780,7 +1780,8 @@ describe("disk holders", () => {
 				),
 				host_b: { features: ["template-sync"], fetches: [failed] },
 			},
-		});
+		};
+		const tom = setUp(options);
 		const { disk, version } = await tom.committed();
 		await tom.api.service.idle();
 		await tom.pool();
@@ -1829,13 +1830,30 @@ describe("disk holders", () => {
 		// The disk: each host of its pool that isn't revoked and may hold the account's data, and what it holds.
 		const listed = await tom.getStickyDisk(disk.id);
 		expect(listed.hosts).toEqual([
-			{ hostId: STUB_HOST_ID, state: "head", version: version.id },
-			{ hostId: "host_b", state: "none" },
-			{ hostId: "host_d", state: "none" },
-			{ hostId: "host_g", state: "fetching" },
+			{ hostId: STUB_HOST_ID, hostName: "stub", state: "head", version: version.id },
+			{ hostId: "host_b", hostName: "host_b", state: "none" },
+			{ hostId: "host_d", hostName: "host_d", state: "none" },
+			{ hostId: "host_g", hostName: "host_g", state: "fetching" },
+		]);
+		// Someone who isn't a super-admin may not be told of the deployment's shared hosts: they are listed unnamed.
+		options.superAdmin = false;
+		expect((await tom.getStickyDisk(disk.id)).hosts).toEqual([
+			{ state: "head", version: version.id },
+			{ state: "none" },
+			{ state: "none" },
+			{ state: "fetching" },
 		]);
 		// A list says nothing of hosts.
 		expect((await tom.listStickyDisks()).items[0]?.hosts).toBeUndefined();
+
+		// One host's view plans its own pool alone, and a pool without sync reads no disks at all.
+		options.superAdmin = true;
+		await tom.api.store.pools.update("pool_b", ({ sync: _sync, ...pool }) => pool);
+		const disksRead = vi.spyOn(tom.api.store.stickyDisks, "list");
+		expect((await tom.getHost("host_c")).sync).toBeUndefined();
+		expect(disksRead).not.toHaveBeenCalled();
+		expect((await tom.getHost("host_g")).sync?.disks).toHaveLength(1);
+		expect(disksRead).toHaveBeenCalledTimes(1);
 	});
 
 	it("has every host of a synced pool fetch its disks' heads in the background, whether or not it ran them", async () => {

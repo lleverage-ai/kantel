@@ -21721,11 +21721,15 @@
 			},
 			"StickyDiskHost": {
 				"type": "object",
-				"required": ["hostId", "state"],
+				"required": ["state"],
 				"properties": {
 					"hostId": {
 						"type": "string",
-						"description": "A host of the disk's pool."
+						"description": "A host of the disk's pool. Absent, with `hostName`, for a host the caller may not be told of: a shared host, for anyone but a super-admin."
+					},
+					"hostName": {
+						"type": "string",
+						"description": "The host's name, with its ID."
 					},
 					"state": {
 						"anyOf": [
