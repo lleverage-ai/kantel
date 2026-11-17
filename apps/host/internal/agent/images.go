@@ -178,10 +178,19 @@ func (h *Host) startImagePatching(kvm bool) {
 	current, _ := store.Current()
 	h.patching.facts.Store(&proto.HostImages{
 		Version: current, Firecracker: images.FirecrackerVersionOf(h.cfg.Firecracker),
-		AutoUpdate: h.cfg.autoUpdateImages(), Signatures: h.cfg.ImageSignatures,
+		// A host on its own image source doesn't follow the welcome's channel.
+		AutoUpdate: h.cfg.autoUpdateImages() && h.cfg.ImageSource == nil, Signatures: h.cfg.ImageSignatures,
 	})
 	h.patching.stop = make(chan struct{})
 	go h.pruneImagesEvery(h.patching.stop, time.Hour)
+	if src := h.cfg.ImageSource; src != nil && h.cfg.autoUpdateImages() {
+		h.log.Info("following the image source instead of the control plane's image channel",
+			"type", src.Type, "url", src.URL, "headersFile", src.HeadersFile, "every", src.interval())
+		if h.cfg.ImageKey == "" && h.cfg.ImageSignatures == images.PolicyRequire {
+			h.log.Warn("imageSource without imageKey: its images are taken only if Kantel's image workflow signed them")
+		}
+		go h.followSourceEvery(h.patching.stop, src.interval())
+	}
 }
 
 func (h *Host) stopImagePatching() {
@@ -194,6 +203,10 @@ func (h *Host) stopImagePatching() {
 // followImages starts a check of the images the control plane wants, in the background: the session never waits on
 // a download.
 func (h *Host) followImages(ctx context.Context, ch *proto.ImageChannel) {
+	if h.cfg.ImagePatching && h.cfg.ImageSource != nil {
+		// The host follows its own source (followSource); the channel's versions aren't the source's.
+		return
+	}
 	if ch != nil {
 		kept := *ch
 		h.patching.channel.Store(&kept)
@@ -231,6 +244,9 @@ func (h *Host) hostImage(ctx context.Context, version string) (string, error) {
 	}
 	if p := u.Store.SandboxImage(version); p != "" {
 		return p, nil
+	}
+	if h.cfg.ImageSource != nil {
+		return h.sourceImage(ctx, version)
 	}
 	ch := h.patching.channel.Load()
 	if ch == nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
@@ -149,10 +150,41 @@ type Config struct {
 	// ImageKey is a cosign public key to check signatures with instead of the identity (an install that builds and
 	// signs its own images).
 	ImageKey string `json:"imageKey,omitempty"`
+	// ImageSource, with image patching on, is a private source of host images the host follows instead of the
+	// control plane's image channel (experimental; unset: off). See ImageSourceConfig.
+	ImageSource *ImageSourceConfig `json:"imageSource,omitempty"`
 	// Cosign is the cosign binary signatures are checked with (default Root/bin/cosign, fetched at start).
 	Cosign string `json:"cosign,omitempty"`
 	// ImagesDir holds the versioned images (default Root/images).
 	ImagesDir string `json:"imagesDir,omitempty"`
+}
+
+// ImageSourceConfig is a private source of host images (images.Source): images Kantel doesn't publish, such as a
+// sandbox image with Chrome for Testing, for the operator's own hosts. Its versions are checked like the channel's:
+// the manifest's signature (against ImageKey, for images the operator signs), every file's digest, then one rename
+// makes the version current for new sandboxes, and every sandbox stays on the version it was made on.
+type ImageSourceConfig struct {
+	// Type is "http" (the default: a directory, local or over HTTPS, with channel.json naming the version) or
+	// "github-release" (a repository's API URL: its latest release is the version).
+	Type string `json:"type,omitempty"`
+	URL  string `json:"url"`
+	// HeadersFile holds the headers every request to URL's origin carries (`Name: value` lines), such as
+	// `Authorization: Bearer …` or a Cloudflare Access service token. It must be mode 600 and belong to the user the
+	// host runs as; otherwise the source isn't followed. Its values are never logged.
+	HeadersFile string `json:"headersFile,omitempty"`
+	// IntervalMinutes is how often the host asks the source for its version (default 60, at least 5).
+	IntervalMinutes int `json:"intervalMinutes,omitempty"`
+}
+
+// interval is how often the source is checked.
+func (c ImageSourceConfig) interval() time.Duration {
+	switch {
+	case c.IntervalMinutes == 0:
+		return time.Hour
+	case c.IntervalMinutes < 5:
+		return 5 * time.Minute
+	}
+	return time.Duration(c.IntervalMinutes) * time.Minute
 }
 
 // MicroVMConfig is the microVM tier's template settings.

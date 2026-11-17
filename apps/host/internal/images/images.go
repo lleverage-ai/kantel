@@ -58,8 +58,16 @@ func isURL(s string) bool {
 }
 
 // Open reads a file from a URL or a directory. A URL's request is made with ctx, so its end (an update's deadline)
-// stops the connection and every read of the body, not only the connect.
+// stops the connection and every read of the body, not only the connect. A context from a Source's Latest or At
+// carries its headers (sent to its origin only) and, for a GitHub release, where each asset is.
 func Open(ctx context.Context, base, rel string) (io.ReadCloser, error) {
+	if r := remoteOf(ctx); r != nil && r.assets != nil && !isURL(rel) {
+		u, ok := r.assets[rel]
+		if !ok {
+			return nil, fmt.Errorf("the release has no asset %s", rel)
+		}
+		return httpGet(ctx, u)
+	}
 	if isURL(rel) {
 		return httpGet(ctx, rel)
 	}
@@ -73,14 +81,25 @@ func Open(ctx context.Context, base, rel string) (io.ReadCloser, error) {
 	return os.Open(filepath.Join(strings.TrimPrefix(base, "file://"), rel))
 }
 
-// httpGet has no timeout of its own (a root filesystem takes a while): ctx bounds it.
+// httpGet has no timeout of its own (a root filesystem takes a while): ctx bounds it. Without a Source's context
+// (the control plane's channel, the installer) a request carries no credentials.
 func httpGet(ctx context.Context, u string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
-	res, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	r := remoteOf(ctx)
+	if r != nil {
+		r.authorize(req)
+		client = r.client()
+	}
+	res, err := client.Do(req)
 	if err != nil {
+		// A source's redirect may be to a signed URL, whose query is a credential of its own: it isn't logged.
+		if ue := (*url.Error)(nil); r != nil && errors.As(err, &ue) {
+			ue.URL = withoutQuery(ue.URL)
+		}
 		return nil, err
 	}
 	if res.StatusCode != 200 {

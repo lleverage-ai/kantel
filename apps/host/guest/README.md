@@ -206,6 +206,85 @@ credential, so serving it there would distribute it). `release.sh --publish` ref
 browser, no workflow sets `KANTEL_BROWSER` (a test in `internal/guest` fails if one does), and the image's
 `THIRD-PARTY-NOTICES.md` says what it bundles and that it may not be redistributed (`cft/notices.md`).
 
+Hosts you run yourself take it in one of two ways: automatically from a private image source (below), or by hand
+through `sandboxImage`.
+
+### From a private image source
+
+A host with `imagePatching` on can follow a private source of host images instead of the control plane's image
+channel: `imageSource` in `/etc/kantel-host/config.json`. It is off unless set. The host asks the source for its
+version every `intervalMinutes` (default 60) and takes a new one as it takes the channel's: it checks the manifest's
+signature against `imageKey` before fetching anything else, checks every file against the manifest's SHA-256, installs
+the version beside the others, and one rename makes it current. Sandboxes stay on the version they were made on; new
+sandboxes, and the templates rebuilt for the new image, start on it. Anything that fails leaves the current images as
+they are and is logged. Pointing the source back at a version the host still has (it keeps the newest two, and any a
+sandbox or snapshot is on) rolls back without downloading the images again.
+
+Build the whole set with `release.sh`, never with `--publish` (which refuses a `cft` build anyway). Without it,
+`release.sh` builds every image the host takes (kernels, the sandbox and isolate images, the guest agent, the isolate
+runtime), writes `manifest.json` with each file's SHA-256, and `SHA256SUMS`:
+
+```sh
+VERSION=cft-157.0.8103.78-1   # letters, digits, . _ and - only; a new one for every build
+KANTEL_BROWSER=cft apps/host/guest/release.sh out "$VERSION"
+apps/host/guest/boot-check-arm64.sh out
+(cd out && sha256sum -c SHA256SUMS)
+```
+
+Sign the manifest with your own key (a `cosign generate-key-pair` key kept off the hosts; each host has only
+`cosign.pub`, as `imageKey`). Kantel's workflow signs its public images keylessly, as its own GitHub workflow, which a
+private build can't be. `cosign` records the signature in Sigstore's public transparency log, as the host's check
+expects: the entry holds the manifest's digest and your public key, not the images.
+
+```sh
+cosign sign-blob --yes --key cosign.key --bundle out/manifest.json.sigstore.json out/manifest.json
+cosign verify-blob --key cosign.pub --bundle out/manifest.json.sigstore.json out/manifest.json
+```
+
+Then upload it where only your hosts can read it. Either:
+
+- **A directory over HTTPS** (`"type": "http"`, the default): any static file server, such as an R2 or S3 bucket
+  behind Cloudflare Access. Upload `manifest.json`, `manifest.json.sigstore.json`, `SHA256SUMS` and the files
+  `release.sh` listed under `<url>/$VERSION/`. Then, last, write `<url>/channel.json` as `{"version": "$VERSION"}`:
+  that is what moves the hosts, so a half-uploaded version is never taken.
+- **A private GitHub repository's releases** (`"type": "github-release"`, `url`
+  `https://api.github.com/repos/<owner>/<repo>`): make a release tagged `$VERSION` with the same files as assets,
+  as a draft, and publish it once every asset is up. Its latest release (never a draft or a prerelease) is the version
+  the hosts take. Assets are fetched through the API by name, with `Accept: application/octet-stream`.
+
+`headersFile` names a file of `Name: value` lines sent with every request to the source's own origin, and nowhere
+else (a redirect to another origin, such as a release asset's storage, goes without them). It must be mode 600 and
+belong to the user kantel-host runs as (root); a file the group or anyone else can read is refused, the reason is
+logged, and the host stays on its images until it's fixed. The values are never logged. The file is read again at
+every check, so a rotated token needs no restart. Headers need an `https://` URL.
+
+```sh
+# Cloudflare Access service token
+printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$ID" "$SECRET" | sudo install -m 600 /dev/stdin /etc/kantel-host/image-source.headers
+# or a GitHub token that can read the repository's contents
+printf 'Authorization: Bearer %s\n' "$TOKEN" | sudo install -m 600 /dev/stdin /etc/kantel-host/image-source.headers
+```
+
+```json
+{
+  "imagePatching": true,
+  "imageKey": "/etc/kantel-host/cosign.pub",
+  "imageSource": {
+    "type": "http",
+    "url": "https://images.example.com/kantel",
+    "headersFile": "/etc/kantel-host/image-source.headers",
+    "intervalMinutes": 60
+  }
+}
+```
+
+Restart kantel-host after changing the config. It logs `following the image source` and, after each version,
+`host images updated`. Remove `imageSource` (and `imageKey`) to go back to Kantel's channel once Debian's Chromium has
+the fix and the public images carry it. The control plane's channel and `kantel-host install` never send the source's
+headers, and a host on a source doesn't follow the channel.
+
+### By hand
+
 Build it locally and copy it to the hosts you run yourself, which boot it through `sandboxImage`:
 
 ```sh
