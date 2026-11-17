@@ -234,6 +234,10 @@ type Config struct {
 	// out-of-memory killer at the host's memory limit: the error its exit is reported with. Called with the sandbox's
 	// lock held, so it mustn't call the tier.
 	ExitCause func() string
+	// OOMKilled says whether the kernel's out-of-memory killer ended a VM's Firecracker, by its PID (the kernel's log,
+	// hostinfo.OOMKilled), whatever limit it hit: its exit, or a VM a restart of the host finds gone, is reported as that
+	// (OOMExit) rather than as an exit or a restart. Nil asks the kernel's log; a test sets its own.
+	OOMKilled func(pid int) bool
 	// Mounts serves sandboxes' read-only bucket mounts; nil refuses a create with mounts.
 	Mounts *mounts.Manager
 	// Bundles is the host's cache of bundle images, for bundle mounts (bundles.go); nil, or BundleDrives 0, refuses
@@ -1178,6 +1182,11 @@ func (m *Manager) adopt() error {
 		if s.meta.State != proto.StateStopped {
 			s.meta.State = proto.StateStopped
 			s.meta.Error = "the host restarted while it ran"
+			// The kernel's out-of-memory killer ended it, which, before kantel-host's unit kept running past such a kill
+			// (OOMPolicy=continue), also restarted the host: that is the cause to report.
+			if s.meta.Pid > 0 && m.oomKilled(s.meta.Pid) {
+				s.meta.Error = OOMExit
+			}
 			// Stamped now: after its machine's start, before any later machine's, so Kantel takes the report of this exit
 			// (the hello's) only for the run that machine was. One already stopped keeps the stamp its exit had.
 			s.healthAt = max(time.Now().UnixMilli(), s.healthAt+1)
@@ -1186,6 +1195,17 @@ func (m *Manager) adopt() error {
 		m.sandboxes[s.meta.ID] = s
 	}
 	return nil
+}
+
+// OOMExit is what a microVM's exit is reported with when the kernel's out-of-memory killer ended its VM.
+const OOMExit = "the host ran out of memory, and the kernel stopped this sandbox's VM to free it"
+
+// oomKilled says whether the kernel's out-of-memory killer ended Firecracker process pid (Config.OOMKilled).
+func (m *Manager) oomKilled(pid int) bool {
+	if m.cfg.OOMKilled != nil {
+		return m.cfg.OOMKilled(pid)
+	}
+	return hostinfo.OOMKilled(pid, "firecracker")
 }
 
 func processAlive(pid int) bool {
@@ -1237,9 +1257,17 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 		s.meta.Error = "the VM exited"
 		if killedFor != "" {
 			s.meta.Error = killedFor
-		} else if m.cfg.ExitCause != nil {
-			if why := m.cfg.ExitCause(); why != "" {
-				s.meta.Error = why
+		} else {
+			// The counted cause is read for every exit the host didn't cause, so a kill the kernel's log names for this VM
+			// is also counted as explained, and doesn't explain another VM's exit later.
+			counted := ""
+			if m.cfg.ExitCause != nil {
+				counted = m.cfg.ExitCause()
+			}
+			if m.oomKilled(machine.Pid()) {
+				s.meta.Error = OOMExit
+			} else if counted != "" {
+				s.meta.Error = counted
 			}
 		}
 		s.meta.Pid = 0

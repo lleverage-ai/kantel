@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -54,6 +55,16 @@ func apiClient(dir string) *http.Client {
 	}}
 }
 
+// OOMScoreAdj is every VM's Firecracker's oom_score_adj: the kernel's out-of-memory killer ends a VM (the largest)
+// before kantel-host or the host's own services, which keep 0. Without it a VM's Firecracker inherits kantel-host's.
+const OOMScoreAdj = 500
+
+// ScoreForOOM sets Firecracker process pid's oom_score_adj to OOMScoreAdj, best effort: a host that refuses it (no
+// /proc, no permission) leaves the kernel's own choice.
+func ScoreForOOM(pid int) {
+	_ = os.WriteFile(filepath.Join("/proc", strconv.Itoa(pid), "oom_score_adj"), []byte(strconv.Itoa(OOMScoreAdj)), 0o644)
+}
+
 // Attach takes over a Firecracker process a previous run of the host started (it is no longer our child, so its
 // exit is noticed by polling).
 func Attach(dir string, pid int) (*Machine, error) {
@@ -64,6 +75,7 @@ func Attach(dir string, pid int) (*Machine, error) {
 		return nil, err
 	}
 	m := &Machine{Dir: dir, pid: pid, http: apiClient(dir), done: make(chan struct{})}
+	ScoreForOOM(pid)
 	go func() {
 		for syscall.Kill(pid, 0) == nil {
 			time.Sleep(time.Second)
@@ -105,6 +117,7 @@ func Launch(ctx context.Context, binary, dir string) (*Machine, error) {
 		return nil, err
 	}
 	m := &Machine{Dir: dir, pid: cmd.Process.Pid, http: apiClient(dir), done: make(chan struct{})}
+	ScoreForOOM(cmd.Process.Pid)
 	_ = os.WriteFile(filepath.Join(dir, PidFile), []byte(fmt.Sprint(cmd.Process.Pid)), 0o600)
 	go func() {
 		m.err = cmd.Wait()

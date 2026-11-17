@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -152,7 +153,7 @@ func (h *Host) admitMemory(vm memplan.VM, held []memplan.VM) error {
 
 // oomExit is what a microVM's exit is reported with when the kernel's out-of-memory killer ended it at the memory
 // limit over-commit gives kantel-host's group (confineMemory): the guard didn't free memory fast enough.
-const oomExit = "the host ran out of memory, and the kernel stopped this sandbox's VM to free it"
+const oomExit = microvm.OOMExit
 
 // oomKills tells the VMs the kernel ended at the host's memory limit (microvm.Config.ExitCause): each kill the group
 // counted since explains one exit the host didn't cause.
@@ -237,7 +238,7 @@ var (
 	outOfMemoryAtLimitEvery = time.Second
 	outOfMemorySettle       = 10 * time.Second
 	outOfMemoryRepeat       = time.Minute
-	vmOOMScoreAdj           = 500
+	vmOOMScoreAdj           = fc.OOMScoreAdj
 )
 
 // memoryGuard acts when the host is short of memory (memplan.Level), over-commit on: reclaim page cache from VMs
