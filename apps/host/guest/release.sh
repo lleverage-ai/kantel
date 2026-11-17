@@ -23,6 +23,11 @@
 # (its BUILD file says so), --publish publishes that build instead of building again: build, check (boot-check-arm64.sh
 # too), merge, publish.
 #
+# KANTEL_BROWSER=cft builds the sandbox image with Google Chrome for Testing in place of Debian's Chromium
+# (guest/Dockerfile, README.md "Chrome for Testing"), for Lleverage's own hosts. Chrome for Testing may not be
+# redistributed, so such a build is never published: BUILD records the browser, and --publish refuses anything but
+# debian, the default.
+#
 # Needs Docker, Go, bun, gzip, git, curl, jq and debugfs (e2fsprogs), and what guest/isolate-runtime.sh needs. About
 # 15 minutes for amd64 on 48 cores from cold; each architecture's images are about 1 GB gzipped. Each asset has to stay under GitHub's 2 GiB limit per
 # release asset; the script checks.
@@ -32,7 +37,13 @@ OUT=${1:?usage: release.sh <out-dir> <tag> [--publish]}
 TAG=${2:?usage: release.sh <out-dir> <tag> [--publish]}
 PUBLISH=${3:-}
 ARCHES=${ARCHES:-amd64 arm64}
+BROWSER=${KANTEL_BROWSER:-debian}
 case "$TAG" in host-images-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;; *) echo "tag: host-images-<yyyymmdd>[.<n>]" >&2; exit 2 ;; esac
+case "$BROWSER" in debian | cft) ;; *) echo "KANTEL_BROWSER is debian or cft, not $BROWSER" >&2; exit 2 ;; esac
+if [ "$PUBLISH" = --publish ] && [ "$BROWSER" != debian ]; then
+	echo "KANTEL_BROWSER=$BROWSER: only Debian's Chromium is published; Chrome for Testing may not be redistributed" >&2
+	exit 1
+fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 MODULE=$(cd "$HERE/.." && pwd)
 mkdir -p "$OUT"
@@ -44,7 +55,8 @@ tree=$(git -C "$MODULE" rev-parse HEAD:apps/host)
 [ -z "$(git -C "$MODULE" status --porcelain -- .)" ] || tree=dirty
 build="tag=$TAG
 arches=$ARCHES
-tree=$tree"
+tree=$tree
+browser=$BROWSER"
 
 if [ "$PUBLISH" = --publish ] && [ "$tree" != dirty ] && [ -f "$OUT/BUILD" ] && [ "$(cat "$OUT/BUILD")" = "$build" ]; then
 	echo "publishing the build already in $OUT (apps/host tree $tree)"
@@ -54,7 +66,7 @@ else
 		case "$arch" in amd64) karch=x86_64 ;; arm64) karch=aarch64 ;; *) echo "unknown arch $arch" >&2; exit 2 ;; esac
 		"$HERE/kernel/build.sh" "$OUT" "$karch"
 		for kind in sandbox isolate; do
-			KANTEL_HOST_VERSION=$TAG "$HERE/rootfs.sh" "$OUT" "$kind" "$arch"
+			KANTEL_HOST_VERSION=$TAG KANTEL_BROWSER=$BROWSER "$HERE/rootfs.sh" "$OUT" "$kind" "$arch"
 		done
 		# The static agent rootfs.sh built, on its own too: a host with injectGuestAgent boots any image with it.
 		cp "$MODULE/dist/kantel-guest-$arch" "$OUT/kantel-guest-$arch"
@@ -95,6 +107,8 @@ done
 set -- "$@" SHA256SUMS
 
 [ "$PUBLISH" = --publish ] || { echo "built in $OUT; publish with: $0 $OUT $TAG --publish"; exit 0; }
+# Never a build of another browser, whatever made it (the check above stops one being made here).
+grep -qx "browser=debian" "$OUT/BUILD" || { echo "$OUT/BUILD isn't a build of Debian's Chromium; it can't be published" >&2; exit 1; }
 commit=$(git -C "$MODULE" rev-parse HEAD)
 git -C "$MODULE" branch -r --contains "$commit" | grep -q . || { echo "commit $commit isn't on origin" >&2; exit 1; }
 # arm64 is published only once boot-check-arm64.sh has passed on this very build (a new build removes its log).

@@ -19,7 +19,8 @@ fit() {
 	# shellcheck disable=SC2046 # "width height"
 	set -- $(xdotool getdisplaygeometry 2>/dev/null) || return 0
 	[ $# -eq 2 ] || return 0
-	for window in $(xdotool search --onlyvisible --class '^(chromium|Chromium|google-chrome|Google-chrome)$' 2>/dev/null); do
+	# Chromium-browser is Chrome for Testing's class (a KANTEL_BROWSER=cft build).
+	for window in $(xdotool search --onlyvisible --class '^(chromium|Chromium|chromium-browser|Chromium-browser|google-chrome|Google-chrome)$' 2>/dev/null); do
 		xprop -id "$window" WM_WINDOW_ROLE 2>/dev/null | grep -q '"browser"' || continue
 		case "$(xdotool getwindowgeometry --shell "$window" 2>/dev/null | tr '\n' ' ')" in
 		*"X=0 Y=0 WIDTH=$1 HEIGHT=$2 "*) ;;
