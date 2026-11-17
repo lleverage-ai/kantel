@@ -688,9 +688,27 @@ export interface StickyDisk {
 	readonly head?: string;
 	/** The newest 20, newest first. */
 	readonly versions: readonly StickyDiskVersion[];
+	/**
+	 * Each host of its pool and what it holds of the disk, as the hosts last reported. Absent where the deployment doesn't
+	 * say (an older control plane), or the disk has no pool yet.
+	 */
+	readonly hosts?: readonly StickyDiskCoverage[];
 	/** The pool it belongs to; absent until it is made in one or first attached. */
 	readonly poolId?: string;
 	readonly createdAt: number;
+}
+
+/**
+ * What a host of a sticky disk's pool holds of it. `head`: the newest version. `fetching`: the newest version, from a
+ * peer. `older`: only older versions (a sandbox there starts from the newest of them). `none`: no version.
+ */
+export interface StickyDiskCoverage {
+	/** Absent, with its name, where the viewer may not see the host (a shared one, for anyone but a super-admin). */
+	readonly hostId?: string;
+	readonly hostName?: string;
+	readonly state: "head" | "fetching" | "older" | "none";
+	/** The newest version it holds, where it holds one. */
+	readonly version?: string;
 }
 
 /** A pool a sticky disk may be in: the account's own, or, for a super-admin, one of the deployment's shared pools. */
@@ -2041,6 +2059,11 @@ export interface Host {
 	 * (its pool's sync is off, or an older host agent) or isn't connected.
 	 */
 	readonly mesh?: HostMesh;
+	/**
+	 * How far it is in syncing its pool's disks from its peers: each sticky disk head it should hold, and its fetches.
+	 * Absent when its pool doesn't sync and it has no fetches.
+	 */
+	readonly sync?: HostSync;
 	/** How far its last move of every sandbox off it has got (`HostEvacuation`). Absent: it has had none. */
 	readonly evacuation?: HostEvacuationProgress;
 }
@@ -2105,6 +2128,8 @@ export interface Pool {
 	readonly default: boolean;
 	/** How many hosts are in it. */
 	readonly hosts: number;
+	/** Its hosts sync disks with each other over the pool's mesh. */
+	readonly sync?: boolean;
 	readonly createdAt: number;
 }
 
@@ -2141,6 +2166,54 @@ export interface HostMeshPeer {
 	readonly endpoint?: string;
 	readonly lastHandshake?: number;
 	readonly rttMs?: number;
+	/** The rate of its last fetch of at least 16 MiB from this peer alone, in bytes a second. */
+	readonly fetchBytesPerSecond?: number;
+}
+
+/**
+ * Where a host stands on one sticky disk head it should hold. `held`: it has it. `fetching`: it's fetching it. `failed`:
+ * its fetch failed (its error is with the fetch), and it's asked again within 10 minutes. `missing`: it's asked to fetch
+ * it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way.
+ * `no-room`: it hasn't the disk free for it. `no-source`: no other host of the pool that can serve it has it.
+ */
+export type HostSyncDiskState = "held" | "fetching" | "failed" | "missing" | "waiting" | "no-room" | "no-source";
+
+export interface HostSyncDisk {
+	readonly diskId: string;
+	readonly name: string;
+	/** The disk's head. */
+	readonly version: string;
+	readonly state: HostSyncDiskState;
+	/** What the head takes on the host it was committed on. */
+	readonly allocatedBytes: number;
+	readonly committedAt: number;
+}
+
+/** A host's fetch from its peers, of any kind, as it last reported it. */
+export interface HostSyncFetch {
+	/** `sticky`, `template`, `rootfs`, `snapshot`, `sandbox` or `sandbox-memory`; a newer host may say another. */
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly state: "queued" | "running" | "failed";
+	/** The version's 4 MiB blocks, and how many it has. */
+	readonly blocks: number;
+	readonly blocksInPlace: number;
+	/** The bytes read from its peers so far: only blocks that differ travel, so it may stay well under `totalBytes`. */
+	readonly bytes?: number;
+	readonly totalBytes: number;
+	readonly error?: string;
+}
+
+/**
+ * How far a host is in syncing its pool's disks. `paused`: why it isn't sent anything now: `draining`, `away` (not
+ * connected), `no-sync` (its host agent doesn't sync, or its mesh isn't up yet).
+ */
+export interface HostSync {
+	readonly paused?: "draining" | "away" | "no-sync";
+	/** Each sticky disk head it should hold, newest commit first. */
+	readonly disks: readonly HostSyncDisk[];
+	readonly fetches: readonly HostSyncFetch[];
 }
 
 /**

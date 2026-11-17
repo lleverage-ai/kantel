@@ -1445,9 +1445,32 @@ export const HOSTS: readonly Host[] = [
 					endpoint: "203.0.113.24:51820",
 					lastHandshake: FIXTURE_NOW - 42_000,
 					rttMs: 0.4,
+					fetchBytesPerSecond: 58_400_000,
 				},
 				{ hostId: "hst_home", path: "none", endpoint: "198.51.100.7:51820", lastHandshake: FIXTURE_NOW - 26 * MINUTE },
 			],
+		},
+		// It holds both of the CI pool's disks.
+		sync: {
+			disks: [
+				{
+					diskId: "sdk_ci_cache",
+					name: "ci-cache",
+					version: "sdv_ci4",
+					state: "held",
+					allocatedBytes: 9.4 * 1024 ** 3,
+					committedAt: FIXTURE_NOW - 40 * MINUTE,
+				},
+				{
+					diskId: "sdk_docker",
+					name: "docker-images",
+					version: "sdv_dk1",
+					state: "held",
+					allocatedBytes: 31.2 * 1024 ** 3,
+					committedAt: FIXTURE_NOW - 2 * DAY,
+				},
+			],
+			fetches: [],
 		},
 	},
 	{
@@ -1478,6 +1501,40 @@ export const HOSTS: readonly Host[] = [
 		}),
 		savedSnapshotLimitBytes: 200 * 1024 ** 3,
 		poolId: "pool_ci",
+		// Draining while it fetches CI's newest cache from hetzner-fsn1-01; nothing new is asked of it.
+		sync: {
+			paused: "draining",
+			disks: [
+				{
+					diskId: "sdk_ci_cache",
+					name: "ci-cache",
+					version: "sdv_ci4",
+					state: "fetching",
+					allocatedBytes: 9.4 * 1024 ** 3,
+					committedAt: FIXTURE_NOW - 40 * MINUTE,
+				},
+				{
+					diskId: "sdk_docker",
+					name: "docker-images",
+					version: "sdv_dk1",
+					state: "held",
+					allocatedBytes: 31.2 * 1024 ** 3,
+					committedAt: FIXTURE_NOW - 2 * DAY,
+				},
+			],
+			fetches: [
+				{
+					kind: "sticky",
+					objectId: "sdk_ci_cache",
+					version: "sdv_ci4",
+					state: "running",
+					blocks: 2407,
+					blocksInPlace: 1590,
+					bytes: 1.1 * 1024 ** 3,
+					totalBytes: 2407 * 4 * 1024 ** 2,
+				},
+			],
+		},
 	},
 	{
 		id: "hst_home",
@@ -1556,6 +1613,10 @@ export const STICKY_DISKS: readonly StickyDisk[] = [
 			diskVersion("sdv_ci2", "hst_hetzner_1", 8.9, 3 * HOUR),
 			diskVersion("sdv_ci1", "hst_hetzner_2", 7.6, 5 * HOUR),
 		],
+		hosts: [
+			{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "head", version: "sdv_ci4" },
+			{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "fetching", version: "sdv_ci3" },
+		],
 		poolId: "pool_ci",
 		createdAt: FIXTURE_NOW - 12 * DAY,
 	},
@@ -1566,6 +1627,10 @@ export const STICKY_DISKS: readonly StickyDisk[] = [
 		sizeGb: 200,
 		head: "sdv_dk1",
 		versions: [diskVersion("sdv_dk1", "hst_hetzner_1", 31.2, 2 * DAY)],
+		hosts: [
+			{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "head", version: "sdv_dk1" },
+			{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "head", version: "sdv_dk1" },
+		],
 		poolId: "pool_ci",
 		createdAt: FIXTURE_NOW - 9 * DAY,
 	},
@@ -1577,6 +1642,11 @@ export const STICKY_DISKS: readonly StickyDisk[] = [
 		sizeGb: 40,
 		head: "sdv_pn2",
 		versions: [diskVersion("sdv_pn2", "hst_home", 2.1, 6 * HOUR), diskVersion("sdv_pn1", "hst_mac", 1.8, 3 * DAY)],
+		// The default pool doesn't sync: the MacBook has only the version committed there.
+		hosts: [
+			{ hostId: "hst_home", hostName: "home-server", state: "head", version: "sdv_pn2" },
+			{ hostId: "hst_mac", hostName: "toms-macbook", state: "older", version: "sdv_pn1" },
+		],
 		poolId: "pool_default",
 		createdAt: FIXTURE_NOW - 20 * DAY,
 	},
@@ -1948,6 +2018,8 @@ function samplePools(kind: "many" | "one" | "long-names", at: (time: number) => 
 		name,
 		default: id === "pool_default",
 		hosts: 0,
+		// The CI pool syncs its hosts' disks over its mesh.
+		...(id === "pool_ci" ? { sync: true } : {}),
 		createdAt: at(FIXTURE_NOW - made),
 	});
 	if (kind === "one") return [pool("pool_default", "default", 30 * DAY)];

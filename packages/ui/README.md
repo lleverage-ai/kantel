@@ -104,7 +104,8 @@ The compute console (`ComputeConsole` and its pages: sandboxes, snapshots, keys,
 OpenTelemetry, the organisation, billing, hosts, sticky disks, base images and the device page) is in `src/compute/`. A sandbox or
 saved snapshot on an outdated base image shows `BaseOutdatedBadge` (`src/compute/base-outdated.tsx`) wherever it's
 listed. An opened host shows its memory with `HostMemoryUsage` (`src/compute/host-memory.tsx`), what takes its disk with
-`HostDiskUsage` (`src/compute/host-disk.tsx`), its mesh peers with `HostPeers` (`src/compute/host-peers.tsx`), and its
+`HostDiskUsage` (`src/compute/host-disk.tsx`), how far it is in syncing its pool's disks with `HostSync` (`src/compute/host-sync.tsx`), its mesh peers with
+`HostPeers` (`src/compute/host-peers.tsx`), and its
 sandboxes moving off it with `HostEvacuationPanel` (`src/compute/host-evacuation.tsx`). The
 Hosts page groups hosts by pool and manages pools with `src/compute/host-pools.tsx`, whose `PoolPicker` New sandbox uses
 too. It calls a `ComputeSource`

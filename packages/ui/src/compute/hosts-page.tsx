@@ -59,6 +59,7 @@ import {
 	PoolPicker,
 	poolGroups,
 } from "./host-pools.tsx";
+import { HostSync } from "./host-sync.tsx";
 import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
 import { lineOf, ROW_SPAN_MS, seriesOf } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline, table, tableFrame } from "./parts.tsx";
@@ -1007,6 +1008,7 @@ function HostRow({
 							<HostGraphs host={host} live={live} />
 							<HostMemoryUsage host={host} />
 							<HostDiskUsage host={host} now={now} />
+							<HostSync host={host} />
 							<HostPeers host={host} names={names} now={now} />
 						</div>
 					</td>
@@ -1092,6 +1094,7 @@ function HostPhoneRow({
 					<HostGraphs host={host} live={live} narrow />
 					<HostMemoryUsage host={host} narrow />
 					<HostDiskUsage host={host} now={now} narrow />
+					<HostSync host={host} narrow />
 					<HostPeers host={host} names={names} now={now} narrow />
 				</div>
 			) : null}

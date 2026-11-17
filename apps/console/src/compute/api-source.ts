@@ -1987,6 +1987,33 @@ function hostOf(host: Host): UiHost {
 							...(peer.endpoint === undefined ? {} : { endpoint: peer.endpoint }),
 							...(peer.lastHandshake === undefined ? {} : { lastHandshake: peer.lastHandshake }),
 							...(peer.rttMs === undefined ? {} : { rttMs: peer.rttMs }),
+							...(peer.fetchBytesPerSecond === undefined ? {} : { fetchBytesPerSecond: peer.fetchBytesPerSecond }),
+						})),
+					},
+				}),
+		...(host.sync === undefined
+			? {}
+			: {
+					sync: {
+						...(host.sync.paused === undefined ? {} : { paused: host.sync.paused }),
+						disks: host.sync.disks.map((disk) => ({
+							diskId: disk.stickyDiskId,
+							name: disk.name,
+							version: disk.version,
+							state: disk.state,
+							allocatedBytes: disk.allocatedBytes,
+							committedAt: disk.committedAt,
+						})),
+						fetches: host.sync.fetches.map((fetch) => ({
+							kind: fetch.kind,
+							objectId: fetch.objectId,
+							version: fetch.version,
+							state: fetch.state,
+							blocks: fetch.blocks,
+							blocksInPlace: fetch.blocksInPlace,
+							...(fetch.bytes === undefined ? {} : { bytes: fetch.bytes }),
+							totalBytes: fetch.totalBytes,
+							...(fetch.error === undefined ? {} : { error: fetch.error }),
 						})),
 					},
 				}),
@@ -2034,7 +2061,14 @@ async function lastEvacuation(read: () => Promise<HostEvacuation>): Promise<UiHo
 }
 
 function poolOf(pool: Pool): UiPool {
-	return { id: pool.id, name: pool.name, default: pool.default, hosts: pool.hosts, createdAt: pool.createdAt };
+	return {
+		id: pool.id,
+		name: pool.name,
+		default: pool.default,
+		hosts: pool.hosts,
+		...(pool.sync === true ? { sync: true } : {}),
+		createdAt: pool.createdAt,
+	};
 }
 
 function hostsSource({ api }: Context): HostsSource {
@@ -2445,6 +2479,19 @@ const stickyDiskOf = (disk: ApiStickyDisk, names: ReadonlyMap<string, string>): 
 			createdAt: version.createdAt,
 		};
 	}),
+	...(disk.hosts === undefined
+		? {}
+		: {
+				hosts: disk.hosts.map((host) => {
+					const hostName = host.hostName ?? (host.hostId === undefined ? undefined : names.get(host.hostId));
+					return {
+						...(host.hostId === undefined ? {} : { hostId: host.hostId }),
+						...(hostName === undefined ? {} : { hostName }),
+						state: host.state,
+						...(host.version === undefined ? {} : { version: host.version }),
+					};
+				}),
+			}),
 	...(disk.poolId === undefined ? {} : { poolId: disk.poolId }),
 	createdAt: disk.createdAt,
 });

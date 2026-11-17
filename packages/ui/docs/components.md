@@ -453,8 +453,9 @@ being read, the pools not read, long names and a phone; the Sandboxes page's `Cr
 
 A host's mesh peers (`src/compute/host-peers.tsx`), under its disk when its row on the Hosts page is opened: each other
 host of its pool by name (its ID where the page has no name for it), whether the host reaches it, the path (direct, or
-none), the endpoint it uses, its last handshake as a relative time and the round trip of its last probe, as the host
-last reported them. A peer is unreachable when its path is none or its last handshake is more than 5 minutes old
+none), the endpoint it uses, its last handshake as a relative time, the round trip of its last probe and the rate of its last
+fetch of at least 16 MiB from the peer (Fetch rate, in bits a second; Not measured before one), as the host last
+reported them. A peer is unreachable when its path is none or its last handshake is more than 5 minutes old
 (`meshPeerReachable`: the host's own 3 minutes and a heartbeat or two); unreachable peers come first, in the error
 colour, and the heading counts them. `narrow` gives a short row per peer instead of the table. A host without a mesh
 (its pool's sync off, or an older host agent) says so plainly, as does one that isn't connected, and one alone on its
@@ -467,6 +468,33 @@ no mesh, not connected, and a phone; all in its stories. Loading and a failed re
 brings the peers.
 
 **Cost:** none: the host sends it with every heartbeat.
+
+### HostSync
+
+A host's sync (`src/compute/host-sync.tsx`), above its peers when its row on the Hosts page is opened: each sticky disk
+head the host should hold (a pool with sync on keeps every host caught up on the disks its pool used in the last 7
+days), its state in words with its status colour (Held, Fetching, Failed, Missing, Queued, No room, No copy to fetch),
+what the head took, and its progress: a fetch's bar (`ProgressBar`, the share of its 4 MiB blocks in place), how much of
+its size is in place and how much has crossed the mesh, and its error; or, for a head it isn't fetching, why. Its other
+fetches (template snapshots and images, saved snapshots, moves) are listed apart below. The heading counts the heads it
+holds; a draining, disconnected or non-syncing host says why it isn't asked for anything new. `narrow` gives a row per
+disk instead of the table. A host whose pool doesn't sync, and that fetches nothing, says so. The pool's heading on the
+Hosts page counts its hosts in sync (`poolSyncText`, with `syncedUp`), and Settings, Disks says which of a disk's pool's
+hosts have its newest version.
+
+**Don't use it for** the mesh's links (`HostPeers`) or what takes a host's disk (`HostDiskUsage`).
+
+**States:** in sync, fetching, failed (with no copy to fetch and no room), draining, empty (no disks, a template copy
+under way), no sync, not connected, long content and a phone; all in its stories. Loading and a failed read are the
+Hosts page's, whose list brings it.
+
+**Cost:** none: the host's view brings it, from the host's last heartbeat and the backfill's plan.
+
+### ProgressBar
+
+How far something has got (`src/compute/parts.tsx`): a thin bar with an accessible name and its value and maximum, its
+width set from the value and never animated, as a live row's must be; `failed` turns it the error colour. For a fetch's
+blocks; `CapacityBar` is for how full something is.
 
 ### HostEvacuationPanel and EvacuateDialog
 
