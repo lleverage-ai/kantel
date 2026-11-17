@@ -222,6 +222,8 @@ export interface HostView {
 	 * says nothing about now. Absent from a host without a mesh (its pool's sync off, or an older host agent).
 	 */
 	readonly mesh?: HostMeshHealth;
+	/** Its fetches from its peers under way or failed (`HostCapacity.fetches`), from its latest report, while connected. */
+	readonly fetches?: readonly HostFetchProgress[];
 	readonly allocated: {
 		readonly sandboxes: number;
 		readonly vcpus: number;
@@ -2128,6 +2130,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			...(reported?.mesh === undefined || state === "unreachable" || state === "revoked"
 				? {}
 				: { mesh: { address: reported.mesh.address, peers: reported.mesh.peers.map((peer) => ({ ...peer })) } }),
+			...(reported?.fetches === undefined || state === "unreachable" || state === "revoked"
+				? {}
+				: { fetches: reported.fetches.map((fetch) => ({ ...fetch })) }),
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
 				vcpus: live.reduce((sum, placement) => sum + placement.vcpus, 0),

@@ -165,16 +165,83 @@ describe("sticky disk backfill", () => {
 		expect(backfillFetches(busy)).toEqual([]);
 	});
 
-	it("counts a head told lately as under way, and doesn't send it again", () => {
-		const disks = ["d1", "d2", "d3"].map((id) => disk(id));
-		const askedLately = (hostId: string, version: string) => hostId === "host_new" && version === "d1_v";
-		const plans = planStickyBackfill(input({ disks, askedLately }));
-		expect(states(plans, "host_new")).toEqual([
+	it("counts heads told lately and not yet reported as under way, wherever they sort, and doesn't send them again", () => {
+		const disks = ["d1", "d2", "d3", "d4"].map((id) => disk(id));
+		// d1 told lately: it takes one of the two, and d2 the other.
+		const first = planStickyBackfill(input({ disks, asked: new Map([["host_new", new Set(["d1_v"])]]) }));
+		expect(states(first, "host_new")).toEqual([
 			["d1", "missing"],
 			["d2", "missing"],
 			["d3", "waiting"],
+			["d4", "waiting"],
 		]);
-		expect(backfillFetches(plans, askedLately).map((send) => send.diskId)).toEqual(["d2"]);
+		expect(backfillFetches(first).map((send) => send.diskId)).toEqual(["d2"]);
+		// The two oldest told lately: newer heads committed since wait for them, rather than going over the two.
+		const older = planStickyBackfill(input({ disks, asked: new Map([["host_new", new Set(["d3_v", "d4_v"])]]) }));
+		expect(states(older, "host_new")).toEqual([
+			["d1", "waiting"],
+			["d2", "waiting"],
+			["d3", "missing"],
+			["d4", "missing"],
+		]);
+		expect(backfillFetches(older)).toEqual([]);
+		// A head told lately and since replaced takes its share too, until the host reports it or the ask lapses.
+		const replaced = planStickyBackfill(
+			input({ disks, asked: new Map([["host_new", new Set(["old_v", "older_v"])]]) }),
+		);
+		expect(backfillFetches(replaced)).toEqual([]);
+		const reported = planStickyBackfill(
+			input({
+				disks,
+				asked: new Map([["host_new", new Set(["old_v", "older_v"])]]),
+				reported: new Map([["host_new", [{ kind: "sticky", objectId: "old", version: "old_v", state: "failed" }]]]),
+			}),
+		);
+		expect(backfillFetches(reported).map((send) => send.diskId)).toEqual(["d1"]);
+	});
+
+	it("tells a host again of a head whose fetch failed, once it isn't asked lately, without counting it under way", () => {
+		const disks = ["d1", "d2", "d3"].map((id) => disk(id));
+		const fetching = [...disks.map((d) => held(d.id, "host_a")), held("d2", "host_new", "fetching")];
+		const failed = new Map([
+			[
+				"host_new",
+				[
+					{ kind: "sticky", objectId: "d2", version: "d2_v", state: "failed" as const },
+					{ kind: "template", objectId: "tsn_1", version: "1", state: "failed" as const },
+				],
+			],
+		]);
+		const plans = planStickyBackfill(input({ disks, holders: fetching, reported: failed }));
+		expect(states(plans, "host_new")).toEqual([
+			["d1", "missing"],
+			["d2", "failed"],
+			["d3", "waiting"],
+		]);
+		expect(backfillFetches(plans).map((send) => send.diskId)).toEqual(["d1", "d2"]);
+		// Told lately: not again until the ask lapses, and, failed, it leaves its share to the next.
+		const asked = planStickyBackfill(
+			input({ disks, holders: fetching, reported: failed, asked: new Map([["host_new", new Set(["d2_v"])]]) }),
+		);
+		expect(states(asked, "host_new")).toEqual([
+			["d1", "missing"],
+			["d2", "failed"],
+			["d3", "missing"],
+		]);
+		expect(backfillFetches(asked).map((send) => send.diskId)).toEqual(["d1", "d3"]);
+		// Running again, it is fetching, and takes its share.
+		const running = planStickyBackfill(
+			input({
+				disks,
+				holders: fetching,
+				reported: new Map([["host_new", [{ kind: "sticky", objectId: "d2", version: "d2_v", state: "running" }]]]),
+			}),
+		);
+		expect(states(running, "host_new")).toEqual([
+			["d1", "missing"],
+			["d2", "fetching"],
+			["d3", "waiting"],
+		]);
 	});
 
 	it("sends nothing to a host that drains, is away, or doesn't sync, but still says what it is missing", () => {

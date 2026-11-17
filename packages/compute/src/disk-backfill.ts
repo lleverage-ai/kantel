@@ -61,12 +61,14 @@ export interface BackfillHost {
  * Where a host stands on one wanted head:
  * - `held`: it holds it.
  * - `fetching`: it reports fetching it (progress is in its last capacity report).
- * - `missing`: it should hold it, and will be told to fetch it.
+ * - `failed`: its fetch of it failed, its partial kept; it is told again (and goes on from the partial) once a retry is
+ *   due and it has room for another fetch.
+ * - `missing`: it should hold it, and is told to fetch it (or was, lately, and hasn't reported it yet).
  * - `waiting`: it should hold it, and will be told once it has fewer fetches under way.
  * - `no-room`: it hasn't the disk free for it and the headroom a fetch must leave.
  * - `no-source`: no other host of the pool that can serve it holds it.
  */
-export type BackfillState = "held" | "fetching" | "missing" | "waiting" | "no-room" | "no-source";
+export type BackfillState = "held" | "fetching" | "failed" | "missing" | "waiting" | "no-room" | "no-source";
 
 export interface BackfillItem {
 	readonly diskId: string;
@@ -76,6 +78,8 @@ export interface BackfillItem {
 	readonly allocatedBytes: number;
 	readonly committedAt: number;
 	readonly state: BackfillState;
+	/** Whether this pass tells the host to fetch it. */
+	readonly send?: true;
 }
 
 /** What one host of a synced pool should hold, and whether it takes part at all. */
@@ -90,6 +94,14 @@ export interface HostBackfill {
 	readonly items: readonly BackfillItem[];
 }
 
+/** A fetch as a host reports it (`HostCapacity.fetches`): enough to tell one under way from one that failed. */
+export interface ReportedFetch {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly state: "queued" | "running" | "failed";
+}
+
 export interface BackfillInput {
 	readonly now: number;
 	/** The pools with sync on. */
@@ -100,10 +112,20 @@ export interface BackfillInput {
 	readonly heads: ReadonlyMap<string, StoredStickyDiskVersion>;
 	/** Each disk's holders, by disk ID, then version. */
 	readonly holders: ReadonlyMap<string, ReadonlyMap<string, readonly StoredDiskHolder[]>>;
-	/** Fetches of other kinds (template snapshots, saved snapshots) each host reports under way, by host ID. */
+	/**
+	 * Each host's fetches of every kind from its last report, by host ID. A host listed here is counted by them: those
+	 * queued or running take its share, and a failed one doesn't. A host not listed (one that doesn't report fetches) is
+	 * counted by its `fetching` holders, of sticky disks and of `otherFetches`.
+	 */
+	readonly reported?: ReadonlyMap<string, readonly ReportedFetch[]>;
+	/** Fetches of other kinds (template snapshots, saved snapshots) each host's holders say are under way, by host ID. */
 	readonly otherFetches?: ReadonlyMap<string, number>;
-	/** Whether a host was told to fetch a version lately (`BACKFILL_RETRY_MS`), by `<host>/<version>`. */
-	readonly askedLately?: (hostId: string, version: string) => boolean;
+	/**
+	 * The sticky disk versions each host was told to fetch lately (`BACKFILL_RETRY_MS`), by host ID. One it hasn't
+	 * reported yet, fetching or held, takes its share whichever disk or version it is, a head since replaced included;
+	 * none is told again.
+	 */
+	readonly asked?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** Whether a host is in a state to fetch from its peers at all, and why not. */
@@ -126,30 +148,41 @@ function serves(host: BackfillHost | undefined, poolId: string): boolean {
 	);
 }
 
+/** Whether a disk is one its pool uses: started on within `STICKY_PREFETCH_MS` of `now`. */
+export function usedLately(disk: StoredStickyDisk, now: number): boolean {
+	const since = now - STICKY_PREFETCH_MS;
+	return Object.values(disk.ranOn ?? {}).some((at) => at > since);
+}
+
 /** The disks a synced pool uses: live, of the pool, with a mapped head, started on within `STICKY_PREFETCH_MS`. */
 export function usedDisks(input: BackfillInput, poolId: string): StoredStickyDisk[] {
-	const since = input.now - STICKY_PREFETCH_MS;
 	return input.disks.filter((disk) => {
 		if (disk.deletedAt !== undefined || disk.poolId !== poolId || disk.head === undefined) return false;
 		if (input.heads.get(disk.id)?.mapDigest === undefined) return false;
-		return Object.values(disk.ranOn ?? {}).some((at) => at > since);
+		return usedLately(disk, input.now);
 	});
 }
 
 /**
  * Each host of each synced pool, with every head it should hold and where it stands on each. Heads are listed newest
- * commit first, which is the order they're fetched in. A host gets `missing` items only up to `BACKFILL_HOST_FETCHES`
- * less the fetches it reports under way (of any kind); the rest are `waiting`. Revoked hosts and hosts of pools without
- * sync aren't listed.
+ * commit first, which is the order they're fetched in. A host is told at most `BACKFILL_HOST_FETCHES` at a time, less
+ * the fetches it has under way of any kind and those it was told lately and hasn't reported; the rest wait. Revoked
+ * hosts and hosts of pools without sync aren't listed.
  */
 export function planStickyBackfill(input: BackfillInput): HostBackfill[] {
 	const byId = new Map(input.hosts.map((host) => [host.id, host]));
-	// What each host is fetching now, of any disk: counted against its share.
+	// What each host's holders say it is fetching, for a host that doesn't report its fetches.
 	const fetchingOn = new Map<string, number>(input.otherFetches ?? []);
+	const heldOn = new Map<string, Set<string>>();
 	for (const versions of input.holders.values()) {
-		for (const holders of versions.values()) {
+		for (const [version, holders] of versions) {
 			for (const holder of holders) {
 				if (holder.state === "fetching") fetchingOn.set(holder.hostId, (fetchingOn.get(holder.hostId) ?? 0) + 1);
+				if (holder.state !== "deleting") {
+					const seen = heldOn.get(holder.hostId) ?? new Set<string>();
+					seen.add(version);
+					heldOn.set(holder.hostId, seen);
+				}
 			}
 		}
 	}
@@ -166,7 +199,25 @@ export function planStickyBackfill(input: BackfillInput): HostBackfill[] {
 			used.set(poolId, disks);
 		}
 		const paused = pausedOf(host);
-		let room = BACKFILL_HOST_FETCHES - (fetchingOn.get(host.id) ?? 0);
+		const reported = input.reported?.get(host.id);
+		const failed = new Set(
+			(reported ?? [])
+				.filter((fetch) => fetch.kind === "sticky" && fetch.state === "failed")
+				.map((fetch) => fetch.version),
+		);
+		const reportedVersions = new Set(
+			(reported ?? []).filter((fetch) => fetch.kind === "sticky").map((fetch) => fetch.version),
+		);
+		const asked = input.asked?.get(host.id) ?? new Set<string>();
+		// Told lately and not reported since, fetching or held: each takes a share until it is, or the ask lapses.
+		const unreported = [...asked].filter(
+			(version) => !reportedVersions.has(version) && heldOn.get(host.id)?.has(version) !== true,
+		).length;
+		const underWay =
+			reported === undefined
+				? (fetchingOn.get(host.id) ?? 0)
+				: reported.filter((fetch) => fetch.state !== "failed").length;
+		let room = BACKFILL_HOST_FETCHES - underWay - unreported;
 		// The disk it can still take: its free disk less what this pass gives it, and the headroom a fetch must leave.
 		let free = host.freeDiskGb === undefined ? Number.POSITIVE_INFINITY : host.freeDiskGb * 1024 ** 3;
 		const items: BackfillItem[] = [];
@@ -184,54 +235,54 @@ export function planStickyBackfill(input: BackfillInput): HostBackfill[] {
 				allocatedBytes: head.allocatedBytes,
 				committedAt: head.createdAt,
 			};
-			if (own !== undefined) {
-				items.push({ ...item, state: own.state === "held" ? "held" : "fetching" });
+			if (own?.state === "held") {
+				items.push({ ...item, state: "held" });
+				continue;
+			}
+			const failing = own !== undefined && failed.has(head.id);
+			if (own !== undefined && !failing) {
+				items.push({ ...item, state: "fetching" });
 				continue;
 			}
 			const source = holders.some(
 				(holder) => holder.state === "held" && holder.hostId !== host.id && serves(byId.get(holder.hostId), poolId),
 			);
 			if (!source) {
-				items.push({ ...item, state: "no-source" });
+				items.push({ ...item, state: failing ? "failed" : "no-source" });
 				continue;
 			}
-			if (free < head.allocatedBytes + BACKFILL_HEADROOM_BYTES) {
+			// A failed fetch's partial already takes its room.
+			if (!failing && free < head.allocatedBytes + BACKFILL_HEADROOM_BYTES) {
 				items.push({ ...item, state: "no-room" });
 				continue;
 			}
-			// One told lately counts as under way, so a pass between the telling and its report doesn't send more.
-			if (input.askedLately?.(host.id, head.id) === true) {
-				room -= 1;
-				free -= head.allocatedBytes;
-				items.push({ ...item, state: "missing" });
+			const state = failing ? "failed" : "missing";
+			// Told lately: counted above, and not told again until the ask lapses.
+			if (asked.has(head.id)) {
+				if (!failing) free -= head.allocatedBytes;
+				items.push({ ...item, state });
 				continue;
 			}
 			if (paused !== undefined || room <= 0) {
-				items.push({ ...item, state: paused === undefined ? "waiting" : "missing" });
+				items.push({ ...item, state: paused !== undefined || failing ? state : "waiting" });
 				continue;
 			}
 			room -= 1;
-			free -= head.allocatedBytes;
-			items.push({ ...item, state: "missing" });
+			if (!failing) free -= head.allocatedBytes;
+			items.push({ ...item, state, send: true });
 		}
 		plans.push({ hostId: host.id, poolId, ...(paused === undefined ? {} : { paused }), items });
 	}
 	return plans;
 }
 
-/**
- * The fetches a plan says to send now: each `missing` item of a host that isn't paused, and that wasn't told it lately.
- * In the plan's order, newest commit first.
- */
+/** The fetches a plan says to send now, in its order, newest commit first. */
 export function backfillFetches(
 	plans: readonly HostBackfill[],
-	askedLately: (hostId: string, version: string) => boolean = () => false,
 ): { readonly hostId: string; readonly diskId: string; readonly version: string }[] {
 	return plans.flatMap((plan) =>
-		plan.paused !== undefined
-			? []
-			: plan.items
-					.filter((item) => item.state === "missing" && !askedLately(plan.hostId, item.version))
-					.map((item) => ({ hostId: plan.hostId, diskId: item.diskId, version: item.version })),
+		plan.items
+			.filter((item) => item.send === true)
+			.map((item) => ({ hostId: plan.hostId, diskId: item.diskId, version: item.version })),
 	);
 }
