@@ -67,6 +67,31 @@ func TestDetectKantelImage(t *testing.T) {
 	}
 }
 
+// A KANTEL_BROWSER=cft image (guest/Dockerfile) has no Debian Chromium: /usr/bin/chromium is an absolute link to Chrome
+// for Testing in /opt/chrome-for-testing, which the image still reports as its browser.
+func TestDetectChromeForTesting(t *testing.T) {
+	root := image(t, map[string]string{
+		"etc/os-release":                                "ID=ubuntu\n",
+		"usr/bin/Xtigervnc":                             "",
+		"usr/local/bin/kantel-desktop":                  "",
+		"usr/local/bin/kantel-browser":                  "",
+		"opt/chrome-for-testing/chrome":                 "",
+		"usr/bin/chromium":                              "->/opt/chrome-for-testing/chrome",
+		"etc/systemd/system/kantel-desktop.service":     "",
+		"usr/lib/systemd/system/kantel-browser.service": "",
+	})
+	if c := Detect(root, "v", "systemd", false); !c.Browser.Available || c.Browser.Detail != "Chromium" {
+		t.Errorf("browser: %+v", c.Browser)
+	}
+	// The link alone, with nothing at its end, is no browser.
+	if err := os.Remove(filepath.Join(root, "opt/chrome-for-testing/chrome")); err != nil {
+		t.Fatal(err)
+	}
+	if c := Detect(root, "v", "systemd", false); c.Browser.Available {
+		t.Errorf("browser without its binary: %+v", c.Browser)
+	}
+}
+
 // The desktop's detail names the session kantel-desktop runs: Kantel's Openbox, the one desktop.env names instead, or
 // in an image from before Openbox (no kantel-session), XFCE's.
 func TestDetectDesktopSession(t *testing.T) {

@@ -31,6 +31,7 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
 and where each part's source is: [`rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md`](rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md),
 at the same path in the image and published beside it. Everything in it may be redistributed; keep it that way (no
 Google Chrome, nothing from Ubuntu's `restricted` or `multiverse`), and update the notices when a component is added.
+The one exception is a private build with Chrome for Testing ("Chrome for Testing" below), which is never published.
 
 The sandbox user is `user` (uid 1000): passwordless sudo, and in the `docker` and `kvm` groups, so it runs
 containers and nested VMs without root.
@@ -185,6 +186,39 @@ KANTEL_GUEST_DOCKERFILE=path/to/Dockerfile apps/host/guest/rootfs.sh out sandbox
 Point a host's `sandboxImage` at the result (or publish it, below). Keep `kantel-init`, the guest agent's unit and
 the `user` account: the host relies on them. The host fingerprints Firecracker, the kernel and the image, and
 rebuilds its templates when any of them changes.
+
+## Chrome for Testing
+
+When Debian's Chromium is behind on a security fix that can't wait (LLE-18651: CVE-2026-125350, exploited in the wild,
+while Debian had no 157), `KANTEL_BROWSER=cft` builds the sandbox image with Google Chrome for Testing in place of
+Debian's Chromium. `debian`, the default, builds as before. The `cft` image has `CFT_VERSION`'s zip (pinned by version
+and SHA-256 in the `Dockerfile`) in `/opt/chrome-for-testing`, without its Widevine CDM, with `/usr/bin/chromium`
+pointing at it, the libraries its `deb.deps` names from Ubuntu, and Chromium's icon. The build fails below
+`CFT_MIN_VERSION`. Everything that looks for `chromium` finds it (`kantel-browser`, `kantel-chromium`, the guest agent's
+capabilities), the window class `Chromium-browser` is matched where Chromium's is, `image.json` records it as
+`chromeForTesting`, and Chromium's sandbox stays on. The daily security refresh doesn't touch it: a newer one is a new
+`CFT_VERSION`.
+
+Chrome for Testing is a flavour of Google Chrome, under Google's terms, which forbid redistributing it
+(GoogleChromeLabs/chrome-for-testing#21). So a `cft` image is **never published**, and never served through a
+control plane (the hosted one's `/v1/hosts/images` and a self-hosted gateway's `KANTEL_COMPUTE_IMAGES` ask no
+credential, so serving it there would distribute it). `release.sh --publish` refuses it, `out/BUILD` records the
+browser, no workflow sets `KANTEL_BROWSER` (a test in `internal/guest` fails if one does), and the image's
+`THIRD-PARTY-NOTICES.md` says what it bundles and that it may not be redistributed (`cft/notices.md`).
+
+Build it locally and copy it to the hosts you run yourself, which boot it through `sandboxImage`:
+
+```sh
+KANTEL_BROWSER=cft apps/host/guest/rootfs.sh out sandbox amd64   # out/sandbox-amd64.ext4
+KANTEL_BROWSER=cft apps/host/guest/rootfs.sh out sandbox arm64   # under QEMU user emulation, about an hour
+apps/host/guest/boot-check-arm64.sh out                           # with out/vmlinux-aarch64 (kernel/build.sh)
+```
+
+On each host, copy `sandbox-<arch>.ext4` to
+`/var/lib/kantel-host/private/sandbox-cft-<CFT_VERSION>-<arch>.ext4`, set `"sandboxImage"` to that path in
+`/etc/kantel-host/config.json`, and restart kantel-host, which makes its templates again for the new image. A
+reinstall keeps an operator's own `sandboxImage`. Remove the setting once Debian's Chromium has the fix and the public
+images carry it.
 
 ## Bucket mounts
 

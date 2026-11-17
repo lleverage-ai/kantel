@@ -1027,6 +1027,16 @@ export function refusedBeforeTheMachine(error: unknown): boolean {
 	return error instanceof KantelError && refusedBeforeMachine.has(error);
 }
 
+/** What a destroy is told of the sandbox besides its ID. */
+export interface DestroyOptions {
+	/**
+	 * The host its record says it is on. A backend with no placement for it (one its host deleted and forgot, whose
+	 * delete's answer was lost) settles it by that host: written off when the host is revoked or gone, deleted there when
+	 * the host answers, and refused while the host can't be reached, so a disk that may still be there isn't forgotten.
+	 */
+	readonly hostId?: string;
+}
+
 export interface SandboxBackend {
 	/** The types, sizes and hosts available now. */
 	capabilities(): Promise<BackendCapabilities>;
@@ -1094,8 +1104,11 @@ export interface SandboxBackend {
 	): Promise<Placement[]>;
 	/** Restarts a sandbox's machine on its disk as it is (or on `fromSnapshot` when the disk is gone); memory is lost. */
 	recover(sandboxId: string, options: BootOptions): Promise<Placement>;
-	/** Lets the machine go for good; its snapshots are deleted separately. */
-	destroy(sandboxId: string): Promise<void>;
+	/**
+	 * Lets the machine go for good; its snapshots are deleted separately. `options.hostId` is the host its record says
+	 * it is on: a backend that no longer has it placed there settles it by that host (`DestroyOptions`).
+	 */
+	destroy(sandboxId: string, options?: DestroyOptions): Promise<void>;
 	/**
 	 * Makes an isolate a microVM with the same ID (`POST /sandboxes/{id}/upgrade`): a machine made as a create of `spec`
 	 * (type `microvm`) would make it, running, with the isolate's `/workspace` in `UPGRADE_WORKSPACE` and `/workspace` a

@@ -11,7 +11,9 @@
  * existing disks are. For those calls the service passes every qualifying host the account may use (online, the
  * type, the labels), and the backend that answers gets the ones among them that are its own. A sandbox neither holds
  * (its create failed, say) isn't sent to `fallback` to be answered as if it were there: it is refused (`NOT_HELD`), and
- * the service makes it again with `create`, which places it as any new sandbox.
+ * the service makes it again with `create`, which places it as any new sandbox. Its destroy goes to `primary`, which
+ * settles it by the host its record names (`DestroyOptions.hostId`): its host may have deleted it and forgotten its
+ * placement before the delete's answer was lost, and `fallback` (a stub) can't speak for an account's host.
  *
  * Templates are each backend's own too: their runtimes are both backends' hosts', a build goes to the backend whose host
  * it names, and a template snapshot is answered by the backend its reference is of (`holdsSnapshot`).
@@ -21,6 +23,7 @@ import type {
 	BackendCapabilities,
 	BackendSize,
 	CreateOutcome,
+	DestroyOptions,
 	MovePlanSpec,
 	MoveSpec,
 	Placement,
@@ -282,10 +285,15 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						return backend.planMove(id, await affine(backend, spec));
 					},
 				}),
-		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.
-		async destroy(id) {
-			madeOnFallback.delete(id);
-			return ((await options.holds(id)) ? primary : fallback).destroy(id);
+		// One `primary` holds is its to destroy, as is one neither holds: `primary` settles that by the host its record names
+		// (written off, deleted there, or refused while that host can't be reached), which `fallback`, a stub, can't speak
+		// for. Without `fallbackHolds`, `fallback` holds everything `primary` doesn't, and answers it.
+		async destroy(id, destroyOptions?: DestroyOptions) {
+			const made = madeOnFallback.delete(id);
+			if (await options.holds(id)) return primary.destroy(id, destroyOptions);
+			if (fallbackHolds !== undefined && !made && !(await fallbackHolds(id)))
+				return primary.destroy(id, destroyOptions);
+			return fallback.destroy(id, destroyOptions);
 		},
 		exec: async (id, request) => (await on(id)).exec(id, request),
 		async killCommand(id, commandId) {

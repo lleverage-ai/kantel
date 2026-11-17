@@ -565,7 +565,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						fallback: stub,
 						holds: async (sandboxId) => (await own.service.sandboxes.placement(sandboxId)) !== undefined,
 						// The stub's are those it placed. One no host holds and the stub never placed (its create on an account's
-						// host failed) isn't revived on the stub: it is made again where its create would put it.
+						// host failed) isn't revived on the stub: it is made again where its create would put it, and its delete
+						// goes to the account's hosts, which settle it by the host its record names.
 						fallbackHolds: async (sandboxId) => (await store.sandboxes.get(sandboxId))?.hostId === STUB_HOST_ID,
 						holdsSnapshot: isHostSnapshotRef,
 					}),
@@ -1308,7 +1309,8 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 				: stub.fork(source, targets);
 		},
 		async destroy(id) {
-			// The stub would answer that it has nothing to delete, and the host's machine would be left running.
+			// The stub would answer that it has nothing to delete, and the host's machine would be left running. With account
+			// hosts on, the routed backend sends a host's sandbox's destroy to the hosts, placed or not; this is with them off.
 			if (await hostBacked(id)) throw onHost();
 			return stub.destroy(id);
 		},

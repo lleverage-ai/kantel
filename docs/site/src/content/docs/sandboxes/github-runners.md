@@ -27,7 +27,7 @@ jobs:
 4. GitHub gives the runner a job with those labels. It isn't always the job that called it up: any runner may take any job its labels match. Kantel counts runners against each kind's queue, so the numbers work out.
 5. When GitHub reports the job `completed`, Kantel deletes the runner's microVM. A runner that no job came for is removed from GitHub and deleted after two minutes with nothing queued for its kind.
 
-A runner is deleted after the kind's `timeoutMinutes` (360 by default), whatever it is doing. If GitHub's `completed` webhook goes missing, Kantel asks GitHub about each busy runner's job every five minutes. Webhooks may come in any order: a job only ever moves forward, from queued to in progress to completed.
+A runner is deleted after the kind's `timeoutMinutes` (360 by default), whatever it is doing. If GitHub's `completed` webhook goes missing, Kantel asks GitHub about each busy runner's job every five minutes. At the same check, a busy runner whose sandbox has gone into `error` (its host lost it, say) is deleted, rather than waiting for GitHub to give up on its job. Webhooks may come in any order: a job only ever moves forward, from queued to in progress to completed.
 
 Kantel answers a webhook once the job is recorded, and makes runners in a pass after it. Webhooks that arrive while a pass runs share the one pass that follows it, so a burst of them doesn't make a pass each.
 

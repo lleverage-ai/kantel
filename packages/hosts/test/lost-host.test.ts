@@ -13,7 +13,7 @@ import {
 	type SandboxBackend,
 	STUB_HOST_ID,
 } from "@kantel/compute";
-import { isKantelError, placementReasonOf } from "@kantel/contracts";
+import { isKantelError, KantelError, placementReasonOf } from "@kantel/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CREATE_LOST, createHostBackend } from "../src/backend.ts";
 import type { HostSandbox } from "../src/protocol.ts";
@@ -710,5 +710,184 @@ describe("a create whose answer was lost, in the compute plane", () => {
 		place();
 		await api.service.idle();
 		expect((await root.getSandbox(id)).state).toBe("running");
+	});
+});
+
+describe("a sandbox whose host deleted it and forgot its placement", () => {
+	/** An API error's code, as the SDK gives it. */
+	const codeOf = (error: unknown) => (error as { code?: unknown } | undefined)?.code;
+
+	/**
+	 * The compute API over an account's host and the stub, routed as a hosted deployment routes them, with a stub that
+	 * refuses to destroy a sandbox its record says is on an account's host (`revivingStub`, apps/cloudflare), and a
+	 * sandbox running on the host.
+	 */
+	async function deleteSetup() {
+		const store = createMemoryHostStore();
+		/** While set, removing a placement waits for it: a store slower than the host's link. */
+		const removals: { gate?: Promise<void> } = {};
+		const slowed = new Proxy(store, {
+			get: (target, name, receiver) => {
+				const value = Reflect.get(target, name, receiver);
+				if (name !== "removePlacementIf" || typeof value !== "function") return value;
+				return async (...args: unknown[]) => {
+					await removals.gate;
+					return value.apply(target, args);
+				};
+			},
+		});
+		const logs: string[] = [];
+		const service = createHostsService({
+			store: slowed,
+			publicUrl: "https://kantel.test",
+			log: (line) => logs.push(line),
+		});
+		services.push(service);
+		const stub = createStubBackend();
+		const refused: string[] = [];
+		const fallback: SandboxBackend = {
+			...stub,
+			async destroy(sandboxId) {
+				refused.push(sandboxId);
+				throw new KantelError(
+					"unavailable",
+					"It is on one of an account's own hosts, which this deployment can't reach now",
+				);
+			},
+		};
+		let records: ReturnType<typeof createComputeApi>["store"] | undefined;
+		const api = createComputeApi({
+			backend: createRoutedBackend({
+				primary: createHostBackend({
+					hosts: service,
+					publicUrl: "https://kantel.test",
+					tickets: createTunnelTickets(createMemoryRelayStore()),
+				}),
+				fallback,
+				holds: async (sandboxId) => (await service.sandboxes.placement(sandboxId)) !== undefined,
+				fallbackHolds: async (sandboxId) => (await records?.sandboxes.get(sandboxId))?.hostId === STUB_HOST_ID,
+				holdsSnapshot: (ref) => ref.startsWith("host_"),
+			}),
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root"
+					? { userId: "usr_root", name: "Root", superAdmin: true }
+					: undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+		});
+		records = api.store;
+		closers.push(() => api.close());
+		service.useJoinTokens(joinTokenSpender(api.store));
+		service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
+		const root = createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const { hostId } = await service.register({ token: (await root.createHostJoinToken({ name: "box" })).token });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		await vi.waitFor(() => expect(host.welcomed()).toBe(true));
+		const { id } = await root.createSandbox({ type: "microvm" });
+		await api.service.idle();
+		expect(await root.getSandbox(id)).toMatchObject({ state: "running", hostId });
+		/** The host deletes the sandbox and says so: its `deleted` event, which forgets the placement. */
+		const hostDeletes = () => {
+			host.sandboxes.delete(id);
+			host.send({
+				type: "event",
+				event: { kind: "sandbox", sandbox: { id, tier: "microvm", size: "default", state: "deleted", createdAt: 1 } },
+			});
+		};
+		return { api, root, service, store, logs, hostId, host, id, refused, hostDeletes, removals };
+	}
+
+	it("is deleted by a delete whose answer was lost after the host's deleted event", async () => {
+		const { api, root, store, host, id, refused, hostDeletes } = await deleteSetup();
+		// The host deletes it and says so, then its link drops before it answers: the host's word stands.
+		host.hold = (method) => {
+			if (method !== "sandbox.delete") return undefined;
+			hostDeletes();
+			return never();
+		};
+		const deleting = root.deleteSandbox(id).catch((caught: unknown) => caught);
+		await vi.waitFor(async () => expect(await store.getPlacement(id)).toBeUndefined());
+		host.connection.closed(1006, "gone");
+		expect(codeOf(await deleting)).toBeUndefined();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("deleted");
+		expect(refused).toEqual([]);
+	});
+
+	it("is deleted when the link drops while the host's deleted event is still being applied", async () => {
+		const { api, root, store, host, id, refused, hostDeletes, removals } = await deleteSetup();
+		let release: () => void = () => undefined;
+		removals.gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		host.hold = (method) => {
+			if (method !== "sandbox.delete") return undefined;
+			hostDeletes();
+			// The link drops at once, before the event's placement removal reaches the store.
+			queueMicrotask(() => host.connection.closed(1006, "gone"));
+			return never();
+		};
+		const deleting = root.deleteSandbox(id).catch((caught: unknown) => caught);
+		await tick();
+		expect(await store.getPlacement(id)).toBeDefined();
+		release();
+		expect(codeOf(await deleting)).toBeUndefined();
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("deleted");
+		expect(refused).toEqual([]);
+	});
+
+	it("still fails a delete whose link dropped with no word from its host, and keeps the sandbox", async () => {
+		const { api, root, store, host, id } = await deleteSetup();
+		host.hold = (method) => (method === "sandbox.delete" ? never() : undefined);
+		const deleting = root.deleteSandbox(id).catch((caught: unknown) => caught);
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true));
+		host.connection.closed(1006, "gone");
+		expect(codeOf(await deleting)).toBe("unavailable");
+		await api.service.idle();
+		expect((await root.getSandbox(id)).state).toBe("error");
+		expect(await store.getPlacement(id)).toBeDefined();
+	});
+
+	it("is deleted, its host asked again, rather than refused by the stub; and kept while its host is offline", async () => {
+		const { api, root, service, store, hostId, host, id, refused, hostDeletes } = await deleteSetup();
+		// Its placement gone, while its record names the host (as a delete that failed before this fix left it).
+		hostDeletes();
+		await vi.waitFor(async () => expect(await store.getPlacement(id)).toBeUndefined());
+		host.connection.closed(1006, "gone");
+		await api.service.idle();
+		// Its host away, it may still have the disk: refused, and kept, until the host can say.
+		const offline = await root.deleteSandbox(id).catch((caught: unknown) => caught);
+		expect(codeOf(offline)).toBe("unavailable");
+		expect((await root.getSandbox(id)).state).toBe("error");
+		const back = new FakeHost(service, hostId);
+		back.connect();
+		await vi.waitFor(() => expect(back.welcomed()).toBe(true));
+		await root.deleteSandbox(id);
+		expect((await root.getSandbox(id)).state).toBe("deleted");
+		expect(back.calls.filter((call) => call.method === "sandbox.delete")).toEqual([
+			{ method: "sandbox.delete", params: expect.objectContaining({ sandboxId: id }) },
+		]);
+		expect(refused).toEqual([]);
+		// Its host holds nothing of it, so the host may move to another pool.
+		expect((await service.get(hostId)).allocated).toMatchObject({ sandboxes: 0 });
+	});
+
+	it("is written off when its host has been revoked", async () => {
+		const { root, service, store, hostId, host, id, refused, logs, hostDeletes } = await deleteSetup();
+		hostDeletes();
+		await vi.waitFor(async () => expect(await store.getPlacement(id)).toBeUndefined());
+		await service.revoke(hostId);
+		await root.deleteSandbox(id);
+		expect((await root.getSandbox(id)).state).toBe("deleted");
+		expect(refused).toEqual([]);
+		expect(host.calls.filter((call) => call.method === "sandbox.delete")).toEqual([]);
+		expect(logs.join("\n")).toMatch(new RegExp(`${id} written off: it has no placement, and its host .* is revoked`));
 	});
 });

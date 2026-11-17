@@ -1132,6 +1132,14 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			if (machine.state === "busy" && t - (machine.checkedAt ?? machine.busyAt ?? t) > JOB_CHECK_EVERY_MS) {
 				const job = jobs.find((candidate) => candidate.jobId === machine.jobId);
 				await store.githubRunnerMachines.update(machine.id, (current) => ({ ...current, checkedAt: t }));
+				// Its sandbox failed under its job (its host lost it, say): its runner can't finish the job, and the sandbox is
+				// deleted now rather than left in error until GitHub gives up on the job.
+				const failed = await failedSandbox(principal, machine);
+				if (failed !== undefined) {
+					await noteError(record, `runner ${machine.id} failed while busy: ${failed}`);
+					await end(lease, record, machine, failed);
+					continue;
+				}
 				// The installation it was registered with: the integration's may have moved to another owner since.
 				const installationId = machine.registration?.installationId ?? record.installationId;
 				if (job !== undefined && installationId !== undefined) {
@@ -1392,6 +1400,26 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			if (machine.commandId === undefined) return undefined;
 			const running = await options.sandboxes.commandRunning(principal, machine.id, machine.commandId);
 			return running === false ? "its runner's command ended" : undefined;
+		} catch (error) {
+			log(`[github-runners] reading runner ${machine.id} failed: ${messageOf(error)}`);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Why a busy runner's sandbox can't run its job, when it is known that it can't: it is gone, or in error. A read that
+	 * fails says nothing, and it is looked at again at the next check.
+	 */
+	async function failedSandbox(
+		principal: KeyPrincipal,
+		machine: StoredGithubRunnerMachine,
+	): Promise<string | undefined> {
+		try {
+			const sandbox = await options.sandboxes.get(principal, machine.id);
+			if (sandbox === undefined || sandbox.state === "deleted") return "its sandbox is gone";
+			if (sandbox.state === "error")
+				return `its sandbox is in error${sandbox.reason === undefined ? "" : `: ${sandbox.reason}`}`;
+			return undefined;
 		} catch (error) {
 			log(`[github-runners] reading runner ${machine.id} failed: ${messageOf(error)}`);
 			return undefined;
