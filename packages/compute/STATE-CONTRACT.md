@@ -124,7 +124,9 @@ go together: the membership and the account; the host registry, the API's host r
 event and its webhook lookup. Writes another record depends on don't: the sandbox is stored before its
 `sandbox.created` event (who may see an event is decided by its sandbox, so an event must never be visible before it),
 and an event before its webhook deliveries (`enqueue(event, written)` queues nothing if the event's write fails). An
-event's outbox record (§5) is written in the event's own batch, so it costs the create no round; the record's insert is
+event's outbox record (§5) is written in the event's own request, so it costs the create no round: one statement in
+Postgres (the event's upsert a data-modifying `WITH`, since a Postgres batch is a request a statement), one batch in D1
+and SQLite; the record's insert is
 conditional on a webhook that wants the event, so an event none wants (the create's, here) needs no statement to clear
 it either. The backend's hosts are read once per create, not
 twice, and without their placements. Nothing written is read back: the host registry answers the placement it wrote,
@@ -198,7 +200,8 @@ across gateways.
   timeout plus 5 s, with `update`. If the dispatcher dies, the delivery falls due again when that lease expires, so a
   delivery is sent at least once and normally exactly once.
 - **Every stored event is delivered (LLE-19603).** An event and its outbox record (`eventOutbox`, the event's ID) are
-  written together or not at all (`eventWrites.put`: one batch in SQL, one turn in memory), when a webhook wants the
+  written together or not at all (`eventWrites.put`: one statement in Postgres, one batch in D1 and SQLite, one turn in
+  memory), when a webhook wants the
   event. Its deliveries are queued once the write has landed, and only then is the record deleted. A record still
   there `OUTBOX_GRACE_MS` (30 s) after its event is one whose gateway died, or failed to queue, in between: any
   dispatcher's `drain()` claims it (leased, as deliveries are), queues the event's deliveries and deletes it. A

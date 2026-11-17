@@ -218,21 +218,41 @@ describe("the dispatcher", () => {
 	});
 });
 
+/** What the driver under a SQL store was asked: one `query` or `batch` is one request to the database. */
+interface Requests {
+	queries: number;
+	batches: number;
+}
+
+const FAILS = { sql: "SELECT no_such_column FROM no_such_table" };
+
 /**
- * A fresh SQL store over `kind`; with `interrupt.next` set, its next batch fails after its own statements have run, so
- * the transaction rolls them back (as `sticky-disks.test.ts`'s).
+ * A fresh SQL store over `kind`, counting its requests in `requests`; with `interrupt.next` set, its next write fails
+ * after its own statements have run (a batch, or a write `query` run in a transaction), so the transaction rolls them
+ * back (as `sticky-disks.test.ts`'s).
  */
-async function sqlStore(kind: TestDatabaseKind, interrupt: { next: boolean }): Promise<ComputeStore> {
+async function sqlStore(
+	kind: TestDatabaseKind,
+	interrupt: { next: boolean },
+	requests: Requests,
+): Promise<ComputeStore> {
 	const database = await kind.open();
 	cleanups.push(() => database.close());
 	await migrateComputeStore(database.driver);
 	const driver: SqlDriver = {
 		dialect: database.driver.dialect,
-		query: (text, params) => database.driver.query(text, params),
+		async query(text, params) {
+			requests.queries += 1;
+			if (!interrupt.next || !/^\s*(WITH|INSERT)\b/i.test(text)) return database.driver.query(text, params);
+			interrupt.next = false;
+			await database.driver.batch([{ sql: text, params }, FAILS]);
+			return [];
+		},
 		async batch(statements) {
+			requests.batches += 1;
 			if (!interrupt.next) return database.driver.batch(statements);
 			interrupt.next = false;
-			await database.driver.batch([...statements, { sql: "SELECT no_such_column FROM no_such_table" }]);
+			await database.driver.batch([...statements, FAILS]);
 		},
 	};
 	return createSqlComputeStore(driver);
@@ -281,8 +301,9 @@ const STORES: readonly { readonly name: string; readonly kind?: TestDatabaseKind
 for (const each of STORES) {
 	const timeout = each.kind?.testTimeoutMs === undefined ? {} : { timeout: each.kind.testTimeoutMs };
 	const interrupt = { next: false };
+	const requests: Requests = { queries: 0, batches: 0 };
 	const open = (): Promise<ComputeStore> =>
-		each.kind === undefined ? Promise.resolve(createMemoryStore()) : sqlStore(each.kind, interrupt);
+		each.kind === undefined ? Promise.resolve(createMemoryStore()) : sqlStore(each.kind, interrupt, requests);
 
 	/** A store with two webhooks that take `sandbox.running`, and dispatchers sending to a fake endpoint. */
 	async function setUp() {
@@ -404,6 +425,17 @@ for (const each of STORES) {
 				expect(await store.events.get(event.id)).toBeUndefined();
 				expect(await store.eventOutbox.get(event.id)).toBeUndefined();
 				expect(await store.deliveries.list()).toEqual([]);
+			});
+
+			it("are recorded with the event in one request to the database", async () => {
+				const { store } = await setUp();
+				const postgres = each.kind?.name.startsWith("Postgres") === true;
+				requests.queries = 0;
+				requests.batches = 0;
+				await store.eventWrites.put(event);
+				expect(await store.eventOutbox.get(event.id)).toBeDefined();
+				// Read back above: one query more. In Postgres the write is one statement, as a batch there is a request a statement.
+				expect(requests).toEqual(postgres ? { queries: 2, batches: 0 } : { queries: 1, batches: 1 });
 			});
 		}
 	});

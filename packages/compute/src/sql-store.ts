@@ -286,8 +286,10 @@ const WEBHOOKS = "webhooks";
 const likeLiteral = (text: string) => text.replace(/[!%_]/g, (char) => `!${char}`);
 
 /**
- * `EventWrites` in SQL: the event's upsert and its outbox record's in one batch (one transaction), so one round trip.
- * The outbox record's is conditional on a webhook that wants the event (`webhookWants`), matched in the same statement
+ * `EventWrites` in SQL: the event's upsert and its outbox record's together, in one database request. In Postgres that
+ * is one statement, the event's upsert a data-modifying `WITH` before the outbox record's, so atomic by itself: a batch
+ * there is `BEGIN`, each statement and `COMMIT`, a request each (`postgresPoolDriver`). Elsewhere it is one batch, which
+ * D1 sends as one request and SQLite runs in-process. The outbox record's is conditional on a webhook that wants the event (`webhookWants`), matched in the same statement
  * on the webhooks' JSON as text: `"accountId":"<account>"`, `"enabled":true` and `"<type>"` (its events list). A string
  * field's quotes are escaped in JSON, so none of these appears inside one; and SQLite's `LIKE` ignores ASCII case, so it
  * may match a webhook it shouldn't, which costs a record and never loses one. As text, not `jsonb`: Postgres can't cast
@@ -306,25 +308,30 @@ function sqlEventWrites(driver: SqlDriver): EventWrites {
 			WHERE kind = ? AND data LIKE ? ESCAPE '!' AND data LIKE ? ESCAPE '!' AND data LIKE ? ESCAPE '!'
 		)
 		ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`;
+	// Postgres runs a `WITH`'s data-modifying statement to completion whether or not the query reads it.
+	const both = `WITH event AS (${upsert})\n${upsertWanted}`;
 	return {
 		async put(event) {
 			const data = JSON.stringify(event);
 			const outbox = eventOutboxOf(event);
+			const eventParams: SqlValue[] = postgres ? [EVENTS, event.id, data] : [EVENTS, event.id, EVENTS, data];
+			const outboxParams: SqlValue[] = [
+				EVENT_OUTBOX,
+				outbox.id,
+				...(postgres ? [] : [EVENT_OUTBOX]),
+				JSON.stringify(outbox),
+				WEBHOOKS,
+				`%${likeLiteral(`"accountId":${JSON.stringify(event.accountId)}`)}%`,
+				'%"enabled":true%',
+				`%${likeLiteral(JSON.stringify(event.type))}%`,
+			];
+			if (postgres) {
+				await driver.query(both, [...eventParams, ...outboxParams]);
+				return;
+			}
 			await driver.batch([
-				{ sql: upsert, params: postgres ? [EVENTS, event.id, data] : [EVENTS, event.id, EVENTS, data] },
-				{
-					sql: upsertWanted,
-					params: [
-						EVENT_OUTBOX,
-						outbox.id,
-						...(postgres ? [] : [EVENT_OUTBOX]),
-						JSON.stringify(outbox),
-						WEBHOOKS,
-						`%${likeLiteral(`"accountId":${JSON.stringify(event.accountId)}`)}%`,
-						'%"enabled":true%',
-						`%${likeLiteral(JSON.stringify(event.type))}%`,
-					],
-				},
+				{ sql: upsert, params: eventParams },
+				{ sql: upsertWanted, params: outboxParams },
 			]);
 		},
 	};
