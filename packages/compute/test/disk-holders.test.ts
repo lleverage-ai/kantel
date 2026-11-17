@@ -1809,6 +1809,7 @@ describe("disk holders", () => {
 		expect(g.sync?.disks).toEqual([
 			{
 				stickyDiskId: disk.id,
+				name: "cache",
 				version: version.id,
 				state: "missing",
 				allocatedBytes: version.allocatedBytes,

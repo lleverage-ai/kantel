@@ -5542,6 +5542,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(plan?.paused === undefined ? {} : { paused: plan.paused }),
 				disks: (plan?.items ?? []).map((item) => ({
 					stickyDiskId: item.diskId,
+					name: item.diskName,
 					version: item.version,
 					state: item.state,
 					allocatedBytes: item.allocatedBytes,

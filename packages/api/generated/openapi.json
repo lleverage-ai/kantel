@@ -18680,11 +18680,15 @@
 			},
 			"HostSyncDisk": {
 				"type": "object",
-				"required": ["stickyDiskId", "version", "state", "allocatedBytes", "committedAt"],
+				"required": ["stickyDiskId", "name", "version", "state", "allocatedBytes", "committedAt"],
 				"properties": {
 					"stickyDiskId": {
 						"type": "string",
 						"description": "The sticky disk."
+					},
+					"name": {
+						"type": "string",
+						"description": "The sticky disk's name."
 					},
 					"version": {
 						"type": "string",

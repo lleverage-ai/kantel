@@ -1364,6 +1364,7 @@ A sticky disk head a host of a synced pool should hold, and where it stands.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `stickyDiskId` | string | yes | The sticky disk. |
+| `name` | string | yes | The sticky disk's name. |
 | `version` | string | yes | Its head, which the host should hold. |
 | `state` | `"held"` or `"fetching"` or `"failed"` or `"missing"` or `"waiting"` or `"no-room"` or `"no-source"` | yes | `held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it. |
 | `allocatedBytes` | integer | yes | What the head takes on the host it was committed on. (minimum 0) |

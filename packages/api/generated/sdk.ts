@@ -1578,6 +1578,8 @@ export interface HostSync {
 export interface HostSyncDisk {
 	/** The sticky disk. */
 	readonly stickyDiskId: string;
+	/** The sticky disk's name. */
+	readonly name: string;
 	/** Its head, which the host should hold. */
 	readonly version: string;
 	/** `held`: it has it. `fetching`: it is fetching it (see `fetches`). `failed`: its fetch failed (see `fetches` for the error), its partial kept, and it is told again within 10 minutes. `missing`: it is told to fetch it on the next pass, or was and hasn't said yet. `waiting`: it will be once fewer of its fetches are under way. `no-room`: it hasn't the disk free for it and the 10 GiB a fetch leaves. `no-source`: no other host of the pool that can serve it has it. */

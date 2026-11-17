@@ -75,6 +75,7 @@ export type BackfillState = "held" | "fetching" | "failed" | "missing" | "waitin
 
 export interface BackfillItem {
 	readonly diskId: string;
+	readonly diskName: string;
 	readonly accountId: string;
 	readonly version: string;
 	/** The version's allocated bytes on the host that committed it: about what a fetch from nothing moves. */
@@ -233,6 +234,7 @@ export function planStickyBackfill(input: BackfillInput): HostBackfill[] {
 			const own = holders.find((holder) => holder.hostId === host.id && holder.state !== "deleting");
 			const item = {
 				diskId: disk.id,
+				diskName: disk.name,
 				accountId: disk.accountId,
 				version: head.id,
 				allocatedBytes: head.allocatedBytes,

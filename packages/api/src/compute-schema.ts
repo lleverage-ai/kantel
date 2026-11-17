@@ -3977,6 +3977,7 @@ export const HostSyncFetch = Type.Object(
 export const HostSyncDisk = Type.Object(
 	{
 		stickyDiskId: Type.String({ description: "The sticky disk." }),
+		name: Type.String({ description: "The sticky disk's name." }),
 		version: Type.String({ description: "Its head, which the host should hold." }),
 		state: Type.Union(
 			[
