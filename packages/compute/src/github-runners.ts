@@ -1252,14 +1252,18 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		if (installationId === undefined) {
 			const found = await app.findInstallation(record.owner);
 			if (found === undefined) return 0;
-			// Bound as the owner's own delivery binds it, unless one did meanwhile.
+			// Bound as the owner's own delivery binds it, unless one did meanwhile, and only while the App and owner are
+			// still those it was found through: changing either clears the installation, and this one isn't theirs.
+			const unchanged = (current: StoredGithubRunners) =>
+				current.retiringAt === undefined &&
+				current.appId === record.appId &&
+				current.owner.toLowerCase() === record.owner.toLowerCase();
 			const bound = await store.githubRunners.update(record.id, (current) =>
-				current.installationId === undefined && current.retiringAt === undefined
-					? { ...current, installationId: found }
-					: undefined,
+				current.installationId === undefined && unchanged(current) ? { ...current, installationId: found } : undefined,
 			);
-			installationId = bound?.installationId ?? (await store.githubRunners.get(record.id))?.installationId;
-			if (installationId === undefined) return 0;
+			const latest = bound ?? (await store.githubRunners.get(record.id));
+			if (latest === undefined || !unchanged(latest) || latest.installationId === undefined) return 0;
+			installationId = latest.installationId;
 			log(`[github-runners] ${record.id}: its App's installation on ${record.owner} is ${installationId}`);
 		}
 		const installation = installationId;
@@ -1324,16 +1328,16 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				)
 				.slice(0, REDELIVERIES_PER_RECONCILE);
 			if (failed.length > 0) {
-				// Noted before it is asked, so each is sent again once: a redelivery that fails too is left, and its job is found
-				// queued on GitHub instead.
-				await store.githubRunners.update(record.id, (current) => {
-					const kept = Object.fromEntries(
-						Object.entries(current.redelivered ?? {}).filter(([, at]) => t - at < QUEUED_JOB_TTL_MS),
-					);
-					for (const delivery of failed) kept[delivery.guid] = t;
-					return { ...current, redelivered: kept };
-				});
 				for (const delivery of failed) {
+					// Noted just before it is asked, so each is sent again once (a redelivery that fails too is left, and its job
+					// is found queued on GitHub instead), and one never asked, as an earlier ask failed, stays due.
+					await store.githubRunners.update(record.id, (current) => {
+						const kept = Object.fromEntries(
+							Object.entries(current.redelivered ?? {}).filter(([, at]) => t - at < QUEUED_JOB_TTL_MS),
+						);
+						kept[delivery.guid] = t;
+						return { ...current, redelivered: kept };
+					});
 					await app.redeliver(delivery.id);
 					log(`[github-runners] ${record.id}: asked GitHub to send failed delivery ${delivery.guid} again`);
 				}

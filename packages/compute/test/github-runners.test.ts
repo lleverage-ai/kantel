@@ -156,6 +156,9 @@ function fakeGithub() {
 	const redelivered: number[] = [];
 	/** The App's installations, by owner. */
 	const installations = new Map<string, number>();
+	/** Deliveries whose redelivery GitHub refuses; and what a lookup of an installation waits for first. */
+	const failRedelivery = new Set<number>();
+	const lookups: { wait?: Promise<void> } = {};
 	return {
 		registered,
 		removed,
@@ -169,8 +172,11 @@ function fakeGithub() {
 		deliveries,
 		redelivered,
 		installations,
+		failRedelivery,
+		lookups,
 		app: () => ({
 			async findInstallation(owner: string) {
+				await lookups.wait;
 				return installations.get(owner);
 			},
 			async listRepositories(_installation: number) {
@@ -184,6 +190,7 @@ function fakeGithub() {
 				return deliveries.filter((delivery) => delivery.deliveredAt >= since);
 			},
 			async redeliver(deliveryId: number) {
+				if (failRedelivery.has(deliveryId)) throw new KantelError("unavailable", "GitHub answered 502");
 				redelivered.push(deliveryId);
 			},
 			async generateJitConfig(
@@ -1305,6 +1312,53 @@ describe("GitHub runners", () => {
 		await settled();
 		expect(github.redelivered).toEqual([11]);
 		expect((await store.githubRunners.get("ghr_one"))?.redelivered).toEqual({ "g-1": expect.any(Number) });
+	});
+
+	it("leaves a failed delivery it never got to ask for due, when an earlier ask fails", async () => {
+		const { job, github, clock, runners, settled, store } = await setUp();
+		github.deliveries.push(
+			{ id: 11, guid: "g-1", event: "workflow_job", installationId: 42, deliveredAt: clock.now },
+			{ id: 15, guid: "g-5", event: "workflow_job", installationId: 42, deliveredAt: clock.now },
+		);
+		github.failRedelivery.add(11);
+		await job("queued", 1);
+		expect(github.redelivered).toEqual([]);
+		// The one asked for is spent; the one after it was never asked, and is asked next time.
+		expect(Object.keys((await store.githubRunners.get("ghr_one"))?.redelivered ?? {})).toEqual(["g-1"]);
+		clock.now += RECONCILE_EVERY_MS;
+		await runners.tick();
+		await settled();
+		expect(github.redelivered).toEqual([15]);
+	});
+
+	it("binds an installation it looked up only while the App and owner are still those it looked up", async () => {
+		const { runners, github, store, settled } = await setUp();
+		github.installations.set("octo-org", 42);
+		let found: () => void = () => undefined;
+		github.lookups.wait = new Promise<void>((resolve) => {
+			found = resolve;
+		});
+		await runners.tick();
+		// The owner changes while GitHub is asked.
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, owner: "new-org" }));
+		found();
+		await settled();
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBeUndefined();
+		expect(github.listed).toEqual([]);
+		// A webhook of the same owner binds it meanwhile: that binding stands.
+		await store.githubRunners.update("ghr_one", ({ reconcileAt: _due, ...current }) => ({
+			...current,
+			owner: "octo-org",
+		}));
+		github.lookups.wait = new Promise<void>((resolve) => {
+			found = resolve;
+		});
+		await runners.tick();
+		await store.githubRunners.update("ghr_one", (current) => ({ ...current, installationId: 77 }));
+		found();
+		await settled();
+		expect((await store.githubRunners.get("ghr_one"))?.installationId).toBe(77);
+		expect(github.listed).toEqual(["octo-org/app"]);
 	});
 
 	it("keeps going when reconciling fails, and tries again when it is next due", async () => {
