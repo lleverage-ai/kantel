@@ -462,6 +462,63 @@ func TestARestartsEndedSandboxIsStamped(t *testing.T) {
 	}
 }
 
+// A VM whose Firecracker the kernel's out-of-memory killer ended is reported stopped for that, not as an exit.
+func TestAnOOMKilledExitIsReportedAsSuch(t *testing.T) {
+	fastHealth(t)
+	ev := &events{}
+	m, s, _, machine := runningSandbox(t, ev)
+	asked := make(chan int, 1)
+	m.cfg.OOMKilled = func(pid int) bool {
+		asked <- pid
+		return pid == machine.Pid()
+	}
+	s.mu.Lock()
+	m.watch(s, machine)
+	s.mu.Unlock()
+	machine.Kill()
+	waitFor(t, "the exit's event", func() bool { return len(ev.all()) == 1 })
+	if got := ev.all()[0]; got.State != proto.StateStopped || got.Error != OOMExit {
+		t.Fatalf("exit event %+v, want stopped with %q", got, OOMExit)
+	}
+	if pid := <-asked; pid != machine.Pid() {
+		t.Fatalf("asked about pid %d, want the machine's %d", pid, machine.Pid())
+	}
+}
+
+// A sandbox a restart of the host finds gone, whose Firecracker the kernel's log says it killed for memory, is stopped
+// with that cause rather than the restart; one it doesn't name keeps the restart's error.
+func TestARestartReportsAnOOMKilledSandboxAsSuch(t *testing.T) {
+	root := t.TempDir()
+	// Past any PID the kernel gives, so the process is never alive here.
+	const killed, other = 1 << 30, 1<<30 + 1
+	for id, pid := range map[string]int{"sbx_oom": killed, "sbx_other": other} {
+		dir := filepath.Join(root, "sandboxes", id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(meta{ID: id, Size: "small", State: proto.StateRunning, Pid: pid})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := &Manager{
+		cfg: Config{Root: root, OOMKilled: func(pid int) bool { return pid == killed }},
+		log: slog.New(slog.DiscardHandler), sandboxes: map[string]*sandbox{},
+	}
+	if err := m.adopt(); err != nil {
+		t.Fatal(err)
+	}
+	if info := m.info(m.sandboxes["sbx_oom"]); info.State != proto.StateStopped || info.Error != OOMExit {
+		t.Fatalf("killed: %+v, want stopped with %q", info, OOMExit)
+	}
+	if info := m.info(m.sandboxes["sbx_other"]); info.Error != "the host restarted while it ran" {
+		t.Fatalf("other: %+v, want the restart's error", info)
+	}
+}
+
 // An exit's stamp is written with the sandbox, so it outlasts restarts of the host: a sandbox adopted already stopped
 // keeps the stamp its exit had, and the next machine's stamps start above it.
 func TestAnExitsStampOutlastsARestart(t *testing.T) {

@@ -151,6 +151,16 @@ func run(args []string) error {
 	prepareCtx, cancelPrepare := context.WithTimeout(context.Background(), 10*time.Minute)
 	agent.PrepareImages(prepareCtx, cfg, FirecrackerVersion, log)
 	cancelPrepare()
+	// Under systemd, a unit an earlier release installed gets this one's settings (OOMPolicy=continue): an update
+	// replaces only the binary.
+	if os.Getenv("INVOCATION_ID") != "" {
+		reload := func() error { return exec.Command("systemctl", "daemon-reload").Run() }
+		if upgraded, err := upgradeUnit(unitPath, reload); err != nil {
+			log.Warn("couldn't bring the kantel-host unit up to date", "path", unitPath, "error", err)
+		} else if upgraded {
+			log.Info("brought the kantel-host unit up to date: a VM the kernel kills for memory no longer restarts the host", "path", unitPath)
+		}
+	}
 	host, err := agent.New(cfg, version, log)
 	if err != nil {
 		return err

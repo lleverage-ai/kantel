@@ -7,7 +7,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -279,5 +282,23 @@ func TestLaunchEndsAFirecrackerLeftInItsDirectory(t *testing.T) {
 	}
 	if err := next.Barrier(context.Background()); err != nil {
 		t.Fatalf("the new one's API: %v", err)
+	}
+}
+
+// A Firecracker this host starts is the kernel's out-of-memory killer's choice before kantel-host: its oom_score_adj is
+// OOMScoreAdj. A process of ours stands in for it.
+func TestScoreForOOM(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skip("no sleep:", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	ScoreForOOM(cmd.Process.Pid)
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(cmd.Process.Pid), "oom_score_adj"))
+	if err != nil {
+		t.Skip("no /proc:", err)
+	}
+	if got := strings.TrimSpace(string(raw)); got != strconv.Itoa(OOMScoreAdj) {
+		t.Fatalf("oom_score_adj %s, want %d", got, OOMScoreAdj)
 	}
 }

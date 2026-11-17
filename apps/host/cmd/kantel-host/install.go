@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,8 +36,34 @@ const (
 )
 
 // The service: VMs are in their own process groups and KillMode=process leaves them running across a restart or an
-// update; the next run adopts them.
+// update; the next run adopts them. Their Firecrackers are in the unit's control group, so OOMPolicy=continue keeps the
+// unit running when the kernel's out-of-memory killer ends one of them: by default (stop) systemd fails the unit and
+// restarts kantel-host, dropping its connection, for the loss of one VM.
 const unit = `[Unit]
+Description=Kantel host: runs Kantel sandboxes (microVMs and isolates)
+Documentation=https://kantel.dev/docs/hosts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kantel-host run
+Restart=always
+RestartSec=2
+KillMode=process
+OOMPolicy=continue
+LimitNOFILE=1048576
+TasksMax=infinity
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// previousUnits are the unit texts earlier releases installed, exactly: a run finding one of them brings it up to
+// `unit` (upgradeUnit), since an update replaces only the binary. A unit an operator changed is never one of them.
+var previousUnits = []string{unitBeforeOOMPolicy}
+
+// unitBeforeOOMPolicy is the unit every release installed until OOMPolicy=continue.
+const unitBeforeOOMPolicy = `[Unit]
 Description=Kantel host: runs Kantel sandboxes (microVMs and isolates)
 Documentation=https://kantel.dev/docs/hosts
 After=network-online.target
@@ -53,6 +80,26 @@ TasksMax=infinity
 [Install]
 WantedBy=multi-user.target
 `
+
+// upgradeUnit rewrites the systemd unit at path to `unit` when it is one an earlier release installed
+// (previousUnits), and has systemd read it again (reload): the running service takes the new settings without a
+// restart. Answers whether it did.
+func upgradeUnit(path string, reload func() error) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !slices.Contains(previousUnits, string(raw)) {
+		return false, nil
+	}
+	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
+		return false, err
+	}
+	return true, reload()
+}
 
 type labelFlag map[string]string
 
