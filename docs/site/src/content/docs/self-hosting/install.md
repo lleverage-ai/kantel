@@ -185,6 +185,12 @@ Then run the installer with `--upgrade`, as in [Your own settings](#your-own-set
 
 With [sticky disks](/sandboxes/sticky-disks/) on, the control plane also keeps the key it signs hosts' disk fetch grants with sealed with `KANTEL_SECRETS_KEY`. To replace that grant key, if you think it has leaked, run `kantel-admin grant-key rotate` (or `POST /v1/admin/grant-key/rotate`): connected hosts get the new key at once, it signs grants from 3 minutes later, and hosts accept the old one for 16 minutes after that, so fetches under way finish. If the secrets key changes, the first gateway that can't open the grant key as it signs a grant replaces it, with a new key that signs at once; change the secrets key on every gateway together, as gateways with different secrets keys can't sign with each other's grant keys. Update the control plane before hosts: a host on an older kantel-host holds one key, takes the new one when it begins signing, and asks again for a grant only for a fetch already under way.
 
+## When the database restarts
+
+The gateway rides out a Postgres restart or failover without being restarted itself. While the database is away, calls fail within a few seconds instead of hanging; once it's back, or once its address points at the new primary, the gateway drops the connections it had (including any to an old primary that's now read-only) and serves again. A batch of changes whose commit may already have reached the database when the connection broke isn't sent again: the call fails and says so. A gateway that starts while the database is down waits for it, retrying with backoff for as long as it takes, rather than exiting.
+
+The [database settings](#your-own-settings) control how long it waits. A `-c` setting in the database URL's `options` wins over them.
+
 ## Your own settings
 
 The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upgrades keep. The ones you're most likely to want:
@@ -208,6 +214,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_EGRESS_ATTRIBUTION_KEY` | The secret hosts sign the [`Kantel-Sandbox` and `Kantel-Account` headers](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy) with |
 | `KANTEL_SECRETS_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`) that environments' [protected values and secret files](/sandboxes/environments/) are encrypted with, and, with sticky disks on, the key the control plane signs hosts' disk fetch grants with. Without it, an install with a database refuses protected values and signs no grants. Losing it loses them, and changing it isn't supported yet |
 | `KANTEL_REPLICA_URL` | With several gateways, where the others reach this one on your private network, such as `http://10.0.3.7:8080` |
+| `KANTEL_DATABASE_CONNECT_TIMEOUT_MS`, `KANTEL_DATABASE_STATEMENT_TIMEOUT_MS`, `KANTEL_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS`, `KANTEL_DATABASE_KEEPALIVE_MS` | How long the gateway waits on Postgres, in milliseconds, `0` for no limit: to connect or get a free connection (default `5000`), for a statement (default `30000`; the gateway gives up on an unanswered one 5 seconds later), in an idle transaction (default `30000`), and the idle time before TCP keepalive starts (default `10000`). See [When the database restarts](#when-the-database-restarts) |
 | `KANTEL_HOST_VERSION`, `KANTEL_HOST_UPDATE_URL` | The `kantel-host` version hosts should run, and where they get it. See [Update a host](/hosts/#update-a-host) |
 | `KANTEL_HOST_RELEASES` | Where the latest `kantel-host` release is read, to mark out-of-date hosts in the console. Default Kantel's latest GitHub Release; `off` reads none. See [Update a host](/hosts/#update-a-host) |
 | `KANTEL_RELEASE_CHECK_TOKEN` | A secret of 32 characters or more (`openssl rand -hex 32`) that `POST /v1/hosts/releases/check` takes as its bearer, to read the latest release now rather than within the hour. Unset, those calls are refused. See [Check for updates now](/hosts/#check-for-updates-now) |
