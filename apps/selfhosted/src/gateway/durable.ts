@@ -44,6 +44,12 @@ export interface DurableConfig {
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
+/**
+ * The advisory lock `CREATE SCHEMA` takes, so gateways starting together on an empty database don't race to create it:
+ * two `CREATE SCHEMA IF NOT EXISTS` at once can both try, and one fail. Each component's migration takes a lock of its
+ * own (audit 7316102022, identity 7316102023, compute 7316102020, hosts 7316102024, relay 7316102021).
+ */
+const SCHEMA_LOCK = 7316102025;
 
 /**
  * The connection settings for `databaseUrl`, with `search_path` set for every connection: audit's and identity's tables
@@ -71,7 +77,10 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const setup = new pg.Client({ connectionString: config.databaseUrl });
 		await setup.connect();
 		try {
+			await setup.query("BEGIN");
+			await setup.query(`SELECT pg_advisory_xact_lock(${SCHEMA_LOCK})`);
 			await setup.query(`CREATE SCHEMA IF NOT EXISTS ${config.schema}`);
+			await setup.query("COMMIT");
 		} finally {
 			await setup.end();
 		}

@@ -404,9 +404,15 @@ export function hostsSchema(dialect: SqlDriver["dialect"]): string[] {
 	];
 }
 
-/** Creates the registry's tables if they are missing. */
+/**
+ * Creates the registry's tables if they are missing, in one batch. On Postgres it takes an advisory lock first, so
+ * replicas starting together don't race to create them (`migrateRelay` takes its own).
+ */
 export async function migrateHosts(driver: SqlDriver): Promise<void> {
-	await driver.batch(hostsSchema(driver.dialect).map((text) => ({ sql: text })));
+	const statements = hostsSchema(driver.dialect).map((text) => ({ sql: text }));
+	await driver.batch(
+		driver.dialect === "postgres" ? [{ sql: "SELECT pg_advisory_xact_lock(7316102024)" }, ...statements] : statements,
+	);
 }
 
 const parse = <T>(row: Record<string, unknown>): T => JSON.parse(String(row.data)) as T;
