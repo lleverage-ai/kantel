@@ -373,6 +373,44 @@ describe("place", () => {
 		expect(run(true, 4, 32)).toEqual({ counts: { "ci-1": 8, "ci-4": 8, "ci-5": 8, "ci-6": 8 }, widest: 1 });
 	});
 
+	it("holds a balanced pool's restore to the emptiest of every host, not to the fresh boot's host the heads chose", () => {
+		// Cerbie's case: a 1-vCPU create on three 32-CPU hosts with memory to spare. The snapshot's holder has 2 vCPUs
+		// booked (0.09 with it placed), a host without it holding the sticky head 1 (0.06), and another nothing (0.03).
+		const big = {
+			...facts,
+			cpus: 32,
+			memoryMiB: 131_072,
+			sizes: [{ name: "one", vcpus: 1, memoryMiB: 512, diskGiB: 10 }],
+		};
+		const request = { tier: "microvm", size: "one", stickyDisks: [{ diskId: "sdk_ci", version: "sdv_2" }] } as const;
+		const host = (id: string, booked: number, heads: boolean) =>
+			candidate(
+				id,
+				{
+					facts: big,
+					capacity: {
+						...capacity(131_000).capacity,
+						stickyDisks: heads
+							? [{ diskId: "sdk_ci", versions: [{ version: "sdv_2", allocatedBytes: 1, at: 1 }] }]
+							: [],
+					},
+				},
+				{ bookedVcpus: booked, balanced: true },
+			);
+		const restore = place(request, [host("holder", 2, false)]);
+		const fresh = place(request, [host("heads", 1, true), host("empty", 0, false)]);
+		if (isRefusal(restore) || isRefusal(fresh)) throw new Error("refused");
+		// Within its own group the heads win (0.06 against 0.03, inside a twentieth)...
+		expect([fresh.host.id, fresh.fullness, fresh.emptiest]).toEqual(["heads", 0.06, 0.03]);
+		// ...but the restore at 0.09 is more than a twentieth over the emptiest of all (0.03), so it boots fresh.
+		expect(restore.fullness).toBe(0.09);
+		expect(bootsFreshInstead(restore, fresh)).toBe(true);
+		// A holder within a twentieth of that emptiest still restores.
+		const near = place(request, [host("holder", 1, false)]);
+		if (isRefusal(near)) throw new Error("refused");
+		expect(bootsFreshInstead(near, fresh)).toBe(false);
+	});
+
 	it("lets a balanced pool's heads win only between hosts within a twentieth of the emptiest", () => {
 		const holding = (id: string, free: number, balanced: boolean) =>
 			candidate(

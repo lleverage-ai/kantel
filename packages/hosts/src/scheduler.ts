@@ -122,6 +122,11 @@ export interface Placement {
 	readonly maxVcpus?: number;
 	/** Its host's pool's placement is balanced (`Candidate.balanced`), as `bootsFreshInstead` reads it. */
 	readonly balanced?: boolean;
+	/**
+	 * How full the emptiest host that could take it would be with it placed, of the hosts this placement chose among:
+	 * `bootsFreshInstead` holds a balanced pool's restore to the emptiest of both its groups.
+	 */
+	readonly emptiest?: number;
 }
 
 /** No host can take it: why, in words, and as a `PlacementReason`. */
@@ -407,6 +412,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		fullness: best.fullness,
 		...(maxVcpus === undefined ? {} : { maxVcpus }),
 		...(best.candidate.balanced === true ? { balanced: true } : {}),
+		emptiest,
 	};
 }
 
@@ -446,7 +452,7 @@ export const muchFuller = (fuller: number, emptier: number): boolean =>
  */
 export const bootsFreshInstead = (restore: Placement, fresh: Placement): boolean =>
 	restore.balanced === true
-		? !nearEmptiest(restore.fullness, fresh.fullness)
+		? !nearEmptiest(restore.fullness, Math.min(restore.emptiest ?? restore.fullness, fresh.emptiest ?? fresh.fullness))
 		: muchFuller(restore.fullness, fresh.fullness);
 
 /**
