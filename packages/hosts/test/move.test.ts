@@ -46,6 +46,9 @@ async function setup(
 		store,
 		publicUrl: "https://kantel.test",
 		log: () => undefined,
+		// The fake hosts beat only when a test has them (once a faked minute in a slow copy), not every 15 s as kantel-host
+		// does, so the heartbeat deadline (heartbeat-deadline.test.ts) would cut them off mid-move.
+		heartbeatDeadlineMs: 0,
 		...(options.now === undefined ? {} : { clock: { now: options.now } }),
 		...(options.moveReconnectWaitMs === undefined ? {} : { moveReconnectWaitMs: options.moveReconnectWaitMs }),
 	});

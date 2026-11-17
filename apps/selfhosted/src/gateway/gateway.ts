@@ -3,6 +3,7 @@
 //
 //   an exposed port's name      a sandbox's exposed port (compute.ts), before any other route
 //   /healthz                    liveness, no credentials
+//   /readyz                     readiness, no credentials: 200 once the database answers within READY_TIMEOUT_MS, else 503
 //   /auth/otp/start, /verify    email one-time PIN sign-in (@kantel/identity/otp/http), no credentials, limited per
 //   /auth/session/end           client address; it issues Kantel sessions (`kts_…`), which every API below accepts
 //   /auth/oauth/<provider>/...  sign-in with GitHub and Google (@kantel/identity/oauth), for each provider whose OAuth
@@ -92,6 +93,8 @@ export interface GatewayOptions {
 	 * route, and nothing else answers that name. `undefined` for every other name.
 	 */
 	readonly computePorts?: (request: Request, client?: ClientInfo) => Promise<Response | undefined>;
+	/** How long `/readyz` waits for the components to answer (`GatewayComponents.ready`). Default `READY_TIMEOUT_MS`. */
+	readonly readyTimeoutMs?: number;
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -122,6 +125,9 @@ const NO_MAILER: OtpMailer = {
 		throw new Error("Sign-in by email is not set up on this deployment");
 	},
 };
+
+/** How long `/readyz` waits for the database before it says the gateway isn't ready. */
+export const READY_TIMEOUT_MS = 2_000;
 
 /** 30 sign-in requests per client address per 15 minutes: room for a few people mistyping codes. */
 export const SIGN_IN_LIMIT: AddressLimitOptions = { requests: 30, windowMilliseconds: 15 * 60 * 1000 };
@@ -190,6 +196,37 @@ export function createGateway(options: GatewayOptions): Gateway {
 		json({ target: "selfhosted", bindings: components.bindings, mail: options.mail ?? null }),
 	);
 
+	// Readiness: whether this gateway can serve calls now, for a load balancer or orchestrator to route by. `/healthz`
+	// stays liveness, so a gateway whose database is down is taken out of rotation, not restarted. Without credentials,
+	// the answer gives no more than which part failed; the log has the error, once each time readiness changes.
+	const readyTimeout = options.readyTimeoutMs ?? READY_TIMEOUT_MS;
+	let wasReady = true;
+	const readiness = async (): Promise<Response> => {
+		if (components.ready === undefined) return json({ ok: true });
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const failure = await Promise.race([
+			components.ready().then(
+				() => undefined,
+				(error: unknown) => ({
+					reason: "The database refused the check",
+					detail: error instanceof Error ? error.message : String(error),
+				}),
+			),
+			new Promise<{ reason: string; detail: string }>((resolve) => {
+				const reason = `The database didn't answer within ${readyTimeout} ms`;
+				timer = setTimeout(() => resolve({ reason, detail: reason }), readyTimeout);
+			}),
+		]).finally(() => clearTimeout(timer));
+		if (failure === undefined) {
+			if (!wasReady) console.error("[gateway] ready again: the database answers");
+			wasReady = true;
+			return json({ ok: true });
+		}
+		if (wasReady) console.error(`[gateway] not ready: ${failure.detail}`);
+		wasReady = false;
+		return json({ ok: false, error: { code: "unavailable", message: failure.reason } }, 503);
+	};
+
 	const consoleAssets = options.consoleDir === undefined ? undefined : createStaticHandler(options.consoleDir);
 	const consoleOrigins = options.publicOrigin === undefined ? [] : [options.publicOrigin];
 
@@ -202,6 +239,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 					if (answer !== undefined) return answer;
 				}
 				if (path === "/healthz") return json({ ok: true });
+				if (path === "/readyz") return await readiness();
 				// The request URL here is always http:, so the same host over https (TLS ended in front) is the console too.
 				const crossSite = crossSiteRefusal(request, { origins: consoleOrigins, httpsTwin: true });
 				if (crossSite !== undefined) return crossSite;

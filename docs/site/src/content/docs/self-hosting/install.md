@@ -105,6 +105,8 @@ curl -s "$KANTEL_URL/v1/me" -H "authorization: Bearer $KANTEL_API_KEY"
 
 `/healthz` answers `{"ok":true}` without a key. `/v1/me` answers with who the key acts as.
 
+`/healthz` only says the gateway's process is running. `/readyz`, also without a key, says whether the gateway can serve calls: it answers `{"ok":true}` once its database answers, and `503` with `{"ok":false,...}` when the database refuses or takes longer than 2 seconds. The gateway's log has the error. Point a load balancer's health check at `/readyz`, so a gateway that has lost its database stops getting traffic, and keep restarts on `/healthz`.
+
 In fish, set the variables with `set -x KANTEL_URL http://127.0.0.1:58090` instead of `export`.
 
 ## The compute API

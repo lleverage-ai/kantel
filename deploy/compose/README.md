@@ -42,6 +42,7 @@ from email one-time PIN sign-in:
 | `/v1/audit/events`, `/v1/audit/event` | Audit queries (`@kantel/audit/http`) |
 | `/v1/deployment` | Which implementation backs each contract |
 | `/healthz` | Liveness, no credentials |
+| `/readyz` | Readiness, no credentials: 503 while the database doesn't answer within 2 s |
 | any other `/v1/...` path | 404 |
 | anything else | The console (`apps/console`) |
 

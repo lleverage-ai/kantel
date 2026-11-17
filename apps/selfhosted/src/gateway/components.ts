@@ -69,6 +69,11 @@ export interface GatewayComponents {
 	readonly cluster?: GatewayCluster;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
+	/**
+	 * Resolves once what the gateway serves from answers, its database: `/readyz` (gateway.ts), which bounds the wait.
+	 * Rejects with why not. Absent in memory, where there is nothing to wait for.
+	 */
+	ready?(): Promise<void>;
 	close(): Promise<void>;
 }
 

@@ -286,6 +286,8 @@ host_u7nfa06bgsim  builder-1  online  dev      microvm  1          just now
 
 A host is `online`, `draining`, `unreachable` (registered, but not connected now) or `revoked`. `host info` adds its machine, whether it has KVM, its labels and when it joined.
 
+A connected host sends a heartbeat every 15 seconds. If nothing at all arrives from a host for three heartbeats (45 seconds), for example because the network between it and Kantel drops packets without closing the connection, Kantel closes the connection. The host then shows as `unreachable`, and calls to it fail straight away instead of waiting for their own timeouts. The host's sandboxes keep running, and the host reconnects as soon as it can reach Kantel again.
+
 Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each running sandbox's CPU and memory, and a microVM's disk and IO pressure. It measures CPU and memory from its own side and runs nothing in a sandbox to do it; only the guest knows its disk and IO, so its agent answers those:
 
 - A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is what the guest itself counts as used, its total less its available memory, as `free -m` shows it in the guest. The guest's kernel reports those figures to Firecracker through a virtio-balloon device that only reports (it never takes memory from the guest), and the host reads them from Firecracker, so nothing runs in the sandbox. Page cache isn't counted, and the figure falls when the guest frees memory.
