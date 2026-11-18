@@ -288,7 +288,6 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 			onHostLost: "recreate",
 			wrap: (backend) => ({
 				...backend,
-				capabilities: backend.capabilities.bind(backend),
 				create: async (spec) => {
 					// The first create over the lost host's fence never reaches a host: its gateway went.
 					if (spec.replacesLost !== undefined && dropped === 0) {
@@ -311,6 +310,37 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(b?.hostId);
 		await pass(LOST_AFTER_MS + 1_000);
 		expect((await api.store.sandboxes.get(sandbox.id))?.recreating).toBeUndefined();
+	});
+
+	it("is made again by the sweep where its create was never sent and its lost host came back and deleted its copy", async () => {
+		let dropped = 0;
+		const { api, root, service, b, sandbox, pass, save, a, reconnectA } = await setup({
+			onHostLost: "recreate",
+			wrap: (backend) => ({
+				...backend,
+				create: async (spec) => {
+					if (spec.replacesLost !== undefined && dropped === 0) {
+						dropped += 1;
+						throw createOutcomeUnknown(new KantelError("unavailable", "gateway gone"));
+					}
+					return backend.create(spec);
+				},
+			}),
+		});
+		await save("kept");
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(dropped).toBe(1);
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "starting" });
+		// Host a is back before the sweep tries it again: its fenced copy is deleted, and its placement with it.
+		const back = await reconnectA();
+		await vi.waitFor(() => expect(back.sandboxes.has(sandbox.id)).toBe(false));
+		await api.service.idle();
+		expect(await service.sandboxes.placement(sandbox.id)).toBeUndefined();
+		await pass(UPGRADE_STALE_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(b?.hostId);
+		expect(b?.host.calls.filter((call) => call.method === "sandbox.create")).toHaveLength(1);
 	});
 
 	it("keeps a create admitted on the other host, its answer lost, for that host's word, across its reconnection", async () => {

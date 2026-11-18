@@ -1088,6 +1088,13 @@ export interface SandboxBackend {
 	 */
 	fencedOn?(sandboxId: string): Promise<(HostSandboxRef & { readonly hostId: string }) | undefined>;
 	/**
+	 * Whether a create of a sandbox's `attempt` was admitted on a host and holds its placement there, not under a lost
+	 * host's fence: its outcome is that host's to say (`settleCreate`), so it is never planned again over it. False where
+	 * none was (never sent, refused, or its placement gone or still a lost host's fenced copy). Absent: not known, so a
+	 * create sent again is the backend's to refuse (`conflict`).
+	 */
+	createAdmitted?(sandboxId: string, attempt: number): Promise<boolean>;
+	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).
 	 */
