@@ -556,6 +556,33 @@ describe("what a loss covers", () => {
 		expect(events).toMatchObject([{ id: eventId }]);
 	});
 
+	it("never deletes its own copy on return while its record isn't lost, though its intent is dropped meanwhile", async () => {
+		const { api, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId) }));
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		// As the return reads the intent, another gateway, finding the host back, drops it.
+		const get = api.store.sandboxes.get.bind(api.store.sandboxes);
+		let dropped = false;
+		const spy = vi.spyOn(api.store.sandboxes, "get").mockImplementation(async (id) => {
+			const found = await get(id);
+			if (id === sandbox.id && found?.losing !== undefined && !dropped) {
+				dropped = true;
+				await api.store.sandboxes.update(id, ({ losing: _, ...rest }) => rest);
+			}
+			return found;
+		});
+		const back = await reconnect(service, hostId, host);
+		await vi.waitFor(() => expect(back.sandboxes.has(sandbox.id)).toBe(false));
+		spy.mockRestore();
+		expect(dropped).toBe(true);
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("lost");
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toHaveLength(1);
+	});
+
 	it("settles an intent a stopped pass left, though its host was revoked meanwhile", async () => {
 		const { api, service, hostId, host, sandbox, pass } = await setup();
 		host.connection.closed(1006, "gone");

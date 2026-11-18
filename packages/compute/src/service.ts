@@ -7554,21 +7554,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** `ComputeService.reportSandboxLost`. */
 	async function reportSandboxLost(hostId: string, sandboxId: string, placedFor?: number): Promise<boolean> {
-		const read = await store.sandboxes.get(sandboxId);
-		if (read === undefined) return true;
-		// Its intent is there, as every fence has one; one that isn't (written before intents were kept) is begun now.
-		if (read.losing === undefined && LOSABLE.includes(read.state)) {
-			const attempt = read.hostId === undefined ? attemptOf(read, placedFor) : undefined;
-			if (read.hostId === hostId || attempt !== undefined) await intendLoss(hostId, sandboxId, attempt);
+		// The copy is its record's: on the host the record names, or (one naming no host yet) at the attempt placed here.
+		const mine = (sandbox: StoredSandbox) =>
+			sandbox.hostId !== undefined ? sandbox.hostId === hostId : attemptOf(sandbox, placedFor) !== undefined;
+		for (let tries = 0; tries < 3; tries += 1) {
+			const read = await store.sandboxes.get(sandboxId);
+			if (read === undefined || read.state === "deleted" || read.state === "deleting") return true;
+			if (read.state === "lost" && read.lostEvent === undefined) return true;
+			if (read.state !== "lost") {
+				// Another host's record, or a later attempt of a create (the copy is an earlier one's): it goes, unless a move
+				// or upgrade under way still needs it.
+				if (!mine(read)) return read.moving === undefined && read.upgrading === undefined;
+				// Its own, deferred by a move or upgrade: kept, fenced, until that is settled.
+				if (read.moving !== undefined || read.upgrading !== undefined) return false;
+				// Its intent is there, as every fence has one; one gone meanwhile (dropped by a caller that found its host
+				// back) is begun again, so the copy is never deleted while its record is not lost.
+				if (read.losing === undefined && LOSABLE.includes(read.state)) {
+					await intendLoss(hostId, sandboxId, read.hostId === undefined ? attemptOf(read, placedFor) : undefined);
+				}
+			}
+			const latest = await store.sandboxes.get(sandboxId);
+			if (latest !== undefined) await settleLoss(latest);
 		}
-		const latest = await store.sandboxes.get(sandboxId);
-		if (latest !== undefined) await settleLoss(latest);
-		const settled = await store.sandboxes.get(sandboxId);
-		if (settled === undefined || settled.state === "deleted" || settled.state === "deleting") return true;
-		if (settled.state === "lost") return settled.lostEvent === undefined;
-		// Not lost: deferred by a move or upgrade under way (kept, fenced, until settled), or not this copy's (another host's
-		// record, or a later attempt of a create), which goes.
-		return settled.losing === undefined && settled.moving === undefined && settled.upgrading === undefined;
+		// Not settled yet: the host keeps it, fenced, and its next heartbeat tries again.
+		return false;
 	}
 
 	/**
