@@ -1674,6 +1674,23 @@ const LOST_SCOPES: ReadonlySet<computeSchema.ApiKeyScope> = new Set([
 ]);
 /** What a lost sandbox's `reason` says. */
 export const HOST_LOST_REASON = "its host stayed disconnected past the deadline, and was counted as lost";
+/** Why a lost sandbox whose `onHostLost` is `recreate` wasn't made again on another host (`recreationOf`). */
+export const NOT_RECREATED = {
+	isolate: "an isolate isn't made again on another host",
+	pinned: "it is kept to its host",
+	snapshot: "it has no saved snapshot to make it again from",
+	host: "no other connected host in its pool can take it",
+	copy: "no host it may go on holds its newest saved snapshot, or can fetch it",
+	failed: "its create on another host failed",
+} as const;
+/** A lost sandbox's `reason` where it wasn't made again on another host, saying why. */
+export const notRecreated = (why: string): string =>
+	`${HOST_LOST_REASON}; it wasn't made again on another host: ${why}`;
+/** Why a sandbox made again on another host was stopped again (`stopFor`): it was lost stopped, paused or in error. */
+export const RECREATED_STOP_REASON =
+	"It was made again on another host after its host was lost, and stopped again as it was before";
+/** The states a sandbox made again on another host is left running in; from any other, it is stopped again. */
+const RECREATED_RUNNING: readonly computeSchema.SandboxState[] = ["starting", "running", "moving"];
 /** The states a sandbox counts against an account's concurrent sandboxes in (`requireCapacity`). */
 const ACTIVE_STATES: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping"];
 /** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
@@ -4288,6 +4305,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...idleView(sandbox),
 			...(sandbox.autoUpgrade === true ? { autoUpgrade: true } : {}),
 			...(sandbox.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: sandbox.autoUpgradeFrom }),
+			...(sandbox.onHostLost === "recreate" ? { onHostLost: "recreate" as const } : {}),
 			...(sandbox.upgradedFrom === undefined ? {} : { upgradedFrom: { ...sandbox.upgradedFrom } }),
 			...(sandbox.moved === undefined ? {} : { moved: { ...sandbox.moved } }),
 			latestSnapshotId: sandbox.latestSnapshotId,
@@ -7314,6 +7332,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (at - lossesRecoveredAt >= Math.min(LOSS_RECOVERY_MS, hostLostAfter)) {
 				lossesRecoveredAt = at;
 				for (const sandbox of await store.sandboxes.list({}, { state: [...LOSABLE, "lost"] })) {
+					// One made again on another host whose finish (its event, its stop again) a gateway didn't see through.
+					if (sandbox.recreating !== undefined && sandbox.state !== "starting" && !pending.has(sandbox.id)) {
+						await finishRecreate(sandbox).catch(() => undefined);
+					}
 					if (sandbox.losing === undefined && sandbox.lostEvent === undefined) continue;
 					await settleLoss(sandbox).catch(() => undefined);
 				}
@@ -7342,6 +7364,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// A move or an upgrade under way is settled first (each knows of a copy on another host): a later pass takes it.
 		sandbox.moving === undefined &&
 		sandbox.upgrading === undefined &&
+		// Being made again after an earlier loss (`recreating`): never lost to the host it left, whose copy is fenced.
+		sandbox.recreating === undefined &&
 		(sandbox.hostId === hostId ||
 			(sandbox.hostId === undefined && attempt !== undefined && (sandbox.lifecycle ?? 0) === attempt));
 
@@ -7467,7 +7491,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					reason: HOST_LOST_REASON,
 					ports: [],
 					hostId: intent.hostId,
-					lostEvent: { eventId: intent.eventId, previousState: intent.previousState },
+					lostEvent: {
+						eventId: intent.eventId,
+						previousState: intent.previousState,
+						// Its choice as it is lost: made again on another host first (`recreateLost`).
+						...(current.onHostLost === "recreate" ? { recreate: true as const } : {}),
+					},
 				});
 			},
 			(current) => current.losing?.eventId === intent.eventId && losableOn(intent.hostId, current, intent.attempt),
@@ -7498,11 +7527,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		});
 	}
 
-	/** Settles whatever of a sandbox's loss is begun and not finished: its intent (`settleLosing`), then `finishLoss`. */
-	async function settleLoss(sandbox: StoredSandbox): Promise<void> {
+	/**
+	 * Settles whatever of a sandbox's loss is begun and not finished: its intent (`settleLosing`), then `finishLoss`.
+	 * `recreate` false (its delete): one to be made again on another host is recorded lost instead.
+	 */
+	async function settleLoss(sandbox: StoredSandbox, recreate = true): Promise<void> {
 		if (sandbox.losing !== undefined) await settleLosing(sandbox);
 		const latest = await store.sandboxes.get(sandbox.id);
-		if (latest?.lostEvent !== undefined) await finishLoss(latest);
+		if (latest?.lostEvent !== undefined) await finishLoss(latest, recreate);
 	}
 
 	/**
@@ -7513,16 +7545,53 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * failure anywhere leaves it, for a later loss pass, the host's return (`reportSandboxLost`) or its delete to finish.
 	 * Each step may be done again.
 	 */
-	async function finishLoss(sandbox: StoredSandbox): Promise<void> {
-		const due = sandbox.lostEvent;
+	async function finishLoss(lost: StoredSandbox, recreate = true): Promise<void> {
+		let sandbox = lost;
+		let due = sandbox.lostEvent;
 		if (due === undefined) return;
+		// To be made again on another host: taken on there (`recreateLost`), or, where it can't be, lost saying why.
+		if (due.recreate === true && recreate) {
+			if (await recreateLost(sandbox, due)) return;
+			const latest = await store.sandboxes.get(sandbox.id);
+			if (latest?.lostEvent?.eventId !== due.eventId) return;
+			sandbox = latest;
+			due = latest.lostEvent;
+		}
+		const reason = due.reason ?? HOST_LOST_REASON;
 		await emit(
 			"sandbox.lost",
 			sandbox.accountId,
-			{ sandbox, data: { previousState: due.previousState, reason: HOST_LOST_REASON } },
+			{ sandbox, data: { previousState: due.previousState, reason } },
 			due.eventId,
 		);
+		const withoutStale = await endWithLostHost(sandbox, due.eventId);
+		await store.sandboxes.update(sandbox.id, (current) => {
+			if (current.lostEvent?.eventId !== due.eventId) return undefined;
+			const { lostEvent: _, ...rest } = withoutStale(current);
+			return rest;
+		});
+	}
+
+	/**
+	 * What a sandbox's loss (its `lostEvent`, `eventId`) ends, whether its loss stands or it is made again elsewhere: its
+	 * commands (its host can't be asked), and its automatic snapshots on the lost host, forgotten with the record's
+	 * pointers to them, as the host deletes their bytes with it (`sandbox.delete`). Each step may be done again. Answers
+	 * the rule for those pointers, for the write that clears its marker to keep too.
+	 *
+	 * Its commands are only the lost machine's: those of its memory as `sandbox` (the lost record) has it
+	 * (`memoryDropped.generation`) or before. A sandbox made again moves that generation on as it leaves `lost`
+	 * (`recreateLost`), so a pass that read the lost record late never ends a command its replacement runs.
+	 */
+	async function endWithLostHost(
+		sandbox: StoredSandbox,
+		eventId: string,
+	): Promise<(current: StoredSandbox) => StoredSandbox> {
+		const generation = sandbox.memoryDropped?.generation ?? 0;
+		const listed = (await store.commands.list({ sandboxId: sandbox.id, state: "running" })).filter(
+			(command) => (command.memoryGeneration ?? 0) <= generation,
+		);
 		await killCommandsOf(sandbox.id, {
+			listed,
 			note: `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`,
 			reconcile: false,
 		});
@@ -7545,8 +7614,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(stale(current.pausedSnapshotId) ? { pausedSnapshotId: undefined } : {}),
 		});
 		await store.sandboxes.update(sandbox.id, (current) =>
-			current.lostEvent?.eventId !== due.eventId ||
-			(!stale(current.latestSnapshotId) && !stale(current.pausedSnapshotId))
+			current.lostEvent?.eventId !== eventId || (!stale(current.latestSnapshotId) && !stale(current.pausedSnapshotId))
 				? undefined
 				: withoutStale(current),
 		);
@@ -7558,11 +7626,305 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const id of [latest?.latestSnapshotId, latest?.pausedSnapshotId]) {
 			if (id !== undefined && (await store.snapshots.get(id)) === undefined) missing.add(id);
 		}
-		await store.sandboxes.update(sandbox.id, (current) => {
-			if (current.lostEvent?.eventId !== due.eventId) return undefined;
-			const { lostEvent: _, ...rest } = withoutStale(current);
-			return rest;
+		await store.sandboxes.update(sandbox.id, (current) =>
+			current.lostEvent?.eventId !== eventId || (!stale(current.latestSnapshotId) && !stale(current.pausedSnapshotId))
+				? undefined
+				: withoutStale(current),
+		);
+		return withoutStale;
+	}
+
+	/**
+	 * Where a lost sandbox to be made again (`onHostLost` `recreate`) can be made, as things are now: its newest saved
+	 * snapshot (ready, of a microVM), the hosts it may go on (connected, in its pool, as its labels and account allow,
+	 * never the lost host), and the hosts holding that snapshot (`snapshotCopiesOf`), one of them eligible or one able to
+	 * fetch it. Else why not: an isolate, one kept to its host, one with no saved snapshot, or no host to take it.
+	 */
+	async function recreationOf(
+		sandbox: StoredSandbox,
+		lostHost: string,
+	): Promise<
+		{ readonly snapshot: StoredSnapshot; readonly eligibleHosts: string[]; readonly copies: SnapshotCopies } | string
+	> {
+		if (sandbox.type !== "microvm") return NOT_RECREATED.isolate;
+		if (sandbox.hostPin !== undefined) return NOT_RECREATED.pinned;
+		const saved = (await store.snapshots.list({ sandboxId: sandbox.id }))
+			.filter(
+				(snapshot) =>
+					snapshot.kind === "saved" &&
+					snapshot.state === "ready" &&
+					snapshot.ref !== undefined &&
+					(snapshot.sandboxType ?? "microvm") === "microvm",
+			)
+			.sort((a, b) => b.createdAt - a.createdAt);
+		const snapshot = saved[0];
+		if (snapshot === undefined) return NOT_RECREATED.snapshot;
+		const hosts = await ensureHosts();
+		// Shared hosts as its owner may use them (`mayShare`).
+		const shared =
+			options.sharedHosts === undefined || sandbox.ownerUserId === undefined
+				? true
+				: await options.sharedHosts(sandbox.ownerUserId);
+		const eligibleHosts = requireHostsOrNone(
+			hosts.filter((host) => host.id !== lostHost),
+			sandbox.accountId,
+			"microvm",
+			sandbox.hostLabels,
+			false,
+			shared,
+			false,
+			await poolOfSandbox(sandbox),
+		);
+		if (eligibleHosts.length === 0) return NOT_RECREATED.host;
+		const copies = await snapshotCopiesOf(snapshot, hosts, sandbox.poolId ?? snapshot.poolId);
+		if (!copies.fetch && !copies.holders.some((holder) => eligibleHosts.includes(holder.hostId))) {
+			return NOT_RECREATED.copy;
+		}
+		return { snapshot, eligibleHosts, copies };
+	}
+
+	/**
+	 * Makes a lost sandbox whose `onHostLost` was `recreate` again (`finishLoss`), under its ID, on another connected host
+	 * in its pool, from its newest saved snapshot. Its loss's end (`endWithLostHost`) first; then, where it can be made
+	 * (`recreationOf`), it moves from `lost` to `starting`, never placed, its loss's event ID and previous state kept on it
+	 * (`recreating`), and its create goes in the background (`recreate`). Answers whether it was taken on so (by this
+	 * call or another); where it can't be made, its loss's record says why (`lostEvent.reason`), and it is answered false,
+	 * for its loss to be said.
+	 */
+	async function recreateLost(sandbox: StoredSandbox, due: NonNullable<StoredSandbox["lostEvent"]>): Promise<boolean> {
+		const lostHost = sandbox.hostId;
+		const { eventId } = due;
+		const ours = (current: StoredSandbox) =>
+			current.lostEvent?.eventId === eventId && current.lostEvent.recreate === true;
+		await endWithLostHost(sandbox, eventId);
+		const plan = lostHost === undefined ? NOT_RECREATED.host : await recreationOf(sandbox, lostHost);
+		if (typeof plan === "string" || lostHost === undefined) {
+			const reason = notRecreated(typeof plan === "string" ? plan : NOT_RECREATED.host);
+			await store.sandboxes.update(sandbox.id, (current) => {
+				if (!ours(current) || current.lostEvent === undefined) return undefined;
+				const { recreate: _, ...lost } = current.lostEvent;
+				return { ...current, reason, lostEvent: { ...lost, reason } };
+			});
+			return false;
+		}
+		const began = await transition(
+			sandbox.id,
+			"lost",
+			(current) => {
+				const { lostEvent: _, ...rest } = current;
+				return withState(rest, "starting", {
+					// Never placed: it is made as a create from the snapshot, and its settling is a create's (`settleLostCreate`).
+					hostId: undefined,
+					latestSnapshotId: undefined,
+					latestSnapshotAt: undefined,
+					pausedSnapshotId: undefined,
+					reason: undefined,
+					ports: [],
+					...(rest.mounts === undefined ? {} : { mounts: pendingMounts(rest.mounts), mountsAt: undefined }),
+					// Its egress read afresh for the boot, as a start's is.
+					egressRevision: later(rest.egressRevision),
+					// A new machine: the lost one's commands are behind it, and ended as such (`endWithLostHost`, `killDroppedOf`),
+					// while those its replacement runs carry the new generation, so no late loss pass ends one of them.
+					...droppedMemory(rest, `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`),
+					recreating: {
+						hostId: lostHost,
+						eventId,
+						previousState: due.previousState,
+						snapshotId: plan.snapshot.id,
+						heartbeatAt: now(),
+					},
+				});
+			},
+			ours,
+		);
+		if (!("moved" in began)) return began.lost.recreating?.eventId === eventId;
+		keepGoing(recreate(began.moved, plan));
+		return true;
+	}
+
+	/**
+	 * The create of a sandbox being made again (`recreating`, `starting`), from `plan`'s snapshot on one of its hosts, over
+	 * the lost host's fence (`SandboxSpec.replacesLost`), as attempt `lifecycle`: its gateway's lease kept fresh
+	 * (`recreating.heartbeatAt`) all the while. Running, it is published as any boot is (`boot`), then finished
+	 * (`finishRecreate`). A create refused (no room, no copy, its fence changed) puts it back in `lost`, saying why
+	 * (`loseRecreation`); one whose outcome isn't known is left `starting`, for the sweep (`settleLostCreate`).
+	 */
+	async function recreate(
+		starting: StoredSandbox,
+		plan: Exclude<Awaited<ReturnType<typeof recreationOf>>, string>,
+		/** A retry of a quiet gateway's (`retryRecreate`): a `conflict` (its earlier try's create was admitted) leaves it. */
+		retry = false,
+	): Promise<void> {
+		const marker = starting.recreating;
+		if (marker === undefined) return;
+		const lifecycle = starting.lifecycle ?? 0;
+		const still = (current: StoredSandbox) =>
+			current.state === "starting" &&
+			(current.lifecycle ?? 0) === lifecycle &&
+			current.recreating?.eventId === marker.eventId;
+		const beat = () =>
+			patchSandbox(starting.id, (latest) =>
+				still(latest) && latest.recreating !== undefined
+					? {
+							...latest,
+							recreating: { ...latest.recreating, heartbeatAt: Math.max(now(), latest.recreating.heartbeatAt) },
+						}
+					: undefined,
+			).catch(() => undefined);
+		const heartbeat = setInterval(() => void beat(), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		try {
+			await track([starting.id], async () => {
+				let placement: Placement;
+				try {
+					const { snapshot, eligibleHosts, copies } = plan;
+					if (snapshot.ref === undefined) throw new KantelError("conflict", "The snapshot isn't ready");
+					placement = await backend.create({
+						sandboxId: starting.id,
+						attempt: lifecycle,
+						accountId: starting.accountId,
+						type: starting.type,
+						subdomain: starting.subdomain,
+						...sizingOf(starting),
+						...(starting.image === undefined ? {} : { image: starting.image }),
+						env: starting.env,
+						eligibleHosts,
+						...pooled(starting.poolId),
+						fromSnapshot: snapshot.ref,
+						snapshotCopies: copies,
+						...(await egressFor(starting.accountId, starting)),
+						...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+						...(await stickySpecOf(starting)),
+						replacesLost: { hostId: marker.hostId },
+					});
+				} catch (error) {
+					// Its host's word on it settles it (`settleLostCreate`).
+					if (isCreateOutcomeUnknown(error)) return;
+					if (retry && error instanceof KantelError && error.code === "conflict") return;
+					await loseRecreation(starting.id, still, notRecreated(`${NOT_RECREATED.failed} (${messageOf(error)})`));
+					return;
+				}
+				const booted = await boot(
+					starting.id,
+					async () => placement,
+					undefined,
+					{ egressRevision: starting.egressRevision },
+					undefined,
+					still,
+				);
+				// Its environments' files now it runs, as a settled create's are; their repositories wait for a start by someone
+				// who may clone them.
+				if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+				if (booted !== undefined) await finishRecreate((await store.sandboxes.get(booted.id)) ?? booted);
+			});
+		} finally {
+			clearInterval(heartbeat);
+		}
+	}
+
+	/**
+	 * The sweep's settling of a sandbox being made again whose gateway went quiet at it: as a create whose answer was lost
+	 * first (`settleLostCreate`: its host's word, where its create was admitted), then, once that is done and still
+	 * nothing settles it, tried again (`retryRecreate`), unless this gateway is at it. Only one whose create its backend
+	 * doesn't hold admitted (`createAdmitted`: never sent, refused, or its placement gone, the lost host's fenced copy
+	 * deleted as that host came back). One admitted whose host hasn't said yet keeps its attempt for its host's word
+	 * (`settleLostCreate`), never planned again over it.
+	 */
+	async function retryStaleRecreate(sandboxId: string, at: number): Promise<void> {
+		await settleLostCreate(sandboxId);
+		const latest = await store.sandboxes.get(sandboxId);
+		const marker = latest?.recreating;
+		if (latest === undefined || marker === undefined || !unsettledCreate(latest) || pending.has(sandboxId)) return;
+		if (marker.heartbeatAt + UPGRADE_STALE_MS > at) return;
+		if ((await backend.createAdmitted?.(sandboxId, latest.lifecycle ?? 0)) === true) return;
+		await retryRecreate(latest);
+	}
+
+	/**
+	 * Tries again the making again of a sandbox whose gateway went quiet at it (`recreating.heartbeatAt`), taken on first
+	 * (its lease moved on from the one read), so one gateway does. Its create may never have been sent: it is sent again,
+	 * as the same attempt, over the lost host's fence; one whose earlier try was admitted is refused, and its host's word
+	 * settles it (`settleLostCreate`). Where it can't be made now, it is lost again, saying why.
+	 */
+	async function retryRecreate(read: StoredSandbox): Promise<void> {
+		const marker = read.recreating;
+		if (marker === undefined) return;
+		const lifecycle = read.lifecycle ?? 0;
+		const still = (current: StoredSandbox) =>
+			current.state === "starting" &&
+			(current.lifecycle ?? 0) === lifecycle &&
+			current.recreating?.eventId === marker.eventId;
+		const at = Math.max(now(), marker.heartbeatAt + 1);
+		let won = false;
+		const claimed = await patchSandbox(read.id, (latest) => {
+			won = still(latest) && latest.recreating?.heartbeatAt === marker.heartbeatAt;
+			return won ? { ...latest, recreating: { ...marker, heartbeatAt: at } } : undefined;
 		});
+		if (!won || claimed?.recreating?.heartbeatAt !== at) return;
+		const plan = await recreationOf(claimed, marker.hostId);
+		if (typeof plan === "string") {
+			await loseRecreation(claimed.id, still, notRecreated(plan));
+			return;
+		}
+		await recreate(claimed, plan, true);
+	}
+
+	/**
+	 * Puts a sandbox whose making again failed (`recreating`, `starting`, while `still` holds) back in `lost`, with its
+	 * loss's event owed (`lostEvent`, the same ID) saying why, then finishes that loss (`finishLoss`).
+	 */
+	async function loseRecreation(
+		sandboxId: string,
+		still: (current: StoredSandbox) => boolean,
+		reason: string,
+	): Promise<void> {
+		const result = await transition(
+			sandboxId,
+			"starting",
+			(current) => {
+				const { recreating: marker, ...rest } = current;
+				if (marker === undefined) return current;
+				return withState(rest, "lost", {
+					reason,
+					ports: [],
+					hostId: marker.hostId,
+					lostEvent: { eventId: marker.eventId, previousState: marker.previousState, reason },
+				});
+			},
+			(current) => still(current) && current.recreating !== undefined,
+		);
+		if ("moved" in result) await finishLoss(result.moved, false);
+	}
+
+	/**
+	 * Finishes a sandbox made again on another host, once it is no longer `starting` (it runs, or its new machine ended):
+	 * its `sandbox.recreated` event, under its loss's ID (a retry writes over it), naming the snapshot it was made from;
+	 * then its marker cleared, in the one write that makes it owe a stop (`stopFor`, `RECREATED_STOP_REASON`) where it
+	 * runs and was lost stopped, paused or in error. That stop is the sweep's durable kind (`stopClaimedAt`, handed back
+	 * if its gateway goes), begun here at once. Each step may be done again, by any gateway (the loss pass finds one left).
+	 */
+	async function finishRecreate(sandbox: StoredSandbox): Promise<void> {
+		const marker = sandbox.recreating;
+		if (marker === undefined || sandbox.state === "starting") return;
+		await emit(
+			"sandbox.recreated",
+			sandbox.accountId,
+			{ sandbox, snapshotId: marker.snapshotId, data: { previousState: marker.previousState } },
+			marker.eventId,
+		);
+		const stopAgain = !RECREATED_RUNNING.includes(marker.previousState);
+		const finished = await store.sandboxes.update(sandbox.id, (current) => {
+			if (current.recreating?.eventId !== marker.eventId || current.state === "starting") return undefined;
+			const { recreating: _, ...rest } = current;
+			return stopAgain && rest.state === "running" && rest.stopFor === undefined
+				? { ...rest, stopFor: RECREATED_STOP_REASON }
+				: rest;
+		});
+		if (finished?.state !== "running" || finished.stopFor !== RECREATED_STOP_REASON) return;
+		// Queued behind whatever is at it now (`track`, never awaited here, so a caller inside one doesn't wait on itself).
+		const owed = (current: StoredSandbox) => current.stopFor === RECREATED_STOP_REASON;
+		const began = await beginStop(finished, false, RECREATED_STOP_REASON, undefined, owed, true).catch(() => undefined);
+		if (began !== undefined) keepGoing(began.work);
 	}
 
 	/** `ComputeService.reportSandboxLost`. */
@@ -7574,6 +7936,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const read = await store.sandboxes.get(sandboxId);
 			if (read === undefined || read.state === "deleted" || read.state === "deleting") return true;
 			if (read.state === "lost" && read.lostEvent === undefined) return true;
+			// Made again on another host since it was lost here (`recreating`): this copy is no longer its record's.
+			if (read.recreating?.hostId === hostId) return true;
 			if (read.state !== "lost") {
 				// Another host's record, or a later attempt of a create (the copy is an earlier one's): it goes, unless a move
 				// or upgrade under way still needs it.
@@ -10347,6 +10711,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					idleStopMinutes: body.idleStopMinutes ?? null,
 					...(body.autoUpgrade === true ? { autoUpgrade: true } : {}),
 					...(body.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: body.autoUpgradeFrom }),
+					...(body.onHostLost === "recreate" ? { onHostLost: "recreate" as const } : {}),
 					source: from === undefined ? undefined : { snapshotId: from.id },
 					createdBy: actorOf(principal),
 					createdAt: now(),
@@ -10502,6 +10867,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						autoUpgrade: body.autoUpgrade === undefined ? latest.autoUpgrade : body.autoUpgrade || undefined,
 						autoUpgradeFrom:
 							body.autoUpgradeFrom === undefined ? latest.autoUpgradeFrom : (body.autoUpgradeFrom ?? undefined),
+						// Read as its host is lost (`settleLosing`): a change after that is for its next loss.
+						onHostLost:
+							body.onHostLost === undefined
+								? latest.onHostLost
+								: body.onHostLost === "recreate"
+									? ("recreate" as const)
+									: undefined,
 						stopsAt,
 					};
 				});
@@ -11045,7 +11417,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let began: Awaited<ReturnType<typeof transition>> | undefined;
 				for (let tries = 0; tries < 3; tries += 1) {
 					if (pending(current)) {
-						await settleLoss(current);
+						// Recorded lost, never made again on another host only to be deleted.
+						await settleLoss(current, false);
 						current = await mustGetSandbox(current.id);
 					}
 					began = await transition(
@@ -13712,6 +14085,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return;
 			}
 			if (outcome.state === "lost") {
+				// One being made again on another host (`recreating`) is lost again, saying why.
+				if (read.recreating !== undefined) {
+					await loseRecreation(sandboxId, attempt, notRecreated(`${NOT_RECREATED.failed} (${outcome.reason})`));
+					return;
+				}
 				await fail(sandboxId, new KantelError("unavailable", outcome.reason), "starting", attempt);
 				return;
 			}
@@ -15284,7 +15662,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// backend, one under way on this gateway left to it. Creates whose answer was lost likewise, in the background, as
 			// each may ask its host.
 			for (const sandbox of await store.sandboxes.list({ state: "starting" })) {
-				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) keepGoing(settleLostCreate(sandbox.id));
+				// One being made again on another host whose gateway went quiet (`recreating.heartbeatAt`) is settled as a create
+				// is, then, where that settles nothing, tried again (`retryStaleRecreate`).
+				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) {
+					const recreating = sandbox.recreating;
+					keepGoing(
+						recreating !== undefined && recreating.heartbeatAt + UPGRADE_STALE_MS <= at
+							? retryStaleRecreate(sandbox.id, at).catch(() => undefined)
+							: settleLostCreate(sandbox.id),
+					);
+				}
 				// Ordinary boots (starts, resumes, recoveries) whose gateway has gone quiet: settled from what their host has,
 				// in the background, as each may wait on its host. One with no lease (begun before leases were kept) gets one.
 				if (backend.settleStart !== undefined && !pending.has(sandbox.id) && unsettledStart(sandbox)) {

@@ -387,6 +387,13 @@ export interface SandboxSpec {
 	readonly mounts?: readonly BackendMount[];
 	/** Sticky disks to attach (`stickyDisks`): it goes only where the backend can attach them. */
 	readonly stickyDisks?: readonly BackendStickyDisk[];
+	/**
+	 * A sandbox made again under its ID after its host was lost (`onHostLost` `recreate`): `hostId`, whose fence
+	 * (`fenceHost`) holds its placement there. It goes on another host, and the lost host's copy stays fenced, deleted
+	 * when that host connects again and before it is used. Refused (`conflict`) where its placement is anything else; a
+	 * create that fails leaves the fence as it was. A backend whose hosts are never lost (no `fenceHost`) ignores it.
+	 */
+	readonly replacesLost?: { readonly hostId: string };
 }
 
 /**
@@ -1080,6 +1087,13 @@ export interface SandboxBackend {
 	 * Undefined when none does. Absent: none ever does (the stub).
 	 */
 	fencedOn?(sandboxId: string): Promise<(HostSandboxRef & { readonly hostId: string }) | undefined>;
+	/**
+	 * Whether a create of a sandbox's `attempt` was admitted on a host and holds its placement there, not under a lost
+	 * host's fence: its outcome is that host's to say (`settleCreate`), so it is never planned again over it. False where
+	 * none was (never sent, refused, or its placement gone or still a lost host's fenced copy). Absent: not known, so a
+	 * create sent again is the backend's to refuse (`conflict`).
+	 */
+	createAdmitted?(sandboxId: string, attempt: number): Promise<boolean>;
 	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).

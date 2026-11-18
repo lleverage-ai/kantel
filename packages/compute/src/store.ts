@@ -292,9 +292,31 @@ export type StoredSandbox = Omit<
 	/**
 	 * Its `sandbox.lost` event, written with its move to `lost` and not yet stored: the ID it is stored under and the
 	 * state it was lost from, never changed, so every try (any gateway's, after any restart) stores the same event once.
-	 * Cleared once stored.
+	 * Cleared once stored. `recreate`: its `onHostLost` was `recreate` as it was lost, so it is made again on another host
+	 * first (`recreating`, under the same event ID), and its loss is said only where that can't be done, with `reason`
+	 * (the event's and its record's) saying why.
 	 */
-	readonly lostEvent?: { readonly eventId: string; readonly previousState: computeSchema.SandboxState };
+	readonly lostEvent?: {
+		readonly eventId: string;
+		readonly previousState: computeSchema.SandboxState;
+		readonly recreate?: true;
+		readonly reason?: string;
+	};
+	/**
+	 * Its making again on another host after its host was lost (`onHostLost` `recreate`), begun and not finished: the
+	 * lost host (`hostId`), the `sandbox.recreated` event's ID (its loss's, so every try stores one event) and the state it
+	 * was lost in, the saved snapshot it is made from, and when the gateway at it last said so (`heartbeatAt`). Written
+	 * with its move from `lost` to `starting`, never placed; a sweep settles one whose gateway went quiet
+	 * (`settleLostCreate`). Once it runs (or its new machine ended), its event is stored, it is stopped again where it was
+	 * lost stopped, and the marker cleared; where it can't be made, it goes back to `lost`, saying why.
+	 */
+	readonly recreating?: {
+		readonly hostId: string;
+		readonly eventId: string;
+		readonly previousState: computeSchema.SandboxState;
+		readonly snapshotId: string;
+		readonly heartbeatAt: number;
+	};
 	/**
 	 * A loss begun and not yet settled (`ComputeServiceOptions.hostLostAfterMs`): the lost host, the create attempt placed
 	 * there (for one whose record names no host yet), the `sandbox.lost` event's ID and the state it was lost from, when,

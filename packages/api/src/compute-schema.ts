@@ -308,9 +308,23 @@ export const SandboxState = Type.Union(
 			"last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected " +
 			"past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer " +
 			"counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. " +
+			"A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. " +
 			"`deleting`, `deleted`: erased for good, with its snapshots.",
 	},
 );
+
+export const SandboxOnHostLost = Type.Union([Type.Literal("recreate"), Type.Literal("lost")], {
+	title: "SandboxOnHostLost",
+	description:
+		"What becomes of a sandbox when its host stays disconnected past the deployment's deadline " +
+		"(`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and " +
+		"can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, " +
+		"from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, " +
+		"with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. " +
+		"It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its " +
+		"pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its " +
+		"host (its create named one). Its old host deletes its copy if it comes back, before it is used.",
+});
 
 export const SandboxNotRunningCode = Type.Union(
 	[
@@ -1127,6 +1141,8 @@ export const Sandbox = Type.Object(
 					"plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in.",
 			}),
 		),
+		// Only `recreate` is answered: absent is `lost`, the default.
+		onHostLost: Type.Optional(SandboxOnHostLost),
 		autoUpgrade: Type.Optional(
 			Type.Boolean({
 				description:
@@ -1452,6 +1468,7 @@ export const CreateSandboxBody = Type.Object(
 					"command's answer stands. Default: the deployment's default microVM. An isolate's only.",
 			}),
 		),
+		onHostLost: Type.Optional(SandboxOnHostLost),
 		wait: Type.Optional(
 			Type.Boolean({ description: "Answer once it is `running` (or `error`) rather than as soon as it is placed." }),
 		),
@@ -1491,6 +1508,7 @@ export const UpdateSandboxBody = Type.Object(
 					"back to the deployment's default microVM.",
 			}),
 		),
+		onHostLost: Type.Optional(SandboxOnHostLost),
 	},
 	{ title: "UpdateSandboxBody" },
 );
@@ -3549,6 +3567,7 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.oom_kill"),
 		Type.Literal("sandbox.upgraded"),
 		Type.Literal("sandbox.lost"),
+		Type.Literal("sandbox.recreated"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
 		Type.Literal("snapshot.deleted"),
@@ -3572,6 +3591,8 @@ export const EventType = Type.Union(
 			"`data.durationMs`. " +
 			"`sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` " +
 			"(`data.previousState`, and `data.reason`); it can only be deleted now. " +
+			"`sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` " +
+			"`recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -4897,6 +4918,7 @@ export type Invite = Static<typeof Invite>;
 export type Caller = Static<typeof Caller>;
 export type SandboxType = Static<typeof SandboxType>;
 export type SandboxState = Static<typeof SandboxState>;
+export type SandboxOnHostLost = Static<typeof SandboxOnHostLost>;
 export type SandboxNotRunningCode = Static<typeof SandboxNotRunningCode>;
 export type SandboxNotRunning = Static<typeof SandboxNotRunning>;
 export type SandboxVisibility = Static<typeof SandboxVisibility>;
@@ -5078,6 +5100,7 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.oom_kill",
 	"sandbox.upgraded",
 	"sandbox.lost",
+	"sandbox.recreated",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",

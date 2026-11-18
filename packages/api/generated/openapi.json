@@ -1339,7 +1339,7 @@
 						"name": "state",
 						"in": "query",
 						"required": false,
-						"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. `deleting`, `deleted`: erased for good, with its snapshots.",
+						"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots.",
 						"schema": {
 							"$ref": "#/components/schemas/SandboxState"
 						}
@@ -8970,7 +8970,7 @@
 						"name": "type",
 						"in": "query",
 						"required": false,
-						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
+						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 						"schema": {
 							"$ref": "#/components/schemas/EventType"
 						}
@@ -16091,6 +16091,9 @@
 						"type": "string",
 						"description": "What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only."
 					},
+					"onHostLost": {
+						"$ref": "#/components/schemas/SandboxOnHostLost"
+					},
 					"wait": {
 						"type": "boolean",
 						"description": "Answer once it is `running` (or `error`) rather than as soon as it is placed."
@@ -16971,6 +16974,10 @@
 					},
 					{
 						"type": "string",
+						"const": "sandbox.recreated"
+					},
+					{
+						"type": "string",
 						"const": "sandbox.deleted"
 					},
 					{
@@ -16983,7 +16990,7 @@
 					}
 				],
 				"title": "EventType",
-				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
+				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
 			},
 			"ExposedPort": {
 				"type": "object",
@@ -19853,6 +19860,9 @@
 						"type": "integer",
 						"description": "When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in."
 					},
+					"onHostLost": {
+						"$ref": "#/components/schemas/SandboxOnHostLost"
+					},
 					"autoUpgrade": {
 						"type": "boolean",
 						"description": "An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false."
@@ -20466,6 +20476,20 @@
 				"title": "SandboxNotRunningCode",
 				"description": "Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. `sandbox_lost`: its host was lost (its state is `lost`); it can only be deleted."
 			},
+			"SandboxOnHostLost": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "recreate"
+					},
+					{
+						"type": "string",
+						"const": "lost"
+					}
+				],
+				"title": "SandboxOnHostLost",
+				"description": "What becomes of a sandbox when its host stays disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its host (its create named one). Its old host deletes its copy if it comes back, before it is used."
+			},
 			"SandboxPage": {
 				"type": "object",
 				"required": ["items"],
@@ -20813,7 +20837,7 @@
 					}
 				],
 				"title": "SandboxState",
-				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. `deleting`, `deleted`: erased for good, with its snapshots."
+				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots."
 			},
 			"SandboxStickyDisk": {
 				"type": "object",
@@ -22672,6 +22696,9 @@
 							}
 						],
 						"description": "Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM."
+					},
+					"onHostLost": {
+						"$ref": "#/components/schemas/SandboxOnHostLost"
 					}
 				},
 				"title": "UpdateSandboxBody"

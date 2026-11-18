@@ -148,6 +148,7 @@ Give --env &lt;env&gt; more than once for several environments, in order (up to 
 | `--host-label <k=v>` | Run it only on a host with this label; repeat for more |
 | `--auto-upgrade` | An isolate that becomes a microVM by itself when a command needs one, and runs it again |
 | `--auto-upgrade-from <snapshot>` | With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name |
+| `--on-host-lost <recreate\|lost>` | If its host is lost: recreate makes a microVM again on another host in its pool from its newest saved snapshot; lost (default) leaves it lost |
 | `--no-wait` | Answer at once rather than once it runs |
 
 ```sh
@@ -1336,7 +1337,7 @@ Send the account's events to a URL; its signing secret is shown once.
 kantel webhook create <url> [flags]
 ```
 
-Events: sandbox.created, sandbox.running, sandbox.stopped, sandbox.paused, sandbox.error, sandbox.degraded, sandbox.recovered, sandbox.environments_changed, sandbox.oom_kill, sandbox.upgraded, sandbox.lost, sandbox.deleted, snapshot.saved, snapshot.deleted.
+Events: sandbox.created, sandbox.running, sandbox.stopped, sandbox.paused, sandbox.error, sandbox.degraded, sandbox.recovered, sandbox.environments_changed, sandbox.oom_kill, sandbox.upgraded, sandbox.lost, sandbox.recreated, sandbox.deleted, snapshot.saved, snapshot.deleted.
 
 | Flag | What it does |
 | --- | --- |

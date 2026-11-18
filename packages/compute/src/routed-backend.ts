@@ -198,6 +198,16 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						return (await primary.fencedOn?.(sandboxId)) ?? fallback.fencedOn?.(sandboxId);
 					},
 				}),
+		...(primary.createAdmitted === undefined && fallback.createAdmitted === undefined
+			? {}
+			: {
+					async createAdmitted(sandboxId: string, attempt: number) {
+						return (
+							(await primary.createAdmitted?.(sandboxId, attempt)) === true ||
+							(await fallback.createAdmitted?.(sandboxId, attempt)) === true
+						);
+					},
+				}),
 		async capabilities(): Promise<BackendCapabilities> {
 			const [first, second] = await Promise.all([primary.capabilities(), fallback.capabilities()]);
 			const sizes = new Map<string, BackendSize>();

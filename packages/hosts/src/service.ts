@@ -303,6 +303,14 @@ export interface CreateSandboxInput {
 	 * template fresh instead when the hosts holding it would be much fuller (`bootsFreshInstead`); else they're ignored.
 	 */
 	readonly freshHosts?: readonly string[];
+	/**
+	 * The sandbox is made again here after its host was lost (`ComputeServiceOptions.hostLostAfterMs`, a sandbox whose
+	 * `onHostLost` is `recreate`): its placement is the one that lost host's fence holds (`sandboxes.fence`), or what an
+	 * earlier try of this left, and the new one takes it over, owing that host the fenced copy's removal (`cleanup`,
+	 * `fenced`), done when it connects again, before it is used. Refused (`conflict`) when the placement is anything
+	 * else, or owes another host a removal already. A create that fails puts the fenced placement back as it was.
+	 */
+	readonly replacesLost?: { readonly hostId: string };
 }
 
 /**
@@ -2452,6 +2460,64 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		throw new KantelError("conflict", "A sandbox with that ID exists");
 	};
 
+	/**
+	 * What a create that makes a lost host's sandbox again (`CreateSandboxInput.replacesLost`) owes that host, from its
+	 * placement as it is: the fenced copy's removal (`cleanup`, `fenced`) where that host's fence holds it, and owes no
+	 * other host anything; what an earlier try of it owes, where that try's host said it doesn't have it (`lost`, never
+	 * fenced); nothing where it has no placement (its fence was done, the copy deleted). `conflict` otherwise: a try still
+	 * being made, a placement owing another host, or one that isn't this lost host's.
+	 */
+	const lostCopyOf = (
+		existing: PlacementRecord | undefined,
+		lostHost: string,
+	): PlacementRecord["cleanup"] | undefined => {
+		if (existing === undefined) return undefined;
+		const clear = existing.move === undefined && existing.upgrade === undefined;
+		if (clear && existing.hostId === lostHost && existing.fenced !== undefined && existing.cleanup === undefined) {
+			return { hostId: lostHost, operationId: shortId("lst"), tier: existing.tier, fenced: true };
+		}
+		const owes = existing.cleanup;
+		if (
+			clear &&
+			existing.hostId !== lostHost &&
+			existing.state === "lost" &&
+			existing.fenced === undefined &&
+			(owes === undefined || (owes.fenced === true && owes.hostId === lostHost))
+		) {
+			return owes;
+		}
+		throw new KantelError(
+			"conflict",
+			existing.state === "starting"
+				? "The sandbox is being made again on another host, or its host hasn't said yet whether it made it"
+				: "The sandbox's placement isn't the one its lost host's fence holds, or a copy of it on another host is still to be deleted",
+		);
+	};
+
+	/**
+	 * Puts back the placement a create that made a lost host's sandbox again took over (`replacesLost`), once that create
+	 * failed: only while the placement is still the one it wrote, so what was fenced stays fenced and its copy's removal
+	 * owed. Where there was none, the create's goes.
+	 */
+	const putBackLost = async (written: PlacementRecord, previous: PlacementRecord | undefined): Promise<void> => {
+		const ours = (latest: PlacementRecord) =>
+			latest.hostId === written.hostId && latest.createdAt === written.createdAt && latest.state === "starting";
+		// The fenced copy's removal, done meanwhile (its host back): not owed again.
+		const cleaned = (latest: PlacementRecord) => written.cleanup !== undefined && latest.cleanup === undefined;
+		// Nothing to put back: there was none, or what was there was that fenced copy, deleted now.
+		const gone = (latest: PlacementRecord) =>
+			previous === undefined || (cleaned(latest) && previous.hostId === written.cleanup?.hostId);
+		const left = await store.updatePlacement(written.sandboxId, (latest) => {
+			if (previous === undefined || !ours(latest) || gone(latest)) return undefined;
+			if (cleaned(latest)) {
+				const { cleanup: _done, ...rest } = previous;
+				return { ...rest, updatedAt: clock.now() };
+			}
+			return { ...previous, updatedAt: clock.now() };
+		});
+		if (left === undefined) await store.removePlacementIf(written.sandboxId, (latest) => ours(latest) && gone(latest));
+	};
+
 	const poolSettings = (settings: PoolPlacement | undefined) => ({
 		...(settings?.vcpusPerCpu === undefined ? {} : { vcpusPerCpu: settings.vcpusPerCpu }),
 		...(settings?.balanced === true ? { balanced: true } : {}),
@@ -2941,22 +3007,41 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * is owed: now, after the upgrade, and when that host is back (its hello names the isolate, its heartbeat sends the
 	 * delete). Answers the placement as left, or undefined when the host couldn't do it now.
 	 */
-	const cleanUpSource = async (hostId: string, sandboxId: string): Promise<PlacementRecord | undefined> => {
+	const cleanUpSource = async (
+		hostId: string,
+		sandboxId: string,
+		/** How to reach the host: a lost host's fence's calls, before it is used (`onFence`); else as any call. */
+		call?: (method: string, params: unknown) => Promise<unknown>,
+	): Promise<PlacementRecord | undefined> => {
 		const placement = await store.getPlacement(sandboxId);
 		const owed = placement?.cleanup;
 		if (owed?.hostId !== hostId) return placement;
 		try {
-			// Its snapshots kept: the sandbox lives on, and they stay its, an isolate's (a host from before
-			// `keepSnapshots` deletes them as a delete does). A moved microVM's source copy is deleted only as the copy
-			// that move exported (`exported`), so a delete sent late never removes a later move's copy back on that host.
-			await onHost(hostId, HostMethods.delete, {
-				sandboxId,
-				keepSnapshots: true,
-				// Only of the tier it left: an upgrade's isolate, never a microVM moved back to that host since.
-				tier: owed.tier ?? "isolate",
-				...(owed.tier === "microvm" ? { exported: owed.operationId } : {}),
-			});
+			const params = owed.fenced
+				? // A lost host's fenced copy (`replacesLost`) goes as a fence's does, its automatic snapshots with it (the
+					// compute plane forgot them with its loss), and only of its tier.
+					{ sandboxId, tier: owed.tier ?? "microvm" }
+				: {
+						sandboxId,
+						// Its snapshots kept: the sandbox lives on, and they stay its, an isolate's (a host from before
+						// `keepSnapshots` deletes them as a delete does). A moved microVM's source copy is deleted only as the copy
+						// that move exported (`exported`), so a delete sent late never removes a later move's copy back on that host.
+						keepSnapshots: true,
+						// Only of the tier it left: an upgrade's isolate, never a microVM moved back to that host since.
+						tier: owed.tier ?? "isolate",
+						...(owed.tier === "microvm" ? { exported: owed.operationId } : {}),
+					};
+			if (call === undefined) await onHost(hostId, HostMethods.delete, params);
+			else {
+				try {
+					await call(HostMethods.delete, params);
+				} catch (error) {
+					throw kantelErrorFromHost(error);
+				}
+			}
 		} catch (error) {
+			// Before its host is used, one that can't be done keeps it unused, as a fence does.
+			if (call !== undefined && !(isKantelError(error) && error.code === "not_found")) throw error;
 			if (!(isKantelError(error) && error.code === "not_found")) {
 				const why = error instanceof Error ? error.message : String(error);
 				log(
@@ -3047,6 +3132,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 			await forgetPlacement(placement.sandboxId, (latest) => latest.hostId === hostId && latest.fenced !== undefined);
 			log(`[hosts] sandbox ${placement.sandboxId} deleted on host ${hostId}, which was lost with it`);
+		}
+		// The fenced copies of sandboxes made again on other hosts since (`replacesLost`): deleted as these are, first.
+		for (const placement of await store.occupying(hostId)) {
+			if (placement.cleanup?.hostId !== hostId || placement.cleanup.fenced !== true) continue;
+			await cleanUpSource(hostId, placement.sandboxId, call);
+			log(
+				`[hosts] sandbox ${placement.sandboxId}'s copy deleted on host ${hostId}, lost with it: it runs elsewhere now`,
+			);
 		}
 		return deferred;
 	};
@@ -3686,10 +3779,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (!SANDBOX_ID.test(sandboxId)) throw new KantelError("invalid", "Not a valid sandbox ID");
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
-				refuseTaken(existing);
+				// Made again after its host was lost: over that host's fence, owing it the fenced copy's removal.
+				const replacing = input.replacesLost;
+				const owed = replacing === undefined ? undefined : lostCopyOf(existing, replacing.hostId);
+				if (replacing === undefined) refuseTaken(existing);
+				// Never on the lost host itself.
+				const candidates = replacing === undefined ? listed : listed.filter((host) => host.id !== replacing.hostId);
 				const sticky = (input.stickyDisks?.length ?? 0) > 0;
 				const placed = async () => {
-					const { tier, shape, chosen, template } = await placeAmong(input, listed);
+					const { tier, shape, chosen, template } = await placeAmong(input, candidates);
 					const now = clock.now();
 					const placement: PlacementRecord = {
 						sandboxId,
@@ -3704,6 +3802,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						createdAt: now,
 						updatedAt: now,
 						...(input.attempt === undefined ? {} : { attempt: input.attempt }),
+						...(owed === undefined ? {} : { cleanup: owed }),
 					};
 					// Only while its host still takes sandboxes in its pool, and, under its pool's vCPU cap, still has the vCPUs: a
 					// drain or move since the hosts were read refuses it, and so do creates at once that took the last vCPUs.
@@ -3768,6 +3867,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						...admitted,
 					};
 				} catch (error) {
+					// What a lost host's fence held is put back: its copy's removal is still owed.
+					if (replacing !== undefined && !unanswered(error)) {
+						await putBackLost(placement, existing);
+						throw error;
+					}
 					throw await unplace(placement, chosen.host, error);
 				}
 			},

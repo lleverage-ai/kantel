@@ -1045,6 +1045,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
 				? {}
 				: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
+			...(spec.replacesLost === undefined ? {} : { replacesLost: { hostId: spec.replacesLost.hostId } }),
 		});
 		const create = (
 			hostIds: readonly string[],
@@ -1317,6 +1318,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				hostId: placement.hostId,
 				...(placement.attempt === undefined ? {} : { attempt: placement.attempt }),
 			};
+		},
+		async createAdmitted(sandboxId, attempt) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			return placement !== undefined && placement.attempt === attempt && placement.fenced === undefined;
 		},
 		async hostConnected(hostId) {
 			if (hosts.hub.connected(hostId)) return true;
