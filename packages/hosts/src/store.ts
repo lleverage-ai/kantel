@@ -175,9 +175,16 @@ export interface PlacementRecord {
 	readonly moved?: { readonly operationId: string; readonly from: string };
 	/**
 	 * What is still to be deleted from another host (`hostId`), once that host can be reached: an upgraded microVM's
-	 * isolate, or a moved microVM's source copy (`tier` `microvm`; absent, an isolate).
+	 * isolate, or a moved microVM's source copy (`tier` `microvm`; absent, an isolate). `fenced`: the copy a lost host's
+	 * fence held there, of a sandbox made again on another host since (`CreateSandboxInput.replacesLost`): deleted as a
+	 * fence's is, when that host connects again and before it is used (`onFence`).
 	 */
-	readonly cleanup?: { readonly hostId: string; readonly operationId: string; readonly tier?: SandboxTier };
+	readonly cleanup?: {
+		readonly hostId: string;
+		readonly operationId: string;
+		readonly tier?: SandboxTier;
+		readonly fenced?: true;
+	};
 	/**
 	 * When its host was counted as lost with it there (`HostsService.sandboxes.fence`): its state is `lost`, nothing its
 	 * host reports changes it, and the host deletes it when it connects again, before it is used (`onFence`); then the

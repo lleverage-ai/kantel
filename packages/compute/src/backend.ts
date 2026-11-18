@@ -387,6 +387,13 @@ export interface SandboxSpec {
 	readonly mounts?: readonly BackendMount[];
 	/** Sticky disks to attach (`stickyDisks`): it goes only where the backend can attach them. */
 	readonly stickyDisks?: readonly BackendStickyDisk[];
+	/**
+	 * A sandbox made again under its ID after its host was lost (`onHostLost` `recreate`): `hostId`, whose fence
+	 * (`fenceHost`) holds its placement there. It goes on another host, and the lost host's copy stays fenced, deleted
+	 * when that host connects again and before it is used. Refused (`conflict`) where its placement is anything else; a
+	 * create that fails leaves the fence as it was. A backend whose hosts are never lost (no `fenceHost`) ignores it.
+	 */
+	readonly replacesLost?: { readonly hostId: string };
 }
 
 /**

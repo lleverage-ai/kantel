@@ -160,6 +160,19 @@ While a sandbox's host is disconnected, the sandbox keeps its last state, with `
 
 A lost sandbox can only be deleted. Any other call answers `409` `conflict`, with `details.code` `sandbox_lost`. If the lost host connects again, it deletes those sandboxes before Kantel uses it for anything else, so none of them comes back running.
 
+#### Make it again on another host
+
+A microVM can ask to be made again instead, with `onHostLost: "recreate"` on its create or a later update (`kantel new --on-host-lost recreate`). When its host is lost, it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and the event is `sandbox.recreated` (`snapshotId` names the snapshot, `data.previousState` the state it was lost in) rather than `sandbox.lost`. It comes back running if it was running or starting, and stopped otherwise. Anything it did after that snapshot was on the lost host and is gone, its memory too. When the old host connects again, it deletes its copy before Kantel uses it for anything else.
+
+It is lost as usual, its `reason` saying why, when it can't be made again: it has no saved snapshot, no other host in its pool can take it or holds the snapshot (or can fetch it), or it is an isolate or was made on a named host (`host`). The default, `onHostLost: "lost"`, always leaves it lost.
+
+```bash
+curl -X PATCH "$KANTEL_URL/v1/sandboxes/$SANDBOX_ID" \
+  -H "Authorization: Bearer $KANTEL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"onHostLost": "recreate"}'
+```
+
 ## List and find sandboxes
 
 The list shows the sandboxes that are starting, running or stopping, newest first. Add `all=true` for stopped, paused and errored ones too, `state` for one state, and `label.<key>=<value>` to filter by label:

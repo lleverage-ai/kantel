@@ -1900,6 +1900,7 @@ export type WebhookEvent =
 	| "sandbox.oom_kill"
 	| "sandbox.upgraded"
 	| "sandbox.lost"
+	| "sandbox.recreated"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1916,6 +1917,7 @@ export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly l
 	{ event: "sandbox.oom_kill", label: "A sandbox ran out of memory" },
 	{ event: "sandbox.upgraded", label: "An isolate was upgraded to a microVM" },
 	{ event: "sandbox.lost", label: "A sandbox was lost with its host" },
+	{ event: "sandbox.recreated", label: "A sandbox was made again on another host" },
 	{ event: "sandbox.deleted", label: "A sandbox was deleted" },
 	{ event: "snapshot.saved", label: "A snapshot was saved" },
 	{ event: "snapshot.deleted", label: "A snapshot was deleted" },

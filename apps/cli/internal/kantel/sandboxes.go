@@ -351,6 +351,8 @@ func newCommand() *cli.Command {
 			{Name: "host-label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "Run it only on a host with this label; repeat for more"},
 			{Name: "auto-upgrade", Type: cli.Bool, Description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again"},
 			{Name: "auto-upgrade-from", Type: cli.String, Value: "<snapshot>", Description: "With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name"},
+			{Name: "on-host-lost", Type: cli.String, Value: "<recreate|lost>", Choices: []string{"recreate", "lost"},
+				Description: "If its host is lost: recreate makes a microVM again on another host in its pool from its newest saved snapshot; lost (default) leaves it lost"},
 			noWaitFlag,
 		},
 		Details: "--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command\n" +
@@ -462,6 +464,12 @@ func runNew(c *cli.Context) error {
 		}
 		body.AutoUpgrade = api.Ptr(true)
 		body.AutoUpgradeFrom = into
+	}
+	if onLost, ok := c.Str("on-host-lost"); ok {
+		if onLost != "recreate" && onLost != "lost" {
+			return cli.Usage(fmt.Sprintf("--on-host-lost takes recreate or lost, not %q", onLost))
+		}
+		body.OnHostLost = api.Ptr(api.SandboxOnHostLost(onLost))
 	}
 	// A variable has an =; an environment's name or ID never does.
 	var vars, environments []string

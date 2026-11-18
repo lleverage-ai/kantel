@@ -324,6 +324,7 @@ const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.oom_kill",
 	"sandbox.upgraded",
 	"sandbox.lost",
+	"sandbox.recreated",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
@@ -344,6 +345,15 @@ const onOff = (value: "on" | "off" | undefined): boolean | undefined =>
 	value === undefined ? undefined : value === "on";
 
 /** `--size`: one of the API's size names, which the hosts may offer fewer of (`kantel sizes`). */
+/** `--on-host-lost`'s choice, for a create's body. */
+function onHostLostOf(value: string | undefined): { onHostLost?: "recreate" | "lost" } {
+	if (value === undefined) return {};
+	if (value !== "recreate" && value !== "lost") {
+		throw new UsageError(`--on-host-lost takes recreate or lost, not "${value}"`);
+	}
+	return { onHostLost: value };
+}
+
 function sizeOf(value: string | undefined): SandboxSizeName | undefined {
 	if (value === undefined) return undefined;
 	const found = SIZES.find((size) => size === value);
@@ -2055,6 +2065,12 @@ const SECTIONS: readonly Section[] = [
 						description:
 							"With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name",
 					},
+					"on-host-lost": {
+						type: "string",
+						value: "<recreate|lost>",
+						description:
+							"If its host is lost: recreate makes a microVM again on another host in its pool from its newest saved snapshot; lost (default) leaves it lost",
+					},
 					"no-wait": noWait,
 				},
 				details:
@@ -2150,6 +2166,7 @@ const SECTIONS: readonly Section[] = [
 						hostLabels: pairs(ctx.list("host-label"), "--host-label"),
 						...(autoUpgrade ? { autoUpgrade: true } : {}),
 						...(into === undefined ? {} : { autoUpgradeFrom: into }),
+						...onHostLostOf(ctx.string("on-host-lost")),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();

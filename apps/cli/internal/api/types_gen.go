@@ -679,7 +679,8 @@ type CreateSandboxBody struct {
 	// Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 	Mounts []Mount `json:"mounts,omitzero"`
 	// Default: a generated name, such as `brave-otter`.
-	Name *string `json:"name,omitempty"`
+	Name       *string            `json:"name,omitempty"`
+	OnHostLost *SandboxOnHostLost `json:"onHostLost,omitempty"`
 	// Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. `unavailable` saying which pool when none of its hosts can take it now. Default: the account's default pool when the account has hosts of its own, else the deployment's default pool, as before pools.
 	Pool      *string            `json:"pool,omitempty"`
 	Resources *SandboxShapeInput `json:"resources,omitempty"`
@@ -1045,7 +1046,7 @@ type EventPage struct {
 	NextCursor *string `json:"nextCursor,omitempty"`
 }
 
-// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 type EventType string
 
 const (
@@ -1060,6 +1061,7 @@ const (
 	EventTypeSandboxOOMKill             EventType = "sandbox.oom_kill"
 	EventTypeSandboxUpgraded            EventType = "sandbox.upgraded"
 	EventTypeSandboxLost                EventType = "sandbox.lost"
+	EventTypeSandboxRecreated           EventType = "sandbox.recreated"
 	EventTypeSandboxDeleted             EventType = "sandbox.deleted"
 	EventTypeSnapshotSaved              EventType = "snapshot.saved"
 	EventTypeSnapshotDeleted            EventType = "snapshot.deleted"
@@ -2304,11 +2306,12 @@ type Sandbox struct {
 	// The snapshot a resume or fork would use.
 	LatestSnapshotID *string `json:"latestSnapshotId,omitempty"`
 	// Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
-	Mounts          []SandboxMount   `json:"mounts,omitzero"`
-	Move            *SandboxMove     `json:"move,omitempty"`
-	Moved           *SandboxMoved    `json:"moved,omitempty"`
-	Name            string           `json:"name"`
-	PlacementReason *PlacementReason `json:"placementReason,omitempty"`
+	Mounts          []SandboxMount     `json:"mounts,omitzero"`
+	Move            *SandboxMove       `json:"move,omitempty"`
+	Moved           *SandboxMoved      `json:"moved,omitempty"`
+	Name            string             `json:"name"`
+	OnHostLost      *SandboxOnHostLost `json:"onHostLost,omitempty"`
+	PlacementReason *PlacementReason   `json:"placementReason,omitempty"`
 	// The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools.
 	PoolID *string `json:"poolId,omitempty"`
 	// Why it is in `error` or `degraded`, in words; or why Kantel stopped or paused it: `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, or a rule's reason. A stop someone asked for has none.
@@ -2541,6 +2544,14 @@ const (
 	SandboxNotRunningCodeSandboxLost         SandboxNotRunningCode = "sandbox_lost"
 )
 
+// What becomes of a sandbox when its host stays disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its host (its create named one). Its old host deletes its copy if it comes back, before it is used.
+type SandboxOnHostLost string
+
+const (
+	SandboxOnHostLostRecreate SandboxOnHostLost = "recreate"
+	SandboxOnHostLostLost     SandboxOnHostLost = "lost"
+)
+
 type SandboxPage struct {
 	Items []Sandbox `json:"items"`
 	// Present when more items follow.
@@ -2672,7 +2683,7 @@ const (
 	SandboxStartupDiskNew     SandboxStartupDisk = "new"
 )
 
-// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. `deleting`, `deleted`: erased for good, with its snapshots.
+// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots.
 type SandboxState string
 
 const (
@@ -3427,6 +3438,7 @@ type UpdateSandboxBody struct {
 	// Replaces its labels.
 	Labels     map[string]string  `json:"labels,omitzero"`
 	Name       *string            `json:"name,omitempty"`
+	OnHostLost *SandboxOnHostLost `json:"onHostLost,omitempty"`
 	Visibility *SandboxVisibility `json:"visibility,omitempty"`
 }
 

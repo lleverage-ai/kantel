@@ -1045,6 +1045,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
 				? {}
 				: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
+			...(spec.replacesLost === undefined ? {} : { replacesLost: { hostId: spec.replacesLost.hostId } }),
 		});
 		const create = (
 			hostIds: readonly string[],
