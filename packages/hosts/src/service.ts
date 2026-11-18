@@ -1077,12 +1077,15 @@ export interface HostsService {
 		/**
 		 * Fences a lost host's sandboxes (`ComputeService`'s `hostLostAfterMs`): each of `sandboxIds` placed on `hostId` is
 		 * kept there as `lost`, taking nothing its host reports, until the host connects again and deletes it, before it is
-		 * used (`onFence`). Refused (`conflict`) while the host is connected; a host that connects as it is written is
-		 * fenced as soon as it is.
+		 * used (`onFence`). Only while the host hasn't been seen since `seenAt`, the `lastSeenAt` it was judged lost by
+		 * (absent: never seen), judged in each fence's own write (`HostStore.updatePlacementUnseen`): its hello moves it, so
+		 * once a host has connected again, a fence for that loss is refused (`conflict`) and can never land after, whatever
+		 * the host does next. Answers those fenced, now or before: one fenced already is answered whatever its host did since.
 		 */
 		fence(
 			hostId: string,
 			sandboxIds: readonly string[],
+			seenAt: number | undefined,
 		): Promise<readonly { readonly sandboxId: string; readonly attempt?: number }[]>;
 		/**
 		 * The sandboxes placed on a host, what a lost host's fence may cover: not a copy owed it by another's move or
@@ -4699,12 +4702,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
 				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
 			},
-			async fence(hostId, sandboxIds) {
-				if (hub.connected(hostId)) throw new KantelError("conflict", `The host ${hostId} is connected`);
+			async fence(hostId, sandboxIds, seenAt) {
 				const at = clock.now();
 				const fenced: { readonly sandboxId: string; readonly attempt?: number }[] = [];
 				for (const sandboxId of sandboxIds) {
-					await store.updatePlacement(sandboxId, (latest) =>
+					// Never on a host seen since it was judged lost: back, so not lost. Its hello moved `lastSeenAt` before it was
+					// used, so a fence that lost to it is refused here, in the write, and never lands after another caller's refusal.
+					const written = await store.updatePlacementUnseen(sandboxId, hostId, seenAt, (latest) =>
 						latest.hostId !== hostId ||
 						latest.fenced !== undefined ||
 						isLeftover(latest) ||
@@ -4714,6 +4718,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							? undefined
 							: { ...latest, state: "lost", fenced: at, updatedAt: at },
 					);
+					if (written === "seen") throw new KantelError("conflict", `The host ${hostId} was seen since it was lost`);
 					// Fenced on this host, now or by an earlier pass: what the compute plane may lose with it.
 					const latest = await store.getPlacement(sandboxId);
 					if (latest?.hostId === hostId && latest.fenced !== undefined) {

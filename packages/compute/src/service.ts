@@ -7324,7 +7324,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (host.connected !== false) continue;
 				const since = Math.max(host.lastSeenAt ?? lossCountsFrom, lossCountsFrom);
 				if (at - since < hostLostAfter) continue;
-				await loseHost(host.id).catch(() => undefined);
+				await loseHost(host.id, host.lastSeenAt).catch(() => undefined);
 			}
 		} finally {
 			markingLost = false;
@@ -7357,10 +7357,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * A lost host's sandboxes lost (`markLostHosts`): those its records place on it, and those its backend placed there
 	 * whose records don't name a host yet, at the attempt placed there. Each has its intent written first (`intendLoss`),
-	 * then all are fenced at once, then each is settled as its intent says (`settleLosing`), which fences one alone when
-	 * the batch failed. One already being lost to this host (an earlier pass's intent) is settled with the rest.
+	 * under the `lastSeenAt` the host was judged lost by (`seenAt`), then all are fenced at once, only while the host is
+	 * still unseen since then, then each is settled as its intent says (`settleLosing`), which fences one alone when the
+	 * batch failed. One already being lost to this host (an earlier pass's intent) is settled with the rest, under its own.
 	 */
-	async function loseHost(hostId: string): Promise<void> {
+	async function loseHost(hostId: string, seenAt: number | undefined): Promise<void> {
 		const candidates = new Map<string, number | undefined>();
 		for (const sandbox of await store.sandboxes.list({ hostId }, { state: LOSABLE })) {
 			if (losableOn(hostId, sandbox) || sandbox.losing?.hostId === hostId) candidates.set(sandbox.id, undefined);
@@ -7374,26 +7375,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		const intended: StoredSandbox[] = [];
 		for (const [sandboxId, attempt] of candidates) {
-			const sandbox = await intendLoss(hostId, sandboxId, attempt).catch(() => undefined);
+			const sandbox = await intendLoss(hostId, sandboxId, attempt, seenAt).catch(() => undefined);
 			if (sandbox !== undefined) intended.push(sandbox);
 		}
 		if (intended.length === 0) return;
-		await backend
-			.fenceHost?.(
-				hostId,
-				intended.map((sandbox) => sandbox.id),
-			)
-			.catch(() => undefined);
+		const ours = intended.filter((sandbox) => sandbox.losing?.seenAt === seenAt);
+		if (ours.length > 0) {
+			await backend
+				.fenceHost?.(
+					hostId,
+					ours.map((sandbox) => sandbox.id),
+					seenAt,
+				)
+				.catch(() => undefined);
+		}
 		for (const sandbox of intended) await settleLosing(sandbox).catch(() => undefined);
 	}
 
 	/**
-	 * Writes the intent to lose a sandbox with `hostId` (`StoredSandbox.losing`), before anything fences it, and answers
-	 * the record holding it: only where it is `losableOn` that host (at `attempt`, for one whose record names no host) and
+	 * Writes the intent to lose a sandbox with `hostId` (`StoredSandbox.losing`), under the `lastSeenAt` the host was judged
+	 * lost by (`seenAt`), before anything fences it, and answers the record holding it: only where it is `losableOn` that host (at `attempt`, for one whose record names no host) and
 	 * no other intent is, as it is when written, so a delete that went `deleting` first is never lost, and a delete after
 	 * finds the intent (`deleteSandbox`). One already intended for this host is answered as it is. Undefined otherwise.
 	 */
-	async function intendLoss(hostId: string, sandboxId: string, attempt?: number): Promise<StoredSandbox | undefined> {
+	async function intendLoss(
+		hostId: string,
+		sandboxId: string,
+		attempt: number | undefined,
+		seenAt: number | undefined,
+	): Promise<StoredSandbox | undefined> {
 		let intended: StoredSandbox | undefined;
 		await store.sandboxes.update(sandboxId, (current) => {
 			intended = undefined;
@@ -7410,6 +7420,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					eventId: randomId("evt"),
 					previousState: current.state,
 					at: now(),
+					...(seenAt === undefined ? {} : { seenAt }),
 				},
 			};
 			return intended;
@@ -7421,8 +7432,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Settles a loss begun (`losing`), the one way for every caller (the pass that began it, a later one, the host's return
 	 * or a delete), each step safe to do again or at once: where its placement is fenced on the lost host (now, by this
 	 * call, or before), it moves to `lost` under the intent, its `sandbox.lost` event's ID and previous state written with
-	 * it (`lostEvent`), and its loss is finished (`finishLoss`). Where nothing fences it (its host back, so the fence is
-	 * refused, or its placement no longer there), the intent is dropped and nothing is lost. A move or an upgrade under
+	 * it (`lostEvent`), and its loss is finished (`finishLoss`). Where nothing fences it (its host seen since the intent's
+	 * `seenAt`, so the fence is refused, or its placement no longer there), the intent is dropped and nothing is lost. The
+	 * refusal is final: the fence lands only in a write that finds the host unseen since then (`SandboxBackend.fenceHost`),
+	 * and one fenced already is answered, so no fence for this intent, another caller's under way included, lands after. A move or an upgrade under
 	 * way keeps it, fenced and intended, until settled. Any other failure leaves the intent for a later try.
 	 */
 	async function settleLosing(sandbox: StoredSandbox): Promise<void> {
@@ -7435,9 +7448,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		let fenced = fencedThere?.hostId === intent.hostId && holds(fencedThere);
 		if (!fenced) {
 			try {
-				fenced = ((await backend.fenceHost?.(intent.hostId, [sandbox.id])) ?? []).some(holds);
+				fenced = ((await backend.fenceHost?.(intent.hostId, [sandbox.id], intent.seenAt)) ?? []).some(holds);
 			} catch (error) {
-				// Refused, as its host is connected: back, so not lost.
+				// Refused, as its host was seen since: back, so not lost.
 				if (!(error instanceof KantelError && error.code === "conflict")) throw error;
 			}
 		}
@@ -7569,8 +7582,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (read.moving !== undefined || read.upgrading !== undefined) return false;
 				// Its intent is there, as every fence has one; one gone meanwhile (dropped by a caller that found its host
 				// back) is begun again, so the copy is never deleted while its record is not lost.
+				// Under no `seenAt`: its fence is here already, and its host is back, so it never fences anew.
 				if (read.losing === undefined && LOSABLE.includes(read.state)) {
-					await intendLoss(hostId, sandboxId, read.hostId === undefined ? attemptOf(read, placedFor) : undefined);
+					await intendLoss(
+						hostId,
+						sandboxId,
+						read.hostId === undefined ? attemptOf(read, placedFor) : undefined,
+						undefined,
+					);
 				}
 			}
 			const latest = await store.sandboxes.get(sandboxId);

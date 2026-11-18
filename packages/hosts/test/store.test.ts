@@ -299,6 +299,32 @@ function behaves(open: () => Promise<HostStore>) {
 		}
 	});
 
+	it("fences a placement only while its host is unseen since it was judged lost, in the same write", async () => {
+		const store = await open();
+		await store.insertHost(host("host_a", 1));
+		await store.putPlacement(placement("s1", "host_a", 1));
+		await store.putPlacement(placement("s2", "host_a", 2));
+		const fenced = (at: number) => (latest: PlacementRecord) =>
+			latest.fenced === undefined ? { ...latest, state: "lost", fenced: at } : undefined;
+		// Never seen: only a fence judged on that lands.
+		expect(await store.updatePlacementUnseen("s1", "host_a", 5, fenced(10))).toBe("seen");
+		expect(await store.updatePlacementUnseen("s1", "host_a", undefined, fenced(10))).toMatchObject({ fenced: 10 });
+		// Seen at 20, as a pass judges it lost by: lands, and a placement fenced already is answered as left, whatever since.
+		await store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 20 }));
+		expect(await store.updatePlacementUnseen("s1", "host_a", 20, fenced(30))).toBeUndefined();
+		// Its hello moves `lastSeenAt`: a fence judged on 20 is refused from then on, writing nothing.
+		await store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 40 }));
+		expect(await store.updatePlacementUnseen("s2", "host_a", 20, fenced(50))).toBe("seen");
+		expect((await store.getPlacement("s2"))?.fenced).toBeUndefined();
+		expect(await store.updatePlacementUnseen("s2", "host_a", undefined, fenced(50))).toBe("seen");
+		expect(await store.updatePlacementUnseen("s2", "host_a", 40, fenced(50))).toMatchObject({ fenced: 50 });
+		expect(await store.getPlacement("s2")).toMatchObject({ state: "lost", fenced: 50 });
+		// A host with no record never connects again; a placement that isn't there is nothing to fence.
+		await store.putPlacement(placement("s3", "host_gone", 3));
+		expect(await store.updatePlacementUnseen("s3", "host_gone", 7, fenced(60))).toMatchObject({ fenced: 60 });
+		expect(await store.updatePlacementUnseen("nope", "host_a", 40, fenced(60))).toBeUndefined();
+	});
+
 	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {
 		const store = await open();
 		await store.putPlacement(placement("s1", "host_a", 1));
@@ -343,7 +369,7 @@ for (const kind of testDatabaseKinds()) {
 // Two connections to a real Postgres (KANTEL_TEST_POSTGRES_URL): a create's placement and a drain of its host, at once.
 const postgresUrl = process.env.KANTEL_TEST_POSTGRES_URL;
 describe.skipIf(postgresUrl === undefined || postgresUrl === "")("Postgres, two connections", () => {
-	it("waits for a drain under way, then refuses the placement, and a drain waits for a placement under way", async () => {
+	it("waits for a drain under way, then refuses the placement, and a drain waits for a placement under way; a lost host's fence and its hello alike", async () => {
 		const kind = testDatabaseKinds().find((candidate) => candidate.name === "Postgres");
 		if (kind === undefined) throw new Error("No Postgres kind");
 		const database = await kind.open();
@@ -441,5 +467,42 @@ describe.skipIf(postgresUrl === undefined || postgresUrl === "")("Postgres, two 
 		await other.query("COMMIT");
 		expect(await capped).toBe("vcpus");
 		expect((await store.placementsOn("host_c")).map((p) => p.sandboxId)).toEqual(["c1", "c2"]);
+
+		// A lost host's fence while its hello is writing `lastSeenAt` (not yet committed): it waits, then is refused. And a
+		// hello while a fence holds the host: it waits, and the fences read after it see that one.
+		await store.putHost({ ...host("host_d", 4), lastSeenAt: 20 });
+		await store.putPlacement(placement("d1", "host_d", 1));
+		const fenced = (latest: PlacementRecord) => ({ ...latest, state: "lost", fenced: 30 });
+		await other.query("BEGIN");
+		await other.query("UPDATE compute_hosts SET data = $1 WHERE id = $2", [
+			JSON.stringify({ ...host("host_d", 4), lastSeenAt: 40 }),
+			"host_d",
+		]);
+		let fenceSettled = false;
+		const fencing = store.updatePlacementUnseen("d1", "host_d", 20, fenced).finally(() => {
+			fenceSettled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(fenceSettled).toBe(false);
+		await other.query("COMMIT");
+		expect(await fencing).toBe("seen");
+		expect((await store.getPlacement("d1"))?.fenced).toBeUndefined();
+		await other.query("BEGIN");
+		await other.query("SELECT id FROM compute_hosts WHERE id = $1 FOR UPDATE", ["host_d"]);
+		await other.query("UPDATE compute_placements SET data = $1 WHERE sandbox_id = $2", [
+			JSON.stringify(fenced(placement("d1", "host_d", 1))),
+			"d1",
+		]);
+		let helloDone = false;
+		const hello = store
+			.updateHost("host_d", (current) => ({ ...current, lastSeenAt: 50 }))
+			.finally(() => {
+				helloDone = true;
+			});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(helloDone).toBe(false);
+		await other.query("COMMIT");
+		await hello;
+		expect((await store.placementsOn("host_d")).map((p) => p.fenced)).toEqual([30]);
 	});
 });

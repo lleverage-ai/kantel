@@ -1303,8 +1303,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
-		fenceHost(hostId, sandboxIds) {
-			return hosts.sandboxes.fence(hostId, sandboxIds);
+		fenceHost(hostId, sandboxIds, seenAt) {
+			return hosts.sandboxes.fence(hostId, sandboxIds, seenAt);
 		},
 		hostSandboxes(hostId) {
 			return hosts.sandboxes.placedOnHost(hostId);

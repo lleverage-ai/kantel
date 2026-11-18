@@ -236,6 +236,21 @@ export interface HostStore {
 		sandboxId: string,
 		change: (placement: PlacementRecord) => PlacementRecord | undefined,
 	): Promise<PlacementRecord | undefined>;
+	/**
+	 * Changes a placement as `updatePlacement` does, only while the record of `hostId` still says it was last seen at
+	 * `seenAt` (absent: never), judged in the same write: a lost host's fence (`HostsService.sandboxes.fence`), which must
+	 * never land once the host has connected again, as its hello moves `lastSeenAt` before the host is used. A host with
+	 * no record never connects again, and doesn't stop it. On Postgres the host's row is locked in the same statement, so
+	 * a hello writing it waits for this write, and this one waits for a hello under way and then reads it. Resolves what
+	 * was written; undefined when `change` left it (so a placement fenced already is answered whatever its host did
+	 * since); `seen` when the host was seen since `seenAt`, writing nothing.
+	 */
+	updatePlacementUnseen(
+		sandboxId: string,
+		hostId: string,
+		seenAt: number | undefined,
+		change: (placement: PlacementRecord) => PlacementRecord | undefined,
+	): Promise<PlacementRecord | "seen" | undefined>;
 	getPlacement(sandboxId: string): Promise<PlacementRecord | undefined>;
 	placementsOn(hostId: string): Promise<PlacementRecord[]>;
 	/** The placements on each of `hostIds`, in one read: a host with none is absent. */
@@ -348,6 +363,17 @@ export function createMemoryHostStore(): HostStore {
 			if (current === undefined) return undefined;
 			const next = change(copy(current));
 			if (next === undefined) return undefined;
+			placements.set(sandboxId, copy(next));
+			return copy(next);
+		},
+		async updatePlacementUnseen(sandboxId, hostId, seenAt, change) {
+			// Read, change, check its host and write with no await between them: nothing else runs in between.
+			const current = placements.get(sandboxId);
+			if (current === undefined) return undefined;
+			const next = change(copy(current));
+			if (next === undefined) return undefined;
+			const host = hosts.get(hostId);
+			if (host !== undefined && host.lastSeenAt !== seenAt) return "seen";
 			placements.set(sandboxId, copy(next));
 			return copy(next);
 		},
@@ -643,6 +669,38 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 					[next.hostId, JSON.stringify(next), sandboxId, read],
 				);
 				if (won.length > 0) return next;
+			}
+			throw new KantelError("unavailable", `The placement of ${sandboxId} kept changing; try again`);
+		},
+		async updatePlacementUnseen(sandboxId, hostId, seenAt, change) {
+			// One statement: the placement's compare and set, and its host's `lastSeenAt` as it is then. On Postgres the host's
+			// row is locked whatever it says (`FOR UPDATE`, which waits for a hello writing it and reads it as written), so a
+			// hello's write waits for this one, and the fences it reads after see it (`placeOnTakingHost` locks it the same
+			// way). SQLite (D1 too) has one writer at a time.
+			const postgres = driver.dialect === "postgres";
+			const seen = postgres
+				? "(host.data::jsonb ->> 'lastSeenAt')::double precision"
+				: "json_extract(host.data, '$.lastSeenAt')";
+			const since = seenAt === undefined ? `${seen} IS NOT NULL` : `(${seen} IS NULL OR ${seen} <> ?)`;
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
+				const [row] = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+				if (row === undefined) return undefined;
+				const read = String(row.data);
+				const next = change(JSON.parse(read) as PlacementRecord);
+				if (next === undefined) return undefined;
+				const won = await driver.query(
+					`WITH host AS (
+						SELECT id, data FROM compute_hosts WHERE id = ?${postgres ? " FOR UPDATE" : ""}
+					)
+					UPDATE compute_placements SET host_id = ?, data = ?
+					WHERE sandbox_id = ? AND data = ? AND NOT EXISTS (SELECT 1 FROM host WHERE ${since})
+					RETURNING sandbox_id`,
+					[hostId, next.hostId, JSON.stringify(next), sandboxId, read, ...(seenAt === undefined ? [] : [seenAt])],
+				);
+				if (won.length > 0) return next;
+				const [hostRow] = await driver.query("SELECT data FROM compute_hosts WHERE id = ?", [hostId]);
+				const host = hostRow === undefined ? undefined : parse<HostRecord>(hostRow);
+				if (host !== undefined && host.lastSeenAt !== seenAt) return "seen";
 			}
 			throw new KantelError("unavailable", `The placement of ${sandboxId} kept changing; try again`);
 		},

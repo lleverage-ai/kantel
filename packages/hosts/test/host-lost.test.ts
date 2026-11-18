@@ -80,13 +80,25 @@ async function setup(options: { readonly lostAfterMs?: number } = {}) {
 	return { api, backend, root, service, hostStore, hostId, host, sandbox, pass };
 }
 
-/** A loss pass's intent on a sandbox's record, as one that stopped after writing it left it (`StoredSandbox.losing`). */
-const intent = (hostId: string, eventId = "evt_intended") => ({
+/**
+ * A loss pass's intent on a sandbox's record, as one that stopped after writing it left it (`StoredSandbox.losing`):
+ * under the `lastSeenAt` its host was judged lost by (`seenAt`).
+ */
+const intent = (hostId: string, seenAt: number | undefined, eventId = "evt_intended") => ({
 	hostId,
 	eventId,
 	previousState: "running" as const,
 	at: Date.now(),
+	...(seenAt === undefined ? {} : { seenAt }),
 });
+
+/** When a host was last seen, as a loss pass reads it to judge it lost. */
+const seenAt = async (service: ReturnType<typeof createHostsService>, hostId: string) =>
+	(await service.get(hostId)).lastSeenAt;
+
+/** A loss pass's fence of a host's sandboxes, under the `lastSeenAt` it is judged lost by now. */
+const fence = async (service: ReturnType<typeof createHostsService>, hostId: string, sandboxIds: readonly string[]) =>
+	service.sandboxes.fence(hostId, sandboxIds, await seenAt(service, hostId));
 
 /** The host connecting again, as kantel-host does after a disconnect: with what it still has. */
 async function reconnect(service: ReturnType<typeof createHostsService>, hostId: string, was: FakeHost) {
@@ -311,7 +323,7 @@ describe("what a loss covers", () => {
 	it("clears a pointer a retry finds to a snapshot an interrupted try already forgot", async () => {
 		const { api, service, hostId, host, sandbox, pass } = await setup();
 		host.connection.closed(1006, "gone");
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		// What an interrupted try left: the snapshot's record gone, the pointer to it not yet cleared.
 		await api.store.sandboxes.update(sandbox.id, (current) => ({
 			...current,
@@ -431,7 +443,7 @@ describe("what a loss covers", () => {
 		expect((await api.store.sandboxes.get(sandbox.id))?.state).not.toBe("lost");
 		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
 		// Fencing the host directly leaves the upgrade's placement too.
-		expect(await service.sandboxes.fence(hostId, [sandbox.id])).toEqual([]);
+		expect(await fence(service, hostId, [sandbox.id])).toEqual([]);
 		// Once settled, the next pass loses it.
 		await api.store.sandboxes.update(sandbox.id, (current) => {
 			const { upgrading: _, ...rest } = current;
@@ -449,7 +461,8 @@ describe("what a loss covers", () => {
 		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
 		// A pass wrote its intent and stopped (or is still going) before fencing; the sandbox is deleted meanwhile.
-		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId) }));
+		const seen = await seenAt(service, hostId);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId, seen) }));
 		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
 		await root.deleteSandbox(sandbox.id);
 		// The delete settled it as the pass would have: fenced, then lost under the pass's intent.
@@ -474,8 +487,9 @@ describe("what a loss covers", () => {
 	});
 
 	it("never goes deleting over a loss a pass began after the delete read the sandbox", async () => {
-		const { api, root, hostId, host, sandbox } = await setup();
+		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
+		const seen = await seenAt(service, hostId);
 		// As the delete writes `deleting`, another gateway's pass has just written its intent.
 		const update = api.store.sandboxes.update.bind(api.store.sandboxes);
 		let raced = false;
@@ -483,7 +497,7 @@ describe("what a loss covers", () => {
 			const current = id === sandbox.id && !raced ? await api.store.sandboxes.get(id) : undefined;
 			if (current !== undefined && change(current)?.state === "deleting") {
 				raced = true;
-				await update(id, (latest) => ({ ...latest, losing: intent(hostId) }));
+				await update(id, (latest) => ({ ...latest, losing: intent(hostId, seen) }));
 			}
 			return update(id, change, expected);
 		});
@@ -559,8 +573,9 @@ describe("what a loss covers", () => {
 	it("never deletes its own copy on return while its record isn't lost, though its intent is dropped meanwhile", async () => {
 		const { api, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
-		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId) }));
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		const seen = await seenAt(service, hostId);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId, seen) }));
+		await fence(service, hostId, [sandbox.id]);
 		// As the return reads the intent, another gateway, finding the host back, drops it.
 		const get = api.store.sandboxes.get.bind(api.store.sandboxes);
 		let dropped = false;
@@ -583,10 +598,61 @@ describe("what a loss covers", () => {
 		expect(events).toHaveLength(1);
 	});
 
+	it("refuses a fence under way once its host is back and another's was refused, so a delete after is clean", async () => {
+		const { api, root, service, hostStore, hostId, host, sandbox, pass } = await setup();
+		host.connection.closed(1006, "gone");
+		const seen = await seenAt(service, hostId);
+		// Pass A wrote its intent and sent its fence, whose write is held in flight.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId, seen) }));
+		const write = hostStore.updatePlacementUnseen.bind(hostStore);
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let inFlight = false;
+		const spy = vi.spyOn(hostStore, "updatePlacementUnseen").mockImplementation(async (...args) => {
+			if (!inFlight) {
+				inFlight = true;
+				await held;
+			}
+			return write(...args);
+		});
+		const fencedByA = service.sandboxes.fence(hostId, [sandbox.id], seen).then(
+			(fenced) => fenced,
+			(error: unknown) => error,
+		);
+		await vi.waitFor(() => expect(inFlight).toBe(true));
+		// The host connects again (its hello is seen a moment after it left).
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const back = await reconnect(service, hostId, host);
+		expect(await seenAt(service, hostId)).not.toBe(seen);
+		// Another caller, a later pass settling the intent, finds no fence: its own is refused, and it drops the intent.
+		await pass(LOST_AFTER_MS + 1_000);
+		const settled = await api.store.sandboxes.get(sandbox.id);
+		expect(settled?.losing).toBeUndefined();
+		expect(settled?.state).toBe("running");
+		// A's fence lands now, after that refusal: refused too, in its write, so nothing is fenced without its intent.
+		release();
+		expect(await fencedByA).toMatchObject({ code: "conflict" });
+		spy.mockRestore();
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
+		expect(back.sandboxes.has(sandbox.id)).toBe(true);
+		// A delete after finds a clean, unfenced sandbox: deleted on its host as any is, never lost.
+		await root.deleteSandbox(sandbox.id);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("deleted");
+		await vi.waitFor(() => expect(back.sandboxes.has(sandbox.id)).toBe(false));
+		const types = (await api.store.events.list({ accountId: sandbox.accountId }))
+			.filter((event) => event.sandboxId === sandbox.id)
+			.map((event) => event.type);
+		expect(types).toContain("sandbox.deleted");
+		expect(types).not.toContain("sandbox.lost");
+	});
+
 	it("settles an intent a stopped pass left, though its host was revoked meanwhile", async () => {
 		const { api, service, hostId, host, sandbox, pass } = await setup();
 		host.connection.closed(1006, "gone");
-		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId) }));
+		const seen = await seenAt(service, hostId);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId, seen) }));
 		await service.revoke(hostId);
 		await pass(LOST_AFTER_MS + 1_000);
 		const lost = await api.store.sandboxes.get(sandbox.id);
@@ -602,7 +668,7 @@ describe("what a loss covers", () => {
 	it("finishes an interrupted loss before a delete, so the delete never drops its event", async () => {
 		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		await api.store.sandboxes.update(sandbox.id, (current) => ({
 			...current,
 			state: "lost",
@@ -625,7 +691,7 @@ describe("what a loss covers", () => {
 		await vi.waitFor(async () => expect((await service.sandboxes.placement(made.id))?.hostId).toBe(hostId));
 		host.connection.closed(1006, "gone");
 		// Fenced, and its record not moved yet (its pass stopped): the sweep's settling of lost creates leaves it be.
-		await service.sandboxes.fence(hostId, [made.id]);
+		await fence(service, hostId, [made.id]);
 		for (let round = 0; round < 5; round += 1) await pass(120_000);
 		expect((await root.getSandbox(made.id)).state).toBe("starting");
 	});
@@ -652,7 +718,7 @@ describe("what a loss covers", () => {
 		const { api, root, service, hostId, host, sandbox, pass } = await setup();
 		host.connection.closed(1006, "gone");
 		// What a pass left: the fence, and the record lost with its event's ID, the event itself never stored.
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		await api.store.sandboxes.update(sandbox.id, (current) => ({
 			...current,
 			state: "lost",
@@ -674,7 +740,7 @@ describe("what a loss covers", () => {
 	it("stores the event as the host comes back when the gateway stopped before it, with the host away", async () => {
 		const { api, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		await api.store.sandboxes.update(sandbox.id, (current) => ({
 			...current,
 			state: "lost",
@@ -692,7 +758,7 @@ describe("what a loss covers", () => {
 		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
 		// A pass wrote the fence and its gateway stopped before the sandbox's record moved.
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
 		const back = await reconnect(service, hostId, host);
 		expect(back.sandboxes.has(sandbox.id)).toBe(false);
@@ -708,7 +774,7 @@ describe("what a loss covers", () => {
 		const { api, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
 		// A pass fenced it; another gateway had begun an upgrade of it meanwhile (compute's marker only).
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		await api.store.sandboxes.update(sandbox.id, (current) => ({
 			...current,
 			upgrading: {
@@ -758,7 +824,7 @@ describe("what a loss covers", () => {
 			detached: true,
 		} as never);
 		host.connection.closed(1006, "gone");
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		// A pass committed the loss and stopped before finishing it; then the host was revoked.
 		await api.store.sandboxes.update(sandbox.id, (current) => ({
 			...current,
@@ -781,7 +847,7 @@ describe("what a loss covers", () => {
 		const owed = { hostId: "host_previous", operationId: "op_move", tier: "microvm" as const };
 		await hostStore.updatePlacement(sandbox.id, (latest) => ({ ...latest, cleanup: owed }));
 		host.connection.closed(1006, "gone");
-		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await fence(service, hostId, [sandbox.id]);
 		await reconnect(service, hostId, host);
 		const left = await service.sandboxes.placement(sandbox.id);
 		expect(left).toMatchObject({ hostId: "host_previous", tier: "microvm", cleanup: owed });

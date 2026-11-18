@@ -1059,9 +1059,16 @@ export interface SandboxBackend {
 	/**
 	 * Fences a lost host's sandboxes (`ComputeServiceOptions.hostLostAfterMs`): each of `sandboxIds` it has placed on
 	 * `hostId` is kept there as lost, and the host deletes it when it connects again, before it is used. Resolves once that
-	 * is recorded; refused while the host is connected. Absent: its hosts are never lost (the stub).
+	 * is recorded, with those fenced (now or before). Only while the host hasn't been seen since `seenAt`, the `lastSeenAt`
+	 * it was judged lost by (`BackendHost.lastSeenAt`; absent, never seen), judged in the fence's own write: refused
+	 * (`conflict`) once it has, as it does when it connects, so a fence for a loss its host came back from never lands, even
+	 * one under way as it did. Absent: its hosts are never lost (the stub).
 	 */
-	fenceHost?(hostId: string, sandboxIds: readonly string[]): Promise<readonly HostSandboxRef[]>;
+	fenceHost?(
+		hostId: string,
+		sandboxIds: readonly string[],
+		seenAt: number | undefined,
+	): Promise<readonly HostSandboxRef[]>;
 	/**
 	 * The sandboxes it has placed on a host, what `fenceHost` may cover there: among them one whose create or fork was
 	 * admitted there but whose answer was never seen, which its record doesn't place on any host yet. Not one moving, nor
