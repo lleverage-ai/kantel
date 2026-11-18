@@ -4,7 +4,18 @@
 // can't be made again (no saved snapshot, no host to take it) is lost as before, its reason saying why; one that
 // never asked (`lost`, the default) is lost whatever hosts there are.
 import { createKantelClient } from "@kantel/api/sdk";
-import { createComputeApi, HOST_LOST_REASON, joinTokenSpender, NOT_RECREATED, notRecreated } from "@kantel/compute";
+import {
+	createComputeApi,
+	createOutcomeUnknown,
+	HOST_LOST_REASON,
+	joinTokenSpender,
+	NOT_RECREATED,
+	notRecreated,
+	RECREATED_STOP_REASON,
+	type SandboxBackend,
+	UPGRADE_STALE_MS,
+} from "@kantel/compute";
+import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { HOST_FEATURES } from "../src/protocol.ts";
@@ -33,6 +44,8 @@ async function setup(
 		readonly second?: boolean;
 		/** Host b's free memory as it reports it; default plenty. */
 		readonly secondFreeMemoryMiB?: number;
+		/** The compute plane's backend as it sees it: the hosts backend, wrapped. */
+		readonly wrap?: (backend: SandboxBackend) => SandboxBackend;
 	} = {},
 ) {
 	let offset = 0;
@@ -44,19 +57,24 @@ async function setup(
 		log: () => undefined,
 		clock: { now: clock },
 	});
-	const backend = createHostBackend({
+	const hostBackend = createHostBackend({
 		hosts: service,
 		publicUrl: "https://kantel.test",
 		tickets: createTunnelTickets(createMemoryRelayStore()),
 	});
-	const api = createComputeApi({
-		backend,
-		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
-		fetch: async () => new Response(null, { status: 204 }),
-		publicUrl: "https://kantel.test",
-		now: clock,
-		hostLostAfterMs: LOST_AFTER_MS,
-	});
+	const backend = options.wrap?.(hostBackend) ?? hostBackend;
+	const gateway = (store?: ReturnType<typeof createComputeApi>["store"]) =>
+		createComputeApi({
+			backend,
+			...(store === undefined ? {} : { store }),
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+			now: clock,
+			hostLostAfterMs: LOST_AFTER_MS,
+		});
+	const api = gateway();
 	service.useJoinTokens(joinTokenSpender(api.store));
 	service.useCompute({
 		secrets: async () => undefined,
@@ -126,7 +144,16 @@ async function setup(
 	};
 	const events = async (type: string) =>
 		(await api.store.events.list({ accountId: sandbox.accountId })).filter((event) => event.type === type);
-	return { api, root, service, a, b, sandbox, pass, save, reconnectA, events };
+	/** Another gateway over the same store and hosts, as a second replica is. */
+	const secondGateway = () => {
+		const other = gateway(api.store);
+		closers.push(() => other.close());
+		return other;
+	};
+	const advance = (ms: number) => {
+		offset += ms;
+	};
+	return { api, root, service, a, b, sandbox, pass, save, reconnectA, events, secondGateway, advance, clock };
 }
 
 describe("a lost host's sandbox set to be made again (onHostLost recreate)", () => {
@@ -171,6 +198,23 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
 	});
 
+	it("carries out its pending environment set-up once its replacement runs", async () => {
+		const { api, root, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		// Set-up left pending on the lost host (its writes never got through).
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			pendingProvision: [{ id: "prv_left", kind: "paths", paths: [] }],
+		}));
+		const fence = (await api.store.sandboxes.get(sandbox.id))?.provisionFence ?? 0;
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored?.provisionFence ?? 0).toBeGreaterThan(fence);
+		expect(stored?.pendingProvision ?? []).toHaveLength(0);
+	});
+
 	it("is stopped again where it was lost stopped", async () => {
 		const { root, b, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
 		await save("kept");
@@ -179,6 +223,153 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		await pass(LOST_AFTER_MS + 1_000);
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
 		expect(b?.host.calls.some((call) => call.method === "sandbox.create")).toBe(true);
+	});
+
+	it("is stopped again by the sweep where its gateway went before its stop was carried out", async () => {
+		const { api, root, b, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		await root.stopSandbox(sandbox.id, { wait: true });
+		if (b === undefined) throw new Error("no host b");
+		// Its first stop on host b never gets through, as a gateway gone before sending it.
+		let refused = 0;
+		b.host.refuse = (method) => {
+			if (method !== "sandbox.stop" || refused > 0) return undefined;
+			refused += 1;
+			return { code: "unavailable", message: "gateway gone" };
+		};
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(refused).toBe(1);
+		// The stop stays owed, on the record, until it is carried out.
+		const owed = await api.store.sandboxes.get(sandbox.id);
+		expect(owed).toMatchObject({ stopFor: RECREATED_STOP_REASON });
+		expect(owed?.recreating).toBeUndefined();
+		await pass(1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
+		expect(b.host.sandboxes.get(sandbox.id)?.state).not.toBe("running");
+	});
+
+	it("is stopped again by a fresh gateway where its gateway went after its host answered the stop", async () => {
+		const { api, root, b, sandbox, pass, save, a, secondGateway, advance, clock } = await setup({
+			onHostLost: "recreate",
+		});
+		await save("kept");
+		await root.stopSandbox(sandbox.id, { wait: true });
+		if (b === undefined) throw new Error("no host b");
+		// Its stop never lands on this gateway; the record is then left as one taken on by a gateway that went.
+		b.host.refuse = (method) =>
+			method === "sandbox.stop" ? { code: "unavailable", message: "gateway gone" } : undefined;
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		// As the record is left when a gateway took the stop on and went, its host's answer unseen.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "stopping",
+			stopClaimedAt: clock(),
+		}));
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({
+			state: "stopping",
+			stopFor: RECREATED_STOP_REASON,
+		});
+		b.host.refuse = () => undefined;
+		const fresh = secondGateway();
+		advance(10 * 60_000);
+		await fresh.service.sweep();
+		await fresh.service.idle();
+		await fresh.service.sweep();
+		await fresh.service.idle();
+		await vi.waitFor(async () => expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("stopped"));
+	});
+
+	it("is made again by the sweep where its gateway went before its create was sent", async () => {
+		let dropped = 0;
+		const { api, root, service, b, sandbox, pass, save, a } = await setup({
+			onHostLost: "recreate",
+			wrap: (backend) => ({
+				...backend,
+				capabilities: backend.capabilities.bind(backend),
+				create: async (spec) => {
+					// The first create over the lost host's fence never reaches a host: its gateway went.
+					if (spec.replacesLost !== undefined && dropped === 0) {
+						dropped += 1;
+						throw createOutcomeUnknown(new KantelError("unavailable", "gateway gone"));
+					}
+					return backend.create(spec);
+				},
+			}),
+		});
+		await save("kept");
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(dropped).toBe(1);
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "starting" });
+		expect(b?.host.calls.some((call) => call.method === "sandbox.create")).toBe(false);
+		// Its lease gone stale, the sweep settles it as a create first, which finds nothing, then tries it again.
+		await pass(UPGRADE_STALE_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(b?.hostId);
+		await pass(LOST_AFTER_MS + 1_000);
+		expect((await api.store.sandboxes.get(sandbox.id))?.recreating).toBeUndefined();
+	});
+
+	it("never ends a command its replacement runs from a loss pass that read the lost record late", async () => {
+		const { api, root, a, sandbox, save, secondGateway, advance } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		const command = (id: string, memoryGeneration?: number) => ({
+			id,
+			sandboxId: sandbox.id,
+			accountId: sandbox.accountId,
+			command: "sleep 1000",
+			cwd: "/root",
+			state: "running" as const,
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now(),
+			detached: true,
+			...(memoryGeneration === undefined ? {} : { memoryGeneration }),
+		});
+		await api.store.commands.put(command("cmd_old") as never);
+		// The first loss pass to list the lost sandbox's commands is held there until let go.
+		const list = api.store.commands.list.bind(api.store.commands);
+		let held: (() => void) | undefined;
+		let reached: () => void = () => undefined;
+		const atList = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			held = resolve;
+		});
+		let gated = false;
+		const spy = vi.spyOn(api.store.commands, "list").mockImplementation(async (...args) => {
+			if (!gated && (await api.store.sandboxes.get(sandbox.id))?.state === "lost") {
+				gated = true;
+				reached();
+				await gate;
+			}
+			return list(...args);
+		});
+		a.host.connection.closed(1006, "gone");
+		advance(LOST_AFTER_MS + 1_000);
+		const late = api.service.sweep();
+		await atList;
+		// Another gateway finishes the loss meanwhile: the sandbox is made again, and runs a new command there.
+		const other = secondGateway();
+		advance(LOST_AFTER_MS + 1_000);
+		await other.service.sweep();
+		await other.service.idle();
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		const generation = (await api.store.sandboxes.get(sandbox.id))?.memoryDropped?.generation;
+		expect(generation).toBeGreaterThan(0);
+		await api.store.commands.put(command("cmd_new", generation) as never);
+		// The late pass goes on: only the lost machine's commands are its to end.
+		held?.();
+		await late;
+		await api.service.idle();
+		spy.mockRestore();
+		expect((await api.store.commands.get("cmd_old"))?.state).toBe("killed");
+		expect((await api.store.commands.get("cmd_new"))?.state).toBe("running");
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
 	});
 
 	it("is lost, saying why, with no saved snapshot", async () => {

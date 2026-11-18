@@ -1686,6 +1686,9 @@ export const NOT_RECREATED = {
 /** A lost sandbox's `reason` where it wasn't made again on another host, saying why. */
 export const notRecreated = (why: string): string =>
 	`${HOST_LOST_REASON}; it wasn't made again on another host: ${why}`;
+/** Why a sandbox made again on another host was stopped again (`stopFor`): it was lost stopped, paused or in error. */
+export const RECREATED_STOP_REASON =
+	"It was made again on another host after its host was lost, and stopped again as it was before";
 /** The states a sandbox made again on another host is left running in; from any other, it is stopped again. */
 const RECREATED_RUNNING: readonly computeSchema.SandboxState[] = ["starting", "running", "moving"];
 /** The states a sandbox counts against an account's concurrent sandboxes in (`requireCapacity`). */
@@ -7574,12 +7577,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * commands (its host can't be asked), and its automatic snapshots on the lost host, forgotten with the record's
 	 * pointers to them, as the host deletes their bytes with it (`sandbox.delete`). Each step may be done again. Answers
 	 * the rule for those pointers, for the write that clears its marker to keep too.
+	 *
+	 * Its commands are only the lost machine's: those of its memory as `sandbox` (the lost record) has it
+	 * (`memoryDropped.generation`) or before. A sandbox made again moves that generation on as it leaves `lost`
+	 * (`recreateLost`), so a pass that read the lost record late never ends a command its replacement runs.
 	 */
 	async function endWithLostHost(
 		sandbox: StoredSandbox,
 		eventId: string,
 	): Promise<(current: StoredSandbox) => StoredSandbox> {
+		const generation = sandbox.memoryDropped?.generation ?? 0;
+		const listed = (await store.commands.list({ sandboxId: sandbox.id, state: "running" })).filter(
+			(command) => (command.memoryGeneration ?? 0) <= generation,
+		);
 		await killCommandsOf(sandbox.id, {
+			listed,
 			note: `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`,
 			reconcile: false,
 		});
@@ -7711,6 +7723,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(rest.mounts === undefined ? {} : { mounts: pendingMounts(rest.mounts), mountsAt: undefined }),
 					// Its egress read afresh for the boot, as a start's is.
 					egressRevision: later(rest.egressRevision),
+					// A new machine: the lost one's commands are behind it, and ended as such (`endWithLostHost`, `killDroppedOf`),
+					// while those its replacement runs carry the new generation, so no late loss pass ends one of them.
+					...droppedMemory(rest, `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`),
 					recreating: {
 						hostId: lostHost,
 						eventId,
@@ -7797,11 +7812,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					undefined,
 					still,
 				);
-				if (booted !== undefined) await finishRecreate(booted);
+				// Its environments' files now it runs, as a settled create's are; their repositories wait for a start by someone
+				// who may clone them.
+				if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+				if (booted !== undefined) await finishRecreate((await store.sandboxes.get(booted.id)) ?? booted);
 			});
 		} finally {
 			clearInterval(heartbeat);
 		}
+	}
+
+	/**
+	 * The sweep's settling of a sandbox being made again whose gateway went quiet at it: as a create whose answer was lost
+	 * first (`settleLostCreate`: its host's word, where its create was admitted), then, once that is done and still
+	 * nothing settles it (its create never admitted), tried again (`retryRecreate`), unless this gateway is at it.
+	 */
+	async function retryStaleRecreate(sandboxId: string, at: number): Promise<void> {
+		await settleLostCreate(sandboxId);
+		const latest = await store.sandboxes.get(sandboxId);
+		const marker = latest?.recreating;
+		if (latest === undefined || marker === undefined || !unsettledCreate(latest) || pending.has(sandboxId)) return;
+		if (marker.heartbeatAt + UPGRADE_STALE_MS > at) return;
+		await retryRecreate(latest);
 	}
 
 	/**
@@ -7863,8 +7895,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Finishes a sandbox made again on another host, once it is no longer `starting` (it runs, or its new machine ended):
 	 * its `sandbox.recreated` event, under its loss's ID (a retry writes over it), naming the snapshot it was made from;
-	 * stopped again where it was lost stopped, paused or in error (its disk its newest snapshot, on its new host); then
-	 * its marker cleared. Each step may be done again, by any gateway (the loss pass finds one left).
+	 * then its marker cleared, in the one write that makes it owe a stop (`stopFor`, `RECREATED_STOP_REASON`) where it
+	 * runs and was lost stopped, paused or in error. That stop is the sweep's durable kind (`stopClaimedAt`, handed back
+	 * if its gateway goes), begun here at once. Each step may be done again, by any gateway (the loss pass finds one left).
 	 */
 	async function finishRecreate(sandbox: StoredSandbox): Promise<void> {
 		const marker = sandbox.recreating;
@@ -7875,21 +7908,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			{ sandbox, snapshotId: marker.snapshotId, data: { previousState: marker.previousState } },
 			marker.eventId,
 		);
-		if (sandbox.state === "running" && !RECREATED_RUNNING.includes(marker.previousState)) {
-			const { work } = await beginStop(
-				sandbox,
-				false,
-				"It was made again on another host after its host was lost, and stopped again as it was",
-				undefined,
-				(current) => current.recreating?.eventId === marker.eventId,
-			);
-			keepGoing(work);
-		}
-		await store.sandboxes.update(sandbox.id, (current) => {
+		const stopAgain = !RECREATED_RUNNING.includes(marker.previousState);
+		const finished = await store.sandboxes.update(sandbox.id, (current) => {
 			if (current.recreating?.eventId !== marker.eventId || current.state === "starting") return undefined;
 			const { recreating: _, ...rest } = current;
-			return rest;
+			return stopAgain && rest.state === "running" && rest.stopFor === undefined
+				? { ...rest, stopFor: RECREATED_STOP_REASON }
+				: rest;
 		});
+		if (finished?.state !== "running" || finished.stopFor !== RECREATED_STOP_REASON) return;
+		// Queued behind whatever is at it now (`track`, never awaited here, so a caller inside one doesn't wait on itself).
+		const owed = (current: StoredSandbox) => current.stopFor === RECREATED_STOP_REASON;
+		const began = await beginStop(finished, false, RECREATED_STOP_REASON, undefined, owed, true).catch(() => undefined);
+		if (began !== undefined) keepGoing(began.work);
 	}
 
 	/** `ComputeService.reportSandboxLost`. */
@@ -15627,11 +15658,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// backend, one under way on this gateway left to it. Creates whose answer was lost likewise, in the background, as
 			// each may ask its host.
 			for (const sandbox of await store.sandboxes.list({ state: "starting" })) {
-				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) keepGoing(settleLostCreate(sandbox.id));
-				// Being made again on another host, by a gateway gone quiet: tried again (`retryRecreate`).
-				const recreating = sandbox.recreating;
-				if (recreating !== undefined && !pending.has(sandbox.id) && recreating.heartbeatAt + UPGRADE_STALE_MS <= at) {
-					keepGoing(retryRecreate(sandbox).catch(() => undefined));
+				// One being made again on another host whose gateway went quiet (`recreating.heartbeatAt`) is settled as a create
+				// is, then, where that settles nothing, tried again (`retryStaleRecreate`).
+				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) {
+					const recreating = sandbox.recreating;
+					keepGoing(
+						recreating !== undefined && recreating.heartbeatAt + UPGRADE_STALE_MS <= at
+							? retryStaleRecreate(sandbox.id, at).catch(() => undefined)
+							: settleLostCreate(sandbox.id),
+					);
 				}
 				// Ordinary boots (starts, resumes, recoveries) whose gateway has gone quiet: settled from what their host has,
 				// in the background, as each may wait on its host. One with no lease (begun before leases were kept) gets one.
