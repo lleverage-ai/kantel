@@ -2,7 +2,8 @@
 // under its ID, on another connected host in its pool, from its newest saved snapshot, with a `sandbox.recreated`
 // event; the lost host's copy stays fenced, and is deleted when that host connects again, before it is used. One that
 // can't be made again (no saved snapshot, no host to take it) is lost as before, its reason saying why; one that
-// never asked (`lost`, the default) is lost whatever hosts there are.
+// never asked (`lost`, the default) is lost whatever hosts there are. apps/host/test/host-lost.sh kills a real host
+// to show it.
 import { createKantelClient } from "@kantel/api/sdk";
 import {
 	CREATE_SETTLE_GRACE_MS,
