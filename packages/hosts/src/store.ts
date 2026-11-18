@@ -698,6 +698,10 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 					[hostId, next.hostId, JSON.stringify(next), sandboxId, read, ...(seenAt === undefined ? [] : [seenAt])],
 				);
 				if (won.length > 0) return next;
+				// Not written: the placement as it is now first. One changed since it was read (another caller's fence, landed
+				// before its host was seen) is changed again as it now is, and so answered as fenced, never refused.
+				const [now] = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+				if (now === undefined || String(now.data) !== read) continue;
 				const [hostRow] = await driver.query("SELECT data FROM compute_hosts WHERE id = ?", [hostId]);
 				const host = hostRow === undefined ? undefined : parse<HostRecord>(hostRow);
 				if (host !== undefined && host.lastSeenAt !== seenAt) return "seen";

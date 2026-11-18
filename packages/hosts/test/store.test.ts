@@ -1,6 +1,7 @@
 // The registry's records behave the same in memory and on every SQL driver a target uses: a join token spent once,
 // hosts found by credential hash, and placements listed per host.
 import { createRequire } from "node:module";
+import type { SqlDriver } from "@kantel/sql";
 import { testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -362,6 +363,42 @@ for (const kind of testDatabaseKinds()) {
 			await migrateHosts(database.driver);
 			await migrateHosts(database.driver);
 			return createSqlHostStore(database.driver);
+		});
+
+		it("answers a fence another caller landed between its read and its write as fenced, though its host was seen after", async () => {
+			const database = await kind.open();
+			cleanups.push(() => database.close());
+			await migrateHosts(database.driver);
+			const other = createSqlHostStore(database.driver);
+			// Run once, right after this caller's first read of the placement.
+			let afterRead: (() => Promise<void>) | undefined;
+			const driver: SqlDriver = {
+				dialect: database.driver.dialect,
+				async query(text, params) {
+					const rows = await database.driver.query(text, params);
+					const run = afterRead;
+					if (run !== undefined && text.startsWith("SELECT data FROM compute_placements")) {
+						afterRead = undefined;
+						await run();
+					}
+					return rows as never;
+				},
+				batch: (statements) => database.driver.batch(statements),
+			};
+			const store = createSqlHostStore(driver);
+			await store.insertHost({ ...host("host_a", 1), lastSeenAt: 20 });
+			await store.putPlacement(placement("s1", "host_a", 1));
+			const fenced = (at: number) => (latest: PlacementRecord) =>
+				latest.fenced === undefined ? { ...latest, state: "lost", fenced: at } : undefined;
+			// B has read it unfenced; A fences it, and then the host's hello moves `lastSeenAt`.
+			afterRead = async () => {
+				expect(await other.updatePlacementUnseen("s1", "host_a", 20, fenced(30))).toMatchObject({ fenced: 30 });
+				await other.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 40 }));
+			};
+			// B's write loses, and B finds A's fence rather than refusing: it stands, so its loss is never dropped.
+			expect(await store.updatePlacementUnseen("s1", "host_a", 20, fenced(35))).toBeUndefined();
+			expect(afterRead).toBeUndefined();
+			expect(await store.getPlacement("s1")).toMatchObject({ state: "lost", fenced: 30 });
 		});
 	});
 }
