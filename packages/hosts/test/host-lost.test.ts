@@ -1,7 +1,8 @@
 // A host that stays disconnected past the deadline is lost (LLE-19621): each sandbox on it moves to `lost`, with one
 // `sandbox.lost` event, and takes only a delete; its placements are fenced, so when it connects again it deletes them
 // before it is used, and none comes back running. A host back within the deadline loses nothing, and a control plane
-// that has only just started loses nothing however long a host was away before it.
+// that has only just started loses nothing however long a host was away before it. apps/host/test/host-lost.sh kills
+// a real host to show it.
 import { createKantelClient } from "@kantel/api/sdk";
 import { createComputeApi, HOST_LOST_REASON, hostLostAfterSetting, joinTokenSpender } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
