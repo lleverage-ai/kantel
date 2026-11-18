@@ -7426,30 +7426,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				sandbox.hostId !== undefined &&
 				refHost(hostRef(snapshot) ?? "") === sandbox.hostId,
 		);
-		// The record's pointers to them go first, the records after: a retry after either finds what is left to do.
-		const ids = new Set(doomed.map((snapshot) => snapshot.id));
-		const pointsAtDoomed = (current: StoredSandbox) =>
-			(current.latestSnapshotId !== undefined && ids.has(current.latestSnapshotId)) ||
-			(current.pausedSnapshotId !== undefined && ids.has(current.pausedSnapshotId));
-		if (pointsAtDoomed(sandbox)) {
-			await store.sandboxes.update(sandbox.id, (current) => {
-				if (current.lostEvent?.eventId !== due.eventId || !pointsAtDoomed(current)) return undefined;
-				const latestGone = current.latestSnapshotId !== undefined && ids.has(current.latestSnapshotId);
-				const pausedGone = current.pausedSnapshotId !== undefined && ids.has(current.pausedSnapshotId);
-				return {
-					...current,
-					...(latestGone ? { latestSnapshotId: undefined, latestSnapshotAt: undefined } : {}),
-					...(pausedGone ? { pausedSnapshotId: undefined } : {}),
-				};
-			});
-		}
+		// One rule for the record's pointers, kept by every write here as the record is then: none names a snapshot doomed
+		// here, or one whose record is gone (a retry's, forgotten by the try it follows). They go before the records, and
+		// once more with the marker, so no interruption or concurrent change between leaves one behind.
+		const doomedIds = new Set(doomed.map((snapshot) => snapshot.id));
+		const missing = new Set<string>();
+		const stale = (id: string | undefined) => id !== undefined && (doomedIds.has(id) || missing.has(id));
+		const withoutStale = (current: StoredSandbox): StoredSandbox => ({
+			...current,
+			...(stale(current.latestSnapshotId) ? { latestSnapshotId: undefined, latestSnapshotAt: undefined } : {}),
+			...(stale(current.pausedSnapshotId) ? { pausedSnapshotId: undefined } : {}),
+		});
+		await store.sandboxes.update(sandbox.id, (current) =>
+			current.lostEvent?.eventId !== due.eventId ||
+			(!stale(current.latestSnapshotId) && !stale(current.pausedSnapshotId))
+				? undefined
+				: withoutStale(current),
+		);
 		for (const snapshot of doomed) {
 			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot);
 		}
+		const latest = await store.sandboxes.get(sandbox.id);
+		for (const id of [latest?.latestSnapshotId, latest?.pausedSnapshotId]) {
+			if (id !== undefined && (await store.snapshots.get(id)) === undefined) missing.add(id);
+		}
 		await store.sandboxes.update(sandbox.id, (current) => {
 			if (current.lostEvent?.eventId !== due.eventId) return undefined;
-			const { lostEvent: _, ...rest } = current;
+			const { lostEvent: _, ...rest } = withoutStale(current);
 			return rest;
 		});
 	}

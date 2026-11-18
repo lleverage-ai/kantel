@@ -299,6 +299,72 @@ describe("what a loss covers", () => {
 		expect(await api.store.snapshots.get("snap_saved")).toMatchObject({ state: "ready" });
 	});
 
+	it("clears a pointer a retry finds to a snapshot an interrupted try already forgot", async () => {
+		const { api, service, hostId, host, sandbox, pass } = await setup();
+		host.connection.closed(1006, "gone");
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		// What an interrupted try left: the snapshot's record gone, the pointer to it not yet cleared.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "lost",
+			reason: HOST_LOST_REASON,
+			lostEvent: { eventId: "evt_interrupted", previousState: "running" },
+			latestSnapshotId: "snap_forgotten",
+			latestSnapshotAt: Date.now(),
+			pausedSnapshotId: "snap_forgotten",
+		}));
+		await pass(LOST_AFTER_MS + 1_000);
+		const finished = await api.store.sandboxes.get(sandbox.id);
+		expect(finished?.lostEvent).toBeUndefined();
+		expect(finished?.latestSnapshotId).toBeUndefined();
+		expect(finished?.pausedSnapshotId).toBeUndefined();
+	});
+
+	it("clears a pointer moved meanwhile to another snapshot it forgets", async () => {
+		const { api, hostId, host, sandbox, pass } = await setup();
+		for (const id of ["snap_a", "snap_b"]) {
+			await api.store.snapshots.put({
+				id,
+				accountId: sandbox.accountId,
+				kind: "automatic",
+				sandboxId: sandbox.id,
+				sandboxType: "microvm",
+				state: "ready",
+				trigger: "stop",
+				memory: false,
+				sizeBytes: 1,
+				createdAt: Date.now(),
+				ref: `${hostId}/${id}`,
+			} as never);
+		}
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			latestSnapshotId: "snap_a",
+			latestSnapshotAt: Date.now(),
+		}));
+		// As the first is forgotten, another gateway points the record at the second (as a snapshot's delete adopts an
+		// older one), after the pointers were first cleared.
+		const remove = api.store.snapshots.delete.bind(api.store.snapshots);
+		const spy = vi.spyOn(api.store.snapshots, "delete").mockImplementation(async (id) => {
+			if (id === "snap_a") {
+				await api.store.sandboxes.update(sandbox.id, (current) => ({
+					...current,
+					latestSnapshotId: "snap_b",
+					latestSnapshotAt: Date.now(),
+				}));
+			}
+			return remove(id);
+		});
+		host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		spy.mockRestore();
+		const finished = await api.store.sandboxes.get(sandbox.id);
+		expect(finished).toMatchObject({ state: "lost" });
+		expect(finished?.lostEvent).toBeUndefined();
+		expect(finished?.latestSnapshotId).toBeUndefined();
+		expect(await api.store.snapshots.get("snap_b")).toBeUndefined();
+	});
+
 	it("never leaves a pointer to a forgotten snapshot when forgetting it is interrupted", async () => {
 		const { api, hostId, host, sandbox, pass } = await setup();
 		await api.store.snapshots.put({
