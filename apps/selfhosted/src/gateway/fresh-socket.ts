@@ -4,51 +4,75 @@
 // keeps answering ENOTFOUND for it while it is asked again, long after the name is back (Bun 1.3.14). In Compose a
 // stopped container's name stops resolving, so a gateway that tried to connect while Postgres was stopped, at start
 // or after a long outage, never reached it again. Bun's lookup through the system resolver doesn't keep answers, so
-// these sockets resolve the name with it and connect to the address; under Node, `dns.lookup` keeps nothing either.
+// these sockets give `net` that one as their `lookup`; under Node, `dns.lookup` keeps nothing either. `net` still gets
+// every address and tries the next family when one can't be reached, as it does with its own lookup.
 import { lookup } from "node:dns/promises";
-import { isIP, Socket } from "node:net";
+import { type LookupFunction, Socket } from "node:net";
 
-/** The name's address, asked of the system's resolver now, never a remembered answer. */
-export async function lookupFresh(host: string): Promise<string> {
-	const bun = (
-		globalThis as { Bun?: { dns: { lookup(host: string, options: object): Promise<{ address: string }[]> } } }
-	).Bun;
-	if (bun === undefined) return (await lookup(host)).address;
-	let found: { address: string }[];
+export interface LookupAddress {
+	readonly address: string;
+	readonly family: number;
+}
+
+type BunDns = { lookup(host: string, options: object): Promise<{ address: string; family: number }[]> };
+
+/** The name's addresses, asked of the system's resolver now, never a remembered answer. */
+export async function lookupFresh(host: string): Promise<LookupAddress[]> {
+	const bun = (globalThis as { Bun?: { dns: BunDns } }).Bun;
+	if (bun === undefined) return lookup(host, { all: true });
+	let found: { address: string; family: number }[];
 	try {
 		found = await bun.dns.lookup(host, { backend: "system" });
 	} catch (error) {
-		// Answered as Node's would be, so the driver tells it from other failures (`postgresFailure`).
-		throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`, { cause: error }), {
-			code: "ENOTFOUND",
-			hostname: host,
-		});
+		found = [];
+		if (!/NOTFOUND|NODATA|NONAME/i.test(String((error as { code?: unknown }).code))) throw error;
 	}
-	const first = found[0];
-	if (first === undefined) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
-	return first.address;
+	// Answered as Node's would be, so the driver tells it from other failures (`postgresFailure`).
+	if (found.length === 0) {
+		throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host });
+	}
+	return found.map(({ address, family }) => ({ address, family }));
 }
 
+/** `resolve` as `net`'s `lookup` option: all the addresses when asked for all, as `net` does, else the first. */
+export const lookupOption = (resolve: (host: string) => Promise<LookupAddress[]>): LookupFunction =>
+	((
+		host: string,
+		options: { readonly all?: boolean },
+		callback: (error: Error | null, address?: string | LookupAddress[], family?: number) => void,
+	) => {
+		resolve(host).then(
+			(addresses) => {
+				const first = addresses[0] as LookupAddress;
+				if (options?.all) callback(null, addresses);
+				else callback(null, first.address, first.family);
+			},
+			(error: Error) => callback(error),
+		);
+	}) as unknown as LookupFunction;
+
+const freshLookup = lookupOption(lookupFresh);
+
 /**
- * A socket whose `connect(port, host)` looks `host` up with `lookupFresh` first. An address, or a Unix socket's path,
- * is connected to as it is. A failed lookup destroys the socket with its error, as `net` does.
+ * A socket whose `connect(port, host)` looks `host` up with `lookupFresh` (tests give another `resolve`). An address,
+ * or a Unix socket's path, is connected to as it is (`net` looks neither up).
  */
 export class FreshLookupSocket extends Socket {
+	readonly #lookup: LookupFunction;
+
+	constructor(resolve?: (host: string) => Promise<LookupAddress[]>) {
+		super();
+		this.#lookup = resolve === undefined ? freshLookup : lookupOption(resolve);
+	}
+
 	override connect(...args: unknown[]): this {
 		const connect = Socket.prototype.connect as (this: Socket, ...a: unknown[]) => Socket;
 		const [port, host] = args;
-		if (typeof host !== "string" || isIP(host) !== 0 || args.length !== 2) {
+		if (args.length === 2 && typeof host === "string") {
+			connect.call(this, { port: Number(port), host, lookup: this.#lookup });
+		} else {
 			connect.apply(this, args);
-			return this;
 		}
-		lookupFresh(host).then(
-			(address) => {
-				if (!this.destroyed) connect.call(this, Number(port), address);
-			},
-			(error: Error) => {
-				if (!this.destroyed) this.destroy(error);
-			},
-		);
 		return this;
 	}
 }

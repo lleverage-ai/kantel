@@ -9,7 +9,10 @@ import {
 	postgresPoolDriver,
 	postgresRenewingPool,
 } from "@kantel/sql/postgres";
+import pg from "pg";
 import { describe, expect, it } from "vitest";
+
+const databaseUrl = process.env.KANTEL_TEST_POSTGRES_URL ?? "";
 
 const pgError = (code: string, message: string) => Object.assign(new Error(message), { code });
 const refused = () => Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:5432"), { code: "ECONNREFUSED" });
@@ -200,5 +203,69 @@ describe("postgresRenewingPool", () => {
 		expect(ended).toEqual(["pool 1", "pool 2"]);
 		pool.renew(readOnly());
 		expect(made).toBe(2);
+	});
+
+	it("ends a retired pool only once the calls waiting on it are answered", async () => {
+		const ended: string[] = [];
+		const answers: (() => void)[] = [];
+		let made = 0;
+		const pool = postgresRenewingPool(() => {
+			made += 1;
+			const name = `pool ${made}`;
+			return {
+				query: () => new Promise((resolve) => answers.push(() => resolve({ rows: [{ name }] }))),
+				connect: () =>
+					new Promise((resolve) => answers.push(() => resolve({ query: async () => ({ rows: [] }), release() {} }))),
+				end: async () => {
+					ended.push(name);
+				},
+			};
+		});
+		const queued = pool.query("SELECT 1");
+		const waiting = pool.connect();
+		pool.renew(readOnly());
+		await pause(10);
+		expect(ended).toEqual([]);
+		answers.shift()?.();
+		await pause(10);
+		expect(ended).toEqual([]);
+		answers.shift()?.();
+		await expect(queued).resolves.toEqual({ rows: [{ name: "pool 1" }] });
+		await waiting;
+		await pause(10);
+		expect(ended).toEqual(["pool 1"]);
+	});
+});
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+describe.skipIf(databaseUrl === "")("postgresRenewingPool on Postgres", () => {
+	it("answers calls queued on a full pool with no connect timeout when it is renewed", async () => {
+		const pools: pg.Pool[] = [];
+		const pool = postgresRenewingPool(() => {
+			const created = new pg.Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 0 });
+			pools.push(created);
+			return created;
+		});
+		try {
+			const lent = await pool.connect();
+			const queuedConnect = pool.connect();
+			const queuedQuery = pool.query("SELECT 2 AS n");
+			await pause(50);
+			expect(pools[0]?.waitingCount).toBe(2);
+			pool.renew(new Error("Connection terminated unexpectedly"));
+			// New calls go to the new pool meanwhile.
+			expect((await pool.query("SELECT 3 AS n")).rows).toEqual([{ n: 3 }]);
+			lent.release();
+			const next = await queuedConnect;
+			expect((await next.query("SELECT 1 AS n")).rows).toEqual([{ n: 1 }]);
+			next.release();
+			expect((await queuedQuery).rows).toEqual([{ n: 2 }]);
+			await pause(50);
+			expect(pools[0]?.ended).toBe(true);
+			expect(pools[1]?.ended).toBe(false);
+		} finally {
+			await pool.end();
+		}
 	});
 });

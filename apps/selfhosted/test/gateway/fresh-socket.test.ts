@@ -3,7 +3,7 @@
 // connect and fail as `net`'s do.
 import { createServer, type Server } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { FreshLookupSocket, freshLookupStream } from "../../src/gateway/fresh-socket.ts";
+import { FreshLookupSocket, freshLookupStream, lookupFresh } from "../../src/gateway/fresh-socket.ts";
 
 let server: Server;
 let port: number;
@@ -42,10 +42,30 @@ describe("FreshLookupSocket", () => {
 		expect(socket.destroyed).toBe(true);
 	});
 
+	it("gives net every address, so it tries the next family when one can't be reached", async () => {
+		expect((await lookupFresh("localhost")).map((each) => each.address)).toContain("127.0.0.1");
+		// ::1 first, where nothing listens on the port; the server is on 127.0.0.1.
+		const asked: string[] = [];
+		const socket = new FreshLookupSocket(async (host) => {
+			asked.push(host);
+			return [
+				{ address: "::1", family: 6 },
+				{ address: "127.0.0.1", family: 4 },
+			];
+		});
+		let connectedTo: string | undefined;
+		socket.once("connect", () => (connectedTo = socket.remoteAddress));
+		socket.connect(port, "postgres.example");
+		expect(await outcome(socket)).toBe("hello");
+		expect(asked).toEqual(["postgres.example"]);
+		expect(connectedTo).toBe("127.0.0.1");
+	});
+
 	it("doesn't connect once destroyed during the lookup", async () => {
 		let accepted = 0;
 		server.once("connection", () => (accepted += 1));
 		const socket = new FreshLookupSocket();
+		socket.on("error", () => undefined);
 		socket.connect(port, "localhost");
 		socket.destroy();
 		await new Promise((resolve) => setTimeout(resolve, 200));

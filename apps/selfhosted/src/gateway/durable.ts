@@ -112,9 +112,41 @@ export function withSearchPath(databaseUrl: string, schema: string, defaults: re
 	return { ...(parsed as pg.PoolConfig), options };
 }
 
+/** Postgres's units for a time setting, in milliseconds; a bare number is milliseconds. */
+const TIME_UNITS: { readonly [unit: string]: number } = {
+	us: 0.001,
+	ms: 1,
+	s: 1_000,
+	min: 60_000,
+	h: 3_600_000,
+	d: 86_400_000,
+};
+
+/** A time setting's value (`90000`, `90s`, `'2 min'`) in milliseconds, or `undefined` when it can't be read. */
+export function settingMs(value: unknown): number | undefined {
+	const match = /^\s*'?\s*(\d+(?:\.\d+)?)\s*(us|ms|s|min|h|d)?\s*'?\s*$/.exec(String(value ?? ""));
+	if (match === null) return undefined;
+	return Number(match[1]) * (TIME_UNITS[match[2] ?? "ms"] ?? 1);
+}
+
+/**
+ * The statement timeout a connection with `settings` gets, in milliseconds (0 for none), or `undefined` when it can't be
+ * told. A `statement_timeout` setting of its own (from the URL's query) wins, as Postgres applies it after `options`;
+ * then the last `-c statement_timeout=` (or `--statement_timeout=`) in `options`.
+ */
+export function effectiveStatementMs(settings: pg.PoolConfig): number | undefined {
+	const own = (settings as { statement_timeout?: unknown }).statement_timeout;
+	if (own !== undefined && own !== null && own !== false) return settingMs(own);
+	const set = [...String(settings.options ?? "").matchAll(/(?:-c\s*|--)statement_timeout=(\S+)/g)];
+	const last = set.at(-1);
+	return last === undefined ? 0 : settingMs(last[1]);
+}
+
 /**
  * `withSearchPath`'s settings with `timeouts`: the connect timeout and keepalive, and, with `statements`, the statement
- * and idle-in-transaction timeouts, which a URL's own `options` override.
+ * and idle-in-transaction timeouts, which a URL's own `options` override. The client gives up on an answer
+ * `ANSWER_GRACE_MS` after the statement timeout the connection ends up with, the URL's if it sets one; with none, or
+ * one it can't read, it waits.
  */
 export function connectionSettings(
 	databaseUrl: string,
@@ -128,14 +160,18 @@ export function connectionSettings(
 				`-c idle_in_transaction_session_timeout=${timeouts.idleInTransactionMs}`,
 			]
 		: [`-c idle_in_transaction_session_timeout=${timeouts.idleInTransactionMs}`];
+	const settings = withSearchPath(databaseUrl, schema, defaults);
+	const statementMs = statements ? effectiveStatementMs(settings) : undefined;
 	return {
-		...withSearchPath(databaseUrl, schema, defaults),
+		...settings,
 		// A fresh lookup of the host for each connection: Bun keeps a failed one (fresh-socket.ts).
 		stream: freshLookupStream,
 		connectionTimeoutMillis: timeouts.connectMs,
 		keepAlive: timeouts.keepAliveMs > 0,
 		keepAliveInitialDelayMillis: timeouts.keepAliveMs,
-		...(statements && timeouts.statementMs > 0 ? { query_timeout: timeouts.statementMs + ANSWER_GRACE_MS } : {}),
+		...(statementMs !== undefined && statementMs > 0
+			? { query_timeout: Math.ceil(statementMs) + ANSWER_GRACE_MS }
+			: {}),
 	};
 }
 

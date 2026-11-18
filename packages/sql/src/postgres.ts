@@ -222,8 +222,9 @@ export interface PostgresEndablePool extends PostgresPool {
 
 export interface PostgresRenewingPool extends PostgresEndablePool {
 	/**
-	 * Replaces the pool with a new one, so new calls get new connections, and closes the old one once the connections
-	 * it lent are back. At most once per `minIntervalMs`; calls in between do nothing.
+	 * Replaces the pool with a new one, so new calls get new connections, and closes the old one once every call waiting
+	 * on it for a connection has one (or gave up) and the connections it lent are back. At most once per
+	 * `minIntervalMs`; calls in between do nothing.
 	 */
 	renew(why: unknown): void;
 }
@@ -239,27 +240,63 @@ export function postgresRenewingPool(
 	options: { readonly minIntervalMs?: number; readonly onRenew?: (why: unknown) => void } = {},
 ): PostgresRenewingPool {
 	const minIntervalMs = options.minIntervalMs ?? 1_000;
-	let current = create();
+	/**
+	 * A pool and the calls waiting on it: a connection asked for, or a query, not yet answered. `pg`'s `end` stops
+	 * handing connections to calls still queued for one, which would leave them waiting for ever (with no connect
+	 * timeout), so a retired pool is ended only once they're answered.
+	 */
+	interface Tracked {
+		readonly pool: PostgresEndablePool;
+		waiting: number;
+		drained?: () => void;
+		ending?: Promise<void>;
+	}
+	const track = (): Tracked => ({ pool: create(), waiting: 0 });
+	const endOnce = (tracked: Tracked) => {
+		tracked.ending ??= tracked.pool.end().catch(() => undefined);
+		return tracked.ending;
+	};
+	const waitingOn = <T>(tracked: Tracked, call: () => Promise<T>): Promise<T> => {
+		tracked.waiting += 1;
+		const done = () => {
+			tracked.waiting -= 1;
+			if (tracked.waiting === 0) tracked.drained?.();
+		};
+		const answer = call();
+		answer.then(done, done);
+		return answer;
+	};
+	const drained = (tracked: Tracked) =>
+		tracked.waiting === 0 ? Promise.resolve() : new Promise<void>((resolve) => (tracked.drained = resolve));
+	let current = track();
 	let renewedAt = Number.NEGATIVE_INFINITY;
 	let ended = false;
-	const retiring = new Set<Promise<void>>();
+	const retiring = new Map<Tracked, Promise<void>>();
 	return {
-		query: (text, params) => current.query(text, params),
-		connect: () => current.connect(),
+		query: (text, params) => {
+			const tracked = current;
+			return waitingOn(tracked, () => tracked.pool.query(text, params));
+		},
+		connect: () => {
+			const tracked = current;
+			return waitingOn(tracked, () => tracked.pool.connect());
+		},
 		renew(why) {
 			const now = Date.now();
 			if (ended || now - renewedAt < minIntervalMs) return;
 			renewedAt = now;
 			const old = current;
-			current = create();
+			current = track();
 			options.onRenew?.(why);
-			const closing = old.end().catch(() => undefined);
-			retiring.add(closing);
-			void closing.then(() => retiring.delete(closing));
+			const closing = drained(old).then(() => endOnce(old));
+			retiring.set(old, closing);
+			void closing.then(() => retiring.delete(old));
 		},
 		async end() {
+			// Closing down: every pool now, whoever is still waiting.
 			ended = true;
-			await Promise.all([current.end(), ...retiring]);
+			const pools = [current, ...retiring.keys()];
+			await Promise.all(pools.map(endOnce));
 		},
 	};
 }
