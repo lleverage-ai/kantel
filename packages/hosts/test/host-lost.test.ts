@@ -541,6 +541,78 @@ describe("what a loss covers", () => {
 		expect(events).toHaveLength(1);
 	});
 
+	it("keeps a fenced sandbox whose loss an upgrade defers, and deletes it once that is settled", async () => {
+		const { api, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		// A pass fenced it; another gateway had begun an upgrade of it meanwhile (compute's marker only).
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			upgrading: {
+				operationId: "op_upgrade",
+				at: Date.now(),
+				heartbeatAt: Date.now() + 3_600_000,
+				from: "running" as const,
+				before: { runs: [] },
+			},
+		}));
+		const back = await reconnect(service, hostId, host);
+		// Connected, and the sandbox kept, fenced: not deleted on a loss not recorded.
+		expect(back.sandboxes.has(sandbox.id)).toBe(true);
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeTypeOf("number");
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("running");
+		const lostEvents = async () =>
+			(await api.store.events.list({ accountId: sandbox.accountId })).filter((event) => event.type === "sandbox.lost");
+		expect(await lostEvents()).toHaveLength(0);
+		// The upgrade settled (rolled back): the next heartbeat loses it, then deletes it.
+		await api.store.sandboxes.update(sandbox.id, (current) => {
+			const { upgrading: _, ...rest } = current;
+			return rest;
+		});
+		back.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { freeMemoryMiB: 20_000, freeDiskGiB: 400, running: 1, stopped: 0, load1: 0 } },
+		});
+		await vi.waitFor(() => expect(back.sandboxes.has(sandbox.id)).toBe(false));
+		await vi.waitFor(async () => expect(await service.sandboxes.placement(sandbox.id)).toBeUndefined());
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("lost");
+		expect(await lostEvents()).toHaveLength(1);
+	});
+
+	it("finishes a committed loss in the background after its host is revoked", async () => {
+		const { api, service, hostId, host, sandbox, pass } = await setup();
+		await api.store.commands.put({
+			id: "cmd_left",
+			sandboxId: sandbox.id,
+			accountId: sandbox.accountId,
+			command: "sleep 1000",
+			cwd: "/root",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now(),
+			detached: true,
+		} as never);
+		host.connection.closed(1006, "gone");
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		// A pass committed the loss and stopped before finishing it; then the host was revoked.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "lost",
+			reason: HOST_LOST_REASON,
+			lostEvent: { eventId: "evt_interrupted", previousState: "running" },
+		}));
+		await service.revoke(hostId);
+		await pass(LOST_AFTER_MS + 1_000);
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toMatchObject([{ id: "evt_interrupted" }]);
+		expect((await api.store.sandboxes.get(sandbox.id))?.lostEvent).toBeUndefined();
+		expect((await api.store.commands.get("cmd_left"))?.state).toBe("killed");
+	});
+
 	it("keeps what a fenced sandbox still owes another host when the lost host deletes it", async () => {
 		const { service, hostStore, hostId, host, sandbox } = await setup();
 		const owed = { hostId: "host_previous", operationId: "op_move", tier: "microvm" as const };

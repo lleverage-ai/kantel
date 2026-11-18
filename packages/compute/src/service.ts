@@ -833,10 +833,12 @@ export interface ComputeService {
 	 * A lost host's fenced sandbox is about to be deleted on it, as the host connects again: it is moved to `lost`, with
 	 * its `sandbox.lost` event, if the loss pass that fenced it stopped before it did (`hostLostAfterMs`); one lost whose
 	 * event isn't stored yet has it stored. `attempt` is the create attempt its placement was admitted for: one whose
-	 * record names no host is lost only at that attempt. Nothing for one deleted or being deleted already. Throws when it
-	 * can't be recorded, so the host keeps it until it is.
+	 * record names no host is lost only at that attempt. Resolves whether the host may delete it now: true once it is lost
+	 * with its loss finished (`finishLoss`), deleted or being deleted, or the copy isn't its record's (another host's, or
+	 * an earlier attempt's); false while a move or upgrade under way defers its loss, when the host keeps it, fenced, to
+	 * be asked again. Throws when it can't be recorded, so the host keeps it until it is.
 	 */
-	reportSandboxLost(hostId: string, sandboxId: string, attempt?: number): Promise<void>;
+	reportSandboxLost(hostId: string, sandboxId: string, attempt?: number): Promise<boolean>;
 	/**
 	 * Whether a pool has sync on (`Pool.sync`): its hosts that run the mesh peer with each other. False for a pool that
 	 * has gone.
@@ -7299,6 +7301,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		lostCheckedAt = at;
 		markingLost = true;
 		try {
+			// A loss already committed but not finished (`lostEvent`) is finished whatever became of its host since: revoked,
+			// back, or gone from the backend's hosts.
+			for (const sandbox of await store.sandboxes.list({ state: "lost" })) {
+				if (sandbox.lostEvent !== undefined) await finishLoss(sandbox).catch(() => undefined);
+			}
 			const { hosts } = await backend.capabilities();
 			for (const host of hosts) {
 				if (host.connected !== false) continue;
@@ -7459,20 +7466,27 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** `ComputeService.reportSandboxLost`. */
-	async function reportSandboxLost(hostId: string, sandboxId: string, placedFor?: number): Promise<void> {
+	async function reportSandboxLost(hostId: string, sandboxId: string, placedFor?: number): Promise<boolean> {
+		const settled = async (): Promise<boolean | undefined> => {
+			const latest = await store.sandboxes.get(sandboxId);
+			if (latest === undefined || latest.state === "deleted" || latest.state === "deleting") return true;
+			if (latest.state === "lost") {
+				await finishLoss(latest);
+				return true;
+			}
+			// Not this copy's: another host's record, or a later attempt of a create (the copy is an earlier one's).
+			if (latest.hostId !== undefined ? latest.hostId !== hostId : attemptOf(latest, placedFor) === undefined) {
+				return latest.moving === undefined && latest.upgrading === undefined;
+			}
+			return undefined;
+		};
+		const before = await settled();
+		if (before !== undefined) return before;
 		const sandbox = await store.sandboxes.get(sandboxId);
-		if (sandbox === undefined) return;
-		if (sandbox.state === "lost") {
-			await finishLoss(sandbox);
-			return;
-		}
-		if (sandbox.hostId === hostId) {
-			await loseSandbox(hostId, sandboxId);
-			return;
-		}
-		if (sandbox.hostId !== undefined) return;
-		const attempt = attemptOf(sandbox, placedFor);
-		if (attempt !== undefined) await loseSandbox(hostId, sandboxId, attempt);
+		if (sandbox === undefined) return true;
+		await loseSandbox(hostId, sandboxId, sandbox.hostId === undefined ? attemptOf(sandbox, placedFor) : undefined);
+		// Lost now, unless a move or upgrade under way defers it: the host keeps it, fenced, until that is settled.
+		return (await settled()) ?? false;
 	}
 
 	/**
