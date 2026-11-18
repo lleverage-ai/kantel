@@ -591,6 +591,24 @@ describe("upgrading an isolate on kantel-host hosts", () => {
 		expect(vms.calls.filter((call) => call.method === "sandbox.exec")).toHaveLength(2);
 	});
 
+	it("is refused on a placement a lost host's fence holds, leaving the fence its loss needs", async () => {
+		const both = factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade]);
+		const store = createMemoryHostStore();
+		const { root, service, hosts } = await setup([{ name: "both", facts: both }], { store });
+		const [host] = hosts;
+		if (host === undefined) throw new Error("no host");
+		const sandbox = await root.createSandbox({ type: "isolate", wait: true });
+		// A loss pass on another replica, which had the host lost, fenced it just before the upgrade reached its placement.
+		await store.updatePlacement(sandbox.id, (latest) => ({ ...latest, state: "lost", fenced: Date.now() }));
+		const refused = await failure(root.upgradeSandbox(sandbox.id, {}));
+		expect(refused.status).toBeGreaterThanOrEqual(400);
+		expect(host.methods()).not.toContain("sandbox.upgrade");
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ tier: "isolate", hostId: host.hostId });
+		expect(placement?.fenced).toBeTypeOf("number");
+		expect(placement?.upgrade).toBeUndefined();
+	});
+
 	it("leaves the isolate where and as it was when its own host has no room and no other can take it", async () => {
 		const both = factsOf(BOTH, [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateUpgrade]);
 		const { root, service, hosts } = await setup([{ name: "both", facts: both }]);

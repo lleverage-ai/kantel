@@ -1303,6 +1303,21 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
+		fenceHost(hostId, sandboxIds, seenAt) {
+			return hosts.sandboxes.fence(hostId, sandboxIds, seenAt);
+		},
+		hostSandboxes(hostId) {
+			return hosts.sandboxes.placedOnHost(hostId);
+		},
+		async fencedOn(sandboxId) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			if (placement?.fenced === undefined) return undefined;
+			return {
+				sandboxId,
+				hostId: placement.hostId,
+				...(placement.attempt === undefined ? {} : { attempt: placement.attempt }),
+			};
+		},
 		async hostConnected(hostId) {
 			if (hosts.hub.connected(hostId)) return true;
 			// Not connected, or not one of these hosts at all (a routed backend's other side): only a host there is to read
@@ -1330,6 +1345,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (placement === undefined || placement.attempt !== attempt || placement.state === "starting") {
 				return { state: "pending" };
 			}
+			// Lost with its host (`fenceHost`): the loss settles it, never a retry or a fail here.
+			if (placement.fenced !== undefined) return { state: "pending" };
 			const reportedAt = placement.updatedAt;
 			// Its host's hello didn't name it: never made there, or gone with its create.
 			if (placement.state === "lost") return { state: "lost", reason: CREATE_LOST, reportedAt };

@@ -404,6 +404,8 @@ export interface StackComputeOptions {
 	readonly stickyDisks?: boolean;
 	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
 	readonly snapshotExpiry?: boolean;
+	/** How long a host may stay disconnected before it is lost (KANTEL_HOST_LOST_AFTER_MINUTES). Default 5 minutes. */
+	readonly hostLostAfterMs?: number;
 	/**
 	 * KANTEL_SECRETS_KEY: 32 bytes, base64, sealing environments' protected values and secret files. Absent, the stack
 	 * object's SQLite store refuses them (`not_supported`); the memory store (tests) seals with a key of its own.
@@ -598,6 +600,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			: {}),
 		...(options.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
+		...(options.hostLostAfterMs === undefined ? {} : { hostLostAfterMs: options.hostLostAfterMs }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
 	// The operator's advice goes to the log, never to a user: they are told only that the deployment doesn't support it.
@@ -621,6 +624,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
 		reportExit: (...report) => api.service.reportExit(...report),
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
+		sandboxLost: (...report) => api.service.reportSandboxLost(...report),
 		// Which pools' hosts peer in their pool's mesh.
 		poolSync: (poolId) => api.service.poolSync(poolId),
 		poolPlacement: (poolId) => api.service.poolPlacement(poolId),

@@ -765,6 +765,13 @@ export interface HostComputeLink {
 	 */
 	hostConnection?(hostId: string, connected: boolean): Promise<void>;
 	/**
+	 * A lost host's fenced sandbox is about to be deleted on it (`sandboxes.fence`): the compute plane records it as lost,
+	 * with its event, if a loss pass hadn't yet (`ComputeService.reportSandboxLost`), and answers whether the host may
+	 * delete it now: false while a move or upgrade under way defers its loss, when it stays fenced, to be asked again. A
+	 * failure leaves it fenced, and the host unused, to be tried again.
+	 */
+	sandboxLost?(hostId: string, sandboxId: string, attempt?: number): Promise<boolean>;
+	/**
 	 * Whether a pool has sync on (`ComputeService.poolSync`): only its hosts that run the mesh get their place in it
 	 * (`HostWelcome.mesh`) and their peers (`mesh.peers`). Absent, no pool has.
 	 */
@@ -1063,9 +1070,29 @@ export interface HostsService {
 		 * Deletes it where it is placed. With no placement, `not_found`, unless `options.hostId` names the host the compute
 		 * plane's record says it is on: then it is settled by that host. Written off when the host is revoked or gone; deleted
 		 * there when the host answers (one it no longer has is gone already); refused (`unavailable`) while the host can't be
-		 * reached, so a disk that may still be on it isn't forgotten.
+		 * reached, so a disk that may still be on it isn't forgotten. One fenced (`fence`) whose host is away is done: its
+		 * fence deletes it there when the host connects again.
 		 */
 		delete(sandboxId: string, options?: { readonly hostId?: string }): Promise<void>;
+		/**
+		 * Fences a lost host's sandboxes (`ComputeService`'s `hostLostAfterMs`): each of `sandboxIds` placed on `hostId` is
+		 * kept there as `lost`, taking nothing its host reports, until the host connects again and deletes it, before it is
+		 * used (`onFence`). Only while the host hasn't been seen since `seenAt`, the `lastSeenAt` it was judged lost by
+		 * (absent: never seen), judged in each fence's own write (`HostStore.updatePlacementUnseen`): its hello moves it, so
+		 * once a host has connected again, a fence for that loss is refused (`conflict`) and can never land after, whatever
+		 * the host does next. Answers those fenced, now or before: one fenced already is answered whatever its host did since.
+		 */
+		fence(
+			hostId: string,
+			sandboxIds: readonly string[],
+			seenAt: number | undefined,
+		): Promise<readonly { readonly sandboxId: string; readonly attempt?: number }[]>;
+		/**
+		 * The sandboxes placed on a host, what a lost host's fence may cover: not a copy owed it by another's move or
+		 * upgrade, nor one moving. One placed there whose compute record doesn't name it yet (a create or fork admitted
+		 * there, its answer never seen) is among them.
+		 */
+		placedOnHost(hostId: string): Promise<readonly { readonly sandboxId: string; readonly attempt?: number }[]>;
 		placement(sandboxId: string): Promise<PlacementRecord | undefined>;
 		openPort(sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
 		/**
@@ -1132,6 +1159,11 @@ export const MESH_REFRESH_MS = 60 * 1000;
  * a rotation's telling missed, or one done on another replica's store write alone, is made good within this.
  */
 export const GRANT_KEYS_REFRESH_MS = 60 * 1000;
+/**
+ * How often a connected host's placements are looked at for a fence (`sandboxes.fence`), on a heartbeat: one written by
+ * a replica that didn't yet see the host connected to another is carried out within this.
+ */
+const FENCE_CHECK_MS = 60 * 1000;
 
 /** How often a connected host's snapshot list is read again for their sizes (`HOST_FEATURES.snapshotSizes`). */
 export const SNAPSHOT_SIZES_REFRESH_MS = 10 * 60 * 1000;
@@ -1780,6 +1812,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				held.delete(placement.sandboxId);
 				continue;
 			}
+			// Lost with its host (`sandboxes.fence`): nothing the host says of it is taken, as it is deleted there before the
+			// host is used (`onFence`).
+			if (placement.fenced !== undefined) {
+				held.delete(placement.sandboxId);
+				continue;
+			}
 			const sandbox = held.get(placement.sandboxId);
 			const latest = asReported(placement, sandbox ?? { state: "lost" }, reported, now);
 			if (latest !== placement) {
@@ -1932,6 +1970,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			reconcileGrantKeys(hostId);
 			readSnapshots(hostId);
 			runCleanups(hostId);
+			if (fencesDue.has(hostId) || receivedAt - (fencesCheckedAt.get(hostId) ?? 0) >= FENCE_CHECK_MS) {
+				fencesCheckedAt.set(hostId, receivedAt);
+				report(fenceConnected(hostId));
+			}
 			report(
 				(async () => {
 					await store.updateHost(hostId, (host) => ({
@@ -1950,7 +1992,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (typeof sandbox.id !== "string" || typeof sandbox.state !== "string") return;
 			const work = (async () => {
 				const placement = await store.getPlacement(sandbox.id);
-				if (placement === undefined || placement.hostId !== hostId) return;
+				// A fenced one is lost, whatever its host says of it: its fence deletes it there.
+				if (placement === undefined || placement.hostId !== hostId || placement.fenced !== undefined) return;
 				const base = (sandbox as { base?: unknown }).base;
 				if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
 					await compute?.recordBases?.(hostId, {
@@ -2084,6 +2127,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			meshCheckedAt.delete(hostId);
 			grantKeysTold.delete(hostId);
 			grantKeysCheckedAt.delete(hostId);
+			fencesCheckedAt.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {
@@ -2092,7 +2136,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			);
 			if (compute?.hostConnection !== undefined) report(compute.hostConnection(hostId, false));
 		},
+		async onFence(hostId, call) {
+			// One deferred is tried again once the host is welcomed (`onWelcomed`), and on its heartbeats after.
+			await runFences(hostId, call);
+		},
 		onWelcomed(hostId) {
+			// A fence written after `onFence` read them, while this connection wasn't yet connected: done now.
+			report(fenceConnected(hostId));
 			if (compute?.hostConnection !== undefined) report(compute.hostConnection(hostId, true));
 		},
 		...(options.callTimeoutMs === undefined ? {} : { callTimeoutMs: options.callTimeoutMs }),
@@ -2947,7 +2997,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		const left = await store.updatePlacement(sandboxId, (latest) => {
 			const owed = latest.cleanup;
 			if (!should(latest) || owed === undefined || owed.hostId === latest.hostId) return undefined;
-			const { upgrade: _upgrade, move: _move, ...rest } = latest;
+			// A lost host's fence (`fenced`) was this host's: what is owed the other is deleted as any leftover is.
+			const { upgrade: _upgrade, move: _move, fenced: _fenced, ...rest } = latest;
 			return {
 				...rest,
 				hostId: owed.hostId,
@@ -2964,6 +3015,64 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		// Never what is left: only `cleanUpSource`, once the isolate is gone, removes that.
 		return store.removePlacementIf(sandboxId, (latest) => !isLeftover(latest) && should(latest));
+	};
+
+	/**
+	 * Deletes what a lost host's fence (`sandboxes.fence`) left on it: for each fenced placement, the compute plane first
+	 * records the sandbox as lost (`ComputeHooks.sandboxLost`: done already, unless a loss pass stopped between the fence
+	 * and its record), then the host is asked to delete it with `call`, and then the placement goes, all but a copy still
+	 * owed another host (`forgetPlacement`). A sandbox the host doesn't have is done. One whose loss the compute plane
+	 * defers (a move or upgrade of it under way) is left, fenced and kept, for a later try (its host's heartbeats): the
+	 * count of those is answered. Throws once one can't be done, leaving it and the rest fenced: the host isn't used until
+	 * they are.
+	 */
+	const runFences = async (
+		hostId: string,
+		call: (method: string, params: unknown) => Promise<unknown>,
+	): Promise<number> => {
+		const fenced = (await store.placementsOn(hostId)).filter(
+			(placement) => placement.fenced !== undefined && placement.hostId === hostId,
+		);
+		let deferred = 0;
+		for (const placement of fenced) {
+			if ((await compute?.sandboxLost?.(hostId, placement.sandboxId, placement.attempt)) === false) {
+				deferred += 1;
+				continue;
+			}
+			try {
+				await call(HostMethods.delete, { sandboxId: placement.sandboxId });
+			} catch (error) {
+				const converted = kantelErrorFromHost(error);
+				if (!(isKantelError(converted) && converted.code === "not_found")) throw converted;
+			}
+			await forgetPlacement(placement.sandboxId, (latest) => latest.hostId === hostId && latest.fenced !== undefined);
+			log(`[hosts] sandbox ${placement.sandboxId} deleted on host ${hostId}, which was lost with it`);
+		}
+		return deferred;
+	};
+
+	/** Hosts with a fence to finish while connected: tried again on each heartbeat until it is done. */
+	const fencesDue = new Set<string>();
+	/**
+	 * When each connected host's placements were last looked at for a fence (`FENCE_CHECK_MS`): one another replica wrote
+	 * as the host connected here, before that replica saw it connected, is found within a minute.
+	 */
+	const fencesCheckedAt = new Map<string, number>();
+	/**
+	 * Finishes a connected host's fence: one written as it connected, or that failed after it was. Until it is done, the
+	 * host may still run those sandboxes, which the compute plane has lost already, so it is tried on every heartbeat.
+	 */
+	const fenceConnected = async (hostId: string): Promise<void> => {
+		if (!hub.connected(hostId)) return;
+		fencesDue.delete(hostId);
+		try {
+			const deferred = await runFences(hostId, (method, params) => onHost(hostId, method, params as object));
+			if (deferred > 0) fencesDue.add(hostId);
+		} catch (error) {
+			const why = error instanceof Error ? error.message : String(error);
+			log(`[hosts] host ${hostId}'s lost sandboxes weren't all deleted (${why}); again on its next heartbeat`);
+			fencesDue.add(hostId);
+		}
 	};
 
 	/** The isolates upgrades left on each host, deleted on its next heartbeat (once it is welcomed). */
@@ -3767,10 +3876,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				 * gateway or answer is lost is settled (`settleUpgrade`) rather than guessed.
 				 */
 				const intend = async (target: HostRecord, size: HostSize, phase: "host" | "copy") => {
-					// Only on the isolate it was read as, with no other upgrade on it: never over a newer placement.
+					// Only on the isolate it was read as, with no other upgrade on it: never over a newer placement, and never on
+					// one a lost host's fence holds (`sandboxes.fence`), whose loss the upgrade would otherwise hold up.
 					const written = await store.updatePlacement(sandboxId, (latest) =>
 						latest.tier === "isolate" &&
 						latest.hostId === source.hostId &&
+						latest.fenced === undefined &&
 						(latest.upgrade === undefined || latest.upgrade.operationId === operationId)
 							? { ...latest, upgrade: { operationId, target: target.id, phase, size }, updatedAt: clock.now() }
 							: undefined,
@@ -4081,11 +4192,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				};
 				// The move, kept on the placement before anything is sent: where its copy may be, so one whose gateway or
 				// answer is lost is settled (`settleMove`) rather than guessed. Only on the stopped microVM it was read as,
-				// with no other move or upgrade on it.
+				// with no other move or upgrade on it, and never on one a lost host's fence holds (`sandboxes.fence`).
 				const intended = await store.updatePlacement(sandboxId, (latest) =>
 					latest.hostId === source.hostId &&
 					latest.tier === "microvm" &&
 					latest.upgrade === undefined &&
+					latest.fenced === undefined &&
 					(latest.move === undefined
 						? movable(latest.state) && latest.cleanup === undefined
 						: latest.move.operationId === operationId && latest.move.target === target.id)
@@ -4520,6 +4632,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					log(`[hosts] sandbox ${sandboxId} deleted on host ${hostId}, where it had no placement`);
 					return;
 				}
+				// Lost with its host: deleted there by its fence when the host is back, so nothing waits for it now. One whose
+				// host is connected (its fence under way, or not done yet) is deleted there now, as any is.
+				if (placed.fenced !== undefined && !hub.connected(placed.hostId)) {
+					log(
+						`[hosts] sandbox ${sandboxId} deleted: its host ${placed.hostId} was lost, and deletes it when it's back`,
+					);
+					return;
+				}
 				let placement = placed;
 				// A move under way leaves nothing on its target. It is fenced first, in the store (its rollback begun, so it
 				// never switches from here), then its copy there cancelled, and the delete goes on against the placement as it
@@ -4581,6 +4701,50 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				}
 				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
 				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
+			},
+			async fence(hostId, sandboxIds, seenAt) {
+				const at = clock.now();
+				const fenced: { readonly sandboxId: string; readonly attempt?: number }[] = [];
+				for (const sandboxId of sandboxIds) {
+					// Never on a host seen since it was judged lost: back, so not lost. Its hello moved `lastSeenAt` before it was
+					// used, so a fence that lost to it is refused here, in the write, and never lands after another caller's refusal.
+					const written = await store.updatePlacementUnseen(sandboxId, hostId, seenAt, (latest) =>
+						latest.hostId !== hostId ||
+						latest.fenced !== undefined ||
+						isLeftover(latest) ||
+						// A move or an upgrade under way owes another host's copy its settling first: never fenced over it.
+						latest.move !== undefined ||
+						latest.upgrade !== undefined
+							? undefined
+							: { ...latest, state: "lost", fenced: at, updatedAt: at },
+					);
+					if (written === "seen") throw new KantelError("conflict", `The host ${hostId} was seen since it was lost`);
+					// Fenced on this host, now or by an earlier pass: what the compute plane may lose with it.
+					const latest = await store.getPlacement(sandboxId);
+					if (latest?.hostId === hostId && latest.fenced !== undefined) {
+						fenced.push({ sandboxId, ...(latest.attempt === undefined ? {} : { attempt: latest.attempt }) });
+					}
+				}
+				log(`[hosts] host ${hostId} was lost: ${fenced.length} sandbox(es) fenced, deleted there when it's back`);
+				// Back as they were written: fenced now, rather than on its next connection.
+				if (hub.connected(hostId)) await fenceConnected(hostId);
+				return fenced;
+			},
+			async placedOnHost(hostId) {
+				return (await store.placementsOn(hostId))
+					.filter(
+						(placement) =>
+							placement.hostId === hostId &&
+							!isLeftover(placement) &&
+							placement.move === undefined &&
+							placement.upgrade === undefined &&
+							// One its host said it no longer had is nothing there to lose: an earlier attempt's, say.
+							(placement.state !== "lost" || placement.fenced !== undefined),
+					)
+					.map((placement) => ({
+						sandboxId: placement.sandboxId,
+						...(placement.attempt === undefined ? {} : { attempt: placement.attempt }),
+					}));
 			},
 			placement(sandboxId) {
 				return store.getPlacement(sandboxId);

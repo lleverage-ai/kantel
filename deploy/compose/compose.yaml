@@ -143,6 +143,9 @@ services:
       # `on` deletes automatic snapshots past their expiry (on hosts that keep their own copies). Off by default; with
       # several gateways on one database, turn it on only once every gateway runs a version that has it.
       KANTEL_SNAPSHOT_EXPIRY: ${KANTEL_SNAPSHOT_EXPIRY:-}
+      # How long a host may stay disconnected before it counts as lost, in minutes (default 5, at least 1): its
+      # sandboxes move to `lost`, and the host deletes them when it connects again, before it is used.
+      KANTEL_HOST_LOST_AFTER_MINUTES: ${KANTEL_HOST_LOST_AFTER_MINUTES:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes:

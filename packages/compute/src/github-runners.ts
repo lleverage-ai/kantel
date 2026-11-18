@@ -1419,6 +1419,9 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			if (sandbox === undefined || sandbox.state === "deleted") return "its sandbox is gone";
 			if (sandbox.state === "error")
 				return `its sandbox is in error${sandbox.reason === undefined ? "" : `: ${sandbox.reason}`}`;
+			// Its host was lost with it: it never finishes, and its machine is deleted when the host is back.
+			if (sandbox.state === "lost")
+				return `its sandbox was lost${sandbox.reason === undefined ? "" : `: ${sandbox.reason}`}`;
 			return undefined;
 		} catch (error) {
 			log(`[github-runners] reading runner ${machine.id} failed: ${messageOf(error)}`);

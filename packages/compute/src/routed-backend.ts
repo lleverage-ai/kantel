@@ -170,6 +170,34 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						return (await primary.hostConnected?.(hostId)) ?? fallback.hostConnected?.(hostId);
 					},
 				}),
+		// Each backend fences what it placed there; one whose hosts are never lost has none.
+		...(primary.fenceHost === undefined && fallback.fenceHost === undefined
+			? {}
+			: {
+					async fenceHost(hostId: string, sandboxIds: readonly string[], seenAt: number | undefined) {
+						return [
+							...((await primary.fenceHost?.(hostId, sandboxIds, seenAt)) ?? []),
+							...((await fallback.fenceHost?.(hostId, sandboxIds, seenAt)) ?? []),
+						];
+					},
+				}),
+		...(primary.hostSandboxes === undefined && fallback.hostSandboxes === undefined
+			? {}
+			: {
+					async hostSandboxes(hostId: string) {
+						return [
+							...((await primary.hostSandboxes?.(hostId)) ?? []),
+							...((await fallback.hostSandboxes?.(hostId)) ?? []),
+						];
+					},
+				}),
+		...(primary.fencedOn === undefined && fallback.fencedOn === undefined
+			? {}
+			: {
+					async fencedOn(sandboxId: string) {
+						return (await primary.fencedOn?.(sandboxId)) ?? fallback.fencedOn?.(sandboxId);
+					},
+				}),
 		async capabilities(): Promise<BackendCapabilities> {
 			const [first, second] = await Promise.all([primary.capabilities(), fallback.capabilities()]);
 			const sizes = new Map<string, BackendSize>();

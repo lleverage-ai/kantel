@@ -28,6 +28,7 @@ The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage 
 | `sandbox.recovered` | Its host has it back |
 | `sandbox.oom_kill` | A microVM ran out of memory and its kernel killed processes (`data.oomKills` of them); it keeps running |
 | `sandbox.upgraded` | An isolate became a microVM with the same ID ([upgrade](/sandboxes/types/#upgrade-an-isolate-to-a-microvm), or its `autoUpgrade`): `data.previousState`, `data.path` (`host` or `control-plane`), `data.files`, `data.bytes` and `data.durationMs` |
+| `sandbox.lost` | Its host stayed disconnected past the deadline, so it moved to `lost` ([When its host is lost](/sandboxes/lifecycle/#when-its-host-is-lost)): `data.previousState` and `data.reason` |
 | `sandbox.deleted` | It has been erased |
 | `snapshot.saved` | A saved snapshot was made |
 | `snapshot.deleted` | A saved snapshot was deleted |

@@ -1336,7 +1336,7 @@ Send the account's events to a URL; its signing secret is shown once.
 kantel webhook create <url> [flags]
 ```
 
-Events: sandbox.created, sandbox.running, sandbox.stopped, sandbox.paused, sandbox.error, sandbox.degraded, sandbox.recovered, sandbox.environments_changed, sandbox.oom_kill, sandbox.upgraded, sandbox.deleted, snapshot.saved, snapshot.deleted.
+Events: sandbox.created, sandbox.running, sandbox.stopped, sandbox.paused, sandbox.error, sandbox.degraded, sandbox.recovered, sandbox.environments_changed, sandbox.oom_kill, sandbox.upgraded, sandbox.lost, sandbox.deleted, snapshot.saved, snapshot.deleted.
 
 | Flag | What it does |
 | --- | --- |

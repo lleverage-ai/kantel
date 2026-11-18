@@ -423,6 +423,8 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	paused: "paused",
 	moving: "moving",
 	error: "error",
+	// The UI has no lost state yet: one lost with its host shows as failed, with its reason, and can be deleted.
+	lost: "error",
 	// The UI has no deleting or deleted: one being erased is on its way out, and a deleted one is gone.
 	deleting: "stopping",
 	deleted: "stopped",
@@ -675,7 +677,10 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.poolId === undefined ? {} : { poolId: sandbox.poolId }),
 		...(Object.keys(sandbox.labels).length === 0 ? {} : { labels: sandbox.labels }),
 		...moveOf(sandbox, context),
-		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
+		// A lost one shows as an error too (`UI_STATES`), with why.
+		...((sandbox.state === "error" || sandbox.state === "lost") && sandbox.reason !== undefined
+			? { error: sandbox.reason }
+			: {}),
 		// Running, but its guest agent doesn't answer: why, for the page's notice and its Recover.
 		...(sandbox.state === "running" && sandbox.health === "unresponsive"
 			? { unresponsive: sandbox.reason ?? "Its guest agent isn't answering. Recover it: a restart that keeps its disk" }

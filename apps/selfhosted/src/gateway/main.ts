@@ -258,6 +258,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(cfg.compute.githubRunners === true ? { githubRunners: true } : {}),
 		...(cfg.compute.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(cfg.compute.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
+		...(cfg.compute.hostLostAfterMs === undefined ? {} : { hostLostAfterMs: cfg.compute.hostLostAfterMs }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(

@@ -292,6 +292,7 @@ export const SandboxState = Type.Union(
 		Type.Literal("paused"),
 		Type.Literal("moving"),
 		Type.Literal("error"),
+		Type.Literal("lost"),
 		Type.Literal("deleting"),
 		Type.Literal("deleted"),
 	],
@@ -304,8 +305,10 @@ export const SandboxState = Type.Union(
 			"first copy is made (`copying`), when it still runs them. " +
 			"`stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like " +
 			"`stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the " +
-			"last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for " +
-			"good, with its snapshots.",
+			"last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected " +
+			"past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer " +
+			"counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. " +
+			"`deleting`, `deleted`: erased for good, with its snapshots.",
 	},
 );
 
@@ -318,6 +321,7 @@ export const SandboxNotRunningCode = Type.Union(
 		Type.Literal("sandbox_error"),
 		Type.Literal("sandbox_deleting"),
 		Type.Literal("sandbox_unresponsive"),
+		Type.Literal("sandbox_lost"),
 	],
 	{
 		title: "SandboxNotRunningCode",
@@ -327,7 +331,8 @@ export const SandboxNotRunningCode = Type.Union(
 			"`sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. " +
 			"`sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't " +
 			"answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it " +
-			"(`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again.",
+			"(`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. " +
+			"`sandbox_lost`: its host was lost (its state is `lost`); it can only be deleted.",
 	},
 );
 
@@ -3543,6 +3548,7 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.environments_changed"),
 		Type.Literal("sandbox.oom_kill"),
 		Type.Literal("sandbox.upgraded"),
+		Type.Literal("sandbox.lost"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
 		Type.Literal("snapshot.deleted"),
@@ -3564,6 +3570,8 @@ export const EventType = Type.Union(
 			"`data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the " +
 			"microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and " +
 			"`data.durationMs`. " +
+			"`sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` " +
+			"(`data.previousState`, and `data.reason`); it can only be deleted now. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -5069,6 +5077,7 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.environments_changed",
 	"sandbox.oom_kill",
 	"sandbox.upgraded",
+	"sandbox.lost",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",

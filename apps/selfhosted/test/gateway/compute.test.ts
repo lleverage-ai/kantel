@@ -257,7 +257,13 @@ describe("the compute plane on the gateway", () => {
 
 	it("is given KANTEL_SNAPSHOT_EXPIRY and the other compute switches by the Compose stack, off unless set", () => {
 		const compose = readFileSync(new URL("../../../../deploy/compose/compose.yaml", import.meta.url), "utf8");
-		for (const name of ["KANTEL_SNAPSHOT_EXPIRY", "KANTEL_TEMPLATES", "KANTEL_MOUNTS", "KANTEL_ACCOUNT_HOSTS"]) {
+		for (const name of [
+			"KANTEL_SNAPSHOT_EXPIRY",
+			"KANTEL_HOST_LOST_AFTER_MINUTES",
+			"KANTEL_TEMPLATES",
+			"KANTEL_MOUNTS",
+			"KANTEL_ACCOUNT_HOSTS",
+		]) {
 			expect(compose).toContain(`${name}: \${${name}:-}`);
 		}
 	});
@@ -270,6 +276,17 @@ describe("the compute plane on the gateway", () => {
 			computeConfig({ KANTEL_SNAPSHOT_EXPIRY: "on", KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" }),
 		).toMatchObject({ snapshotExpiry: true, hosts: { publicUrl: "http://127.0.0.1:58090" } });
 		expect(() => computeConfig({ KANTEL_SNAPSHOT_EXPIRY: "yes" })).toThrow(/KANTEL_SNAPSHOT_EXPIRY/);
+	});
+
+	it("reads KANTEL_HOST_LOST_AFTER_MINUTES as minutes, left out unset, and stops on anything else", () => {
+		expect(computeConfig({ KANTEL_HOST_LOST_AFTER_MINUTES: "" })).toEqual({});
+		expect(computeConfig({ KANTEL_HOST_LOST_AFTER_MINUTES: "10" })).toEqual({ hostLostAfterMs: 600_000 });
+		expect(
+			computeConfig({ KANTEL_HOST_LOST_AFTER_MINUTES: "2", KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" }),
+		).toMatchObject({ hostLostAfterMs: 120_000, hosts: { publicUrl: "http://127.0.0.1:58090" } });
+		for (const bad of ["0", "5m", "soon"]) {
+			expect(() => computeConfig({ KANTEL_HOST_LOST_AFTER_MINUTES: bad })).toThrow(/KANTEL_HOST_LOST_AFTER_MINUTES/);
+		}
 	});
 
 	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {

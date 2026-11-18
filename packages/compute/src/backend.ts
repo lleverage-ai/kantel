@@ -1037,6 +1037,16 @@ export interface DestroyOptions {
 	readonly hostId?: string;
 }
 
+/**
+ * A sandbox placed on a host (`SandboxBackend.hostSandboxes`, `fenceHost`), and the create attempt it was admitted for
+ * (`SandboxSpec`'s attempt, its record's `lifecycle`): absent for a placement that names none (a fork, or one from
+ * before attempts were kept).
+ */
+export interface HostSandboxRef {
+	readonly sandboxId: string;
+	readonly attempt?: number;
+}
+
 export interface SandboxBackend {
 	/** The types, sizes and hosts available now. */
 	capabilities(): Promise<BackendCapabilities>;
@@ -1046,6 +1056,30 @@ export interface SandboxBackend {
 	 * is (the stub).
 	 */
 	hostConnected?(hostId: string): Promise<boolean | undefined>;
+	/**
+	 * Fences a lost host's sandboxes (`ComputeServiceOptions.hostLostAfterMs`): each of `sandboxIds` it has placed on
+	 * `hostId` is kept there as lost, and the host deletes it when it connects again, before it is used. Resolves once that
+	 * is recorded, with those fenced (now or before). Only while the host hasn't been seen since `seenAt`, the `lastSeenAt`
+	 * it was judged lost by (`BackendHost.lastSeenAt`; absent, never seen), judged in the fence's own write: refused
+	 * (`conflict`) once it has, as it does when it connects, so a fence for a loss its host came back from never lands, even
+	 * one under way as it did. Absent: its hosts are never lost (the stub).
+	 */
+	fenceHost?(
+		hostId: string,
+		sandboxIds: readonly string[],
+		seenAt: number | undefined,
+	): Promise<readonly HostSandboxRef[]>;
+	/**
+	 * The sandboxes it has placed on a host, what `fenceHost` may cover there: among them one whose create or fork was
+	 * admitted there but whose answer was never seen, which its record doesn't place on any host yet. Not one moving, nor
+	 * one its host said it no longer had (unless fenced).
+	 */
+	hostSandboxes?(hostId: string): Promise<readonly HostSandboxRef[]>;
+	/**
+	 * Where a lost host's fence (`fenceHost`) holds a sandbox's placement: that host and the attempt it was admitted for.
+	 * Undefined when none does. Absent: none ever does (the stub).
+	 */
+	fencedOn?(sandboxId: string): Promise<(HostSandboxRef & { readonly hostId: string }) | undefined>;
 	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).
