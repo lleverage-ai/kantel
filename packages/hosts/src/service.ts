@@ -769,7 +769,7 @@ export interface HostComputeLink {
 	 * with its event, if a loss pass hadn't yet (`ComputeService.reportSandboxLost`). A failure leaves it fenced, and the
 	 * host unused, to be tried again.
 	 */
-	sandboxLost?(hostId: string, sandboxId: string): Promise<void>;
+	sandboxLost?(hostId: string, sandboxId: string, attempt?: number): Promise<void>;
 	/**
 	 * Whether a pool has sync on (`ComputeService.poolSync`): only its hosts that run the mesh get their place in it
 	 * (`HostWelcome.mesh`) and their peers (`mesh.peers`). Absent, no pool has.
@@ -1079,13 +1079,16 @@ export interface HostsService {
 		 * used (`onFence`). Refused (`conflict`) while the host is connected; a host that connects as it is written is
 		 * fenced as soon as it is.
 		 */
-		fence(hostId: string, sandboxIds: readonly string[]): Promise<void>;
+		fence(
+			hostId: string,
+			sandboxIds: readonly string[],
+		): Promise<readonly { readonly sandboxId: string; readonly attempt?: number }[]>;
 		/**
 		 * The sandboxes placed on a host, what a lost host's fence may cover: not a copy owed it by another's move or
 		 * upgrade, nor one moving. One placed there whose compute record doesn't name it yet (a create or fork admitted
 		 * there, its answer never seen) is among them.
 		 */
-		placedOnHost(hostId: string): Promise<readonly string[]>;
+		placedOnHost(hostId: string): Promise<readonly { readonly sandboxId: string; readonly attempt?: number }[]>;
 		placement(sandboxId: string): Promise<PlacementRecord | undefined>;
 		openPort(sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
 		/**
@@ -3021,7 +3024,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			(placement) => placement.fenced !== undefined && placement.hostId === hostId,
 		);
 		for (const placement of fenced) {
-			await compute?.sandboxLost?.(hostId, placement.sandboxId);
+			await compute?.sandboxLost?.(hostId, placement.sandboxId, placement.attempt);
 			try {
 				await call(HostMethods.delete, { sandboxId: placement.sandboxId });
 			} catch (error) {
@@ -4683,21 +4686,38 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			async fence(hostId, sandboxIds) {
 				if (hub.connected(hostId)) throw new KantelError("conflict", `The host ${hostId} is connected`);
 				const at = clock.now();
+				const fenced: { readonly sandboxId: string; readonly attempt?: number }[] = [];
 				for (const sandboxId of sandboxIds) {
 					await store.updatePlacement(sandboxId, (latest) =>
 						latest.hostId !== hostId || latest.fenced !== undefined || isLeftover(latest) || latest.move !== undefined
 							? undefined
 							: { ...latest, state: "lost", fenced: at, updatedAt: at },
 					);
+					// Fenced on this host, now or by an earlier pass: what the compute plane may lose with it.
+					const latest = await store.getPlacement(sandboxId);
+					if (latest?.hostId === hostId && latest.fenced !== undefined) {
+						fenced.push({ sandboxId, ...(latest.attempt === undefined ? {} : { attempt: latest.attempt }) });
+					}
 				}
-				log(`[hosts] host ${hostId} was lost: ${sandboxIds.length} sandbox(es) fenced, deleted there when it's back`);
+				log(`[hosts] host ${hostId} was lost: ${fenced.length} sandbox(es) fenced, deleted there when it's back`);
 				// Back as they were written: fenced now, rather than on its next connection.
 				if (hub.connected(hostId)) await fenceConnected(hostId);
+				return fenced;
 			},
 			async placedOnHost(hostId) {
 				return (await store.placementsOn(hostId))
-					.filter((placement) => placement.hostId === hostId && !isLeftover(placement) && placement.move === undefined)
-					.map((placement) => placement.sandboxId);
+					.filter(
+						(placement) =>
+							placement.hostId === hostId &&
+							!isLeftover(placement) &&
+							placement.move === undefined &&
+							// One its host said it no longer had is nothing there to lose: an earlier attempt's, say.
+							(placement.state !== "lost" || placement.fenced !== undefined),
+					)
+					.map((placement) => ({
+						sandboxId: placement.sandboxId,
+						...(placement.attempt === undefined ? {} : { attempt: placement.attempt }),
+					}));
 			},
 			placement(sandboxId) {
 				return store.getPlacement(sandboxId);

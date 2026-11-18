@@ -1037,6 +1037,16 @@ export interface DestroyOptions {
 	readonly hostId?: string;
 }
 
+/**
+ * A sandbox placed on a host (`SandboxBackend.hostSandboxes`, `fenceHost`), and the create attempt it was admitted for
+ * (`SandboxSpec`'s attempt, its record's `lifecycle`): absent for a placement that names none (a fork, or one from
+ * before attempts were kept).
+ */
+export interface HostSandboxRef {
+	readonly sandboxId: string;
+	readonly attempt?: number;
+}
+
 export interface SandboxBackend {
 	/** The types, sizes and hosts available now. */
 	capabilities(): Promise<BackendCapabilities>;
@@ -1051,12 +1061,13 @@ export interface SandboxBackend {
 	 * `hostId` is kept there as lost, and the host deletes it when it connects again, before it is used. Resolves once that
 	 * is recorded; refused while the host is connected. Absent: its hosts are never lost (the stub).
 	 */
-	fenceHost?(hostId: string, sandboxIds: readonly string[]): Promise<void>;
+	fenceHost?(hostId: string, sandboxIds: readonly string[]): Promise<readonly HostSandboxRef[]>;
 	/**
 	 * The sandboxes it has placed on a host, what `fenceHost` may cover there: among them one whose create or fork was
-	 * admitted there but whose answer was never seen, which its record doesn't place on any host yet. Not one moving.
+	 * admitted there but whose answer was never seen, which its record doesn't place on any host yet. Not one moving, nor
+	 * one its host said it no longer had (unless fenced).
 	 */
-	hostSandboxes?(hostId: string): Promise<readonly string[]>;
+	hostSandboxes?(hostId: string): Promise<readonly HostSandboxRef[]>;
 	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).

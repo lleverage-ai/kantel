@@ -175,8 +175,10 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			? {}
 			: {
 					async fenceHost(hostId: string, sandboxIds: readonly string[]) {
-						await primary.fenceHost?.(hostId, sandboxIds);
-						await fallback.fenceHost?.(hostId, sandboxIds);
+						return [
+							...((await primary.fenceHost?.(hostId, sandboxIds)) ?? []),
+							...((await fallback.fenceHost?.(hostId, sandboxIds)) ?? []),
+						];
 					},
 				}),
 		...(primary.hostSandboxes === undefined && fallback.hostSandboxes === undefined

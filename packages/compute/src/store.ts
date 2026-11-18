@@ -290,6 +290,12 @@ export type StoredSandbox = Omit<
 		readonly pending?: OOMPending;
 	};
 	/**
+	 * Its `sandbox.lost` event, written with its move to `lost` and not yet stored: the ID it is stored under and the
+	 * state it was lost from, never changed, so every try (any gateway's, after any restart) stores the same event once.
+	 * Cleared once stored.
+	 */
+	readonly lostEvent?: { readonly eventId: string; readonly previousState: computeSchema.SandboxState };
+	/**
 	 * When its host started the machine this run booted (the host's clock, ms: its first health stamp, `Placement.machineAt`):
 	 * a host's report of an exit stamped earlier is an earlier machine's, and is dropped (`ComputeService.reportExit`).
 	 * Absent from a backend that doesn't say. Set by every boot.

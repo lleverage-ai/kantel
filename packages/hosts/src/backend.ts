@@ -1303,8 +1303,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
-		async fenceHost(hostId, sandboxIds) {
-			await hosts.sandboxes.fence(hostId, sandboxIds);
+		fenceHost(hostId, sandboxIds) {
+			return hosts.sandboxes.fence(hostId, sandboxIds);
 		},
 		hostSandboxes(hostId) {
 			return hosts.sandboxes.placedOnHost(hostId);
@@ -1336,6 +1336,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (placement === undefined || placement.attempt !== attempt || placement.state === "starting") {
 				return { state: "pending" };
 			}
+			// Lost with its host (`fenceHost`): the loss settles it, never a retry or a fail here.
+			if (placement.fenced !== undefined) return { state: "pending" };
 			const reportedAt = placement.updatedAt;
 			// Its host's hello didn't name it: never made there, or gone with its create.
 			if (placement.state === "lost") return { state: "lost", reason: CREATE_LOST, reportedAt };

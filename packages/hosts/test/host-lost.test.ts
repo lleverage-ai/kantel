@@ -220,6 +220,76 @@ describe("what a loss covers", () => {
 		expect((await root.getSandbox(made.id)).state).toBe("lost");
 	});
 
+	it("keeps a fenced create out of the create's own settling: only the loss settles it", async () => {
+		const { root, service, hostId, host, pass } = await setup({ lostAfterMs: 3_600_000 });
+		host.hold = (method) => (method === "sandbox.create" ? new Promise<void>(() => undefined) : undefined);
+		const made = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(async () => expect((await service.sandboxes.placement(made.id))?.hostId).toBe(hostId));
+		host.connection.closed(1006, "gone");
+		// Fenced, and its record not moved yet (its pass stopped): the sweep's settling of lost creates leaves it be.
+		await service.sandboxes.fence(hostId, [made.id]);
+		for (let round = 0; round < 5; round += 1) await pass(120_000);
+		expect((await root.getSandbox(made.id)).state).toBe("starting");
+	});
+
+	it("never loses a later attempt of a create with the host an earlier attempt was placed on", async () => {
+		const { api, root, service, hostId, host, pass } = await setup();
+		host.hold = (method) => (method === "sandbox.create" ? new Promise<void>(() => undefined) : undefined);
+		const made = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(async () => expect((await service.sandboxes.placement(made.id))?.hostId).toBe(hostId));
+		// A retry has begun a new attempt, not placed yet: the placement still there is the earlier attempt's.
+		await api.store.sandboxes.update(made.id, (current) => ({ ...current, lifecycle: (current.lifecycle ?? 0) + 1 }));
+		host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		expect((await root.getSandbox(made.id)).state).toBe("starting");
+		const events = (await api.store.events.list({ accountId: made.accountId })).filter(
+			(event) => event.type === "sandbox.lost" && event.sandboxId === made.id,
+		);
+		expect(events).toHaveLength(0);
+		// Its placement, the earlier attempt's, isn't fenced on the new attempt's account.
+		expect((await service.sandboxes.placement(made.id))?.fenced).toBeUndefined();
+	});
+
+	it("stores the event once when a gateway stopped between the move to lost and its event", async () => {
+		const { api, root, service, hostId, host, sandbox, pass } = await setup();
+		host.connection.closed(1006, "gone");
+		// What a pass left: the fence, and the record lost with its event's ID, the event itself never stored.
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "lost",
+			reason: HOST_LOST_REASON,
+			lostEvent: { eventId: "evt_interrupted", previousState: "running" },
+		}));
+		const lostEvents = async () =>
+			(await api.store.events.list({ accountId: sandbox.accountId })).filter((event) => event.type === "sandbox.lost");
+		expect(await lostEvents()).toHaveLength(0);
+		await pass(LOST_AFTER_MS + 1_000);
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(await lostEvents()).toMatchObject([{ id: "evt_interrupted", data: { previousState: "running" } }]);
+		expect((await api.store.sandboxes.get(sandbox.id))?.lostEvent).toBeUndefined();
+		await reconnect(service, hostId, host);
+		expect(await lostEvents()).toHaveLength(1);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("lost");
+	});
+
+	it("stores the event as the host comes back when the gateway stopped before it, with the host away", async () => {
+		const { api, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "lost",
+			reason: HOST_LOST_REASON,
+			lostEvent: { eventId: "evt_interrupted", previousState: "running" },
+		}));
+		await reconnect(service, hostId, host);
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toMatchObject([{ id: "evt_interrupted" }]);
+	});
+
 	it("records the loss as the host comes back when the pass that fenced it stopped first", async () => {
 		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");

@@ -831,10 +831,12 @@ export interface ComputeService {
 	reportHostConnection(hostId: string, connected: boolean): Promise<void>;
 	/**
 	 * A lost host's fenced sandbox is about to be deleted on it, as the host connects again: it is moved to `lost`, with
-	 * its `sandbox.lost` event, if the loss pass that fenced it stopped before it did (`hostLostAfterMs`). Nothing for one
-	 * lost, deleted or being deleted already. Throws when it can't be recorded, so the host keeps it until it is.
+	 * its `sandbox.lost` event, if the loss pass that fenced it stopped before it did (`hostLostAfterMs`); one lost whose
+	 * event isn't stored yet has it stored. `attempt` is the create attempt its placement was admitted for: one whose
+	 * record names no host is lost only at that attempt. Nothing for one deleted or being deleted already. Throws when it
+	 * can't be recorded, so the host keeps it until it is.
 	 */
-	reportSandboxLost(hostId: string, sandboxId: string): Promise<void>;
+	reportSandboxLost(hostId: string, sandboxId: string, attempt?: number): Promise<void>;
 	/**
 	 * Whether a pool has sync on (`Pool.sync`): its hosts that run the mesh peer with each other. False for a pool that
 	 * has gone.
@@ -7311,81 +7313,133 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Whether a sandbox goes to `lost` with a lost host: one in a state it may be lost from (`LOSABLE`, so not one being
-	 * deleted) and not moving, that its record places on that host, or on none yet (a create or fork admitted there whose
-	 * answer was never seen: `SandboxBackend.hostSandboxes` names it).
+	 * deleted) and not moving, that its record places on that host; or, with `attempt`, one whose record places it on no
+	 * host yet and is still at that attempt (`lifecycle`): a create or fork admitted there whose answer was never seen
+	 * (`SandboxBackend.hostSandboxes`), and never a later attempt of it.
 	 */
-	const losableOn = (hostId: string, sandbox: StoredSandbox) =>
-		(sandbox.hostId === hostId || sandbox.hostId === undefined) &&
+	const losableOn = (hostId: string, sandbox: StoredSandbox, attempt?: number) =>
 		LOSABLE.includes(sandbox.state) &&
-		sandbox.moving === undefined;
+		sandbox.moving === undefined &&
+		(sandbox.hostId === hostId ||
+			(sandbox.hostId === undefined && attempt !== undefined && (sandbox.lifecycle ?? 0) === attempt));
+
+	/**
+	 * Whether a placement admitted for `placedFor` (absent: one that names none, such as a fork's) is a sandbox's current
+	 * attempt: what `losableOn` takes as its attempt, or undefined when it is an earlier one's.
+	 */
+	const attemptOf = (sandbox: StoredSandbox, placedFor: number | undefined): number | undefined => {
+		const current = sandbox.lifecycle ?? 0;
+		return placedFor === undefined || placedFor === current ? current : undefined;
+	};
 
 	/**
 	 * A lost host's sandboxes, fenced and then moved to `lost` (`markLostHosts`): those its records place on it, and those
-	 * its backend placed there whose records don't name a host yet. The fence comes first: should it fail, nothing is
-	 * lost, and a later pass tries again. It is the durable intent: a sandbox fenced whose move to `lost` failed, or whose
+	 * its backend placed there whose records don't name a host yet, at the attempt placed there. The fence comes first:
+	 * should it fail, nothing is lost, and a later pass tries again; one whose record names no host is lost only once its
+	 * own placement is fenced. The fence is the durable intent: a sandbox fenced whose move to `lost` failed, or whose
 	 * gateway stopped first, is moved by a later pass while its host is away, and before its host deletes it otherwise
-	 * (`reportSandboxLost`).
+	 * (`reportSandboxLost`). A `sandbox.lost` event not yet stored is stored here too (`storeLostEvent`).
 	 */
 	async function loseHost(hostId: string): Promise<void> {
-		const recorded = await store.sandboxes.list({ hostId }, { state: LOSABLE });
-		const known = new Set(recorded.map((sandbox) => sandbox.id));
-		const unpublished: StoredSandbox[] = [];
-		for (const sandboxId of (await backend.hostSandboxes?.(hostId)) ?? []) {
-			if (known.has(sandboxId)) continue;
-			const sandbox = await store.sandboxes.get(sandboxId);
-			if (sandbox?.hostId === undefined && sandbox !== undefined) unpublished.push(sandbox);
+		const recorded = await store.sandboxes.list({ hostId }, { state: [...LOSABLE, "lost"] });
+		for (const sandbox of recorded) {
+			if (sandbox.state === "lost" && sandbox.lostEvent !== undefined)
+				await storeLostEvent(sandbox).catch(() => undefined);
 		}
-		const sandboxes = [...recorded, ...unpublished].filter((sandbox) => losableOn(hostId, sandbox));
-		if (sandboxes.length === 0) return;
-		await backend.fenceHost?.(
-			hostId,
-			sandboxes.map((sandbox) => sandbox.id),
-		);
-		for (const sandbox of sandboxes) await loseSandbox(hostId, sandbox.id).catch(() => undefined);
+		const published = recorded.filter((sandbox) => losableOn(hostId, sandbox));
+		const known = new Set(recorded.map((sandbox) => sandbox.id));
+		const unpublished = new Map<string, number>();
+		for (const placed of (await backend.hostSandboxes?.(hostId)) ?? []) {
+			if (known.has(placed.sandboxId)) continue;
+			const sandbox = await store.sandboxes.get(placed.sandboxId);
+			if (sandbox === undefined || sandbox.hostId !== undefined) continue;
+			const attempt = attemptOf(sandbox, placed.attempt);
+			if (attempt !== undefined && losableOn(hostId, sandbox, attempt)) unpublished.set(sandbox.id, attempt);
+		}
+		if (published.length === 0 && unpublished.size === 0) return;
+		const fenced =
+			(await backend.fenceHost?.(hostId, [...published.map((sandbox) => sandbox.id), ...unpublished.keys()])) ?? [];
+		for (const sandbox of published) await loseSandbox(hostId, sandbox.id).catch(() => undefined);
+		// One its record doesn't place: only as fenced there, for the attempt chosen (not re-admitted elsewhere meanwhile).
+		for (const placed of fenced) {
+			const attempt = unpublished.get(placed.sandboxId);
+			if (attempt === undefined || (placed.attempt !== undefined && placed.attempt !== attempt)) continue;
+			await loseSandbox(hostId, placed.sandboxId, attempt).catch(() => undefined);
+		}
 	}
 
 	/**
-	 * One sandbox of a lost host, moved to `lost` with its `sandbox.lost` event, once (`transition`), and its commands
-	 * ended. Nothing when it isn't `losableOn` the host (lost, deleted or being deleted already, or on another host). An
+	 * One sandbox of a lost host moved to `lost`, once (`transition`), with its `sandbox.lost` event's ID and what it says
+	 * written in the same record (`lostEvent`), then stored (`storeLostEvent`), and its commands ended. Nothing when it
+	 * isn't `losableOn` the host (lost, deleted or being deleted already, on another host, or at another attempt). An
 	 * operation under way on it finds it lost: each moves it only from the states it expects.
 	 */
-	async function loseSandbox(hostId: string, sandboxId: string): Promise<void> {
-		let was: SandboxState | undefined;
+	async function loseSandbox(hostId: string, sandboxId: string, attempt?: number): Promise<void> {
 		const result = await transition(
 			sandboxId,
 			LOSABLE,
-			(current) => {
-				was = current.state;
-				return withState(current, "lost", { reason: HOST_LOST_REASON, ports: [], hostId });
-			},
-			(current) => losableOn(hostId, current),
+			(current) =>
+				withState(current, "lost", {
+					reason: HOST_LOST_REASON,
+					ports: [],
+					hostId,
+					lostEvent: { eventId: randomId("evt"), previousState: current.state },
+				}),
+			(current) => losableOn(hostId, current, attempt),
 		).catch((error: unknown) => {
 			// Its record gone meanwhile: nothing to lose.
 			if (error instanceof KantelError && error.code === "not_found") return undefined;
 			throw error;
 		});
-		if (result === undefined || !("moved" in result)) return;
-		const lost = result.moved;
-		await emit("sandbox.lost", lost.accountId, {
-			sandbox: lost,
-			data: { previousState: was ?? "running", reason: HOST_LOST_REASON },
-		});
-		// Its commands went with its machine; its host can't be asked.
+		if (result === undefined) return;
+		const sandbox = "moved" in result ? result.moved : result.lost;
+		if (sandbox.state !== "lost" || sandbox.lostEvent === undefined) return;
+		await storeLostEvent(sandbox);
+	}
+
+	/**
+	 * Stores a lost sandbox's `sandbox.lost` event under the ID its record keeps (`lostEvent`), so a retry writes over it
+	 * rather than add another, ends its commands (its host can't be asked), and then clears it from the record.
+	 */
+	async function storeLostEvent(sandbox: StoredSandbox): Promise<void> {
+		const due = sandbox.lostEvent;
+		if (due === undefined) return;
+		await emit(
+			"sandbox.lost",
+			sandbox.accountId,
+			{ sandbox, data: { previousState: due.previousState, reason: HOST_LOST_REASON } },
+			due.eventId,
+		);
 		keepGoing(
-			track([sandboxId], () =>
-				killCommandsOf(sandboxId, {
+			track([sandbox.id], () =>
+				killCommandsOf(sandbox.id, {
 					note: `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`,
 					reconcile: false,
 				}),
 			),
 		);
+		await store.sandboxes.update(sandbox.id, (current) => {
+			if (current.lostEvent?.eventId !== due.eventId) return undefined;
+			const { lostEvent: _, ...rest } = current;
+			return rest;
+		});
 	}
 
 	/** `ComputeService.reportSandboxLost`. */
-	async function reportSandboxLost(hostId: string, sandboxId: string): Promise<void> {
+	async function reportSandboxLost(hostId: string, sandboxId: string, placedFor?: number): Promise<void> {
 		const sandbox = await store.sandboxes.get(sandboxId);
-		if (sandbox === undefined || !losableOn(hostId, sandbox)) return;
-		await loseSandbox(hostId, sandboxId);
+		if (sandbox === undefined) return;
+		if (sandbox.state === "lost") {
+			await storeLostEvent(sandbox);
+			return;
+		}
+		if (sandbox.hostId === hostId) {
+			await loseSandbox(hostId, sandboxId);
+			return;
+		}
+		if (sandbox.hostId !== undefined) return;
+		const attempt = attemptOf(sandbox, placedFor);
+		if (attempt !== undefined) await loseSandbox(hostId, sandboxId, attempt);
 	}
 
 	/**
