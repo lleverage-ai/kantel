@@ -7825,7 +7825,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * The sweep's settling of a sandbox being made again whose gateway went quiet at it: as a create whose answer was lost
 	 * first (`settleLostCreate`: its host's word, where its create was admitted), then, once that is done and still
-	 * nothing settles it (its create never admitted), tried again (`retryRecreate`), unless this gateway is at it.
+	 * nothing settles it, tried again (`retryRecreate`), unless this gateway is at it. Only one whose create was never
+	 * admitted, or was refused: the lost host's fence still holds its placement (`fencedOn`), as a replacement admitted
+	 * elsewhere takes that placement over (`replacesLost`) and a refused one puts it back. One admitted whose host hasn't
+	 * said yet keeps its attempt for its host's word (`settleLostCreate`), never planned again over it.
 	 */
 	async function retryStaleRecreate(sandboxId: string, at: number): Promise<void> {
 		await settleLostCreate(sandboxId);
@@ -7833,6 +7836,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const marker = latest?.recreating;
 		if (latest === undefined || marker === undefined || !unsettledCreate(latest) || pending.has(sandboxId)) return;
 		if (marker.heartbeatAt + UPGRADE_STALE_MS > at) return;
+		if (backend.fencedOn !== undefined && (await backend.fencedOn(sandboxId))?.hostId !== marker.hostId) return;
 		await retryRecreate(latest);
 	}
 

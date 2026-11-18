@@ -5,6 +5,7 @@
 // never asked (`lost`, the default) is lost whatever hosts there are.
 import { createKantelClient } from "@kantel/api/sdk";
 import {
+	CREATE_SETTLE_GRACE_MS,
 	createComputeApi,
 	createOutcomeUnknown,
 	HOST_LOST_REASON,
@@ -308,6 +309,50 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		await pass(UPGRADE_STALE_MS + 1_000);
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
 		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(b?.hostId);
+		await pass(LOST_AFTER_MS + 1_000);
+		expect((await api.store.sandboxes.get(sandbox.id))?.recreating).toBeUndefined();
+	});
+
+	it("keeps a create admitted on the other host, its answer lost, for that host's word, across its reconnection", async () => {
+		const { api, root, service, b, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		if (b === undefined) throw new Error("no host b");
+		// Host b takes the create, and its connection drops before it answers.
+		let answer: () => void = () => undefined;
+		let admitted: () => void = () => undefined;
+		const atCreate = new Promise<void>((resolve) => {
+			admitted = resolve;
+		});
+		b.host.hold = (method) => {
+			if (method !== "sandbox.create") return undefined;
+			admitted();
+			return new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+		};
+		a.host.connection.closed(1006, "gone");
+		const loss = pass(LOST_AFTER_MS + 1_000);
+		await atCreate;
+		b.host.connection.closed(1006, "gone");
+		answer();
+		await loss;
+		await vi.waitFor(() => expect(service.hub.connected(b.hostId)).toBe(false));
+		expect(b.host.sandboxes.has(sandbox.id)).toBe(true);
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "starting" });
+		// Its gateway's lease gone stale, and no host to plan it on: it waits for host b's word, never lost meanwhile.
+		await pass(UPGRADE_STALE_MS + 1_000);
+		await pass(UPGRADE_STALE_MS + 1_000);
+		const waiting = await api.store.sandboxes.get(sandbox.id);
+		expect(waiting).toMatchObject({ state: "starting" });
+		expect(waiting?.recreating).toBeDefined();
+		expect(b.host.calls.filter((call) => call.method === "sandbox.create")).toHaveLength(1);
+		// Host b back with it running: that settles it, on b.
+		const back = new FakeHost(service, b.hostId, FEATURES);
+		back.connect([...b.host.sandboxes.values()]);
+		await vi.waitFor(() => expect(service.hub.connected(b.hostId)).toBe(true));
+		await pass(CREATE_SETTLE_GRACE_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(b.hostId);
 		await pass(LOST_AFTER_MS + 1_000);
 		expect((await api.store.sandboxes.get(sandbox.id))?.recreating).toBeUndefined();
 	});
