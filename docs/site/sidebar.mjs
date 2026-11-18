@@ -52,6 +52,7 @@ export const sidebar = [
 			"self-hosting/quickstart",
 			"self-hosting/install",
 			"self-hosting/database",
+			"self-hosting/database-drills",
 			"self-hosting/admin-cli",
 			"self-hosting/security",
 		],
