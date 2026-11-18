@@ -235,6 +235,24 @@ describe("the disk store on the host link", () => {
 		expect(recordHoldings).toHaveBeenCalledTimes(2);
 	});
 
+	it("shows a connected host's fetches from its last report, and none once it is away", async () => {
+		const { service, host, hostId } = await setup({});
+		const running = {
+			kind: "sticky",
+			objectId: "sdk_1",
+			version: "sdv_1",
+			state: "running",
+			blocks: 10,
+			inPlace: 4,
+			bytes: 18_000_000,
+		};
+		host.send({ type: "heartbeat", heartbeat: { capacity: { ...capacity, fetches: [running] } } });
+		await vi.waitFor(async () => expect((await service.get(hostId)).fetches).toEqual([running]));
+		service.hub.disconnect(hostId, 1001, "gone");
+		await vi.waitFor(async () => expect((await service.get(hostId)).state).toBe("unreachable"));
+		expect((await service.get(hostId)).fetches).toBeUndefined();
+	});
+
 	it("answers disk.locate for the connection's own host, passing on the catalogue's refusals", async () => {
 		const answer = { mapDigest: "sha256:aa", holders: [{ hostId: "host_b", address: "fd00::2" }], grant: "p.s" };
 		const locateDisk = vi.fn(async (_hostId: string, params: { readonly version: string }) => {

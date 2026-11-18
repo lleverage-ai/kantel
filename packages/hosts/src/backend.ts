@@ -1291,6 +1291,20 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					...(host.mesh === undefined
 						? {}
 						: { mesh: { address: host.mesh.address, peers: host.mesh.peers.map((peer) => ({ ...peer })) } }),
+					...(host.fetches === undefined
+						? {}
+						: {
+								fetches: host.fetches.map((fetch) => ({
+									kind: fetch.kind,
+									objectId: fetch.objectId,
+									version: fetch.version,
+									state: fetch.state,
+									blocks: fetch.blocks,
+									inPlace: fetch.inPlace,
+									...(fetch.bytes === undefined ? {} : { bytes: fetch.bytes }),
+									...(fetch.error === undefined ? {} : { error: fetch.error }),
+								})),
+							}),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },

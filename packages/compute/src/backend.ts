@@ -301,6 +301,11 @@ export interface BackendHost {
 	readonly memory?: computeSchema.HostMemory;
 	/** How it reaches its mesh peers, as it last reported it, while connected. Absent: it has no mesh (or the stub). */
 	readonly mesh?: computeSchema.HostMesh;
+	/**
+	 * Its fetches from its peers under way or failed, as it last reported them, while connected. Absent: it hasn't said
+	 * (an older host, the stub).
+	 */
+	readonly fetches?: readonly BackendHostFetch[];
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**
@@ -461,6 +466,21 @@ export interface CommittedStickyDisk {
 }
 
 /** What a connected host last reported holding of sticky disks (`SandboxBackend.stickyHoldings`). */
+/** A host's fetch from its peers, as it reports it (`HostCapacity.fetches`). */
+export interface BackendHostFetch {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly state: "queued" | "running" | "failed";
+	/** The version's 4 MiB blocks, every part's. */
+	readonly blocks: number;
+	/** How many of them it has. */
+	readonly inPlace: number;
+	/** The bytes it has read from its peers; absent from an older host. */
+	readonly bytes?: number;
+	readonly error?: string;
+}
+
 export interface BackendStickyHoldings {
 	readonly hostId: string;
 	/** When the report arrived: the host measured it a moment before, so a version committed since may be missing. */

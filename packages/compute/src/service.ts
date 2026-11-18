@@ -65,6 +65,7 @@ import {
 	type BackendEgressGrant,
 	type BackendFileEntry,
 	type BackendHost,
+	type BackendHostFetch,
 	type BackendMountStatus,
 	type BackendShape,
 	type BackendSize,
@@ -96,6 +97,15 @@ import {
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
+import {
+	BACKFILL_EVERY_MS,
+	BACKFILL_RETRY_MS,
+	type BackfillHost,
+	backfillFetches,
+	type HostBackfill,
+	planStickyBackfill,
+	usedLately,
+} from "./disk-backfill.ts";
 import {
 	createDiskHolders,
 	type DiskLocateRequest,
@@ -2232,6 +2242,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	let snapshotsExpiredAt = Number.NEGATIVE_INFINITY;
 	/** When `keepEverySnapshotsCopies` last began a pass. */
 	let copiesKeptAt = Number.NEGATIVE_INFINITY;
+	// When the sweep last went over the synced pools for sticky disk heads their hosts are missing (`backfillStickyDisks`).
+	let backfilledAt = Number.NEGATIVE_INFINITY;
 	/** When this process may first expire snapshots (`snapshotExpiryDelayMs` after it started). */
 	const expiryStartsAt = now() + (options.snapshotExpiryDelayMs ?? SNAPSHOT_EXPIRY_START_DELAY_MS);
 	/** This process, as the owner of the expiry marks it makes (`markExpiring`). */
@@ -2998,18 +3010,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * that doesn't sync is left out, and nothing waits for the fetches, which progress in the hosts' reports.
 	 */
 	async function prefetchStickyHead(diskId: string, versionId: string): Promise<void> {
+		const poolId = await prefetchToRecent(diskId, versionId);
+		// Then the pool's other hosts, which hold its disks' heads whether or not they ran one, in turn.
+		if (poolId !== undefined) await backfillStickyDisks(poolId);
+	}
+
+	/**
+	 * `prefetchStickyHead`'s sends to the hosts that started a sandbox with the disk lately. Answers the disk's pool, for
+	 * its backfill, while the version is its head.
+	 */
+	async function prefetchToRecent(diskId: string, versionId: string): Promise<string | undefined> {
 		const fetchDisk = backend.fetchDisk;
-		if (fetchDisk === undefined) return;
+		if (fetchDisk === undefined) return undefined;
 		const disk = await store.stickyDisks.get(diskId);
 		if (disk === undefined || disk.deletedAt !== undefined || disk.head !== versionId || disk.poolId === undefined)
-			return;
+			return undefined;
+		const poolId = disk.poolId;
 		const since = now() - STICKY_PREFETCH_MS;
 		const recent = Object.entries(disk.ranOn ?? {})
 			.filter(([, at]) => at > since)
 			.map(([hostId]) => hostId);
-		if (recent.length === 0) return;
+		if (recent.length === 0) return poolId;
 		const [version, pool] = await Promise.all([store.stickyDiskVersions.get(versionId), store.pools.get(disk.poolId)]);
-		if (version?.mapDigest === undefined || pool?.sync !== true) return;
+		if (version?.mapDigest === undefined || pool?.sync !== true) return poolId;
 		const hosts = new Map((await ensureHosts()).map((host) => [host.id, host]));
 		const holding = new Set(
 			((await diskHolders.holdersOf("sticky", diskId)).get(versionId) ?? [])
@@ -3022,6 +3045,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const host = hosts.get(hostId);
 				if (host?.state !== "online" || host.poolId !== disk.poolId || holding.has(hostId)) return;
 				// One host's refusal (it doesn't sync, it went away, nothing it can reach holds the head) is no other's.
+				askBackfill(hostId, versionId);
 				try {
 					const location = await diskHolders.locate(hostId, request);
 					if (location.holders.length > 0) await fetchDisk(hostId, { ...request, ...location });
@@ -3030,6 +3054,142 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}),
 		);
+		return poolId;
+	}
+
+	/** The backfills this gateway told hosts of, and until when each isn't told again, by host, then version. */
+	const backfillAsked = new Map<string, Map<string, number>>();
+	const askBackfill = (hostId: string, version: string) => {
+		const asked = backfillAsked.get(hostId) ?? new Map<string, number>();
+		asked.set(version, now() + BACKFILL_RETRY_MS);
+		backfillAsked.set(hostId, asked);
+	};
+	/** The versions each host was told lately, those whose ask has lapsed let go. */
+	function askedLately(): Map<string, Set<string>> {
+		const at = now();
+		const answer = new Map<string, Set<string>>();
+		for (const [hostId, asked] of backfillAsked) {
+			for (const [version, until] of asked) if (until <= at) asked.delete(version);
+			if (asked.size === 0) backfillAsked.delete(hostId);
+			else answer.set(hostId, new Set(asked.keys()));
+		}
+		return answer;
+	}
+
+	/**
+	 * Every synced pool's hosts with the sticky disk heads each should hold and where it stands on each
+	 * (`planStickyBackfill`): from the catalogue's disks, heads and holders, the hosts as copies see them, and their
+	 * fetches as they last reported them. Only `poolId`'s, where given. Only the heads of disks used lately are read.
+	 * Empty with sticky disks off.
+	 */
+	async function stickyBackfillPlan(poolId?: string): Promise<HostBackfill[]> {
+		if (options.stickyDisks !== true) return [];
+		const [copy, allPools, disks, holders] = await Promise.all([
+			copyHosts(),
+			store.pools.list(),
+			store.stickyDisks.list(),
+			store.diskHolders.list(),
+		]);
+		const syncing = new Set(
+			allPools
+				.filter((pool) => pool.sync === true && (poolId === undefined || pool.id === poolId))
+				.map((pool) => pool.id),
+		);
+		if (syncing.size === 0) return [];
+		const at = now();
+		const live = disks.filter(
+			(disk) =>
+				disk.deletedAt === undefined &&
+				disk.head !== undefined &&
+				syncing.has(disk.poolId ?? "") &&
+				usedLately(disk, at),
+		);
+		const heads = new Map<string, StoredStickyDiskVersion>();
+		await Promise.all(
+			live.map(async (disk) => {
+				const head = disk.head === undefined ? undefined : await store.stickyDiskVersions.get(disk.head);
+				if (head !== undefined && head.diskId === disk.id) heads.set(disk.id, head);
+			}),
+		);
+		const byDisk = new Map<string, Map<string, StoredDiskHolder[]>>();
+		// Other kinds' fetches under way count against a host's share too.
+		const otherFetches = new Map<string, number>();
+		for (const holder of holders) {
+			if (holder.kind !== "sticky") {
+				if (holder.state === "fetching") otherFetches.set(holder.hostId, (otherFetches.get(holder.hostId) ?? 0) + 1);
+				continue;
+			}
+			const versions = byDisk.get(holder.objectId) ?? new Map<string, StoredDiskHolder[]>();
+			versions.set(holder.version, [...(versions.get(holder.version) ?? []), holder]);
+			byDisk.set(holder.objectId, versions);
+		}
+		const hosts: BackfillHost[] = [...copy.values()]
+			.filter((host) => host.poolId !== undefined && syncing.has(host.poolId))
+			.map((host) => ({
+				id: host.id,
+				state: host.state,
+				...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+				...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+				connected: host.connected !== false,
+				...(host.features === undefined ? {} : { features: host.features }),
+				...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
+				...(host.meshAddress === undefined ? {} : { meshAddress: host.meshAddress }),
+			}));
+		return planStickyBackfill({
+			now: at,
+			syncing,
+			hosts,
+			disks: live,
+			heads,
+			holders: byDisk,
+			reported: new Map(
+				hosts.flatMap((host) => {
+					const fetches = hostFetches.get(host.id);
+					return fetches === undefined ? [] : [[host.id, fetches] as const];
+				}),
+			),
+			otherFetches,
+			asked: askedLately(),
+		});
+	}
+
+	/** The passes of `backfillStickyDisks` under way, by pool (`""` for every pool), which another call joins. */
+	const backfilling = new Map<string, Promise<void>>();
+	/**
+	 * Has each host of a synced pool (only `poolId`'s, where given) fetch the heads of its pool's sticky disks that it is
+	 * missing (docs/design/disk-store.md, 2d, "Backfill"), at most `BACKFILL_HOST_FETCHES` at a time, newest first, and
+	 * none while it drains, is away or doesn't sync. On the sweep every `BACKFILL_EVERY_MS` for every pool, and after
+	 * each commit for its disk's, so a host that joins or is moved into the pool, is undrained, comes back, or missed a
+	 * prefetch catches up without a job committing on it. A host told one isn't told it again within
+	 * `BACKFILL_RETRY_MS`; one whose fetch failed is told again after that, and goes on from its partial. Nothing waits
+	 * for the fetches, which progress in reports.
+	 */
+	function backfillStickyDisks(poolId?: string): Promise<void> {
+		const fetchDisk = backend.fetchDisk;
+		if (fetchDisk === undefined || options.stickyDisks !== true) return Promise.resolve();
+		const key = poolId ?? "";
+		let pass = backfilling.get(key);
+		if (pass !== undefined) return pass;
+		pass = (async () => {
+			const sends = backfillFetches(await stickyBackfillPlan(poolId));
+			await Promise.all(
+				sends.map(async ({ hostId, diskId, version }) => {
+					askBackfill(hostId, version);
+					const request = { kind: "sticky", objectId: diskId, version };
+					// One host's refusal (it went away, nothing it can reach holds the head) is no other's.
+					try {
+						const location = await diskHolders.locate(hostId, request);
+						if (location.holders.length > 0) await fetchDisk(hostId, { ...request, ...location });
+					} catch {
+						// Asked again after `BACKFILL_RETRY_MS`.
+					}
+				}),
+			);
+		})().finally(() => {
+			backfilling.delete(key);
+		});
+		backfilling.set(key, pass);
+		return pass;
 	}
 
 	/**
@@ -3339,6 +3499,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const hostMeshAddress = new Map<string, string>();
 	// Each host's mesh health as the backend last said, kept as its memory is: it moves on every heartbeat too.
 	const hostMesh = new Map<string, computeSchema.HostMesh>();
+	// Each host's fetches from its peers as the backend last said, kept as its mesh health is.
+	const hostFetches = new Map<string, readonly BackendHostFetch[]>();
 	const ensureHosts = (read?: Promise<BackendCapabilities>): Promise<StoredHost[]> => {
 		hostsReady ??= (async () => {
 			const [capabilities, records, allPools] = await Promise.all([
@@ -3354,6 +3516,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Mesh addresses are up only in pools with sync on: a host in another is no holder to fetch from (taken below).
 			const syncing = new Set(allPools.filter((pool) => pool.sync === true).map((pool) => pool.id));
 			hostMesh.clear();
+			hostFetches.clear();
 			// Each owner's pools, read in the one statement above; an owner with none gets its default made.
 			const ownerPools = new Map<string, Promise<StoredPool[]>>();
 			const grouped = new Map<string, StoredPool[]>();
@@ -3389,6 +3552,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
 				if (host.mesh !== undefined) hostMesh.set(host.id, host.mesh);
+				if (host.fetches !== undefined) hostFetches.set(host.id, host.fetches);
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
@@ -14790,6 +14954,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async sweep() {
 			const at = now();
 			keepGoing(sweepStickyDisks().catch(() => undefined));
+			if (at - backfilledAt >= BACKFILL_EVERY_MS) {
+				backfilledAt = at;
+				keepGoing(backfillStickyDisks().catch(() => undefined));
+			}
 			if (at - copiesKeptAt >= SNAPSHOT_COPIES_EVERY_MS) {
 				copiesKeptAt = at;
 				keepGoing(keepEverySnapshotsCopies());
