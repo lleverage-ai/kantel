@@ -153,6 +153,31 @@ func TestComputeEnableAndApply(t *testing.T) {
 	contains(t, "failed", failed.Err, "the stack didn't start")
 }
 
+// With a Postgres of the operator's own, every docker compose call takes external-postgres.yaml too, as the installer
+// does, so the bundled Postgres doesn't start; the URL is a secret.
+func TestExternalPostgres(t *testing.T) {
+	tt := newTester(t)
+	dir := filepath.Join(tt.home, ".kantel", "src", "deploy", "compose")
+	base := "compose -f " + filepath.Join(dir, "compose.yaml")
+	with := base + " -f " + filepath.Join(dir, "external-postgres.yaml")
+	tt.install("KANTEL_GATEWAY_PORT=58123\nKANTEL_DATABASE_URL='postgres://kantel:pa$$@db.example.com/kantel'\n")
+
+	applied := tt.run([]string{"apply"}, opts{})
+	eq(t, "exit", applied.Code, 0)
+	eq(t, "files", strings.Join(applied.Spawned[0].Args, " "), with+" up -d --wait")
+
+	list := tt.run([]string{"config", "list"}, opts{})
+	contains(t, "list", list.Out, "KANTEL_DATABASE_URL")
+	lacks(t, "list", list.Out, "pa$$")
+
+	// Set in the environment only, as Compose reads it first.
+	tt.install("KANTEL_GATEWAY_PORT=58123\n")
+	bare := tt.run([]string{"apply"}, opts{})
+	eq(t, "bundled", strings.Join(bare.Spawned[0].Args, " "), base+" up -d --wait")
+	fromEnv := tt.run([]string{"apply"}, opts{env: cli.Env{"KANTEL_DATABASE_URL": "postgres://db/kantel"}})
+	eq(t, "from env", strings.Join(fromEnv.Spawned[0].Args, " "), with+" up -d --wait")
+}
+
 func TestBootstrapKey(t *testing.T) {
 	tt := newTester(t)
 	tt.install(defaultEnv)

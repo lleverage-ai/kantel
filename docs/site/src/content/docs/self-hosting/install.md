@@ -25,7 +25,7 @@ The command works the same from bash, zsh and fish, because the script always ru
 
 1. checks for Docker, Compose, `curl` and `tar`, and tells you how to get anything that's missing;
 2. downloads Kantel's source from GitHub into `~/.kantel/src`;
-3. builds and starts the stack (the gateway, which serves the console and the API, Postgres, and a mailbox for sign-in codes), and waits until the console answers;
+3. builds and starts the stack (the gateway, which serves the console and the API, Postgres, and a mailbox for sign-in codes), and waits until the console answers. With `--database-url`, it uses [your own Postgres](/self-hosting/database/) instead of starting one;
 4. prints where everything is, and opens the console in your browser when it can.
 
 Pass options after `sh -s --`:
@@ -37,6 +37,8 @@ curl -fsSL https://kantel.dev/install.sh | sh -s -- --email you@example.com --no
 | Option | What it does |
 | --- | --- |
 | `--email ADDRESS` | The first admin, who signs in. Without it, `admin@harbour.localhost` |
+| `--database-url URL` | A Postgres of your own, such as a managed one, instead of the bundled one. See [Use your own Postgres](/self-hosting/database/) |
+| `--database-ca FILE` | The CA certificate that Postgres's TLS certificate is checked with. See [TLS](/self-hosting/database/#tls) |
 | `--upgrade` | Download the source again and rebuild the stack with it. See [Upgrade](#upgrade) |
 | `--ref REF` | Install a branch, tag or commit instead of `main` |
 | `--repo OWNER/NAME` | Install from another repository, such as your fork. A private one downloads through your `gh` login |
@@ -44,7 +46,7 @@ curl -fsSL https://kantel.dev/install.sh | sh -s -- --email you@example.com --no
 | `--home DIR` | Where Kantel lives, instead of `~/.kantel` |
 | `--no-open` | Don't open the console in a browser |
 
-Each option also reads an environment variable (`KANTEL_REPO`, `KANTEL_REF`, `KANTEL_TARBALL`, `KANTEL_HOME`, `KANTEL_ADMIN_EMAIL`, `KANTEL_NO_OPEN=1`). `sh -s -- --help` lists them.
+Each option also reads an environment variable (`KANTEL_REPO`, `KANTEL_REF`, `KANTEL_TARBALL`, `KANTEL_HOME`, `KANTEL_ADMIN_EMAIL`, `KANTEL_DATABASE_URL`, `KANTEL_DATABASE_CA_FILE`, `KANTEL_NO_OPEN=1`). `sh -s -- --help` lists them.
 
 If the image build fails with `EACCES`, your umask is too tight for Docker to read the source (`077` does this). Run `chmod -R go+rX ~/.kantel/src` and install again.
 
@@ -181,7 +183,7 @@ An account's [proxy settings](/sandboxes/egress-proxy/) (`PUT /v1/proxy`) reach 
 echo "KANTEL_SECRETS_KEY=$(openssl rand -base64 32)" >> ~/.kantel/src/deploy/compose/.env
 ```
 
-Then run the installer with `--upgrade`, as in [Your own settings](#your-own-settings), to restart with it. Without the key, an install that keeps its data in a database refuses protected values and secret files, and plain variables still work. Keep a copy of the key somewhere safe, apart from the database's backups: without it, the protected values and secret files can't be read, and you have to set them again. Changing the key isn't supported yet, so set it once.
+Then run the installer with `--upgrade`, as in [Your own settings](#your-own-settings), to restart with it. Without the key, an install that keeps its data in a database refuses protected values and secret files, and plain variables still work. Keep a copy of the key somewhere safe, apart from the [database's backups](/self-hosting/database/#backups-and-restores): without it, the protected values and secret files can't be read, and you have to set them again. Changing the key isn't supported yet, so set it once.
 
 With [sticky disks](/sandboxes/sticky-disks/) on, the control plane also keeps the key it signs hosts' disk fetch grants with sealed with `KANTEL_SECRETS_KEY`. To replace that grant key, if you think it has leaked, run `kantel-admin grant-key rotate` (or `POST /v1/admin/grant-key/rotate`): connected hosts get the new key at once, it signs grants from 3 minutes later, and hosts accept the old one for 16 minutes after that, so fetches under way finish. If the secrets key changes, the first gateway that can't open the grant key as it signs a grant replaces it, with a new key that signs at once; change the secrets key on every gateway together, as gateways with different secrets keys can't sign with each other's grant keys. Update the control plane before hosts: a host on an older kantel-host holds one key, takes the new one when it begins signing, and asks again for a grant only for a fetch already under way.
 
@@ -192,6 +194,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | Setting | What it does |
 | --- | --- |
 | `KANTEL_ADMIN_EMAIL` | The address invited as the first admin |
+| `KANTEL_DATABASE_URL`, `KANTEL_DATABASE_CA_FILE` | A Postgres of your own instead of the bundled one, and the CA certificate its TLS is checked with. See [Use your own Postgres](/self-hosting/database/) |
 | `KANTEL_SMTP_URL` | Where sign-in codes and invites go: `smtps://user:password@host:port` for TLS from the start, `smtp://user:password@host:port` for STARTTLS. Without it they go to the built-in mailbox |
 | `KANTEL_MAIL_FROM` | The sender of sign-in codes, such as `Kantel <kantel@example.com>` |
 | `KANTEL_PUBLIC_URL` | The console's address when people reach it through a TLS proxy, such as `https://kantel.example.com` |
@@ -255,7 +258,7 @@ docker compose -f ~/.kantel/src/deploy/compose/compose.yaml down      # stop it 
 docker compose -f ~/.kantel/src/deploy/compose/compose.yaml down -v   # stop it and delete all its data
 ```
 
-`down -v` deletes the volumes this version's stack declares. An upgraded install's older volumes (`miniodata`, `vaultca`, `browserdata`) go with `docker volume rm`.
+`down -v` deletes the volumes this version's stack declares. An upgraded install's older volumes (`miniodata`, `vaultca`, `browserdata`) go with `docker volume rm`. With [your own Postgres](/self-hosting/database/), add `-f ~/.kantel/src/deploy/compose/external-postgres.yaml` after `compose.yaml`; `down -v` doesn't touch that database.
 
 <!-- Compute only (TASK-4705): deploy/compose/compose.yaml, deploy/compose/README.md (Upgrading from the agent plane), apps/site/public/install.sh (run_compose) -->
 

@@ -1,0 +1,30 @@
+# Kantel self-hosted on a Postgres of your own, such as a managed, highly available one, instead of the bundled one.
+#
+#   KANTEL_DATABASE_URL=postgres://kantel:...@db.example.com:5432/kantel?sslmode=verify-full
+#   docker compose -f deploy/compose/compose.yaml -f deploy/compose/external-postgres.yaml up -d --build --wait --remove-orphans
+#
+# The installer and kantel-admin add this file themselves when KANTEL_DATABASE_URL is set, in deploy/compose/.env or
+# the environment. With it, the bundled `postgres` service doesn't start and the gateway doesn't wait for it: it uses
+# KANTEL_DATABASE_URL. The bundled database's `pgdata` volume is left as it is.
+#
+# For TLS, put sslmode in the URL (`sslmode=verify-full`). A server certificate from a CA that isn't public (most
+# managed Postgres services have their own) needs that CA: set KANTEL_DATABASE_CA_FILE to the CA's PEM file on this
+# machine, and the gateway finds it at /etc/kantel/database-ca.pem, so add `sslrootcert=/etc/kantel/database-ca.pem`
+# to the URL. Unset, an empty file is there instead, unused.
+#
+# What the database must provide (Postgres 17, one writer endpoint that moves on failover, backups with point-in-time
+# recovery, connections) and how to move an install's data onto it: docs/site/src/content/docs/self-hosting/database.md.
+
+services:
+  # Not started: the gateway uses KANTEL_DATABASE_URL. Its data stays in the pgdata volume.
+  postgres:
+    profiles: [bundled-postgres]
+
+  gateway:
+    environment:
+      KANTEL_DATABASE_URL: ${KANTEL_DATABASE_URL:?set KANTEL_DATABASE_URL to your Postgres, or leave out external-postgres.yaml for the bundled one}
+    # Not on the bundled Postgres. `!reset` rather than `!override` (Compose 2.24.4) to keep Mailpit's: Compose before
+    # that ignores `!override`, and the gateway sends mail only when someone signs in, so it needn't wait for Mailpit.
+    depends_on: !reset {}
+    volumes:
+      - ${KANTEL_DATABASE_CA_FILE:-/dev/null}:/etc/kantel/database-ca.pem:ro

@@ -97,6 +97,23 @@ as the client's callback. It is invite-only as codes are: the provider's verifie
 and it shares the per-address limit. The [install guide](../../docs/site/src/content/docs/self-hosting/install.md#sign-in-with-github-or-google)
 has the steps.
 
+### A Postgres of your own
+
+The `external-postgres.yaml` overlay runs the stack on a Postgres you provide, such as a managed one with failover and
+point-in-time backups, instead of the bundled `postgres` service, which it doesn't start (its `pgdata` volume stays).
+The gateway takes `KANTEL_DATABASE_URL`, and `KANTEL_DATABASE_CA_FILE` (a CA's PEM on this machine) is mounted at
+`/etc/kantel/database-ca.pem` for the URL's `sslrootcert`. The installer (`--database-url`, `--database-ca`) and
+`kantel-admin` add the overlay themselves whenever `KANTEL_DATABASE_URL` is set in `.env` or the environment. It needs
+Compose 2.20 or later:
+
+```bash
+KANTEL_DATABASE_URL='postgres://kantel:…@db.example.com:5432/kantel?sslmode=verify-full' \
+  docker compose -f deploy/compose/compose.yaml -f deploy/compose/external-postgres.yaml up -d --build --wait --remove-orphans
+```
+
+What the database must provide, TLS, and moving an install's data onto it are in
+[Use your own Postgres](../../docs/site/src/content/docs/self-hosting/database.md).
+
 ### On the host's network
 
 The `next-to-sal.yaml` overlay runs the gateway on the host's network, listening on 127.0.0.1 only, reaching Postgres

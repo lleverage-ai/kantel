@@ -13,7 +13,7 @@ var (
 	envLine = regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$`)
 	envKey  = regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=`)
 	// secretKey is a setting whose value is a secret, shown as (set).
-	secretKey = regexp.MustCompile(`SECRET|TOKEN|PASSWORD|_KEY$|SMTP_URL`)
+	secretKey = regexp.MustCompile(`SECRET|TOKEN|PASSWORD|_KEY$|SMTP_URL|DATABASE_URL`)
 )
 
 // Setting is one KEY=value.
