@@ -2383,6 +2383,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return settled;
 	};
 
+	/**
+	 * Records what a host said of a create that made a lost host's sandbox again (`replacesLost`), as `settle` does, but
+	 * only on its own admission as it is now (its host, when it was written, unfenced), so what changed meanwhile is kept:
+	 * the lost host's copy removed (`cleanup`), or this host lost in turn and its copy fenced (LLE-19676). `conflict` where
+	 * the admission is no longer its own: the answer is too late, and the loss settles the sandbox.
+	 */
+	const settleReplacement = async (
+		admitted: PlacementRecord,
+		sandbox: HostSandbox,
+		host: HostRecord,
+	): Promise<PlacementRecord> => {
+		const written = await store.updatePlacement(admitted.sandboxId, (latest) =>
+			latest.hostId === admitted.hostId && latest.createdAt === admitted.createdAt && latest.fenced === undefined
+				? { ...asReported(latest, sandbox, host, clock.now()), updatedAt: clock.now() }
+				: undefined,
+		);
+		if (written === undefined) {
+			throw new KantelError("conflict", `The sandbox's host ${host.name} was lost while it was being made there`);
+		}
+		return written;
+	};
+
 	/** Refusals because another create took the last of a host's vCPUs under its pool's cap first (`vcpusTaken`). */
 	const vcpusTakenErrors = new WeakSet<object>();
 	const vcpusTaken = (hostName: string) => {
@@ -3856,7 +3878,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 								: undefined,
 						chosen.host,
 					);
-					const settled = await settle(placement, sandbox, chosen.host);
+					const settled =
+						replacing === undefined
+							? await settle(placement, sandbox, chosen.host)
+							: await settleReplacement(placement, sandbox, chosen.host);
 					const statuses = mounts.status(sandbox);
 					return {
 						sandbox,

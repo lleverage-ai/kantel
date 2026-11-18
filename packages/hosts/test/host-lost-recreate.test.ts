@@ -178,6 +178,7 @@ async function setup(
 		clock,
 		join,
 		lostAfterMs,
+		hostStore,
 	};
 }
 
@@ -535,6 +536,142 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ hostId: a.hostId });
 		expect((await service.sandboxes.placement(sandbox.id))?.cleanup).toBeUndefined();
 		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+	});
+
+	it("is made again from its new host's loss, not a stale retry, where that retry runs as the loss is settled", async () => {
+		// A loss pass held after it fenced the new host's copy, before it settled the sandbox (`settleLosing`).
+		let held: Promise<void> | undefined;
+		let reached: () => void = () => undefined;
+		let settlesCreate = 0;
+		const { api, root, service, b, sandbox, pass, save, a, reconnect, events, advance } = await setup({
+			onHostLost: "recreate",
+			wrap: (backend) => ({
+				...backend,
+				fencedOn: async (sandboxId) => {
+					if (held !== undefined) {
+						reached();
+						await held;
+					}
+					return backend.fencedOn?.(sandboxId);
+				},
+				settleCreate: async (sandboxId, attempt) => {
+					settlesCreate += 1;
+					if (backend.settleCreate === undefined) return { state: "pending" };
+					return backend.settleCreate(sandboxId, attempt);
+				},
+			}),
+		});
+		await save("kept");
+		if (b === undefined) throw new Error("no host b");
+		await admittedThenAway(b, () => {
+			a.host.connection.closed(1006, "gone");
+			return pass(LOST_AFTER_MS + 1_000);
+		});
+		const backA = await reconnect(a);
+		await vi.waitFor(() => expect(backA.sandboxes.has(sandbox.id)).toBe(false));
+		await api.service.idle();
+		let release: () => void = () => undefined;
+		held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const atSettle = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		// Host b's loss pass fences its copy, and is held there.
+		advance(LOST_AFTER_MS + 1_000);
+		await api.service.sweep();
+		await atSettle;
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeTypeOf("number");
+		// Meanwhile the recreation's lease goes stale, and a sweep finds it.
+		const before = settlesCreate;
+		advance(UPGRADE_STALE_MS + 1_000);
+		await api.service.sweep();
+		await vi.waitFor(() => expect(settlesCreate).toBeGreaterThan(before));
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "starting" });
+		expect((await api.store.sandboxes.get(sandbox.id))?.losing).toBeDefined();
+		// The loss goes on: made again on host a, now back, over host b's fence.
+		held = undefined;
+		release();
+		await api.service.idle();
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(a.hostId);
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(await events("sandbox.recreated")).toHaveLength(1);
+		expect(await events("sandbox.lost")).toHaveLength(0);
+	});
+
+	it("keeps its new host's fence where that host's answer to the create is recorded after its loss", async () => {
+		const { api, root, service, b, sandbox, save, a, reconnect, events, advance, hostStore } = await setup({
+			onHostLost: "recreate",
+		});
+		await save("kept");
+		if (b === undefined) throw new Error("no host b");
+		let answer: () => void = () => undefined;
+		let admitted: () => void = () => undefined;
+		const atCreate = new Promise<void>((resolve) => {
+			admitted = resolve;
+		});
+		b.host.hold = (method) => {
+			if (method !== "sandbox.create") return undefined;
+			admitted();
+			return new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+		};
+		a.host.connection.closed(1006, "gone");
+		advance(LOST_AFTER_MS + 1_000);
+		await api.service.sweep();
+		await atCreate;
+		// Host b answers, and the hosts service's record of that answer is held.
+		let armed = true;
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let reached: () => void = () => undefined;
+		const atWrite = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		const hold = async (sandboxId: string) => {
+			if (!armed || sandboxId !== sandbox.id) return;
+			armed = false;
+			reached();
+			await gate;
+		};
+		const put = hostStore.putPlacement.bind(hostStore);
+		const update = hostStore.updatePlacement.bind(hostStore);
+		const puts = vi.spyOn(hostStore, "putPlacement").mockImplementation(async (placement) => {
+			await hold(placement.sandboxId);
+			return put(placement);
+		});
+		const updates = vi.spyOn(hostStore, "updatePlacement").mockImplementation(async (sandboxId, change) => {
+			await hold(sandboxId);
+			return update(sandboxId, change);
+		});
+		answer();
+		await atWrite;
+		// Host b goes, and is lost: its copy fenced, the sandbox lost with it, no other host left.
+		b.host.connection.closed(1006, "gone");
+		await vi.waitFor(() => expect(service.hub.connected(b.hostId)).toBe(false));
+		advance(LOST_AFTER_MS + 1_000);
+		await api.service.sweep();
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("lost"));
+		// The answer's record lands late: the fence holds.
+		release();
+		await api.service.idle();
+		puts.mockRestore();
+		updates.mockRestore();
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: b.hostId, cleanup: { hostId: a.hostId, fenced: true } });
+		expect(placement?.fenced).toBeTypeOf("number");
+		expect((await root.getSandbox(sandbox.id)).state).toBe("lost");
+		expect(await events("sandbox.lost")).toMatchObject([{ data: { previousState: "running" } }]);
+		expect(await events("sandbox.running")).toHaveLength(1);
+		// Host b back: it deletes its copy before it is used.
+		const backB = await reconnect(b);
+		await vi.waitFor(() => expect(backB.sandboxes.has(sandbox.id)).toBe(false));
+		expect(backB.calls[0]).toMatchObject({ method: "sandbox.delete", params: { sandboxId: sandbox.id } });
 	});
 
 	it("never ends a command its replacement runs from a loss pass that read the lost record late", async () => {

@@ -7839,6 +7839,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const latest = await store.sandboxes.get(sandboxId);
 		const marker = latest?.recreating;
 		if (latest === undefined || marker === undefined || !unsettledCreate(latest) || pending.has(sandboxId)) return;
+		// Its new host being lost (`losing`): that loss settles it, never a retry planned against the host it left.
+		if (latest.losing !== undefined) return;
 		if (marker.heartbeatAt + UPGRADE_STALE_MS > at) return;
 		if ((await backend.createAdmitted?.(sandboxId, latest.lifecycle ?? 0)) === true) return;
 		await retryRecreate(latest);
@@ -7861,7 +7863,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const at = Math.max(now(), marker.heartbeatAt + 1);
 		let won = false;
 		const claimed = await patchSandbox(read.id, (latest) => {
-			won = still(latest) && latest.recreating?.heartbeatAt === marker.heartbeatAt;
+			won = still(latest) && latest.losing === undefined && latest.recreating?.heartbeatAt === marker.heartbeatAt;
 			return won ? { ...latest, recreating: { ...marker, heartbeatAt: at } } : undefined;
 		});
 		if (!won || claimed?.recreating?.heartbeatAt !== at) return;
@@ -7895,7 +7897,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					lostEvent: { eventId: marker.eventId, previousState: marker.previousState, reason },
 				});
 			},
-			(current) => still(current) && current.recreating !== undefined,
+			// Never over a loss of its new host begun (`losing`), which settles it: lost, made again, or, where its fence
+			// didn't land, dropped, for a later retry (`retryStaleRecreate`).
+			(current) => still(current) && current.recreating !== undefined && current.losing === undefined,
 		);
 		if ("moved" in result) await finishLoss(result.moved, false);
 	}
