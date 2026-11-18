@@ -16,6 +16,22 @@ export interface LookupAddress {
 
 type BunDns = { lookup(host: string, options: object): Promise<{ address: string; family: number }[]> };
 
+/**
+ * A Bun lookup's failure as Node would report it, so the driver tells it from other failures (`postgresFailure`): a name
+ * that doesn't resolve is ENOTFOUND, a resolver that didn't answer in time ETIMEDOUT, and any other resolver failure
+ * EAI_AGAIN (try again). Anything that isn't a resolver's failure is as it was. The original is the `cause`.
+ */
+export function nodeDnsError(host: string, error: unknown): unknown {
+	const code = String((error as { code?: unknown })?.code ?? "");
+	if (!/^(DNS_|EAI_)/.test(code)) return error;
+	const node = /NOTFOUND|NODATA|NONAME/.test(code)
+		? "ENOTFOUND"
+		: /TIMEOUT|TIMEDOUT/.test(code)
+			? "ETIMEDOUT"
+			: "EAI_AGAIN";
+	return Object.assign(new Error(`getaddrinfo ${node} ${host}`, { cause: error }), { code: node, hostname: host });
+}
+
 /** The name's addresses, asked of the system's resolver now, never a remembered answer. */
 export async function lookupFresh(host: string): Promise<LookupAddress[]> {
 	const bun = (globalThis as { Bun?: { dns: BunDns } }).Bun;
@@ -24,10 +40,8 @@ export async function lookupFresh(host: string): Promise<LookupAddress[]> {
 	try {
 		found = await bun.dns.lookup(host, { backend: "system" });
 	} catch (error) {
-		found = [];
-		if (!/NOTFOUND|NODATA|NONAME/i.test(String((error as { code?: unknown }).code))) throw error;
+		throw nodeDnsError(host, error);
 	}
-	// Answered as Node's would be, so the driver tells it from other failures (`postgresFailure`).
 	if (found.length === 0) {
 		throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host });
 	}

@@ -2,8 +2,9 @@
 // these don't is shown on a real install (a gateway started while Compose's Postgres is stopped); here, that they
 // connect and fail as `net`'s do.
 import { createServer, type Server } from "node:net";
+import { postgresFailure } from "@kantel/sql/postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { FreshLookupSocket, freshLookupStream, lookupFresh } from "../../src/gateway/fresh-socket.ts";
+import { FreshLookupSocket, freshLookupStream, lookupFresh, nodeDnsError } from "../../src/gateway/fresh-socket.ts";
 
 let server: Server;
 let port: number;
@@ -59,6 +60,27 @@ describe("FreshLookupSocket", () => {
 		expect(await outcome(socket)).toBe("hello");
 		expect(asked).toEqual(["postgres.example"]);
 		expect(connectedTo).toBe("127.0.0.1");
+	});
+
+	it("reports Bun's resolver failures with Node's codes, so a transient one is retried", () => {
+		const bun = (code: string) => Object.assign(new Error(`lookup failed: ${code}`), { code });
+		const cases = {
+			DNS_ENOTFOUND: "ENOTFOUND",
+			DNS_ENODATA: "ENOTFOUND",
+			DNS_ETIMEOUT: "ETIMEDOUT",
+			DNS_EAI_AGAIN: "EAI_AGAIN",
+			DNS_ESERVFAIL: "EAI_AGAIN",
+			DNS_ECONNREFUSED: "EAI_AGAIN",
+		};
+		for (const [from, to] of Object.entries(cases)) {
+			const error = nodeDnsError("postgres", bun(from)) as Error & { code: string };
+			expect(error).toMatchObject({ code: to, message: `getaddrinfo ${to} postgres` });
+			expect((error.cause as { code: string }).code).toBe(from);
+			expect(postgresFailure(error)).toBe("unavailable");
+		}
+		// Not the resolver's: left as it is.
+		const other = new TypeError("host must be a string");
+		expect(nodeDnsError("postgres", other)).toBe(other);
 	});
 
 	it("doesn't connect once destroyed during the lookup", async () => {
