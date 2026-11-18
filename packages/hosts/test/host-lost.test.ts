@@ -52,6 +52,7 @@ async function setup(options: { readonly lostAfterMs?: number } = {}) {
 		recordEgress: async () => undefined,
 		reportExit: (...report) => api.service.reportExit(...report),
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
+		sandboxLost: (...report) => api.service.reportSandboxLost(...report),
 	});
 	closers.push(
 		() => service.close(),
@@ -197,6 +198,54 @@ describe("a host away past the deadline", () => {
 		release();
 		await vi.waitFor(() => expect(service.hub.connected(hostId)).toBe(true));
 		expect(back.sandboxes.has(sandbox.id)).toBe(false);
+	});
+});
+
+describe("what a loss covers", () => {
+	it("loses a create admitted on the host whose answer never came, though its record names no host yet", async () => {
+		const { api, root, service, hostId, host, pass } = await setup();
+		// The host takes the create and never answers it: its record stays starting, with no host.
+		host.hold = (method) => (method === "sandbox.create" ? new Promise<void>(() => undefined) : undefined);
+		const made = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(async () => expect((await service.sandboxes.placement(made.id))?.hostId).toBe(hostId));
+		expect((await api.store.sandboxes.get(made.id))?.hostId).toBeUndefined();
+		host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(await root.getSandbox(made.id)).toMatchObject({ state: "lost", hostId });
+		expect((await service.sandboxes.placement(made.id))?.fenced).toBeTypeOf("number");
+		// Back, it deletes it, and the create never publishes it running.
+		const back = await reconnect(service, hostId, host);
+		expect(back.calls.some((call) => call.method === "sandbox.delete" && call.params.sandboxId === made.id)).toBe(true);
+		await pass(60_000);
+		expect((await root.getSandbox(made.id)).state).toBe("lost");
+	});
+
+	it("records the loss as the host comes back when the pass that fenced it stopped first", async () => {
+		const { api, root, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		// A pass wrote the fence and its gateway stopped before the sandbox's record moved.
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+		const back = await reconnect(service, hostId, host);
+		expect(back.sandboxes.has(sandbox.id)).toBe(false);
+		expect((await root.getSandbox(sandbox.id)).state).toBe("lost");
+		const account = (await root.getSandbox(sandbox.id)).accountId;
+		const events = (await api.store.events.list({ accountId: account })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toHaveLength(1);
+	});
+
+	it("keeps what a fenced sandbox still owes another host when the lost host deletes it", async () => {
+		const { service, hostStore, hostId, host, sandbox } = await setup();
+		const owed = { hostId: "host_previous", operationId: "op_move", tier: "microvm" as const };
+		await hostStore.updatePlacement(sandbox.id, (latest) => ({ ...latest, cleanup: owed }));
+		host.connection.closed(1006, "gone");
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await reconnect(service, hostId, host);
+		const left = await service.sandboxes.placement(sandbox.id);
+		expect(left).toMatchObject({ hostId: "host_previous", tier: "microvm", cleanup: owed });
+		expect(left?.fenced).toBeUndefined();
 	});
 });
 

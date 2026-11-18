@@ -1053,6 +1053,11 @@ export interface SandboxBackend {
 	 */
 	fenceHost?(hostId: string, sandboxIds: readonly string[]): Promise<void>;
 	/**
+	 * The sandboxes it has placed on a host, what `fenceHost` may cover there: among them one whose create or fork was
+	 * admitted there but whose answer was never seen, which its record doesn't place on any host yet. Not one moving.
+	 */
+	hostSandboxes?(hostId: string): Promise<readonly string[]>;
+	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).
 	 */

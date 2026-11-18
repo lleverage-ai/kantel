@@ -728,6 +728,7 @@ export async function gatewayCompute(options: {
 		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
 		reportExit: (...report) => api.service.reportExit(...report),
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
+		sandboxLost: (...report) => api.service.reportSandboxLost(...report),
 		// Which pools' hosts peer in their pool's mesh.
 		poolSync: (poolId) => api.service.poolSync(poolId),
 		poolPlacement: (poolId) => api.service.poolPlacement(poolId),

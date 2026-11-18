@@ -179,6 +179,16 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						await fallback.fenceHost?.(hostId, sandboxIds);
 					},
 				}),
+		...(primary.hostSandboxes === undefined && fallback.hostSandboxes === undefined
+			? {}
+			: {
+					async hostSandboxes(hostId: string) {
+						return [
+							...((await primary.hostSandboxes?.(hostId)) ?? []),
+							...((await fallback.hostSandboxes?.(hostId)) ?? []),
+						];
+					},
+				}),
 		async capabilities(): Promise<BackendCapabilities> {
 			const [first, second] = await Promise.all([primary.capabilities(), fallback.capabilities()]);
 			const sizes = new Map<string, BackendSize>();

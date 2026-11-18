@@ -830,6 +830,12 @@ export interface ComputeService {
 	 */
 	reportHostConnection(hostId: string, connected: boolean): Promise<void>;
 	/**
+	 * A lost host's fenced sandbox is about to be deleted on it, as the host connects again: it is moved to `lost`, with
+	 * its `sandbox.lost` event, if the loss pass that fenced it stopped before it did (`hostLostAfterMs`). Nothing for one
+	 * lost, deleted or being deleted already. Throws when it can't be recorded, so the host keeps it until it is.
+	 */
+	reportSandboxLost(hostId: string, sandboxId: string): Promise<void>;
+	/**
 	 * Whether a pool has sync on (`Pool.sync`): its hosts that run the mesh peer with each other. False for a pool that
 	 * has gone.
 	 */
@@ -7304,48 +7310,82 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * A lost host's sandboxes, fenced and then moved to `lost` (`markLostHosts`). Not one that is being deleted, moved, or
-	 * worked on by this gateway (each settles first, and a later pass takes it). The fence comes first: should it fail,
-	 * nothing is lost, and a later pass tries again.
+	 * Whether a sandbox goes to `lost` with a lost host: one in a state it may be lost from (`LOSABLE`, so not one being
+	 * deleted) and not moving, that its record places on that host, or on none yet (a create or fork admitted there whose
+	 * answer was never seen: `SandboxBackend.hostSandboxes` names it).
+	 */
+	const losableOn = (hostId: string, sandbox: StoredSandbox) =>
+		(sandbox.hostId === hostId || sandbox.hostId === undefined) &&
+		LOSABLE.includes(sandbox.state) &&
+		sandbox.moving === undefined;
+
+	/**
+	 * A lost host's sandboxes, fenced and then moved to `lost` (`markLostHosts`): those its records place on it, and those
+	 * its backend placed there whose records don't name a host yet. The fence comes first: should it fail, nothing is
+	 * lost, and a later pass tries again. It is the durable intent: a sandbox fenced whose move to `lost` failed, or whose
+	 * gateway stopped first, is moved by a later pass while its host is away, and before its host deletes it otherwise
+	 * (`reportSandboxLost`).
 	 */
 	async function loseHost(hostId: string): Promise<void> {
-		const losable = (sandbox: StoredSandbox) =>
-			sandbox.hostId === hostId && LOSABLE.includes(sandbox.state) && sandbox.moving === undefined;
-		const sandboxes = (await store.sandboxes.list({ hostId }, { state: LOSABLE })).filter(
-			(sandbox) => losable(sandbox) && !pending.has(sandbox.id),
-		);
+		const recorded = await store.sandboxes.list({ hostId }, { state: LOSABLE });
+		const known = new Set(recorded.map((sandbox) => sandbox.id));
+		const unpublished: StoredSandbox[] = [];
+		for (const sandboxId of (await backend.hostSandboxes?.(hostId)) ?? []) {
+			if (known.has(sandboxId)) continue;
+			const sandbox = await store.sandboxes.get(sandboxId);
+			if (sandbox?.hostId === undefined && sandbox !== undefined) unpublished.push(sandbox);
+		}
+		const sandboxes = [...recorded, ...unpublished].filter((sandbox) => losableOn(hostId, sandbox));
 		if (sandboxes.length === 0) return;
 		await backend.fenceHost?.(
 			hostId,
 			sandboxes.map((sandbox) => sandbox.id),
 		);
-		for (const sandbox of sandboxes) {
-			let was: SandboxState = sandbox.state;
-			const result = await transition(
-				sandbox.id,
-				LOSABLE,
-				(current) => {
-					was = current.state;
-					return withState(current, "lost", { reason: HOST_LOST_REASON, ports: [] });
-				},
-				losable,
-			).catch(() => undefined);
-			if (result === undefined || !("moved" in result)) continue;
-			const lost = result.moved;
-			await emit("sandbox.lost", lost.accountId, {
-				sandbox: lost,
-				data: { previousState: was, reason: HOST_LOST_REASON },
-			});
-			// Its commands went with its machine; its host can't be asked.
-			keepGoing(
-				track([sandbox.id], () =>
-					killCommandsOf(sandbox.id, {
-						note: `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`,
-						reconcile: false,
-					}),
-				),
-			);
-		}
+		for (const sandbox of sandboxes) await loseSandbox(hostId, sandbox.id).catch(() => undefined);
+	}
+
+	/**
+	 * One sandbox of a lost host, moved to `lost` with its `sandbox.lost` event, once (`transition`), and its commands
+	 * ended. Nothing when it isn't `losableOn` the host (lost, deleted or being deleted already, or on another host). An
+	 * operation under way on it finds it lost: each moves it only from the states it expects.
+	 */
+	async function loseSandbox(hostId: string, sandboxId: string): Promise<void> {
+		let was: SandboxState | undefined;
+		const result = await transition(
+			sandboxId,
+			LOSABLE,
+			(current) => {
+				was = current.state;
+				return withState(current, "lost", { reason: HOST_LOST_REASON, ports: [], hostId });
+			},
+			(current) => losableOn(hostId, current),
+		).catch((error: unknown) => {
+			// Its record gone meanwhile: nothing to lose.
+			if (error instanceof KantelError && error.code === "not_found") return undefined;
+			throw error;
+		});
+		if (result === undefined || !("moved" in result)) return;
+		const lost = result.moved;
+		await emit("sandbox.lost", lost.accountId, {
+			sandbox: lost,
+			data: { previousState: was ?? "running", reason: HOST_LOST_REASON },
+		});
+		// Its commands went with its machine; its host can't be asked.
+		keepGoing(
+			track([sandboxId], () =>
+				killCommandsOf(sandboxId, {
+					note: `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`,
+					reconcile: false,
+				}),
+			),
+		);
+	}
+
+	/** `ComputeService.reportSandboxLost`. */
+	async function reportSandboxLost(hostId: string, sandboxId: string): Promise<void> {
+		const sandbox = await store.sandboxes.get(sandboxId);
+		if (sandbox === undefined || !losableOn(hostId, sandbox)) return;
+		await loseSandbox(hostId, sandboxId);
 	}
 
 	/**
@@ -15317,6 +15357,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		reportExit,
 		reportHostConnection,
+		reportSandboxLost,
 
 		async poolSync(poolId) {
 			return (await store.pools.get(poolId))?.sync === true;
