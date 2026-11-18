@@ -165,6 +165,10 @@ type rootfsBuilder struct {
 	registry string
 	locks    keyedLocks
 	docker   dockerCheck
+	// maps are the root filesystems' block maps (rootfssync.go).
+	maps rootfsMaps
+	// pool is the pool the host is in now (Config.Pool), which a root filesystem made is stamped with; nil, none.
+	pool func() string
 }
 
 func newRootfsBuilder(dir string, run runner, registry string) *rootfsBuilder {
@@ -236,6 +240,8 @@ func (b *rootfsBuilder) rootfs(ctx context.Context, img templateImage) (string, 
 	if path, rec, ok := b.cached(key); ok {
 		return path, rec.ImageDigest, nil
 	}
+	// The pool it is made in, as the build starts.
+	pool := b.currentPool()
 	if b.registry == "" {
 		return "", "", &proto.Error{Code: proto.ErrUnsupported, Message: "this host can't make templates from a published base image: its settings name no templateRegistry to pull " + img.BaseImage + "@" + img.BaseDigest + " from"}
 	}
@@ -282,9 +288,12 @@ func (b *rootfsBuilder) rootfs(ctx context.Context, img templateImage) (string, 
 		return "", "", err
 	}
 	path := b.path(key)
+	// A map left of a fetch cut short describes other bytes: this file gets its own (mapRootfsLater).
+	_ = os.Remove(b.mapPath(key))
 	if err := os.Rename(filepath.Join(work, "rootfs.ext4"), path); err != nil {
 		return "", "", err
 	}
+	b.stampPool(key, pool)
 	raw, _ := json.Marshal(builtRootfs{ImageDigest: digest, BuiltFrom: tag})
 	_ = os.WriteFile(filepath.Join(b.dir, key+".json"), raw, 0o600)
 	return path, digest, nil

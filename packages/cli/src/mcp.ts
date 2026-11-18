@@ -14,11 +14,27 @@ import { notRunningOf } from "./errors.ts";
 export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
 const LATEST_PROTOCOL = "2025-06-18";
 
+/** How to choose between an isolate and a microVM, for the instructions and sandbox_create alike. */
+const CHOOSING_A_TYPE =
+	"Choose its type. An isolate starts in milliseconds and costs almost nothing: a shell (just-bash) over files in " +
+	"/workspace with curl, jq, grep, rg, sed, awk, sort, diff and gzip, plus `node` (JavaScript or TypeScript, with " +
+	"fs, path, crypto, fetch and relative imports, but no npm packages) and `python` (Pyodide: the standard library " +
+	"and numpy, but no pip install). Each command runs at most 30 s unless you give a timeoutMs. It has no git, " +
+	"package manager, Docker, browser, ports or SSH. Use one for calling HTTP APIs, working on text, JSON or CSV, and " +
+	"short scripts that need only what's built in, such as reading issues or logs with a token, reshaping an export, " +
+	"or checking many items in forks. Use a microvm, a full Linux with root, Docker, a desktop and a browser, for " +
+	"anything touching a codebase (clone, install, build, test, run), packages, a server or a long job. If unsure, " +
+	"use a microvm. If an isolate's command needs a microVM (its answer says so, or 'command not " +
+	"found' or 'not available in an isolate'), don't work around it: upgrade it with sandbox_upgrade, which keeps its " +
+	"id, files (in /home/user/workspace, with /workspace linked there), env and grants, and run the command again. " +
+	"Create an isolate with autoUpgrade to have that done for you.";
+
 /** What `initialize` tells the agent about using the tools. */
 export const INSTRUCTIONS =
 	"Kantel gives you sandboxes: machines of your own to run code in, away from the user's computer. Create one with " +
-	"sandbox_create (an isolate starts in milliseconds and runs JavaScript; type microvm is a full Linux with root, " +
-	"Docker, a desktop and a browser) and keep its id. Run commands in it with sandbox_exec, and move files with " +
+	"sandbox_create and keep its id. " +
+	CHOOSING_A_TYPE +
+	" Run commands in it with sandbox_exec, and move files with " +
 	"file_write, file_read and file_list. port_expose gives a server in it a URL; snapshot_save keeps its state to " +
 	"start new sandboxes from. Stop it with sandbox_stop when you are done: a stopped sandbox keeps its disk and costs " +
 	"nothing to run, and sandbox_resume brings it back. If a command may take longer than your MCP client waits " +
@@ -293,6 +309,26 @@ export function commandResult(command: Command): ToolResult {
 		default:
 			lines.push(`The command exited with code ${command.exitCode ?? "unknown"}.`);
 	}
+	if (command.rerunOf !== undefined) {
+		lines.push(
+			`Its isolate needed a microVM for it (${command.rerunOf} said so): Kantel upgraded ${command.sandboxId} to a ` +
+				"microVM, its files in /home/user/workspace (/workspace links there), and this is the command run again there.",
+		);
+	}
+	if (command.rerunAs !== undefined) {
+		lines.push(
+			`It needed a microVM: Kantel upgraded ${command.sandboxId} and runs it again there as ${command.rerunAs}. ` +
+				`Read that one with command_get (sandboxId ${command.sandboxId}, commandId ${command.rerunAs}).`,
+		);
+	} else if (command.needsMicrovm !== undefined) {
+		lines.push(
+			`${command.needsMicrovm.inferred === true ? "It looks like it needs a microVM (read from its output)" : "It needs a microVM"}: ${command.needsMicrovm.reason} Call sandbox_upgrade with sandboxId ${command.sandboxId} ` +
+				"(it keeps the id, files, env and grants), then run it again.",
+		);
+	}
+	if (command.terminated !== undefined) {
+		lines.push(`The isolate stopped it for using too much ${command.terminated} time.`);
+	}
 	if (command.truncated) lines.push("Kantel kept only its first 1 MiB of output.");
 	if (command.state !== "running" || stdout !== "" || stderr !== "") {
 		lines.push("stdout:", stdout === "" ? "(empty)" : stdout);
@@ -308,6 +344,10 @@ export function commandResult(command: Command): ToolResult {
 			stderr,
 			truncated: command.truncated || stdout !== command.stdout || stderr !== command.stderr,
 			durationMs: command.durationMs ?? null,
+			...(command.needsMicrovm === undefined ? {} : { needsMicrovm: command.needsMicrovm }),
+			...(command.terminated === undefined ? {} : { terminated: command.terminated }),
+			...(command.rerunAs === undefined ? {} : { rerunAs: command.rerunAs }),
+			...(command.rerunOf === undefined ? {} : { rerunOf: command.rerunOf }),
 		},
 	};
 }
@@ -354,11 +394,14 @@ const TOOLS: readonly Tool[] = [
 	{
 		name: "sandbox_create",
 		description:
-			"Create a sandbox and wait until it runs; answers it, with its id. An isolate (the default) starts in " +
-			"milliseconds and runs a JavaScript shell, but no native binaries. A microvm is a full Linux with root, " +
-			"Docker, a desktop, a browser and SSH. Stop it with sandbox_stop when you are done.",
+			`Create a sandbox and wait until it runs; answers it, with its id. ${CHOOSING_A_TYPE} ` +
+			"Stop it with sandbox_stop when you are done.",
 		inputSchema: schema({
-			type: { type: "string", enum: SANDBOX_TYPES, description: "isolate (default) or microvm." },
+			type: {
+				type: "string",
+				enum: SANDBOX_TYPES,
+				description: "isolate or microvm. Needed unless from names a snapshot, whose type it takes.",
+			},
 			size: { type: "string", enum: SIZES, description: "A microVM's size; default the deployment's." },
 			name: { type: "string", description: "Default: a generated name." },
 			from: { type: "string", description: "Start from this snapshot: its ID, or a saved snapshot's name." },
@@ -381,22 +424,45 @@ const TOOLS: readonly Tool[] = [
 				type: "string",
 				description: "Run it on this host, its name or ID. Only when the user asks for a host; default: Kantel picks.",
 			},
+			autoUpgrade: {
+				type: "boolean",
+				description:
+					"For an isolate: when a command needs a microVM, Kantel upgrades it (as sandbox_upgrade does) and runs the " +
+					"command again there, once, answering that run. Use it when a task may turn out to need more than a shell.",
+			},
+			autoUpgradeFrom: {
+				type: "string",
+				description:
+					"With autoUpgrade: the microVM's snapshot it upgrades into (its ID, or a saved snapshot's name), such as one " +
+					"with the project cloned and installed.",
+			},
 		}),
 		annotations: { title: "Create a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
 		async call(args, { client, account, signal }) {
+			// The API makes an isolate when no type is given, which an agent that left it out rarely wants: it has to choose.
+			const type = optionalChoice(args, "type", SANDBOX_TYPES);
+			const from = optionalText(args, "from");
+			if (type === undefined && from === undefined) {
+				throw new ArgumentError(
+					"type is required: microvm for anything touching code, a runtime or a server; isolate only for HTTP calls " +
+						"and text or JSON work.",
+				);
+			}
 			const sandbox = await client.createSandbox(
 				{
 					account,
-					type: optionalChoice(args, "type", SANDBOX_TYPES),
+					type,
 					size: optionalChoice(args, "size", SIZES),
 					name: optionalText(args, "name"),
-					from: optionalText(args, "from"),
+					from,
 					image: optionalText(args, "image"),
 					autoStopMinutes: optionalNumber(args, "autoStopMinutes"),
 					idleStopMinutes: optionalNumber(args, "idleStopMinutes"),
 					labels: optionalStrings(args, "labels"),
 					env: optionalStrings(args, "env"),
 					host: optionalText(args, "host"),
+					...(optionalBoolean(args, "autoUpgrade") === true ? { autoUpgrade: true } : {}),
+					autoUpgradeFrom: optionalText(args, "autoUpgradeFrom"),
 					wait: true,
 				},
 				{ signal },
@@ -465,6 +531,52 @@ const TOOLS: readonly Tool[] = [
 		async call(args, { client, signal }) {
 			const sandbox = await client.resumeSandbox(text(args, "sandboxId"), { wait: true }, { signal });
 			return json(sandbox, `Sandbox ${sandbox.id} is ${stateLine(sandbox)}.`);
+		},
+	},
+	{
+		name: "sandbox_upgrade",
+		description:
+			"Turn an isolate into a microVM and wait until it runs: the same id, name, labels, env, environments, grants " +
+			"and protected variables, and its /workspace files in /home/user/workspace, with /workspace a link there, so " +
+			"its paths still work. Use it when an isolate's command needs a microVM (git, node, python, a package " +
+			"manager, a build, Docker), then run the command again; a stopped isolate comes back running. A microVM " +
+			"costs more than an isolate from then on. If the microVM can't be made, the isolate is left as it was.",
+		inputSchema: schema(
+			{
+				sandboxId,
+				size: { type: "string", enum: SIZES, description: "The microVM's size; default the deployment's." },
+				image: { type: "string", description: "The microVM's base image; default the deployment's." },
+				from: {
+					type: "string",
+					description:
+						"Start the microVM from this snapshot of a microVM (its ID, or a saved snapshot's name), such as one with " +
+						"the project cloned and installed; the isolate's files are laid over its /home/user/workspace.",
+				},
+			},
+			["sandboxId"],
+		),
+		annotations: {
+			title: "Upgrade an isolate to a microVM",
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		async call(args, { client, signal }) {
+			const sandbox = await client.upgradeSandbox(
+				text(args, "sandboxId"),
+				{
+					size: optionalChoice(args, "size", SIZES),
+					image: optionalText(args, "image"),
+					from: optionalText(args, "from"),
+					wait: true,
+				},
+				{ signal, idempotencyKey: crypto.randomUUID() },
+			);
+			return json(
+				sandbox,
+				`Sandbox ${sandbox.id} is a ${sandbox.type} now, ${stateLine(sandbox)}. Its files are in /home/user/workspace ` +
+					"(/workspace links there): run the command again.",
+			);
 		},
 	},
 	{

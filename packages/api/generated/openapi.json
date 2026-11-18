@@ -1339,7 +1339,7 @@
 						"name": "state",
 						"in": "query",
 						"required": false,
-						"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.",
+						"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.",
 						"schema": {
 							"$ref": "#/components/schemas/SandboxState"
 						}
@@ -1462,7 +1462,7 @@
 			"post": {
 				"operationId": "createSandbox",
 				"summary": "Create a sandbox",
-				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.",
+				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -1612,6 +1612,15 @@
 						"in": "query",
 						"required": false,
 						"description": "The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "pool",
+						"in": "query",
+						"required": false,
+						"description": "The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. Default: from the hosts a create naming no pool may use, in the default pools.",
 						"schema": {
 							"type": "string"
 						}
@@ -1854,7 +1863,7 @@
 			"delete": {
 				"operationId": "deleteSandbox",
 				"summary": "Delete a sandbox permanently",
-				"description": "Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`.",
+				"description": "Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. One on an account's own host is deleted there, even after the host has lost track of it (its earlier delete's answer lost): while that host is offline the delete is refused (`unavailable`) and the sandbox is kept, and once the host is revoked the sandbox is written off. A key needs `sandboxes:delete`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -2416,6 +2425,389 @@
 					},
 					"429": {
 						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/upgrade": {
+			"post": {
+				"operationId": "upgradeSandbox",
+				"summary": "Upgrade an isolate to a microVM",
+				"description": "Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and `/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`, Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was. Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the upgrade; a `sandbox.upgraded` event records it. A key needs `sandboxes:write`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpgradeSandboxBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The sandbox, now a microVM.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Sandbox"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/move": {
+			"post": {
+				"operationId": "moveSandbox",
+				"summary": "Move a sandbox to another host",
+				"description": "Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs, then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with `keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/MoveSandboxBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The sandbox, running on its new host (or `moving`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Sandbox"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "planSandboxMove",
+				"summary": "Plan a sandbox's move",
+				"description": "A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused as a move would be when it can't move. A key needs `sandboxes:write`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Where it may move, and what each way does.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxMovePlan"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -3499,7 +3891,7 @@
 						"name": "path",
 						"in": "query",
 						"required": true,
-						"description": "An absolute path, or one relative to the user's home.",
+						"description": "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1
@@ -3583,7 +3975,7 @@
 						"name": "path",
 						"in": "query",
 						"required": false,
-						"description": "Default: the user's home.",
+						"description": "Default: a microVM's `/home/user` or an isolate's `/workspace`.",
 						"schema": {
 							"type": "string"
 						}
@@ -3895,7 +4287,7 @@
 						"name": "path",
 						"in": "query",
 						"required": true,
-						"description": "The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.",
+						"description": "The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -5107,7 +5499,7 @@
 						"name": "path",
 						"in": "query",
 						"required": false,
-						"description": "A directory; default the user's home.",
+						"description": "A directory; default a microVM's `/home/user` or an isolate's `/workspace`.",
 						"schema": {
 							"type": "string"
 						}
@@ -7495,6 +7887,246 @@
 				}
 			}
 		},
+		"/sandboxes/{sandboxId}/environments": {
+			"get": {
+				"operationId": "listSandboxEnvironments",
+				"summary": "List a sandbox's environments",
+				"description": "In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and repositories are still to be set up. A key needs `sandboxes:read`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEnvironments"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "attachSandboxEnvironment",
+				"summary": "Attach an environment to a sandbox",
+				"description": "Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once (and, on a host that supports it, services that read `/etc/kantel/env`). Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/AttachSandboxEnvironmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Its environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEnvironments"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/environments/{environmentId}": {
+			"delete": {
+				"operationId": "detachSandboxEnvironment",
+				"summary": "Detach an environment from a sandbox",
+				"description": "Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop resolving at once and its grants go. Secret files it wrote and repositories it cloned stay. A key needs `exec`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"description": "The environment's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxEnvironments"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/templates": {
 			"get": {
 				"operationId": "listTemplates",
@@ -8338,7 +8970,7 @@
 						"name": "type",
 						"in": "query",
 						"required": false,
-						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
+						"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 						"schema": {
 							"$ref": "#/components/schemas/EventType"
 						}
@@ -9125,6 +9757,956 @@
 				}
 			}
 		},
+		"/github-runners": {
+			"get": {
+				"operationId": "listGithubRunners",
+				"summary": "List GitHub runner integrations",
+				"description": "`not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The integrations.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunnersList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createGithubRunners",
+				"summary": "Connect a GitHub App for runners",
+				"description": "From then on, each `workflow_job` the App's webhook sends whose `runs-on` labels a pool's label matches gets a runner: a microVM made from the pool's template on the account's hosts, deleted once its job ends. Answers the webhook's URL and secret (shown once) to give the App. Its runners act through an API key it makes, named for it; revoking that key stops them. Needs protected values (`KANTEL_SECRETS_KEY`), as the App's key is kept sealed. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateGithubRunnersBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The integration and its webhook secret.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunnersWithSecret"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/github-runners/{githubRunnersId}": {
+			"get": {
+				"operationId": "getGithubRunners",
+				"summary": "Get a GitHub runner integration",
+				"description": "With each pool's queue and runners (`status`). A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The integration.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunners"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateGithubRunners",
+				"summary": "Change a GitHub runner integration",
+				"description": "Runners already made keep the pool they were made for; disabling it makes no more, and leaves its queue to wait. A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateGithubRunnersBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The integration.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunners"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteGithubRunners",
+				"summary": "Disconnect a GitHub App",
+				"description": "Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub wait there for another runner. A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/github-runners/{githubRunnersId}/jobs": {
+			"get": {
+				"operationId": "listGithubRunnerJobs",
+				"summary": "List a GitHub runner integration's jobs",
+				"description": "The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits. A key needs `account:admin`.",
+				"tags": ["github-runners"],
+				"parameters": [
+					{
+						"name": "githubRunnersId",
+						"in": "path",
+						"required": true,
+						"description": "The runner integration's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its jobs.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GithubRunnerJobList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sticky-disks": {
+			"get": {
+				"operationId": "listStickyDisks",
+				"summary": "List sticky disks",
+				"description": "`not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:read`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The account's sticky disks.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDiskList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createStickyDisk",
+				"summary": "Create a sticky disk",
+				"description": "An empty disk until its first commit. Attach it to a microVM with `stickyDisks` in a create. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:admin`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateStickyDiskBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The sticky disk.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDisk"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sticky-disks/{stickyDiskId}": {
+			"get": {
+				"operationId": "getStickyDisk",
+				"summary": "Get a sticky disk",
+				"description": "With its newest versions. A key needs `account:read`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "stickyDiskId",
+						"in": "path",
+						"required": true,
+						"description": "The sticky disk's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The sticky disk.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDisk"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteStickyDisk",
+				"summary": "Delete a sticky disk",
+				"description": "Its versions go from every host. Sandboxes with a copy keep it until they are deleted. A key needs `account:admin`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "stickyDiskId",
+						"in": "path",
+						"required": true,
+						"description": "The sticky disk's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/sticky-disks/{stickyDiskId}/commit": {
+			"post": {
+				"operationId": "commitStickyDisk",
+				"summary": "Commit a sandbox's copy of a sticky disk",
+				"description": "Makes the sandbox's copy, as it is now, the disk's next version: later sandboxes on its host start from it. The sandbox must be running; its filesystem is frozen for the moment the copy takes. Commit only from sandboxes you trust: every later sandbox reads what this one wrote. A key needs `snapshots:write`.",
+				"tags": ["sticky-disks"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "stickyDiskId",
+						"in": "path",
+						"required": true,
+						"description": "The sticky disk's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"201": {
+						"description": "The new version.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/StickyDiskVersion"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/telemetry": {
 			"get": {
 				"operationId": "getTelemetry",
@@ -9562,7 +11144,7 @@
 			"patch": {
 				"operationId": "updateHost",
 				"summary": "Change a host",
-				"description": "Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -9909,6 +11491,384 @@
 				}
 			}
 		},
+		"/admin/hosts/{hostId}/evacuation": {
+			"post": {
+				"operationId": "startHostEvacuation",
+				"summary": "Move every sandbox off a host",
+				"description": "It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation, under way.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "getHostEvacuation",
+				"summary": "Get a host's evacuation",
+				"description": "How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/admin/hosts/{hostId}/sticky-disk-fetches": {
+			"post": {
+				"operationId": "fetchHostStickyDisk",
+				"summary": "Fetch a sticky disk version onto a host",
+				"description": "Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/FetchHostStickyDiskBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "The fetch has started."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/admin/hosts/{hostId}/snapshot-fetches": {
+			"post": {
+				"operationId": "fetchHostSnapshot",
+				"summary": "Fetch a saved snapshot onto a host",
+				"description": "Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started. `not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/FetchHostSnapshotBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"204": {
+						"description": "The fetch has started."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/hosts/check-for-updates": {
 			"post": {
 				"operationId": "checkHostUpdates",
@@ -10056,6 +12016,420 @@
 					},
 					"403": {
 						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/admin/grant-key": {
+			"get": {
+				"operationId": "getGrantKeys",
+				"summary": "Get the grant keys",
+				"description": "The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The grant keys.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GrantKeys"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/admin/grant-key/rotate": {
+			"post": {
+				"operationId": "rotateGrantKey",
+				"summary": "Rotate the grant key",
+				"description": "Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The grant keys after the rotation.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GrantKeys"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/admin/pools": {
+			"get": {
+				"operationId": "listPools",
+				"summary": "List the deployment's pools",
+				"description": "The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The pools.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PoolList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createPool",
+				"summary": "Make a pool of shared hosts",
+				"description": "An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreatePoolBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The pool.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Pool"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/admin/pools/{poolId}": {
+			"patch": {
+				"operationId": "updatePool",
+				"summary": "Change a pool of shared hosts",
+				"description": "Renames it, or makes it the deployment's default pool. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "poolId",
+						"in": "path",
+						"required": true,
+						"description": "The pool's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdatePoolBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The pool.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Pool"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deletePool",
+				"summary": "Delete a pool of shared hosts",
+				"description": "Only an empty pool that isn't the default: `conflict` while a host is in it. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "poolId",
+						"in": "path",
+						"required": true,
+						"description": "The pool's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -10324,7 +12698,7 @@
 			"patch": {
 				"operationId": "updateAccountHost",
 				"summary": "Change one of an account's hosts",
-				"description": "Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"description": "Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
 				"parameters": [
 					{
@@ -10614,6 +12988,652 @@
 							"application/json": {
 								"schema": {
 									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/hosts/{hostId}/evacuation": {
+			"post": {
+				"operationId": "startAccountHostEvacuation",
+				"summary": "Move every sandbox off one of an account's hosts",
+				"description": "It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation, under way.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "getAccountHostEvacuation",
+				"summary": "Get the evacuation of one of an account's hosts",
+				"description": "How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The evacuation.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostEvacuation"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/pools": {
+			"get": {
+				"operationId": "listAccountPools",
+				"summary": "List an account's pools",
+				"description": "The pools the account's own hosts are in, the default first made if there is none yet. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The pools.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PoolList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createAccountPool",
+				"summary": "Make a pool of an account's hosts",
+				"description": "An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "Idempotency-Key",
+						"in": "header",
+						"required": false,
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateAccountPoolBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The pool.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Pool"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/pools/{poolId}": {
+			"patch": {
+				"operationId": "updateAccountPool",
+				"summary": "Change one of an account's pools",
+				"description": "Renames it, or makes it the account's default pool. A name is looked for in the caller's own account (its personal account, or an API key's). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "poolId",
+						"in": "path",
+						"required": true,
+						"description": "The pool's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdatePoolBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The pool.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Pool"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteAccountPool",
+				"summary": "Delete one of an account's pools",
+				"description": "Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "poolId",
+						"in": "path",
+						"required": true,
+						"description": "The pool's ID or name.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/mounts/refresh": {
+			"post": {
+				"operationId": "refreshSandboxMounts",
+				"summary": "Bring a sandbox's bucket mounts up to date",
+				"description": "Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RefreshMountsBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Each bucket mount, as the sandbox shows it now.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RefreshedMountList"
 								}
 							}
 						}
@@ -11414,6 +14434,10 @@
 					"personalTokens": {
 						"$ref": "#/components/schemas/PersonalTokenPolicy"
 					},
+					"snapshotCopies": {
+						"type": "boolean",
+						"description": "Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it."
+					},
 					"createdAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
@@ -11689,6 +14713,22 @@
 				},
 				"title": "ApproveDeviceLoginBody",
 				"description": "What the device gets. A sign-in that asked for a personal token is approved with `personal: true`, and gets one acting as the approver, in `accounts` or all of theirs, capped by `preset` when given; `account` is ignored. Any other gets an API key in the approver's personal account unless `account` names an organisation, which needs admin or owner there; without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin."
+			},
+			"AttachSandboxEnvironmentBody": {
+				"type": "object",
+				"required": ["environment"],
+				"properties": {
+					"environment": {
+						"type": "string",
+						"description": "The environment, its ID or name in the sandbox's account."
+					},
+					"position": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, so it wins over the others."
+					}
+				},
+				"title": "AttachSandboxEnvironmentBody"
 			},
 			"BaseImage": {
 				"type": "object",
@@ -12069,7 +15109,7 @@
 						"type": "integer",
 						"minimum": 0,
 						"maximum": 86400,
-						"description": "How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's."
+						"description": "How long the host trusts its listing of the prefix before it looks again, so objects added later appear: it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call `refreshSandboxMounts`."
 					}
 				},
 				"title": "BucketMountSource",
@@ -12377,9 +15417,43 @@
 					},
 					"durationMs": {
 						"type": "integer"
+					},
+					"needsMicrovm": {
+						"$ref": "#/components/schemas/CommandNeedsMicrovm"
+					},
+					"terminated": {
+						"$ref": "#/components/schemas/CommandTermination"
+					},
+					"rerunAs": {
+						"type": "string",
+						"description": "It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run again in the microVM."
+					},
+					"rerunOf": {
+						"type": "string",
+						"description": "It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the command that answered `needsMicrovm` in the isolate."
 					}
 				},
 				"title": "Command"
+			},
+			"CommandNeedsMicrovm": {
+				"type": "object",
+				"required": ["command", "reason"],
+				"properties": {
+					"command": {
+						"type": "string",
+						"description": "What it ran that an isolate doesn't have, such as `tar`."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why, in one sentence."
+					},
+					"inferred": {
+						"type": "boolean",
+						"description": "Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it."
+					}
+				},
+				"title": "CommandNeedsMicrovm",
+				"description": "In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`."
 			},
 			"CommandPage": {
 				"type": "object",
@@ -12418,6 +15492,24 @@
 					}
 				],
 				"title": "CommandState"
+			},
+			"CommandTermination": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "cpu"
+					},
+					{
+						"type": "string",
+						"const": "memory"
+					},
+					{
+						"type": "string",
+						"const": "wall"
+					}
+				],
+				"title": "CommandTermination",
+				"description": "In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`)."
 			},
 			"Cost": {
 				"type": "object",
@@ -12459,6 +15551,11 @@
 							}
 						}
 					},
+					"pool": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The pool the host joins, an ID or name. Default: the account's default pool."
+					},
 					"expiresInMinutes": {
 						"type": "integer",
 						"minimum": 5,
@@ -12467,6 +15564,51 @@
 					}
 				},
 				"title": "CreateAccountJoinTokenBody"
+			},
+			"CreateAccountPoolBody": {
+				"type": "object",
+				"required": ["name"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
+					},
+					"vcpusPerCpu": {
+						"anyOf": [
+							{
+								"type": "number",
+								"minimum": 0.25,
+								"maximum": 16
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache."
+					}
+				},
+				"title": "CreateAccountPoolBody"
 			},
 			"CreateApiKeyBody": {
 				"type": "object",
@@ -12594,6 +15736,71 @@
 				},
 				"title": "CreateEnvironmentBody"
 			},
+			"CreateGithubRunnersBody": {
+				"type": "object",
+				"required": ["name", "appId", "privateKey", "owner"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"appId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"privateKey": {
+						"type": "string",
+						"minLength": 64,
+						"maxLength": 16384,
+						"description": "The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered."
+					},
+					"owner": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"scope": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "organization"
+							},
+							{
+								"type": "string",
+								"const": "repository"
+							}
+						],
+						"description": "Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository."
+					},
+					"runnerGroupId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[^/\\s]+/[^/\\s]+$"
+						},
+						"maxItems": 500
+					},
+					"pools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPool"
+						},
+						"minItems": 1,
+						"maxItems": 20,
+						"description": "Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it."
+					}
+				},
+				"title": "CreateGithubRunnersBody"
+			},
 			"CreateHostJoinTokenBody": {
 				"type": "object",
 				"properties": {
@@ -12608,6 +15815,11 @@
 								"type": "string"
 							}
 						}
+					},
+					"pool": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The pool the host joins, an ID or name among the deployment's pools. Default: its default pool."
 					},
 					"expiresInMinutes": {
 						"type": "integer",
@@ -12688,6 +15900,47 @@
 				},
 				"title": "CreatePersonalTokenBody",
 				"description": "`scopes` or a `preset` (or both, which adds them) cap what it may do; with neither, it does whatever your role allows. A token making a token can't make one that does more than it, in more accounts, or for longer."
+			},
+			"CreatePoolBody": {
+				"type": "object",
+				"required": ["name"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
+					},
+					"vcpusPerCpu": {
+						"anyOf": [
+							{
+								"type": "number",
+								"minimum": 0.25,
+								"maximum": 16
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache."
+					}
+				},
+				"title": "CreatePoolBody"
 			},
 			"CreateProjectBody": {
 				"type": "object",
@@ -12776,15 +16029,32 @@
 								"type": "string"
 							}
 						},
-						"description": "Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused."
+						"description": "Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused."
 					},
 					"environment": {
 						"type": "string",
-						"description": "Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables."
+						"description": "Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one."
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 1,
+						"maxItems": 10,
+						"description": "Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`."
 					},
 					"template": {
 						"type": "string",
 						"description": "Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables."
+					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxStickyDiskInput"
+						},
+						"maxItems": 2,
+						"description": "Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them."
 					},
 					"hostLabels": {
 						"type": "object",
@@ -12794,6 +16064,11 @@
 							}
 						},
 						"description": "Place it only on a host with each label, such as `{ site: \"home\" }`."
+					},
+					"pool": {
+						"type": "string",
+						"minLength": 1,
+						"description": "Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. `unavailable` saying which pool when none of its hosts can take it now. Default: the account's default pool when the account has hosts of its own, else the deployment's default pool, as before pools."
 					},
 					"host": {
 						"type": "string",
@@ -12808,6 +16083,14 @@
 						"maxItems": 16,
 						"description": "Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`)."
 					},
+					"autoUpgrade": {
+						"type": "boolean",
+						"description": "For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is."
+					},
+					"autoUpgradeFrom": {
+						"type": "string",
+						"description": "What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only."
+					},
 					"wait": {
 						"type": "boolean",
 						"description": "Answer once it is `running` (or `error`) rather than as soon as it is placed."
@@ -12815,6 +16098,36 @@
 				},
 				"title": "CreateSandboxBody",
 				"description": "Every field is optional: `{}` makes a running isolate in the caller's account."
+			},
+			"CreateStickyDiskBody": {
+				"type": "object",
+				"required": ["name", "sizeGb"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+						"description": "Lower-case letters, digits and hyphens, unique in the account."
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 500
+					},
+					"sizeGb": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 2048
+					},
+					"pool": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in that pool. Default: the pool of the first sandbox it is attached to."
+					}
+				},
+				"title": "CreateStickyDiskBody"
 			},
 			"CreateTemplateBody": {
 				"type": "object",
@@ -13540,6 +16853,55 @@
 					},
 					"startup": {
 						"$ref": "#/components/schemas/SandboxStartup"
+					},
+					"attached": {
+						"type": "string",
+						"description": "`sandbox.environments_changed`: the environment attached."
+					},
+					"detached": {
+						"type": "string",
+						"description": "`sandbox.environments_changed`: the environment detached."
+					},
+					"environmentIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "`sandbox.environments_changed`: the sandbox's environments now, in order."
+					},
+					"from": {
+						"$ref": "#/components/schemas/SandboxType"
+					},
+					"to": {
+						"$ref": "#/components/schemas/SandboxType"
+					},
+					"path": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "host"
+							},
+							{
+								"type": "string",
+								"const": "control-plane"
+							}
+						],
+						"description": "`sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them."
+					},
+					"files": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`sandbox.upgraded`: the files, links and directories moved."
+					},
+					"bytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`sandbox.upgraded`: the files' bytes."
+					},
+					"durationMs": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "`sandbox.upgraded`: how long the upgrade took."
 					}
 				},
 				"title": "EventData"
@@ -13593,7 +16955,15 @@
 					},
 					{
 						"type": "string",
+						"const": "sandbox.environments_changed"
+					},
+					{
+						"type": "string",
 						"const": "sandbox.oom_kill"
+					},
+					{
+						"type": "string",
+						"const": "sandbox.upgraded"
 					},
 					{
 						"type": "string",
@@ -13609,7 +16979,7 @@
 					}
 				],
 				"title": "EventType",
-				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
+				"description": "`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted."
 			},
 			"ExposedPort": {
 				"type": "object",
@@ -13687,6 +17057,32 @@
 					}
 				},
 				"title": "ExtractedArchive"
+			},
+			"FetchHostSnapshotBody": {
+				"type": "object",
+				"required": ["snapshotId"],
+				"properties": {
+					"snapshotId": {
+						"type": "string",
+						"description": "The saved snapshot's ID."
+					}
+				},
+				"title": "FetchHostSnapshotBody"
+			},
+			"FetchHostStickyDiskBody": {
+				"type": "object",
+				"required": ["stickyDiskId", "version"],
+				"properties": {
+					"stickyDiskId": {
+						"type": "string",
+						"description": "The sticky disk's ID."
+					},
+					"version": {
+						"type": "string",
+						"description": "The version to fetch: one a host in the same pool holds."
+					}
+				},
+				"title": "FetchHostStickyDiskBody"
 			},
 			"FileContent": {
 				"type": "object",
@@ -13824,7 +17220,7 @@
 						"type": "string",
 						"minLength": 1,
 						"maxLength": 4096,
-						"description": "An absolute path, or one relative to the user's home."
+						"description": "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`."
 					},
 					"ttlSeconds": {
 						"type": "integer",
@@ -13884,6 +17280,555 @@
 					}
 				},
 				"title": "ForkSandboxBody"
+			},
+			"GithubRunnerJob": {
+				"type": "object",
+				"required": ["id", "runId", "repository", "name", "labels", "state", "queuedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "GitHub's ID for the job."
+					},
+					"runId": {
+						"type": "integer"
+					},
+					"repository": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"labels": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"pool": {
+						"type": "string",
+						"description": "The pool whose label it matched."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "queued"
+							},
+							{
+								"type": "string",
+								"const": "in_progress"
+							},
+							{
+								"type": "string",
+								"const": "completed"
+							},
+							{
+								"type": "string",
+								"const": "ignored"
+							}
+						],
+						"description": "`queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for."
+					},
+					"conclusion": {
+						"type": "string"
+					},
+					"sandboxId": {
+						"type": "string",
+						"description": "The runner's sandbox that took it."
+					},
+					"queuedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"completedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it is ignored, or why it still waits."
+					}
+				},
+				"title": "GithubRunnerJob"
+			},
+			"GithubRunnerJobList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerJob"
+						},
+						"description": "The newest 200, newest first."
+					}
+				},
+				"title": "GithubRunnerJobList"
+			},
+			"GithubRunnerKind": {
+				"type": "object",
+				"required": ["integration", "label", "template", "resources"],
+				"properties": {
+					"integration": {
+						"type": "string",
+						"description": "The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`."
+					},
+					"label": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case."
+					},
+					"template": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path."
+					},
+					"resources": {
+						"$ref": "#/components/schemas/GithubRunnerResources"
+					},
+					"hostLabels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Of the pool's hosts, run only on those with each of these labels."
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"maxItems": 10,
+						"description": "Environments each runner starts with, IDs or names in the account, such as one holding a cache token."
+					},
+					"maxRunners": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 500,
+						"description": "The most runners the pool has at once, starting or running. Default 20."
+					},
+					"timeoutMinutes": {
+						"type": "integer",
+						"minimum": 5,
+						"maximum": 4320,
+						"description": "How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360."
+					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerStickyDisk"
+						},
+						"maxItems": 2,
+						"description": "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)."
+					},
+					"runnerCommand": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 4096,
+						"description": "The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig \"$KANTEL_RUNNER_JITCONFIG\"`."
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[^/\\s]+/[^/\\s]+$"
+						},
+						"maxItems": 500,
+						"description": "Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels."
+					}
+				},
+				"title": "GithubRunnerKind",
+				"description": "Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools."
+			},
+			"GithubRunnerPool": {
+				"type": "object",
+				"required": ["label", "template", "resources"],
+				"properties": {
+					"label": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case."
+					},
+					"template": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path."
+					},
+					"resources": {
+						"$ref": "#/components/schemas/GithubRunnerResources"
+					},
+					"hostLabels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select."
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"maxItems": 10,
+						"description": "Environments each runner starts with, IDs or names in the account, such as one holding a cache token."
+					},
+					"maxRunners": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 500,
+						"description": "The most runners the pool has at once, starting or running. Default 20."
+					},
+					"timeoutMinutes": {
+						"type": "integer",
+						"minimum": 5,
+						"maximum": 4320,
+						"description": "How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360."
+					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerStickyDisk"
+						},
+						"maxItems": 2,
+						"description": "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)."
+					},
+					"runnerCommand": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 4096,
+						"description": "The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig \"$KANTEL_RUNNER_JITCONFIG\"`."
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"pattern": "^[^/\\s]+/[^/\\s]+$"
+						},
+						"maxItems": 500,
+						"description": "Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels."
+					}
+				},
+				"title": "GithubRunnerPool",
+				"description": "Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool."
+			},
+			"GithubRunnerPoolStatus": {
+				"type": "object",
+				"required": ["label", "queued", "starting", "idle", "busy"],
+				"properties": {
+					"label": {
+						"type": "string"
+					},
+					"queued": {
+						"type": "integer",
+						"description": "Jobs waiting for a runner."
+					},
+					"starting": {
+						"type": "integer",
+						"description": "Runners being made or booting."
+					},
+					"idle": {
+						"type": "integer",
+						"description": "Runners up and waiting for GitHub to give them a job."
+					},
+					"busy": {
+						"type": "integer",
+						"description": "Runners running a job."
+					},
+					"waitingSince": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"waitingFor": {
+						"type": "string",
+						"description": "Why the oldest queued job has no runner yet, when it has waited."
+					}
+				},
+				"title": "GithubRunnerPoolStatus"
+			},
+			"GithubRunnerResources": {
+				"type": "object",
+				"required": ["vcpus", "memoryMb"],
+				"properties": {
+					"vcpus": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 32
+					},
+					"memoryMb": {
+						"type": "integer",
+						"minimum": 512
+					},
+					"diskGb": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 4096
+					}
+				},
+				"title": "GithubRunnerResources",
+				"description": "A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range."
+			},
+			"GithubRunners": {
+				"type": "object",
+				"required": [
+					"id",
+					"accountId",
+					"name",
+					"appId",
+					"owner",
+					"scope",
+					"pools",
+					"enabled",
+					"webhookUrl",
+					"createdAt",
+					"updatedAt"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The runner integration's ID, such as `ghr_3m4n5b`."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"appId": {
+						"type": "integer",
+						"description": "The GitHub App's ID."
+					},
+					"owner": {
+						"type": "string",
+						"description": "The GitHub organization (or user) the App is installed on, such as `octo-org`."
+					},
+					"scope": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "organization"
+							},
+							{
+								"type": "string",
+								"const": "repository"
+							}
+						],
+						"description": "Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository."
+					},
+					"runnerGroupId": {
+						"type": "integer",
+						"description": "The organization's runner group the runners join."
+					},
+					"repositories": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on."
+					},
+					"pools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPool"
+						}
+					},
+					"enabled": {
+						"type": "boolean"
+					},
+					"webhookUrl": {
+						"type": "string",
+						"description": "Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered."
+					},
+					"installationId": {
+						"type": "integer",
+						"description": "The App's installation, as the first webhook from it named it."
+					},
+					"lastWebhookAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"lastError": {
+						"$ref": "#/components/schemas/GithubRunnersError"
+					},
+					"status": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPoolStatus"
+						},
+						"description": "Each pool's queue and runners, on a get."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "GithubRunners",
+				"description": "A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is."
+			},
+			"GithubRunnersError": {
+				"type": "object",
+				"required": ["at", "message"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"message": {
+						"type": "string"
+					}
+				},
+				"title": "GithubRunnersError",
+				"description": "The last failure talking to GitHub or making a runner."
+			},
+			"GithubRunnersList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunners"
+						}
+					}
+				},
+				"title": "GithubRunnersList"
+			},
+			"GithubRunnerStickyCommit": {
+				"type": "object",
+				"required": ["branches"],
+				"properties": {
+					"branches": {
+						"type": "array",
+						"items": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 255
+						},
+						"minItems": 1,
+						"maxItems": 20,
+						"description": "Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`."
+					},
+					"beforeCommit": {
+						"type": "string",
+						"maxLength": 4096,
+						"description": "A shell command run as root in the runner before its copy is committed, such as one that prunes the cache and stops Docker. A commit is skipped when it fails."
+					}
+				},
+				"title": "GithubRunnerStickyCommit",
+				"description": "When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. Pull requests never commit."
+			},
+			"GithubRunnerStickyDisk": {
+				"type": "object",
+				"required": ["disk", "path"],
+				"properties": {
+					"disk": {
+						"type": "string",
+						"minLength": 1,
+						"description": "A sticky disk of the account, by ID or name."
+					},
+					"path": {
+						"type": "string",
+						"pattern": "^/[^\\0]*$",
+						"maxLength": 255,
+						"description": "Where each runner mounts it."
+					},
+					"commit": {
+						"$ref": "#/components/schemas/GithubRunnerStickyCommit"
+					}
+				},
+				"title": "GithubRunnerStickyDisk"
+			},
+			"GithubRunnersWithSecret": {
+				"type": "object",
+				"required": ["githubRunners", "webhookSecret"],
+				"properties": {
+					"githubRunners": {
+						"$ref": "#/components/schemas/GithubRunners"
+					},
+					"webhookSecret": {
+						"type": "string",
+						"description": "The secret to give the GitHub App's webhook. Shown once."
+					}
+				},
+				"title": "GithubRunnersWithSecret"
+			},
+			"GrantKeys": {
+				"type": "object",
+				"required": ["current", "retired"],
+				"properties": {
+					"current": {
+						"type": "object",
+						"required": ["id", "publicKey", "since"],
+						"properties": {
+							"id": {
+								"type": "string",
+								"description": "The key's ID, which each grant it signs names as `kid`."
+							},
+							"publicKey": {
+								"type": "string",
+								"description": "The Ed25519 public key, its 32 raw bytes in base64url."
+							},
+							"since": {
+								"type": "integer",
+								"description": "When it was made, on first use or by a rotation: epoch milliseconds, UTC."
+							}
+						},
+						"description": "The key that signs grants now."
+					},
+					"next": {
+						"type": "object",
+						"required": ["id", "publicKey", "from"],
+						"properties": {
+							"id": {
+								"type": "string",
+								"description": "The key's ID, which each grant it signs names as `kid`."
+							},
+							"publicKey": {
+								"type": "string",
+								"description": "The Ed25519 public key, its 32 raw bytes in base64url."
+							},
+							"from": {
+								"type": "integer",
+								"description": "When it begins signing: epoch milliseconds, UTC."
+							}
+						},
+						"description": "The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the rotation, once every connected host has it. Absent between rotations."
+					},
+					"retired": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"required": ["id", "publicKey", "until"],
+							"properties": {
+								"id": {
+									"type": "string",
+									"description": "The key's ID, which each grant it signs names as `kid`."
+								},
+								"publicKey": {
+									"type": "string",
+									"description": "The Ed25519 public key, its 32 raw bytes in base64url."
+								},
+								"until": {
+									"type": "integer",
+									"description": "When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began signing: epoch milliseconds, UTC."
+								}
+							}
+						},
+						"description": "Keys rotated out that hosts still accept, oldest first."
+					}
+				},
+				"title": "GrantKeys"
 			},
 			"GuestAgent": {
 				"type": "object",
@@ -14124,6 +18069,17 @@
 					"nestedVirtualisation": {
 						"type": "boolean"
 					},
+					"cpuFingerprint": {
+						"type": "string",
+						"description": "Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said."
+					},
+					"runtimeFingerprints": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said."
+					},
 					"capacity": {
 						"$ref": "#/components/schemas/HostCapacity"
 					},
@@ -14142,6 +18098,10 @@
 						"type": "string",
 						"description": "The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use."
 					},
+					"poolId": {
+						"type": "string",
+						"description": "The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in."
+					},
 					"joinedAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
@@ -14158,6 +18118,12 @@
 					},
 					"memory": {
 						"$ref": "#/components/schemas/HostMemory"
+					},
+					"mesh": {
+						"$ref": "#/components/schemas/HostMesh"
+					},
+					"evacuation": {
+						"$ref": "#/components/schemas/HostEvacuationProgress"
 					},
 					"savedSnapshotBytesLimit": {
 						"type": "integer",
@@ -14270,6 +18236,202 @@
 				},
 				"title": "HostDiskUsage",
 				"description": "What takes the space on a host's disk, as the host measured it last (every few minutes), counting only files on the filesystem that holds the host's files. Each file counts once, in the first of these it is in: bundles, images, templates, sandboxes, snapshots. Memory a stop's snapshot shares with its sandbox counts for the sandbox. Snapshots are split into saved and automatic by Kantel's own records, not by the host."
+			},
+			"HostEvacuation": {
+				"type": "object",
+				"required": ["hostId", "state", "startedAt", "moved", "remaining", "skipped", "failed", "sandboxes"],
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "The host's ID."
+					},
+					"state": {
+						"$ref": "#/components/schemas/HostEvacuationState"
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it failed or stopped, where that wasn't a sandbox's move (each says its own)."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"moved": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The sandboxes moved to another host."
+					},
+					"remaining": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those still to move, or moving now."
+					},
+					"skipped": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those that can't move, each with its reason."
+					},
+					"failed": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those whose move failed: each is where it was, as it was."
+					},
+					"sandboxes": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/HostEvacuationSandbox"
+						},
+						"description": "Each sandbox that was on the host when it began, or came onto it since, in the order taken."
+					}
+				},
+				"title": "HostEvacuation",
+				"description": "Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting it otherwise). It carries on across a control plane restart."
+			},
+			"HostEvacuationProgress": {
+				"type": "object",
+				"required": ["state", "startedAt", "moved", "remaining", "skipped", "failed"],
+				"properties": {
+					"state": {
+						"$ref": "#/components/schemas/HostEvacuationState"
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it failed or stopped, where that wasn't a sandbox's move (each says its own)."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"moved": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The sandboxes moved to another host."
+					},
+					"remaining": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those still to move, or moving now."
+					},
+					"skipped": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those that can't move, each with its reason."
+					},
+					"failed": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Those whose move failed: each is where it was, as it was."
+					}
+				},
+				"title": "HostEvacuationProgress",
+				"description": "How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got."
+			},
+			"HostEvacuationSandbox": {
+				"type": "object",
+				"required": ["sandboxId", "type", "state"],
+				"properties": {
+					"sandboxId": {
+						"type": "string",
+						"description": "The sandbox's ID."
+					},
+					"name": {
+						"type": "string",
+						"description": "Its name, where the caller may see the sandbox."
+					},
+					"type": {
+						"$ref": "#/components/schemas/SandboxType"
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "waiting"
+							},
+							{
+								"type": "string",
+								"const": "moving"
+							},
+							{
+								"type": "string",
+								"const": "moved"
+							},
+							{
+								"type": "string",
+								"const": "skipped"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							}
+						],
+						"description": "`waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was."
+					},
+					"phase": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "copying"
+							},
+							{
+								"type": "string",
+								"const": "stopping"
+							},
+							{
+								"type": "string",
+								"const": "final-copy"
+							},
+							{
+								"type": "string",
+								"const": "starting"
+							}
+						],
+						"description": "Where its move has got, while it moves: as its own `move.phase`."
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it moved to."
+					},
+					"keptMemory": {
+						"type": "boolean",
+						"description": "Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it was skipped, why its move failed, or why it restarted where it moved."
+					}
+				},
+				"title": "HostEvacuationSandbox",
+				"description": "One sandbox of a host's evacuation."
+			},
+			"HostEvacuationState": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "done"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "stopped"
+					}
+				],
+				"title": "HostEvacuationState",
+				"description": "`running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes."
 			},
 			"HostJoinToken": {
 				"type": "object",
@@ -14429,6 +18591,55 @@
 				},
 				"title": "HostMemory",
 				"description": "A host's memory, in MiB, as it last reported it (every heartbeat)."
+			},
+			"HostMesh": {
+				"type": "object",
+				"required": ["address", "peers"],
+				"properties": {
+					"address": {
+						"type": "string",
+						"description": "The host's own address on its pool's mesh, an IPv6 address."
+					},
+					"peers": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/HostMeshPeer"
+						},
+						"description": "The other hosts of its pool, each as it reaches it."
+					}
+				},
+				"title": "HostMesh",
+				"description": "How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected."
+			},
+			"HostMeshPeer": {
+				"type": "object",
+				"required": ["hostId", "path"],
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "The peer's host ID: another host of the same pool."
+					},
+					"path": {
+						"type": "string",
+						"description": "How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another."
+					},
+					"endpoint": {
+						"type": "string",
+						"description": "The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`."
+					},
+					"lastHandshake": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first."
+					},
+					"rttMs": {
+						"type": "number",
+						"minimum": 0,
+						"description": "The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer."
+					}
+				},
+				"title": "HostMeshPeer",
+				"description": "One mesh peer as a host reaches it, as the host last reported it."
 			},
 			"HostReleaseCheck": {
 				"type": "object",
@@ -14600,7 +18811,7 @@
 					},
 					"enforced": {
 						"type": "boolean",
-						"description": "Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit."
+						"description": "Whether an isolate's memory is a hard limit (its heap, ArrayBuffers and WebAssembly memory together): true when every host the account's isolates may run on says its isolate runtime enforces it. Otherwise the runtime records it, and the account VM's memory, shared by its isolates, is the limit."
 					}
 				},
 				"title": "IsolateShapes"
@@ -14841,6 +19052,25 @@
 				"title": "MountStatus",
 				"description": "`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it."
 			},
+			"MoveSandboxBody": {
+				"type": "object",
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox."
+					},
+					"keepMemory": {
+						"type": "boolean",
+						"description": "Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't (`hostId` names one, or there is no other), it restarts there instead, and its `move` says why (`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable only for that stop, the last copy and its boot. A stopped sandbox has no memory."
+					},
+					"wait": {
+						"type": "boolean",
+						"description": "Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was."
+					}
+				},
+				"title": "MoveSandboxBody",
+				"description": "Where to move it, and whether its memory goes with it. Every field is optional."
+			},
 			"PersonalToken": {
 				"type": "object",
 				"required": ["id", "name", "prefix", "createdAt", "expiresAt"],
@@ -14969,6 +19199,81 @@
 					}
 				},
 				"title": "PollDeviceLoginBody"
+			},
+			"Pool": {
+				"type": "object",
+				"required": ["id", "name", "default", "hosts", "sync", "placement", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The pool's ID, such as `pool_6t5r4e`."
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+						"description": "Its name, unique among its owner's pools."
+					},
+					"accountId": {
+						"type": "string",
+						"description": "The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts."
+					},
+					"default": {
+						"type": "boolean",
+						"description": "Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool."
+					},
+					"hosts": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many hosts are in it, revoked ones not counted."
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default."
+					},
+					"vcpusPerCpu": {
+						"type": "number",
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds."
+					},
+					"runners": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerKind"
+						},
+						"description": "Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "Pool",
+				"description": "A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the deployment start with a pool named `default`, which their hosts are in until moved."
+			},
+			"PoolList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Pool"
+						}
+					}
+				},
+				"title": "PoolList"
 			},
 			"Project": {
 				"type": "object",
@@ -15324,6 +19629,62 @@
 				},
 				"title": "PutTelemetryBody"
 			},
+			"RefreshedMount": {
+				"type": "object",
+				"required": ["path", "source", "status"],
+				"properties": {
+					"path": {
+						"type": "string"
+					},
+					"source": {
+						"$ref": "#/components/schemas/MountSource"
+					},
+					"status": {
+						"$ref": "#/components/schemas/MountStatus"
+					},
+					"error": {
+						"type": "string",
+						"description": "Why it is `failed`, in words."
+					},
+					"objects": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many objects the listing it shows holds."
+					},
+					"listedAt": {
+						"type": "integer",
+						"description": "When the listing it shows began (ms since the epoch), after the call arrived: it has every object the bucket held then."
+					}
+				},
+				"title": "RefreshedMount",
+				"description": "A bucket mount as the sandbox shows it after a refresh."
+			},
+			"RefreshedMountList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/RefreshedMount"
+						},
+						"description": "Each bucket mount refreshed, in the sandbox's order."
+					}
+				},
+				"title": "RefreshedMountList"
+			},
+			"RefreshMountsBody": {
+				"type": "object",
+				"properties": {
+					"path": {
+						"type": "string",
+						"minLength": 2,
+						"maxLength": 1024,
+						"description": "Just the bucket mount at this path. Default: every bucket mount of the sandbox's."
+					}
+				},
+				"title": "RefreshMountsBody"
+			},
 			"ResumeSandboxBody": {
 				"type": "object",
 				"properties": {
@@ -15348,7 +19709,7 @@
 					},
 					"cwd": {
 						"type": "string",
-						"description": "Default: the sandbox user's home."
+						"description": "Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there."
 					},
 					"env": {
 						"type": "object",
@@ -15488,6 +19849,23 @@
 						"type": "integer",
 						"description": "When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in."
 					},
+					"autoUpgrade": {
+						"type": "boolean",
+						"description": "An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false."
+					},
+					"autoUpgradeFrom": {
+						"type": "string",
+						"description": "The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM."
+					},
+					"upgradedFrom": {
+						"$ref": "#/components/schemas/SandboxUpgrade"
+					},
+					"move": {
+						"$ref": "#/components/schemas/SandboxMove"
+					},
+					"moved": {
+						"$ref": "#/components/schemas/SandboxMoved"
+					},
 					"latestSnapshotId": {
 						"type": "string",
 						"description": "The snapshot a resume or fork would use."
@@ -15501,7 +19879,14 @@
 					},
 					"environmentId": {
 						"type": "string",
-						"description": "The environment it was made from."
+						"description": "Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`."
+					},
+					"environmentIds": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its environments, in order: where two set the same variable, file or repository path, the later one wins. Absent: none."
 					},
 					"template": {
 						"$ref": "#/components/schemas/SandboxTemplate"
@@ -15511,7 +19896,7 @@
 						"items": {
 							"$ref": "#/components/schemas/EgressGrant"
 						},
-						"description": "Its own egress grants, on top of its environment's."
+						"description": "Its own egress grants, on top of its environments'."
 					},
 					"mounts": {
 						"type": "array",
@@ -15519,6 +19904,13 @@
 							"$ref": "#/components/schemas/SandboxMount"
 						},
 						"description": "Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`)."
+					},
+					"stickyDisks": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxStickyDisk"
+						},
+						"description": "Its sticky disks, each with the version its copy came from and its state. Absent: none."
 					},
 					"createdBy": {
 						"$ref": "#/components/schemas/CreatedBy"
@@ -15548,6 +19940,10 @@
 					"hostName": {
 						"type": "string",
 						"description": "That host's name, with `hostId`."
+					},
+					"poolId": {
+						"type": "string",
+						"description": "The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools."
 					},
 					"hostReachable": {
 						"type": "boolean",
@@ -15627,13 +20023,33 @@
 			},
 			"SandboxCapabilities": {
 				"type": "object",
-				"required": ["exec", "files", "ssh", "desktop", "browser", "ports", "docker", "kvm", "pause"],
+				"required": [
+					"exec",
+					"files",
+					"javascript",
+					"python",
+					"ssh",
+					"desktop",
+					"browser",
+					"ports",
+					"docker",
+					"kvm",
+					"pause"
+				],
 				"properties": {
 					"exec": {
 						"type": "boolean"
 					},
 					"files": {
 						"type": "boolean"
+					},
+					"javascript": {
+						"type": "boolean",
+						"description": "Whether its commands can run JavaScript with `node`: always in a microVM; in an isolate, where its host's isolate runtime has it (each run a fresh V8 isolate, with no npm packages)."
+					},
+					"python": {
+						"type": "boolean",
+						"description": "Whether its commands can run Python with `python` (`python3`): always in a microVM; in an isolate, where its host's isolate runtime has it (Pyodide, with the packages it ships, none installed from the internet)."
 					},
 					"ssh": {
 						"type": "boolean"
@@ -15675,6 +20091,7 @@
 					"sandboxId",
 					"sandboxName",
 					"accountId",
+					"environments",
 					"protectedVariables",
 					"environmentGrants",
 					"grants",
@@ -15693,6 +20110,13 @@
 					"environment": {
 						"$ref": "#/components/schemas/SandboxEgressEnvironment"
 					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxEgressEnvironmentRef"
+						},
+						"description": "Its environments, in order."
+					},
 					"protectedVariables": {
 						"type": "array",
 						"items": {
@@ -15704,14 +20128,14 @@
 						"items": {
 							"$ref": "#/components/schemas/EgressGrant"
 						},
-						"description": "Its environment's grants, which it has too."
+						"description": "Its environments' grants, which it has too."
 					},
 					"grants": {
 						"type": "array",
 						"items": {
 							"$ref": "#/components/schemas/EgressGrant"
 						},
-						"description": "Its own grants, on top of its environment's."
+						"description": "Its own grants, on top of its environments'."
 					},
 					"entries": {
 						"type": "array",
@@ -15735,7 +20159,89 @@
 						"type": "string"
 					}
 				},
-				"title": "SandboxEgressEnvironment"
+				"title": "SandboxEgressEnvironment",
+				"description": "Its first environment. Deprecated: read `environments`."
+			},
+			"SandboxEgressEnvironmentRef": {
+				"type": "object",
+				"required": ["id", "name"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					}
+				},
+				"title": "SandboxEgressEnvironmentRef"
+			},
+			"SandboxEnvironment": {
+				"type": "object",
+				"required": ["id", "name", "shadowed", "pending"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"shadowed": {
+						"$ref": "#/components/schemas/SandboxEnvironmentShadowed"
+					},
+					"pending": {
+						"type": "boolean",
+						"description": "Its secret files and repositories are set up when the sandbox next runs."
+					}
+				},
+				"title": "SandboxEnvironment",
+				"description": "One of a sandbox's environments."
+			},
+			"SandboxEnvironments": {
+				"type": "object",
+				"required": ["sandboxId", "environments"],
+				"properties": {
+					"sandboxId": {
+						"type": "string"
+					},
+					"environments": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxEnvironment"
+						},
+						"description": "In order: where two set the same variable, file or repository path, the later one wins."
+					}
+				},
+				"title": "SandboxEnvironments",
+				"description": "A sandbox's environments, and what each gives it."
+			},
+			"SandboxEnvironmentShadowed": {
+				"type": "object",
+				"required": ["variables", "files", "repos"],
+				"properties": {
+					"variables": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its variables a later environment, or the sandbox's own env, sets instead."
+					},
+					"files": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its secret files' paths a later environment writes instead."
+					},
+					"repos": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"description": "Its repositories' paths a later environment clones into instead."
+					}
+				},
+				"title": "SandboxEnvironmentShadowed",
+				"description": "What of an environment a sandbox doesn't take from it."
 			},
 			"SandboxHealth": {
 				"anyOf": [
@@ -15775,6 +20281,123 @@
 				},
 				"title": "SandboxMount",
 				"description": "A mount of a sandbox's, and whether its files are in place."
+			},
+			"SandboxMove": {
+				"type": "object",
+				"required": ["phase", "keepMemory", "startedAt"],
+				"properties": {
+					"phase": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "copying"
+							},
+							{
+								"type": "string",
+								"const": "stopping"
+							},
+							{
+								"type": "string",
+								"const": "final-copy"
+							},
+							{
+								"type": "string",
+								"const": "starting"
+							}
+						],
+						"description": "`copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are there, and it is starting on it."
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it is moving to, where the caller may know it, once chosen."
+					},
+					"keepMemory": {
+						"type": "boolean",
+						"description": "Whether its memory moves too, so it carries on where it left off on the new host: asked for (the default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running programs ending (`restartReason` says why, where it had memory that might have moved). Said once its new host is chosen, before anything is copied."
+					},
+					"restartReason": {
+						"type": "string",
+						"description": "Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from its host's, or a host can't move memory yet."
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "SandboxMove",
+				"description": "A move to another host under way (its `state` is `moving`)."
+			},
+			"SandboxMoved": {
+				"type": "object",
+				"required": ["at", "keptMemory"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"keptMemory": {
+						"type": "boolean",
+						"description": "Its memory moved with it, so its programs carried on; `false`, it booted on its disk there."
+					},
+					"restartReason": {
+						"type": "string",
+						"description": "Why its memory didn't move with it although that was asked for, as its `move` said."
+					}
+				},
+				"title": "SandboxMoved",
+				"description": "Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it."
+			},
+			"SandboxMovePlan": {
+				"type": "object",
+				"properties": {
+					"targets": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxMoveTarget"
+						},
+						"description": "Each host it may move to now, as the scheduler would place it (room and all), with what a move there does with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host."
+					}
+				},
+				"title": "SandboxMovePlan",
+				"description": "A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory."
+			},
+			"SandboxMoveTarget": {
+				"type": "object",
+				"required": ["hostId", "keepsMemory"],
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "A host it may move to now."
+					},
+					"keepsMemory": {
+						"type": "boolean",
+						"description": "A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it restarts there, booting on its disk."
+					},
+					"restartReason": {
+						"type": "string",
+						"description": "Why a move there restarts it, where it has memory that might have moved."
+					},
+					"pauseMs": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it wrote since its first copy and its boot."
+					},
+					"memoryBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its guest has touched; the rest is zero, and costs nothing), a paused one's memory file."
+					},
+					"bytesPerSecond": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false)."
+					},
+					"rateMeasured": {
+						"type": "boolean",
+						"description": "`bytesPerSecond` was measured by the hosts, rather than assumed."
+					}
+				},
+				"title": "SandboxMoveTarget"
 			},
 			"SandboxNotRunning": {
 				"type": "object",
@@ -15912,6 +20535,10 @@
 						"items": {
 							"$ref": "#/components/schemas/DestinationBinding"
 						}
+					},
+					"environmentId": {
+						"type": "string",
+						"description": "The environment whose value it takes."
 					}
 				},
 				"title": "SandboxProtectedVariable",
@@ -16102,6 +20729,14 @@
 						"type": "number",
 						"description": "Making its disk, in milliseconds."
 					},
+					"fetchMs": {
+						"type": "number",
+						"description": "For a sandbox made from a saved snapshot on a host that didn't hold it: its host fetching the snapshot's disk from another host in its pool first, in milliseconds, until the host reported it (each 15 seconds or so). Not in `hostMs`."
+					},
+					"restoredMemory": {
+						"type": "boolean",
+						"description": "For a sandbox made from a snapshot that holds memory: whether its memory was restored, its processes carrying on (`true`), or it booted on the snapshot's disk alone (`false`), on a host whose copy of the snapshot has no memory it can restore (another CPU or runtime, or its memory not fetched yet)."
+					},
 					"snapshotMs": {
 						"type": "number",
 						"description": "For a fork of a running sandbox: the live snapshot of its source it was made from."
@@ -16120,7 +20755,7 @@
 					},
 					"totalMs": {
 						"type": "number",
-						"description": "From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it."
+						"description": "From Kantel's call to its host until the host answered, in milliseconds, its fetch (`fetchMs`) included. Well over `hostMs` and `fetchMs` is time on the way to and from the host, not on it."
 					}
 				},
 				"title": "SandboxStartup",
@@ -16150,6 +20785,10 @@
 					},
 					{
 						"type": "string",
+						"const": "moving"
+					},
+					{
+						"type": "string",
 						"const": "error"
 					},
 					{
@@ -16162,7 +20801,64 @@
 					}
 				],
 				"title": "SandboxState",
-				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots."
+				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots."
+			},
+			"SandboxStickyDisk": {
+				"type": "object",
+				"required": ["diskId", "name", "path", "state"],
+				"properties": {
+					"diskId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"path": {
+						"type": "string"
+					},
+					"version": {
+						"type": "string",
+						"description": "The version its copy was cloned from; absent for an empty disk."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "pending"
+							},
+							{
+								"type": "string",
+								"const": "mounted"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							}
+						]
+					},
+					"reason": {
+						"type": "string"
+					}
+				},
+				"title": "SandboxStickyDisk"
+			},
+			"SandboxStickyDiskInput": {
+				"type": "object",
+				"required": ["disk", "path"],
+				"properties": {
+					"disk": {
+						"type": "string",
+						"minLength": 1,
+						"description": "The sticky disk, by ID or name."
+					},
+					"path": {
+						"type": "string",
+						"pattern": "^/[^\\0]*$",
+						"maxLength": 255,
+						"description": "Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory."
+					}
+				},
+				"title": "SandboxStickyDiskInput"
 			},
 			"SandboxTemplate": {
 				"type": "object",
@@ -16212,7 +20908,26 @@
 					}
 				],
 				"title": "SandboxType",
-				"description": "`isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH."
+				"description": "`isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH."
+			},
+			"SandboxUpgrade": {
+				"type": "object",
+				"required": ["type", "at"],
+				"properties": {
+					"type": {
+						"$ref": "#/components/schemas/SandboxType"
+					},
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"snapshotId": {
+						"type": "string",
+						"description": "The snapshot its microVM was started from (`upgradeSandbox`'s `from`)."
+					}
+				},
+				"title": "SandboxUpgrade",
+				"description": "A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings."
 			},
 			"SandboxUsage": {
 				"type": "object",
@@ -16653,7 +21368,7 @@
 					"uses": {
 						"type": "integer",
 						"minimum": 0,
-						"description": "How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it."
+						"description": "How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it."
 					},
 					"createdAt": {
 						"type": "integer",
@@ -16672,9 +21387,53 @@
 					},
 					"base": {
 						"$ref": "#/components/schemas/SandboxBase"
+					},
+					"poolId": {
+						"type": "string",
+						"description": "The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it."
+					},
+					"hosts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SnapshotHost"
+						},
+						"description": "Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it."
 					}
 				},
 				"title": "Snapshot"
+			},
+			"SnapshotHost": {
+				"type": "object",
+				"required": ["state", "memory"],
+				"properties": {
+					"hostId": {
+						"type": "string",
+						"description": "The host; absent where the caller may not be told it (a shared host)."
+					},
+					"hostName": {
+						"type": "string",
+						"description": "Its name, where `hostId` is given."
+					},
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "held"
+							},
+							{
+								"type": "string",
+								"const": "fetching"
+							}
+						],
+						"description": "`held`: the host has the snapshot's disk. `fetching`: it is copying it from another host."
+					},
+					"memory": {
+						"type": "boolean",
+						"description": "Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose memory came too, which a host fetches only where it restores. Always false for a snapshot without memory."
+					}
+				},
+				"title": "SnapshotHost",
+				"description": "A host a saved snapshot is on (`Snapshot.hosts`)."
 			},
 			"SnapshotKind": {
 				"anyOf": [
@@ -16796,6 +21555,103 @@
 					}
 				},
 				"title": "StartDeviceLoginBody"
+			},
+			"StickyDisk": {
+				"type": "object",
+				"required": ["id", "accountId", "name", "sizeGb", "createdAt", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The sticky disk's ID, such as `sdk_3m4n5b`."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+						"description": "Lower-case letters, digits and hyphens, unique in the account."
+					},
+					"description": {
+						"type": "string"
+					},
+					"sizeGb": {
+						"type": "integer",
+						"description": "Each copy's size: what a sandbox can fill."
+					},
+					"head": {
+						"type": "string",
+						"description": "The newest committed version; absent until one is."
+					},
+					"versions": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/StickyDiskVersion"
+						},
+						"description": "The newest 20, newest first, on a get."
+					},
+					"poolId": {
+						"type": "string",
+						"description": "The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "StickyDisk",
+				"description": "A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental."
+			},
+			"StickyDiskList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/StickyDisk"
+						}
+					}
+				},
+				"title": "StickyDiskList"
+			},
+			"StickyDiskVersion": {
+				"type": "object",
+				"required": ["id", "hostId", "sandboxId", "sizeBytes", "allocatedBytes", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The version's ID, such as `sdv_3m4n5b`."
+					},
+					"parent": {
+						"type": "string",
+						"description": "The version it was cloned from; absent for one made empty."
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it was committed on."
+					},
+					"sandboxId": {
+						"type": "string",
+						"description": "The sandbox it was committed from."
+					},
+					"sizeBytes": {
+						"type": "integer"
+					},
+					"allocatedBytes": {
+						"type": "integer",
+						"description": "What it takes on its host's disk, blocks it shares included."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "StickyDiskVersion"
 			},
 			"StopSandboxBody": {
 				"type": "object",
@@ -17246,6 +22102,10 @@
 					"memoryMb": {
 						"type": "integer",
 						"description": "With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too."
+					},
+					"poolId": {
+						"type": "string",
+						"description": "The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used in. Absent for one built before pools."
 					}
 				},
 				"title": "TemplateCacheKey",
@@ -17535,6 +22395,10 @@
 					},
 					"personalTokens": {
 						"$ref": "#/components/schemas/PersonalTokenPolicy"
+					},
+					"snapshotCopies": {
+						"type": "boolean",
+						"description": "Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; those there are stay until their snapshots are deleted."
 					}
 				},
 				"title": "UpdateAccountBody"
@@ -17553,6 +22417,81 @@
 					}
 				},
 				"title": "UpdateEnvironmentBody"
+			},
+			"UpdateGithubRunnersBody": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"appId": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"privateKey": {
+						"type": "string",
+						"minLength": 64,
+						"maxLength": 16384
+					},
+					"owner": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100
+					},
+					"scope": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "organization"
+							},
+							{
+								"type": "string",
+								"const": "repository"
+							}
+						],
+						"description": "Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository."
+					},
+					"runnerGroupId": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"minimum": 1
+							},
+							{
+								"type": "null"
+							}
+						]
+					},
+					"repositories": {
+						"anyOf": [
+							{
+								"type": "array",
+								"items": {
+									"type": "string",
+									"pattern": "^[^/\\s]+/[^/\\s]+$"
+								},
+								"maxItems": 500
+							},
+							{
+								"type": "null"
+							}
+						]
+					},
+					"pools": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerPool"
+						},
+						"maxItems": 20,
+						"description": "Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none."
+					},
+					"enabled": {
+						"type": "boolean"
+					}
+				},
+				"title": "UpdateGithubRunnersBody"
 			},
 			"UpdateHostBody": {
 				"type": "object",
@@ -17573,6 +22512,11 @@
 					"draining": {
 						"type": "boolean",
 						"description": "Stop placing new sandboxes on it."
+					},
+					"pool": {
+						"type": "string",
+						"minLength": 1,
+						"description": "Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it."
 					},
 					"savedSnapshotBytesLimit": {
 						"anyOf": [
@@ -17598,6 +22542,59 @@
 					}
 				},
 				"title": "UpdateMemberBody"
+			},
+			"UpdatePoolBody": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
+					"default": {
+						"type": "boolean",
+						"const": true,
+						"description": "Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again."
+					},
+					"sync": {
+						"type": "boolean",
+						"description": "Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it."
+					},
+					"vcpusPerCpu": {
+						"anyOf": [
+							{
+								"type": "number",
+								"minimum": 0.25,
+								"maximum": 16
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap."
+					},
+					"placement": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "warm"
+							},
+							{
+								"type": "string",
+								"const": "balanced"
+							}
+						],
+						"description": "How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache."
+					},
+					"runners": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/GithubRunnerKind"
+						},
+						"maxItems": 100,
+						"description": "Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are."
+					}
+				},
+				"title": "UpdatePoolBody"
 			},
 			"UpdateSandboxBody": {
 				"type": "object",
@@ -17648,6 +22645,21 @@
 							}
 						},
 						"description": "Replaces its labels."
+					},
+					"autoUpgrade": {
+						"type": "boolean",
+						"description": "Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade."
+					},
+					"autoUpgradeFrom": {
+						"anyOf": [
+							{
+								"type": "string"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM."
 					}
 				},
 				"title": "UpdateSandboxBody"
@@ -17694,6 +22706,31 @@
 					}
 				},
 				"title": "UpdateWebhookBody"
+			},
+			"UpgradeSandboxBody": {
+				"type": "object",
+				"properties": {
+					"size": {
+						"$ref": "#/components/schemas/SandboxSizeName"
+					},
+					"resources": {
+						"$ref": "#/components/schemas/SandboxShapeInput"
+					},
+					"image": {
+						"type": "string",
+						"description": "The microVM's base image. Default: the deployment's."
+					},
+					"from": {
+						"type": "string",
+						"description": "Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with `resources.diskGb`. Only a snapshot whose guest agent lays files into a real directory alone (saved from a sandbox on a current host) can be upgraded into; one older is refused, `not_supported`. Default: a new microVM of `image`."
+					},
+					"wait": {
+						"type": "boolean",
+						"description": "Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was."
+					}
+				},
+				"title": "UpgradeSandboxBody",
+				"description": "The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM."
 			},
 			"UsageSparklines": {
 				"type": "object",

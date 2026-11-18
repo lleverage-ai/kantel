@@ -18,7 +18,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/disksync"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
@@ -75,6 +78,11 @@ type Host struct {
 	callKantel func(ctx context.Context, method string, params any) (json.RawMessage, error)
 	// secrets holds sandboxes' protected values, in memory only, fetched from Kantel (secrets.fetch) on first use.
 	secrets *protect.Store
+	// fenceMu guards fences: each sandbox path's environment set-up fence (fencedWrite).
+	fenceMu sync.Mutex
+	fences  map[string]*fence
+	// envFetch replaces env.fetch to Kantel (tests); nil asks Kantel.
+	envFetch func(ctx context.Context, sandboxID string) (map[string]string, error)
 	// cas are the sandboxes' interception CAs (keys in Root/egress-ca/<sandbox>, never in a guest).
 	cas *egress.CAStore
 	// egressLog batches the proxy's records to Kantel.
@@ -93,10 +101,15 @@ type Host struct {
 	patching imagePatching
 	// updating is one binary update at a time (gatewayUpdate): they all stage the same kantel-host.new.
 	updating sync.Mutex
+	// templateBuilds counts the template.build calls being answered, from their arrival until their answer is sent:
+	// a reconnect to report new runtimes waits for them (reconnectOnRuntimes).
+	templateBuilds atomic.Int64
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
 	bySlot map[int]egress.Rules
+	// held are the sandboxes being upgraded, whose events wait for the upgrade's end (holdEvents).
+	held map[string]int
 	// events go to the control plane while connected.
 	events func(proto.Event)
 	// link makes calls to the control plane while connected.
@@ -111,6 +124,21 @@ type Host struct {
 	plan *memplan.Plan
 	// guard acts when memory runs short, with memory over-commit on (memory.go).
 	guard memoryGuard
+	// mesh is the host's side of its pool's WireGuard mesh (mesh.go), nil when the host doesn't offer it.
+	mesh hostMesh
+	// peers serves the versions the host holds to its mesh peers (peersync.go), and fetcher fetches versions from them;
+	// nil without the mesh. syncStop ends the fetches.
+	peers    *disksync.Server
+	fetcher  *disksync.Fetcher
+	syncStop context.CancelFunc
+	// grantKeys are the control plane's grant keys from its last welcome that had any, and welcomeID the host ID it named.
+	grantKeys atomic.Pointer[[]proto.GrantKey]
+	welcomeID atomic.Pointer[string]
+	// welcomePool is the pool the last welcome named the host in ("" for none), which templates' root filesystems it
+	// makes are stamped with (microvm.Config.Pool).
+	welcomePool atomic.Pointer[string]
+	// welcomeMu is one welcome's mesh and peer sync server applied at a time (applyWelcome).
+	welcomeMu sync.Mutex
 }
 
 // New starts the tiers the host can run.
@@ -130,7 +158,11 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The pool mesh's prefix is no sandbox's to reach through the proxy, whatever the operator allows.
+	dest.Denied = h.meshDenied
 	h.proxy.Destinations = dest
+	h.startMesh()
+	h.startPeerSync()
 	want := map[string]bool{}
 	for _, t := range cfg.Tiers {
 		want[t] = true
@@ -179,6 +211,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
+			FetchSticky: h.fetchStickyLater, FetchRootfs: h.fetchRootfs, FetchTemplate: h.fetchTemplate,
+			Pool: h.pool, HostImage: h.hostImage,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
@@ -207,8 +241,16 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		log.Warn("microVM tier off: needs /dev/kvm, firecracker, a kernel and the sandbox image", "kvm", kvm, "firecracker", cfg.Firecracker, "kernel", cfg.Kernel, "image", cfg.SandboxImage)
 	}
 	isolateReady := false
+	binary, assets, legacyWorkerd, legacyBundle := cfg.IsolateBinary, cfg.IsolateAssets, "", ""
 	if cfg.IsolateRuntime == "native" {
-		isolateReady = fileExists(cfg.Workerd) && fileExists(cfg.IsolateBundle+"/config.capnp")
+		isolateReady = fileExists(binary) && fileExists(assets)
+		if workerd, bundle := cfg.legacyNativeRuntime(); !isolateReady && workerd != "" {
+			// A native host installed with workerd and updated to this binary alone (an update fetches kantel-host only):
+			// it keeps running workerd, rather than losing its isolates, until kantel-isolate is installed.
+			log.Warn("isolate tier on workerd, from before kantel-isolate: run the install command again to install kantel-isolate and its assets",
+				"workerd", workerd, "isolateBinary", binary, "isolateAssets", assets)
+			isolateReady, binary, assets, legacyWorkerd, legacyBundle = true, "", "", workerd, bundle
+		}
 	} else {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
@@ -220,13 +262,15 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		}
 		iso, err := isolate.New(isolate.Config{
 			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
-			Rootfs: isoRootfs, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
+			Rootfs: isoRootfs, Binary: binary, Assets: assets, LegacyWorkerd: legacyWorkerd, LegacyBundle: legacyBundle, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
 			return nil, err
 		}
 		h.add(isolate.Tier, iso)
+		// Its template (or, native, a first start), so the facts say what its runtime can do (Facts.Isolate).
+		go iso.Prepare(context.Background())
 	} else if want[isolate.Tier] {
 		log.Warn("isolate tier off: its runtime isn't installed", "runtime", cfg.IsolateRuntime)
 	}
@@ -235,6 +279,8 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	}
 	if cfg.ImagePatching {
 		h.startImagePatching(kvm)
+	} else if cfg.ImageSource != nil {
+		log.Warn("imageSource is ignored: it needs imagePatching on")
 	}
 	h.facts = h.withRuntime(h.makeFacts())
 	h.startMemoryPlan()
@@ -279,7 +325,7 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 	total := hostinfo.MemoryMiB()
 	reserve := h.cfg.reserveMemoryMiB(total)
-	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep, proto.FeatureSandboxEnv}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -298,7 +344,19 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureProcesses)
 	}
 	if _, ok := h.tiers[microvm.Tier]; ok {
-		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps)
+		features = append(features, proto.FeatureGuestHealth, proto.FeatureExitStamps, proto.FeatureStartMemoryDropped)
+	}
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(GuestReporter); ok {
+			features = append(features, proto.FeatureGuestFeatures)
+			break
+		}
+	}
+	if h.upgradesIsolates() {
+		features = append(features, proto.FeatureIsolateUpgrade, proto.FeatureIsolateUpgradeFrom)
+	}
+	if _, ok := h.tiers[isolate.Tier].(upgradeSource); ok {
+		features = append(features, proto.FeatureIsolateFreeze)
 	}
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(SnapshotMeasurer); ok {
@@ -313,10 +371,34 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureImagePatching)
 	}
 	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBucket}) {
-		features = append(features, proto.FeatureBucketMounts)
+		features = append(features, proto.FeatureBucketMounts, proto.FeatureMountsSync)
 	}
 	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBundle}) {
 		features = append(features, proto.FeatureBundleMounts)
+	}
+	if _, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
+		features = append(features, proto.FeatureStickyDisks)
+	}
+	if h.mesh != nil {
+		features = append(features, proto.FeatureMesh)
+	}
+	if h.fetchesSticky() {
+		features = append(features, proto.FeatureDiskSync)
+	}
+	if h.fetches(proto.DiskKindRootfs) {
+		features = append(features, proto.FeatureRootfsSync)
+	}
+	if h.fetches(proto.DiskKindTemplate) {
+		features = append(features, proto.FeatureTemplateSync, proto.FeatureTemplateImageCopies)
+	}
+	if h.fetches(proto.DiskKindSnapshot) {
+		features = append(features, proto.FeatureSnapshotSync)
+	}
+	if h.movesSandboxes() {
+		features = append(features, proto.FeatureSandboxMove, proto.FeatureSandboxMoveRunning, proto.FeatureFetchBytes)
+	}
+	if h.movesMemory() {
+		features = append(features, proto.FeatureSandboxMoveMemory)
 	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
@@ -326,12 +408,21 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 }
 
-// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates.
+// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates, what
+// its isolate runtime said it can do once it has (Isolate), and its microVM runtimes for the images it has now.
 func (h *Host) Facts() proto.Facts {
 	f := h.facts
 	if held := h.patching.facts.Load(); held != nil {
 		copied := *held
 		f.Images = &copied
+	}
+	if iso, ok := h.tiers[isolate.Tier].(*isolate.Manager); ok {
+		f.Isolate = iso.RuntimeInfo()
+	}
+	f.Runtimes = h.runtimes()
+	if h.mesh != nil {
+		// Its endpoints as its interfaces are now.
+		f.Mesh = h.mesh.Facts()
 	}
 	if h.canBuildTemplates(context.Background()) == nil {
 		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
@@ -369,7 +460,67 @@ func (h *Host) Capacity() proto.Capacity {
 		}
 	}
 	c.Disk = h.diskUsage()
+	if t, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
+		c.StickyDisks = t.StickyHoldings()
+	}
+	// Templates' root filesystems, with FeatureRootfsSync, and template snapshots, with FeatureTemplateSync: what the
+	// host holds of other kinds is reported only while it serves them.
+	if t, ok := h.tiers[microvm.Tier].(RootfsFetcher); ok && h.fetches(proto.DiskKindRootfs) {
+		if held := t.RootfsHoldings(); held != nil {
+			c.Holdings = map[string][]proto.ObjectHolding{proto.DiskKindRootfs: held}
+		}
+	}
+	if t, ok := h.tiers[microvm.Tier].(TemplateFetcher); ok && h.fetches(proto.DiskKindTemplate) {
+		if held := t.TemplateHoldings(); held != nil {
+			if c.Holdings == nil {
+				c.Holdings = map[string][]proto.ObjectHolding{}
+			}
+			c.Holdings[proto.DiskKindTemplate] = held
+		}
+	}
+	// Saved snapshots, with FeatureSnapshotSync.
+	if t, ok := h.tiers[microvm.Tier].(SnapshotFetcher); ok && h.fetches(proto.DiskKindSnapshot) {
+		if held := t.SnapshotHoldings(); held != nil {
+			if c.Holdings == nil {
+				c.Holdings = map[string][]proto.ObjectHolding{}
+			}
+			c.Holdings[proto.DiskKindSnapshot] = held
+		}
+	}
+	// The fetches under way, waiting or failed (FeatureDiskSync), of the kinds the host fetches: [] for none, so the
+	// control plane lets go of those it no longer lists.
+	if kinds := h.syncKinds(); h.fetcher != nil && len(kinds) > 0 {
+		c.Fetches = []proto.FetchProgress{}
+		for _, p := range h.fetcher.Progress() {
+			if _, ok := kinds[p.Kind]; ok {
+				c.Fetches = append(c.Fetches, p)
+			}
+		}
+	}
+	if h.mesh != nil {
+		c.Mesh = h.mesh.Health()
+		h.notePeerRates(c.Mesh)
+	}
 	return c
+}
+
+// notePeerRates puts on each peer of the mesh's health the rate the host's last fetch from it ran at
+// (disksync.Fetcher.Rates), for the control plane's estimate of a move's pause.
+func (h *Host) notePeerRates(health *proto.MeshHealth) {
+	if health == nil || h.fetcher == nil {
+		return
+	}
+	byHost := map[string]disksync.Rate{}
+	for addr, r := range h.fetcher.Rates() {
+		if id, ok := h.mesh.PeerAt(addr); ok {
+			byHost[id] = r
+		}
+	}
+	for i, p := range health.Peers {
+		if r, ok := byHost[p.HostID]; ok {
+			health.Peers[i].FetchBytesPerSecond, health.Peers[i].FetchRateAt = r.BytesPerSecond, r.At.UnixMilli()
+		}
+	}
 }
 
 // budgetBeside is what the tier named may use now (microvm.Config.Budget): the memory budget less what the other
@@ -413,6 +564,13 @@ func (h *Host) WaitTemplate(ctx context.Context, tier string, p proto.CreatePara
 
 func (h *Host) Close() {
 	h.stopImagePatching()
+	if h.peers != nil {
+		h.peers.Close()
+		h.syncStop()
+	}
+	if h.mesh != nil {
+		h.mesh.Close()
+	}
 	for _, t := range h.tiers {
 		t.Close()
 	}
@@ -425,7 +583,12 @@ func (h *Host) Close() {
 func (h *Host) sandboxEvent(info proto.SandboxInfo) {
 	h.mu.Lock()
 	fn := h.events
+	held := h.held[info.ID] > 0
 	h.mu.Unlock()
+	if held {
+		// Being upgraded: its microVM's create and its isolate's going are told as one, once it is done (upgrade.go).
+		return
+	}
 	if fn != nil {
 		fn(proto.Event{Kind: "sandbox", Sandbox: &info})
 	}
@@ -591,6 +754,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if len(p.Mounts) > 0 && !supportsMounts(t, p.Mounts...) {
 			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier on this host doesn't take these mounts", h.tierName(p.Tier))}
 		}
+		if _, ok := t.(StickyDisks); len(p.StickyDisks) > 0 && !ok {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier on this host has no sticky disks", h.tierName(p.Tier))}
+		}
 		defer h.lifecycle.lock(p.SandboxID)()
 		if _, err := h.tierOf(p.SandboxID); err == nil {
 			// Before any CA is made: a new one would replace the CA the running sandbox of that ID trusts.
@@ -614,7 +780,44 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 			return nil, err
 		}
+		if err := requireGuest(ctx, t, p); err != nil {
+			// Its own context: the call's may be what ended.
+			cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if derr := t.Delete(cleanup, p.SandboxID); derr != nil {
+				h.log.Warn("create: the sandbox its guest agent can't serve couldn't be deleted", "sandbox", p.SandboxID, "err", derr)
+			}
+			if fresh {
+				_ = h.cas.Forget(p.SandboxID)
+			}
+			return nil, err
+		}
 		return info, nil
+	case proto.MethodUpgrade:
+		p, err := decode[proto.UpgradeParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.upgrade(ctx, p)
+	case proto.MethodUpgradeSettle:
+		p, err := decode[proto.UpgradeRef](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.settleUpgrade(ctx, p)
+	case proto.MethodUpgradeFreeze, proto.MethodUpgradeThaw:
+		p, err := decode[proto.UpgradeRef](params)
+		if err != nil {
+			return nil, err
+		}
+		// Both under the lifecycle lock, so a thaw (a rollback, perhaps on a new connection) can't answer before a
+		// freeze still waiting for a command or file write has frozen the isolate after it. The freeze can wait under
+		// it: commands and file writes take none.
+		defer h.lifecycle.lock(p.SandboxID)()
+		if method == proto.MethodUpgradeFreeze {
+			return map[string]bool{"ok": true}, h.freezeIsolate(p)
+		}
+		return map[string]bool{"ok": true}, h.thawIsolate(p)
 	case proto.MethodStop:
 		p, err := decode[proto.StopParams](params)
 		if err != nil {
@@ -643,6 +846,21 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]bool{"ok": true}, h.setEgress(ctx, t, name, p)
+	case proto.MethodEnv:
+		p, err := decode[proto.EnvParams](params)
+		if err != nil {
+			return nil, err
+		}
+		if p.SandboxID == "" {
+			return nil, invalid("sandbox.env needs sandboxId")
+		}
+		// With the lifecycle calls, so a boot's identity and this rewrite of the guest's file can't cross.
+		defer h.lifecycle.lock(p.SandboxID)()
+		t, name, err := h.tierOfNamed(p.SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, h.setEnv(ctx, t, name, p)
 	case proto.MethodSecrets:
 		p, err := decode[proto.SecretsParams](params)
 		if err != nil {
@@ -751,24 +969,44 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		return info, nil
 	case proto.MethodDelete:
-		p, err := decode[proto.SandboxRef](params)
+		p, err := decode[proto.DeleteParams](params)
 		if err != nil {
 			return nil, err
 		}
 		defer h.lifecycle.lock(p.SandboxID)()
-		t, err := h.tierOf(p.SandboxID)
+		t, name, err := h.tierOfNamed(p.SandboxID)
+		if err == nil && p.Tier != "" && name != p.Tier {
+			return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no %s sandbox %s on this host", p.Tier, p.SandboxID)}
+		}
+		if err != nil {
+			// A source's cleanup (exported, or of a tier) finds nothing of its own: an import under way here is a later
+			// move's, left as it is.
+			if p.Exported != "" || p.Tier != "" {
+				return nil, err
+			}
+			// Only an import of it from another host under way here (a move rolled back): that ends, and the delete is done.
+			if mover, ok := h.tiers[microvm.Tier].(SandboxMover); ok {
+				if mover.(Tier).Delete(ctx, p.SandboxID) == nil {
+					return map[string]bool{"ok": true}, nil
+				}
+			}
+			return nil, err
+		}
+		// The isolate an upgrade to another host left goes as one upgraded here does, its snapshots kept; so does a
+		// microVM moved to another host.
+		if source, ok := t.(upgradeSource); ok && p.KeepSnapshots {
+			err = source.Dispose(p.SandboxID)
+		} else if moved, ok := t.(SandboxMover); ok && p.Exported != "" {
+			err = moved.DeleteExported(p.SandboxID, p.Exported)
+		} else if moved, ok := t.(SandboxMover); ok && p.KeepSnapshots {
+			err = moved.DeleteMoved(p.SandboxID)
+		} else {
+			err = t.Delete(ctx, p.SandboxID)
+		}
 		if err != nil {
 			return nil, err
 		}
-		if err := t.Delete(ctx, p.SandboxID); err != nil {
-			return nil, err
-		}
-		h.forgetSecrets(p.SandboxID)
-		if h.cas != nil {
-			_ = h.cas.Forget(p.SandboxID)
-		}
-		h.forgetFloor(p.SandboxID)
-		h.runs.forget(p.SandboxID)
+		h.forgetSandbox(p.SandboxID)
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)
@@ -848,6 +1086,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		data, err := base64.StdEncoding.DecodeString(p.Data)
 		if err != nil {
 			return nil, invalid("data isn't base64")
+		}
+		if p.Fence > 0 {
+			return h.fencedWrite(ctx, t, p, data)
 		}
 		return map[string]bool{"ok": true}, t.WriteFile(ctx, p, data)
 	case proto.MethodFileExtract:
@@ -963,12 +1204,74 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
+	case proto.MethodStickyCommit:
+		p, err := decode[proto.StickyCommitParams](params)
+		if err != nil {
+			return nil, err
+		}
+		// The whole call, queued behind another commit of the sandbox's or not, within the control plane's time for
+		// it: its trim takes only what leaves the freeze its lease, and its map's wait what is left.
+		ctx, cancel := context.WithTimeout(ctx, stickyCommitAnswerWait)
+		defer cancel()
+		var sticky StickyDisks
+		res, err := func() (proto.StickyCommitResult, error) {
+			// With the lifecycle calls: a stop waits for the commit's freeze, clone and thaw.
+			defer h.lifecycle.lock(p.SandboxID)()
+			t, err := h.tierOf(p.SandboxID)
+			if err != nil {
+				return proto.StickyCommitResult{}, err
+			}
+			var ok bool
+			if sticky, ok = t.(StickyDisks); !ok {
+				return proto.StickyCommitResult{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s has no sticky disk %s", p.SandboxID, p.DiskID)}
+			}
+			return sticky.CommitSticky(ctx, p)
+		}()
+		if err != nil {
+			return nil, err
+		}
+		// Its map, after the lock: the sandbox's other calls don't wait for it.
+		res.MapDigest = sticky.StickyMapDigest(ctx, p.DiskID, p.Version)
+		return res, nil
+	case proto.MethodStickyDelete:
+		p, err := decode[proto.StickyDeleteParams](params)
+		if err != nil {
+			return nil, err
+		}
+		sticky, ok := h.tiers[microvm.Tier].(StickyDisks)
+		if !ok {
+			return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this host has no sticky disks"}
+		}
+		return map[string]any{}, sticky.DeleteSticky(p)
+	case proto.MethodDiskFetch:
+		return h.diskFetch(params)
+	case proto.MethodSandboxExport:
+		return h.sandboxExport(ctx, params)
+	case proto.MethodSandboxExportDelete:
+		return h.sandboxExportDelete(params)
+	case proto.MethodSandboxImport:
+		return h.sandboxImport(ctx, params)
+	case proto.MethodSandboxImportCancel:
+		return h.sandboxImportCancel(params)
+	case proto.MethodSandboxMemory:
+		return h.sandboxMemory(params)
 	case proto.MethodHostImages:
 		return h.hostImages(params)
 	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:
 		return h.templateCall(ctx, method, params)
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
+}
+
+// forgetSandbox lets go of what the host keeps of a sandbox it has deleted: its protected values, its egress CA, its
+// egress revision floor and its commands.
+func (h *Host) forgetSandbox(id string) {
+	h.forgetSecrets(id)
+	if h.cas != nil {
+		_ = h.cas.Forget(id)
+	}
+	h.forgetFloor(id)
+	h.runs.forget(id)
 }
 
 // List is every sandbox on the host.
@@ -991,8 +1294,25 @@ func (h *Host) DialPort(ctx context.Context, id string, port int) (net.Conn, err
 
 var _ = exec.Command
 
+// StickyDisks is a tier with sticky disks (FeatureStickyDisks): the microVM tier.
+type StickyDisks interface {
+	CommitSticky(ctx context.Context, p proto.StickyCommitParams) (proto.StickyCommitResult, error)
+	// StickyMapDigest waits a while for the block map of a version just committed, and answers its digest ("" if not).
+	StickyMapDigest(ctx context.Context, diskID, version string) string
+	DeleteSticky(p proto.StickyDeleteParams) error
+	StickyHoldings() []proto.StickyDiskHolding
+}
+
+// The microVM tier has sticky disks: without this, the host would stop reporting FeatureStickyDisks unnoticed.
+var _ StickyDisks = (*microvm.Manager)(nil)
+
 // SnapshotMeasurer is a tier that measures its snapshots as they are on the disk now (FeatureSnapshotSizes): the
 // host's snapshot.list answers its snapshots with those sizes, not the ones they had when they were made.
 type SnapshotMeasurer interface {
 	MeasuredSnapshots(sandboxID string) ([]proto.SnapshotInfo, []proto.SharedBytes)
 }
+
+// stickyCommitAnswerWait is how long a sticky.commit has, from its arrival to its answer: within the control plane's
+// 120 seconds for a call, with room for the answer to reach it. A commit queued behind another of its sandbox's (the
+// lifecycle lock) spends its wait there too.
+const stickyCommitAnswerWait = 110 * time.Second

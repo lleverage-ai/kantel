@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { environmentNamesText } from "./compute-model.ts";
 import {
 	bindingText,
 	hostProblem,
@@ -7,7 +8,8 @@ import {
 	repoUrlProblem,
 	variableNameProblem,
 } from "./egress-rules.ts";
-import { createComputeFixtures, DEV_STACK, LLEVERAGE } from "./fixtures.ts";
+import { API_SERVER, createComputeFixtures, DEV_STACK, LLEVERAGE, RENDER } from "./fixtures.ts";
+import { shadowedLines } from "./sandbox-environments.tsx";
 
 describe("what a binding, a grant and a repository may be", () => {
 	it("takes a host alone, with a wildcard only for subdomains", () => {
@@ -108,6 +110,66 @@ describe("the sample environments", () => {
 	it("list an account's environments by name", async () => {
 		const source = createComputeFixtures();
 		const names = (await source.environments.list(LLEVERAGE.id)).map((env) => env.name);
-		expect(names).toEqual(["backend-dev", "evals"]);
+		expect(names).toEqual(["backend-dev", "evals", "lleverage-github"]);
+	});
+});
+
+describe("a sample sandbox's environments", () => {
+	it("say what each loses to a later one, and which come when it next starts", async () => {
+		const source = createComputeFixtures();
+		const environments = source.sandboxes.environments;
+		if (environments === undefined) throw new Error("No sandbox environments.");
+		const [backend, github] = await environments.list(API_SERVER.id);
+		expect(backend?.shadowed).toEqual({ variables: ["GH_TOKEN"], files: [], repos: ["~/kantel"] });
+		expect(github?.shadowed).toEqual({ variables: [], files: [], repos: [] });
+		expect(shadowedLines(backend?.shadowed ?? { variables: [], files: [], repos: [] })).toEqual([
+			{ label: "Variables set later", items: ["GH_TOKEN"] },
+			{ label: "Repositories cloned by a later one", items: ["~/kantel"] },
+		]);
+		expect((await environments.list(RENDER.id)).map((env) => env.pending)).toEqual([true]);
+	});
+
+	it("attach last (pending on a stopped one), move one attached again, and detach", async () => {
+		const source = createComputeFixtures();
+		const environments = source.sandboxes.environments;
+		if (environments === undefined) throw new Error("No sandbox environments.");
+		const attached = await environments.attach(RENDER.id, "env_evals");
+		expect(attached.map((env) => [env.name, env.pending])).toEqual([
+			["lleverage-github", true],
+			["evals", true],
+		]);
+		const moved = await environments.attach(RENDER.id, "env_evals", 0);
+		expect(moved.map((env) => env.name)).toEqual(["evals", "lleverage-github"]);
+		expect((await source.sandboxes.get(RENDER.id)).environments?.map((env) => env.id)).toEqual([
+			"env_evals",
+			"env_github",
+		]);
+		const detached = await environments.detach(RENDER.id, "env_evals");
+		expect(detached.map((env) => env.name)).toEqual(["lleverage-github"]);
+		// Deleting an environment takes it off every sandbox.
+		await source.environments.remove("env_github");
+		expect(await environments.list(RENDER.id)).toEqual([]);
+		expect((await source.sandboxes.get(API_SERVER.id)).environments?.map((env) => env.name)).toEqual(["backend-dev"]);
+	});
+
+	it("give the egress each protected variable from the environment that wins it, and every grant", async () => {
+		const egress = await createComputeFixtures().egress.get(API_SERVER.id);
+		expect(egress.environments.map((env) => env.name)).toEqual(["backend-dev", "lleverage-github"]);
+		expect(egress.protectedVariables.find((variable) => variable.name === "GH_TOKEN")?.environmentId).toBe(
+			"env_github",
+		);
+		expect(egress.environmentGrants.map((grant) => grant.id)).toContain("grt_gh_org");
+	});
+
+	it("names them in a line", () => {
+		expect(environmentNamesText(undefined)).toBeUndefined();
+		expect(environmentNamesText([{ id: "a", name: "a" }])).toBe("a");
+		expect(
+			environmentNamesText([
+				{ id: "a", name: "a" },
+				{ id: "b", name: "b" },
+				{ id: "c", name: "c" },
+			]),
+		).toBe("a, b and c");
 	});
 });

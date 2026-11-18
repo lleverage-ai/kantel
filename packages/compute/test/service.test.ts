@@ -41,11 +41,13 @@ import {
 } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import {
+	type AnyOf,
 	type ComputeStore,
 	createMemoryStore,
 	fenceClosedAccounts,
 	joinTokenSpender,
 	type StoredCommand,
+	type StoredSandbox,
 } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
@@ -196,15 +198,19 @@ describe("sandboxes", () => {
 		expect(command.exitCode).toBe(0);
 		expect(command.stdout).toBe("hello\n");
 		expect((await tom.listCommands(sandbox.id)).items.map((item) => item.id)).toEqual([command.id]);
+		// An isolate keeps only /workspace, so its commands start there, and relative paths are from there.
+		expect(command.cwd).toBe("/workspace");
+		expect((await tom.runCommand(sandbox.id, { command: "pwd; echo $HOME" })).stdout).toBe("/workspace\n/workspace\n");
+		expect((await tom.runCommand(sandbox.id, { command: "pwd", cwd: "notes" })).cwd).toBe("/workspace/notes");
 
 		const read = await tom.readFile(sandbox.id, { path: "f.txt" });
-		expect(read).toMatchObject({ path: "/home/user/f.txt", encoding: "utf8", content: "hello\n", size: 6 });
+		expect(read).toMatchObject({ path: "/workspace/f.txt", encoding: "utf8", content: "hello\n", size: 6 });
 
 		const written = await tom.writeFile(sandbox.id, { path: "notes/todo.md", content: "# To do" });
-		expect(written).toMatchObject({ path: "/home/user/notes/todo.md", kind: "file", size: 7 });
+		expect(written).toMatchObject({ path: "/workspace/notes/todo.md", kind: "file", size: 7 });
 		const listing = await tom.listFiles(sandbox.id, { path: "notes" });
 		expect(listing.items.map((entry) => entry.name)).toEqual(["todo.md"]);
-		const encoded = await tom.readFile(sandbox.id, { path: "/home/user/notes/todo.md", encoding: "base64" });
+		const encoded = await tom.readFile(sandbox.id, { path: "/workspace/notes/todo.md", encoding: "base64" });
 		expect(atob(encoded.content)).toBe("# To do");
 
 		await tom.deleteFile(sandbox.id, { path: "notes/todo.md" });
@@ -2190,7 +2196,7 @@ describe("calls on a sandbox that isn't running", () => {
 		gated.release();
 		const command = await first;
 		expect(command).toMatchObject({ state: "exited", exitCode: 0, stdout: "one\n" });
-		expect(await second).toMatchObject({ path: "/home/user/two.txt" });
+		expect(await second).toMatchObject({ path: "/workspace/two.txt" });
 		expect(gated.state.resumes).toBe(1);
 		await api.service.idle();
 		const events = await tom.listEvents({ sandboxId: sandbox.id });
@@ -2879,6 +2885,56 @@ describe.each(STORES)("deleting your account as things are being made, stored $n
 		await vi.waitFor(async () => expect(await store.events.list({ accountId: account.id })).toEqual([]));
 	});
 
+	it("takes out an event and its outbox record whose write was under way as its account closed and went", async () => {
+		const store = await make();
+		const fenced = fenceClosedAccounts(store);
+		const account = {
+			id: "acc_o",
+			kind: "personal" as const,
+			name: "O",
+			defaultVisibility: "private" as const,
+			createdAt: 0,
+		};
+		await store.accounts.put(account);
+		// A webhook that wants the event, so its outbox record is written with it.
+		await store.webhooks.put({
+			id: "whk_o",
+			accountId: account.id,
+			name: "hook",
+			url: "https://hooks.example/in",
+			events: ["sandbox.running"],
+			enabled: true,
+			createdAt: 0,
+			secret: "whsec_AAAA",
+			consecutiveFailures: 0,
+		});
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const put = store.eventWrites.put.bind(store.eventWrites);
+		store.eventWrites.put = async (event) => {
+			await held;
+			return put(event);
+		};
+		const event = {
+			id: "evt_late",
+			type: "sandbox.running",
+			accountId: account.id,
+			createdAt: 0,
+			data: {},
+		} as Parameters<typeof store.eventWrites.put>[0];
+		const writing = fenced.eventWrites.put(event);
+		await close(store, account.id);
+		await store.accounts.delete(account.id);
+		release();
+		await writing;
+		await vi.waitFor(async () => {
+			expect(await store.events.list({ accountId: account.id })).toEqual([]);
+			expect(await store.eventOutbox.list({ accountId: account.id })).toEqual([]);
+		});
+	});
+
 	it("keeps its last pass for when it is due, and asks the deployment to wake for it", async () => {
 		const store = await make();
 		const wakes: number[] = [];
@@ -3350,6 +3406,27 @@ describe("organisations", () => {
 		expect((await failure(tom.removeMember(org.id, "usr_tom"))).code).toBe("conflict");
 		await ann.removeMember(org.id, "usr_ann");
 		expect((await failure(ann.listSandboxes({ account: org.id }))).code).toBe("forbidden");
+	});
+
+	it("revokes a leaving member's keys while their private sandbox moves, and owes the sandbox its stop", async () => {
+		const { api, client, tom, ann } = setup();
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "admin" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		const key = client((await ann.createApiKey({ name: "theirs", preset: "read-only", account: org.id })).secret);
+		const theirs = await ann.createSandbox({ account: org.id, visibility: "private", wait: true });
+		// A running sandbox's move under way (on any gateway): its stop is its move's.
+		const at = Date.now();
+		await api.store.sandboxes.update(theirs.id, (latest) => ({
+			...latest,
+			moving: { operationId: "mov_1", at, heartbeatAt: at, phase: "copying", from: "running", before: {} },
+		}));
+		await tom.removeMember(org.id, "usr_ann");
+		expect((await failure(key.listSandboxes({ account: org.id }))).code).toBe("unauthenticated");
+		expect(await api.store.sandboxes.get(theirs.id)).toMatchObject({
+			state: "running",
+			moving: { operationId: "mov_1", stopAfter: "Its person left the organisation" },
+		});
 	});
 
 	it("lets only the person an emailed invite is for join, whatever case either email is in, and says who it's for (#657)", async () => {
@@ -3947,6 +4024,51 @@ describe("hosts", () => {
 		// A host that stops saying has none.
 		memory = undefined;
 		expect((await root.listHosts()).items[0]?.memory).toBeUndefined();
+	});
+
+	it("shows how a host reaches its mesh peers as the backend last said, without writing it to the host's record", async () => {
+		const store = createMemoryStore();
+		const stub = createStubBackend();
+		const report: computeSchema.HostMesh = {
+			address: "fd4b:91c2:7e10:0:5a1e:3f20:9c4d:1b07",
+			peers: [
+				{
+					hostId: "host_b",
+					path: "direct",
+					endpoint: "203.0.113.24:51820",
+					lastHandshake: 1_700_000_000_000,
+					rttMs: 0.4,
+				},
+				{ hostId: "host_c", path: "none" },
+			],
+		};
+		let mesh: computeSchema.HostMesh | undefined;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				const read = await stub.capabilities();
+				return {
+					...read,
+					hosts: (read.hosts ?? []).map((host) => (mesh === undefined ? host : { ...host, mesh })),
+				};
+			},
+		};
+		const { root } = setup(backend, { store });
+		expect((await root.getHost(STUB_HOST_ID)).mesh).toBeUndefined();
+		mesh = report;
+		expect((await root.getHost(STUB_HOST_ID)).mesh).toEqual(report);
+		expect((await root.listHosts()).items[0]?.mesh).toEqual(report);
+		const written = await store.hosts.get(STUB_HOST_ID);
+		expect(written).not.toHaveProperty("mesh");
+		// A host whose mesh went down (its pool's sync off) has none.
+		mesh = undefined;
+		expect((await root.listHosts()).items[0]?.mesh).toBeUndefined();
+		// Nor has a revoked one, though its last report is still read.
+		mesh = report;
+		expect((await root.listHosts()).items[0]?.mesh).toEqual(report);
+		const revoked = await root.revokeHost(STUB_HOST_ID);
+		expect(revoked.state).toBe("revoked");
+		expect(revoked.mesh).toBeUndefined();
 	});
 
 	it("shows what takes a host's disk as the host last measured it, its snapshots split by their records", async () => {
@@ -4657,10 +4779,11 @@ describe("hosts", () => {
 		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
 		const { client, root } = setup({
 			...stub,
-			// Between the drain reading the host and writing it, another call revokes it.
+			// Between the drain reading the host and writing it, another call revokes it. (The registry is also told the
+			// host's pool, which is no drain.)
 			async updateHost(hostId, change) {
-				const revoke = revokeMeanwhile;
-				revokeMeanwhile = undefined;
+				const revoke = change.draining === undefined ? undefined : revokeMeanwhile;
+				if (revoke !== undefined) revokeMeanwhile = undefined;
 				await revoke?.();
 				return stub.updateHost?.(hostId, change);
 			},
@@ -5647,5 +5770,41 @@ describe.each(STORES)("saves at once against a host's limit, stored $name", sqlT
 		// Each refused one's new bytes went again, and its record with them.
 		expect(released).toHaveLength(refused.length);
 		expect(await store.snapshots.list({ state: "deleting" })).toEqual([]);
+	});
+});
+
+describe("listing sandboxes", () => {
+	it("reads the states it shows from the store in one read, never the account's deleted sandboxes, newest first", async () => {
+		const store = createMemoryStore();
+		const asked: { where: Partial<StoredSandbox>; anyOf?: AnyOf<StoredSandbox> }[] = [];
+		const watched: ComputeStore = {
+			...store,
+			sandboxes: {
+				...store.sandboxes,
+				list: (where, anyOf) => {
+					asked.push({ where: { ...where }, ...(anyOf === undefined ? {} : { anyOf }) });
+					return store.sandboxes.list(where, anyOf);
+				},
+			},
+		};
+		const { tom } = setup(createStubBackend(), { store: watched });
+		const gone = await tom.createSandbox({ wait: true, name: "gone" });
+		await tom.deleteSandbox(gone.id);
+		const stopped = await tom.createSandbox({ wait: true, name: "stopped" });
+		await tom.stopSandbox(stopped.id, { wait: true });
+		const running = await tom.createSandbox({ wait: true, name: "running" });
+		expect((await store.sandboxes.get(gone.id))?.state).toBe("deleted");
+
+		asked.splice(0);
+		expect((await tom.listSandboxes()).items.map((item) => item.id)).toEqual([running.id]);
+		expect((await tom.listSandboxes({ all: true })).items.map((item) => item.id)).toEqual([running.id, stopped.id]);
+		expect((await tom.listSandboxes({ state: "stopped" })).items.map((item) => item.id)).toEqual([stopped.id]);
+		// One read per list, each naming the states it shows, never `deleted`.
+		const lists = asked.filter(({ where }) => where.accountId !== undefined && where.ownerUserId === undefined);
+		expect(lists).toHaveLength(3);
+		for (const { anyOf } of lists) {
+			expect(anyOf?.state?.length).toBeGreaterThan(0);
+			expect(anyOf?.state).not.toContain("deleted");
+		}
 	});
 });

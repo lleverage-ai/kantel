@@ -20,7 +20,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
-| `state` | [SandboxState](/api/reference/types/#sandboxstate) | no | `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. |
+| `state` | [SandboxState](/api/reference/types/#sandboxstate) | no | `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. |
 | `all` | boolean | no | Include stopped, paused and errored sandboxes. Default: only active ones. |
 | `label` | Record&lt;string, string&gt; | no | Only those with each label: `label.ticket=PROJ-12`. |
 | `host` | string | no | Only those on this host, a host's ID or name: one of the account's own hosts, or for a super-admin any host. |
@@ -38,7 +38,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 
 `POST /v1/sandboxes` (SDK method `createSandbox`)
 
-Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.
+Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.
 
 **Header parameters**
 
@@ -66,6 +66,7 @@ What a new sandbox in the account may be, from the hosts it may use: an isolate'
 | --- | --- | --- | --- |
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `host` | string | no | The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use. |
+| `pool` | string | no | The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. Default: from the hosts a create naming no pool may use, in the default pools. |
 
 **Answers**
 
@@ -121,7 +122,7 @@ Renames it, changes its auto-stop or idle stop or moves its stop time (`extendMi
 
 `DELETE /v1/sandboxes/{sandboxId}` (SDK method `deleteSandbox`)
 
-Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`.
+Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. One on an account's own host is deleted there, even after the host has lost track of it (its earlier delete's answer lost): while that host is offline the delete is refused (`unavailable`) and the sandbox is kept, and once the host is revoked the sandbox is written off. A key needs `sandboxes:delete`.
 
 **Path parameters**
 
@@ -224,6 +225,76 @@ Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snap
 **Answers**
 
 - `201`: [ForkedSandboxes](/api/reference/types/#forkedsandboxes) (`application/json`). The new sandboxes.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Upgrade an isolate to a microVM
+
+`POST /v1/sandboxes/{sandboxId}/upgrade` (SDK method `upgradeSandbox`)
+
+Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and `/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`, Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was. Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the upgrade; a `sandbox.upgraded` event records it. A key needs `sandboxes:write`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
+**Body**: [UpgradeSandboxBody](/api/reference/types/#upgradesandboxbody)
+
+**Answers**
+
+- `200`: [Sandbox](/api/reference/types/#sandbox) (`application/json`). The sandbox, now a microVM.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Plan a sandbox's move
+
+`GET /v1/sandboxes/{sandboxId}/move` (SDK method `planSandboxMove`)
+
+A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused as a move would be when it can't move. A key needs `sandboxes:write`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Answers**
+
+- `200`: [SandboxMovePlan](/api/reference/types/#sandboxmoveplan) (`application/json`). Where it may move, and what each way does.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Move a sandbox to another host
+
+`POST /v1/sandboxes/{sandboxId}/move` (SDK method `moveSandbox`)
+
+Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs, then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with `keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
+**Body**: [MoveSandboxBody](/api/reference/types/#movesandboxbody)
+
+**Answers**
+
+- `200`: [Sandbox](/api/reference/types/#sandbox) (`application/json`). The sandbox, running on its new host (or `moving`).
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `422` refused, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 

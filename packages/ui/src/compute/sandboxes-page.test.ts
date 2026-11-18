@@ -7,6 +7,7 @@ import {
 	HOST_UNREACHABLE_LABEL,
 	type HostChoice,
 	idleStopText,
+	type Pool,
 	type Sandbox,
 	type SandboxState,
 	sandboxActions,
@@ -23,7 +24,11 @@ import {
 	creatorText,
 	filterCounts,
 	filtered,
+	hostFilters,
+	labelFilters,
+	labelValue,
 	NO_FILTERS,
+	poolFilters,
 	type SandboxFilters,
 	TYPE_FILTERS,
 } from "./sandbox-filters.ts";
@@ -33,8 +38,11 @@ import {
 	countdownText,
 	hostOptions,
 	hostProblem,
+	hostsInPool,
 	newSandboxInput,
 	newSandboxType,
+	poolChoices,
+	poolSent,
 	QUICK_SANDBOX,
 	requestedTemplate,
 	SandboxesPage,
@@ -64,7 +72,7 @@ describe("a sandbox's logs", () => {
 			...box("api", "running"),
 			createdAt: 100,
 			createdBy: "Ada",
-			environment: { id: "e", name: "dev" },
+			environments: [{ id: "e", name: "dev" }],
 		};
 		const timeline = sandboxTimeline(
 			sandbox,
@@ -82,19 +90,19 @@ describe("a sandbox's logs", () => {
 			"Stopped, snapshot taken",
 			"ls",
 			"Snapshot taken",
-			"Started from dev",
+			"Created",
 		]);
 	});
 
-	it("names the sandbox a fork came from, even with the environment it inherited", () => {
-		const made = (sandbox: Pick<Sandbox, "environment" | "forkedFrom">) => {
+	it("names the sandbox a fork came from, and not its environments, which change after it's made", () => {
+		const made = (sandbox: Pick<Sandbox, "environments" | "forkedFrom">) => {
 			const [entry] = sandboxTimeline({ ...box("api", "running"), ...sandbox }, [], []);
 			return entry?.kind === "event" ? entry.text : undefined;
 		};
-		const dev = { id: "e", name: "dev" };
-		expect(made({ environment: dev, forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
+		const dev = [{ id: "e", name: "dev" }];
+		expect(made({ environments: dev, forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
 		expect(made({ forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
-		expect(made({ environment: dev })).toBe("Started from dev");
+		expect(made({ environments: dev })).toBe("Created");
 		expect(made({})).toBe("Created");
 	});
 });
@@ -325,6 +333,86 @@ describe("the sandboxes list", () => {
 		]);
 	});
 
+	it("filters by pool, host and label, each option counted and named", () => {
+		const placed = (
+			name: string,
+			poolId: string | undefined,
+			hostId: string | undefined,
+			labels?: Record<string, string>,
+		): Sandbox => ({
+			...box(name, "running"),
+			...(poolId === undefined ? {} : { poolId }),
+			...(hostId === undefined ? {} : { hostId, hostName: hostId.replace("hst_", "") }),
+			...(labels === undefined ? {} : { labels }),
+		});
+		const all = [
+			placed("a", "pool_ci", "hst_ci_1", { team: "platform", ticket: "LLE-1" }),
+			placed("b", "pool_ci", "hst_ci_2", { team: "research" }),
+			placed("c", "pool_default", "hst_home"),
+			placed("d", undefined, undefined, { team: "platform" }),
+		];
+		const names = (filters: Partial<SandboxFilters>) =>
+			sandboxesShown(all, { ...NO_FILTERS, ...filters }, 0).map((each) => each.name);
+		expect(names({ pool: "pool_ci" })).toEqual(["a", "b"]);
+		expect(names({ host: "hst_home" })).toEqual(["c"]);
+		const platform = labelValue("team", "platform");
+		expect(names({ label: platform })).toEqual(["a", "d"]);
+		expect(names({ pool: "pool_ci", label: platform })).toEqual(["a"]);
+		// A label's key alone, or a value under another key, isn't the label.
+		expect(names({ label: "team" })).toEqual([]);
+		expect(names({ label: labelValue("ticket", "platform") })).toEqual([]);
+		expect(filtered({ ...NO_FILTERS, host: "hst_home" })).toBe(true);
+		// Filters from before these leave them out: any.
+		const { pool: _p, host: _h, label: _l, ...older } = NO_FILTERS;
+		expect(filtered(older)).toBe(false);
+		expect(sandboxesShown(all, older, 0)).toHaveLength(4);
+
+		const pools = poolFilters(all, new Map([["pool_ci", "ci"]]));
+		// A pool the account's list doesn't name goes by its ID.
+		expect(pools).toEqual([
+			{ value: "all", label: "Any pool" },
+			{ value: "pool_ci", label: "ci" },
+			{ value: "pool_default", label: "pool_default" },
+		]);
+		expect([...filterCounts(all, NO_FILTERS, "pool", pools, 0)]).toEqual([
+			["all", 4],
+			["pool_ci", 2],
+			["pool_default", 1],
+		]);
+		expect(hostFilters(all).map((option) => option.label)).toEqual(["Any host", "ci_1", "ci_2", "home"]);
+		expect(labelFilters(all)).toEqual([
+			{ value: "all", label: "Any label" },
+			{ value: platform, label: "team=platform" },
+			{ value: labelValue("team", "research"), label: "team=research" },
+			{ value: labelValue("ticket", "LLE-1"), label: "ticket=LLE-1" },
+		]);
+		// Labels that read the same as key=value stay apart, and each matches only its own sandbox.
+		const lookalikes = [
+			placed("x", undefined, undefined, { "a=b": "c" }),
+			placed("y", undefined, undefined, { a: "b=c" }),
+		];
+		const options = labelFilters(lookalikes);
+		expect(options.map((option) => option.label)).toEqual(["Any label", "a=b=c", "a=b=c"]);
+		expect(
+			options.slice(1).map((option) => sandboxesShown(lookalikes, { ...NO_FILTERS, label: option.value }, 0).length),
+		).toEqual([1, 1]);
+		// The chosen one stays an option when no sandbox has it any more, so the menu still says what it filters by.
+		expect(poolFilters([], new Map([["pool_gone", "gone"]]), "pool_gone").map((option) => option.label)).toEqual([
+			"Any pool",
+			"gone",
+		]);
+		expect(hostFilters([], "hst_gone").map((option) => option.label)).toEqual(["Any host", "hst_gone"]);
+		// A host's name, once seen, outlasts its last sandbox.
+		expect(hostFilters([], "hst_gone", new Map([["hst_gone", "old-box"]])).map((option) => option.label)).toEqual([
+			"Any host",
+			"old-box",
+		]);
+		expect(labelFilters([], labelValue("team", "gone"))).toEqual([
+			{ value: "all", label: "Any label" },
+			{ value: labelValue("team", "gone"), label: "team=gone" },
+		]);
+	});
+
 	it("counts down to auto-stop in minutes, and in minutes and seconds for its last 10", () => {
 		const running = { state: "running" as const };
 		expect(countdownText({ ...running, stopsAt: 52 * MINUTE }, 0)).toBe("52m");
@@ -384,7 +472,7 @@ describe("New sandbox", () => {
 		shape: { vcpus: 2, memoryMb: 4096 },
 		shapeChosen: false,
 		from: "",
-		environment: "",
+		environments: [],
 		autoStop: "60",
 	};
 
@@ -406,10 +494,67 @@ describe("New sandbox", () => {
 		);
 	});
 
+	it("sends the environments picked, in the order picked, and none without any", () => {
+		expect(newSandboxInput({ ...form, environments: ["env_b", "env_a"] }).environmentIds).toEqual(["env_b", "env_a"]);
+		expect("environmentIds" in newSandboxInput(form)).toBe(false);
+	});
+
 	it("puts it on the host picked, and leaves Kantel to pick without one", () => {
 		expect(newSandboxInput({ ...form, host: "hst_home" }).hostId).toBe("hst_home");
 		expect("hostId" in newSandboxInput({ ...form, host: "" })).toBe(false);
 		expect("hostId" in newSandboxInput(form)).toBe(false);
+	});
+
+	describe("in a pool", () => {
+		const pool = (id: string, name: string, isDefault = false): Pool => ({
+			id,
+			name,
+			default: isDefault,
+			hosts: 1,
+			createdAt: FIXTURE_NOW,
+		});
+		const pools = [pool("pool_default", "default", true), pool("pool_ci", "ci")];
+
+		it("offers a picker only once the pools are read and there's more than one, so one pool changes nothing", () => {
+			expect(poolChoices({ status: "ready", pools })).toEqual(pools);
+			expect(poolChoices({ status: "ready", pools: [pools[0] as Pool] })).toBeUndefined();
+			expect(poolChoices({ status: "ready", pools: [] })).toBeUndefined();
+			expect(poolChoices({ status: "loading" })).toBeUndefined();
+			expect(poolChoices({ status: "failed" })).toBeUndefined();
+		});
+
+		it("sends the pool picked, and none for the default, so a sandbox may still go on shared hosts", () => {
+			expect(newSandboxInput({ ...form, pool: poolSent(pools, "pool_ci") }).poolId).toBe("pool_ci");
+			expect("poolId" in newSandboxInput({ ...form, pool: poolSent(pools, "pool_default") })).toBe(false);
+			expect("poolId" in newSandboxInput({ ...form, pool: poolSent(pools, "") })).toBe(false);
+			// One the account no longer has, or with no picker (one pool, or pools not read): the default.
+			expect(poolSent(pools, "pool_gone")).toBe("");
+			expect(poolSent(undefined, "pool_ci")).toBe("");
+			expect("poolId" in newSandboxInput(form)).toBe(false);
+		});
+
+		it("offers only the pool's hosts once one is picked, and every host for the default", () => {
+			const hosts: HostChoice[] = [
+				{ id: "hst_a", name: "box-a", state: "online", kinds: ["microvm"], shared: false, poolId: "pool_ci" },
+				{ id: "hst_b", name: "box-b", state: "online", kinds: ["microvm"], shared: false, poolId: "pool_default" },
+				{ id: "hst_c", name: "box-c", state: "online", kinds: ["microvm"], shared: true, poolId: "pool_shared" },
+			];
+			expect(hostsInPool(hosts, "pool_ci").map((host) => host.id)).toEqual(["hst_a"]);
+			expect(hostsInPool(hosts, "")).toEqual(hosts);
+			expect(hostsInPool(hosts, "pool_empty")).toEqual([]);
+		});
+
+		it("is placed in the pool picked, and refused naming it when none of its hosts can take it", async () => {
+			const source = createComputeFixtures({ hostsAway: ["hst_hetzner_1"] });
+			const made = await source.sandboxes.create({ accountId: LLEVERAGE.id, kind: "isolate", poolId: "pool_default" });
+			expect(made.hostId).toBe("hst_home");
+			await expect(
+				source.sandboxes.create({ accountId: LLEVERAGE.id, kind: "microvm", poolId: "pool_ci" }),
+			).rejects.toThrow("No host in pool ci can run a microvm sandbox now");
+			// And its shapes say so: no microVMs in ci while its hosts are away.
+			expect((await source.sandboxes.shapes?.(LLEVERAGE.id, undefined, "pool_ci"))?.microvm.available).toBe(false);
+			expect((await source.sandboxes.shapes?.(LLEVERAGE.id))?.microvm.available).not.toBe(false);
+		});
 	});
 
 	it("offers the hosts that can take the type now, and keeps a picked one that can't with why", () => {

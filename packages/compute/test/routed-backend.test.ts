@@ -95,6 +95,20 @@ describe("createRoutedBackend", () => {
 		]);
 	});
 
+	it("upgrades an isolate into a snapshot only on the backend that holds the isolate", async () => {
+		const { routed, primary, fallback } = setup();
+		const into = (intoSnapshot: string) => ({ ...spec("sbx_p1", ["host_own", "host_stub"]), intoSnapshot });
+		await routed.upgrade?.("sbx_p1", into("host_own/snap_1"), "upg_1");
+		expect(primary.seen).toEqual([{ method: "upgrade", eligible: ["host_own"] }]);
+		// A snapshot the other backend holds is out of its reach: refused, nothing sent to either.
+		await expect(routed.upgrade?.("sbx_p1", into("ref_stub_snapshot"), "upg_2")).rejects.toMatchObject({
+			code: "unavailable",
+			message: expect.stringContaining("an isolate upgrades into a snapshot on its own hosts"),
+		});
+		expect(primary.seen).toHaveLength(1);
+		expect(fallback.seen).toEqual([]);
+	});
+
 	it("gives what the primary holds the primary's hosts among those eligible", async () => {
 		const { routed, primary } = setup();
 		await routed.start("sbx_p1", { env: {}, eligibleHosts: ["host_own", "host_stub"] });
@@ -113,9 +127,20 @@ describe("createRoutedBackend", () => {
 	it("refuses a sandbox neither holds rather than ask the fallback for it, and places it again only with create", async () => {
 		const primary = fake([host("host_own", "acc_a")]);
 		const fallback = fake([host("host_stub")]);
+		const destroyed: unknown[] = [];
+		/** `backend`, its destroys noted with their options. */
+		const destroying = (name: string, backend: SandboxBackend): SandboxBackend =>
+			new Proxy(backend, {
+				get: (target, method: string) =>
+					method === "destroy"
+						? async (id: string, options?: unknown) => {
+								destroyed.push({ on: name, id, ...(options === undefined ? {} : { options }) });
+							}
+						: Reflect.get(target, method),
+			});
 		const routed = createRoutedBackend({
-			primary: primary.backend,
-			fallback: fallback.backend,
+			primary: destroying("primary", primary.backend),
+			fallback: destroying("fallback", fallback.backend),
 			holds: async (id) => id.startsWith("sbx_p"),
 			fallbackHolds: async (id) => id.startsWith("sbx_f"),
 			holdsSnapshot: (ref) => ref.startsWith("host_"),
@@ -135,9 +160,15 @@ describe("createRoutedBackend", () => {
 			});
 		}
 		expect([...primary.seen, ...fallback.seen]).toEqual([]);
-		// What the fallback holds still goes there, a destroy of one neither holds too (it has nothing to destroy).
+		// What the fallback holds still goes there. A destroy of one neither holds goes to the account's hosts, with the host
+		// its record names, to be settled by that host: the fallback, a stub, can't speak for an account's host.
 		await routed.start("sbx_f1", { env: {}, eligibleHosts: eligible });
-		await routed.destroy("sbx_lost");
+		await routed.destroy("sbx_lost", { hostId: "host_own" });
+		await routed.destroy("sbx_f1");
+		expect(destroyed).toEqual([
+			{ on: "primary", id: "sbx_lost", options: { hostId: "host_own" } },
+			{ on: "fallback", id: "sbx_f1" },
+		]);
 		// Made again as a create, it goes where a new sandbox goes: the account's own host.
 		await routed.create(spec("sbx_lost", eligible));
 		expect(fallback.seen).toEqual([{ method: "start", eligible: ["host_stub"] }]);

@@ -4,23 +4,40 @@ A Kantel release is one version of everything, on the GitHub Release `v<version>
 
 | What | From | How people get it |
 | --- | --- | --- |
-| `kantel.js`, the user CLI and MCP server (Node.js 22+) | `packages/cli` | `install-cli.sh` installs it as `kantel` |
-| `kantel-admin.js`, the operator CLI (Node.js 22+) | `packages/admin` | `install-cli.sh --admin` installs it as `kantel-admin`, or `curl -fsSLo kantel-admin …/releases/latest/download/kantel-admin.js` |
-| `install-cli.sh`, the CLIs' installer | `packages/cli/install-cli.sh` | `curl -fsSL https://kantel.dev/cli.sh \| sh` (kantel.dev serves the repository's copy, unstamped, which installs the latest release), or this release's own stamped copy |
+| `kantel-<os>-<arch>`, the user CLI and MCP server, for `linux` and `darwin` on `amd64` and `arm64` | `apps/cli/cmd/kantel` | `install-cli.sh` installs it as `kantel`; `kantel update` updates it |
+| `kantel-admin-<os>-<arch>`, the operator CLI, for the same four | `apps/cli/cmd/kantel-admin` | `install-cli.sh --admin` installs it as `kantel-admin`, or `curl -fsSLo kantel-admin …/releases/latest/download/kantel-admin-linux-amd64` |
+| `install-cli.sh`, the CLIs' installer | `apps/cli/install-cli.sh` | `curl -fsSL https://kantel.dev/cli.sh \| sh` (kantel.dev serves the repository's copy, unstamped, which installs the latest release), or this release's own stamped copy |
 | `kantel-host-linux-amd64`, `kantel-host-linux-arm64`, the host agent | `apps/host` | `install.sh` downloads it |
 | `install.sh`, the host installer | `apps/host/install.sh` | the join command: `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh \| sudo sh -s -- --url … --token kth_…` |
 | `SHA256SUMS` | | both installers check what they download against it |
 
 Both one-liners work pasted into bash, zsh and fish: the scripts run under `sh`.
 
-`install-cli.sh` needs no sudo: it puts the files in `~/.local/share/kantel` (`KANTEL_HOME`) as `kantel.mjs`,
-and `kantel-admin.mjs` (with `--admin`), so Node runs them as ES modules whatever is around them, and links
-`~/.local/bin/kantel` (and `~/.local/bin/kantel-admin`) to them. An update keeps a `kantel-admin` it installed before
-unless given `--no-admin`. `sh -s -- --dir DIR` links them elsewhere, and `--version V` installs a release other than
-the script's own. Run it again to update.
+Every binary is a static Go one (`CGO_ENABLED=0`, `-trimpath`, `-s -w`), so nothing else needs installing: no
+Node.js, no libc of a particular version. Each has the release's version stamped in with `-X`:
+`apps/cli/internal/kantel.Version` for `kantel`, `apps/cli/internal/admin.Version` for `kantel-admin`, and
+`main.version` for `kantel-host`. Until `apps/cli/cmd/kantel-admin` is there, `pack.sh` skips it with a note and the
+release has no `kantel-admin`.
 
-`kantel` is also built as the npm package `kantel`, and the workflow can publish it, but that is on hold until Kantel
-is ready for it: it runs only with `-f publish_npm=true`.
+`install-cli.sh` needs no sudo: it picks the binary for the machine (`uname`: Linux or macOS, x86_64 or arm64; arm64
+on an Apple silicon Mac under Rosetta), checks it against `SHA256SUMS` and that it runs, and puts it in
+`~/.local/bin` (`KANTEL_BIN_DIR`, or `--dir DIR`), beside the old one and renamed over it. It says how to put that
+directory on the `PATH` in fish, bash and zsh. An update keeps a `kantel-admin` it installed before unless given
+`--no-admin`, and `--version V` installs a release other than the script's own. It replaces an install by a Node.js
+release (a link to `~/.local/share/kantel/kantel.mjs`), but not a file or link it didn't put there. Run it again, or
+`kantel update`, to update.
+
+`kantel update` does the same from the binary itself: it finds the latest release where `releases/latest` redirects
+(or takes `--version`), downloads `kantel-<os>-<arch>` and `SHA256SUMS`, checks the one against the other and that it
+runs and prints the version, and renames it over the running binary (its links resolved), and over `kantel-admin`
+when that is in the same directory. After a command, `kantel` prints one line on stderr when a newer release is out,
+asking GitHub at most once a day (`~/.cache/kantel/update-check.json`), never for a script, CI or a coding agent.
+`KANTEL_RELEASE_URL`, a directory holding a release's files, points the installer, `kantel update` and the notice at
+a mirror (`smoke.sh` uses `file://`); `kantel` reads which release it holds from its stamped `install-cli.sh`.
+
+npm publishing is off. The npm package `kantel` was the Node.js CLI; the CLI is a Go binary now, so `pack.sh` builds
+no npm package, and the workflow's `dry-run` and `publish` jobs (`publish.sh`, left as it was) are switched off with
+`if: false` until there is an npm package for the binaries.
 
 ## Why the self-hosting side isn't on npm
 
@@ -43,20 +60,21 @@ Run the [Release workflow](../../.github/workflows/release.yml) on main with a v
 gh workflow run release.yml --repo lleverage-ai/kantel --ref main -f version=0.1.0 -f publish=true
 ```
 
-It builds everything (`pack.sh`) and checks it (`smoke.sh`: every command prints the version, `SHA256SUMS` matches,
-`install.sh` installs a good binary and refuses a bad one, and `install-cli.sh` installs `kantel` for a user, adds `kantel-admin` with `--admin`,
-updates both, and refuses a bad file or an old Node.js). Then it attests the release's files and makes the GitHub Release
-`v<version>` at the run's commit (`github-release.sh`). With `-f publish_npm=true` as well, it then publishes `kantel`
-to npm (`publish.sh`).
+It builds everything (`pack.sh`) and checks it (`smoke.sh`: every command prints the version, the macOS binaries are
+Mach-O, `SHA256SUMS` matches, `install.sh` installs a good binary and refuses a bad one, `install-cli.sh` installs
+`kantel` for a user, adds `kantel-admin` with `--admin`, updates both, replaces a Node.js release's install and refuses
+a bad binary, and `kantel update` replaces itself from the release's files and refuses a bad binary). Then it attests
+the release's files and makes the GitHub Release `v<version>` at the run's commit (`github-release.sh`), with every
+file `SHA256SUMS` lists.
 
 - A version without a prerelease part (`0.1.0`) becomes the **latest** GitHub Release, which the join command
   Kantel prints (`releases/latest/download/install.sh`) and `releases/latest/download/install-cli.sh` install.
-- A prerelease (`0.2.0-rc.1`) is a GitHub prerelease, never the latest (and npm's `next`). Try it on a host with
+- A prerelease (`0.2.0-rc.1`) is a GitHub prerelease, never the latest, so neither `kantel update` nor its notice
+  offers it; `kantel update --version 0.2.0-rc.1` installs it. Try it on a host with
   `curl -fsSL https://github.com/lleverage-ai/kantel/releases/download/v0.2.0-rc.1/install.sh | sudo sh -s -- --url … --token …`.
-- A run that stopped part way can be run again with the same version: a complete GitHub Release and a version
-  already on npm are skipped.
-- Without `-f publish=true` it stops after printing the GitHub Release it would make and `npm publish --dry-run`,
-  which is also what it does on a pull request that touches what it releases.
+- A run that stopped part way can be run again with the same version: a complete GitHub Release is skipped.
+- Without `-f publish=true` it stops after printing the GitHub Release it would make, which is also what it does on a
+  pull request that touches what it releases.
 
 ## Telling the control plane
 
@@ -96,22 +114,22 @@ curl -fsSLO https://github.com/lleverage-ai/kantel/releases/download/v0.1.0/kant
 curl -fsSLO https://github.com/lleverage-ai/kantel/releases/download/v0.1.0/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 gh attestation verify kantel-host-linux-amd64 --repo lleverage-ai/kantel
-npm audit signatures   # in a project that installed kantel: checks its provenance
+gh attestation verify ~/.local/bin/kantel --repo lleverage-ai/kantel   # an installed kantel
 ```
 
 ## Locally
 
 ```sh
-pnpm install --filter "@kantel/admin..." --filter "@kantel/console..."
 tools/release/pack.sh 0.1.0 /tmp/release
 tools/release/smoke.sh 0.1.0 /tmp/release
 tools/release/github-release.sh --dry-run 0.1.0 /tmp/release
-tools/release/publish.sh --dry-run /tmp/release
 ```
 
-`pack.sh` needs Go (the version in `apps/host/go.mod`) and leaves the repository as it found it.
+`pack.sh` needs Go (the version in `apps/cli/go.mod`, which `apps/host/go.mod` matches), GNU find and `sha256sum`,
+and leaves the repository as it found it; it takes about half a minute for every platform. `smoke.sh` runs on Linux,
+x86_64 or arm64, as a user other than root.
 
-## The first `kantel` version on npm (for when publishing is turned on)
+## The first `kantel` version on npm (for if publishing is turned on again)
 
 npm only lets a trusted publisher be added to a package that already exists. `kantel`'s first version is a
 placeholder (`0.0.0-bootstrap.0`, under the `bootstrap` dist-tag) published by a maintainer, who then adds the

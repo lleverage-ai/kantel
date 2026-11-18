@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,8 +36,34 @@ const (
 )
 
 // The service: VMs are in their own process groups and KillMode=process leaves them running across a restart or an
-// update; the next run adopts them.
+// update; the next run adopts them. Their Firecrackers are in the unit's control group, so OOMPolicy=continue keeps the
+// unit running when the kernel's out-of-memory killer ends one of them: by default (stop) systemd fails the unit and
+// restarts kantel-host, dropping its connection, for the loss of one VM.
 const unit = `[Unit]
+Description=Kantel host: runs Kantel sandboxes (microVMs and isolates)
+Documentation=https://kantel.dev/docs/hosts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kantel-host run
+Restart=always
+RestartSec=2
+KillMode=process
+OOMPolicy=continue
+LimitNOFILE=1048576
+TasksMax=infinity
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// previousUnits are the unit texts earlier releases installed, exactly: a run finding one of them brings it up to
+// `unit` (upgradeUnit), since an update replaces only the binary. A unit an operator changed is never one of them.
+var previousUnits = []string{unitBeforeOOMPolicy}
+
+// unitBeforeOOMPolicy is the unit every release installed until OOMPolicy=continue.
+const unitBeforeOOMPolicy = `[Unit]
 Description=Kantel host: runs Kantel sandboxes (microVMs and isolates)
 Documentation=https://kantel.dev/docs/hosts
 After=network-online.target
@@ -54,6 +81,26 @@ TasksMax=infinity
 WantedBy=multi-user.target
 `
 
+// upgradeUnit rewrites the systemd unit at path to `unit` when it is one an earlier release installed
+// (previousUnits), and has systemd read it again (reload): the running service takes the new settings without a
+// restart. Answers whether it did.
+func upgradeUnit(path string, reload func() error) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !slices.Contains(previousUnits, string(raw)) {
+		return false, nil
+	}
+	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
+		return false, err
+	}
+	return true, reload()
+}
+
 type labelFlag map[string]string
 
 func (l labelFlag) String() string { return fmt.Sprint(map[string]string(l)) }
@@ -64,6 +111,20 @@ func (l labelFlag) Set(v string) error {
 			return fmt.Errorf("label %q: want key=value", kv)
 		}
 		l[k] = val
+	}
+	return nil
+}
+
+// listFlag is a repeatable flag whose values may also be comma-separated.
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(v string) error {
+	for _, item := range strings.Split(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			*l = append(*l, item)
+		}
 	}
 	return nil
 }
@@ -86,9 +147,13 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 	root := fs.String("root", agent.DefaultRoot, "Where sandboxes live, a `directory`")
 	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
 	tiers := fs.String("tiers", "", "The `tiers` to run: microvm, isolate or both, comma-separated (default: what the machine can)")
-	isolateRuntime := fs.String("isolate-runtime", "", "The isolate `runtime`: native runs isolates with workerd on the host itself (no KVM; trusted code only)")
+	isolateRuntime := fs.String("isolate-runtime", "", "The isolate `runtime`: native runs isolates with kantel-isolate on the host itself (no KVM; trusted code only)")
 	proxyDataPath := fs.Bool("proxy-data-path", false, "Turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
 	injectGuestAgent := fs.Bool("inject-guest-agent", false, "Boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
+	meshPort := fs.Int("mesh-port", 0, "The UDP `port` of the WireGuard mesh with the other hosts of this host's pool (default 51820; -1: no mesh)")
+	meshEndpoints := &listFlag{}
+	fs.Var(meshEndpoints, "mesh-endpoint", "Where the host's mesh peers reach it besides its own addresses, `host:port`, such as a forwarded port (repeatable, or comma-separated)")
+	syncRate := fs.Int("sync-rate", 0, "The most peer sync moves over the mesh each way, in `Mbit/s` (default half the link the host detects; -1: no limit)")
 	noStart := fs.Bool("no-start", false, "Install and register, but don't start the service")
 	dryRun := fs.Bool("dry-run", false, "Print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
 	if err := fs.parse(args); err != nil {
@@ -113,7 +178,8 @@ func parseInstallAs(cmd string, args []string) (installOptions, error) {
 	return installOptions{
 		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
 		tiers: *tiers, isolateRuntime: *isolateRuntime, labels: labels, proxyDataPath: *proxyDataPath,
-		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun,
+		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun, meshPort: *meshPort, meshEndpoints: *meshEndpoints,
+		syncRate: *syncRate,
 	}, nil
 }
 

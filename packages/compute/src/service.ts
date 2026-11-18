@@ -33,6 +33,7 @@ import {
 	placementError,
 	placementReasonOf,
 } from "@kantel/contracts";
+import { MOUNT_SYSTEM_PATHS } from "@kantel/contracts/mounts";
 import {
 	type Acting,
 	accountById,
@@ -67,22 +68,64 @@ import {
 	type BackendMountStatus,
 	type BackendShape,
 	type BackendSize,
+	type BackendStickyDisk,
+	type BackendStickyDiskStatus,
 	type BootOptions,
 	type CommandProgress,
 	type ExecResult,
 	hostNotConnected,
+	isBootDroppedMemory,
 	isCommandProgress,
+	isCreateOutcomeUnknown,
 	isDetachedWaitEnded,
+	isStartOutcomeUnknown,
+	isUpgradeOutcomeUnknown,
+	type MoveOutcome,
 	type Placement,
 	refusedBeforeTheMachine,
 	type SandboxBackend,
+	type SandboxSpec,
 	type SandboxTemplateBoot,
 	type SharedSnapshotBytes,
 	SNAPSHOT_KEEP_FEATURE,
+	type SnapshotCopies,
+	type SnapshotMadeOn,
 	type TakenSnapshot,
+	type UpgradedPlacement,
+	type UpgradeOutcome,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
+import {
+	createDiskHolders,
+	type DiskLocateRequest,
+	type DiskLocation,
+	GRANT_KEY_UNAVAILABLE,
+	type GrantKeyring,
+	type GrantKeyView,
+	type HoldingsReport,
+} from "./disk-holders.ts";
+import {
+	composeEnv,
+	type EnvironmentResolution,
+	environmentFields,
+	environmentIdsOf,
+	envLayersOf,
+	MAX_SANDBOX_ENVIRONMENTS,
+	protectedClashes,
+	protectedWinners,
+	resolveEnvironments,
+	secretsVersionOf,
+	shadowedOf,
+} from "./environment-resolution.ts";
+import { createGithubApp, type GithubApp, importAppKey } from "./github-app.ts";
+import {
+	createGithubRunners,
+	kindView,
+	newGithubRunnersId,
+	type RunnerPool,
+	type StoredGithubRunners,
+} from "./github-runners.ts";
 import { createLiveFeed, type LiveRelay, type WatchVerdict, watchResponse, watchSandboxes } from "./live.ts";
 import {
 	type AskedMachine,
@@ -117,35 +160,52 @@ import {
 	sandboxNotRunning,
 	sandboxUnresponsive,
 } from "./not-running.ts";
+import { createPoolService, defaultPoolOf, type PoolRunners, poolOwnerOf } from "./pools.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
+import { COPY_RETRY_MS, type CopyHost, copyTarget, keepingCopies, SNAPSHOT_COPIES } from "./snapshot-copies.ts";
 import type {
 	ComputeStore,
 	OOMPending,
+	ProvisionWork,
 	RunPeriod,
 	StoredAccount,
 	StoredApiKey,
 	StoredCommand,
 	StoredDeletion,
 	StoredDeviceLogin,
+	StoredDiskHolder,
 	StoredEgressEntry,
 	StoredEnvironment,
 	StoredEnvironmentFile,
 	StoredEnvironmentVariable,
+	StoredEvacuation,
+	StoredEvacuationSandbox,
 	StoredHost,
 	StoredIdempotency,
 	StoredInvite,
+	StoredJoinToken,
 	StoredPeak,
 	StoredPersonalToken,
+	StoredPool,
 	StoredProxy,
 	StoredSample,
 	StoredSandbox,
 	StoredSnapshot,
+	StoredStickyDisk,
+	StoredStickyDiskVersion,
 	StoredTelemetry,
 	StoredUsageClaim,
 	StoredUser,
 	StoredWebhook,
 } from "./store.ts";
-import { UniqueViolation, usageClaimId } from "./store.ts";
+import {
+	diskHolderId,
+	OPERATOR_POOLS,
+	STICKY_PREFETCH_MS,
+	stickyDiskNameId,
+	UniqueViolation,
+	usageClaimId,
+} from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
@@ -162,6 +222,7 @@ import {
 	base64ToBytes,
 	bytesToBase64,
 	HOME,
+	homeFor,
 	paginate,
 	randomId,
 	randomSecret,
@@ -178,8 +239,46 @@ type SandboxType = computeSchema.SandboxType;
 type MemberRole = computeSchema.MemberRole;
 type EventType = computeSchema.EventType;
 type EventData = computeSchema.Event["data"];
+
+/** Whether two lists of IDs are the same, in the same order. */
+const sameIds = (a: readonly string[], b: readonly string[]) =>
+	a.length === b.length && a.every((id, index) => id === b[index]);
+
+/** `pendingProvision` without an environment's own set-up (its files and repositories). */
+const pendingWithout = (
+	sandbox: Pick<StoredSandbox, "pendingProvision">,
+	environmentId: string,
+): Pick<StoredSandbox, "pendingProvision"> => {
+	const pending = (sandbox.pendingProvision ?? []).filter((work) => work.environmentId !== environmentId);
+	return { pendingProvision: pending.length === 0 ? undefined : pending };
+};
+
+/** The set-up an environment a sandbox has just been given needs: its files, and its repositories. */
+const workFor = (environment: StoredEnvironment): ProvisionWork[] => [
+	...(environment.files.length > 0
+		? [{ id: randomId("pw", 8), kind: "files" as const, environmentId: environment.id }]
+		: []),
+	...(environment.repos.length > 0
+		? [{ id: randomId("pw", 8), kind: "repos" as const, environmentId: environment.id }]
+		: []),
+];
+
+/** The secret file paths whose winning environment differs between two resolutions, and that one of `after` wins. */
+const changedWinners = (before: EnvironmentResolution, after: EnvironmentResolution): string[] =>
+	[...after.files.entries()]
+		.filter(([path, winner]) => before.files.get(path)?.environment.id !== winner.environment.id)
+		.map(([path]) => path);
+
+/** The environments whose repositories a boot's set-up may clone once it runs, as the call read them. */
+interface Provisioning {
+	readonly environments: readonly StoredEnvironment[];
+}
+
 /** What decides a sandbox's egress besides its account's proxy settings. */
-type EgressSubject = Pick<StoredSandbox, "environmentId" | "placeholders" | "grants" | "egressRevision">;
+type EgressSubject = Pick<
+	StoredSandbox,
+	"environmentId" | "environmentIds" | "placeholders" | "grants" | "egressRevision" | "env" | "secretsFloor"
+>;
 
 /** What an hour of running costs: a microVM by its vCPUs and memory, an isolate by its memory (its CPU is shared). */
 export interface RateTable {
@@ -333,6 +432,28 @@ export interface ComputeServiceOptions {
 	readonly snapshotExpiryDelayMs?: number;
 	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
 	readonly startPollMs?: number;
+	/**
+	 * GitHub Actions runners (experimental, `github-runners.ts`): GitHub Apps whose `workflow_job` webhooks get ephemeral
+	 * microVM runners (`/v1/github-runners`). Absent, off: their routes answer `not_supported`. The gateways turn it on
+	 * with `KANTEL_GITHUB_RUNNERS=experimental`, and only where sandboxes run on hosts.
+	 */
+	readonly githubRunners?: GithubRunnersSettings;
+	/**
+	 * Sticky disks (experimental, docs/design/disk-store.md): an account's named, versioned disks, cloned into microVMs
+	 * (`/v1/sticky-disks`, `stickyDisks` in a create). Absent, off: their routes and a create naming them answer
+	 * `not_supported`, as they do with a backend that has none. The gateways turn it on with
+	 * `KANTEL_STICKY_DISKS=experimental`.
+	 */
+	readonly stickyDisks?: boolean;
+}
+
+/** How the GitHub runner broker reaches GitHub (`ComputeServiceOptions.githubRunners`). */
+export interface GithubRunnersSettings {
+	/** Default the global `fetch`. */
+	readonly fetch?: typeof fetch;
+	readonly log?: (message: string) => void;
+	/** Makes the App's client; tests give a stand-in. Default `createGithubApp`. */
+	readonly app?: (credentials: { readonly appId: number; readonly privateKey: string }) => GithubApp;
 }
 
 /** One invite to email: the same message as identity's `InviteMessage`, so its mailers send it as they are. */
@@ -410,6 +531,55 @@ export interface ReportedEgress {
 }
 
 /** What someone kept off the shared hosts is told about a sandbox on one. */
+/** How often an upgrade under way says it is (`upgrading.heartbeatAt`). */
+export const UPGRADE_HEARTBEAT_MS = 20_000;
+/**
+ * How long an upgrade may go without saying so before the sweep settles it with its backend. An ordinary boot's lease
+ * (`booting.heartbeatAt`), which its gateway moves on as often, goes quiet after as long.
+ */
+export const UPGRADE_STALE_MS = 2 * 60_000;
+/**
+ * How long after its host reported a create whose answer was lost (made, or not) the sweep settles it
+ * (`settleLostCreate`): time for a gateway still making it, which got the answer, to record it itself.
+ */
+export const CREATE_SETTLE_GRACE_MS = 30_000;
+/** How long a command's end that needs a microVM waits for its owner to record it with its run again. */
+export const RERUN_CLAIM_MS = 10 * 60_000;
+/** What an upgrade whose outcome can't be told yet answers. */
+export const UPGRADE_OUTCOME_UNKNOWN =
+	"The sandbox's host didn't answer, so whether it is a microVM yet isn't known: it stays starting until Kantel " +
+	"settles the upgrade with its host, and is then the microVM or the isolate it was";
+
+/** What an upgrade is refused with where no backend upgrades isolates. */
+export const UPGRADE_UNSUPPORTED =
+	"This deployment's hosts don't upgrade isolates to microVMs; make a microVM and copy the files across";
+
+/** What a move whose outcome can't be told yet answers. */
+const MOVE_OUTCOME_UNKNOWN =
+	"The move's outcome can't be told yet: a host it used doesn't answer. The sandbox stays moving until Kantel " +
+	"settles the move with its hosts, and is then on its new host, running, or stopped where it was";
+
+/** What a move is refused with where no backend moves sandboxes. */
+const MOVE_UNSUPPORTED = "This deployment's hosts don't move sandboxes between them";
+
+/** What an evacuation's move is refused with when its sandbox has left the host meanwhile: reconciled as moved. */
+const MOVED_ELSEWHERE = "The sandbox has left the host being evacuated";
+/** How many sandboxes a host's evacuation moves at once (docs/design/disk-store.md, "Draining a host"). */
+const EVACUATION_MOVES = 2;
+/** How long an evacuation's gateway holds it without saying so before another (the sweep) takes it on. */
+export const EVACUATION_LEASE_MS = 60_000;
+/** How often an evacuation's gateway says it still holds it. */
+const EVACUATION_HEARTBEAT_MS = 15_000;
+/** How long an evacuation's gateway waits before it looks at the host again, when no move of its has ended. */
+const EVACUATION_TICK_MS = 2_000;
+/** How many of a sandbox's moves may end with no answer (their gateway gone) before an evacuation gives it up. */
+const EVACUATION_ATTEMPTS = 3;
+/** The states a sandbox on a draining host is moved off from; one starting or stopping waits until it is in one. */
+const EVACUABLE: ReadonlySet<computeSchema.SandboxState> = new Set(["running", "stopped", "paused"]);
+
+/** What an upgrade into a snapshot whose pool can't be told is told to do instead (`poolOfSnapshot`). */
+const UPGRADE_IN_POOL = "upgrade into a snapshot saved in the sandbox's pool";
+
 export const SHARED_HOSTS_REFUSED =
 	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
 
@@ -476,6 +646,17 @@ export interface ComputeService {
 	 */
 	sweep(): Promise<void>;
 	/**
+	 * Answers a GitHub App's webhook for a runner integration (`POST /v1/github-runners/{id}/webhook`, no sign-in: its
+	 * signature is the check). `not_supported` while GitHub runners are off.
+	 */
+	githubWebhook(integrationId: string, request: Request): Promise<Response>;
+	/**
+	 * One pass of the GitHub runner broker over every integration: runners made for queued jobs, booted ones registered,
+	 * ended ones deleted. Answers when the next is due (undefined with none, or while it is off): for a deployment that
+	 * wakes for it (`wakeAt`).
+	 */
+	tickGithubRunners(): Promise<number | undefined>;
+	/**
 	 * Carries on every account deletion whose pass is due, waiting for each, and answers when the next is due (undefined
 	 * with none): for a deployment that wakes for them (`wakeAt`).
 	 */
@@ -525,6 +706,11 @@ export interface ComputeService {
 	 * doesn't open.
 	 */
 	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
+	/**
+	 * A sandbox's env as it is now, for the host that asked over its link (`env.fetch`), which applies a `sandbox.env`
+	 * from it: `undefined` unless the sandbox's recorded host is `hostId`.
+	 */
+	sandboxEnv(hostId: string, sandboxId: string): Promise<{ env: { [name: string]: string } } | undefined>;
 	/**
 	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
@@ -593,11 +779,56 @@ export interface ComputeService {
 	 */
 	reportExit(hostId: string, sandboxId: string, error: string | undefined, healthAt?: number): Promise<void>;
 	/**
+	 * A host's capacity report's holdings (`HostCapacity.stickyDisks` and `HostCapacity.holdings`) and fetches
+	 * (`HostCapacity.fetches`), received at `at`: its copies in the catalogue (`StoredDiskHolder`), held and being
+	 * fetched, are made what it reports (`DiskHolders.recordHoldings`). Nothing of sticky disks with them off, nor of
+	 * templates' root filesystems with templates off.
+	 */
+	recordHoldings(hostId: string, at: number, report: HoldingsReport): Promise<void>;
+	/**
+	 * A host's `disk.locate`: the version's block map digest, the online hosts in the asker's pool holding it with their
+	 * mesh addresses, and a grant to fetch it from them (docs/design/disk-store.md, 2c). `not_found` for a version the
+	 * catalogue doesn't have or the host may not have; `not_supported` with its kind off (sticky disks, templates) or no
+	 * grant key.
+	 */
+	locateDisk(hostId: string, request: DiskLocateRequest): Promise<DiskLocation>;
+	/**
+	 * A grant for host `to` to fetch a version of an object of `accountId`'s from the hosts `from`, whose holders the
+	 * host registry knows rather than the catalogue: a move's export (kind `sandbox`), and its memory (`sandbox-memory`).
+	 * `not_supported` with no grant key.
+	 */
+	grantFetch(grant: {
+		readonly kind: "sandbox" | "sandbox-memory";
+		readonly objectId: string;
+		readonly version: string;
+		readonly accountId: string;
+		readonly from: readonly string[];
+		readonly to: string;
+	}): Promise<string>;
+	/**
+	 * The control plane's grant key's public key (base64url), for hosts' welcomes, made on first use; undefined with no
+	 * secrets key over a persistent store.
+	 */
+	grantPublicKey(): Promise<string | undefined>;
+	/**
+	 * Every grant key hosts accept grants from now, for their welcomes (`HostWelcome.grantKeys`): the one that signs first,
+	 * then one a rotation published (with when it signs), then those rotated out, each until it stops being accepted.
+	 * Undefined as for `grantPublicKey`.
+	 */
+	grantKeys(): Promise<readonly GrantKeyView[] | undefined>;
+	/**
 	 * A host connected to this gateway, or its connection here ended: each of its sandboxes that isn't deleted is
 	 * published to the live feed as it is (its state unchanged), so an open console reads it again and shows whether it can
 	 * be reached (`hostReachable`). Nothing is written.
 	 */
 	reportHostConnection(hostId: string, connected: boolean): Promise<void>;
+	/**
+	 * Whether a pool has sync on (`Pool.sync`): its hosts that run the mesh peer with each other. False for a pool that
+	 * has gone.
+	 */
+	poolSync(poolId: string): Promise<boolean>;
+	/** A pool's placement settings (`Pool.vcpusPerCpu`, `Pool.placement`): undefined for a pool that has gone. */
+	poolPlacement(poolId: string): Promise<{ readonly vcpusPerCpu?: number; readonly balanced?: boolean } | undefined>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
@@ -633,6 +864,7 @@ function refuseInMount(sandbox: StoredSandbox, path: string): void {
 }
 
 const MOUNTS_OFF_HANDLERS: MountHandlers = {
+	refreshSandboxMounts: mountsOff,
 	createUploadUrl: mountsOff,
 	createDownloadUrl: mountsOff,
 	extractArchive: mountsOff,
@@ -696,6 +928,13 @@ export const MAX_OUTPUT_CHARS = 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 /** How long after its start a detached command its backend doesn't know is taken as lost, not as not yet started. */
 const LOST_COMMAND_MS = 60_000;
+/** How long after a boot let go of a sandbox's memory the sweep looks for its commands from before (`killDroppedOf`). */
+const DROPPED_SWEEP_MS = 60 * 60_000;
+/** How often a foreground call whose follow can't say asks for its command's end: from the first to the second. */
+const EXEC_FOLLOW_MIN_MS = 1_000;
+const EXEC_FOLLOW_MAX_MS = 30_000;
+/** The longest a command's failed call waits for its sandbox's stop to settle before its failure is recorded. */
+const STOP_SETTLE_MS = 120_000;
 /** The longest a stop or delete waits to bring in the ends of a sandbox's detached commands no gateway here follows. */
 const RECONCILE_MS = 5_000;
 /** How many of each base image's versions the admin list answers, newest first. */
@@ -722,6 +961,8 @@ const BASE_ROUTES = [
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** How often the sweep looks for automatic snapshots past their `expiresAt` to delete (`expireSnapshots`). */
 export const SNAPSHOT_EXPIRY_EVERY_MS = 10 * 60_000;
+/** How often the sweep counts every saved snapshot's copies, and asks for those missing (`keepEverySnapshotsCopies`). */
+export const SNAPSHOT_COPIES_EVERY_MS = 5 * 60_000;
 /**
  * How long after it starts a process first expires snapshots (`snapshotExpiry`): longer than any create or fork an older
  * version's process, replaced by this one, could still have had in flight.
@@ -903,6 +1144,7 @@ export const MAX_ENVIRONMENT_FILES = 20;
 export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
 /** How long a repository's clone may take when a sandbox starts. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
+
 /** How many times a boot sends egress changed while it started (or tries again), before it is stopped instead. */
 const BOOT_RECONCILE_ROUNDS = 5;
 /**
@@ -927,6 +1169,51 @@ export const IDEMPOTENCY_RENEW_MS = 20_000;
  * nothing they can do about it, so no operator advice. The gateways log that (`secretsKeyMissing`), and the caller says
  * it up front (`Caller.protectedValues`).
  */
+/** What sticky disks' routes answer while they are off. */
+const STICKY_DISKS_OFF =
+	"Sticky disks are off here; the deployment turns them on with KANTEL_STICKY_DISKS=experimental";
+/** How long a deleted sticky disk's tombstone is kept, its versions deleted from hosts that come back meanwhile. */
+const STICKY_TOMBSTONE_MS = 30 * 24 * 3_600_000;
+/**
+ * How often the sweep deletes tombstoned sticky disks' versions from hosts again, and forgets versions their hosts no
+ * longer hold.
+ */
+const STICKY_SWEEP_EVERY_MS = 10 * 60_000;
+/**
+ * How long before a host's report arrived a version must have been committed for the report to say whether the host
+ * holds it: the host measures its holdings a moment before it sends them, so a version committed meanwhile may be
+ * missing from them.
+ */
+const STICKY_REPORT_GRACE_MS = 2 * 60_000;
+/** How many of a disk's versions a get answers. */
+const STICKY_VERSIONS_LISTED = 20;
+/** How long the sweep leaves between the broker's passes when it has no word of when the next is due. */
+const IDLE_RUNNER_PASS_MS = 60_000;
+/** What GitHub runners' routes answer while they are off. */
+const GITHUB_RUNNERS_OFF =
+	"GitHub runners are off here; the deployment turns them on with KANTEL_GITHUB_RUNNERS=experimental";
+/** What an integration's own key may do: make, run commands in and delete its runners' sandboxes. */
+const GITHUB_RUNNER_SCOPES: readonly computeSchema.ApiKeyScope[] = [
+	"sandboxes:read",
+	"sandboxes:write",
+	"sandboxes:delete",
+	"exec",
+];
+/** What a broker key needs as well while one of its integration's pools commits sticky disks. */
+const GITHUB_RUNNER_COMMIT_SCOPE: computeSchema.ApiKeyScope = "snapshots:write";
+/** The most runner kinds an integration has, across its pools: as many as its `pools` take. */
+const MAX_RUNNER_KINDS = 20;
+/** Runner pools as the integration's `pools` take them: never with a pool, which those don't say. */
+const unpooled = (pools: readonly RunnerPool[]): RunnerPool[] => pools.map(({ poolId: _pool, ...pool }) => pool);
+/** Whether one of `pools` commits its runners' copies of its sticky disks. */
+const poolsCommit = (pools: readonly RunnerPool[]): boolean =>
+	pools.some((pool) => pool.stickyDisks?.some((sticky) => sticky.commit !== undefined) === true);
+/** The scopes a broker key needs for `pools`. */
+const githubRunnerScopes = (pools: readonly RunnerPool[]): computeSchema.ApiKeyScope[] => [
+	...GITHUB_RUNNER_SCOPES,
+	...(poolsCommit(pools) ? [GITHUB_RUNNER_COMMIT_SCOPE] : []),
+];
+
 export const PROTECTED_VALUES_UNSUPPORTED =
 	"This deployment doesn't support protected variables or secret files; plain variables still work";
 export const BUCKET_CREDENTIALS_UNSUPPORTED = "This deployment doesn't support bucket sources with credentials";
@@ -1227,16 +1514,62 @@ function goneAlready(error: unknown): boolean {
 	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "not_found";
 }
 
-/** The host a snapshot's ref names, `<hostId>/<id>` as a host backend's are; undefined for another backend's. */
+/**
+ * The host a snapshot's ref names, `<hostId>/<id>` as a host backend's are; undefined for one that names none (a saved
+ * snapshot's ID alone, or another backend's).
+ */
 function refHost(ref: string): string | undefined {
 	const slash = ref.indexOf("/");
 	return slash > 0 ? ref.slice(0, slash) : undefined;
 }
 
+/** A snapshot's ID on its hosts (a disk store object's, kind `snapshot`): a ref's second half, or one naming no host whole. */
+function refId(ref: string): string {
+	const slash = ref.indexOf("/");
+	return slash > 0 ? ref.slice(slash + 1) : ref;
+}
+
+/**
+ * A snapshot's ref naming its host, for a call to that host (its files, a keep, a fork or upgrade from it, its delete):
+ * its ref, or for one naming none, its copy on the host it was taken on (`StoredSnapshot.hostId`), `<hostId>/<ref>`.
+ */
+function hostRef(snapshot: Pick<StoredSnapshot, "ref" | "hostId">): string | undefined {
+	const { ref, hostId } = snapshot;
+	if (ref === undefined || hostId === undefined || refHost(ref) !== undefined) return ref;
+	return `${hostId}/${ref}`;
+}
+
+/** Whether a ref `hostId` reports its snapshots by is one of its own: `<hostId>/<id>`, or one naming no host. */
+const reportsOwn = (hostId: string, ref: string): boolean => ref.startsWith(`${hostId}/`) || refHost(ref) === undefined;
+
+/**
+ * Whether a record's bytes are those `hostId` took, which it reports by their ref: a ref naming that host, or one naming
+ * none whose record says it was taken there (a copy elsewhere is reported by the same ref).
+ */
+const takenHere = (hostId: string, snapshot: StoredSnapshot): snapshot is StoredSnapshot & { readonly ref: string } =>
+	snapshot.ref !== undefined &&
+	(refHost(snapshot.ref) === undefined ? snapshot.hostId === hostId : refHost(snapshot.ref) === hostId);
+
 /** A byte count for a message: in GiB to one decimal place, or MiB below 1 GiB. */
 function bytesText(bytes: number): string {
 	const gib = bytes / 2 ** 30;
 	return gib >= 1 ? `${gib.toFixed(1)} GiB` : `${Math.round(bytes / 2 ** 20)} MiB`;
+}
+
+/** What a snapshot was made on (`SnapshotMadeOn`), copied for another record: none where it says none. */
+function madeOnOf(made: SnapshotMadeOn): SnapshotMadeOn {
+	return {
+		...(made.cpu === undefined ? {} : { cpu: { ...made.cpu } }),
+		...(made.runtime === undefined ? {} : { runtime: made.runtime }),
+	};
+}
+
+/** A host's CPU and runtime fingerprints as its backend says them now, for its record: none where it says none. */
+function fingerprintsOf(host: BackendHost): Pick<StoredHost, "cpuFingerprint" | "runtimeFingerprints"> {
+	return {
+		...(host.cpuFingerprint === undefined ? {} : { cpuFingerprint: host.cpuFingerprint }),
+		...(host.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: [...host.runtimeFingerprints] }),
+	};
 }
 
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
@@ -1255,6 +1588,24 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
 	"error",
 	"deleting",
 ];
+/**
+ * Every state a sandbox list may show, each a stored record may hold but `deleted`: the list reads only these
+ * (`listSandboxes`). A record, so a new state can't be left out of it.
+ */
+const LISTED_STATES = Object.keys({
+	starting: true,
+	running: true,
+	stopping: true,
+	stopped: true,
+	paused: true,
+	moving: true,
+	error: true,
+	deleting: true,
+} satisfies Record<Exclude<computeSchema.SandboxState, "deleted">, true>) as readonly computeSchema.SandboxState[];
+/** The states a host's sandbox is in while it still counts as the host's (`sandboxRecordsOn`): every one but deleting. */
+const PLACED_STATES = LISTED_STATES.filter((state) => state !== "deleting");
+/** The states a sandbox counts against an account's concurrent sandboxes in (`requireCapacity`). */
+const ACTIVE_STATES: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping"];
 /** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
 const STRANDABLE: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping", "stopped", "paused"];
 /**
@@ -1264,9 +1615,15 @@ const STRANDABLE: readonly computeSchema.SandboxState[] = ["starting", "running"
 const ACCESS_TTL_MINUTES = 10;
 const DAY_MS = 24 * 3_600_000;
 
+/**
+ * An isolate's until its host says what its runtime has (the placement's capabilities): no `node` or `python` yet,
+ * which a host from before kantel-isolate never has.
+ */
 const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: false,
+	python: false,
 	ssh: false,
 	desktop: false,
 	browser: false,
@@ -1278,6 +1635,8 @@ const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: true,
+	python: true,
 	ssh: true,
 	desktop: true,
 	browser: true,
@@ -1287,12 +1646,38 @@ const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	pause: true,
 };
 
+/**
+ * A sandbox's capabilities with `javascript` and `python`, which a sandbox recorded before them lacks: a microVM has
+ * both, and an isolate placed before its host said has neither (its next placement says).
+ */
+function withLanguages(
+	type: SandboxType,
+	capabilities: computeSchema.SandboxCapabilities,
+): computeSchema.SandboxCapabilities {
+	if (typeof capabilities.javascript === "boolean" && typeof capabilities.python === "boolean") return capabilities;
+	const vm = type === "microvm";
+	return { ...capabilities, javascript: capabilities.javascript ?? vm, python: capabilities.python ?? vm };
+}
+
 const ADJECTIVES = ["brave", "calm", "eager", "fond", "gentle", "keen", "lucky", "merry", "quick", "quiet", "swift"];
 const ANIMALS = ["otter", "heron", "badger", "lynx", "marten", "puffin", "wren", "hare", "stoat", "newt", "plover"];
 const pick = (items: readonly string[]): string => items[Math.floor(Math.random() * items.length)] ?? "sandbox";
 const generatedName = () => `${pick(ADJECTIVES)}-${pick(ANIMALS)}`;
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** A host's `poolId` field, where it has one. */
+const pooled = (poolId: string | undefined) => (poolId === undefined ? {} : { poolId });
+
+/**
+ * The pools a sandbox may be placed in, before its labels choose among their hosts: of the account's own hosts, those in
+ * `own`, and of the shared hosts, those in `shared`; none of either where it is absent. `name`: the pool it named, which a
+ * refusal says.
+ */
+interface PoolChoice {
+	readonly own?: string;
+	readonly shared?: string;
+	readonly name?: string;
+}
 const notFound = (what: string) => new KantelError("not_found", `No such ${what}`);
 const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 const unique = <T>(items: readonly T[]): T[] => [...new Set(items)];
@@ -1762,6 +2147,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		...options.store,
 		sandboxes: watchSandboxes(options.store.sandboxes, (change) => live.publish(change), now),
 	};
+	/**
+	 * The sandboxes `where` names but deleted ones, in one read that names the states it wants, so the store never reads
+	 * the deleted ones: they are kept, and in a busy account (a GitHub runner pool's) outnumber the rest many times over.
+	 * Read whole and parsed, they are enough to run the stack object out of memory.
+	 */
+	const undeleted = (where: Partial<StoredSandbox>) => store.sandboxes.list(where, { state: LISTED_STATES });
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
@@ -1839,12 +2230,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	let claimsSweptAt = Number.NEGATIVE_INFINITY;
 	/** When `expireSnapshots` last began a pass. */
 	let snapshotsExpiredAt = Number.NEGATIVE_INFINITY;
+	/** When `keepEverySnapshotsCopies` last began a pass. */
+	let copiesKeptAt = Number.NEGATIVE_INFINITY;
 	/** When this process may first expire snapshots (`snapshotExpiryDelayMs` after it started). */
 	const expiryStartsAt = now() + (options.snapshotExpiryDelayMs ?? SNAPSHOT_EXPIRY_START_DELAY_MS);
 	/** This process, as the owner of the expiry marks it makes (`markExpiring`). */
 	const retireOwner = crypto.randomUUID();
 	/** Set by `close`: a claim sweep under way stops. */
 	let closing = false;
+	/** Aborted by `close`: a wait on a command's end here (`awaitedEnd`, `finish`'s retries) is let go. */
+	const closed = new AbortController();
+	/** Waits `ms`, or until `close`. */
+	const pauseUnlessClosed = (ms: number): Promise<void> =>
+		new Promise<void>((resolve) => {
+			if (closed.signal.aborted) return resolve();
+			const done = () => {
+				clearTimeout(timer);
+				closed.signal.removeEventListener("abort", done);
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			closed.signal.addEventListener("abort", done, { once: true });
+		});
 
 	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
 	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
@@ -1929,6 +2336,913 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await Promise.all(writes);
 	}
 
+	// GitHub Actions runners: the broker, acting through each integration's own key with the handlers below.
+	const runnerSettings = options.githubRunners;
+	/** What an internal call to a handler is given for its request: the broker's calls come from no request. */
+	const internalRequest = () => new Request("http://kantel.internal/github-runners");
+	const answered = <T>(value: T | Response): T => {
+		if (value instanceof Response)
+			throw new KantelError("unavailable", "A handler answered a raw response to the broker");
+		return value;
+	};
+	const githubRunners = createGithubRunners({
+		store,
+		now,
+		sealer: requireSealer,
+		principalOf: (keyId) => liveKeyPrincipal(store, keyId, now()),
+		// Ending runners outlives the key: revoking it stops new runners, not the deletion of those it made.
+		cleanupPrincipalOf: async (keyId) => {
+			const key = await store.apiKeys.get(keyId);
+			return key === undefined ? undefined : keyPrincipal(key);
+		},
+		github:
+			runnerSettings?.app ??
+			((credentials) =>
+				createGithubApp({
+					...credentials,
+					now,
+					...(runnerSettings?.fetch === undefined ? {} : { fetch: runnerSettings.fetch }),
+				})),
+		...(options.wakeAt === undefined ? {} : { wakeAt: options.wakeAt }),
+		...(runnerSettings?.log === undefined ? {} : { log: runnerSettings.log }),
+		// A webhook's pass runs after its answer, tracked, so `idle()` waits for it.
+		background: keepGoing,
+		place: (record) => placeRunnerKinds(record),
+		sandboxes: {
+			async create(principal, body) {
+				return answered(await handlers.createSandbox(principal, { params: {}, query: {}, body }, internalRequest()));
+			},
+			async get(principal, sandboxId) {
+				try {
+					return answered(
+						await handlers.getSandbox(
+							principal,
+							{ params: { sandboxId }, query: {}, body: undefined },
+							internalRequest(),
+						),
+					);
+				} catch (error) {
+					if (error instanceof KantelError && error.code === "not_found") return undefined;
+					throw error;
+				}
+			},
+			async delete(principal, sandboxId) {
+				answered(
+					await handlers.deleteSandbox(
+						principal,
+						{ params: { sandboxId }, query: {}, body: undefined },
+						internalRequest(),
+					),
+				);
+			},
+			async exec(principal, sandboxId, command, timeoutMs) {
+				// As root, as a pool's `beforeCommit` is documented to run (stopping Docker, say), whatever the image's default
+				// user: only this internal call can ask for that, never a caller's command.
+				const { sandbox } = await sandboxFor(principal, sandboxId, "exec");
+				const ran = await runCommandOnce(principal, sandbox.id, { command, timeoutMs }, { asRoot: true });
+				return ran.exitCode ?? 1;
+			},
+			async commit(principal, sandboxId, disk) {
+				answered(
+					await handlers.commitStickyDisk(
+						principal,
+						{ params: { sandboxId, stickyDiskId: disk }, query: {}, body: undefined },
+						internalRequest(),
+					),
+				);
+			},
+			async run(principal, sandboxId, command, env) {
+				const started = answered(
+					await handlers.runCommand(
+						principal,
+						{ params: { sandboxId }, query: {}, body: { command, env, detached: true } },
+						internalRequest(),
+					),
+				);
+				return started.id;
+			},
+			async commandRunning(principal, sandboxId, commandId) {
+				try {
+					const command = answered(
+						await handlers.getCommand(
+							principal,
+							{ params: { sandboxId, commandId }, query: {}, body: undefined },
+							internalRequest(),
+						),
+					);
+					return command.state === "running";
+				} catch (error) {
+					if (error instanceof KantelError && error.code === "not_found") return false;
+					return undefined;
+				}
+			},
+			async listMadeBy(accountId, keyId, labels) {
+				return (await undeleted({ accountId }))
+					.filter(
+						(sandbox) =>
+							sandbox.state !== "deleted" &&
+							sandbox.createdBy.kind === "api_key" &&
+							sandbox.createdBy.id === keyId &&
+							Object.entries(labels).every(([key, value]) => sandbox.labels?.[key] === value),
+					)
+					.map((sandbox) => ({ id: sandbox.id, createdAt: sandbox.createdAt }));
+			},
+		},
+	});
+	/** When the sweep next runs the broker's pass (`tickGithubRunners` moves it on). */
+	let runnersDueAt = 0;
+	const requireGithubRunners = (): void => {
+		if (runnerSettings === undefined) throw new KantelError("not_supported", GITHUB_RUNNERS_OFF);
+	};
+	/** The account's integration `id`, for a caller who may administer it; `not_found` for any other. */
+	async function githubRunnersFor(principal: Principal, id: string): Promise<StoredGithubRunners> {
+		requireGithubRunners();
+		const record = await store.githubRunners.get(id);
+		if (record === undefined || record.retiringAt !== undefined) {
+			throw new KantelError("not_found", "No such GitHub runner integration");
+		}
+		const { role } = await actingAccount(store, principal, record.accountId).catch(() => {
+			throw new KantelError("not_found", "No such GitHub runner integration");
+		});
+		requireScope(principal, "account:admin", role);
+		return record;
+	}
+	const githubWebhookUrl = async (request: Request, id: string) =>
+		`${(await publicUrlView(request)).publicUrl}${apiBasePath}/github-runners/${id}/webhook`;
+	/** Checks a pool list: labels unique, and each template one the account has. */
+	async function checkPools(accountId: string, pools: readonly RunnerPool[]): Promise<void> {
+		const labels = new Set<string>();
+		const capabilities = await backend.capabilities();
+		const presets = [...capabilities.sizes, ...capabilities.hosts.flatMap((host) => host.sizes ?? [])];
+		for (const pool of pools) {
+			if (labels.has(pool.label)) throw new KantelError("invalid", `Two pools have the label ${pool.label}`);
+			labels.add(pool.label);
+			// The constraints a create holds the shape to, its hosts' preset sizes included, so a pool that can never make a
+			// runner is refused now.
+			checkShape("microvm", pool.resources, presets);
+			checkDisk("microvm", pool.resources.diskGb);
+			await templates.templateIn(accountId, pool.template);
+			if ((pool.stickyDisks?.length ?? 0) > 0) {
+				requireSticky();
+				const attached = await stickyDisksFor(accountId, pool.stickyDisks ?? []);
+				// A kind's runners are made in its pool, and a sticky disk is attached only in its own.
+				const held = pool.poolId === undefined ? undefined : await poolOfStickyDisks(attached, await ensureHosts());
+				if (held !== undefined && held.poolId !== pool.poolId) {
+					throw new KantelError(
+						"invalid",
+						`The sticky disk ${held.disk} is in pool ${await poolName(held.poolId)}, not ${pool.label}'s pool ${await poolName(pool.poolId ?? "")}: a runner kind's sticky disks are in its pool`,
+					);
+				}
+			}
+		}
+	}
+	/** Forgets an account's GitHub runner records: its sandboxes and keys go with it. */
+	const forgetGithubRunners = (accountId: string): Promise<void> => githubRunners.forgetAccount(accountId);
+	/**
+	 * Gives an integration's broker key the scope its runners' sticky disk commits need, when it lacks it: only from a
+	 * caller who may grant that scope, and never to a revoked key, which stays as it is.
+	 */
+	async function grantRunnerCommits(principal: Principal, keyId: string): Promise<void> {
+		const key = await store.apiKeys.get(keyId);
+		if (key === undefined || key.revokedAt !== undefined || key.scopes.includes(GITHUB_RUNNER_COMMIT_SCOPE)) return;
+		requireGrantable(principal, [GITHUB_RUNNER_COMMIT_SCOPE]);
+		await store.apiKeys.update(keyId, (current) =>
+			current.revokedAt !== undefined || current.scopes.includes(GITHUB_RUNNER_COMMIT_SCOPE)
+				? undefined
+				: { ...current, scopes: [...current.scopes, GITHUB_RUNNER_COMMIT_SCOPE] },
+		);
+	}
+
+	/** What the broker logs: the deployment's runner log, else the process's. */
+	const runnerLog = (message: string): void => (runnerSettings?.log ?? console.log)(`[github-runners] ${message}`);
+	/**
+	 * The pool a runner kind with none goes in, and why. The pool its sticky disks are in, where its runners went before
+	 * kinds were in pools; else the one pool whose hosts its `hostLabels` select, of the hosts that could run its runners
+	 * (microVM hosts its integration's runners may use, the account's own first, as placement prefers them); else, with
+	 * no labels or labels that select hosts in several pools or none, the default pool its runners went to before: the
+	 * account's own default where one of its hosts there could run them, else the deployment's where it may use that.
+	 * Judged on the hosts as they are, not whether each is online now, so a host away for a moment doesn't move it. A
+	 * failed read rejects, so the kind is placed on a later try rather than from what couldn't be read.
+	 */
+	async function kindPool(
+		accountId: string,
+		/** Whether its runners may run on the deployment's shared hosts (`mayShare` of its integration's key). */
+		shared: boolean,
+		kind: RunnerPool,
+	): Promise<{ readonly poolId: string; readonly why: string }> {
+		const hosts = await ensureHosts();
+		if ((kind.stickyDisks?.length ?? 0) > 0) {
+			// A disk gone, or two in different pools, says nothing of a pool; any other failure is thrown.
+			const settled = (error: unknown) => {
+				if (error instanceof KantelError && (error.code === "not_found" || error.code === "invalid")) return undefined;
+				throw error;
+			};
+			const attached = await stickyDisksFor(accountId, kind.stickyDisks ?? []).catch(settled);
+			const held = attached === undefined ? undefined : await poolOfStickyDisks(attached, hosts).catch(settled);
+			if (held !== undefined) return { poolId: held.poolId, why: `its sticky disk ${held.disk} is there` };
+		}
+		const labels = Object.entries(kind.hostLabels ?? {});
+		const could = hosts.filter(
+			(host) =>
+				host.state !== "revoked" &&
+				host.tiers.includes("microvm") &&
+				(host.accountId === accountId || (shared && host.accountId === undefined)) &&
+				labels.every(([name, value]) => host.labels[name] === value),
+		);
+		const fallback = async (why: string) => {
+			const choice = await placementPool(accountId, undefined, hosts, shared);
+			const ran = (poolId: string | undefined) => poolId !== undefined && could.some((host) => host.poolId === poolId);
+			const poolId = ran(choice.own) ? choice.own : ran(choice.shared) ? choice.shared : (choice.own ?? choice.shared);
+			return { poolId: poolId ?? (await pools.defaultPool(accountId)).id, why };
+		};
+		if (labels.length === 0) return fallback("it has no host labels, so it went in the default pool");
+		const own = could.filter((host) => host.accountId === accountId);
+		const selected = unique((own.length > 0 ? own : could).flatMap((host) => host.poolId ?? []));
+		const [only] = selected;
+		if (selected.length === 1 && only !== undefined) return { poolId: only, why: "its host labels select hosts there" };
+		return fallback(
+			selected.length === 0
+				? "its host labels select no host, so it went in the default pool"
+				: "its host labels select hosts in several pools, so it went in the default pool",
+		);
+	}
+	/**
+	 * `kinds` each in a pool: one already in one stays there, one `current` has (by label) stays in that one's, and a new
+	 * one goes where `kindPool` says.
+	 */
+	async function placedKinds(
+		accountId: string,
+		shared: boolean,
+		kinds: readonly RunnerPool[],
+		current: readonly RunnerPool[],
+		/** The integration, by ID or name, for the log. */
+		integration: string,
+	): Promise<RunnerPool[]> {
+		const placed: RunnerPool[] = [];
+		for (const kind of kinds) {
+			const kept = kind.poolId ?? current.find((other) => other.label === kind.label)?.poolId;
+			if (kept !== undefined && (await store.pools.get(kept)) !== undefined) {
+				placed.push({ ...kind, poolId: kept });
+				continue;
+			}
+			const { poolId, why } = await kindPool(accountId, shared, kind);
+			runnerLog(`${integration}: runner kind ${kind.label} is in pool ${await poolName(poolId)}: ${why}`);
+			placed.push({ ...kind, poolId });
+		}
+		return placed;
+	}
+	/**
+	 * Puts an integration's kinds that have no pool (kept before kinds were in pools, or whose pool went) in one, once:
+	 * a kind given a pool meanwhile keeps it. Answers the record as it is then; one that couldn't be placed now is
+	 * answered as it was, and placed on a later read.
+	 */
+	async function placeRunnerKinds(record: StoredGithubRunners): Promise<StoredGithubRunners> {
+		const live = await Promise.all(
+			record.pools.map(async (kind) => kind.poolId !== undefined && (await store.pools.get(kind.poolId)) !== undefined),
+		);
+		if (live.every(Boolean)) return record;
+		try {
+			const lacking = record.pools.filter((_kind, at) => live[at] !== true).map(({ poolId: _pool, ...kind }) => kind);
+			const key = await store.apiKeys.get(record.keyId);
+			const shared = key === undefined || (await mayShare(keyPrincipal(key)));
+			const placed = await placedKinds(record.accountId, shared, lacking, [], record.id);
+			// Only a kind still as it was read: one placed or moved meanwhile keeps that.
+			const seen = new Map(record.pools.map((kind) => [kind.label, kind.poolId]));
+			const updated = await store.githubRunners.update(record.id, (current) => {
+				let changed = false;
+				const kinds = current.pools.map((kind) => {
+					const into = placed.find((other) => other.label === kind.label)?.poolId;
+					if (into === undefined || !seen.has(kind.label) || seen.get(kind.label) !== kind.poolId) return kind;
+					changed = true;
+					return { ...kind, poolId: into };
+				});
+				return changed ? { ...current, pools: kinds } : undefined;
+			});
+			return updated ?? (await store.githubRunners.get(record.id)) ?? record;
+		} catch (error) {
+			runnerLog(
+				`${record.id}: its runner kinds couldn't be put in pools yet: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return record;
+		}
+	}
+
+	/** GitHub runner kinds as the account pools' `runners` read and write them: kept with their integrations. */
+	const poolRunners: PoolRunners = {
+		async of(owner, list) {
+			const byPool = new Map<string, computeSchema.GithubRunnerKind[]>();
+			for (const found of await store.githubRunners.list({ accountId: owner })) {
+				if (found.retiringAt !== undefined) continue;
+				const record = await placeRunnerKinds(found);
+				for (const kind of record.pools) {
+					if (kind.poolId === undefined || !list.some((pool) => pool.id === kind.poolId)) continue;
+					byPool.set(kind.poolId, [...(byPool.get(kind.poolId) ?? []), kindView(record.id, kind)]);
+				}
+			}
+			return byPool;
+		},
+		async in(pool) {
+			const labels: string[] = [];
+			const integrations =
+				pool.owner === OPERATOR_POOLS
+					? await store.githubRunners.list()
+					: await store.githubRunners.list({ accountId: pool.owner });
+			for (const found of integrations) {
+				if (found.retiringAt !== undefined) continue;
+				const record = await placeRunnerKinds(found);
+				for (const kind of record.pools) if (kind.poolId === pool.id) labels.push(kind.label);
+			}
+			return labels;
+		},
+		async set(principal, pool, kinds) {
+			requireGithubRunners();
+			const accountId = pool.owner;
+			// The integrations the call names, each the account's, and those with kinds in the pool now, which it replaces.
+			const records = new Map<string, StoredGithubRunners>();
+			for (const id of unique(kinds.map((kind) => kind.integration))) {
+				const found = await store.githubRunners.get(id);
+				if (found === undefined || found.retiringAt !== undefined || found.accountId !== accountId) {
+					throw new KantelError("not_found", `No GitHub runner integration ${id} in the pool's account`);
+				}
+				records.set(id, await placeRunnerKinds(found));
+			}
+			for (const found of await store.githubRunners.list({ accountId })) {
+				if (found.retiringAt !== undefined || records.has(found.id)) continue;
+				const record = await placeRunnerKinds(found);
+				if (record.pools.some((kind) => kind.poolId === pool.id)) records.set(found.id, record);
+			}
+			/** Each integration's kinds in the pool from now: the call's, a label it has in another pool moving here. */
+			const mine = (id: string): RunnerPool[] =>
+				kinds
+					.filter((kind) => kind.integration === id)
+					.map(({ integration: _integration, ...kind }) => ({ ...kind, poolId: pool.id }));
+			const merged = (id: string, current: readonly RunnerPool[]): RunnerPool[] => {
+				const here = mine(id);
+				const labels = new Set(here.map((kind) => kind.label));
+				return [...current.filter((kind) => kind.poolId !== pool.id && !labels.has(kind.label)), ...here];
+			};
+			// Every integration's kinds checked as they would be, before any is written.
+			for (const [id, record] of records) {
+				const next = merged(id, record.pools);
+				if (next.length > MAX_RUNNER_KINDS) {
+					throw new KantelError("invalid", `${record.name} would have more than ${MAX_RUNNER_KINDS} runner kinds`);
+				}
+				await checkPools(accountId, next);
+				// Kinds that commit need the key to commit, given it first, as the integration's own update does.
+				if (poolsCommit(next)) await grantRunnerCommits(principal, record.keyId);
+			}
+			// Each integration's write merges into its kinds as they are then, held to the limit again. Each is atomic; a call
+			// changing several integrations writes them one after another.
+			for (const id of records.keys()) {
+				await store.githubRunners.update(id, (current) => {
+					if (current.retiringAt !== undefined) return undefined;
+					const next = merged(id, current.pools);
+					if (next.length > MAX_RUNNER_KINDS) {
+						throw new KantelError("invalid", `${current.name} would have more than ${MAX_RUNNER_KINDS} runner kinds`);
+					}
+					return { ...current, pools: next, updatedAt: now() };
+				});
+			}
+		},
+	};
+
+	// Sticky disks.
+	const requireSticky = (): void => {
+		if (options.stickyDisks !== true || backend.commitStickyDisk === undefined) {
+			throw new KantelError("not_supported", STICKY_DISKS_OFF);
+		}
+	};
+	/** The account's sticky disk by ID or name; `not_found` for any other. */
+	async function stickyDiskIn(accountId: string, ref: string): Promise<StoredStickyDisk> {
+		const byId = ref.startsWith("sdk_") ? await store.stickyDisks.get(ref) : undefined;
+		const named =
+			byId?.accountId === accountId ? undefined : await store.stickyDiskNames.get(stickyDiskNameId(accountId, ref));
+		const disk = byId?.accountId === accountId ? byId : named && (await store.stickyDisks.get(named.diskId));
+		if (disk === undefined || disk.deletedAt !== undefined) throw new KantelError("not_found", "No such sticky disk");
+		return disk;
+	}
+	/**
+	 * A create's sticky disks, checked: each the account's, once, at a path the guest takes for a mount (absolute, clean,
+	 * not its system's own: `MOUNT_SYSTEM_PATHS`), apart from the others and from the sandbox's read-only mounts.
+	 */
+	async function stickyDisksFor(
+		accountId: string,
+		inputs: readonly computeSchema.SandboxStickyDiskInput[],
+		mountPaths: readonly string[] = [],
+	): Promise<computeSchema.SandboxStickyDisk[]> {
+		const disks: computeSchema.SandboxStickyDisk[] = [];
+		const meets = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+		for (const input of inputs) {
+			const path = input.path.replace(/\/+$/, "") || "/";
+			const unclean = path.split("/").some((part, at) => at > 0 && (part === "" || part === "." || part === ".."));
+			if (
+				path === "/" ||
+				unclean ||
+				MOUNT_SYSTEM_PATHS.some((reserved) => path === reserved || path.startsWith(`${reserved}/`))
+			) {
+				throw new KantelError("invalid", `A sticky disk can't be mounted at ${input.path}`);
+			}
+			if (mountPaths.some((mount) => meets(mount, path))) {
+				throw new KantelError("invalid", `A sticky disk at ${path} would meet one of the sandbox's mounts`);
+			}
+			const disk = await stickyDiskIn(accountId, input.disk);
+			if (disks.some((other) => other.diskId === disk.id)) {
+				throw new KantelError("invalid", `${disk.name} is attached twice`);
+			}
+			if (disks.some((other) => meets(other.path, path))) {
+				throw new KantelError("invalid", `Two sticky disks can't be mounted at ${path} and inside each other`);
+			}
+			disks.push({ diskId: disk.id, name: disk.name, path, state: "pending" });
+		}
+		return disks;
+	}
+	/** What a create sends its backend for the sandbox's sticky disks: each one's size, read now. */
+	async function stickySpecOf(sandbox: StoredSandbox): Promise<{ stickyDisks?: BackendStickyDisk[] }> {
+		if (sandbox.stickyDisks === undefined || sandbox.stickyDisks.length === 0) return {};
+		const specs: BackendStickyDisk[] = [];
+		for (const attached of sandbox.stickyDisks) {
+			const disk = await store.stickyDisks.get(attached.diskId);
+			if (disk === undefined || disk.deletedAt !== undefined) {
+				throw new KantelError("not_found", `The sticky disk ${attached.name} was deleted`);
+			}
+			// Its head, which placement prefers a host holding (docs/design/disk-store.md, 2d).
+			specs.push({
+				diskId: disk.id,
+				path: attached.path,
+				sizeGiB: disk.sizeGb,
+				...(disk.head === undefined ? {} : { version: disk.head }),
+			});
+		}
+		return { stickyDisks: specs };
+	}
+	/**
+	 * A sandbox's sticky disks once its backend answered: what it reported for each, `failed` for one it didn't, and those
+	 * its host has that the record doesn't name.
+	 */
+	const stickyAfter = (
+		stored: readonly computeSchema.SandboxStickyDisk[],
+		reported: readonly BackendStickyDiskStatus[] | undefined,
+	): computeSchema.SandboxStickyDisk[] => [
+		...stored.map((disk) => {
+			const status = reported?.find((candidate) => candidate.diskId === disk.diskId);
+			if (status === undefined) {
+				return disk.state === "pending"
+					? { ...disk, state: "failed" as const, reason: "Its host didn't attach it" }
+					: disk;
+			}
+			const { version: _version, reason: _reason, ...rest } = disk;
+			return {
+				...rest,
+				...(status.version === undefined ? {} : { version: status.version }),
+				state: status.state,
+				...(status.reason === undefined ? {} : { reason: status.reason }),
+			};
+		}),
+		// Disks its host has that the record doesn't name: inherited from the snapshot it was made from. Named by ID until
+		// a commit or get reads the disk; a commit checks the disk is the sandbox's account's.
+		...(reported ?? [])
+			.filter((status) => !stored.some((disk) => disk.diskId === status.diskId))
+			.map((status) => ({
+				diskId: status.diskId,
+				name: status.diskId,
+				path: status.path,
+				...(status.version === undefined ? {} : { version: status.version }),
+				state: status.state,
+				...(status.reason === undefined ? {} : { reason: status.reason }),
+			})),
+	];
+	const stickyVersionView = (version: StoredStickyDiskVersion): computeSchema.StickyDiskVersion => ({
+		id: version.id,
+		...(version.parent === undefined ? {} : { parent: version.parent }),
+		hostId: version.hostId,
+		sandboxId: version.sandboxId,
+		sizeBytes: version.sizeBytes,
+		allocatedBytes: version.allocatedBytes,
+		createdAt: version.createdAt,
+	});
+	async function stickyDiskView(disk: StoredStickyDisk, withVersions: boolean): Promise<computeSchema.StickyDisk> {
+		const versions = withVersions
+			? (await store.stickyDiskVersions.list({ diskId: disk.id }))
+					.sort((a, b) => b.seq - a.seq)
+					.slice(0, STICKY_VERSIONS_LISTED)
+					.map(stickyVersionView)
+			: undefined;
+		return {
+			id: disk.id,
+			accountId: disk.accountId,
+			name: disk.name,
+			...(disk.description === undefined ? {} : { description: disk.description }),
+			sizeGb: disk.sizeGb,
+			...(disk.head === undefined ? {} : { head: disk.head }),
+			...(versions === undefined ? {} : { versions }),
+			...pooled(disk.poolId),
+			createdAt: disk.createdAt,
+			updatedAt: disk.updatedAt,
+		};
+	}
+	/** The sticky disk by ID or name in an account the caller may act in, with `scope`; `not_found` for any other. */
+	async function stickyDiskFor(
+		principal: Principal,
+		ref: string,
+		scope: computeSchema.ApiKeyScope,
+	): Promise<StoredStickyDisk> {
+		const found = ref.startsWith("sdk_") ? await store.stickyDisks.get(ref) : undefined;
+		const byId = found?.deletedAt === undefined ? found : undefined;
+		if (byId !== undefined) {
+			const { role } = await actingAccount(store, principal, byId.accountId).catch(() => {
+				throw new KantelError("not_found", "No such sticky disk");
+			});
+			requireScope(principal, scope, role);
+			return byId;
+		}
+		const { account, role } = await actingAccount(store, principal, undefined);
+		requireScope(principal, scope, role);
+		return stickyDiskIn(account.id, ref);
+	}
+	/**
+	 * Deletes a sticky disk: a tombstone, with its name's claim released, so it is gone to callers and to a commit from
+	 * now on and its name is free; then its catalogue versions, and its versions on the hosts there are now. The tombstone
+	 * is kept (`STICKY_TOMBSTONE_MS`) for the sweep to delete its versions from hosts again, so a host away now, or a
+	 * commit finishing meanwhile, leaves nothing behind.
+	 */
+	async function deleteStickyDiskNow(diskId: string): Promise<void> {
+		if ((await store.stickyDiskWrites.tombstone(diskId, now())) === undefined) return;
+		for (const version of await store.stickyDiskVersions.list({ diskId })) {
+			await store.stickyDiskVersions.delete(version.id);
+		}
+		await diskHolders.forget("sticky", diskId);
+		await backend.deleteStickyDisk?.(diskId).catch(() => undefined);
+	}
+	/**
+	 * Deletes an account's sticky disks, as a delete does: their sandboxes go with the account, and their tombstones
+	 * outlive it (the fence lets them be written in a closed account), so the sweep still deletes their versions from
+	 * hosts that were away. A disk made since is refused by the fence.
+	 */
+	async function forgetStickyDisks(accountId: string): Promise<void> {
+		for (const disk of await store.stickyDisks.list({ accountId })) await deleteStickyDiskNow(disk.id);
+	}
+
+	/** When the sweep last went over sticky disks. */
+	let stickySweptAt = Number.NEGATIVE_INFINITY;
+	/**
+	 * Deletes deleted sticky disks' versions from every connected host again (a host away at the delete, or a commit
+	 * that finished after it), and their catalogue versions a delete stopped before, and forgets tombstones past
+	 * `STICKY_TOMBSTONE_MS`. Tombstones of a deleted account's disks too: they outlive it. Then sweeps the holders of
+	 * every kind (`DiskHolders.sweep`), and forgets the versions of live disks their hosts no longer hold
+	 * (`forgetDroppedStickyVersions`). With sticky disks off and templates on, it sweeps the holders alone: templates'
+	 * root filesystems have holders too.
+	 */
+	async function sweepStickyDisks(): Promise<void> {
+		if (options.stickyDisks !== true && options.templates !== true) return;
+		const t = now();
+		if (t - stickySweptAt < STICKY_SWEEP_EVERY_MS) return;
+		stickySweptAt = t;
+		if (options.stickyDisks !== true) {
+			await diskHolders.sweep(t);
+			return;
+		}
+		const disks = await store.stickyDisks.list();
+		if (backend.deleteStickyDisk !== undefined) {
+			for (const disk of disks) {
+				if (disk.deletedAt === undefined) continue;
+				for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
+					await store.stickyDiskVersions.delete(version.id);
+				}
+				await diskHolders.forget("sticky", disk.id);
+				await backend.deleteStickyDisk(disk.id).catch(() => undefined);
+				if (t - disk.deletedAt > STICKY_TOMBSTONE_MS) await store.stickyDisks.delete(disk.id);
+			}
+		}
+		await diskHolders.sweep(t);
+		await forgetDroppedStickyVersions(disks);
+	}
+	/**
+	 * Forgets each version of a live disk that its host, connected and reporting what it holds, no longer holds (it
+	 * keeps only its newest few), so a disk lists the versions there are. Never the disk's head, which a later commit
+	 * replaces; never on the word of a host that doesn't say what it holds (absent isn't none); never a version
+	 * committed within `STICKY_REPORT_GRACE_MS` of the report, which may have been measured before it; and never a version
+	 * another host still holds (its holders, `StoredDiskHolder`), which the version's own host's report can't speak for.
+	 * Its holders go with it.
+	 *
+	 * A version without its block map's digest (its map took longer than its commit, or it was committed before maps)
+	 * gets the one its host reports.
+	 */
+	async function forgetDroppedStickyVersions(disks: readonly StoredStickyDisk[]): Promise<void> {
+		if (backend.stickyHoldings === undefined) return;
+		const live = disks.filter((disk) => disk.deletedAt === undefined);
+		if (live.length === 0) return;
+		const reports = new Map<
+			string,
+			{ readonly reportedAt: number; readonly held: ReadonlySet<string>; readonly digests: ReadonlyMap<string, string> }
+		>();
+		for (const report of await backend.stickyHoldings()) {
+			if (report.disks === undefined) continue;
+			const held = new Set(report.disks.flatMap((disk) => disk.versions.map((version) => `${disk.diskId}/${version}`)));
+			const digests = new Map(
+				report.disks.flatMap((disk) =>
+					Object.entries(disk.mapDigests ?? {}).map(
+						([version, digest]) => [`${disk.diskId}/${version}`, digest] as const,
+					),
+				),
+			);
+			reports.set(report.hostId, { reportedAt: report.reportedAt, held, digests });
+		}
+		if (reports.size === 0) return;
+		const hosts = new Map((await ensureHosts()).map((host) => [host.id, host]));
+		for (const disk of live) {
+			const holders = await diskHolders.holdersOf("sticky", disk.id);
+			for (const version of await store.stickyDiskVersions.list({ diskId: disk.id })) {
+				const report = reports.get(version.hostId);
+				const digest = report?.digests.get(`${disk.id}/${version.id}`);
+				if (version.mapDigest === undefined && digest !== undefined) {
+					const given = await store.stickyDiskVersions.update(version.id, (current) =>
+						current.mapDigest === undefined ? { ...current, mapDigest: digest } : undefined,
+					);
+					// A head committed before its map was made is sent to its disk's hosts now it can be fetched. Whether it is the
+					// head is read again there: one committed since this pass read the disk is too.
+					if (given !== undefined) keepGoing(prefetchStickyHead(disk.id, version.id));
+				}
+				if (version.id === disk.head || report === undefined) continue;
+				if (version.createdAt > report.reportedAt - STICKY_REPORT_GRACE_MS) continue;
+				if (report.held.has(`${disk.id}/${version.id}`)) continue;
+				// A copy elsewhere keeps it: one held, not one being fetched (which needs a copy held to finish) or deleted.
+				const elsewhere = (holder: StoredDiskHolder) =>
+					holder.hostId !== version.hostId && holder.state === "held" && hosts.get(holder.hostId)?.state !== "revoked";
+				if ((holders.get(version.id) ?? []).some(elsewhere)) continue;
+				// Checked again as it is forgotten: a host that records holding it meanwhile keeps it.
+				if (!(await store.stickyDiskWrites.forget(version.id, (latest) => latest.some(elsewhere)))) continue;
+				await diskHolders.forget("sticky", disk.id, version.id);
+			}
+		}
+	}
+
+	/**
+	 * Writes down that a sandbox with sticky disks started on its host (`StoredStickyDisk.ranOn`), so each new head is sent
+	 * there (`prefetchStickyHead`): only where the host's entry is older than `STICKY_RAN_EVERY_MS`, so most starts only
+	 * read, and entries past `STICKY_PREFETCH_MS` go as it writes (`stickyRunNoted`). Through `StickyDiskWrites`, which
+	 * the account fence leaves alone, so a note landing as the account closes never removes the disk or its tombstone.
+	 */
+	async function noteStickyRuns(sandbox: StoredSandbox): Promise<void> {
+		const hostId = sandbox.hostId;
+		if (options.stickyDisks !== true || hostId === undefined) return;
+		for (const attached of sandbox.stickyDisks ?? [])
+			await store.stickyDiskWrites.noteRun(attached.diskId, hostId, now());
+	}
+
+	/**
+	 * Sends a sticky disk's head to the hosts in its pool that started a sandbox with it within `STICKY_PREFETCH_MS`
+	 * (`StoredStickyDisk.ranOn`), so the next sandbox there starts warm (docs/design/disk-store.md, 2d): `disk.fetch` with
+	 * its pool's holders and a grant, as `fetchHostStickyDisk` sends it. Only while the version is still the head, where
+	 * the disk's pool syncs, and once the head has its block map's digest, which the fetch checks against (a commit whose
+	 * map took longer is sent once the sweep has it). A host that holds or is fetching it, that is away or draining, or
+	 * that doesn't sync is left out, and nothing waits for the fetches, which progress in the hosts' reports.
+	 */
+	async function prefetchStickyHead(diskId: string, versionId: string): Promise<void> {
+		const fetchDisk = backend.fetchDisk;
+		if (fetchDisk === undefined) return;
+		const disk = await store.stickyDisks.get(diskId);
+		if (disk === undefined || disk.deletedAt !== undefined || disk.head !== versionId || disk.poolId === undefined)
+			return;
+		const since = now() - STICKY_PREFETCH_MS;
+		const recent = Object.entries(disk.ranOn ?? {})
+			.filter(([, at]) => at > since)
+			.map(([hostId]) => hostId);
+		if (recent.length === 0) return;
+		const [version, pool] = await Promise.all([store.stickyDiskVersions.get(versionId), store.pools.get(disk.poolId)]);
+		if (version?.mapDigest === undefined || pool?.sync !== true) return;
+		const hosts = new Map((await ensureHosts()).map((host) => [host.id, host]));
+		const holding = new Set(
+			((await diskHolders.holdersOf("sticky", diskId)).get(versionId) ?? [])
+				.filter((holder) => holder.state !== "deleting")
+				.map((holder) => holder.hostId),
+		);
+		const request = { kind: "sticky", objectId: diskId, version: versionId };
+		await Promise.all(
+			recent.map(async (hostId) => {
+				const host = hosts.get(hostId);
+				if (host?.state !== "online" || host.poolId !== disk.poolId || holding.has(hostId)) return;
+				// One host's refusal (it doesn't sync, it went away, nothing it can reach holds the head) is no other's.
+				try {
+					const location = await diskHolders.locate(hostId, request);
+					if (location.holders.length > 0) await fetchDisk(hostId, { ...request, ...location });
+				} catch {
+					// Its next sandbox starts on the version it has, and fetches the head then.
+				}
+			}),
+		);
+	}
+
+	/**
+	 * Has `hostId` fetch a saved snapshot's disk (`ref`) from the hosts in its pool that hold it, as its own `disk.locate`
+	 * would find them; its memory follows where it restores there. The host is recorded fetching it first, so a delete of
+	 * the snapshot meanwhile reaches it at once, as one before its first report of the copy does; kept when the call fails,
+	 * as the host may have started it anyway. A fast path only: whatever it misses, the host's report of a copy of a
+	 * snapshot the catalogue no longer has gets it deleted (`DiskHolders.recordHoldings`), and the host asks before it
+	 * publishes one. `conflict` when no other host there holds it.
+	 */
+	async function sendSnapshotFetch(hostId: string, ref: string): Promise<void> {
+		if (backend.fetchDisk === undefined) {
+			throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
+		}
+		const objectId = refId(ref);
+		const request = { kind: "snapshot", objectId, version: "disk" };
+		const location = await diskHolders.locate(hostId, request);
+		if (location.holders.length === 0) {
+			throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
+		}
+		await diskHolders.recordSnapshotFetch(objectId, "disk", hostId, ref);
+		await backend.fetchDisk(hostId, { ...request, ...location });
+	}
+
+	/**
+	 * Every host as saved snapshots' copies are counted and placed (`CopyHost`): its record's state, pool, owner and
+	 * fingerprints, and what the backend says of its features, connection and free disk; its mesh address only while its
+	 * pool syncs (`hostMeshAddress`).
+	 */
+	async function copyHosts(): Promise<Map<string, CopyHost>> {
+		const [records, capabilities] = await Promise.all([ensureHosts(), backend.capabilities()]);
+		const reported = new Map(capabilities.hosts.map((host) => [host.id, host]));
+		const hosts = new Map<string, CopyHost>();
+		for (const record of records) {
+			const host = reported.get(record.id);
+			const meshAddress = hostMeshAddress.get(record.id);
+			hosts.set(record.id, {
+				id: record.id,
+				state: record.state,
+				...(record.poolId === undefined ? {} : { poolId: record.poolId }),
+				...(record.accountId === undefined ? {} : { accountId: record.accountId }),
+				...(record.arch === undefined ? {} : { arch: record.arch }),
+				...(record.lastSeenAt === undefined ? {} : { lastSeenAt: record.lastSeenAt }),
+				...(record.cpuFingerprint === undefined ? {} : { cpuFingerprint: record.cpuFingerprint }),
+				...(record.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: record.runtimeFingerprints }),
+				...(record.savedSnapshotBytesLimit === undefined
+					? {}
+					: { savedSnapshotBytesLimit: record.savedSnapshotBytesLimit }),
+				...(meshAddress === undefined ? {} : { meshAddress }),
+				// One the backend no longer has isn't connected, whatever its record says.
+				connected: host !== undefined && host.connected !== false,
+				...(host?.features === undefined ? {} : { features: host.features }),
+				...(host?.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
+			});
+		}
+		return hosts;
+	}
+
+	/**
+	 * Keeps a saved snapshot on `SNAPSHOT_COPIES` hosts of its pool (`snapshot-copies.ts`): where it has fewer, the host
+	 * `copyTarget` picks is told to fetch it (`sendSnapshotFetch`). Only a saved snapshot named by its ID alone (an older
+	 * ref's host-local ID may name another snapshot on the host that would fetch it), where snapshots are synced, in an
+	 * account with `snapshotCopies` on. One ask for each snapshot every `COPY_RETRY_MS`, of every gateway, unless the last
+	 * was answered (its host holds the copy): written over its record as it was read (`StoredSnapshot.copying`), which the
+	 * next pick passes that host over by while it hasn't it.
+	 * `read` is a pass's one read of what it needs for every snapshot; absent, it is read for this one.
+	 */
+	async function keepSnapshotCopies(
+		snapshot: StoredSnapshot,
+		read?: {
+			readonly hosts: ReadonlyMap<string, CopyHost>;
+			readonly holders: Map<string, StoredDiskHolder[]>;
+			readonly accounts: Map<string, Promise<StoredAccount | undefined>>;
+			readonly saved: readonly StoredSnapshot[];
+		},
+	): Promise<void> {
+		const { ref } = snapshot;
+		if (backend.fetchDisk === undefined || !diskHolders.syncsSnapshots) return;
+		if (snapshot.kind !== "saved" || snapshot.state !== "ready" || ref === undefined || refHost(ref) !== undefined)
+			return;
+		let account = read?.accounts.get(snapshot.accountId);
+		if (account === undefined) {
+			account = store.accounts.get(snapshot.accountId);
+			read?.accounts.set(snapshot.accountId, account);
+		}
+		const owner = await account;
+		if (owner === undefined || owner.closedAt !== undefined || owner.snapshotCopies === false) return;
+		const holders = (
+			read === undefined
+				? ((await diskHolders.holdersOf("snapshot", ref)).get("disk") ?? [])
+				: (read.holders.get(ref) ?? [])
+		).filter((holder) => holder.ref === ref && holder.version === "disk");
+		// Nothing to copy from until its host has reported it.
+		if (!holders.some((holder) => holder.state === "held")) return;
+		const hosts = read?.hosts ?? (await copyHosts());
+		const taken = await hostOfSnapshot(snapshot);
+		const poolId = snapshot.poolId ?? (taken === undefined ? undefined : hosts.get(taken)?.poolId);
+		if (poolId === undefined) return;
+		const at = now();
+		if (keepingCopies(holders, hosts, poolId, at).length >= SNAPSHOT_COPIES) return;
+		const target = copyTarget(snapshot, holders, await withAllowances(snapshot, hosts, read), poolId, at);
+		if (target === undefined) return;
+		// An ask the host it named has answered (it holds the copy) holds back no other.
+		const held = new Set(holders.filter((holder) => holder.state === "held").map((holder) => holder.hostId));
+		const claimed = await store.snapshots.update(snapshot.id, (latest) =>
+			latest.state !== "ready" ||
+			(latest.copying !== undefined && latest.copying.at > at - COPY_RETRY_MS && !held.has(latest.copying.hostId))
+				? undefined
+				: { ...latest, copying: { hostId: target, at } },
+		);
+		if (claimed === undefined) return;
+		// Counted as fetching it for the rest of the pass, so a host's allowance isn't spent twice.
+		read?.holders.set(ref, [
+			...(read.holders.get(ref) ?? []),
+			{
+				id: diskHolderId("snapshot", refId(ref), "disk", target),
+				kind: "snapshot",
+				objectId: refId(ref),
+				version: "disk",
+				hostId: target,
+				state: "fetching",
+				since: at,
+				ref,
+			},
+		]);
+		// One that fails is asked of another host on a later pass: this one is passed over meanwhile.
+		await sendSnapshotFetch(target, ref).catch(() => undefined);
+	}
+
+	/**
+	 * `hosts` with what `snapshot`'s account may still keep in saved snapshots on each that limits it
+	 * (`CopyHost.savedBytesLeft`): its limit less the full size of each of the account's saved snapshots there, by ref,
+	 * once each, whether the host saved it or holds or is fetching a copy (`savedBytesOver` counts its own saves alone,
+	 * so a copy never keeps an account from saving), all but `snapshot` itself, which `copyTarget` adds. A host without a
+	 * limit is as it was.
+	 */
+	async function withAllowances(
+		snapshot: StoredSnapshot,
+		hosts: ReadonlyMap<string, CopyHost>,
+		read?: {
+			readonly holders: ReadonlyMap<string, readonly StoredDiskHolder[]>;
+			readonly saved: readonly StoredSnapshot[];
+		},
+	): Promise<ReadonlyMap<string, CopyHost>> {
+		const limited = [...hosts.values()].filter((host) => host.savedSnapshotBytesLimit !== undefined);
+		if (limited.length === 0) return hosts;
+		const saved = (
+			read?.saved ?? (await store.snapshots.list({ accountId: snapshot.accountId, kind: "saved" }))
+		).filter(
+			(record) => record.accountId === snapshot.accountId && record.state !== "deleting" && record.ref !== undefined,
+		);
+		const used = new Map<string, Map<string, number>>();
+		for (const record of saved) {
+			const ref = record.ref ?? "";
+			// This one's own charge, where a host holds or is fetching it already, is the copy's: asked again (a fetch that
+			// ran too long), it costs nothing more there.
+			if (ref === snapshot.ref) continue;
+			const copies =
+				read?.holders.get(ref) ??
+				((await diskHolders.holdersOf("snapshot", refId(ref))).get("disk") ?? []).filter(
+					(holder) => holder.ref === ref,
+				);
+			const on = new Set(copies.filter((holder) => holder.state !== "deleting").map((holder) => holder.hostId));
+			const taken = await hostOfSnapshot(record);
+			if (taken !== undefined) on.add(taken);
+			for (const hostId of on) {
+				const refs = used.get(hostId) ?? new Map<string, number>();
+				refs.set(ref, Math.max(refs.get(ref) ?? 0, fullSize(record)));
+				used.set(hostId, refs);
+			}
+		}
+		const out = new Map(hosts);
+		for (const host of limited) {
+			let total = 0;
+			for (const size of used.get(host.id)?.values() ?? []) total += size;
+			out.set(host.id, { ...host, savedBytesLeft: (host.savedSnapshotBytesLimit ?? 0) - total });
+		}
+		return out;
+	}
+
+	/** Keeps the copies of each saved snapshot with `ref` (`keepSnapshotCopies`): a host holds its disk now. */
+	async function keepCopiesOf(ref: string): Promise<void> {
+		for (const snapshot of await store.snapshots.list({ ref })) await keepSnapshotCopies(snapshot);
+	}
+
+	/**
+	 * Keeps every saved snapshot's copies (`keepSnapshotCopies`), each in turn, over one read of the hosts, the holders of
+	 * saved snapshots' disks and the accounts: run by the sweep every `SNAPSHOT_COPIES_EVERY_MS`, and on a host's
+	 * revocation, so a copy lost with a host revoked or away is made again from the one left.
+	 */
+	async function keepEverySnapshotsCopies(): Promise<void> {
+		if (backend.fetchDisk === undefined || !diskHolders.syncsSnapshots) return;
+		const saved = (await store.snapshots.list({ kind: "saved", state: "ready" })).filter(
+			(snapshot) => snapshot.ref !== undefined && refHost(snapshot.ref) === undefined,
+		);
+		if (saved.length === 0) return;
+		const holders = new Map<string, StoredDiskHolder[]>();
+		for (const holder of await store.diskHolders.list()) {
+			if (holder.kind !== "snapshot" || holder.version !== "disk" || holder.ref === undefined) continue;
+			holders.set(holder.ref, [...(holders.get(holder.ref) ?? []), holder]);
+		}
+		const read = {
+			hosts: await copyHosts(),
+			holders,
+			accounts: new Map<string, Promise<StoredAccount | undefined>>(),
+			saved: await store.snapshots.list({ kind: "saved" }),
+		};
+		for (const snapshot of saved) {
+			if (closing) return;
+			await keepSnapshotCopies(snapshot, read).catch(() => undefined);
+		}
+	}
+
 	// Templates: their routes, their snapshot cache's builds (tracked, so `idle()` waits for them) and a create's start.
 	const templates = createTemplateService({
 		store,
@@ -1938,18 +3252,57 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		keepGoing,
 		buildHosts: async (accountId, userId) => {
 			const shared = options.sharedHosts === undefined || (await options.sharedHosts(userId));
+			const known = await ensureHosts();
 			try {
-				return requireHosts(await ensureHosts(), accountId, "microvm", {}, false, shared);
+				return requireHosts(known, accountId, "microvm", {}, false, shared).map((id) => ({
+					id,
+					...pooled(known.find((host) => host.id === id)?.poolId),
+				}));
 			} catch {
 				return [];
 			}
 		},
-		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants })).egress,
+		// In its pool's mesh, with the pool's sync on, as the latest read of the hosts says.
+		takesCopies: (hostId) => hostMeshAddress.has(hostId),
+		buildEgress: async (accountId, grants) => (await egressFor(accountId, { grants, env: {} })).egress,
 		normaliseGrants,
 		checkVariableName,
 		checkResources: (resources) => checkShape("microvm", resources),
 		actorOf: (principal) => actorOf(principal),
 		once: (principal, operation, input, work) => once(principal, operation, input, work),
+	});
+
+	// Pools: an account's hosts, or the shared ones, in sets (`pools.ts`).
+	const pools = createPoolService({
+		store,
+		now,
+		hosts: () => ensureHosts(),
+		syncChanged: async (poolId, sync) => {
+			await backend.updatePool?.(poolId, { sync });
+		},
+		requireAccountHosts: () => requireAccountHosts(),
+		once: (principal, operation, input, work) => once(principal, operation, input, work),
+		...(runnerSettings === undefined ? {} : { runners: poolRunners }),
+	});
+
+	// Which hosts hold which disk versions, and grants to fetch them from each other (`disk-holders.ts`).
+	const diskHolders = createDiskHolders({
+		store,
+		now,
+		stickyDisks: options.stickyDisks === true,
+		templates: options.templates === true,
+		sealer,
+		hosts: () => ensureHosts(),
+		meshAddress: (hostId) => hostMeshAddress.get(hostId),
+		reportGraceMs: STICKY_REPORT_GRACE_MS,
+		// Connected hosts are told at once; the hosts service's check on their heartbeats makes good a telling missed.
+		keysChanged: () => {
+			if (backend.grantKeysChanged !== undefined) keepGoing(backend.grantKeysChanged());
+		},
+		// A copy of a saved snapshot the catalogue no longer has, whatever became of its record: deleted from its host.
+		deleteSnapshotCopy: (hostId, objectId) => backend.deleteSnapshot(`${hostId}/${objectId}`),
+		// A save its host has mapped, or a copy one has fetched: its copies are counted now, so a second is asked for at once.
+		snapshotHeld: (ref) => keepGoing(keepCopiesOf(ref)),
 	});
 
 	/** Runs `work` after every operation already queued on the sandboxes, and answers its promise. */
@@ -1977,23 +3330,80 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	// hosts (or the caller's read of them), and one is written only when it changed: a host's `lastSeenAt` alone moves
 	// on every heartbeat, so it is written once it is `HOST_SEEN_PRECISION_MS` stale, and the answer has it fresh.
 	let hostsReady: Promise<StoredHost[]> | undefined;
+	// The pools as the latest read of the hosts read them, beside the hosts (`placementPool`'s, saving a read a create).
+	let poolsRead: readonly StoredPool[] = [];
 	// Each host's memory as the backend last said, answered with it (`hostView`) but never stored: it moves on every
 	// heartbeat.
 	const hostMemory = new Map<string, computeSchema.HostMemory>();
+	// Each host's mesh address as the backend last said, for `disk.locate`'s answers; not stored either.
+	const hostMeshAddress = new Map<string, string>();
+	// Each host's mesh health as the backend last said, kept as its memory is: it moves on every heartbeat too.
+	const hostMesh = new Map<string, computeSchema.HostMesh>();
 	const ensureHosts = (read?: Promise<BackendCapabilities>): Promise<StoredHost[]> => {
 		hostsReady ??= (async () => {
-			const [capabilities, records] = await Promise.all([read ?? backend.capabilities(), store.hosts.list()]);
+			const [capabilities, records, allPools] = await Promise.all([
+				read ?? backend.capabilities(),
+				store.hosts.list(),
+				store.pools.list(),
+			]);
 			const byId = new Map(records.map((record) => [record.id, record]));
 			const writes: Promise<void>[] = [];
 			hostMemory.clear();
+			poolsRead = allPools;
+			hostMeshAddress.clear();
+			// Mesh addresses are up only in pools with sync on: a host in another is no holder to fetch from (taken below).
+			const syncing = new Set(allPools.filter((pool) => pool.sync === true).map((pool) => pool.id));
+			hostMesh.clear();
+			// Each owner's pools, read in the one statement above; an owner with none gets its default made.
+			const ownerPools = new Map<string, Promise<StoredPool[]>>();
+			const grouped = new Map<string, StoredPool[]>();
+			for (const pool of allPools) grouped.set(pool.owner, [...(grouped.get(pool.owner) ?? []), pool]);
+			for (const [owner, owned] of grouped) ownerPools.set(owner, Promise.resolve(owned));
+			/**
+			 * The pool a host is in: `wanted` where it is one of the owner's pools, else the owner's default. So a host is in
+			 * a pool that exists whatever raced: one from before pools, one joined with a token whose pool was deleted
+			 * meanwhile, and one in a pool deleted as it was moved or joined there all go to the default. None where the
+			 * owner's pools can't be made (an account closing, whose hosts are being revoked).
+			 */
+			const poolFor = async (owner: string, wanted: string | undefined): Promise<string | undefined> => {
+				let read = ownerPools.get(owner);
+				if (read === undefined) {
+					// An account gone or closing gets none made: its hosts are being revoked.
+					read = (async () => {
+						if (owner !== OPERATOR_POOLS) {
+							const account = await store.accounts.get(owner);
+							if (account === undefined || account.closedAt !== undefined) return [];
+						}
+						return pools.poolsOf(owner).catch(() => []);
+					})();
+					ownerPools.set(owner, read);
+				}
+				const known = await read;
+				if (wanted === undefined) return defaultPoolOf(known)?.id;
+				if (known.some((pool) => pool.id === wanted)) return wanted;
+				// Not in the pools read: made since (a move into it read after them) unless it has gone.
+				const since = await store.pools.get(wanted);
+				if (since !== undefined && since.owner === owner) return wanted;
+				return defaultPoolOf(known)?.id ?? wanted;
+			};
 			for (const host of capabilities.hosts) {
 				if (host.memory !== undefined) hostMemory.set(host.id, host.memory);
+				if (host.mesh !== undefined) hostMesh.set(host.id, host.mesh);
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
 				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
 				// (looked up once, when the host is first seen). Once private, never shared again.
-				const accountId =
-					known?.accountId ?? host.accountId ?? (known === undefined ? await enrolledInto(host.id) : undefined);
+				const enrolment =
+					known === undefined && (host.accountId === undefined || host.poolId === undefined)
+						? await enrolmentOf(host.id)
+						: undefined;
+				const accountId = known?.accountId ?? host.accountId ?? enrolment?.accountId;
+				// Its pool: the one it is in; else, first seen, the one its join token named; else (one from before pools, or
+				// a pool that has gone) its owner's default (`poolFor`). A revoked host's is left.
+				const poolId =
+					known?.state === "revoked"
+						? known.poolId
+						: await poolFor(accountId ?? OPERATOR_POOLS, known?.poolId ?? host.poolId ?? enrolment?.poolId);
 				// Applied to the record as it is when written, not only as read above: a revocation or drain that lands
 				// meanwhile (another request, another gateway) is kept.
 				const refresh = (current: StoredHost): StoredHost => {
@@ -2006,6 +3416,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						updateAvailable: _available,
 						updating,
 						diskUsage: keptDisk,
+						cpuFingerprint: _cpu,
+						runtimeFingerprints: _runtimes,
 						...rest
 					} = current;
 					const pending =
@@ -2015,6 +3427,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					return {
 						...rest,
 						...(owner === undefined ? {} : { accountId: owner }),
+						// A move written meanwhile (another gateway) stands.
+						...pooled(current.poolId === known?.poolId ? poolId : current.poolId),
 						state: held ? current.state : reachable ? "online" : "unreachable",
 						...hostVersions(host),
 						...(pending ? { updating } : {}),
@@ -2024,6 +3438,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						tiers: [...host.tiers],
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
+						...fingerprintsOf(host),
 						capacity: { ...host.capacity },
 						// What its disk holds: the latest measure it sent, else the one kept.
 						...(host.diskUsage === undefined
@@ -2054,11 +3469,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					tiers: [...host.tiers],
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
+					...fingerprintsOf(host),
 					capacity: { ...host.capacity },
 					...(host.diskUsage === undefined ? {} : { diskUsage: { ...host.diskUsage } }),
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
 					labels: { ...host.labels },
 					...(accountId === undefined ? {} : { accountId }),
+					...(poolId === undefined ? {} : { poolId }),
 					joinedAt: now(),
 					lastSeenAt: now(),
 				};
@@ -2074,8 +3491,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// so placement passes it over, its record (owner, revocation, sandboxes) kept for when the backend has it again.
 			const advertised = new Set(capabilities.hosts.map((host) => host.id));
 			for (const record of records) {
+				// One that isn't here now goes into a pool that exists too.
+				const poolId =
+					advertised.has(record.id) || record.state === "revoked"
+						? record.poolId
+						: await poolFor(poolOwnerOf(record), record.poolId);
+				if (poolId !== undefined && poolId !== record.poolId) {
+					byId.set(record.id, { ...(byId.get(record.id) ?? record), poolId });
+					writes.push(
+						store.hosts
+							.update(record.id, (current) => (current.poolId === record.poolId ? { ...current, poolId } : undefined))
+							.then(() => undefined),
+					);
+				}
 				if (advertised.has(record.id) || record.state !== "online") continue;
-				byId.set(record.id, { ...record, state: "unreachable" });
+				byId.set(record.id, { ...(byId.get(record.id) ?? record), state: "unreachable" });
 				writes.push(
 					store.hosts
 						.update(record.id, (current) =>
@@ -2085,17 +3515,115 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 			}
 			await Promise.all(writes);
-			return [...byId.values()];
+			const answer = [...byId.values()];
+			for (const host of capabilities.hosts) {
+				const record = byId.get(host.id);
+				if (record === undefined || record.state === "revoked") continue;
+				// Its mesh address, given in the registry's pool: only while that is the pool here too (a move the registry
+				// hasn't taken yet has an address in the pool it left) and it has sync on.
+				if (host.meshAddress !== undefined && host.poolId === record.poolId && syncing.has(record.poolId ?? "")) {
+					hostMeshAddress.set(host.id, host.meshAddress);
+				}
+				// The registry keeps each host's pool too, for what runs on the hosts (the mesh): told where it differs.
+				if (record.poolId !== undefined && host.poolId !== record.poolId) {
+					tellPool(record.id, record.poolId, host.poolId !== undefined);
+				}
+			}
+			return answer;
 		})().finally(() => {
 			hostsReady = undefined;
 		});
 		return hostsReady;
 	};
 
-	/** The account the enrolment a host spent joined it to, if it was an enrolment. */
-	async function enrolledInto(hostId: string): Promise<string | undefined> {
+	/** The join token a host spent, where this store minted it: the account and pool it joined the host to. */
+	async function enrolmentOf(hostId: string): Promise<StoredJoinToken | undefined> {
 		const [token] = await store.joinTokens.list({ hostId });
-		return token?.accountId;
+		return token;
+	}
+
+	// The hosts whose registry is being told their pool (`tellPool`), and the pool told to each that keeps none.
+	const telling = new Set<string>();
+	const toldUnkept = new Map<string, string>();
+
+	/**
+	 * Tells the backend's registry the pool a host is in, in the background, one call at a time per host. A registry that
+	 * keeps a pool (`kept`) and has another is told whenever it is read so, from any gateway, so it is put right after a
+	 * move whose call to it failed; one that keeps none (a routed backend's other side) is told once per pool from this
+	 * gateway, not on every read.
+	 */
+	function tellPool(hostId: string, poolId: string, kept: boolean): void {
+		const updateHost = backend.updateHost?.bind(backend);
+		if (updateHost === undefined || telling.has(hostId) || (!kept && toldUnkept.get(hostId) === poolId)) return;
+		telling.add(hostId);
+		keepGoing(
+			updateHost(hostId, { poolId })
+				.then(() => {
+					if (!kept) toldUnkept.set(hostId, poolId);
+				})
+				.finally(() => telling.delete(hostId)),
+		);
+	}
+
+	/**
+	 * Whether a host holds a sandbox. Its backend's scheduler says first where it can (`hostHolds`: a placement, one
+	 * being made included, which a drained host takes no more of). Then the records here: a create, fork or upgrade that
+	 * doesn't name the host yet (starting, or `error` from a call never answered, which the host may still have made),
+	 * found by where its backend placed it, as `strandOn` finds them; and one whose record names the host, in any state
+	 * but `deleted`. Read in that order, so one that comes to name it between the reads is found by the last.
+	 */
+	async function holdsSandboxes(hostId: string): Promise<boolean> {
+		if ((await backend.hostHolds?.(hostId)) === true) return true;
+		if (backend.placedOn !== undefined) {
+			const unnamed = (
+				await Promise.all([store.sandboxes.list({ state: "starting" }), store.sandboxes.list({ state: "error" })])
+			)
+				.flat()
+				.filter((sandbox) => sandbox.hostId === undefined);
+			for (const sandbox of unnamed) {
+				if ((await backend.placedOn(sandbox.id)) === hostId) return true;
+			}
+		}
+		const named = await store.sandboxes.list({ hostId });
+		return named.some((sandbox) => NOT_DELETED.includes(sandbox.state));
+	}
+
+	/**
+	 * Moves a drained host with no sandboxes to another of its owner's pools: one conditional write, made only while the
+	 * host is still draining and in the pool it was read in, so a host undrained or moved meanwhile isn't moved. A draining
+	 * host takes no new sandbox (here or in the registry, whose scheduler refuses one too), so none can land after the
+	 * check. Then the registry is told, which a later read tells again should that fail (`tellPool`). It stays draining:
+	 * whoever moved it undrains it.
+	 */
+	async function moveHost(host: StoredHost, into: StoredPool): Promise<StoredHost> {
+		if (into.id === host.poolId) return host;
+		if (host.state !== "draining") {
+			throw new KantelError(
+				"conflict",
+				"Drain the host before moving it to another pool, and move it once it has no sandboxes",
+			);
+		}
+		if (await holdsSandboxes(host.id)) {
+			throw new KantelError("conflict", "The host still has sandboxes: move it once they are deleted");
+		}
+		const from = host.poolId;
+		const drain = host.drainEpoch;
+		let refused: string | undefined;
+		const moved = await store.hosts.update(host.id, (current) => {
+			refused =
+				current.state === "revoked"
+					? "The host is revoked"
+					: current.state !== "draining" || current.drainEpoch !== drain
+						? "The host was undrained meanwhile: drain it again to move it"
+						: current.poolId !== from
+							? "The host was moved meanwhile"
+							: undefined;
+			return refused === undefined ? { ...current, poolId: into.id, poolSince: now() } : undefined;
+		});
+		if (refused !== undefined) throw new KantelError("conflict", refused);
+		if (moved === undefined) throw new KantelError("not_found", "No such host");
+		await backend.updateHost?.(host.id, { poolId: into.id }).catch(() => undefined);
+		return moved;
 	}
 
 	/**
@@ -2113,6 +3641,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 *
 	 * `pin`: the one host it was asked to go on (`CreateSandboxBody.host`), whether or not the account has hosts of its
 	 * own; `host_unavailable` when that host can't take it now.
+	 *
+	 * `pool`: the pools it may go in (`PoolChoice`), before its labels choose among their hosts; absent, any.
 	 */
 	function requireHosts(
 		hosts: readonly StoredHost[],
@@ -2122,11 +3652,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine: boolean,
 		shared: boolean,
 		pin?: string,
+		pool?: PoolChoice,
 	): string[] {
 		if (pin !== undefined) {
 			const pinned = hosts.find((host) => host.id === pin);
 			const eligible =
-				pinned === undefined ? [] : requireHostsOrNone([pinned], accountId, type, labels, affine, shared);
+				pinned === undefined ? [] : requireHostsOrNone([pinned], accountId, type, labels, affine, shared, false, pool);
 			if (eligible.length === 0) {
 				throw placementError(
 					"unavailable",
@@ -2136,7 +3667,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			return eligible;
 		}
-		return requireHostsOrNone(hosts, accountId, type, labels, affine, shared, true);
+		return requireHostsOrNone(hosts, accountId, type, labels, affine, shared, true, pool);
 	}
 
 	/** `requireHosts` without a pin: the eligible hosts, or with `refuse` an `unavailable` error when there are none. */
@@ -2148,10 +3679,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine: boolean,
 		shared: boolean,
 		refuse = false,
+		pool?: PoolChoice,
 	): string[] {
-		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none.
+		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none: its pool first.
 		const up = hosts
 			.filter((host) => host.accountId === accountId || (shared && host.accountId === undefined))
+			.filter(
+				(host) =>
+					pool === undefined || (host.accountId === undefined ? host.poolId === pool.shared : host.poolId === pool.own),
+			)
 			.filter((host) => host.state === "online" || (affine && host.state === "draining"));
 		const typed = up.filter((host) => host.tiers.includes(type));
 		const qualifying = typed.filter((host) =>
@@ -2174,12 +3710,192 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw placementError(
 				"unavailable",
 				reason,
-				shared
-					? `No host can run ${what} now`
-					: `No host of this account's own can run ${what} now. Add one with kantel hosts add, or under Hosts in the console`,
+				pool?.name !== undefined
+					? `No host in pool ${pool.name} can run ${what} now`
+					: shared
+						? `No host can run ${what} now`
+						: `No host of this account's own can run ${what} now. Add one with kantel hosts add, or under Hosts in the console`,
 			);
 		}
 		return eligible;
+	}
+
+	/**
+	 * The pools a new sandbox may go in. Named (`CreateSandboxBody.pool`), one of the account's pools, else (where the
+	 * caller may use shared hosts) one of the deployment's: that pool only. Not named, the account's default pool for its
+	 * own hosts (where it has any) and the deployment's default for the shared ones, so it goes as before pools: on its
+	 * own hosts where one qualifies, else a shared one.
+	 */
+	async function placementPool(
+		accountId: string,
+		ref: string | undefined,
+		hosts: readonly StoredHost[],
+		shared: boolean,
+	): Promise<PoolChoice> {
+		// An owner's pools as the hosts' read had them, else read (and its default made) now.
+		const poolsOf = async (owner: string) => {
+			const read = poolsRead.filter((pool) => pool.owner === owner);
+			return read.length > 0 ? read : pools.poolsOf(owner);
+		};
+		const named = (list: readonly StoredPool[], name: string) =>
+			list.find((pool) => pool.id === name) ?? list.find((pool) => pool.name === name);
+		if (ref !== undefined) {
+			// The account's pools as the hosts' read had them, else read again (one made since): none made by naming one.
+			const mine =
+				named(
+					poolsRead.filter((pool) => pool.owner === accountId),
+					ref,
+				) ?? named(await store.pools.list({ owner: accountId }), ref);
+			if (mine !== undefined) return { own: mine.id, name: mine.name };
+			if (shared) {
+				const theirs =
+					named(await poolsOf(OPERATOR_POOLS), ref) ?? named(await store.pools.list({ owner: OPERATOR_POOLS }), ref);
+				if (theirs !== undefined) return { shared: theirs.id, name: theirs.name };
+			}
+			throw new KantelError("not_found", `No pool named ${ref}`);
+		}
+		const hasOwn = hosts.some((host) => host.accountId === accountId && host.state !== "revoked");
+		const [own, common] = await Promise.all([
+			hasOwn ? poolsOf(accountId).then(defaultPoolOf) : undefined,
+			shared ? poolsOf(OPERATOR_POOLS).then(defaultPoolOf) : undefined,
+		]);
+		return { ...(own === undefined ? {} : { own: own.id }), ...(common === undefined ? {} : { shared: common.id }) };
+	}
+
+	/**
+	 * The pools a sandbox placed before may be placed in again: its own (`poolId`) only; any, for one from before pools;
+	 * none, where its pool has gone (it isn't placed elsewhere).
+	 */
+	async function poolOfSandbox(sandbox: StoredSandbox): Promise<PoolChoice | undefined> {
+		return sandbox.poolId === undefined ? undefined : poolChoiceOf(sandbox.poolId);
+	}
+
+	/** The pool `poolId` as a placement's choice: that pool only; none, where it has gone. */
+	async function poolChoiceOf(poolId: string): Promise<PoolChoice> {
+		const pool = await store.pools.get(poolId);
+		if (pool === undefined) return { name: poolId };
+		return pool.owner === OPERATOR_POOLS ? { shared: pool.id, name: pool.name } : { own: pool.id, name: pool.name };
+	}
+
+	/**
+	 * `poolId` where that pool is still there (as the hosts' read had the pools, else read now), else undefined: data
+	 * whose pool was deleted under it (a delete racing its create) is taken to have none, so it isn't left unusable.
+	 */
+	async function livePool(poolId: string | undefined): Promise<string | undefined> {
+		if (poolId === undefined) return undefined;
+		if (poolsRead.some((pool) => pool.id === poolId)) return poolId;
+		return (await store.pools.get(poolId)) === undefined ? undefined : poolId;
+	}
+
+	/** A pool's name for a message, or its ID where it has gone; "no pool" for none. */
+	async function poolName(poolId: string | undefined): Promise<string> {
+		if (poolId === undefined) return "no pool";
+		return (await store.pools.get(poolId))?.name ?? poolId;
+	}
+
+	/**
+	 * The pool a sandbox made or forked from `snapshot` goes in: the snapshot's own (`poolId`), else (one from before
+	 * pools, or whose pool has since been deleted) the pool of the host holding it, among `hosts`. Refused,
+	 * `host_unavailable`, when that host is in another pool than the snapshot's now (moved since): a snapshot stays in its
+	 * pool, and nothing is made from it in another. Undefined where neither can be told.
+	 *
+	 * One that must go in a pool (`kept`: the pool a create named, or the one an upgrading isolate is in) is refused,
+	 * `host_unavailable`, when the snapshot is in another, or when its pool can't be told, which isn't guessed. `name`:
+	 * that pool as the caller knows it; `instead`: what to do then.
+	 */
+	async function poolOfSnapshot(
+		snapshot: StoredSnapshot,
+		hosts: readonly StoredHost[],
+		kept?: { readonly id: string; readonly name: string; readonly instead: string },
+	): Promise<string | undefined> {
+		const holderId = await hostOfSnapshot(snapshot);
+		const holderPool = holderId === undefined ? undefined : hosts.find((host) => host.id === holderId)?.poolId;
+		const recorded = await livePool(snapshot.poolId);
+		// A ref naming no host (a saved snapshot's ID alone) is its pool's, on any of its holders there: the host it was
+		// taken on moving to another pool leaves the copies in its own.
+		const named = snapshot.ref !== undefined && refHost(snapshot.ref) !== undefined;
+		if (recorded !== undefined && holderPool !== undefined && holderPool !== recorded && named) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				`The snapshot is in pool ${await poolName(recorded)}, and the host holding it is in pool ${await poolName(holderPool)} now: nothing is made from it outside its pool`,
+			);
+		}
+		const pool = recorded ?? holderPool;
+		if (kept !== undefined && pool !== kept.id) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				pool === undefined
+					? `The snapshot's pool can't be told, so it can't be made in ${kept.name}: ${kept.instead}`
+					: `The snapshot is in pool ${await poolName(pool)}, not ${kept.name}: a sandbox made from it runs only in its pool`,
+			);
+		}
+		return pool;
+	}
+
+	/** The pool a sandbox is kept to (a `PoolChoice`), as `poolOfSnapshot` takes it: none for one kept to none. */
+	function keptPool(pool: PoolChoice | undefined, instead: string) {
+		const id = pool?.own ?? pool?.shared;
+		return id === undefined || pool?.name === undefined ? undefined : { id, name: pool.name, instead };
+	}
+
+	/**
+	 * The pool a sandbox's sticky disks hold it to, and the disk that says so: each disk's own (`StoredStickyDisk.poolId`),
+	 * or for one from before pools with versions, the pool of the host its newest was made on, among `hosts`. Undefined
+	 * where none has a pool yet. `invalid` when two are in different pools.
+	 */
+	async function poolOfStickyDisks(
+		attached: readonly computeSchema.SandboxStickyDisk[],
+		hosts: readonly StoredHost[],
+	): Promise<{ readonly poolId: string; readonly disk: string } | undefined> {
+		let held: { readonly poolId: string; readonly disk: string } | undefined;
+		for (const each of attached) {
+			const disk = await store.stickyDisks.get(each.diskId);
+			const recorded = await livePool(disk?.poolId);
+			const head = recorded !== undefined || disk?.head === undefined ? undefined : disk.head;
+			const madeOn = head === undefined ? undefined : (await store.stickyDiskVersions.get(head))?.hostId;
+			const poolId = recorded ?? hosts.find((host) => host.id === madeOn)?.poolId;
+			if (poolId === undefined) continue;
+			if (held !== undefined && held.poolId !== poolId) {
+				throw new KantelError(
+					"invalid",
+					`The sticky disks ${held.disk} and ${each.name} are in different pools (${await poolName(held.poolId)} and ${await poolName(poolId)}): a sandbox's sticky disks are all of its pool`,
+				);
+			}
+			held = { poolId, disk: each.name };
+		}
+		return held;
+	}
+
+	/** Refusal of a sticky disk in pool `diskPool` for a sandbox in `sandboxPool`, naming both. */
+	async function stickyPoolRefusal(disk: string, diskPool: string, sandboxPool: string | undefined) {
+		return placementError(
+			"unavailable",
+			"host_unavailable",
+			`The sticky disk ${disk} is in pool ${await poolName(diskPool)}, not ${sandboxPool === undefined ? "no pool" : `pool ${await poolName(sandboxPool)}`}: a sticky disk is attached only to sandboxes in its own pool`,
+		);
+	}
+
+	/**
+	 * Gives a sandbox's sticky disks with no pool yet the sandbox's, `poolId`, all of them or none
+	 * (`StickyDiskWrites.pool`): refused, naming both pools, while any is in another. So of two sandboxes in different
+	 * pools attaching new disks at once, one gives them its pool and the other is refused, leaving none in its own.
+	 */
+	async function bindStickyDisks(attached: readonly computeSchema.SandboxStickyDisk[], poolId: string): Promise<void> {
+		// A disk whose pool was deleted under it (a delete racing its create) has none again, only while it still names it.
+		for (const each of attached) {
+			const gone = (await store.stickyDisks.get(each.diskId))?.poolId;
+			if (gone === undefined || gone === poolId || (await livePool(gone)) !== undefined) continue;
+			await store.stickyDisks.update(each.diskId, ({ poolId: was, ...rest }) => (was === gone ? rest : undefined));
+		}
+		const other = await store.stickyDiskWrites.pool(
+			attached.map((disk) => disk.diskId),
+			poolId,
+		);
+		if (other === undefined) return;
+		const name = attached.find((disk) => disk.diskId === other.diskId)?.name ?? other.diskId;
+		throw await stickyPoolRefusal(name, other.poolId, poolId);
 	}
 
 	/**
@@ -2192,12 +3908,91 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * The host a snapshot's disk is on, where its backend's ref says (a host backend's is `{hostId}/{snapshotId}`);
-	 * undefined where the ref names no known host.
+	 * The hosts a sandbox made from `snapshot` can start on (`SandboxSpec.snapshotCopies`, docs/design/disk-store.md,
+	 * "Phase 3 notes"): the host it was taken on (`hostOfSnapshot`), its first holder, then each host with a copy of its
+	 * disk (the catalogue's `snapshot` holders of its ref), each with whether its copy restores the snapshot's memory (the
+	 * host it was taken on, or a copy whose memory came too, which a host fetches only where it restores it). It may be
+	 * fetched by another host where snapshots are synced, its pool can be told (a copy is offered only in it), and a
+	 * holder online in it has reported its disk.
 	 */
-	function snapshotHolder(ref: string, hosts: readonly StoredHost[]): StoredHost | undefined {
-		const [hostId] = ref.split("/");
-		return hosts.find((host) => host.id === hostId);
+	async function snapshotCopiesOf(
+		snapshot: StoredSnapshot,
+		hosts: readonly StoredHost[],
+		poolId: string | undefined,
+	): Promise<SnapshotCopies> {
+		const memory = await holdsMemory(snapshot);
+		const origin = await hostOfSnapshot(snapshot);
+		const holders: { hostId: string; memory: boolean }[] = origin === undefined ? [] : [{ hostId: origin, memory }];
+		const { ref } = snapshot;
+		if (ref === undefined) return { holders, memory, fetch: false };
+		const byVersion = await diskHolders.holdersOf("snapshot", refId(ref));
+		const held = (version: string) =>
+			(byVersion.get(version) ?? []).filter((holder) => holder.ref === ref && holder.state === "held");
+		const withMemory = new Set(held("memory").map((holder) => holder.hostId));
+		const disks = held("disk");
+		for (const holder of disks) {
+			if (holders.some((each) => each.hostId === holder.hostId)) continue;
+			holders.push({ hostId: holder.hostId, memory: memory && withMemory.has(holder.hostId) });
+		}
+		const online = new Map(
+			hosts
+				.filter((host) => (host.state === "online" || host.state === "draining") && host.poolId === poolId)
+				.map((host) => [host.id, host]),
+		);
+		// The holders that serve it (a full or draining one too), which a host fetches from only of its architecture.
+		const serving = disks.filter((holder) => holder.mapDigest !== undefined && online.has(holder.hostId));
+		const architectures = [...new Set(serving.flatMap((holder) => online.get(holder.hostId)?.arch ?? []))];
+		// Only a saved snapshot's ID alone: an older ref's host-local ID may name another snapshot on the host fetching it.
+		const fetch =
+			diskHolders.syncsSnapshots && poolId !== undefined && refHost(ref) === undefined && serving.length > 0;
+		return { holders, memory, fetch, ...(fetch && architectures.length > 0 ? { architectures } : {}) };
+	}
+
+	/**
+	 * The hosts a saved snapshot is on, for its details (`Snapshot.hosts`), as their hosts report them: the catalogue's
+	 * holders of its disk under its ref (`snapshot` holders), held or being fetched, the host it was taken on first, each
+	 * with whether a sandbox made from it there restores its memory (its own host, or a copy whose memory is held there
+	 * too). One rule for every snapshot whose holdings are reported. Those that aren't, an isolate's (only the microVM
+	 * tier reports snapshots) and a ref naming its host with no holder (its host may be from before hosts reported them),
+	 * are listed on the host they were taken on, as their save said, the only word there is. A revoked host holds
+	 * nothing. Each is named only to a caller who may be told of it (`mayKnowHost`). Undefined for an automatic
+	 * snapshot, or one not yet ready.
+	 */
+	async function snapshotHostsView(
+		principal: Principal,
+		snapshot: StoredSnapshot,
+	): Promise<computeSchema.SnapshotHost[] | undefined> {
+		const { ref } = snapshot;
+		if (snapshot.kind !== "saved" || ref === undefined) return undefined;
+		const origin = await hostOfSnapshot(snapshot);
+		const byVersion = await diskHolders.holdersOf("snapshot", refId(ref));
+		const of = (version: string) => (byVersion.get(version) ?? []).filter((holder) => holder.ref === ref);
+		const disks = of("disk").filter((holder) => holder.state !== "deleting");
+		const unreported = snapshot.sandboxType === "isolate" || (refHost(ref) !== undefined && disks.length === 0);
+		let entries: { hostId: string; state: "held" | "fetching"; memory: boolean }[];
+		if (unreported) {
+			entries = origin === undefined ? [] : [{ hostId: origin, state: "held", memory: snapshot.memory }];
+		} else {
+			const withMemory = new Set(
+				of("memory")
+					.filter((holder) => holder.state === "held")
+					.map((holder) => holder.hostId),
+			);
+			entries = disks
+				.map((holder) => {
+					const held = holder.state === "held";
+					const memory = snapshot.memory && held && (holder.hostId === origin || withMemory.has(holder.hostId));
+					return { hostId: holder.hostId, state: held ? ("held" as const) : ("fetching" as const), memory };
+				})
+				.sort((a, b) => Number(b.hostId === origin) - Number(a.hostId === origin));
+		}
+		const hosts = new Map((await store.hosts.list()).map((host) => [host.id, host]));
+		return entries.flatMap(({ hostId, state, memory }) => {
+			const host = hosts.get(hostId);
+			if (host?.state === "revoked") return [];
+			const named = host !== undefined && mayKnowHost(principal, host, snapshot.accountId);
+			return [{ ...(named ? { hostId: host.id, hostName: host.name } : {}), state, memory }];
+		});
 	}
 
 	/**
@@ -2247,6 +4042,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default }
 				: (LEGACY_SIZES[sandbox.size ?? "default"] ?? LEGACY_SIZES.default));
 		return hourlyRate(rates, sandbox.type, resources);
+	};
+
+	/**
+	 * What a sandbox's runs over `[from, to)` cost: each at its own rate where it has one (an upgraded isolate's run before
+	 * its upgrade, priced as the isolate it was), else at the sandbox's rate now.
+	 */
+	const costOf = (sandbox: StoredSandbox, from: number, to: number): number => {
+		const rate = rateOf(sandbox);
+		let cost = 0;
+		for (const run of sandbox.runs) cost += (runningMs([run], from, to) / 3_600_000) * (run.ratePerHour ?? rate);
+		return cost;
 	};
 
 	/**
@@ -2323,6 +4129,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if ((await backend.hostConnected(hostId).catch(() => undefined)) === false) throw hostNotConnected();
 	}
 
+	/** The stop a move owed its sandbox (`moving.stopAfter`), as its `stopFor` once it runs again; none kept otherwise. */
+	const owedStop = (sandbox: StoredSandbox): Pick<StoredSandbox, "stopFor"> =>
+		sandbox.moving?.stopAfter === undefined || sandbox.stopFor !== undefined
+			? {}
+			: { stopFor: sandbox.moving.stopAfter };
+
+	const movingConflict = () =>
+		new KantelError("conflict", "The sandbox is moving to another host; try again once the move ends");
+
+	/**
+	 * Whether a sandbox is moving as the API answers it: a move under way is `starting` here, as a boot is, and `running`
+	 * while a running sandbox's first copy is made.
+	 */
+	const movingNow = (sandbox: StoredSandbox): boolean =>
+		sandbox.moving !== undefined && (sandbox.state === "starting" || sandbox.state === "running");
+
+	/** Its state as the API answers it: a move under way is answered `moving`. */
+	function publicState(sandbox: StoredSandbox): SandboxState {
+		return movingNow(sandbox) ? "moving" : sandbox.state;
+	}
+
+	/** A move under way, as the API answers it: its target only where the caller may know the host. */
+	function moveView(sandbox: StoredSandbox, host: { readonly hostId?: string }): { readonly move?: Sandbox["move"] } {
+		const moving = sandbox.moving;
+		if (moving === undefined || !movingNow(sandbox)) return {};
+		// Its new host only for a caller who may know its host.
+		const to = moving.to !== undefined && host.hostId !== undefined ? moving.to : undefined;
+		return {
+			move: {
+				phase: moving.phase,
+				keepMemory: moving.keepMemory === true,
+				...(moving.restartReason === undefined ? {} : { restartReason: moving.restartReason }),
+				startedAt: moving.at,
+				...(to === undefined ? {} : { hostId: to }),
+			},
+		};
+	}
+
 	async function sandboxView(
 		sandbox: StoredSandbox,
 		principal: Principal,
@@ -2333,7 +4177,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			hostOfView(sandbox, principal, hosts),
 			hostReachableOf(sandbox, reach),
 		]);
-		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
+		const at = now();
+		const seconds = runningMs(sandbox.runs, 0, at) / 1000;
 		const rate = rateOf(sandbox);
 		return {
 			id: sandbox.id,
@@ -2346,20 +4191,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			shape: sandbox.shape === undefined ? undefined : { ...sandbox.shape },
 			resources: sandbox.resources,
 			image: sandbox.image,
-			state: sandbox.state,
+			state: publicState(sandbox),
+			...moveView(sandbox, host),
 			health: sandbox.health,
 			reason: sandbox.reason,
 			placementReason: sandbox.placementReason,
 			visibility: sandbox.visibility,
-			capabilities: sandbox.capabilities,
+			capabilities: withLanguages(sandbox.type, sandbox.capabilities),
 			labels: sandbox.labels,
 			autoStopMinutes: sandbox.autoStopMinutes,
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			...idleView(sandbox),
+			...(sandbox.autoUpgrade === true ? { autoUpgrade: true } : {}),
+			...(sandbox.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: sandbox.autoUpgradeFrom }),
+			...(sandbox.upgradedFrom === undefined ? {} : { upgradedFrom: { ...sandbox.upgradedFrom } }),
+			...(sandbox.moved === undefined ? {} : { moved: { ...sandbox.moved } }),
 			latestSnapshotId: sandbox.latestSnapshotId,
 			latestSnapshotAt: sandbox.latestSnapshotId === undefined ? undefined : sandbox.latestSnapshotAt,
 			source: sandbox.source,
-			environmentId: sandbox.environmentId,
+			...environmentFields(environmentIdsOf(sandbox)),
 			template: sandbox.template === undefined ? undefined : { ...sandbox.template },
 			grants: (sandbox.grants ?? []).map(copyGrant),
 			createdBy: sandbox.createdBy,
@@ -2369,7 +4219,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(sandbox.mounts === undefined
 				? {}
 				: { mounts: sandbox.mounts.map((mount) => ({ ...mount, source: { ...mount.source } })) }),
-			cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
+			...(sandbox.stickyDisks === undefined ? {} : { stickyDisks: sandbox.stickyDisks.map((disk) => ({ ...disk })) }),
+			cost: { currency: rates.currency, total: round(costOf(sandbox, 0, at)), ratePerHour: rate },
 			usage: {
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
@@ -2378,6 +4229,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...peakView(peakOf(sandbox)),
 			},
 			...host,
+			...pooled(sandbox.poolId),
 			...reachable,
 			base: baseView(sandbox.base),
 			...(sandbox.startup === undefined ? {} : { startup: { ...sandbox.startup } }),
@@ -2386,13 +4238,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * How many of an account's sandboxes were made from each snapshot (`source.snapshotId`: a create from it, or a fork
-	 * from it), deleted ones included, by the snapshot's ID: a snapshot's `uses`.
+	 * from it; `upgradedFrom.snapshotId`: an upgrade into it), deleted ones included, by the snapshot's ID: a snapshot's
+	 * `uses`.
 	 */
 	async function usesIn(accountId: string): Promise<Map<string, number>> {
 		const uses = new Map<string, number>();
 		for (const sandbox of await store.sandboxes.list({ accountId })) {
 			const from = sandbox.source?.snapshotId;
 			if (from !== undefined) uses.set(from, (uses.get(from) ?? 0) + 1);
+			// And what an upgrade started its microVM from.
+			const into = sandbox.upgradedFrom?.snapshotId;
+			if (into !== undefined) uses.set(into, (uses.get(into) ?? 0) + 1);
 		}
 		return uses;
 	}
@@ -2425,6 +4281,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createdBy: snapshot.createdBy,
 		expiresAt: snapshot.expiresAt,
 		base: baseView(snapshot.base),
+		...pooled(snapshot.poolId),
 	});
 
 	/** A version of a base image as the admin list answers it: what the index says of it, its commit left out. */
@@ -2467,6 +4324,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		startedAt: command.startedAt,
 		endedAt: command.endedAt,
 		durationMs: command.durationMs,
+		...(command.needsMicrovm === undefined ? {} : { needsMicrovm: { ...command.needsMicrovm } }),
+		...(command.terminated === undefined ? {} : { terminated: command.terminated }),
+		...(command.rerunAs === undefined ? {} : { rerunAs: command.rerunAs }),
+		...(command.rerunOf === undefined ? {} : { rerunOf: command.rerunOf }),
 	});
 
 	const apiKeyView = (key: StoredApiKey): computeSchema.ApiKey => ({
@@ -2517,6 +4378,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updatedAt: proxy.updatedAt,
 	});
 
+	/** A sandbox's environments as they are now, in order; one deleted meanwhile is left out. */
+	async function environmentsOf(
+		sandbox: Pick<StoredSandbox, "environmentIds" | "environmentId">,
+	): Promise<StoredEnvironment[]> {
+		const found = await Promise.all(environmentIdsOf(sandbox).map((id) => store.environments.get(id)));
+		return found.filter((environment): environment is StoredEnvironment => environment !== undefined);
+	}
+
+	/** What `environments` give a sandbox, in order (`resolveEnvironments`). */
+	const resolved = (environments: readonly StoredEnvironment[]): EnvironmentResolution =>
+		resolveEnvironments(environments, clonePath);
+
 	/**
 	 * A sandbox's egress for the backend, `{ egress }` to spread into a spec: the account's proxy settings when they're
 	 * on, with its protected variables' hosts (never a value) and its environment's and its own grants. With the proxy
@@ -2530,15 +4403,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// The revision goes with no egress too: a boot states its egress, none being the host's default, and an update
 		// read before it (an empty egress included) is then older and refused.
 		const revision = subject?.egressRevision === undefined ? {} : { egressRevision: subject.egressRevision };
-		const [proxy, environment] = await Promise.all([
+		const [proxy, environments] = await Promise.all([
 			store.proxies.get(accountId),
-			subject?.environmentId === undefined ? undefined : store.environments.get(subject.environmentId),
+			subject === undefined ? [] : environmentsOf(subject),
 		]);
-		const names = Object.keys(subject?.placeholders ?? {});
-		const bound = (environment?.variables ?? []).filter(
-			(variable) => variable.protected && variable.sealed !== undefined && names.includes(variable.name),
-		);
-		const grants = [...(environment?.grants ?? []), ...(subject?.grants ?? [])];
+		const resolution = resolved(environments);
+		const bound = subject === undefined ? [] : protectedWinners(subject, resolution).map(({ winner }) => winner.item);
+		const grants = [...resolution.grants, ...(subject?.grants ?? [])];
 		const on = proxy?.enabled;
 		if (!on && bound.length === 0 && grants.length === 0) return revision;
 		const base: BackendEgress = proxy?.enabled
@@ -2555,11 +4426,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return {
 			egress: {
 				...base,
-				...(environment === undefined || bound.length === 0
+				...(bound.length === 0
 					? {}
 					: {
 							protected: {
-								version: environment.secretsVersion,
+								version: secretsVersionOf(environments, subject?.secretsFloor) ?? now(),
 								intercept: unique(bound.flatMap((variable) => variable.bindings.map((binding) => binding.host))),
 							},
 						}),
@@ -2591,8 +4462,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Only for what was found unenforceable: the sandbox in the state and at the `egressRevision` the refused delivery
 	 * (or the boot) was for. A newer egress (a clear, a boot's fresh revision) or another lifecycle step since leaves it
 	 * to its own delivery, and it answers `false`. A boot gives its `placement`, written with the intent, so the stop
-	 * and its retries know the host. `wait` awaits the stop (never from inside the sandbox's own queued work, which the
-	 * stop queues behind).
+	 * and its retries know the host. `publishing` is what else changes with the intent: a boot's (an upgrade's microVM,
+	 * its type, which its stop and snapshot are then), or an undone upgrade's (the isolate's runs and stop times as they
+	 * were, `restoreUpgrade`). `wait` awaits the stop (never from inside the sandbox's own queued work,
+	 * which the stop queues behind).
 	 */
 	async function enforceStop(
 		sandboxId: string,
@@ -2600,15 +4473,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		wait: boolean,
 		evaluated: Pick<StoredSandbox, "state" | "egressRevision">,
 		placement?: Placement,
+		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
+		/**
+		 * Only while this holds (a settled create's attempt, `settleLostCreate`) is it made due to stop. Its move to
+		 * `stopping`, which is what sends the stop, is then fenced to that intent and the lifecycle it was made in, which
+		 * making it due doesn't move on and any later attempt does: so it stops the attempt it was decided for, never a
+		 * later one.
+		 */
+		fence: (sandbox: StoredSandbox) => boolean = () => true,
 	): Promise<boolean> {
 		const at = now();
 		const due = await patchSandbox(sandboxId, (current) =>
+			fence(current) &&
 			current.state === evaluated.state &&
 			current.egressRevision === evaluated.egressRevision &&
 			// Its host revoked under its boot (`strandOn`): its boot ends it `error`, not a stop its host can't take.
 			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
 						...current,
+						...publishing?.(current),
 						...(placement === undefined
 							? {}
 							: {
@@ -2623,7 +4506,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				: undefined,
 		);
 		if (due === undefined) return false;
-		const still = (current: StoredSandbox) => current.stopFor === reason;
+		const lifecycle = due.lifecycle ?? 0;
+		const still = (current: StoredSandbox) => current.stopFor === reason && (current.lifecycle ?? 0) === lifecycle;
 		const began = await beginStop(due, false, reason, undefined, still, true).catch(() => undefined);
 		if (began !== undefined) {
 			if (wait) await began.work.catch(() => undefined);
@@ -2689,26 +4573,69 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	};
 
-	/** The sandboxes made from an environment that run, or are starting (and will reconcile when they run). */
-	const liveFrom = async (environmentId: string) =>
-		(await store.sandboxes.list({ environmentId })).filter(
-			(sandbox) => sandbox.state === "running" || sandbox.state === "starting",
+	/**
+	 * The sandboxes that have an environment, but deleted ones. Environments and their sandboxes share an account:
+	 * `account`, the account's sandboxes as `undeleted` read them, when the caller has them already.
+	 */
+	const sandboxesWith = async (
+		environment: Pick<StoredEnvironment, "id" | "accountId">,
+		account?: readonly StoredSandbox[],
+	) =>
+		(account ?? (await undeleted({ accountId: environment.accountId }))).filter(
+			(sandbox) => sandbox.state !== "deleted" && environmentIdsOf(sandbox).includes(environment.id),
 		);
+
+	/** The sandboxes with an environment that run, or are starting (and will reconcile when they run). */
+	const liveFrom = async (environment: Pick<StoredEnvironment, "id" | "accountId">) =>
+		(await sandboxesWith(environment)).filter((sandbox) => sandbox.state === "running" || sandbox.state === "starting");
+
+	/**
+	 * Whether a variable of this name in an environment decides which protected value a running sandbox's placeholder
+	 * stands for: one with other environments has a placeholder of the name, so the variable shadows (or shadowed) one.
+	 */
+	const shadowsProtected = async (environment: Pick<StoredEnvironment, "id" | "accountId">, name: string) =>
+		(await liveFrom(environment)).some(
+			(sandbox) => environmentIdsOf(sandbox).length > 1 && Object.hasOwn(sandbox.placeholders ?? {}, name),
+		);
+
+	/**
+	 * A sandbox's next protected-values version: past every version it may have been given, which is at most the newest
+	 * of its environments' and its floor, and past now.
+	 */
+	const nextFloorOf = async (sandbox: StoredSandbox): Promise<number> =>
+		nextSecretsVersion(secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0, now());
 
 	/**
 	 * Tells the hosts of an environment's running sandboxes that its protected values changed, so they drop what they
 	 * hold and fetch them again, and gives them its egress as it is now (the hosts to intercept, the grants). A starting
 	 * one's revision moves on too, so its boot sees the change and reconciles.
 	 */
-	async function pushEnvironment(environmentId: string, version: number | undefined): Promise<void> {
-		const live = await liveFrom(environmentId);
-		const bumped = (await Promise.all(live.map((sandbox) => bumpEgress(sandbox.id)))).filter(
-			(sandbox): sandbox is StoredSandbox => sandbox !== undefined,
-		);
+	async function pushEnvironment(
+		environment: Pick<StoredEnvironment, "id" | "accountId">,
+		version: number | undefined,
+	): Promise<void> {
+		const live = await liveFrom(environment);
+		const bumped = (
+			await Promise.all(
+				live.map(async (sandbox) => {
+					if (version === undefined) return bumpEgress(sandbox.id);
+					// Its protected values changed: its own version moves past any it was given, from all its environments
+					// (this one as it is now), so one of several whose version is behind another's still counts as a change.
+					const floor = await nextFloorOf(sandbox);
+					return patchSandbox(sandbox.id, (current) => ({
+						...current,
+						secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+						egressRevision: later(current.egressRevision),
+					}));
+				}),
+			)
+		).filter((sandbox): sandbox is StoredSandbox => sandbox !== undefined);
 		const running = bumped.filter((sandbox) => sandbox.state === "running");
 		const updateSecrets = backend.updateSecrets?.bind(backend);
 		if (version !== undefined && updateSecrets !== undefined) {
-			for (const sandbox of running) keepGoing(updateSecrets(sandbox.id, version));
+			for (const sandbox of running) {
+				if (sandbox.secretsFloor !== undefined) keepGoing(updateSecrets(sandbox.id, sandbox.secretsFloor));
+			}
 		}
 		pushEgress(running);
 	}
@@ -2751,8 +4678,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updatedAt: file.updatedAt,
 	});
 
-	async function environmentView(environment: StoredEnvironment): Promise<computeSchema.Environment> {
-		const made = await store.sandboxes.list({ environmentId: environment.id });
+	/** An environment as the API answers it; `account`, its account's sandboxes as `undeleted` read them, if read already. */
+	async function environmentView(
+		environment: StoredEnvironment,
+		account?: readonly StoredSandbox[],
+	): Promise<computeSchema.Environment> {
+		const made = await sandboxesWith(environment, account);
 		return {
 			id: environment.id,
 			accountId: environment.accountId,
@@ -2762,7 +4693,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			files: environment.files.map(fileView),
 			repos: environment.repos.map(copyRepo),
 			grants: environment.grants.map(copyGrant),
-			sandboxCount: made.filter((sandbox) => sandbox.state !== "deleted").length,
+			sandboxCount: made.length,
 			createdAt: environment.createdAt,
 			updatedAt: environment.updatedAt,
 		};
@@ -2797,28 +4728,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	async function sandboxEgressView(sandbox: StoredSandbox, limit: number): Promise<computeSchema.SandboxEgress> {
-		const [environment, log] = await Promise.all([
-			sandbox.environmentId === undefined ? undefined : store.environments.get(sandbox.environmentId),
-			egressLog(sandbox.id),
-		]);
-		const protectedVariables: computeSchema.SandboxProtectedVariable[] = [];
-		for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
-			const variable = environment?.variables.find((each) => each.name === name && each.protected);
-			// One whose variable is gone, or plain now, no longer resolves: it isn't protected any more.
-			if (variable === undefined) continue;
-			protectedVariables.push({
+		const [environments, log] = await Promise.all([environmentsOf(sandbox), egressLog(sandbox.id)]);
+		const resolution = resolved(environments);
+		// One whose variable is gone, plain now or shadowed no longer resolves: it isn't protected any more.
+		const protectedVariables: computeSchema.SandboxProtectedVariable[] = protectedWinners(sandbox, resolution).map(
+			({ name, placeholder, winner }) => ({
 				name,
 				placeholderPrefix: placeholder.slice(0, PLACEHOLDER_PREFIX_CHARS),
-				bindings: variable.bindings.map(copyBinding),
-			});
-		}
+				bindings: winner.item.bindings.map(copyBinding),
+				environmentId: winner.environment.id,
+			}),
+		);
+		const [first] = environments;
 		return {
 			sandboxId: sandbox.id,
 			sandboxName: sandbox.name,
 			accountId: sandbox.accountId,
-			...(environment === undefined ? {} : { environment: { id: environment.id, name: environment.name } }),
+			...(first === undefined ? {} : { environment: { id: first.id, name: first.name } }),
+			environments: environments.map((environment) => ({ id: environment.id, name: environment.name })),
 			protectedVariables,
-			environmentGrants: (environment?.grants ?? []).map(copyGrant),
+			environmentGrants: resolution.grants.map(copyGrant),
 			grants: (sandbox.grants ?? []).map(copyGrant),
 			entries: log.slice(0, limit).map(egressEntryView),
 		};
@@ -2845,6 +4774,191 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const [byName] = await store.environments.list({ accountId, name: ref });
 		if (byName === undefined) throw notFound(`environment ${ref}`);
 		return byName;
+	}
+
+	/** The environments a create names, `environment` or `environments`, in order; each once. */
+	async function environmentsNamed(
+		accountId: string,
+		one: string | undefined,
+		many: readonly string[] | undefined,
+	): Promise<StoredEnvironment[]> {
+		if (one !== undefined && many !== undefined) {
+			throw new KantelError("invalid", "Give environment or environments, not both");
+		}
+		const refs = many ?? (one === undefined ? [] : [one]);
+		if (refs.length > MAX_SANDBOX_ENVIRONMENTS) {
+			throw new KantelError("invalid", `A sandbox has at most ${MAX_SANDBOX_ENVIRONMENTS} environments`);
+		}
+		const environments = await Promise.all(refs.map((ref) => environmentIn(accountId, ref)));
+		const seen = new Set<string>();
+		for (const environment of environments) {
+			if (seen.has(environment.id))
+				throw new KantelError("invalid", `The environment ${environment.name} is named twice`);
+			seen.add(environment.id);
+		}
+		return environments;
+	}
+
+	/** Refuses a sandbox's own variable that would hide a protected variable of its environments. */
+	function refuseProtectedClashes(
+		own: { readonly [name: string]: string },
+		resolution: EnvironmentResolution,
+		count: number,
+	): void {
+		const [name] = protectedClashes(own, resolution);
+		if (name === undefined) return;
+		const of =
+			count > 1 ? `of the environment ${resolution.variables.get(name)?.environment.name}` : "of the environment";
+		throw new KantelError("invalid", `${name} is a protected variable ${of}; leave it out of env`);
+	}
+
+	/** A sandbox's environments, in order, with what each gives it and whether its files and repositories are to come. */
+	async function sandboxEnvironmentsView(sandbox: StoredSandbox): Promise<computeSchema.SandboxEnvironments> {
+		const environments = await environmentsOf(sandbox);
+		const resolution = resolved(environments);
+		const { own } = envLayersOf(sandbox);
+		// Pending: its own files or repositories, or a path a move gave it whose file isn't written yet.
+		const pending = new Set(
+			(sandbox.pendingProvision ?? []).flatMap((work) =>
+				work.kind === "paths"
+					? (work.paths ?? []).map((path) => resolution.files.get(path)?.environment.id)
+					: [work.environmentId],
+			),
+		);
+		return {
+			sandboxId: sandbox.id,
+			environments: environments.map((environment) => ({
+				id: environment.id,
+				name: environment.name,
+				shadowed: shadowedOf(environment, resolution, own, clonePath),
+				pending: pending.has(environment.id),
+			})),
+		};
+	}
+
+	/**
+	 * Gives a sandbox the environments `change` makes of its own, then works its env out again from them as they are now
+	 * (its own variables over them), and moves its egress and its protected values' version on. A running sandbox takes
+	 * the change at once: its egress and protected values, its env (for new shells, where its host can), and an attached
+	 * environment's secret files and repositories, set up in the background. A stopped one gets those when it next runs.
+	 */
+	async function changeSandboxEnvironments(
+		sandbox: StoredSandbox,
+		change: (ids: string[]) => string[],
+		how: { attached: StoredEnvironment } | { detached: string },
+	): Promise<computeSchema.SandboxEnvironments> {
+		const before = environmentIdsOf(sandbox);
+		const ids = change([...before]);
+		if (ids.length > MAX_SANDBOX_ENVIRONMENTS) {
+			throw new KantelError("invalid", `A sandbox has at most ${MAX_SANDBOX_ENVIRONMENTS} environments`);
+		}
+		const settled = ["running", "stopped", "paused", "error"];
+		if (!settled.includes(sandbox.state)) throw new KantelError("conflict", `The sandbox is ${sandbox.state}`);
+		const read = await Promise.all(ids.map((id) => store.environments.get(id)));
+		const environments = read.filter((environment): environment is StoredEnvironment => environment !== undefined);
+		// The version its host was last given: the new floor goes past it, so no fetch answers below what it holds.
+		const had = await environmentsOf(sandbox);
+		const given = secretsVersionOf(had, sandbox.secretsFloor) ?? 0;
+		const resolution = resolved(environments);
+		const attached = "attached" in how ? how.attached : undefined;
+		const moved = attached !== undefined && before.includes(attached.id);
+		// The set-up it needs, recorded with the change: a newly attached environment's files and repositories, and the
+		// paths whose winning file another environment now has (a move). A detach needs none: what it wrote stays.
+		const newly = attached !== undefined && !moved ? workFor(attached) : [];
+		const repaths = changedWinners(resolved(had), resolution).filter(
+			(path) => moved || resolution.files.get(path)?.environment.id !== attached?.id,
+		);
+		const work: ProvisionWork[] = [
+			...newly,
+			...(attached !== undefined && repaths.length > 0
+				? [{ id: randomId("pw", 8), kind: "paths" as const, paths: repaths }]
+				: []),
+		];
+		if (attached !== undefined) {
+			refuseProtectedClashes(envLayersOf(sandbox).own, resolution, environments.length);
+			const enforced = attached.grants.length > 0 || attached.variables.some((variable) => variable.protected);
+			if (enforced) await requireEnforcing([sandbox]);
+		}
+		let changed = await patchSandbox(sandbox.id, (current) => {
+			if (!sameIds(environmentIdsOf(current), before)) {
+				throw new KantelError("conflict", "The sandbox's environments changed meanwhile; try again");
+			}
+			if (!settled.includes(current.state)) throw new KantelError("conflict", `The sandbox is ${current.state}`);
+			const envLayers = envLayersOf(current);
+			const { env, placeholders } = composeEnv(envLayers, resolution, current.placeholders ?? {}, newPlaceholder);
+			// Pending until a set-up has done it, running or not: if a stop gets there first, its next start does it.
+			const kept =
+				"detached" in how ? pendingWithout(current, how.detached).pendingProvision : current.pendingProvision;
+			const pending = [...(kept ?? []), ...work];
+			return {
+				...current,
+				...environmentFields(environments.map((environment) => environment.id)),
+				pendingProvision: pending.length === 0 ? undefined : pending,
+				env,
+				envLayers,
+				placeholders,
+				// Past any version its host was given: it drops what it held, and fetches them again as they are now.
+				secretsFloor: nextSecretsVersion(Math.max(given, current.secretsFloor ?? 0), now()),
+				egressRevision: later(current.egressRevision),
+			};
+		});
+		if (changed === undefined) throw notFound("sandbox");
+		// Deleted while it was being attached, after the delete looked for its sandboxes: taken off again here, as the
+		// delete would have, with the floor moved past what it may have given.
+		let gone = false;
+		if (attached !== undefined && (await store.environments.get(attached.id)) === undefined) {
+			gone = true;
+			const floor = nextSecretsVersion(Math.max(given, attached.secretsVersion, changed.secretsFloor ?? 0), now());
+			changed = await patchSandbox(sandbox.id, (current) => ({
+				...current,
+				...environmentFields(environmentIdsOf(current).filter((id) => id !== attached.id)),
+				...pendingWithout(current, attached.id),
+				secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+				egressRevision: later(current.egressRevision),
+			}));
+			if (changed === undefined) throw notFound("sandbox");
+		}
+		const done = changed;
+		await emit("sandbox.environments_changed", done.accountId, {
+			sandbox: done,
+			data: {
+				...("attached" in how ? { attached: how.attached.id } : { detached: how.detached }),
+				environmentIds: [...environmentIdsOf(done)],
+			},
+		}).catch(() => undefined);
+		if (done.state === "running") {
+			pushEgress([done]);
+			const updateSecrets = backend.updateSecrets?.bind(backend);
+			if (updateSecrets !== undefined && done.secretsFloor !== undefined) {
+				keepGoing(updateSecrets(done.id, done.secretsFloor));
+			}
+			keepGoing(deliverEnv(done));
+			if (!gone && work.length > 0) {
+				// Its repositories as this call read them, which the caller (who may run commands) authorised.
+				keepGoing(track([done.id], () => provision(done.id, attached === undefined ? [] : [attached])));
+			}
+		}
+		return sandboxEnvironmentsView(done);
+	}
+
+	/**
+	 * Tells a running sandbox's host its env changed (`updateEnv`). The host applies the env Kantel has when it takes
+	 * the notification (`sandboxEnv`, over its link), not the one sent, so however late one lands it never puts an older
+	 * env back. A failure is an event; its next boot has the env anyway.
+	 */
+	async function deliverEnv(sandbox: StoredSandbox): Promise<void> {
+		const updateEnv = backend.updateEnv?.bind(backend);
+		if (updateEnv === undefined) return;
+		try {
+			await updateEnv(sandbox.id, sandbox.env);
+		} catch (error) {
+			await emit("sandbox.degraded", sandbox.accountId, {
+				sandbox,
+				data: {
+					reason: `New commands have its environments' variables, but its env file (/etc/kantel/env) won't until it restarts: ${messageOf(error)}`,
+				},
+			}).catch(() => undefined);
+		}
 	}
 
 	const nameTaken = (name: string) => new KantelError("conflict", `The account has an environment named ${name}`);
@@ -2904,33 +5018,80 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Writes an environment's secret files into a sandbox that has just started, then clones its repositories (through
-	 * the sandbox's egress proxy, so a protected token bound to the repository's host is swapped in). A failure is an
-	 * event on the sandbox, which keeps running: what failed is named, never a file's contents.
+	 * Does a running sandbox's pending environment set-up (`pendingProvision`): writes the secret files each item names
+	 * (an environment's, at the paths it wins; or whatever wins the paths a move changed), and clones an environment's
+	 * repositories through the sandbox's egress proxy (so a protected token bound to a repository's host is swapped in).
+	 * A failure is an event on the sandbox, which keeps running: what failed is named, never a file's contents.
 	 *
-	 * `authorised` is the environment as the create read it, when it checked that its caller may run commands (a clone
-	 * runs with the sandbox's env, which that caller chose): its repositories are cloned, not any added since, which no
-	 * one's authority covers. The files are the environment's as it is now (a rotation meanwhile is taken).
+	 * Each item comes off by its ID once done, never before, so a set-up that stops leaves the rest for the next start,
+	 * and never one another change added. Each set-up takes a fence past every earlier one's (in the store), which its
+	 * writes carry: the host drops one below a fence it has taken, so an older set-up's write, however late it lands,
+	 * never overwrites a newer one's. Every change that moves a file's winner records the item that writes it, so the
+	 * newest set-up writes the newest winner.
+	 *
+	 * `authorised` is the environments whose repositories the call that started it may have cloned (its caller may run
+	 * commands, and a clone runs with the sandbox's env), as it read them: not any added since. A repositories item of
+	 * another environment waits for a set-up that may.
 	 */
-	async function provision(sandbox: StoredSandbox, authorised: StoredEnvironment): Promise<void> {
-		const latest = await store.environments.get(authorised.id);
-		if (latest === undefined) return;
-		const environment = { ...latest, repos: authorised.repos };
+	async function provision(sandboxId: string, authorised: readonly StoredEnvironment[]): Promise<void> {
+		const fenced = await patchSandbox(sandboxId, (latest) =>
+			latest.state === "running" && (latest.pendingProvision?.length ?? 0) > 0
+				? { ...latest, provisionFence: (latest.provisionFence ?? 0) + 1 }
+				: undefined,
+		);
+		if (fenced === undefined) return;
+		const fence = fenced.provisionFence ?? 1;
+		const work = fenced.pendingProvision ?? [];
+		const asAuthorised = new Map(authorised.map((environment) => [environment.id, environment]));
+		const environments = await environmentsOf(fenced);
+		const resolution = resolved(
+			environments.map((latest) => {
+				const read = asAuthorised.get(latest.id);
+				return read === undefined ? latest : { ...latest, repos: read.repos };
+			}),
+		);
 		const degraded = (reason: string) =>
-			emit("sandbox.degraded", sandbox.accountId, { sandbox, data: { reason } }).catch(() => undefined);
-		for (const file of environment.files) {
+			emit("sandbox.degraded", fenced.accountId, { sandbox: fenced, data: { reason } }).catch(() => undefined);
+		const label = (environment: StoredEnvironment) =>
+			environments.length > 1 ? `The environment ${environment.name}'s` : "The environment's";
+		const credentials = { variables: protectedWinners(fenced, resolution).map(({ winner }) => winner.item) };
+		/** Writes a file; false when its outcome is unknown (it failed in flight), so its item stays pending. */
+		const write = async ({
+			environment,
+			item: file,
+		}: {
+			environment: StoredEnvironment;
+			item: StoredEnvironmentFile;
+		}) => {
+			let bytes: Uint8Array;
 			try {
-				const bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
-				await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
+				bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
 			} catch (error) {
-				await degraded(`The environment's secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				return true;
 			}
-		}
-		for (const repo of environment.repos) {
+			try {
+				// Fenced (dropped by its host): a newer set-up's write of this path landed, whose winner is newer than this
+				// one's, so this item's part there is done.
+				await backend.writeFile(sandboxId, file.path, bytes, file.mode, { fence });
+				return true;
+			} catch (error) {
+				await degraded(`${label(environment)} secret file ${file.path} wasn't written: ${messageOf(error)}`);
+				return false;
+			}
+		};
+		/** Clones a repository; false when its outcome is unknown, so its item stays pending. */
+		const clone = async ({
+			environment,
+			item: repo,
+		}: {
+			environment: StoredEnvironment;
+			item: computeSchema.EnvironmentRepo;
+		}) => {
 			const path = clonePath(repo);
 			// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
 			// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
-			const credential = repoCredential(environment, repo, sandbox.placeholders ?? {});
+			const credential = repoCredential(credentials, repo, fenced.placeholders ?? {});
 			const command = [
 				"git",
 				...(credential === undefined ? [] : gitCredentialArgs(credential)),
@@ -2941,22 +5102,71 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				shellWord(path),
 			].join(" ");
 			try {
-				const result = await backend.exec(sandbox.id, {
+				const result = await backend.exec(sandboxId, {
 					command,
 					// No terminal to ask on: a repository that wants a login fails at once, saying so.
-					env: { ...sandbox.env, GIT_TERMINAL_PROMPT: "0" },
+					env: { ...fenced.env, GIT_TERMINAL_PROMPT: "0" },
 					timeoutMs: CLONE_TIMEOUT_MS,
 				});
 				if (result.exitCode !== 0 || result.timedOut) {
 					const why = result.timedOut
 						? "it took too long"
 						: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
-					await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${why}`);
+					await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${why}`);
 				}
+				return true;
 			} catch (error) {
-				await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+				await degraded(`${label(environment)} repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+				return false;
 			}
+		};
+		const done: string[] = [];
+		for (const item of work) {
+			let finished = true;
+			if (item.kind === "repos") {
+				// Only for a set-up a caller who may run commands started; otherwise it waits for one.
+				if (item.environmentId === undefined || !asAuthorised.has(item.environmentId)) continue;
+				for (const winner of resolution.repos.values()) {
+					if (winner.environment.id === item.environmentId && !(await clone(winner))) finished = false;
+				}
+			} else {
+				const targets =
+					item.kind === "files"
+						? [...resolution.files.values()].filter((winner) => winner.environment.id === item.environmentId)
+						: (item.paths ?? []).flatMap((path) => {
+								const winner = resolution.files.get(path);
+								return winner === undefined ? [] : [winner];
+							});
+				for (const target of targets) if (!(await write(target))) finished = false;
+			}
+			if (finished) done.push(item.id);
 		}
+		if (done.length === 0) return;
+		await patchSandbox(sandboxId, (latest) => {
+			const pending = (latest.pendingProvision ?? []).filter((item) => !done.includes(item.id));
+			return { ...latest, pendingProvision: pending.length === 0 ? undefined : pending };
+		});
+	}
+
+	/**
+	 * Takes environments deleted since a create or fork read them off the sandbox it has just stored: the delete looked
+	 * for its sandboxes before this one was there. Nothing was given its host yet, so only the record changes.
+	 */
+	async function dropDeleted(sandbox: StoredSandbox): Promise<void> {
+		const ids = environmentIdsOf(sandbox);
+		if (ids.length === 0) return;
+		const found = await Promise.all(ids.map((id) => store.environments.get(id)));
+		const missing = new Set(ids.filter((_, index) => found[index] === undefined));
+		if (missing.size === 0) return;
+		await patchSandbox(sandbox.id, (current) => {
+			let pending: Pick<StoredSandbox, "pendingProvision"> = current;
+			for (const id of missing) pending = pendingWithout(pending, id);
+			return {
+				...current,
+				...environmentFields(environmentIdsOf(current).filter((id) => !missing.has(id))),
+				pendingProvision: pending.pendingProvision,
+			};
+		});
 	}
 
 	/**
@@ -3020,6 +5230,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		role,
 		defaultVisibility: account.defaultVisibility,
 		personalTokens: account.personalTokens ?? "allowed",
+		snapshotCopies: account.snapshotCopies !== false,
 		createdAt: account.createdAt,
 	});
 
@@ -3106,6 +5317,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return memory === undefined ? {} : { memory: { ...memory } };
 	}
 
+	/** How a host reaches its mesh peers, as it last reported it, when it is connected and has a mesh. */
+	function hostMeshOf(hostId: string): { mesh?: computeSchema.HostMesh } {
+		const mesh = hostMesh.get(hostId);
+		return mesh === undefined
+			? {}
+			: { mesh: { address: mesh.address, peers: mesh.peers.map((peer) => ({ ...peer })) } };
+	}
+
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
@@ -3116,14 +5335,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		// An update that hasn't happened in its window isn't under way, whether or not the record was refreshed since.
-		const { updating, diskUsage, ...rest } = host;
+		const { updating, diskUsage, drainEpoch: _drain, poolSince: _since, evacuation: _evacuation, ...rest } = host;
 		const pending = updating !== undefined && now() - updating.requestedAt < HOST_UPDATE_WINDOW_MS;
+		const evacuation = await store.evacuations.get(host.id);
 		return {
 			...rest,
+			...(evacuation === undefined ? {} : { evacuation: evacuationProgress(evacuation) }),
 			...(diskUsage === undefined ? {} : { diskUsage: await diskView(host.id, diskUsage) }),
 			...(pending ? { updating } : {}),
 			usage: hostSparklines(host.id),
 			...hostMemoryOf(host.id),
+			// A revoked or dropped host's last report says nothing about now (a revoke answers before the next read).
+			...(host.state === "revoked" || host.state === "unreachable" ? {} : hostMeshOf(host.id)),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),
@@ -3214,8 +5437,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...fields.data,
 			},
 		};
-		// The webhooks are looked up while the event is written, but a delivery is queued only once the event is stored.
-		const written = store.events.put(event);
+		// The webhooks are looked up while the event is written, but a delivery is queued only once the event is stored. The
+		// event's outbox record is written with it, and deleted once its deliveries are queued: should queueing fail, or this
+		// gateway die first, a dispatcher's `drain()` queues them from the record (`webhooks.ts`).
+		const written = store.eventWrites.put(event);
 		await Promise.all([written, dispatcher.enqueue(event, written).catch(() => undefined)]);
 		exporter.record({ event, sandboxType: sandbox?.type });
 	}
@@ -3356,8 +5581,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(sandbox.health === "unresponsive" && extra.health === undefined && !stillUnresponsive
 				? { health: "ok" as const }
 				: {}),
+			// An ordinary boot's lease only in the `starting` its boot wrote (`bootLease`).
+			booting: extra.booting,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
+			// A drop of its memory pending only while it starts: its boot's publishing makes it `memoryDropped`, and any
+			// other way out of `starting` (its boot failed, so its host may hold that memory still) lets it go.
+			...(state === "starting" ? {} : { memoryDropping: undefined }),
 		};
 	}
 
@@ -3512,14 +5742,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await requireHostReachable(latest);
 				}
 				if (latest.state !== "starting") {
-					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes.
-					const sandbox = await settled(sandboxId);
+					// As before: whatever is queued on it (a stop, a fork of it) ends first, however long that takes. But a
+					// running sandbox's move, whose first copy is made as it runs on: until its move stops it, it is used as it is.
+					const sandbox =
+						latest.state === "running" && latest.moving?.from === "running" ? latest : await settled(sandboxId);
 					if (sandbox.state === "running") {
 						// Its host went while the call waited: nothing reaches the machine (an SSH or desktop grant would only
 						// fail when used).
 						await requireHostReachable(sandbox);
 						// Its guest agent doesn't answer its host: the call would only hang.
 						if (sandbox.health === "unresponsive") throw sandboxUnresponsive(sandbox, apiBasePath);
+						// Owed a stop (`enforceStop`: its egress as stored isn't what its host enforces) that didn't reach its host:
+						// running only until the sweep stops it, and never used meanwhile, its host back or not.
+						if (sandbox.stopFor !== undefined) {
+							throw new KantelError("conflict", `The sandbox is being stopped: ${sandbox.stopFor}`);
+						}
 						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
 						noteActivity(sandbox.id);
 						return sandbox;
@@ -3566,8 +5803,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {
 		if (limits.concurrentSandboxes === undefined) return;
-		const active = (await store.sandboxes.list({ accountId })).filter(
-			(sandbox) => sandbox.state === "starting" || sandbox.state === "running" || sandbox.state === "stopping",
+		const active = (await store.sandboxes.list({ accountId }, { state: ACTIVE_STATES })).filter((sandbox) =>
+			ACTIVE_STATES.includes(sandbox.state),
 		).length;
 		if (active + adding > limits.concurrentSandboxes) {
 			throw placementError(
@@ -3586,7 +5823,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * (routed there, or refused while it is unreachable).
 	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
-		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
+		if (sandbox.latestSnapshotId !== undefined) {
+			const latest = await store.snapshots.get(sandbox.latestSnapshotId);
+			return latest === undefined ? undefined : hostRef(latest);
+		}
 		if (!neverPlaced(sandbox) || sandbox.source === undefined) return undefined;
 		const from = sandbox.source.snapshotId;
 		const source = from === undefined ? undefined : await store.snapshots.get(from);
@@ -3607,14 +5847,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * holds its disk or snapshot finds its own host among them.
 	 */
 	async function hostsToBoot(principal: Principal, sandbox: StoredSandbox): Promise<string[]> {
+		const affine = !neverPlaced(sandbox) || sandbox.source !== undefined;
 		return requireHosts(
 			await ensureHosts(),
 			sandbox.accountId,
 			sandbox.type,
 			sandbox.hostLabels,
-			!neverPlaced(sandbox) || sandbox.source !== undefined,
+			affine,
 			await mayShare(principal),
 			sandbox.hostPin,
+			// Placed afresh, in its pool again.
+			affine ? undefined : await poolOfSandbox(sandbox),
 		);
 	}
 
@@ -3632,7 +5875,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<Placement> {
 		if (!neverPlaced(sandbox)) return booted(boot);
 		const stored = sandbox.source === undefined ? sandbox.templateBoot : undefined;
-		let template: Omit<SandboxTemplateBoot, "snapshot"> | undefined;
+		let template: Omit<SandboxTemplateBoot, "snapshot" | "snapshotHosts"> | undefined;
 		let eligibleHosts = boot.eligibleHosts;
 		if (stored !== undefined) {
 			const { holders, ...fresh } = stored;
@@ -3649,9 +5892,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}
 		}
+		// From a saved snapshot named by its ID alone: on its holders in its pool, or a host that fetches it, as its create.
+		const source =
+			sandbox.source?.snapshotId === undefined || boot.fromSnapshot === undefined
+				? undefined
+				: await store.snapshots.get(sandbox.source.snapshotId);
+		let fromCopies: Pick<SandboxSpec, "fromSnapshot" | "snapshotCopies"> = {};
+		// Either kind of ref: an older one names its host and is never fetched, but goes on a copy held under it too.
+		if (source?.ref !== undefined && (refHost(source.ref) !== undefined || source.hostId !== undefined)) {
+			const known = await ensureHosts();
+			const poolId = sandbox.poolId ?? source.poolId;
+			fromCopies = { fromSnapshot: source.ref, snapshotCopies: await snapshotCopiesOf(source, known, poolId) };
+			if (poolId !== undefined) {
+				const inPool = new Set(known.filter((host) => host.poolId === poolId).map((host) => host.id));
+				eligibleHosts = eligibleHosts.filter((hostId) => inPool.has(hostId));
+			}
+		}
 		const placement = await backend.create({
 			...boot,
+			...fromCopies,
+			// This attempt, as the boot moved it to starting.
+			attempt: sandbox.lifecycle ?? 0,
 			eligibleHosts,
+			// Placed afresh (from its source's snapshot too): in its pool, kept to it as the host admits it.
+			...pooled(sandbox.poolId),
 			sandboxId: sandbox.id,
 			accountId: sandbox.accountId,
 			type: sandbox.type,
@@ -3659,6 +5923,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(boot.shape === undefined ? {} : { shape: boot.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
 			...(template === undefined ? {} : { template: { ...template } }),
+			...(await stickySpecOf(sandbox)),
 		});
 		// Made again from its template's base, its setup run: no longer the snapshot its create was to start from.
 		return template === undefined || sandbox.template?.start !== "snapshot"
@@ -3667,8 +5932,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** A template's boot as a sandbox keeps it for a retry of its create (`templateBoot`): its base and setup, no snapshot. */
-	const freshBoot = ({ snapshot: _cached, ...fresh }: SandboxTemplateBoot): Omit<SandboxTemplateBoot, "snapshot"> =>
-		fresh;
+	const freshBoot = ({
+		snapshot: _cached,
+		snapshotHosts: _copies,
+		...fresh
+	}: SandboxTemplateBoot): Omit<SandboxTemplateBoot, "snapshot" | "snapshotHosts"> => fresh;
 
 	/** A boot's sizing from the record as it moved: its named size and, where it has one, its shape. */
 	const sizingOf = (sandbox: StoredSandbox): Pick<BootOptions, "size" | "shape"> => ({
@@ -3677,20 +5945,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	});
 
 	/**
-	 * The environment `bootAgain` provisions a sandbox it makes from its image with (its create failed, so the files and
-	 * repositories its create would have put there never were), checked as its create checks it: only a caller that may
-	 * run commands has repositories cloned. None for a sandbox on a disk of its own or made from a snapshot, which has them.
+	 * What a boot's set-up may do once the sandbox runs, if it has any pending (`pendingProvision`): the environments whose
+	 * repositories it may clone, checked as a create checks it (only a caller that may run commands has repositories
+	 * cloned; `lenient` leaves them pending for one that may, rather than refuse). A sandbox made before set-up was
+	 * recorded, whose create never placed it, has its environments' set-up recorded now.
 	 */
 	async function provisionedAgain(
 		principal: Principal,
 		role: MemberRole,
 		sandbox: StoredSandbox,
-	): Promise<StoredEnvironment | undefined> {
-		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.environmentId === undefined) return undefined;
-		const environment = await store.environments.get(sandbox.environmentId);
-		if (environment === undefined) return undefined;
-		if (environment.repos.length > 0) requireScope(principal, "exec", role);
-		return environment;
+		lenient = false,
+	): Promise<Provisioning | undefined> {
+		let pending = sandbox.pendingProvision ?? [];
+		const environments = await environmentsOf(sandbox);
+		const older = sandbox.envLayers === undefined && neverPlaced(sandbox) && sandbox.source === undefined;
+		if (pending.length === 0 && older) {
+			const work = environments.flatMap(workFor);
+			if (work.length === 0) return undefined;
+			await patchSandbox(sandbox.id, (latest) =>
+				(latest.pendingProvision?.length ?? 0) > 0 ? undefined : { ...latest, pendingProvision: work },
+			);
+			pending = work;
+		}
+		if (pending.length === 0) return undefined;
+		const cloning = new Set(pending.filter((work) => work.kind === "repos").map((work) => work.environmentId));
+		let authorised = environments.filter((environment) => cloning.has(environment.id));
+		if (authorised.length > 0) {
+			if (!lenient) requireScope(principal, "exec", role);
+			else if (!mayScope(principal, "exec", role)) authorised = [];
+		}
+		return { environments: authorised };
+	}
+
+	/** Whether a caller may act with `scope`, as `requireScope` would let them. */
+	function mayScope(principal: Principal, scope: computeSchema.ApiKeyScope, role: MemberRole): boolean {
+		try {
+			requireScope(principal, scope, role);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	/**
@@ -3702,16 +5996,72 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		requireScope(principal, "exec", role);
 	}
 
+	/**
+	 * An ordinary boot's lease (`StoredSandbox.booting`), written with its move to `starting` from `latest`: said now, and,
+	 * from paused, what it was paused as, for its settling to put back.
+	 */
+	const bootLease = (latest: StoredSandbox): Pick<StoredSandbox, "booting"> => ({
+		booting: {
+			heartbeatAt: now(),
+			...(latest.state === "paused"
+				? {
+						paused: {
+							...(latest.stoppedAt === undefined ? {} : { stoppedAt: latest.stoppedAt }),
+							...(latest.pausedSnapshotId === undefined ? {} : { pausedSnapshotId: latest.pausedSnapshotId }),
+							...(latest.size === undefined ? {} : { size: latest.size }),
+							...(latest.shape === undefined ? {} : { shape: latest.shape }),
+							...(latest.mounts === undefined ? {} : { mounts: latest.mounts }),
+							...(latest.mountsAt === undefined ? {} : { mountsAt: latest.mountsAt }),
+						},
+					}
+				: {}),
+		},
+	});
+
+	/**
+	 * The heartbeat of the ordinary boot of `starting` (as its move to `starting` wrote it, with its lease): begun as soon
+	 * as that move is made, its lease moved on every `UPGRADE_HEARTBEAT_MS` through the boot's preparation, queueing and
+	 * publishing, until `end`, or the boot `over` it settles. So the sweep, on any gateway, never settles a boot this
+	 * gateway is still at. Once it ends with the sandbox still `starting` (its preparation or publish failed, its host's
+	 * answer was lost), the lease goes quiet, and the sweep settles it from what its host has (`settleStuckStart`).
+	 */
+	function bootHeartbeat(starting: StoredSandbox): {
+		readonly over: <T>(work: () => Promise<T>) => Promise<T>;
+		readonly end: () => void;
+	} {
+		const lifecycle = starting.lifecycle ?? 0;
+		const beat = () =>
+			patchSandbox(starting.id, (latest) =>
+				latest.state === "starting" && (latest.lifecycle ?? 0) === lifecycle && latest.booting !== undefined
+					? { ...latest, booting: { ...latest.booting, heartbeatAt: Math.max(now(), latest.booting.heartbeatAt) } }
+					: undefined,
+			).catch(() => undefined);
+		const heartbeat = setInterval(() => void beat(), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		const end = () => clearInterval(heartbeat);
+		return {
+			end,
+			over: <T>(work: () => Promise<T>) => {
+				try {
+					return work().finally(end);
+				} catch (error) {
+					end();
+					throw error;
+				}
+			},
+		};
+	}
+
 	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
 	async function bootProvisioned(
 		sandboxId: string,
 		run: () => Promise<Placement>,
-		environment: StoredEnvironment | undefined,
+		provisioning: Provisioning | undefined,
 		sent: { readonly egressRevision: number | undefined },
 	): Promise<StoredSandbox | undefined> {
 		const booted = await boot(sandboxId, run, undefined, sent);
-		if (booted?.state === "running" && environment !== undefined)
-			await provision(booted, environment).catch(() => undefined);
+		if (booted?.state === "running" && provisioning !== undefined)
+			await provision(booted.id, provisioning.environments).catch(() => undefined);
 		return booted;
 	}
 
@@ -3740,10 +6090,60 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await store.snapshots.delete(snapshot.id);
 	}
 
-	async function releaseRef(ref: string | undefined): Promise<void> {
+	/** Lets the backend drop a snapshot's bytes (`ref`, on `hostId` where it names none) once no record has their ref. */
+	async function releaseRef(bytes: Pick<StoredSnapshot, "ref" | "hostId">): Promise<void> {
+		const { ref } = bytes;
 		if (ref === undefined) return;
 		if ((await store.snapshots.list({ ref })).length > 0) return;
-		await backend.deleteSnapshot(ref).catch(() => undefined);
+		await deleteSnapshotBytes({ ...bytes, ref }).catch(() => undefined);
+	}
+
+	/**
+	 * Deletes a snapshot's bytes on the host they were taken on (its ref's, or `hostId` for a ref naming none), then the
+	 * copies other hosts fetched of it, or are fetching (`disk-holders.ts`, kind `snapshot`: the holders recorded as copies
+	 * of this ref, never of another ref that shares its host's ID), whose holders go with them. That is the prompt path
+	 * only: a copy it doesn't reach (its host away, or told to fetch it just as this ran) is deleted when its host next
+	 * reports it (`DiskHolders.recordHoldings`). Bytes their host no longer has count as deleted; any other failure there
+	 * is thrown, and the copies are left for a retry.
+	 */
+	async function deleteSnapshotBytes(bytes: { readonly ref: string; readonly hostId?: string }): Promise<void> {
+		const { ref } = bytes;
+		const named = hostRef(bytes) ?? ref;
+		try {
+			await backend.deleteSnapshot(named);
+		} catch (error) {
+			if (!goneAlready(error)) throw error;
+		}
+		const hostId = refHost(named);
+		if (hostId === undefined) return;
+		const objectId = refId(named);
+		const copies = [...(await diskHolders.holdersOf("snapshot", objectId)).values()]
+			.flat()
+			.filter((holder) => holder.ref === ref);
+		for (const host of new Set(copies.map((holder) => holder.hostId))) {
+			if (host === hostId) continue;
+			await backend.deleteSnapshot(`${host}/${objectId}`).catch(() => undefined);
+		}
+		for (const holder of copies) await store.diskHolders.delete(holder.id);
+	}
+
+	/**
+	 * Refuses bytes just taken of `read` (a running sandbox, as read before they were taken) when what they are of can't
+	 * be told: the sandbox began or ended an upgrade meanwhile, so they may be the isolate's or the microVM's. The bytes go
+	 * again (`taken`). A snapshot's `sandboxType` is then always what its bytes are of.
+	 */
+	async function requireSameTier(read: StoredSandbox, taken: Pick<StoredSnapshot, "ref" | "hostId">): Promise<void> {
+		const latest = await store.sandboxes.get(read.id);
+		if (latest === undefined) return;
+		if (
+			latest.type === read.type &&
+			latest.upgrading === undefined &&
+			latest.upgradedFrom?.at === read.upgradedFrom?.at
+		) {
+			return;
+		}
+		await releaseRef(taken);
+		throw new KantelError("conflict", "The sandbox was upgraded while its snapshot was taken; take it again");
 	}
 
 	// Expiry of automatic snapshots. A record goes ready → marked (`deleting`, `retiring` {by, token, at}, which may be
@@ -3828,6 +6228,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				sandbox.latestSnapshotId,
 				sandbox.state === "paused" || sandbox.state === "starting" ? sandbox.pausedSnapshotId : undefined,
 				neverPlaced(sandbox) ? sandbox.source?.snapshotId : undefined,
+				// What an upgrade under way starts its microVM from.
+				sandbox.upgrading?.snapshotId,
 			]) {
 				if (id !== undefined && snapshotIds.has(id)) needed.add(id);
 			}
@@ -3901,7 +6303,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const { ref } = snapshot;
 		if (ref !== undefined && !(await store.snapshots.list({ ref })).some((other) => other.id !== snapshot.id)) {
 			try {
-				await backend.deleteSnapshot(ref);
+				await deleteSnapshotBytes({ ref, ...(snapshot.hostId === undefined ? {} : { hostId: snapshot.hostId }) });
 			} catch (error) {
 				if (!goneAlready(error)) return false;
 			}
@@ -3927,6 +6329,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** The error a create or fork answers when the snapshot it is made from was deleted under it. */
 	const deletedMeanwhile = () => new KantelError("conflict", "The snapshot was deleted while it was being used");
+
+	/** An upgrade starts its microVM from a microVM's snapshot, never an isolate's (`invalid`). */
+	function requireMicrovmSnapshot(snapshot: StoredSnapshot): void {
+		if (snapshot.sandboxType === "isolate") {
+			throw new KantelError(
+				"invalid",
+				`Snapshot ${snapshot.id} is of an isolate: an isolate upgrades into a snapshot of a microVM`,
+			);
+		}
+	}
+
+	/**
+	 * What an isolate's automatic upgrade is to start from (`autoUpgradeFrom`), checked as its upgrade will take it: the
+	 * snapshot's pool too, by the caller, once the sandbox's is known (`poolOfSnapshot`).
+	 */
+	async function checkAutoUpgradeFrom(principal: Principal, accountId: string, from: string): Promise<StoredSnapshot> {
+		const snapshot = await snapshotFrom(principal, accountId, from);
+		requireMicrovmSnapshot(snapshot);
+		return snapshot;
+	}
 
 	/**
 	 * Expires automatic snapshots past their `expiresAt` (the model above), at most once each `SNAPSHOT_EXPIRY_EVERY_MS`,
@@ -4020,9 +6442,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * already recorded while it ran is kept: a real end's output starts with it, and an end Kantel made up (its result
 	 * lost, its host gone) adds its reason after it.
 	 */
-	async function endCommand(commandId: string, result: ExecResult): Promise<StoredCommand | undefined> {
+	async function endCommand(
+		commandId: string,
+		result: ExecResult,
+		rerunAs?: string,
+		/** Its owner, the call that ran it: the one that records an end its sandbox's upgrade runs again. */
+		owner = false,
+	): Promise<StoredCommand | undefined> {
 		const at = now();
 		const ended = await settleCommand(commandId, (latest) => {
+			if (!owner && heldForRerun(latest, result, at)) return undefined;
 			const stdout = endStream(latest.stdout, result.stdout);
 			const stderr = endStream(latest.stderr, result.stderr);
 			return {
@@ -4038,6 +6467,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					(latest.truncated && !(result.stdout.startsWith(latest.stdout) && result.stderr.startsWith(latest.stderr))),
 				endedAt: at,
 				durationMs: at - latest.startedAt,
+				...(result.needsMicrovm === undefined
+					? {}
+					: {
+							needsMicrovm: {
+								command: result.needsMicrovm.command,
+								reason: result.needsMicrovm.reason,
+								...(result.needsMicrovm.inferred === true ? { inferred: true } : {}),
+							},
+						}),
+				...(result.terminated === undefined ? {} : { terminated: result.terminated }),
+				...(rerunAs === undefined ? {} : { rerunAs }),
 			};
 		});
 		return ended ?? (await store.commands.get(commandId));
@@ -4049,15 +6489,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function settleCommand(
 		commandId: string,
-		change: (running: StoredCommand) => StoredCommand,
+		change: (running: StoredCommand) => StoredCommand | undefined,
 	): Promise<StoredCommand | undefined> {
 		let won = false;
 		const written = await store.commands.update(commandId, (latest) => {
-			won = latest.state === "running";
-			return won ? change(latest) : undefined;
+			const next = latest.state === "running" ? change(latest) : undefined;
+			won = next !== undefined;
+			return next;
 		});
 		return won ? written : undefined;
 	}
+
+	/**
+	 * Whether a command's end, needing a microVM (as its runtime said, in a sandbox with `autoUpgrade`), is its owner's to
+	 * record with its run again: until `RERUN_CLAIM_MS` after a reader first saw it (`rerunPending`), when its owner is
+	 * taken to be gone and the end is recorded as it is.
+	 */
+	const heldForRerun = (command: StoredCommand, result: ExecResult | CommandProgress, at: number): boolean =>
+		command.autoUpgrade === true &&
+		!isCommandProgress(result) &&
+		result.needsMicrovm !== undefined &&
+		result.needsMicrovm.inferred !== true &&
+		(command.rerunPending === undefined || at - command.rerunPending < RERUN_CLAIM_MS);
 
 	/**
 	 * A running command as its backend has it now: its output so far (what `attach` shows while it runs), and ended once
@@ -4065,24 +6518,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * lost once the backend no longer knows it; one a gateway here follows is left to that gateway to end.
 	 */
 	async function fetchedCommand(command: StoredCommand): Promise<StoredCommand> {
-		if (command.state !== "running" || backend.commandResult === undefined) return command;
+		if (command.state !== "running") return command;
+		// Its memory let go by a boot since it started: killed, saying why, never asked for.
+		const gone = await endedWithMemory(command).catch(() => command);
+		if (gone !== undefined) return gone;
+		if (backend.commandResult === undefined) return command;
 		const followed = runningCommands.has(command.id);
 		// A foreground one a gateway here waits for is ended by that wait, and only its output so far is recorded; one none
 		// here does outlived its gateway (on a backend that runs commands on past their call) or is another replica's, and
 		// is asked for as a detached one is.
 		if (command.detached !== true && followed) return progressOf(command);
 		let result: ExecResult | CommandProgress | undefined;
+		// Made up here (its backend no longer knows it), not its backend's answer.
+		let lost = false;
 		try {
 			result = await backend.commandResult(command.sandboxId, command.id);
 		} catch (error) {
 			// Not just started (a start the backend hasn't recorded yet reads as unknown too).
+			// Nor while its sandbox isn't running: paused, its commands run on in its memory; starting, they are its
+			// machine before's, which whatever lets that machine go kills, saying why, before it runs again.
 			if (
 				followed ||
 				!(error instanceof KantelError && error.code === "not_found") ||
-				now() - command.startedAt < LOST_COMMAND_MS
+				now() - command.startedAt < LOST_COMMAND_MS ||
+				(await store.sandboxes.get(command.sandboxId).catch(() => undefined))?.state !== "running"
 			) {
 				return command;
 			}
+			lost = true;
 			result = {
 				exitCode: 1,
 				stdout: "",
@@ -4093,6 +6556,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		if (result === undefined) return command;
 		if (isCommandProgress(result)) return (await recordProgress(command.id, result)) ?? command;
+		// Checked again now it has been read: a boot may have let go of its memory meanwhile.
+		const may = await endable(command, !lost);
+		if (may === "hold" || may === "unknown") return command;
+		if (may !== "end") return may.gone;
+		// Its owner runs it again in the microVM its sandbox upgrades to, and records its end with that: seen, and left.
+		if (heldForRerun(command, result, now())) {
+			if (command.rerunPending !== undefined) return command;
+			return (
+				(await store.commands.update(command.id, (latest) =>
+					latest.state === "running" && latest.rerunPending === undefined
+						? { ...latest, rerunPending: now() }
+						: undefined,
+				)) ?? command
+			);
+		}
 		return (await endCommand(command.id, result)) ?? command;
 	}
 
@@ -4129,6 +6607,67 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * `killCommand`: a running command marked killed and its kill sent to its backend; one ended is answered with its end.
+	 * A command its sandbox's upgrade runs again (`autoUpgrade`) has its run again killed with it, whether the kill finds
+	 * it running with its run again starting (`rerunStarting`), or ended naming its run again (`rerunAs`): a kill never
+	 * leaves its run again running.
+	 */
+	async function killStored(sandboxId: string, stored: StoredCommand): Promise<StoredCommand> {
+		// Killed before, but its kill never reached its backend: sent again.
+		if (stored.state === "killed" && stored.killPending === true) {
+			return reachRerun(sandboxId, await deliverKill(sandboxId, stored));
+		}
+		// One that ended where no gateway here saw it is answered with its end, not killed.
+		const command = await fetchedCommand(stored);
+		if (command.state !== "running") return reachRerun(sandboxId, command);
+		noteActivity(sandboxId);
+		const at = now();
+		// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
+		// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
+		// kill is pending from then until its backend takes it, so a gateway that dies before sending it, or a send
+		// that fails, leaves it for the next kill to send.
+		const killed = await settleCommand(command.id, (latest) => ({
+			...latest,
+			state: "killed",
+			exitCode: 137,
+			endedAt: at,
+			durationMs: at - latest.startedAt,
+			...(backend.killCommand === undefined ? {} : { killPending: true }),
+		}));
+		if (killed === undefined) return reachRerun(sandboxId, (await store.commands.get(command.id)) ?? command);
+		runningCommands.get(command.id)?.abort();
+		runningCommands.delete(command.id);
+		// Paused: its process is kept in its memory, where nothing reaches it, and its kill goes as it resumes from that
+		// memory (`sendPendingKills`, after the resume is published, so one of the two sends it).
+		if (killed.killPending === true && (await store.sandboxes.get(sandboxId))?.state === "paused") {
+			return reachRerun(sandboxId, killed);
+		}
+		// Its process, which the gateway that started it may not be: the kill goes to its host whichever it is.
+		return reachRerun(sandboxId, await deliverKill(sandboxId, killed));
+	}
+
+	/**
+	 * A killed or ended command's run again (`autoUpgrade`), killed too while it runs. One whose run again isn't recorded
+	 * yet is left to that run's start, which runs it only while this one still runs (`runCommandOnce`). A killed one gets
+	 * the `rerunAs` its owner can no longer record.
+	 */
+	async function reachRerun(sandboxId: string, command: StoredCommand): Promise<StoredCommand> {
+		const rerunId = command.rerunAs ?? (command.state === "killed" ? command.rerunStarting : undefined);
+		if (rerunId === undefined) return command;
+		const rerun = await store.commands.get(rerunId);
+		if (rerun === undefined || rerun.sandboxId !== sandboxId) return command;
+		if (rerun.state === "running" || (rerun.state === "killed" && rerun.killPending === true)) {
+			await killStored(sandboxId, rerun);
+		}
+		if (command.rerunAs !== undefined) return command;
+		return (
+			(await store.commands.update(command.id, (latest) =>
+				latest.rerunAs === undefined ? { ...latest, rerunAs: rerunId } : undefined,
+			)) ?? command
+		);
+	}
+
+	/**
 	 * Sends a killed command's kill to its backend (`killCommand`), the record's `killPending` until it is done: the
 	 * backend took it, or can't ever (`not_supported`, an older host). One that failed otherwise (its host out of reach)
 	 * stays pending, its stderr saying so, and the next kill of it, on any gateway, sends it again.
@@ -4162,35 +6701,244 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
-	 * (a pause keeps them, as it keeps the rest of the sandbox's memory).
+	 * Sends again each kill of a sandbox's commands its backend hasn't taken yet (`killPending`): those made while it
+	 * was paused, whose processes its memory kept, once it runs from that memory again.
 	 */
-	async function killCommandsOf(sandboxId: string, listed?: readonly StoredCommand[]): Promise<void> {
+	async function sendPendingKills(sandboxId: string): Promise<void> {
+		for (const command of await store.commands.list({ sandboxId, state: "killed" })) {
+			if (command.killPending === true) await deliverKill(sandboxId, command).catch(() => undefined);
+		}
+	}
+
+	/**
+	 * A sandbox's running commands (`listed`, else all of them now) as its backend has them: one that ended where no
+	 * gateway here saw it gets its end. Asked for all at once, for at most RECONCILE_MS in all, so a stop or delete never
+	 * waits long on a host that doesn't answer; one not answered in time is as it was.
+	 */
+	async function reconciledCommands(sandboxId: string, listed?: readonly StoredCommand[]): Promise<StoredCommand[]> {
 		const running = listed ?? (await store.commands.list({ sandboxId, state: "running" }));
-		// One that ended where no gateway here saw it keeps its end, not a kill: asked for all at once, for at most
-		// RECONCILE_MS in all, so a stop or delete never waits long on a host that doesn't answer. One not answered in
-		// time is marked killed.
+		if (running.length === 0) return [];
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const budget = new Promise<undefined>((resolve) => {
 			timer = setTimeout(() => resolve(undefined), RECONCILE_MS);
 		});
 		const reconciled = await Promise.all(
-			running.map(async (listed) => (await Promise.race([fetchedCommand(listed), budget])) ?? listed),
+			running.map(
+				async (listed) => (await Promise.race([fetchedCommand(listed).catch(() => listed), budget])) ?? listed,
+			),
 		);
 		if (timer !== undefined) clearTimeout(timer);
+		return reconciled;
+	}
+
+	/**
+	 * Marks a sandbox's running commands killed, and stops waiting for them: its stop or delete ends their processes
+	 * (a pause keeps them, as it keeps the rest of the sandbox's memory, until something lets that memory go).
+	 * `listed`: those to kill, fixed before its next machine was published (a command started on that machine is never
+	 * one of them); else all of them now. `note`, added to each one's stderr, says why. Each is first asked of its
+	 * backend, so one that ended keeps its end (`reconciledCommands`), unless `reconcile` is false: the sandbox's memory
+	 * is gone, and the machine its backend would ask now is a new one, which doesn't know them.
+	 */
+	async function killCommandsOf(
+		sandboxId: string,
+		how: { readonly listed?: readonly StoredCommand[]; readonly note?: string; readonly reconcile?: boolean } = {},
+	): Promise<void> {
+		const { note } = how;
+		const reconciled =
+			how.reconcile === false
+				? (how.listed ?? (await store.commands.list({ sandboxId, state: "running" })))
+				: await reconciledCommands(sandboxId, how.listed);
 		for (const command of reconciled) {
 			if (command.state !== "running") continue;
 			const at = now();
-			await settleCommand(command.id, (latest) => ({
-				...latest,
-				state: "killed",
-				endedAt: at,
-				durationMs: at - latest.startedAt,
-			}));
+			// Only in the memory it was listed in: one moved on to a later memory since (`runCommandOnce`, sent after its
+			// sandbox's next boot) runs there, and isn't this kill's.
+			const killed = await settleCommand(command.id, (latest) =>
+				(latest.memoryGeneration ?? 0) !== (command.memoryGeneration ?? 0)
+					? undefined
+					: {
+							...latest,
+							state: "killed",
+							endedAt: at,
+							durationMs: at - latest.startedAt,
+							...(note === undefined ? {} : noted(latest, note)),
+						},
+			);
+			if (killed === undefined) continue;
 			runningCommands.get(command.id)?.abort();
 			runningCommands.delete(command.id);
 		}
 	}
+
+	/** A command's stderr with `note` added, cut to what a command keeps. */
+	const noted = (command: StoredCommand, note: string): Pick<StoredCommand, "stderr" | "truncated"> => {
+		const stderr = truncate(`${command.stderr}${note}`);
+		return { stderr: stderr.text, truncated: command.truncated || stderr.truncated };
+	};
+
+	/**
+	 * What a running command's failure adds when its sandbox was being moved, from its stop on (`moving.phase` past
+	 * `copying`): its call may have broken with that stop, which a move that restarts the sandbox makes to end its
+	 * processes, and which a move that keeps its memory carries commands on through, except on a host or guest image from
+	 * before that. Undefined while it isn't being moved so. Said beside the failure, never instead of it: the failure
+	 * may be the command's own.
+	 */
+	async function moveNote(sandboxId: string): Promise<string | undefined> {
+		const moving = (await store.sandboxes.get(sandboxId).catch(() => undefined))?.moving;
+		if (moving === undefined || moving.from !== "running" || moving.phase === "copying") return undefined;
+		if (moving.keepMemory !== true) {
+			return `kantel: the sandbox's move to another host was stopping it to restart it there (${restartWhy(moving.restartReason)}) as this command ended\n`;
+		}
+		return "kantel: the sandbox's move to another host was stopping it, keeping its memory, as this command ended; a kantel-host or guest image from before commands carried on across a move ends a command so\n";
+	}
+
+	/**
+	 * Waits, for at most `STOP_SETTLE_MS`, while a sandbox is `stopping`: a stop kills its commands before it begins, and
+	 * a pause brings them up to date and leaves them running, unless its host stops it cold, which kills them once it
+	 * says so.
+	 */
+	async function stopSettled(sandboxId: string): Promise<void> {
+		const until = Date.now() + STOP_SETTLE_MS;
+		while (Date.now() < until) {
+			const state = (await store.sandboxes.get(sandboxId).catch(() => undefined))?.state;
+			if (state !== "stopping") return;
+			await delay(startPollMs).done;
+		}
+	}
+
+	/**
+	 * A foreground command's end, for a call whose follow of it read an end that can't be recorded yet (`endable`): its
+	 * record read, and asked of its backend as a detached one is (`fetchedCommand`, which holds as `endable` does), from
+	 * 1 s doubling to 30 s apart, until it ends: killed by the move's commit, or its own end once the move is over.
+	 */
+	async function awaitedEnd(command: StoredCommand): Promise<StoredCommand> {
+		let wait = EXEC_FOLLOW_MIN_MS;
+		for (;;) {
+			const stored = await store.commands.get(command.id).catch(() => undefined);
+			if (stored !== undefined && stored.state !== "running") return stored;
+			if (stored !== undefined) {
+				const fetched = await fetchedCommand(stored).catch(() => stored);
+				if (fetched.state !== "running") return fetched;
+			}
+			// This gateway closing: the wait is let go, the command left running for the next read, as a closing gateway
+			// leaves any it follows.
+			if (closed.signal.aborted) return stored ?? command;
+			await pauseUnlessClosed(wait);
+			wait = Math.min(wait * 2, EXEC_FOLLOW_MAX_MS);
+		}
+	}
+
+	/**
+	 * What may be recorded of a running command once an end of it has been read (its backend's answer, or that its
+	 * backend doesn't know it), checked after the read, against its sandbox as it is now:
+	 * - `gone`: a boot has let go of its memory since it started, and it is killed, saying why (`endedWithMemory`);
+	 * - `hold`: nothing, for now: its sandbox is booting fresh from paused, or being moved without its memory past where
+	 *   anything ends in it (paused, or its source being stopped for the move, where only an answer from the source is
+	 *   still a real end), and its publishing kills it, or a failed boot or a rollback leaves it running;
+	 * - `unknown`: its sandbox or that kill couldn't be read or written, so whether its memory went isn't known: asked
+	 *   again;
+	 * - `end`: the end is its own, read from the memory it runs in (a boot that lets that memory go writes so before
+	 *   any machine that doesn't know it can be asked).
+	 */
+	async function endable(
+		command: StoredCommand,
+		/** The end is the backend's answer from where it ran, not a failure of its call (which its machine's stop makes). */
+		answered = false,
+	): Promise<{ readonly gone: StoredCommand } | "hold" | "unknown" | "end"> {
+		let sandbox: StoredSandbox | undefined;
+		try {
+			sandbox = await store.sandboxes.get(command.sandboxId);
+			const gone = await endedWithMemory(command, sandbox);
+			if (gone !== undefined) return { gone };
+		} catch {
+			return "unknown";
+		}
+		// A boot from its disk under way that lets its paused memory go once it has booted fresh.
+		if (sandbox?.memoryDropping !== undefined) return "hold";
+		// A move that lets its memory go: from paused, or from running once its source is being stopped. From then on a
+		// failed call is its machine's stop, and its kill is the move's. While it is `stopping`, an answer its source gave
+		// is still its real end (the source may not have stopped yet); from `final-copy` on, nothing ends there.
+		const moving = sandbox?.moving;
+		if (moving !== undefined && moving.keepMemory !== true) {
+			if (moving.from === "paused") return "hold";
+			if (moving.from === "running" && moving.phase !== "copying" && !(answered && moving.phase === "stopping")) {
+				return "hold";
+			}
+		}
+		return "end";
+	}
+
+	/** Why a command ended with its sandbox's move to another host that restarted it, `reason` its move's restartReason. */
+	const restartedByMove = (reason: string | undefined): string =>
+		`kantel: killed: the sandbox moved to another host and restarted there (${restartWhy(reason)}), which ended its processes\n`;
+
+	/** Why a move restarted a sandbox, as a clause: its restartReason, or that it was asked to. */
+	const restartWhy = (reason: string | undefined): string =>
+		reason === undefined ? "the move was asked to restart it" : `${reason.charAt(0).toLowerCase()}${reason.slice(1)}`;
+
+	/**
+	 * Why a paused sandbox's commands, kept running in its memory, were killed by what let that memory go: a stop, a
+	 * delete, or a boot from its disk (a start, a restart on a new base).
+	 */
+	const pausedMemoryGone = (by: "stopped" | "deleted" | "started afresh from its disk"): string =>
+		`kantel: killed: the sandbox was ${by}, which let go of the memory it was paused with, and its processes with it\n`;
+
+	/**
+	 * What a sandbox's record says as a boot lets go of the memory its commands ran in (`memoryDropped`), `why` being
+	 * what each of them killed so says: written in the same write that moves it to `starting` (a move's, as it is
+	 * published on its new host), so a command started after it (on the machine it boots) carries the new generation.
+	 */
+	const droppedMemory = (sandbox: StoredSandbox, why: string): Pick<StoredSandbox, "memoryDropped"> => ({
+		memoryDropped: { at: now(), generation: (sandbox.memoryDropped?.generation ?? 0) + 1, why },
+	});
+
+	/**
+	 * The one rule for a command whose memory went: one still `running` whose `memoryGeneration` is behind its
+	 * sandbox's `memoryDropped.generation` ran in a memory a boot let go, so it is killed, saying why (`memoryDropped.why`),
+	 * never asked of its backend (whose machine now is a new one, which doesn't know it) nor taken as lost. "Behind" is
+	 * by generations its sandbox's record counts, never a gateway's clock. Answers the command as it is then, or
+	 * undefined where the rule doesn't apply. `sandbox`: its sandbox as just read, if the caller has it.
+	 */
+	async function endedWithMemory(command: StoredCommand, sandbox?: StoredSandbox): Promise<StoredCommand | undefined> {
+		if (command.state !== "running") return undefined;
+		const dropped = (sandbox ?? (await store.sandboxes.get(command.sandboxId)))?.memoryDropped;
+		if (dropped === undefined || (command.memoryGeneration ?? 0) >= dropped.generation) return undefined;
+		const at = now();
+		const killed = await settleCommand(command.id, (latest) =>
+			(latest.memoryGeneration ?? 0) < dropped.generation
+				? { ...latest, state: "killed", endedAt: at, durationMs: at - latest.startedAt, ...noted(latest, dropped.why) }
+				: undefined,
+		);
+		if (killed !== undefined) {
+			runningCommands.get(command.id)?.abort();
+			runningCommands.delete(command.id);
+		}
+		return killed ?? (await store.commands.get(command.id)) ?? command;
+	}
+
+	/**
+	 * Each of a sandbox's commands whose memory went, killed (`endedWithMemory`): straight after the boot that let it go,
+	 * and by the sweep after, in case that failed. One that fails is left for the next.
+	 */
+	async function killDroppedOf(sandbox: StoredSandbox): Promise<void> {
+		const dropped = sandbox.memoryDropped;
+		if (dropped === undefined || cleared.get(sandbox.id) === dropped.generation) return;
+		let all = true;
+		for (const command of await store.commands.list({ sandboxId: sandbox.id, state: "running" })) {
+			const ended = await endedWithMemory(command, sandbox).catch(() => undefined);
+			if (ended?.state === "running" && (ended.memoryGeneration ?? 0) < dropped.generation) all = false;
+			if (ended === undefined && (command.memoryGeneration ?? 0) < dropped.generation) all = false;
+		}
+		// None left from before: this gateway's sweep looks no more, until its memory goes again.
+		if (all) cleared.set(sandbox.id, dropped.generation);
+	}
+
+	/** The sandboxes whose commands from before their memory went this gateway has seen all ended, by generation. */
+	const cleared = new Map<string, number>();
+
+	/** Why a pause's commands were killed when its host stopped the sandbox instead, without its memory. */
+	const PAUSE_STOPPED_COLD =
+		"kantel: killed: the sandbox's host couldn't pause it keeping its memory, so it stopped it, which ended its processes\n";
 
 	/**
 	 * Boots a sandbox in `starting` with `run`, and records `running`, or `error` when it fails; either only while it is
@@ -4202,12 +6950,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		written?: StoredSandbox,
 		/** The `egressRevision` of the egress `run` sent, read before it. */
 		sent?: { readonly egressRevision: number | undefined },
+		/** What else changes as it is published (an upgrade's microVM: its type, size and image). */
+		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
+		/** Only while this holds is it published or its egress sent (a settlement's claim, `settleLostCreate`). */
+		fence: (sandbox: StoredSandbox) => boolean = () => true,
 	): Promise<StoredSandbox | undefined> {
 		let placement: Placement;
 		const calledAt = now();
 		try {
 			placement = await run();
 		} catch (error) {
+			// Its host was sent it and didn't answer (its connection dropped): it may have made it, so it stays starting
+			// until the sweep settles it from what the host reports (`settleLostCreate`), never failed on a guess.
+			if (isCreateOutcomeUnknown(error)) return undefined;
+			// An ordinary boot (one with a lease, `booting`) its host was sent and never answered: it may have booted, or let
+			// go of the memory it was paused with, so it stays starting until the sweep settles it from what its host has
+			// (`settleStuckStart`), never failed on a guess. One with no lease (a move's start again) fails, as ever.
+			if (isStartOutcomeUnknown(error)) {
+				return fail(sandboxId, error, "starting", (current) => current.booting === undefined);
+			}
+			// Failed after its backend let go of the memory it was paused with (a rebase): the drop is recorded with its
+			// `error`, as its publishing would have, and the commands that ran in that memory killed, saying why. So too for
+			// a retry from `error` of a start that failed before the drop (which cleared the pending one): the backend's
+			// word is that the memory went.
+			if (isBootDroppedMemory(error)) {
+				const failed = await fail(sandboxId, error, "starting", undefined, (sandbox) =>
+					droppedMemory(sandbox, sandbox.memoryDropping ?? pausedMemoryGone("started afresh from its disk")),
+				);
+				if (failed !== undefined) await killDroppedOf(failed).catch(() => undefined);
+				return failed;
+			}
 			return fail(sandboxId, error, "starting");
 		}
 		// Its machine's phases, from this start: none where its backend didn't say, not a previous start's.
@@ -4222,9 +6994,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { snapshotId: _none, ...rest } = template;
 			return { ...rest, start: "boot" };
 		};
-		const toRunning = (sandbox: StoredSandbox) =>
-			withState(sandbox, "running", {
+		// What its publishing changes goes with every outcome once its machine exists: running, stopped for its egress, or
+		// `error` with its host revoked. An upgrade's isolate is gone by then, so none of them may say it is one.
+		// A drop of its memory pending (`memoryDropping`): its machine booted fresh, so that memory is gone, written as it
+		// is published (`memoryDropped`), whatever the outcome. `drops`: whether its publishing let go of its memory
+		// (pending, or as a move's publishing says), so its commands go.
+		let drops = false;
+		const published = (stored: StoredSandbox): StoredSandbox => {
+			const dropped =
+				stored.memoryDropping === undefined
+					? stored
+					: { ...stored, ...droppedMemory(stored, stored.memoryDropping), memoryDropping: undefined };
+			const out = publishing === undefined ? dropped : { ...dropped, ...publishing(dropped) };
+			drops = (out.memoryDropped?.generation ?? 0) > (stored.memoryDropped?.generation ?? 0);
+			return out;
+		};
+		const toRunning = (stored: StoredSandbox) => {
+			const sandbox = published(stored);
+			return withState(sandbox, "running", {
 				hostId: placement.hostId,
+				// The pool its host was in as its backend admitted it there, where it says: the one it was kept to, or for one
+				// from before pools, the one it landed in.
+				...pooled(placement.poolId),
 				// This run's machine, which fences a late report of an earlier one's exit (`reportExit`); none where not said.
 				machineAt: placement.machineAt,
 				resources: placement.resources ?? sandbox.resources,
@@ -4248,10 +7039,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? { image: templateBootImage(sandbox.templateBoot) }
 					: {}),
 				capabilities: placement.capabilities,
-				health: "ok",
+				// A fresh boot's agent answers; a machine that ran before this answer (a settled create) is as its host said.
+				...(placement.reportedHealth?.unresponsive === true
+					? { health: "unresponsive" as const, reason: unresponsiveReason(placement.reportedHealth.reason) }
+					: { health: "ok" as const }),
+				...(placement.reportedHealth?.healthAt === undefined ? {} : { healthAt: placement.reportedHealth.healthAt }),
 				startup,
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
 				...placedBase(placement),
+				...(placement.stickyDisks === undefined
+					? {}
+					: { stickyDisks: stickyAfter(sandbox.stickyDisks ?? [], placement.stickyDisks) }),
 				...(sandbox.mounts === undefined
 					? {}
 					: {
@@ -4265,6 +7063,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					? {}
 					: { egressApplied: applied }),
 			});
+		};
 		const reconciles = sent !== undefined && backend.updateEgress !== undefined;
 		// Running only if its egress is what its backend has (what the boot sent, at first), on every move to running:
 		// the usual case, in one write.
@@ -4275,9 +7074,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const revokedUnder = (sandbox: StoredSandbox) => sandbox.strandedOn?.includes(placement.hostId) === true;
 		const publish = (sandbox: StoredSandbox) =>
 			revokedUnder(sandbox)
-				? withState(sandbox, "error", { reason: HOST_REVOKED_REASON, ports: [] })
+				? withState(published(sandbox), "error", { reason: HOST_REVOKED_REASON, ports: [] })
 				: toRunning(sandbox);
-		const ready = (sandbox: StoredSandbox) => revokedUnder(sandbox) || upToDate(sandbox);
+		const ready = (sandbox: StoredSandbox) => fence(sandbox) && (revokedUnder(sandbox) || upToDate(sandbox));
 		// Its record deleted, or being deleted, while it booted (a delete, or its account's deletion, whose destroy may have
 		// come before this machine existed): what booted is destroyed, so no machine outlives its record.
 		const orphaned = async () => {
@@ -4291,11 +7090,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
 			// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
 			// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
-			for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
+			for (let round = 0; "lost" in result && result.lost.state === "starting" && fence(result.lost); round++) {
 				const lost = result.lost;
 				if (round >= BOOT_RECONCILE_ROUNDS) {
 					const reason = "Its egress couldn't be applied to it while it started";
-					if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
+					if (await enforceStop(sandboxId, reason, false, lost, placement, published, fence)) return undefined;
 					result = await transition(sandboxId, "starting", publish, ready);
 					continue;
 				}
@@ -4304,7 +7103,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					applied = lost.egressRevision;
 				} catch (error) {
 					// Refused for the egress it has still: stopped. One changed since is sent next round.
-					if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
+					if (
+						unenforceable(error) &&
+						(await enforceStop(sandboxId, UNENFORCED, false, lost, placement, published, fence))
+					) {
 						return undefined;
 					}
 					// A call that didn't get through: tried again, a moment on.
@@ -4330,10 +7132,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
+		// Its memory let go as it was published: the commands it ran killed, saying why (and by any later read or sweep,
+		// if not now).
+		if (drops) await killDroppedOf(next).catch(() => undefined);
+		// Its host uses its sticky disks: sent their new heads from now on.
+		if (next.stickyDisks !== undefined && next.stickyDisks.length > 0) keepGoing(noteStickyRuns(next));
 		await emit("sandbox.running", next.accountId, {
 			sandbox: next,
 			data: { previousState: "starting", ...(startup === undefined ? {} : { startup }) },
 		});
+		// Running with an agent its host said doesn't answer (a settled create): said as `reportHealth` says it.
+		if (next.health === "unresponsive") {
+			await emit("sandbox.degraded", next.accountId, { sandbox: next, data: { reason: next.reason } });
+		}
 		return next;
 	}
 
@@ -4433,18 +7244,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: "running", reason } });
 		// In the background: each is asked of its host first, which may take a while, and the report (a host's hello) needn't
 		// wait for that.
-		keepGoing(track([sandboxId], () => killCommandsOf(sandboxId, commands)));
+		keepGoing(track([sandboxId], () => killCommandsOf(sandboxId, { listed: commands })));
 	}
 
 	/**
 	 * Records `error` for work that failed, only while the sandbox is still in `from`, the passing state that work set: a
 	 * stale step that lost to another call (a second stop, a delete) never writes `error` over the state that call left.
 	 */
-	async function fail(sandboxId: string, error: unknown, from: SandboxState): Promise<StoredSandbox | undefined> {
+	async function fail(
+		sandboxId: string,
+		error: unknown,
+		from: SandboxState,
+		still?: (current: StoredSandbox) => boolean,
+		/** What else the move to `error` writes, from the sandbox as it is then. */
+		also?: (current: StoredSandbox) => Partial<StoredSandbox>,
+	): Promise<StoredSandbox | undefined> {
 		const reason = messageOf(error);
 		const placementReason = placementReasonOf(error);
-		const result = await transition(sandboxId, from, (sandbox) =>
-			withState(sandbox, "error", { reason, ...(placementReason === undefined ? {} : { placementReason }) }),
+		const result = await transition(
+			sandboxId,
+			from,
+			(sandbox) =>
+				withState(sandbox, "error", {
+					...also?.(sandbox),
+					reason,
+					...(placementReason === undefined ? {} : { placementReason }),
+				}),
+			still,
 		).catch(() => undefined);
 		if (result === undefined || !("moved" in result)) return undefined;
 		const next = result.moved;
@@ -4469,43 +7295,71 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
 	): Promise<{ readonly work: Promise<void>; readonly stopping: StoredSandbox }> {
+		// The record as the move to stopping found it: what is stopped (its type and machine, for its snapshot) and what a
+		// handed-back stop puts back, never the caller's earlier read, which an upgrade may have changed since.
+		let was = sandbox;
+		// Never while it moves (a running sandbox's first copy being made, on any gateway): its move stops it, and it is
+		// stopped once it runs where it went.
 		const began = await transition(
 			sandbox.id,
 			sandbox.state,
-			(current) => withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() }),
-			still,
+			(current) => {
+				was = current;
+				return withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() });
+			},
+			(current) => current.moving === undefined && (still?.(current) ?? true),
 		);
-		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+		if (!("moved" in began)) {
+			if (began.lost.moving !== undefined) throw movingConflict();
+			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+		}
 		const work = track([sandbox.id], async () => {
 			try {
-				await killCommandsOf(sandbox.id);
+				// A stop ends its commands' processes. A pause keeps them in its memory, its commands running on (followed by
+				// their IDs once it runs again), so they are only brought up to date first: one that ended keeps its end, as
+				// its memory, which a later boot may let go, can't be asked once it is paused. A paused sandbox's stop lets
+				// that memory go, and its commands with it: they are killed as they are, saying so, as its guest can't be asked.
+				if (keepMemory) await reconciledCommands(sandbox.id);
+				else if (was.state === "paused") {
+					await killCommandsOf(sandbox.id, { note: pausedMemoryGone("stopped"), reconcile: false });
+				} else await killCommandsOf(sandbox.id);
 				// A stop someone asked for waits a while for a host that is away, rather than leaving the sandbox in error
 				// (#737); a sweep's hands the sandbox back for a later sweep instead (`handBack`).
 				const taken = await backend.stop(sandbox.id, { keepMemory, waitForHost: !handBack });
 				// What it kept: a host that couldn't pause the machine (its Firecracker not answering) stops it cold, and says
-				// so (`memory: false`); it is then stopped, not paused.
+				// so (`memory: false`); it is then stopped, not paused, and its commands ended with it.
 				const kept = keepMemory && taken.memory !== false;
+				// Best effort: its stop records its memory gone (below), so a later read or the sweep kills any not killed now.
+				if (keepMemory && !kept) {
+					await killCommandsOf(sandbox.id, { note: PAUSE_STOPPED_COLD, reconcile: false }).catch(() => undefined);
+				}
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
 					accountId: sandbox.accountId,
 					kind: "automatic",
 					sandboxId: sandbox.id,
-					sandboxType: sandbox.type,
+					sandboxType: was.type,
 					state: "ready",
 					trigger: "stop",
 					memory: kept,
-					...recordedMachine(sandbox),
+					...recordedMachine(was),
 					sizeBytes: taken.sizeBytes,
 					createdAt: at,
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
+					...(taken.hostId === undefined ? {} : { hostId: taken.hostId }),
 					...(taken.base === undefined ? {} : { base: taken.base }),
+					...madeOnOf(taken),
+					...pooled(await poolOfTaken(was, taken.ref)),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
 					withState(current, kept ? "paused" : "stopped", {
+						// A pause its host turned into a cold stop: its memory, and the processes it kept, are gone, recorded
+						// with the stop, so that the rule kills any of its commands the kill above couldn't write.
+						...(keepMemory && !kept ? droppedMemory(current, PAUSE_STOPPED_COLD) : {}),
 						latestSnapshotId: snapshot.id,
 						latestSnapshotAt: snapshot.createdAt,
 						ports: [],
@@ -4534,8 +7388,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await transition(sandbox.id, "stopping", (current) => ({
 						...current,
 						state: "running",
-						runs: sandbox.runs,
-						stopsAt: sandbox.stopsAt,
+						runs: was.runs,
+						stopsAt: was.stopsAt,
 						// The same machine: its guest agent's health (and why) as the stop found it.
 						reason: current.health === "unresponsive" ? current.reason : undefined,
 					}));
@@ -4592,11 +7446,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return snapshot;
 	}
 
+	/** A ready snapshot's ref naming its host (`hostRef`), for a call to that host. */
 	const readyRef = (snapshot: StoredSnapshot): string => {
-		if (snapshot.state !== "ready" || snapshot.ref === undefined) {
+		const ref = hostRef(snapshot);
+		if (snapshot.state !== "ready" || ref === undefined) {
 			throw new KantelError("conflict", "The snapshot isn't ready");
 		}
-		return snapshot.ref;
+		return ref;
 	};
 
 	async function apiKeyFor(principal: Principal, apiKeyId: string, scope: computeSchema.ApiKeyScope) {
@@ -4652,6 +7508,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Where hosts reach this control plane: the URL a super-admin set in the console, else the deployment's own
 	 * (`publicUrl`, or the address the call came in at).
 	 */
+	/** The grant keys as the API answers them. */
+	function grantKeysView(keys: GrantKeyring): computeSchema.GrantKeys {
+		return {
+			current: { id: keys.current.id, publicKey: keys.current.publicKey, since: keys.since },
+			...(keys.next === undefined
+				? {}
+				: { next: { id: keys.next.id, publicKey: keys.next.publicKey, from: keys.next.from } }),
+			retired: keys.retired.map((key) => ({ id: key.id, publicKey: key.publicKey, until: key.until })),
+		};
+	}
+
 	async function publicUrlView(request: Request): Promise<computeSchema.PublicUrl> {
 		const deploymentUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
 		const set = await store.settings.get("publicUrl");
@@ -4668,11 +7535,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		body: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
+			readonly pool?: string;
 			readonly expiresInMinutes?: number;
 		},
 		request: Request,
 		owner?: { readonly accountId: string; readonly createdBy: string },
 	): Promise<computeSchema.HostJoinToken> {
+		// The pool it joins the host to, by ID: absent, its owner's default when it joins.
+		const pool =
+			body.pool === undefined ? undefined : await pools.poolIn(owner?.accountId ?? OPERATOR_POOLS, body.pool);
 		const token = randomSecret("kth_", 32);
 		const expiresAt = now() + (body.expiresInMinutes ?? 60) * 60_000;
 		const id = randomId(owner === undefined ? "hjt" : "enr");
@@ -4684,6 +7555,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			expiresAt,
 			createdAt: now(),
 			...(owner === undefined ? {} : { accountId: owner.accountId, createdBy: owner.createdBy }),
+			...(pool === undefined ? {} : { poolId: pool.id }),
 		});
 		const { publicUrl } = await publicUrlView(request);
 		return {
@@ -4700,8 +7572,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * The host a snapshot's bytes are on: its ref's (`<hostId>/<id>`, a host backend's), else its sandbox's while that
 	 * is placed. Undefined when neither says.
 	 */
+	/**
+	 * The pool a snapshot of `sandbox` at `ref` belongs to (`StoredSnapshot.poolId`): its host's, the host the ref names
+	 * (else, a backend's opaque ref, the sandbox's host), where Kantel knows it; else the sandbox's pool. Absent only for a
+	 * sandbox from before pools on a host with none.
+	 */
+	async function poolOfTaken(sandbox: StoredSandbox, ref: string | undefined): Promise<string | undefined> {
+		const hostId = (ref === undefined ? undefined : refHost(ref)) ?? sandbox.hostId;
+		const host = hostId === undefined ? undefined : await store.hosts.get(hostId);
+		return host?.poolId ?? sandbox.poolId;
+	}
+
 	async function hostOfSnapshot(snapshot: StoredSnapshot): Promise<string | undefined> {
-		const named = snapshot.ref === undefined ? undefined : refHost(snapshot.ref);
+		const named = snapshot.hostId ?? (snapshot.ref === undefined ? undefined : refHost(snapshot.ref));
 		if (named !== undefined) return named;
 		if (snapshot.sandboxId === undefined) return undefined;
 		return (await store.sandboxes.get(snapshot.sandboxId))?.hostId;
@@ -4885,14 +7768,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			readonly pool?: string;
 			readonly savedSnapshotBytesLimit?: number | null;
 		},
 	): Promise<computeSchema.Host> {
 		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+		// A move to another pool of its owner's (`moveHost`), made on its own.
+		if (body.pool !== undefined) {
+			if (
+				body.name !== undefined ||
+				body.labels !== undefined ||
+				body.draining !== undefined ||
+				body.savedSnapshotBytesLimit !== undefined
+			) {
+				throw new KantelError("invalid", "Move a host to another pool on its own, with no other change");
+			}
+			return hostView(await moveHost(host, await pools.poolIn(poolOwnerOf(host), body.pool)));
+		}
+		// A drain or undrain takes the next place in order here first (an undrain ending the drain here with it, so a move
+		// checked under the drain won't land), then is told the registry with it, which takes it only over an older one.
+		let epoch: number | undefined;
+		if (body.draining !== undefined) {
+			const draining = body.draining;
+			const ordered = await store.hosts.update(host.id, (current) => {
+				if (current.state === "revoked") return undefined;
+				const next = (current.drainEpoch ?? 0) + 1;
+				return {
+					...current,
+					drainEpoch: next,
+					...(draining === false && current.state === "draining" ? { state: "online" as const } : {}),
+				};
+			});
+			if (ordered === undefined) throw new KantelError("conflict", "The host is revoked");
+			epoch = ordered.drainEpoch;
+		}
 		await backend.updateHost?.(host.id, {
 			...(body.name === undefined ? {} : { name: body.name }),
 			...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
-			...(body.draining === undefined ? {} : { draining: body.draining }),
+			...(body.draining === undefined ? {} : { draining: body.draining, drainEpoch: epoch }),
 		});
 		// On the record as it is now: a revocation that landed meanwhile stays (and the change is refused).
 		let revoked = false;
@@ -4900,8 +7813,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			revoked = current.state === "revoked";
 			if (revoked) return undefined;
 			let state = current.state;
-			if (body.draining === true) state = "draining";
-			if (body.draining === false && current.state === "draining") state = "online";
+			// A drain only while it is still the latest: a later undrain stands.
+			if (body.draining === true && current.drainEpoch === epoch) state = "draining";
 			const { savedSnapshotBytesLimit: kept, ...rest } = current;
 			const limit = body.savedSnapshotBytesLimit === undefined ? kept : (body.savedSnapshotBytesLimit ?? undefined);
 			return {
@@ -4953,11 +7866,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function forgetSandbox(sandbox: StoredSandbox): Promise<void> {
 		if (sandbox.state !== "deleted") {
 			await killCommandsOf(sandbox.id);
-			await backend.destroy(sandbox.id);
+			await backend.destroy(sandbox.id, sandbox.hostId === undefined ? undefined : { hostId: sandbox.hostId });
 		}
 		for (const snapshot of await store.snapshots.list({ sandboxId: sandbox.id })) {
 			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
+			await releaseRef(snapshot);
 		}
 		for (const command of await store.commands.list({ sandboxId: sandbox.id })) await store.commands.delete(command.id);
 		await store.sandboxes.delete(sandbox.id);
@@ -5069,7 +7982,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const sandbox of await store.sandboxes.list({ accountId })) await forgetSandbox(sandbox);
 		for (const snapshot of await store.snapshots.list({ accountId })) {
 			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
+			await releaseRef(snapshot);
 		}
 		for (const bundle of await store.bundles.list({ accountId })) {
 			if (mounts === undefined) throw new KantelError("unavailable", "Bundles can't be deleted while mounts are off");
@@ -5096,13 +8009,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const invite of await store.invites.list({ accountId })) await store.invites.delete(invite.id);
 		for (const webhook of await store.webhooks.list({ accountId })) await store.webhooks.delete(webhook.id);
 		for (const delivery of await store.deliveries.list({ accountId })) await store.deliveries.delete(delivery.id);
+		// Its GitHub runners' and sticky disks' records: their sandboxes went with the account's.
+		await forgetGithubRunners(accountId);
+		await forgetStickyDisks(accountId);
 		for (const environment of await store.environments.list({ accountId })) {
 			await store.environments.delete(environment.id);
 		}
+		for (const pending of await store.eventOutbox.list({ accountId })) await store.eventOutbox.delete(pending.id);
 		for (const event of await store.events.list({ accountId })) await store.events.delete(event.id);
 		for (const entry of await store.egress.list({ accountId })) await store.egress.delete(entry.id);
 		await store.telemetry.delete(accountId);
 		await store.proxies.delete(accountId);
+		for (const pool of await store.pools.list({ owner: accountId })) await store.pools.delete(pool.id);
 		// The account before its memberships: should what follows fail, a membership left names it, for the next pass.
 		await store.accounts.delete(accountId);
 		for (const member of await store.members.list({ accountId })) await store.members.delete(member.id);
@@ -5196,7 +8114,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function holdSnapshot(snapshot: StoredSnapshot): Promise<void> {
 		if (await accountOpen(snapshot.accountId)) return;
 		await forgetSnapshot(snapshot);
-		await releaseRef(snapshot.ref);
+		await releaseRef(snapshot);
 		throw accountClosed();
 	}
 
@@ -5216,6 +8134,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
 		await strandOn(host.id);
+		// Its copies of saved snapshots no longer count: each is made again on another host from the one left.
+		keepGoing(keepEverySnapshotsCopies());
 		return hostView(revoked ?? { ...host, state: "revoked" });
 	}
 
@@ -5244,6 +8164,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			let previous: SandboxState | undefined;
 			await store.sandboxes.update(sandbox.id, (current) => {
 				previous = undefined;
+				// A move under way stays as it is, for its gateway or the sweep to settle: its outcome (a copy running on
+				// another host, perhaps) is known only from its hosts, and settlement allows for its source being revoked.
+				if (current.moving !== undefined && (current.state === "starting" || current.state === "running")) {
+					// Its source revoked: kept, so a rollback that puts it back there publishes the revocation (`restoreMove`).
+					if (current.hostId !== hostId || current.strandedOn?.includes(hostId) === true) return undefined;
+					return { ...current, strandedOn: [...(current.strandedOn ?? []), hostId] };
+				}
 				if (current.hostId === hostId && STRANDABLE.includes(current.state)) {
 					previous = current.state;
 					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
@@ -5850,19 +8777,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (reports.length > 0 && now() - settledAt >= SETTLE_EVERY_MS) await settleTaken();
 	}
 
-	/** The sandboxes placed on a host and not deleted, by ID. */
+	/**
+	 * The sandboxes placed on a host and not deleted, by ID: read every tick, so only in the states wanted, never the
+	 * host's deleted sandboxes, of which a GitHub runner pool's host has thousands.
+	 */
 	async function sandboxRecordsOn(hostId: string): Promise<ReadonlyMap<string, StoredSandbox>> {
 		return new Map(
-			(await store.sandboxes.list({ hostId }))
+			(await store.sandboxes.list({ hostId }, { state: PLACED_STATES }))
 				.filter((sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting")
 				.map((sandbox) => [sandbox.id, sandbox]),
 		);
 	}
 
-	/** The sandboxes placed on a host and not deleted. */
+	/** The sandboxes placed on a host and not deleted, read as `sandboxRecordsOn` reads them. */
 	async function sandboxesOn(hostId: string): Promise<ReadonlySet<string>> {
 		return new Set(
-			(await store.sandboxes.list({ hostId }))
+			(await store.sandboxes.list({ hostId }, { state: PLACED_STATES }))
 				.filter((sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting")
 				.map((sandbox) => sandbox.id),
 		);
@@ -6026,9 +8956,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		let seconds = 0;
 		let total = 0;
 		for (const sandbox of sandboxes) {
-			const ran = runningMs(sandbox.runs, since, at) / 1000;
-			seconds += ran;
-			total += (ran / 3600) * rateOf(sandbox);
+			seconds += runningMs(sandbox.runs, since, at) / 1000;
+			total += costOf(sandbox, since, at);
 		}
 		const hasLimits =
 			limits.concurrentSandboxes !== undefined ||
@@ -6442,8 +9371,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(body.personalTokens === undefined && current.personalTokens === undefined
 					? {}
 					: { personalTokens: body.personalTokens ?? current.personalTokens }),
+				...(body.snapshotCopies === undefined && current.snapshotCopies === undefined
+					? {}
+					: { snapshotCopies: body.snapshotCopies ?? current.snapshotCopies }),
 			}));
 			if (updated === undefined) throw notFound("account");
+			// Turned on: its saved snapshots get their second copies now, not on the sweep's next pass.
+			if (body.snapshotCopies === true && account.snapshotCopies === false) keepGoing(keepEverySnapshotsCopies());
 			return accountView(updated, role);
 		},
 
@@ -6471,8 +9405,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const webhook of await store.webhooks.list({ accountId: account.id })) {
 				await store.webhooks.delete(webhook.id);
 			}
+			await forgetGithubRunners(account.id);
+			await forgetStickyDisks(account.id);
 			await store.telemetry.delete(account.id);
 			await store.proxies.delete(account.id);
+			for (const pool of await store.pools.list({ owner: account.id })) await store.pools.delete(pool.id);
 			await store.accounts.delete(account.id);
 			return undefined;
 		},
@@ -6529,14 +9466,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("conflict", "The last owner can't leave");
 			}
 			await store.members.delete(target.id);
-			// Their private sandboxes stay, stopped; their keys in the organisation stop working.
-			for (const sandbox of await store.sandboxes.list({ accountId: params.accountId, ownerUserId: params.userId })) {
-				if (sandbox.visibility === "private" && sandbox.state === "running") {
-					keepGoing((await beginStop(sandbox, false, "Its person left the organisation", principal)).work);
-				}
-			}
+			// Their keys in the organisation stop working, first: nothing below keeps them working.
 			for (const key of await store.apiKeys.list({ accountId: params.accountId, ownerUserId: params.userId })) {
 				if (key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+			}
+			// Their private sandboxes stay, stopped. One moving (whose stop and boot are its move's) is stopped once it runs
+			// wherever its move leaves it: its stop is owed on its move (`stopAfter`), which becomes its `stopFor` as it runs
+			// again, for the sweep to carry out.
+			const left = "Its person left the organisation";
+			// As the record is when written: on its move while it has one, else, a move ended meanwhile, on the sandbox
+			// itself while it runs (`stopFor`); one stopped already is left.
+			const oweStop = (sandboxId: string) =>
+				patchSandbox(sandboxId, (latest) => {
+					if (latest.moving !== undefined) {
+						return latest.moving.stopAfter !== undefined
+							? undefined
+							: { ...latest, moving: { ...latest.moving, stopAfter: left } };
+					}
+					return latest.state === "running" && latest.stopFor === undefined ? { ...latest, stopFor: left } : undefined;
+				});
+			for (const sandbox of await store.sandboxes.list({ accountId: params.accountId, ownerUserId: params.userId })) {
+				if (sandbox.visibility !== "private") continue;
+				if (sandbox.moving !== undefined) {
+					await oweStop(sandbox.id);
+					continue;
+				}
+				if (sandbox.state !== "running") continue;
+				const stopping = await beginStop(sandbox, false, left, principal).catch((error: unknown) => {
+					if (!(error instanceof KantelError && error.code === "conflict")) throw error;
+					return undefined;
+				});
+				if (stopping !== undefined) keepGoing(stopping.work);
+				// A move begun since it was read: its stop owed on that move.
+				else await oweStop(sandbox.id);
 			}
 			return undefined;
 		},
@@ -6608,12 +9570,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: pinnableHost(principal, account.id, await ensureHosts(), query.host, { revoked: true }).id;
 			const visible: StoredSandbox[] = [];
 			const owned = query.mine === true ? { ownerUserId: principal.userId } : {};
-			for (const sandbox of await store.sandboxes.list({ accountId: account.id, ...owned })) {
+			// Only the states it may show, in one read, so the store never reads the account's deleted sandboxes, which are
+			// kept and in a busy account outnumber the rest many times over, and a sandbox changing state as it reads is
+			// answered once. Checked again below as before.
+			const states = query.all === true || query.state !== undefined ? LISTED_STATES : active;
+			for (const sandbox of await store.sandboxes.list({ accountId: account.id, ...owned }, { state: states })) {
 				if (sandbox.state === "deleted") continue;
 				if (onHost !== undefined && sandbox.hostId !== onHost) continue;
 				const wanted =
 					query.state !== undefined
-						? sandbox.state === query.state
+						? publicState(sandbox) === query.state
 						: query.all === true || active.includes(sandbox.state);
 				if (!wanted) continue;
 				const labels = query.label ?? {};
@@ -6637,31 +9603,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const read = backend.capabilities();
 			const [records, capabilities, shared] = await Promise.all([ensureHosts(read), read, mayShare(principal)]);
 			const byId = new Map(capabilities.hosts.map((host) => [host.id, host]));
-			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones; or the one host
+			// requireHosts's rule, unlabelled: the account's own hosts that run the type, else the shared ones; or the one host
 			// a sandbox is to be pinned to.
 			const pinned = query.host === undefined ? undefined : pinnableHost(principal, account.id, records, query.host).id;
-			const running = records.filter(
-				(record) =>
-					record.state === "online" &&
-					record.tiers.includes("microvm") &&
-					(pinned === undefined || record.id === pinned),
-			);
-			const own = running.filter((record) => record.accountId === account.id);
-			const usable =
-				pinned !== undefined
-					? running
-					: own.length > 0
-						? own
-						: shared
-							? running.filter((record) => record.accountId === undefined)
-							: [];
-			const hosts = usable.flatMap((record) => {
-				const host = byId.get(record.id);
-				return host === undefined ? [] : [host];
-			});
-			const microvm = microvmShapes(hosts, capabilities.sizes);
+			// The pool a create would go in (`placementPool`): a pinned one, naming none, wherever its host is.
+			const pool =
+				pinned !== undefined && query.pool === undefined
+					? undefined
+					: await placementPool(account.id, query.pool, records, shared);
+			const usableFor = (type: SandboxType) => {
+				const running = records.filter(
+					(record) =>
+						record.state === "online" &&
+						record.tiers.includes(type) &&
+						(pinned === undefined || record.id === pinned) &&
+						(pool === undefined ||
+							(record.accountId === undefined ? record.poolId === pool.shared : record.poolId === pool.own)),
+				);
+				const own = running.filter((record) => record.accountId === account.id);
+				const usable =
+					pinned !== undefined
+						? running
+						: own.length > 0
+							? own
+							: shared
+								? running.filter((record) => record.accountId === undefined)
+								: [];
+				return usable.flatMap((record) => {
+					const host = byId.get(record.id);
+					return host === undefined ? [] : [host];
+				});
+			};
+			const microvm = microvmShapes(usableFor("microvm"), capabilities.sizes);
+			// An isolate's memory is a hard limit only if it is wherever the isolate may go: every such host's runtime says so.
+			const isolateHosts = usableFor("isolate");
+			const enforced = isolateHosts.length > 0 && isolateHosts.every((host) => host.isolate?.memoryEnforced === true);
 			return {
-				isolate: { memoryMb: { ...computeSchema.ISOLATE_MEMORY_MB }, enforced: false },
+				isolate: { memoryMb: { ...computeSchema.ISOLATE_MEMORY_MB }, enforced },
 				...(microvm === undefined ? {} : { microvm }),
 				// Self-hosted, a sandbox costs its operator nothing per hour, so New sandbox shows no price.
 				...(mode === "hosted"
@@ -6699,38 +9677,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("not_supported", MOUNTS_OFF);
 				}
 				const sandboxMounts = await mounts?.checkCreate(account.id, type, body.mounts);
-				const environment =
-					body.environment === undefined ? undefined : await environmentIn(account.id, body.environment);
-				// Its repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
+				let sandboxSticky: computeSchema.SandboxStickyDisk[] | undefined;
+				if (body.stickyDisks !== undefined && body.stickyDisks.length > 0) {
+					requireSticky();
+					if (type !== "microvm") throw new KantelError("invalid", "Sticky disks are a microVM's");
+					sandboxSticky = await stickyDisksFor(
+						account.id,
+						body.stickyDisks,
+						(body.mounts ?? []).map((mount) => mount.path),
+					);
+				}
+				const environments = await environmentsNamed(account.id, body.environment, body.environments);
+				// Their repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
 				// from it): only a caller that may run commands may have them cloned.
-				if (environment !== undefined && environment.repos.length > 0) requireScope(principal, "exec", role);
-				const protectedNames = new Set(
-					(environment?.variables ?? []).filter((variable) => variable.protected).map((variable) => variable.name),
-				);
-				for (const name of Object.keys(body.env ?? {})) {
-					refuseReserved(name);
-					if (protectedNames.has(name)) {
-						throw new KantelError("invalid", `${name} is a protected variable of the environment; leave it out of env`);
-					}
-				}
+				if (environments.some((environment) => environment.repos.length > 0)) requireScope(principal, "exec", role);
+				const resolution = resolved(environments);
+				for (const name of Object.keys(body.env ?? {})) refuseReserved(name);
+				refuseProtectedClashes(body.env ?? {}, resolution, environments.length);
 				// The sandbox's own placeholder for each protected variable, minted now and never changed (a rotation changes
-				// the value it stands for). Its env: its template's variables, the environment's plain variables, then the
-				// placeholders, then its own.
-				const placeholders: { [name: string]: string } = {};
-				for (const name of protectedNames) placeholders[name] = newPlaceholder();
-				const env: { [name: string]: string } = { ...template?.spec.env };
-				for (const variable of environment?.variables ?? []) {
-					if (!variable.protected && variable.value !== undefined) env[variable.name] = variable.value;
-				}
-				Object.assign(env, placeholders, body.env);
+				// the value it stands for). Its env: its template's variables, its environments' plain variables and
+				// placeholders in order, then its own.
+				const envLayers = { base: { ...template?.spec.env }, own: { ...body.env } };
+				const { env, placeholders } = composeEnv(envLayers, resolution, {}, newPlaceholder);
 				const egressRevision = now();
 				// Its own grants: its template's, if it has one.
 				const grants = template === undefined ? [] : normaliseGrants(template.spec.network?.grants ?? []);
 				const subject: EgressSubject = {
-					...(environment === undefined ? {} : { environmentId: environment.id }),
+					...environmentFields(environments.map((environment) => environment.id)),
 					placeholders,
 					grants,
 					egressRevision,
+					env,
 				};
 				// The backend's hosts and the host records, read at once: one round trip, not one each. The backend's hosts
 				// are read once, for the checks below and the host records alike.
@@ -6743,15 +9720,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// fleet runs.
 				const hostPin =
 					body.host === undefined ? undefined : pinnableHost(principal, account.id, await known, body.host).id;
-				// From a snapshot, a pin can only be the host that holds it: refused now, before anything is stored, rather than
-				// left as a sandbox that can never start.
-				if (hostPin !== undefined && from?.ref !== undefined) {
-					const holder = snapshotHolder(from.ref, await known);
-					if (holder !== undefined && holder.id !== hostPin) {
+				// The pool it goes in, by name or the default (`placementPool`): one it named that the caller has none of is
+				// `not_found`. Made from a snapshot, or on a host it named, it goes there, in a pool it named only.
+				// From a snapshot, the snapshot's pool (below). With sticky disks that have a pool, theirs (`poolOfStickyDisks`),
+				// naming none.
+				const stickyPool =
+					sandboxSticky === undefined ? undefined : await poolOfStickyDisks(sandboxSticky, await known);
+				const pool =
+					body.pool !== undefined
+						? await placementPool(account.id, body.pool, await known, await mayShare(principal))
+						: from !== undefined
+							? undefined
+							: stickyPool !== undefined
+								? await poolChoiceOf(stickyPool.poolId)
+								: hostPin !== undefined
+									? undefined
+									: await placementPool(account.id, undefined, await known, await mayShare(principal));
+				const named = body.pool === undefined ? undefined : (pool?.own ?? pool?.shared);
+				// From a snapshot, the snapshot's pool (`poolOfSnapshot`: refused where its host has since gone to another), which
+				// must be the pool it named: one whose pool can't be told (from before pools, its host's ref opaque and its
+				// sandbox gone) can't be, and isn't guessed.
+				const snapshotPool =
+					from === undefined
+						? undefined
+						: await poolOfSnapshot(
+								from,
+								await known,
+								named === undefined ? undefined : { id: named, name: body.pool ?? named, instead: "name no pool" },
+							);
+				if (stickyPool !== undefined && named !== undefined && named !== stickyPool.poolId) {
+					throw await stickyPoolRefusal(stickyPool.disk, stickyPool.poolId, named);
+				}
+				// Where a sandbox made from the snapshot can start: its holders, or a host that fetches it first.
+				const copies = from === undefined ? undefined : await snapshotCopiesOf(from, await known, snapshotPool);
+				// From a snapshot that can't be fetched, a pin can only be a host that holds it: refused now, before anything is
+				// stored, rather than left as a sandbox that can never start.
+				if (hostPin !== undefined && copies !== undefined && !copies.fetch) {
+					const holder = (await known).find((host) => host.id === copies.holders[0]?.hostId);
+					if (holder !== undefined && !copies.holders.some((each) => each.hostId === hostPin)) {
 						throw placementError(
 							"unavailable",
 							"host_unavailable",
-							`The snapshot is on another host (${mayKnowHost(principal, holder, account.id) ? holder.name : "not one you can name"}): a sandbox made from it runs only there`,
+							`The snapshot is on another host (${mayKnowHost(principal, holder, account.id) ? holder.name : "not one you can name"}), and can't be fetched from it here: a sandbox made from it runs only there`,
 						);
 					}
 				}
@@ -6767,6 +9777,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							from !== undefined,
 							await mayShare(principal),
 							hostPin,
+							pool,
 						);
 					} catch (error) {
 						reason = placementReasonOf(error) ?? reason;
@@ -6774,6 +9785,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw placementError("unavailable", reason, `No host runs ${type} sandboxes`);
 				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
+				let autoUpgradeFrom: StoredSnapshot | undefined;
+				if (body.autoUpgradeFrom !== undefined) {
+					if (type !== "isolate")
+						throw new KantelError("invalid", "autoUpgradeFrom is an isolate's: a microVM isn't upgraded");
+					autoUpgradeFrom = await checkAutoUpgradeFrom(principal, account.id, body.autoUpgradeFrom);
+				}
 				// A size takes a disk beside it (`resources.diskGb` alone), but not vCPUs or memory.
 				if (
 					body.size !== undefined &&
@@ -6813,7 +9830,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 					hostPin,
+					pool,
 				);
+				// From a snapshot, placed in its pool, where a copy of it may be fetched as well as on its holders. None there
+				// now: the create is kept, and fails as it boots, to be made again once one is.
+				const inSnapshotPool = new Set(
+					(await known).filter((host) => host.poolId === snapshotPool).map((host) => host.id),
+				);
+				const placeOn =
+					from === undefined || snapshotPool === undefined
+						? hosts
+						: hosts.filter((hostId) => inSnapshotPool.has(hostId));
+				// The pool it is placed in: its eligible hosts' (one pool, as chosen), or from a snapshot the snapshot's.
+				const placedPool =
+					from === undefined ? (await known).find((host) => host.id === hosts[0])?.poolId : snapshotPool;
+				// What its automatic upgrade is to start from, in the pool it is placed in, as its upgrade will check it.
+				if (autoUpgradeFrom !== undefined) {
+					await poolOfSnapshot(
+						autoUpgradeFrom,
+						await known,
+						keptPool(placedPool === undefined ? undefined : await poolChoiceOf(placedPool), UPGRADE_IN_POOL),
+					);
+				}
+				// Its sticky disks are in its pool (those with none yet are given it just before it is stored).
+				if (stickyPool !== undefined && placedPool !== stickyPool.poolId) {
+					throw await stickyPoolRefusal(stickyPool.disk, stickyPool.poolId, placedPool);
+				}
 				// Its shape, checked against the hosts it may go to, as placement will choose among them: what it asks for, else
 				// its template's resources (unless it names a size), which a template snapshot was built as.
 				const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
@@ -6885,6 +9927,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: await templates.startFor(template, {
 								shape: machine.shape,
 								eligibleHosts: hosts,
+								hostPools: new Map((await known).map((host) => [host.id, host.poolId])),
+								// A copy of its snapshot on another host is restored only where its memory restores.
+								hostFingerprints: new Map((await known).map((host) => [host.id, host])),
 								// A disk asked for is given from a template snapshot only by hosts that say their disk limits (this
 								// kantel-host and later), which grow the snapshot's disk to it or boot fresh where it is bigger.
 								restoreOn: eligible.filter((host) => host.disk !== undefined).map((host) => host.id),
@@ -6909,12 +9954,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					labels: { ...body.labels },
 					autoStopMinutes: body.autoStopMinutes === undefined ? DEFAULT_AUTO_STOP_MINUTES : body.autoStopMinutes,
 					idleStopMinutes: body.idleStopMinutes ?? null,
+					...(body.autoUpgrade === true ? { autoUpgrade: true } : {}),
+					...(body.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: body.autoUpgradeFrom }),
 					source: from === undefined ? undefined : { snapshotId: from.id },
 					createdBy: actorOf(principal),
 					createdAt: now(),
 					ownerUserId: principal.userId,
 					env,
-					...(environment === undefined ? {} : { environmentId: environment.id }),
+					envLayers,
+					// Its environments' set-up, done once it runs (and, if its boot fails, by its next start).
+					...(environments.some((environment) => workFor(environment).length > 0)
+						? { pendingProvision: environments.flatMap(workFor) }
+						: {}),
+					...environmentFields(environments.map((environment) => environment.id)),
 					...(start === undefined
 						? {}
 						: {
@@ -6930,11 +9982,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					egressRevision,
 					hostLabels,
 					...(hostPin === undefined ? {} : { hostPin }),
+					...pooled(placedPool),
 					runs: [],
 					samples: [],
 					ports: [],
 					...(sandboxMounts === undefined ? {} : { mounts: sandboxMounts }),
+					...(sandboxSticky === undefined ? {} : { stickyDisks: sandboxSticky }),
 				};
+				// Its sticky disks with no pool yet get its pool, once every check that could refuse it has passed: a create
+				// refused never gives a disk its pool.
+				if (sandboxSticky !== undefined && placedPool !== undefined) await bindStickyDisks(sandboxSticky, placedPool);
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
 				const put = () => store.sandboxes.put(sandbox);
@@ -6943,6 +10000,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw deletedMeanwhile();
 				}
 				await holdAccount(account.id, [sandbox.id]);
+				await dropDeleted(sandbox);
 				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
 				// refuses the create, which forgets the sandbox before anything else saw it.
 				if (sandboxMounts !== undefined && mounts !== undefined) {
@@ -6960,9 +10018,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const work = track([sandbox.id], async () => {
 					const booted = await boot(
 						sandbox.id,
-						() =>
+						// Its sticky disks read in the boot, so a disk deleted since (or a read that fails) ends it in `error`, said
+						// so, rather than leave it `starting` for good.
+						async () =>
 							backend.create({
 								sandboxId: sandbox.id,
+								attempt: sandbox.lifecycle ?? 0,
 								accountId: account.id,
 								type,
 								subdomain: sandbox.subdomain,
@@ -6970,19 +10031,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 								image: sandbox.image,
 								env: sandbox.env,
-								eligibleHosts: start?.eligibleHosts ?? hosts,
+								eligibleHosts: start?.eligibleHosts ?? placeOn,
+								// Kept to its pool as the host admits it, from a snapshot too (its host's pool, as recorded).
+								...pooled(sandbox.poolId),
 								fromSnapshot: from?.ref,
+								...(copies === undefined ? {} : { snapshotCopies: copies }),
 								...(start === undefined ? {} : { template: start.boot }),
 								...egress,
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
+								...(await stickySpecOf(sandbox)),
 							}),
 						sandbox,
 						{ egressRevision },
 					);
 					// Queued with the boot, so a call after the create (an exec, a stop) finds the files and repositories there.
-					if (booted?.state === "running" && environment !== undefined) {
-						// As read when the call was authorised, not as it may be now.
-						await provision(booted, environment).catch(() => undefined);
+					if (booted?.state === "running" && environments.length > 0) {
+						// As read when the call was authorised, not as they may be now.
+						await provision(booted.id, environments).catch(() => undefined);
 					}
 					return booted;
 				});
@@ -7015,6 +10080,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.visibility === "organisation" && account?.kind === "personal") {
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
+				if (typeof body.autoUpgradeFrom === "string") {
+					if (current.type !== "isolate") {
+						throw new KantelError("invalid", "autoUpgradeFrom is an isolate's: this sandbox is a microVM already");
+					}
+					await poolOfSnapshot(
+						await checkAutoUpgradeFrom(principal, current.accountId, body.autoUpgradeFrom),
+						await ensureHosts(),
+						keptPool(await poolOfSandbox(current), UPGRADE_IN_POOL),
+					);
+				}
 				const updated = await patchSandbox(current.id, (latest) => {
 					let stopsAt = latest.stopsAt;
 					if (body.autoStopMinutes !== undefined && latest.state === "running") {
@@ -7033,6 +10108,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(body.idleStopMinutes !== undefined && latest.state === "running" ? { lastActiveAt: now() } : {}),
 						visibility: body.visibility ?? latest.visibility,
 						labels: body.labels === undefined ? latest.labels : { ...body.labels },
+						autoUpgrade: body.autoUpgrade === undefined ? latest.autoUpgrade : body.autoUpgrade || undefined,
+						autoUpgradeFrom:
+							body.autoUpgradeFrom === undefined ? latest.autoUpgradeFrom : (body.autoUpgradeFrom ?? undefined),
 						stopsAt,
 					};
 				});
@@ -7083,7 +10161,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (snapshot === undefined) throw new KantelError("conflict", "The sandbox has no snapshot to fork from");
 				}
 				const ref = snapshot === undefined ? undefined : readyRef(snapshot);
-				if (current.type === "isolate" && body.size !== undefined) {
+				// What they are: what the snapshot was taken of (an upgraded sandbox's snapshots from before are an isolate's),
+				// or forked live, what the source is now.
+				const type = snapshot?.sandboxType ?? current.type;
+				const sameType = type === current.type;
+				if (type === "isolate" && body.size !== undefined) {
 					throw new KantelError("invalid", "Isolates have no size");
 				}
 				const account = await store.accounts.get(current.accountId);
@@ -7091,10 +10173,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
 				await requireCapacity(current.accountId, count);
+				const known = await ensureHosts();
+				// Their pool: from a snapshot, the snapshot's (refused where its host has since gone to another), else the
+				// source's, whose host they stay on.
+				const forkPool =
+					snapshot === undefined ? current.poolId : ((await poolOfSnapshot(snapshot, known)) ?? current.poolId);
 				const hosts = requireHosts(
-					await ensureHosts(),
+					known,
 					current.accountId,
-					current.type,
+					type,
 					current.hostLabels,
 					true,
 					await mayShare(principal),
@@ -7106,7 +10193,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// source's own, whatever `size` says: a host copies the running machine as it is.
 				const copies = snapshot !== undefined && recordsMachine(snapshot) ? snapshot : current;
 				const machine =
-					current.type !== "microvm"
+					type !== "microvm"
 						? undefined
 						: snapshot === undefined
 							? sandboxMachine({ copies: current }, {}, [])
@@ -7131,15 +10218,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								);
 				// What they will be given, where that is the machine they copy: on their records from the start, so a fork never
 				// reads as having no machine (shown as the smallest size) while it starts. Their placements then say what they got.
-				const resources = current.type === "microvm" ? copiedResources(copies, machine) : undefined;
+				const resources = type === "microvm" ? copiedResources(copies, machine) : undefined;
 				// The source's exposed ports, as they are now: each fork gets them once it runs (`copyPorts`).
 				// Only for a caller who may open them (`access`): a port is exposed as its caller, and stops working once they
 				// may not (`stillAllowed`), so one copied for a key without the scope would be listed but refuse everyone. Such a
 				// key still forks; its forks get no ports.
+				const forkCapabilities = sameType ? current.capabilities : ISOLATE_CAPABILITIES;
 				const sourcePorts =
-					current.capabilities.ports && mayUse(principal, "access", role)
-						? current.ports.map((port) => ({ ...port }))
-						: [];
+					forkCapabilities.ports && mayUse(principal, "access", role) ? current.ports.map((port) => ({ ...port })) : [];
 				const grantee = encodeGrantee(principal);
 				// One for them all, as their egress is read once for them all.
 				const egressRevision = now();
@@ -7163,17 +10249,27 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						accountId: current.accountId,
 						name,
 						subdomain: subdomainFor(name),
-						type: current.type,
+						type,
 						size: machine?.size,
 						...(machine?.shape === undefined ? {} : { shape: { ...machine.shape } }),
 						...(resources === undefined ? {} : { resources: { ...resources } }),
-						// An isolate asks for its source's memory.
-						...(current.type === "isolate" && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
-						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
-						image: current.image,
+						// An isolate asks for its source's memory, where its source is one; from an isolate's snapshot of a sandbox
+						// since upgraded, the memory that isolate had, as its snapshot recorded it.
+						...(type === "isolate" && sameType && current.shape !== undefined ? { shape: { ...current.shape } } : {}),
+						...(type === "isolate" && sameType && current.resources !== undefined
+							? { resources: current.resources }
+							: {}),
+						...(type === "isolate" && !sameType && snapshot?.resources !== undefined
+							? {
+									shape: { vcpus: 0, memoryMb: snapshot.resources.memoryMb },
+									resources: { ...snapshot.resources },
+								}
+							: {}),
+						// An isolate has no image: not the microVM's its source became.
+						image: sameType ? current.image : undefined,
 						state: "starting",
 						visibility: account?.kind === "personal" ? "private" : (body.visibility ?? current.visibility),
-						capabilities: current.capabilities,
+						capabilities: forkCapabilities,
 						labels: body.labels === undefined ? { ...current.labels } : { ...body.labels },
 						autoStopMinutes: current.autoStopMinutes,
 						idleStopMinutes: current.idleStopMinutes ?? null,
@@ -7182,12 +10278,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						createdAt: now(),
 						ownerUserId: principal.userId,
 						env,
-						...(current.environmentId === undefined ? {} : { environmentId: current.environmentId }),
+						...environmentFields(environmentIdsOf(current)),
+						...(current.envLayers === undefined ? {} : { envLayers: current.envLayers }),
+						...(current.secretsFloor === undefined ? {} : { secretsFloor: current.secretsFloor }),
+						...(current.pendingProvision === undefined ? {} : { pendingProvision: [...current.pendingProvision] }),
 						grants: (current.grants ?? []).map(copyGrant),
 						placeholders,
 						egressRevision,
 						hostLabels: { ...current.hostLabels },
 						...(current.hostPin === undefined ? {} : { hostPin: current.hostPin }),
+						...pooled(forkPool),
 						runs: [],
 						samples: [],
 						ports: [],
@@ -7220,6 +10320,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				for (const fork of forks) {
+					await dropDeleted(fork);
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied. The forks' egress is alike:
@@ -7246,6 +10347,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											image: fork.image,
 											env: fork.env,
 											eligibleHosts: hosts,
+											// Its pool, which its source's host (or its snapshot's) admits it only while in.
+											...pooled(fork.poolId),
 											...egress,
 											...(fork.mounts === undefined ? {} : { mounts: backendMounts(fork.mounts) }),
 										},
@@ -7257,6 +10360,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							undefined,
 							{ egressRevision },
 						);
+						// An environment attached to its source while stopped: its files and repositories, which the copied disk
+						// never had.
+						if (booted?.state === "running" && (booted.pendingProvision?.length ?? 0) > 0) {
+							const provisioning = await provisionedAgain(principal, role, booted, true).catch(() => undefined);
+							if (provisioning !== undefined)
+								await provision(booted.id, provisioning.environments).catch(() => undefined);
+						}
 						// Best effort, as each port is: a failure here (its records' store down, say) leaves this fork running without
 						// them, and never stops the batch's other forks booting.
 						if (booted?.state === "running") await copyPorts(booted, sourcePorts, grantee).catch(() => undefined);
@@ -7270,6 +10380,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			});
 		},
 
+		upgradeSandbox: async (principal, { params, body, idempotencyKey }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			return once(principal, "upgradeSandbox", { params, body, idempotencyKey }, async () =>
+				sandboxView(await upgradeIsolate(principal, role, sandbox.id, body), principal),
+			);
+		},
+
+		planSandboxMove: async (principal, { params }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			return planMoveOf(principal, role, sandbox.id);
+		},
+
+		moveSandbox: async (principal, { params, body, idempotencyKey }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			return once(principal, "moveSandbox", { params, body, idempotencyKey }, async () =>
+				sandboxView(await moveToHost(principal, role, sandbox.id, body), principal),
+			);
+		},
+
 		recoverSandbox: async (principal, { params, idempotencyKey }) => {
 			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			// A running sandbox is recovered too, so a retry would restart it again: with the key it answers the first.
@@ -7278,42 +10407,65 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (current.state !== "running" && current.state !== "error") {
 					throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 				}
+				if (current.moving !== undefined) throw movingConflict();
 				const hosts = await hostsToBoot(principal, current);
 				const fromSnapshot = await latestRef(current);
 				requireSetupScope(principal, role, current);
-				const environment = await provisionedAgain(principal, role, current);
+				// Refused now, as its create would be; read again once it is starting, for an attach meanwhile.
+				await provisionedAgain(principal, role, current);
 				// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 				// say, still being retried) never equals it, and loses.
-				const began = await transition(current.id, current.state, (latest) =>
-					withState(latest, "starting", {
-						ports: [],
-						egressRevision: later(latest.egressRevision),
-						...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
-					}),
+				// Never over a move begun since the read above (on another gateway): its stop and publish are its own.
+				const began = await transition(
+					current.id,
+					current.state,
+					(latest) =>
+						withState(latest, "starting", {
+							ports: [],
+							egressRevision: later(latest.egressRevision),
+							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+							...bootLease(latest),
+						}),
+					(latest) => latest.moving === undefined,
 				);
-				if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+				if (!("moved" in began)) {
+					if (began.lost.moving !== undefined) throw movingConflict();
+					throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+				}
 				const starting = began.moved;
-				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-				const egress = await egressFor(starting.accountId, starting);
+				// Its lease is kept fresh from now, through its preparation, to its end.
+				const heartbeat = bootHeartbeat(starting);
+				let provisioning: Provisioning | undefined;
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					provisioning = await provisionedAgain(principal, role, starting, true);
+					// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					heartbeat.end();
+					throw error;
+				}
 				keepGoing(
-					track([current.id], () =>
-						bootProvisioned(
-							current.id,
-							() =>
-								bootAgain(
-									starting,
-									{
-										fromSnapshot,
-										env: current.env,
-										eligibleHosts: hosts,
-										...sizingOf(starting),
-										...egress,
-										...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-									},
-									(options) => backend.recover(current.id, options),
-								),
-							environment,
-							{ egressRevision: starting.egressRevision },
+					heartbeat.over(() =>
+						track([current.id], () =>
+							bootProvisioned(
+								current.id,
+								() =>
+									bootAgain(
+										starting,
+										{
+											fromSnapshot,
+											env: starting.env,
+											eligibleHosts: hosts,
+											...sizingOf(starting),
+											...egress,
+											...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+										},
+										(options) => backend.recover(current.id, options),
+									),
+								provisioning,
+								{ egressRevision: starting.egressRevision },
+							),
 						),
 					),
 				);
@@ -7344,8 +10496,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				requireSetupScope(principal, role, current);
 				// Its lifecycle as checked here: the stop and the boot below are claimed only while nothing else (another restart, a
 				// recovery, on any gateway) has moved it since, even if it is back in the state read.
+				// Nor while it moves (on any gateway): its move's stop and boot are its own.
+				if (current.moving !== undefined) throw movingConflict();
 				const unmoved = (seen: StoredSandbox) => (latest: StoredSandbox) =>
-					(latest.lifecycle ?? 0) === (seen.lifecycle ?? 0);
+					(latest.lifecycle ?? 0) === (seen.lifecycle ?? 0) && latest.moving === undefined;
 				// A running one holds its place already; the hosts are checked before it is stopped, so a sandbox no host can
 				// take now is refused as it is, not left stopped.
 				if (current.state !== "running") await requireCapacity(current.accountId, 1);
@@ -7405,6 +10559,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							egressRevision: later(latest.egressRevision),
 							// Its mounts go with it, as a start's do, each pending until the boot says.
 							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+							// Paused: the commands its memory kept running go with that memory, once it has booted fresh
+							// (`memoryDropping`, made `memoryDropped` as it is published).
+							...(latest.state === "paused"
+								? { memoryDropping: pausedMemoryGone("started afresh from its disk") }
+								: {}),
+							...bootLease(latest),
 						}),
 					unmoved(current),
 				);
@@ -7412,30 +10572,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(stoppedIt ? "aborted" : "conflict", `The sandbox is ${began.lost.state}`);
 				const starting = began.moved;
 				const stopped = current;
-				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-				const egress = await egressFor(starting.accountId, starting);
+				// Its lease is kept fresh from now, through its preparation, to its end.
+				const heartbeat = bootHeartbeat(starting);
+				let provisioning: Provisioning | undefined;
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					// An environment attached while it was stopped: its files and repositories, once it runs.
+					provisioning = await provisionedAgain(principal, role, starting, true);
+					// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					heartbeat.end();
+					throw error;
+				}
 				keepGoing(
-					track([stopped.id], () =>
-						boot(
-							stopped.id,
-							() =>
-								bootAgain(
-									stopped,
-									{
-										fromSnapshot,
-										env: stopped.env,
-										eligibleHosts: hosts,
-										// Its size and shape as recorded, as a start keeps them: only its base changes.
-										...sizingOf(stopped),
-										...egress,
-										...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-										rebase: true,
-										...(rebaseTo === undefined ? {} : { rebaseTo }),
-									},
-									(options) => backend.start(stopped.id, options),
-								),
-							undefined,
-							{ egressRevision: starting.egressRevision },
+					heartbeat.over(() =>
+						track([stopped.id], () =>
+							bootProvisioned(
+								stopped.id,
+								() =>
+									bootAgain(
+										stopped,
+										{
+											fromSnapshot,
+											env: starting.env,
+											eligibleHosts: hosts,
+											// Its size and shape as recorded, as a start keeps them: only its base changes.
+											...sizingOf(stopped),
+											...egress,
+											...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+											rebase: true,
+											...(rebaseTo === undefined ? {} : { rebaseTo }),
+										},
+										(options) => backend.start(stopped.id, options),
+									),
+								provisioning,
+								{ egressRevision: starting.egressRevision },
+							),
 						),
 					),
 				);
@@ -7448,21 +10621,60 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteSandbox: async (principal, { params, idempotencyKey }) =>
 			once(principal, "deleteSandbox", { params, idempotencyKey }, async () => {
 				const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
-				const current = await settledFor(principal, sandbox.id);
+				let current = await settledFor(principal, sandbox.id);
 				if (current.state === "deleted") return sandboxView(current, principal);
+				// A move under way is settled first, so a delete never leaves one unsettled (its copy on another host unknown):
+				// one another gateway is at is waited for by the caller; one gone quiet is settled here, and one that can't be
+				// settled yet (a host it used away) is refused as it is, still moving. That is in any state: a running sandbox's
+				// move leaves it running until it is stopped, and a stop or exit meanwhile leaves its move to be settled.
+				if (current.moving !== undefined) {
+					if (current.moving.heartbeatAt + UPGRADE_STALE_MS > now()) {
+						throw new KantelError("conflict", "The sandbox is moving to another host; delete it once the move ends");
+					}
+					await settleStuckMove(current).catch(() => undefined);
+					current = await mustGetSandbox(sandbox.id);
+					if (current.moving !== undefined) {
+						throw new KantelError(
+							"unavailable",
+							"The sandbox's move can't be settled yet (a host it used doesn't answer); delete it once it has been",
+						);
+					}
+				}
 				// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
 				// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
 				// of them writes `deleted`.
-				const began = await transition(current.id, NOT_DELETED, (latest) => withState(latest, "deleting"));
-				if (!("moved" in began)) return sandboxView(began.lost, principal);
+				// Never over a move begun since the read above (on another gateway): that is refused as one seen would be.
+				// What it was as it went `deleting`, which may have changed since the read above.
+				let was = current.state;
+				const began = await transition(
+					current.id,
+					NOT_DELETED,
+					(latest) => {
+						was = latest.state;
+						return withState(latest, "deleting");
+					},
+					(latest) => latest.moving === undefined,
+				);
+				if (!("moved" in began)) {
+					if (began.lost.moving !== undefined && began.lost.state !== "deleted") {
+						throw new KantelError("conflict", "The sandbox is moving to another host; delete it once the move ends");
+					}
+					return sandboxView(began.lost, principal);
+				}
 				await track([current.id], async () => {
 					try {
-						await killCommandsOf(current.id);
-						await backend.destroy(current.id);
+						// A paused one's commands, kept in its memory, go with it, as its guest can't be asked.
+						await killCommandsOf(
+							current.id,
+							was === "paused" ? { note: pausedMemoryGone("deleted"), reconcile: false } : {},
+						);
+						// With the host its record names: a backend whose placement of it went (its host deleted it, and the answer was
+						// lost) settles it by that host, rather than leave it in error with nothing to delete.
+						await backend.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId });
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
 								await forgetSnapshot(snapshot);
-								await releaseRef(snapshot.ref);
+								await releaseRef(snapshot);
 							} else {
 								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
 								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
@@ -7511,7 +10723,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					cpu: Math.min(1, mean.cpu),
 					memoryMb: round(mean.memoryMb),
 					runningSeconds: round(seconds),
-					cost: round((seconds / 3600) * rate),
+					cost: round(costOf(current, from, to)),
 					measured: mean.measured,
 					...(mean.cpuMax === undefined ? {} : { cpuMax: Math.min(1, mean.cpuMax) }),
 					...(mean.memoryMbMax === undefined ? {} : { memoryMbMax: round(mean.memoryMbMax) }),
@@ -7538,7 +10750,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				totals: {
 					runningSeconds: round(seconds),
 					cpuSeconds: round(seconds * meanCpu(current, since, at)),
-					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
+					cost: { currency: rates.currency, total: round(costOf(current, since, at)), ratePerHour: rate },
 				},
 				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
 				...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
@@ -7564,74 +10776,73 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Commands and files.
 
 		runCommand: async (principal, { params, body, idempotencyKey }) => {
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "exec");
 			return once(principal, "runCommand", { params, body, idempotencyKey }, async () => {
-				const current = await requireRunning(principal, sandbox.id);
-				if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
-				const detached = body.detached === true;
-				const command: StoredCommand = {
-					id: randomId("cmd"),
-					sandboxId: current.id,
-					accountId: current.accountId,
-					command: body.command,
-					cwd: resolvePath(body.cwd ?? HOME),
-					state: "running",
-					stdout: "",
-					stderr: "",
-					truncated: false,
-					startedAt: now(),
-					...(detached ? { detached: true } : {}),
-				};
-				await store.commands.put(command);
-				// Checked once stored, as a create is: a command landing as its sandbox's account is deleted (its sandbox gone
-				// or the account closed) is forgotten and never run.
-				if ((await store.sandboxes.get(current.id)) === undefined || !(await accountOpen(current.accountId))) {
-					await store.commands.delete(command.id);
-					throw accountClosed();
-				}
-				const controller = new AbortController();
-				runningCommands.set(command.id, controller);
-				// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a
-				// long build isn't stopped under them. A detached one counts only while it is followed (`getCommand`).
-				const using: ReturnType<typeof setInterval> | undefined = detached
-					? undefined
-					: setInterval(() => noteActivity(current.id), ACTIVITY_WRITE_MS);
-				(using as { unref?: () => void } | undefined)?.unref?.();
-				const stopUsing = (): void => {
-					if (using !== undefined) clearInterval(using);
-				};
-				const finish = async (result: ExecResult): Promise<StoredCommand> => {
-					stopUsing();
-					runningCommands.delete(command.id);
-					return (await endCommand(command.id, result)) ?? command;
-				};
-				const failed = async (error: unknown): Promise<StoredCommand> => {
-					// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
-					// it runs on, and getCommand fetches its end. A foreground one too, on a backend that keeps it past its call.
-					// This gateway's wait is over either way, so its use ends; following the command counts on its own.
-					if (isDetachedWaitEnded(error)) {
-						stopUsing();
-						runningCommands.delete(command.id);
-						return (await store.commands.get(command.id)) ?? command;
+				let rerun: StoredCommand | undefined;
+				// An isolate with `autoUpgrade` whose command needed a microVM: upgraded, and the command run again there,
+				// once, where it ran (`/workspace` is the same files in the microVM), before the first is recorded as ended,
+				// with the run again's ID (`rerunAs`). A detached one's run again is detached too, and followed by its ID.
+				// Whichever command's upgrade made the microVM: one that ran in the isolate with it (`command.autoUpgrade`),
+				// whose answer comes once another's upgrade has begun or ended, is run again in that microVM, still opted in.
+				const beforeEnd = async (command: StoredCommand, result: ExecResult) => {
+					// Only what the isolate's runtime says: an inferred one is text the command may have printed.
+					if (result.needsMicrovm === undefined || result.needsMicrovm.inferred === true) return undefined;
+					if (command.autoUpgrade !== true) return undefined;
+					// Another command's upgrade under way (on another gateway, whose queue this one doesn't see): its outcome is
+					// waited for as a command's is, start hold after start hold, for up to half the time a reader holds this
+					// command's end for it (`RERUN_CLAIM_MS`), by the clock, then read again.
+					const waitOutUpgrade = async () => {
+						let latest = await store.sandboxes.get(sandbox.id);
+						const until = Date.now() + RERUN_CLAIM_MS / 2;
+						while (latest?.upgrading !== undefined && Date.now() < until) {
+							await requireRunning(principal, sandbox.id).catch(() => delay(startPollMs).done);
+							latest = await store.sandboxes.get(sandbox.id);
+						}
+						return latest;
+					};
+					const latest = await waitOutUpgrade();
+					if (latest?.autoUpgrade !== true) return undefined;
+					if (latest.type !== "isolate" && latest.upgradedFrom === undefined) return undefined;
+					// Claimed before the upgrade, so another reader of its end leaves it to this one.
+					const claimed = await store.commands.update(command.id, (stored) =>
+						stored.state === "running" ? { ...stored, rerunPending: stored.rerunPending ?? now() } : undefined,
+					);
+					if (claimed === undefined) return undefined;
+					try {
+						// Into what it names, read afresh: a saved snapshot saved again under the name gives its newest.
+						await upgradeIsolate(
+							principal,
+							role,
+							sandbox.id,
+							latest.autoUpgradeFrom === undefined ? {} : { from: latest.autoUpgradeFrom },
+						);
+					} catch (error) {
+						// Another command's upgrade began between the read above and this one's (`conflict` while it starts): its
+						// outcome is waited for, and its microVM, if it made one, runs this command again too, still opted in.
+						const after =
+							error instanceof KantelError && error.code === "conflict" ? await waitOutUpgrade() : undefined;
+						if (after?.type === "isolate" || after?.upgradedFrom === undefined || after.autoUpgrade !== true) {
+							// The isolate is as it was: the command's answer stands, saying why it wasn't upgraded.
+							return { note: `kantel: the isolate couldn't be upgraded to a microVM: ${messageOf(error)}\n` };
+						}
 					}
-					return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n`, timedOut: false });
+					// Run again only if it wasn't killed while its sandbox upgraded (the upgrade stands either way): its run
+					// again's ID is written first, while it still runs, so a kill from then on reaches that run too.
+					const rerunId = randomId("cmd");
+					const fenced = await store.commands.update(command.id, (stored) =>
+						stored.state === "running" ? { ...stored, rerunStarting: rerunId } : undefined,
+					);
+					if (fenced?.rerunStarting !== rerunId) return undefined;
+					rerun = await runCommandOnce(
+						principal,
+						sandbox.id,
+						{ ...body, cwd: command.cwd },
+						{ rerunOf: command.id, id: rerunId },
+					);
+					return { rerunAs: rerun.id };
 				};
-				const run = backend.exec(current.id, {
-					command: body.command,
-					cwd: command.cwd,
-					env: { ...current.env, ...body.env },
-					stdin: body.stdin,
-					// A detached command has no limit unless the caller gave one.
-					timeoutMs: detached ? body.timeoutMs : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-					signal: controller.signal,
-					commandId: command.id,
-					...(detached ? { detached: true } : {}),
-				});
-				if (detached) {
-					keepGoing(run.then(finish, failed));
-					return commandView(command);
-				}
-				return commandView(await run.then(finish, failed));
+				const first = await runCommandOnce(principal, sandbox.id, body, { beforeEnd });
+				return commandView(rerun ?? first);
 			});
 		},
 
@@ -7651,7 +10862,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const items = await Promise.all(page.items.map((command) => fetchedCommand(command)));
 			return { items: items.map(commandView), nextCursor: page.nextCursor };
 		},
-
 		getCommand: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const command = await store.commands.get(params.commandId);
@@ -7666,38 +10876,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const stored = await store.commands.get(params.commandId);
 			if (stored === undefined || stored.sandboxId !== sandbox.id) throw notFound("command");
-			// Killed before, but its kill never reached its backend: sent again.
-			if (stored.state === "killed" && stored.killPending === true) {
-				return commandView(await deliverKill(sandbox.id, stored));
-			}
-			// One that ended where no gateway here saw it is answered with its end, not killed.
-			const command = await fetchedCommand(stored);
-			if (command.state !== "running") return commandView(command);
-			noteActivity(sandbox.id);
-			const at = now();
-			// Recorded first, so the end its process now comes to (137) isn't recorded as an exit; and only by the kill
-			// that moved it out of running, so an end recorded meanwhile is kept, and its process isn't sent a kill. Its
-			// kill is pending from then until its backend takes it, so a gateway that dies before sending it, or a send
-			// that fails, leaves it for the next kill to send.
-			const killed = await settleCommand(command.id, (latest) => ({
-				...latest,
-				state: "killed",
-				exitCode: 137,
-				endedAt: at,
-				durationMs: at - latest.startedAt,
-				...(backend.killCommand === undefined ? {} : { killPending: true }),
-			}));
-			if (killed === undefined) return commandView((await store.commands.get(command.id)) ?? command);
-			runningCommands.get(command.id)?.abort();
-			runningCommands.delete(command.id);
-			// Its process, which the gateway that started it may not be: the kill goes to its host whichever it is.
-			return commandView(await deliverKill(sandbox.id, killed));
+			return commandView(await killStored(sandbox.id, stored));
 		},
-
 		readFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(query.path);
+			const path = resolvePath(query.path, homeFor(sandbox.type));
 			const ranged = query.offset !== undefined || query.length !== undefined;
 			const offset = query.offset ?? 0;
 			// Without a range, a file over 1 MiB is refused: one more byte is enough to tell, and the host sends no more.
@@ -7719,7 +10903,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		writeFile: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(body.path);
+			const path = resolvePath(body.path, homeFor(sandbox.type));
 			refuseInMount(sandbox, path);
 			const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", "A file written here is at most 1 MiB");
@@ -7734,7 +10918,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(query.path);
+			const path = resolvePath(query.path, homeFor(sandbox.type));
 			const touching = mountsTouching(sandbox.mounts, path);
 			if (touching.length > 0) {
 				throw new KantelError("conflict", `${path} is in or over the read-only mount at ${touching[0]?.path}`);
@@ -7746,7 +10930,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listFiles: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			const path = resolvePath(query.path ?? HOME);
+			const path = resolvePath(query.path ?? homeFor(sandbox.type), homeFor(sandbox.type));
 			const page = paginate(await backend.listFiles(sandbox.id, path), query.limit, query.cursor);
 			return { path, items: page.items.map(fileEntry), nextCursor: page.nextCursor };
 		},
@@ -7927,6 +11111,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return once(principal, "takeSnapshot", { params, body, idempotencyKey }, async () => {
 				const current = await requireRunning(principal, sandbox.id);
 				const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
+				await requireSameTier(current, taken);
 				const at = now();
 				const snapshot: StoredSnapshot = {
 					id: randomId("snap"),
@@ -7946,15 +11131,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdBy: actorOf(principal),
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
+					...(taken.hostId === undefined ? {} : { hostId: taken.hostId }),
 					...(taken.base === undefined ? {} : { base: taken.base }),
+					...madeOnOf(taken),
+					...pooled(await poolOfTaken(current, taken.ref)),
 				};
 				await store.snapshots.put(snapshot);
 				await holdSnapshot(snapshot);
-				await patchSandbox(current.id, (latest) => ({
-					...latest,
-					latestSnapshotId: snapshot.id,
-					latestSnapshotAt: snapshot.createdAt,
-				}));
+				// What it resumes from, only while it is still what the snapshot is of (an upgrade since makes it a microVM).
+				await patchSandbox(current.id, (latest) =>
+					latest.type === snapshot.sandboxType
+						? { ...latest, latestSnapshotId: snapshot.id, latestSnapshotAt: snapshot.createdAt }
+						: undefined,
+				);
 				return snapshotView(snapshot);
 			});
 		},
@@ -7973,7 +11162,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (existing !== undefined && body.replace !== true) {
 					throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
 				}
-				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && current.type !== "microvm") {
+				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
+				// own (`keepSnapshot`), since a host prunes automatic snapshots, and removes them with their sandbox. The
+				// entry stays in the sandbox's history, automatic, on its own ref.
+				const source =
+					body.snapshotId !== undefined
+						? await store.snapshots.get(body.snapshotId)
+						: current.state === "running" || current.latestSnapshotId === undefined
+							? undefined
+							: await store.snapshots.get(current.latestSnapshotId);
+				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
+					throw notFound("snapshot of this sandbox");
+				}
+				// What its bytes are of: a copied snapshot's own (an upgraded sandbox's from before are an isolate's), else what
+				// the sandbox is now.
+				const type = source?.sandboxType ?? current.type;
+				if (body.minMemoryMb !== undefined && body.minMemoryMb > 0 && type !== "microvm") {
 					throw new KantelError("invalid", "Only a microVM's snapshot takes minMemoryMb");
 				}
 				// The least memory a sandbox made from it may have: as given, 0 for none, else the one it replaces keeps its own.
@@ -7988,6 +11192,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 				}
 				let ref: string;
+				// The host its bytes were taken on, where the backend said: where its ref names none, its first holder.
+				let takenOn: string | undefined;
 				let sizeBytes: number | undefined;
 				// All its files take, shared ones included: what the host's limit counts it at.
 				let fullSizeBytes: number | undefined;
@@ -7995,33 +11201,27 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				let base: string | undefined;
 				// Whether the bytes hold memory: a copied snapshot's own say, or the host's for one taken now.
 				let memory = false;
+				// What its memory was made on, where its host said.
+				let made: SnapshotMadeOn = {};
 				// When the bytes were taken: a copied snapshot's own time (its source's, for one saved before this was kept), else now.
 				let takenAt: number | undefined;
-				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one.
-				let machine = recordedMachine(current);
-				// A history entry, or a stopped sandbox's newest snapshot: its bytes kept under a ref of the saved snapshot's
-				// own (`keepSnapshot`), since a host prunes automatic snapshots, and removes them with their sandbox. The
-				// entry stays in the sandbox's history, automatic, on its own ref.
-				const source =
-					body.snapshotId !== undefined
-						? await store.snapshots.get(body.snapshotId)
-						: current.state === "running" || current.latestSnapshotId === undefined
-							? undefined
-							: await store.snapshots.get(current.latestSnapshotId);
-				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
-					throw notFound("snapshot of this sandbox");
-				}
+				// The machine of the sandbox when the bytes were taken: a copied snapshot's own, where it records one, else the
+				// sandbox's where it is still what they were taken of (an isolate's records none).
+				let machine = type === current.type ? recordedMachine(current) : {};
 				if (source !== undefined) {
 					const from = readyRef(source);
 					await requireSnapshotHostReachable(from);
 					const kept = await backend.keepSnapshot?.(from);
-					ref = kept?.ref ?? from;
+					// Sharing its source's bytes, it names them as its source does.
+					ref = kept?.ref ?? source.ref ?? from;
+					takenOn = kept === undefined ? source.hostId : kept.hostId;
 					// Its new bytes are recorded (`admitSave`) whatever happens here: a size not worked out is its whole size.
 					sizeBytes =
 						kept === undefined ? source.sizeBytes : await keptSize(kept, existing).catch(() => kept.sizeBytes);
 					// Sharing its source's ref: the source's full size, where recorded (else read from the host when counted).
 					fullSizeBytes = kept === undefined ? source.fullSizeBytes : kept.sizeBytes;
 					base = kept?.base ?? source.base;
+					made = madeOnOf(kept?.runtime === undefined ? source : kept);
 					memory = kept?.memory ?? (await holdsMemory(source));
 					takenAt = source.takenAt ?? (source.kind === "automatic" ? source.createdAt : undefined);
 					if (recordsMachine(source)) machine = recordedMachine(source);
@@ -8032,10 +11232,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					const full = await savedBytesOver(current.accountId, current.hostId, existing);
 					if (full !== undefined) throw full;
 					const taken = await backend.takeSnapshot(current.id, { memory: body.memory === true });
+					await requireSameTier(current, taken);
 					ref = taken.ref;
+					takenOn = taken.hostId;
 					sizeBytes = await keptSize(taken, existing).catch(() => taken.sizeBytes);
 					fullSizeBytes = taken.sizeBytes;
 					base = taken.base;
+					made = madeOnOf(taken);
 					memory = taken.memory === true;
 				} else {
 					throw new KantelError("conflict", "The sandbox has no state to save yet");
@@ -8051,7 +11254,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					description: body.description,
 					...(body.labels === undefined ? {} : { labels: body.labels }),
 					sandboxId: current.id,
-					sandboxType: current.type,
+					sandboxType: type,
 					state: "ready",
 					trigger: "save",
 					memory,
@@ -8063,13 +11266,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(source === undefined ? { takenAt: savedAt } : takenAt === undefined ? {} : { takenAt }),
 					createdBy: actorOf(principal),
 					ref,
+					...(takenOn === undefined ? {} : { hostId: takenOn }),
 					...(base === undefined ? {} : { base }),
+					...made,
+					// A copy's is its source's: the pool it was taken in.
+					...pooled(source?.poolId ?? (await poolOfTaken(current, ref))),
 				};
 				await admitSave(snapshot, existing);
 				await holdSnapshot(snapshot);
 				if (existing !== undefined) {
 					await forgetSnapshot(existing);
-					await releaseRef(existing.ref);
+					await releaseRef(existing);
 					await emit("snapshot.deleted", existing.accountId, {
 						snapshotId: existing.id,
 						data: { name: existing.name, actor: actorOf(principal) },
@@ -8086,12 +11293,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getSnapshot: async (principal, { params }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
 			const uses = (await usesIn(snapshot.accountId)).get(snapshot.id) ?? 0;
-			return snapshotView({ ...snapshot, memory: await holdsMemory(snapshot) }, uses);
+			const memory = await holdsMemory(snapshot);
+			const hosts = await snapshotHostsView(principal, { ...snapshot, memory });
+			return { ...snapshotView({ ...snapshot, memory }, uses), ...(hosts === undefined ? {} : { hosts }) };
 		},
 
 		listSnapshotFiles: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
-			const path = resolvePath(query.path ?? HOME);
+			const home = homeFor(snapshot.sandboxType);
+			const path = resolvePath(query.path ?? home, home);
 			const ref = readyRef(snapshot);
 			// Its files are on its host: refused at once while that's away (its record and history are still answered).
 			await requireSnapshotHostReachable(ref);
@@ -8101,7 +11311,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		readSnapshotFile: async (principal, { params, query }) => {
 			const snapshot = await snapshotFor(principal, params.snapshotId, "snapshots:read");
-			const path = resolvePath(query.path);
+			const path = resolvePath(query.path, homeFor(snapshot.sandboxType));
 			const ref = readyRef(snapshot);
 			await requireSnapshotHostReachable(ref);
 			const bytes = await backend.readSnapshotFile(ref, path);
@@ -8126,13 +11336,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 			}
 			await forgetSnapshot(snapshot);
-			await releaseRef(snapshot.ref);
+			await releaseRef(snapshot);
 			// Its running sandbox's newest moves back to the one before it, by `adopt` (expiry may be deleting that one): the
-			// first still there, else none; a pointer another write moved meanwhile is left as it is.
+			// first still there, else none; a pointer another write moved meanwhile is left as it is. Only one of what the
+			// sandbox is now: an upgraded sandbox's from before are an isolate's, which its microVM never starts from.
 			if (current !== undefined && current.latestSnapshotId === snapshot.id) {
 				const older = newestFirst(
 					(await store.snapshots.list({ sandboxId: current.id, kind: "automatic" })).filter(
-						(entry) => entry.state === "ready",
+						(entry) => entry.state === "ready" && entry.sandboxType === current.type,
 					),
 				);
 				const pointAt = async (to: StoredSnapshot | undefined, was: string | undefined) =>
@@ -8381,7 +11592,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const environments = await store.environments.list({ accountId: account.id });
-			return { items: await Promise.all(environments.map(environmentView)) };
+			// The account's sandboxes once for every environment's count, not once each, all at once.
+			const sandboxes = environments.length === 0 ? [] : await undeleted({ accountId: account.id });
+			return { items: await Promise.all(environments.map((environment) => environmentView(environment, sandboxes))) };
 		},
 
 		createEnvironment: async (principal, { body, idempotencyKey }) => {
@@ -8434,9 +11647,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		deleteEnvironment: async (principal, { params }) => {
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			// Its sandboxes keep their env and files, but lose it from their environments: their placeholders for its
+			// variables stop resolving at once, at a floor past any version it gave them, and its grants go. Deleted first,
+			// then its sandboxes looked for: one attached meanwhile is either found here or sees it gone after its own write.
 			await store.environments.delete(environment.id);
-			// Its sandboxes keep their env and files; their placeholders stop resolving at once, and its grants go.
-			await pushEnvironment(environment.id, nextSecretsVersion(environment.secretsVersion, now()));
+			const holding = await sandboxesWith(environment);
+			const detached = await Promise.all(
+				holding.map(async (sandbox) => {
+					// Past the version its host was last given, from all its environments (this one included).
+					const given = secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0;
+					const floor = nextSecretsVersion(Math.max(given, environment.secretsVersion), now());
+					return patchSandbox(sandbox.id, (current) => ({
+						...current,
+						...environmentFields(environmentIdsOf(current).filter((id) => id !== environment.id)),
+						secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+						...pendingWithout(current, environment.id),
+						egressRevision: later(current.egressRevision),
+					}));
+				}),
+			);
+			const running = detached.filter((sandbox): sandbox is StoredSandbox => sandbox?.state === "running");
+			const updateSecrets = backend.updateSecrets?.bind(backend);
+			if (updateSecrets !== undefined) {
+				for (const sandbox of running) {
+					if (sandbox.secretsFloor !== undefined) keepGoing(updateSecrets(sandbox.id, sandbox.secretsFloor));
+				}
+			}
+			pushEgress(running);
 			return undefined;
 		},
 
@@ -8449,7 +11686,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const bindingsGiven = body.bindings?.map(normaliseBinding);
 			if ((body.protected ?? environment.variables.find((variable) => variable.name === name)?.protected) === true) {
-				await requireEnforcing(await liveFrom(environment.id));
+				await requireEnforcing(await liveFrom(environment));
 			}
 			// A value given is sealed up front (sealing is async; the change below isn't) when it will be protected, as far as
 			// the read above can tell; the change checks it again against the variable as it is.
@@ -8461,6 +11698,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				? await requireSealer().seal(body.value as string, variableAad(environment.id, name))
 				: undefined;
 			const at = now();
+			// A running sandbox with a placeholder of this name may take its protected value from another of its
+			// environments, which this one, later, now shadows or no longer does: its host must fetch them again.
+			const shadowing = await shadowsProtected(environment, name);
 			let touchesSecrets = false;
 			// Built from the variable as the store has it, each time the change runs: a field left out is kept as it is now,
 			// never as an earlier read had it (a bindings edit doesn't undo a rotation that landed meanwhile).
@@ -8499,7 +11739,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 					next = { name, protected: false, value: body.value ?? existing?.value ?? "", bindings: [], updatedAt: at };
 				}
-				touchesSecrets = wantProtected || existing?.protected === true;
+				touchesSecrets = wantProtected || existing?.protected === true || shadowing;
 				return {
 					...current,
 					// In its place, or last when it is new.
@@ -8511,7 +11751,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					updatedAt: later(current.updatedAt),
 				};
 			});
-			if (touchesSecrets) await pushEnvironment(changed.id, changed.secretsVersion);
+			if (touchesSecrets) await pushEnvironment(changed, changed.secretsVersion);
 			return environmentView(changed);
 		},
 
@@ -8520,13 +11760,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const existing = environment.variables.find((variable) => variable.name === params.name);
 			if (existing === undefined) throw notFound("variable");
 			const at = now();
+			const touchesSecrets = existing.protected || (await shadowsProtected(environment, params.name));
 			const changed = await changeEnvironment(environment.id, (current) => ({
 				...current,
 				variables: current.variables.filter((variable) => variable.name !== params.name),
-				secretsVersion: existing.protected ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
+				secretsVersion: touchesSecrets ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
 				updatedAt: at,
 			}));
-			if (existing.protected) await pushEnvironment(changed.id, changed.secretsVersion);
+			if (touchesSecrets) await pushEnvironment(changed, changed.secretsVersion);
 			return environmentView(changed);
 		},
 
@@ -8611,13 +11852,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		putEnvironmentGrants: async (principal, { params, body }) => {
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
 			const grants = normaliseGrants(body.grants);
-			if (grants.length > 0) await requireEnforcing(await liveFrom(environment.id));
+			if (grants.length > 0) await requireEnforcing(await liveFrom(environment));
 			const expected = body.expected === undefined ? undefined : grantsKey(body.expected);
 			const changed = await changeEnvironment(environment.id, (current) => {
 				requireUnchanged(expected, grantsKey(current.grants), "The environment's grants");
 				return { ...current, grants, updatedAt: later(current.updatedAt) };
 			});
-			await pushEnvironment(changed.id, undefined);
+			await pushEnvironment(changed, undefined);
 			return environmentView(changed);
 		},
 
@@ -8640,6 +11881,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (changed === undefined) throw notFound("sandbox");
 			if (changed.state === "running") pushEgress([changed]);
 			return sandboxEgressView(changed, 100);
+		},
+
+		listSandboxEnvironments: async (principal, { params }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read");
+			return sandboxEnvironmentsView(sandbox);
+		},
+
+		attachSandboxEnvironment: async (principal, { params, body }) => {
+			// An environment's variables reach every command it runs, and its repositories are cloned with its env: as a
+			// command it runs, so only for a caller that may run commands.
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
+			const environment = await environmentIn(sandbox.accountId, body.environment);
+			return changeSandboxEnvironments(
+				sandbox,
+				(ids) => {
+					const others = ids.filter((id) => id !== environment.id);
+					others.splice(Math.min(body.position ?? others.length, others.length), 0, environment.id);
+					return others;
+				},
+				{ attached: environment },
+			);
+		},
+
+		detachSandboxEnvironment: async (principal, { params }) => {
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "exec");
+			if (!environmentIdsOf(sandbox).includes(params.environmentId)) throw notFound("environment on the sandbox");
+			// Its deny grants are egress rules only an admin may change (as its grants and the sandbox's own are): taking
+			// them off the sandbox needs that too.
+			const environment = await store.environments.get(params.environmentId);
+			if (environment?.grants.some((grant) => grant.action === "deny")) requireScope(principal, "account:admin", role);
+			return changeSandboxEnvironments(sandbox, (ids) => ids.filter((id) => id !== params.environmentId), {
+				detached: params.environmentId,
+			});
 		},
 
 		// Events, webhooks and telemetry.
@@ -8761,6 +12035,275 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return undefined;
 		},
 
+		// Sticky disks.
+
+		listStickyDisks: async (principal, { query }) => {
+			requireSticky();
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:read", role);
+			const disks = (await store.stickyDisks.list({ accountId: account.id })).filter(
+				(disk) => disk.deletedAt === undefined,
+			);
+			return { items: await Promise.all(disks.map((disk) => stickyDiskView(disk, false))) };
+		},
+
+		createStickyDisk: async (principal, { body, idempotencyKey }) => {
+			requireSticky();
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			return once(principal, "createStickyDisk", { body, idempotencyKey }, async () => {
+				// The pool it names, as a sandbox's create names one; naming none, the first sandbox's it is attached to.
+				const pool =
+					body.pool === undefined
+						? undefined
+						: await placementPool(account.id, body.pool, await ensureHosts(), await mayShare(principal));
+				const t = now();
+				const disk: StoredStickyDisk = {
+					id: randomId("sdk"),
+					accountId: account.id,
+					name: body.name,
+					...(body.description === undefined ? {} : { description: body.description }),
+					sizeGb: body.sizeGb,
+					...pooled(pool?.own ?? pool?.shared),
+					createdAt: t,
+					updatedAt: t,
+				};
+				// The disk with its name's claim, in one write: of two creates of one name only one lands, and an
+				// interrupted create leaves neither.
+				if (!(await store.stickyDiskWrites.create(disk))) {
+					throw new KantelError("conflict", `The account has a sticky disk named ${body.name}`);
+				}
+				return stickyDiskView(disk, true);
+			});
+		},
+
+		getStickyDisk: async (principal, { params }) => {
+			requireSticky();
+			const disk = await stickyDiskFor(principal, params.stickyDiskId, "account:read");
+			return stickyDiskView(disk, true);
+		},
+
+		deleteStickyDisk: async (principal, { params }) => {
+			requireSticky();
+			const disk = await stickyDiskFor(principal, params.stickyDiskId, "account:admin");
+			await deleteStickyDiskNow(disk.id);
+			return undefined;
+		},
+
+		commitStickyDisk: async (principal, { params }) => {
+			requireSticky();
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "snapshots:write");
+			const attached = sandbox.stickyDisks?.find(
+				(disk) => disk.diskId === params.stickyDiskId || disk.name === params.stickyDiskId,
+			);
+			if (attached === undefined) throw new KantelError("not_found", "The sandbox has no such sticky disk");
+			if (attached.state !== "mounted") throw new KantelError("conflict", "Its sticky disk isn't mounted");
+			const disk = await store.stickyDisks.get(attached.diskId);
+			if (disk === undefined || disk.deletedAt !== undefined || disk.accountId !== sandbox.accountId) {
+				throw new KantelError("not_found", "The sticky disk was deleted");
+			}
+			const running = await requireRunning(principal, sandbox.id);
+			// Its versions are made in its pool only: one attached before disks had pools gets the sandbox's now (its host's,
+			// for a sandbox from before pools), and one in another pool is refused.
+			const inPool =
+				running.poolId ?? (running.hostId === undefined ? undefined : (await store.hosts.get(running.hostId))?.poolId);
+			if (inPool !== undefined) await bindStickyDisks([attached], inPool);
+			const id = randomId("sdv");
+			const committed = await backend.commitStickyDisk?.(sandbox.id, disk.id, id);
+			if (committed === undefined) throw new KantelError("not_supported", STICKY_DISKS_OFF);
+			const version: StoredStickyDiskVersion = {
+				id,
+				diskId: disk.id,
+				accountId: disk.accountId,
+				...(attached.version === undefined ? {} : { parent: attached.version }),
+				hostId: committed.hostId,
+				sandboxId: sandbox.id,
+				sizeBytes: committed.sizeBytes,
+				allocatedBytes: committed.allocatedBytes,
+				...(committed.mapDigest === undefined ? {} : { mapDigest: committed.mapDigest }),
+				seq: 0,
+				createdAt: now(),
+			};
+			// The version and the disk's head, with the next place in its order, in one write that needs the disk live: two
+			// commits from one version are both kept, and the later one wins. Deleted while it was made (an account's
+			// teardown too): its version goes from its host again rather than outliving its disk, and the catalogue never
+			// records it.
+			const recorded = await store.stickyDiskWrites.commit(version, now());
+			if (recorded === undefined) {
+				await backend.deleteStickyDisk?.(disk.id).catch(() => undefined);
+				throw new KantelError("not_found", "The sticky disk was deleted");
+			}
+			// Its host holds it from now; its reports keep that so (`recordHoldings`).
+			await diskHolders.recordCommit("sticky", disk.id, recorded.id, recorded.hostId);
+			// The hosts that use the disk fetch it now, not when their next sandbox asks.
+			keepGoing(prefetchStickyHead(disk.id, recorded.id));
+			return stickyVersionView(recorded);
+		},
+
+		// GitHub Actions runners.
+
+		listGithubRunners: async (principal, { query }, request) => {
+			requireGithubRunners();
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:admin", role);
+			const records = (await store.githubRunners.list({ accountId: account.id })).filter(
+				(record) => record.retiringAt === undefined,
+			);
+			return {
+				items: await Promise.all(
+					records.map(async (record) => githubRunners.view(record, await githubWebhookUrl(request, record.id), false)),
+				),
+			};
+		},
+
+		createGithubRunners: async (principal, { body, idempotencyKey }, request) => {
+			requireGithubRunners();
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			const scope = body.scope ?? "organization";
+			if (scope === "organization" && body.runnerGroupId === undefined) {
+				throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
+			}
+			await importAppKey(body.privateKey);
+			// Its kinds, each in a pool: where its sticky disks are, else where its host labels select (`kindPool`).
+			const kinds = await placedKinds(account.id, await mayShare(principal), unpooled(body.pools ?? []), [], body.name);
+			await checkPools(account.id, kinds);
+			// Its key acts for runners with what a create, a command and a delete need, and a commit where a pool commits,
+			// and no more.
+			const scopes = githubRunnerScopes(kinds);
+			requireGrantable(principal, scopes);
+			return once(
+				principal,
+				"createGithubRunners",
+				{ body, idempotencyKey },
+				async () => {
+					const id = newGithubRunnersId();
+					const sealed = await githubRunners.seal(id, body.privateKey);
+					const { prefix, hash } = await newApiKeySecret();
+					const t = now();
+					const key: StoredApiKey = {
+						id: randomId("key"),
+						accountId: account.id,
+						name: `GitHub runners: ${body.name}`.slice(0, 100),
+						prefix,
+						scopes,
+						sandboxIds: undefined,
+						createdBy: actorOf(principal),
+						createdAt: t,
+						expiresAt: undefined,
+						// Its secret is never shown: only the broker acts as it, by its ID.
+						secretHash: hash,
+						ownerUserId: principal.userId,
+					};
+					await store.apiKeys.put(key);
+					const record: StoredGithubRunners = {
+						id,
+						accountId: account.id,
+						name: body.name,
+						appId: body.appId,
+						owner: body.owner,
+						scope,
+						...(body.runnerGroupId === undefined ? {} : { runnerGroupId: body.runnerGroupId }),
+						...(body.repositories === undefined ? {} : { repositories: [...body.repositories] }),
+						pools: kinds,
+						enabled: true,
+						keyId: key.id,
+						privateKey: sealed.privateKey,
+						webhookSecret: sealed.webhookSecret,
+						createdAt: t,
+						updatedAt: t,
+					};
+					await store.githubRunners.put(record);
+					return {
+						githubRunners: await githubRunners.view(record, await githubWebhookUrl(request, id), true),
+						webhookSecret: sealed.secret,
+					};
+				},
+				{ secret: true },
+			);
+		},
+
+		getGithubRunners: async (principal, { params }, request) => {
+			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			return githubRunners.view(record, await githubWebhookUrl(request, record.id), true);
+		},
+
+		updateGithubRunners: async (principal, { params, body }, request) => {
+			const found = await githubRunnersFor(principal, params.githubRunnersId);
+			if (body.privateKey !== undefined) await importAppKey(body.privateKey);
+			// Its kinds as runner pools: each it has keeps its pool, and a new one goes where `kindPool` says.
+			const record = body.pools === undefined ? found : await placeRunnerKinds(found);
+			const key = body.pools === undefined ? undefined : await store.apiKeys.get(record.keyId);
+			const kinds =
+				body.pools === undefined
+					? undefined
+					: await placedKinds(
+							record.accountId,
+							key === undefined || (await mayShare(keyPrincipal(key))),
+							unpooled(body.pools),
+							record.pools,
+							record.id,
+						);
+			if (kinds !== undefined) await checkPools(record.accountId, kinds);
+			// Pools that commit need the key to commit: an integration made without that (or before it was granted) has its
+			// key given it, by a caller who may grant it. Before the pools change, so no pool commits with a key that can't.
+			if (kinds !== undefined && poolsCommit(kinds)) await grantRunnerCommits(principal, record.keyId);
+			const resealed =
+				body.privateKey === undefined
+					? undefined
+					: await requireSealer().seal(body.privateKey, sealedAt("githubRunners", record.id, "privateKey"));
+			const updated = await store.githubRunners.update(record.id, (current) => {
+				// Its kinds were placed and checked in the pools they were in then: a kind moved meanwhile (through a pool's
+				// `runners`) isn't moved back, and the call is tried again from where it now is.
+				const was = (pools: readonly RunnerPool[], label: string) => pools.find((kind) => kind.label === label)?.poolId;
+				if (kinds?.some((kind) => was(current.pools, kind.label) !== was(record.pools, kind.label)) === true) {
+					throw new KantelError("conflict", "The integration's runner kinds moved between pools meanwhile: try again");
+				}
+				const scope = body.scope ?? current.scope;
+				const runnerGroupId = body.runnerGroupId === null ? undefined : (body.runnerGroupId ?? current.runnerGroupId);
+				if (scope === "organization" && runnerGroupId === undefined) {
+					throw new KantelError("invalid", "An organization's runners need runnerGroupId: the runner group they join");
+				}
+				const repositories = body.repositories === null ? undefined : (body.repositories ?? current.repositories);
+				// Another owner or App: the installation is found again from that owner's next delivery.
+				const moved =
+					(body.owner !== undefined && body.owner.toLowerCase() !== current.owner.toLowerCase()) ||
+					(body.appId !== undefined && body.appId !== current.appId);
+				const { runnerGroupId: _group, repositories: _repositories, installationId, ...rest } = current;
+				return {
+					...rest,
+					...(moved || installationId === undefined ? {} : { installationId }),
+					...(body.name === undefined ? {} : { name: body.name }),
+					...(body.appId === undefined ? {} : { appId: body.appId }),
+					...(body.owner === undefined ? {} : { owner: body.owner }),
+					...(kinds === undefined ? {} : { pools: kinds }),
+					...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+					...(resealed === undefined ? {} : { privateKey: resealed }),
+					scope,
+					...(runnerGroupId === undefined ? {} : { runnerGroupId }),
+					...(repositories === undefined ? {} : { repositories: [...repositories] }),
+					updatedAt: now(),
+				};
+			});
+			if (updated === undefined) throw new KantelError("not_found", "No such GitHub runner integration");
+			return githubRunners.view(updated, await githubWebhookUrl(request, updated.id), true);
+		},
+
+		deleteGithubRunners: async (principal, { params }) => {
+			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			// Its key first, so nothing makes another runner; the runners it made are still ended with it. The
+			// integration is hidden from now, and kept until its runners have gone, which passes finish if this can't.
+			const key = await store.apiKeys.get(record.keyId);
+			if (key !== undefined && key.revokedAt === undefined) await store.apiKeys.put({ ...key, revokedAt: now() });
+			await githubRunners.retire(record.id);
+			return undefined;
+		},
+
+		listGithubRunnerJobs: async (principal, { params }) => {
+			const record = await githubRunnersFor(principal, params.githubRunnersId);
+			return { items: await githubRunners.jobs(record.id) };
+		},
+
 		rotateWebhookSecret: async (principal, { params, idempotencyKey }) => {
 			const webhook = await webhookFor(principal, params.webhookId);
 			return once(principal, "rotateWebhookSecret", { params, idempotencyKey }, async () => {
@@ -8859,6 +12402,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return publicUrlView(request);
 		},
 
+		getGrantKeys: async (principal) => {
+			requireScope(principal, "hosts:admin");
+			const keys = await diskHolders.keys();
+			if (keys === undefined) throw new KantelError("not_supported", GRANT_KEY_UNAVAILABLE);
+			return grantKeysView(keys);
+		},
+
+		rotateGrantKey: async (principal) => {
+			requireScope(principal, "hosts:admin");
+			return grantKeysView(await diskHolders.rotate(principal.userId));
+		},
+
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
 		getHostUsage: async (principal, { params, query }) =>
@@ -8867,6 +12422,57 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
 
 		updateHostAgent: async (principal, { params }) => updateHostAgentOf(await hostFor(principal, params.hostId)),
+
+		startHostEvacuation: async (principal, { params }) =>
+			startEvacuation(principal, await hostFor(principal, params.hostId), true),
+
+		getHostEvacuation: async (principal, { params }) =>
+			evacuationOf(principal, (await hostFor(principal, params.hostId)).id, true),
+
+		fetchHostStickyDisk: async (principal, { params, body }) => {
+			const host = await hostFor(principal, params.hostId);
+			if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+			if (backend.fetchDisk === undefined) {
+				throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
+			}
+			const disk = await store.stickyDisks.get(body.stickyDiskId);
+			if (disk === undefined || disk.deletedAt !== undefined) throw notFound("sticky disk");
+			// Where it is, for this host: its pool's holders and a grant naming it, as its own disk.locate would get.
+			const request = { kind: "sticky", objectId: disk.id, version: body.version };
+			const location = await diskHolders.locate(host.id, request);
+			if (location.holders.length === 0) {
+				throw new KantelError("conflict", "No other host in the host's pool holds that version where it can fetch it");
+			}
+			await backend.fetchDisk(host.id, { ...request, ...location });
+			return undefined;
+		},
+
+		fetchHostSnapshot: async (principal, { params, body }) => {
+			const host = await hostFor(principal, params.hostId);
+			if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+			if (backend.fetchDisk === undefined) {
+				throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
+			}
+			const snapshot = await store.snapshots.get(body.snapshotId);
+			const ref = snapshot?.ref;
+			const objectId = ref === undefined ? undefined : refId(ref);
+			if (
+				snapshot === undefined ||
+				snapshot.kind !== "saved" ||
+				snapshot.state !== "ready" ||
+				ref === undefined ||
+				objectId === undefined
+			) {
+				throw notFound("saved snapshot");
+			}
+			// Not before its host has reported it: there is nowhere to fetch it from.
+			const held = (await diskHolders.holdersOf("snapshot", objectId)).get("disk") ?? [];
+			if (!held.some((holder) => holder.ref === ref && holder.state === "held" && holder.hostId !== host.id)) {
+				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
+			}
+			await sendSnapshotFetch(host.id, ref);
+			return undefined;
+		},
 
 		checkHostUpdates: async (principal) => {
 			requireScope(principal, "hosts:admin");
@@ -8960,8 +12566,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updateAccountHostAgent: async (principal, { params }) =>
 			updateHostAgentOf((await accountHostFor(principal, params.hostId, "account:admin")).host),
 
+		startAccountHostEvacuation: async (principal, { params }) => {
+			const { host, acting } = await accountHostFor(principal, params.hostId, "account:admin");
+			return startEvacuation(principal, host, false, acting.role);
+		},
+
+		getAccountHostEvacuation: async (principal, { params }) => {
+			const { host, acting } = await accountHostFor(principal, params.hostId, "account:read");
+			return evacuationOf(principal, host.id, false, acting.role);
+		},
+
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
+
+		// Pools: `pools.ts`.
+
+		...pools.handlers,
 
 		...(mounts?.handlers ?? MOUNTS_OFF_HANDLERS),
 	};
@@ -8995,16 +12615,2054 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			: { id: user.id, name: personName({ userId: user.id, name: user.name, email: user.email }), email: user.email };
 	}
 
+	/**
+	 * Runs a command once in a running sandbox (`runCommand`): recorded, run by its backend, and answered once it ends
+	 * (detached: at once, its end recorded later). `rerunOf`: it is a command run again in the microVM its isolate was
+	 * just upgraded to (`autoUpgrade`). `beforeEnd`: what is done once its result is in and before it is recorded as
+	 * ended, so a follower never sees it end without it (an upgrade and its run again), and what to add to its record.
+	 */
+	async function runCommandOnce(
+		principal: Principal,
+		sandboxId: string,
+		body: computeSchema.RunCommandBody,
+		how: {
+			readonly rerunOf?: string;
+			/** Its ID, given beforehand (a run again's, `rerunStarting`). */
+			readonly id?: string;
+			/** Run as root (`ExecRequest.asRoot`): Kantel's own commands only, never a caller's. */
+			readonly asRoot?: boolean;
+			readonly beforeEnd?: (
+				command: StoredCommand,
+				result: ExecResult,
+			) => Promise<{ readonly rerunAs?: string; readonly note?: string } | undefined>;
+		} = {},
+	): Promise<StoredCommand> {
+		const { rerunOf } = how;
+		const current = await requireRunning(principal, sandboxId);
+		if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
+		const detached = body.detached === true;
+		const command: StoredCommand = {
+			id: how.id ?? randomId("cmd"),
+			sandboxId: current.id,
+			accountId: current.accountId,
+			command: body.command,
+			...(rerunOf === undefined ? {} : { rerunOf }),
+			...(current.type === "isolate" && current.autoUpgrade === true ? { autoUpgrade: true } : {}),
+			cwd: resolvePath(body.cwd ?? homeFor(current.type), homeFor(current.type)),
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: now(),
+			...(detached ? { detached: true } : {}),
+			// The memory it runs in, as its sandbox was read running.
+			...(current.memoryDropped === undefined ? {} : { memoryGeneration: current.memoryDropped.generation }),
+		};
+		await store.commands.put(command);
+		// Checked once stored, as a create is: a command landing as its sandbox's account is deleted (its sandbox gone
+		// or the account closed) is forgotten and never run.
+		if ((await store.sandboxes.get(current.id)) === undefined || !(await accountOpen(current.accountId))) {
+			await store.commands.delete(command.id);
+			throw accountClosed();
+		}
+		// Read again last, just before it is sent, and only once it runs (a boot under way is waited for, as its start
+		// was): a boot that let go of the memory it was read in since then (which a pause, or a move's stop, had to come
+		// before, and which is recorded as that boot is published) means it runs in the one after, as it isn't sent yet.
+		// One whose sandbox no longer runs is refused as its start would be, and forgotten; one killed meanwhile (with
+		// that memory, or by anyone) never runs. A drop between this read and its sending would need a whole stop and
+		// boot in that time.
+		let running: StoredSandbox;
+		try {
+			running = await requireRunning(principal, current.id);
+		} catch (error) {
+			await store.commands.delete(command.id).catch(() => undefined);
+			throw error;
+		}
+		const generation = running.memoryDropped?.generation ?? 0;
+		let admitted = false;
+		await store.commands.update(command.id, (latest) => {
+			admitted = latest.state === "running";
+			return admitted && generation > (latest.memoryGeneration ?? 0)
+				? { ...latest, memoryGeneration: generation }
+				: undefined;
+		});
+		if (!admitted) return (await store.commands.get(command.id)) ?? command;
+		const controller = new AbortController();
+		runningCommands.set(command.id, controller);
+		// A run again starts only while the command it runs again still runs: one killed meanwhile (the kill found no run
+		// again recorded to reach, `reachRerun`) has it killed before it starts, as one killed since is.
+		if (rerunOf !== undefined) {
+			const original = await store.commands.get(rerunOf);
+			if (original?.state !== "running") {
+				runningCommands.delete(command.id);
+				const at = now();
+				const unrun = await settleCommand(command.id, (latest) => ({
+					...latest,
+					state: "killed",
+					exitCode: 137,
+					stderr: "kantel: not run again: the command it runs again was killed while its sandbox upgraded\n",
+					endedAt: at,
+					durationMs: at - latest.startedAt,
+				}));
+				// The kill found no run again to link (it wasn't recorded yet): link it now, leaving the original as it ended,
+				// so the killed command still says which run again it had.
+				if (original !== undefined) {
+					await store.commands.update(original.id, (latest) =>
+						latest.rerunAs === undefined && latest.sandboxId === command.sandboxId
+							? { ...latest, rerunAs: command.id }
+							: undefined,
+					);
+				}
+				return unrun ?? (await store.commands.get(command.id)) ?? command;
+			}
+		}
+		// Someone waits on an attached command for as long as it runs: it is a use of the sandbox throughout, so a
+		// long build isn't stopped under them. A detached one counts only while it is followed (`getCommand`).
+		const using: ReturnType<typeof setInterval> | undefined = detached
+			? undefined
+			: setInterval(() => noteActivity(current.id), ACTIVITY_WRITE_MS);
+		(using as { unref?: () => void } | undefined)?.unref?.();
+		const stopUsing = (): void => {
+			if (using !== undefined) clearInterval(using);
+		};
+		const finish = async (
+			result: ExecResult,
+			/** Its backend's answer from where it ran: not a failure of its call made into an end (`failed`), nor one its
+			 * backend made up as it no longer knows it (`ExecResult.unknown`). */
+			answered = result.unknown !== true,
+		): Promise<StoredCommand> => {
+			stopUsing();
+			// What of its end may be recorded (`endable`): its memory let go by a boot since it started (the end read is its
+			// new machine not knowing it), it is killed, saying why; a move that lets its memory go under way, or what
+			// became of its memory not known, nothing yet: a detached one's follow lets it go, and a foreground call waits
+			// on for its end, as recorded or as its backend says.
+			const read = async () =>
+				endable((await store.commands.get(command.id).catch(() => undefined)) ?? command, answered);
+			let may = await read();
+			// Not known (its store not answering): asked again, the end it read kept, from 1 s doubling to 30 s apart, until
+			// this gateway closes, which lets it go, left running for the next read.
+			for (let wait = EXEC_FOLLOW_MIN_MS; may === "unknown"; wait = Math.min(wait * 2, EXEC_FOLLOW_MAX_MS)) {
+				if (closed.signal.aborted) {
+					runningCommands.delete(command.id);
+					return (await store.commands.get(command.id).catch(() => undefined)) ?? command;
+				}
+				await pauseUnlessClosed(wait);
+				may = await read();
+			}
+			if (may !== "end") {
+				runningCommands.delete(command.id);
+				if (may !== "hold") return may.gone;
+				if (detached) return (await store.commands.get(command.id).catch(() => undefined)) ?? command;
+				return awaitedEnd(command);
+			}
+			const more = await how.beforeEnd?.(command, result).catch(() => undefined);
+			runningCommands.delete(command.id);
+			const said = more?.note === undefined ? result : { ...result, stderr: `${result.stderr}${more.note}` };
+			return (await endCommand(command.id, said, more?.rerunAs, true)) ?? command;
+		};
+		const failed = async (error: unknown): Promise<StoredCommand> => {
+			// Only the wait ended (this gateway closing), and the backend can still be asked for the command's end:
+			// it runs on, and getCommand fetches its end. A foreground one too, on a backend that keeps it past its call.
+			// This gateway's wait is over either way, so its use ends; following the command counts on its own.
+			if (isDetachedWaitEnded(error)) {
+				stopUsing();
+				runningCommands.delete(command.id);
+				return (await store.commands.get(command.id)) ?? command;
+			}
+			// Its call may have broken as its sandbox was paused, by a host that then stopped it cold instead: that stop's
+			// kill, saying so, is waited for, and lands first.
+			if ((await store.commands.get(command.id).catch(() => undefined))?.state === "running") {
+				await stopSettled(current.id);
+			}
+			// Its call may have broken as its sandbox's move stopped it: said so, beside the failure.
+			const note = await moveNote(current.id);
+			return finish({ exitCode: 1, stdout: "", stderr: `${messageOf(error)}\n${note ?? ""}`, timedOut: false }, false);
+		};
+		const run = backend.exec(current.id, {
+			command: body.command,
+			cwd: command.cwd,
+			env: { ...current.env, ...body.env },
+			stdin: body.stdin,
+			// A detached command has no limit unless the caller gave one.
+			timeoutMs: detached ? body.timeoutMs : (body.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+			signal: controller.signal,
+			commandId: command.id,
+			...(detached ? { detached: true } : {}),
+			...(how.asRoot === true ? { asRoot: true } : {}),
+		});
+		if (detached) {
+			keepGoing(run.then(finish, failed));
+			return command;
+		}
+		return run.then(finish, failed);
+	}
+
+	/**
+	 * `POST /sandboxes/{id}/upgrade`: an isolate made a microVM with the same ID, its files, settings and history.
+	 *
+	 * The record goes `starting` with its upgrade (`upgrading`: an operation ID its backend does at most once, and what
+	 * the record was), so its commands and file calls wait for it as they wait for a start (`requireRunning`), every
+	 * other lifecycle call queues behind it (`track`), and a gateway that dies meanwhile leaves it for the sweep to settle
+	 * (`settleStuckUpgrade`). Its isolate time ends there: every run it had is priced as an isolate's
+	 * (`RunPeriod.ratePerHour`). Its backend's microVM is published as a boot's is (`commitUpgrade`, through `boot`), its
+	 * egress reconciled first, so a grant revoked meanwhile is enforced before it runs. A failure the backend is sure of
+	 * puts the record back exactly as it was (its state, runs and stop times): the isolate is untouched. An outcome the
+	 * backend can't tell (`isUpgradeOutcomeUnknown`) is settled with it at once where it can say, else left `starting`
+	 * for the sweep, never guessed. A microVM is answered as it is. Answers the record once the upgrade ends, or with
+	 * `wait: false` as soon as it is `starting`.
+	 */
+	async function upgradeIsolate(
+		principal: Principal,
+		role: MemberRole,
+		sandboxId: string,
+		body: computeSchema.UpgradeSandboxBody,
+	): Promise<StoredSandbox> {
+		const current = await settledFor(principal, sandboxId);
+		if (current.type === "microvm") return current;
+		if (current.state !== "running" && current.state !== "stopped") {
+			throw new KantelError(
+				"conflict",
+				`The sandbox is ${current.state}: an isolate is upgraded while it is running or stopped`,
+			);
+		}
+		const upgrade = backend.upgrade;
+		if (upgrade === undefined) throw new KantelError("not_supported", UPGRADE_UNSUPPORTED);
+		// A microVM's snapshot to start from, as a create from it takes one.
+		const from = body.from === undefined ? undefined : await snapshotFrom(principal, current.accountId, body.from);
+		if (from !== undefined) requireMicrovmSnapshot(from);
+		if (
+			body.size !== undefined &&
+			body.resources !== undefined &&
+			(body.resources.vcpus !== undefined || body.resources.memoryMb !== undefined)
+		) {
+			throw new KantelError("invalid", "Give resources or a size, not both");
+		}
+		if (from !== undefined && body.resources?.diskGb !== undefined) {
+			throw new KantelError("invalid", "A sandbox made from a snapshot keeps the snapshot's disk; leave out diskGb");
+		}
+		const read = backend.capabilities();
+		const known = ensureHosts(read);
+		known.catch(() => undefined);
+		const capabilities = await read;
+		if (!capabilities.types.includes("microvm")) {
+			throw placementError("unavailable", "no_host_for_type", "No host runs microvm sandboxes");
+		}
+		// A snapshot's own size is its machine, whatever the hosts name now, as for a create from it.
+		if (
+			body.size !== undefined &&
+			body.size !== from?.size &&
+			!capabilities.sizes.some((size) => size.name === body.size)
+		) {
+			throw placementError(
+				"not_supported",
+				"no_host_offers_size",
+				`This deployment doesn't offer the size ${body.size}`,
+			);
+		}
+		// The hosts its microVM may go on, as a create of one would choose: its labels, pin and pool kept. From a snapshot,
+		// as a create from it: its host draining too, where only that host holds it.
+		const pool = await poolOfSandbox(current);
+		const hosts = requireHosts(
+			await known,
+			current.accountId,
+			"microvm",
+			{ ...current.hostLabels },
+			from !== undefined,
+			await mayShare(principal),
+			current.hostPin,
+			pool,
+		);
+		// From a snapshot, in the pool the sandbox is kept to, as a create naming that pool takes one (`poolOfSnapshot`).
+		if (from !== undefined) await poolOfSnapshot(from, await known, keptPool(pool, UPGRADE_IN_POOL));
+		// From a snapshot, the microVM goes only on the host that holds it: refused now, the isolate untouched, when that
+		// host isn't one the sandbox may use.
+		const into = from === undefined ? undefined : hostRef(from);
+		const holder = into === undefined ? undefined : refHost(into);
+		if (holder !== undefined && !hosts.includes(holder)) {
+			const named = (await known).find((host) => host.id === holder);
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				`The snapshot is on a host this sandbox can't use now (${named !== undefined && mayKnowHost(principal, named, current.accountId) ? named.name : "not one you can name"}): it is offline, or outside the sandbox's host labels or pin`,
+			);
+		}
+		const eligible = capabilities.hosts.filter((host) => hosts.includes(host.id));
+		const diskAlone =
+			body.resources !== undefined && body.resources.vcpus === undefined && body.resources.memoryMb === undefined
+				? checkDisk("microvm", body.resources.diskGb)
+				: undefined;
+		const shape = shapeFor(
+			"microvm",
+			diskAlone === undefined ? body.resources : undefined,
+			eligible,
+			capabilities.sizes,
+			from === undefined,
+		);
+		const presets = eligible.flatMap((host) => host.sizes ?? capabilities.sizes);
+		const wanted: AskedMachine = {
+			...(body.size === undefined ? {} : { size: body.size }),
+			...(shape === undefined ? {} : { shape }),
+			...(diskAlone === undefined ? {} : { diskGb: diskAlone }),
+		};
+		// Its machine as a create from the snapshot decides it: one that holds memory restores it, so it is that machine.
+		const fromOn =
+			from === undefined
+				? undefined
+				: copiedOn(
+						capabilities.hosts.find((host) => host.id === holder),
+						capabilities.sizes,
+					);
+		const machine = sandboxMachine(
+			from === undefined ? undefined : { copies: from, on: fromOn },
+			from === undefined ? wanted : restoreAsked({ ...from, memory: await holdsMemory(from) }, wanted),
+			presets,
+		);
+		if (machine === undefined) {
+			throw placementError(
+				"not_supported",
+				"no_host_offers_size",
+				`No host this sandbox may use offers the size ${body.size ?? "default"}`,
+			);
+		}
+		if (from !== undefined) requireMinMemory(from, memoryOf(machine, fromOn?.presets ?? presets, from));
+		if (diskAlone !== undefined && machine.shape !== undefined)
+			requireMaker(eligible, capabilities.sizes, machine.shape);
+		// A stopped one comes back running, as a microVM: it counts against the account's sandboxes as a start does.
+		if (current.state === "stopped") await requireCapacity(current.accountId, 1);
+		// A stopped isolate's files, for a backend that keeps them in its stop's snapshot (the stub); a host keeps them.
+		const fromSnapshot = current.state === "stopped" ? await latestRef(current) : undefined;
+		const image = body.image ?? capabilities.defaultImage;
+		const operationId = randomId("upg");
+		const began = await transition(
+			current.id,
+			current.state,
+			(latest) => {
+				const at = now();
+				const isolateRate = rateOf(latest);
+				const egressRevision = later(latest.egressRevision);
+				return {
+					...latest,
+					state: "starting",
+					lifecycle: (latest.lifecycle ?? 0) + 1,
+					// Its egress is read afresh for the microVM: an update read before it is older, and loses.
+					egressRevision,
+					// Its time as an isolate ends now, and every run it had is priced as an isolate's, so none is billed at the
+					// microVM's rate once it is one.
+					runs: latest.runs.map((run) => ({ ...run, to: run.to ?? at, ratePerHour: run.ratePerHour ?? isolateRate })),
+					upgrading: {
+						operationId,
+						at,
+						heartbeatAt: at,
+						from: latest.state === "stopped" ? "stopped" : "running",
+						before: {
+							runs: latest.runs,
+							...(latest.stopsAt === undefined ? {} : { stopsAt: latest.stopsAt }),
+							...(latest.startedAt === undefined ? {} : { startedAt: latest.startedAt }),
+							...(latest.stoppedAt === undefined ? {} : { stoppedAt: latest.stoppedAt }),
+							...(latest.lastActiveAt === undefined ? {} : { lastActiveAt: latest.lastActiveAt }),
+							// Whether the isolate's host had its egress as it was (an update not yet delivered, it hadn't).
+							egressInSync:
+								latest.egressRevision === undefined ||
+								(latest.egressApplied ?? Number.NEGATIVE_INFINITY) >= latest.egressRevision,
+						},
+						...(machine.size === undefined ? {} : { size: machine.size }),
+						...(machine.shape === undefined ? {} : { shape: machine.shape }),
+						...(image === undefined ? {} : { image }),
+						...(from === undefined ? {} : { snapshotId: from.id }),
+						egressRevision,
+					},
+				};
+			},
+			(latest) => latest.type === "isolate" && latest.lifecycle === current.lifecycle,
+		);
+		if (!("moved" in began)) {
+			if (began.lost.type === "microvm") return began.lost;
+			throw new KantelError("conflict", `The sandbox is ${began.lost.state}; try the upgrade again`);
+		}
+		// Depending on its snapshot from the record on (`dependents`), as a create does (`adopt`): one deleted or expired
+		// meanwhile puts the isolate back, nothing sent.
+		if (
+			from !== undefined &&
+			!(await adopt(
+				from.id,
+				async () => undefined,
+				() => restoreUpgrade(sandboxId, operationId),
+			))
+		) {
+			throw deletedMeanwhile();
+		}
+		const starting = began.moved;
+		const work = track([current.id], async (): Promise<StoredSandbox> => {
+			// Said every so often while this gateway is at it: a record gone quiet is a gateway gone, settled by the sweep.
+			const heartbeat = setInterval(() => {
+				patchSandbox(sandboxId, (latest) =>
+					latest.upgrading?.operationId === operationId
+						? { ...latest, upgrading: { ...latest.upgrading, heartbeatAt: now() } }
+						: undefined,
+				).catch(() => undefined);
+			}, UPGRADE_HEARTBEAT_MS);
+			(heartbeat as { unref?: () => void }).unref?.();
+			try {
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					await restoreUpgrade(sandboxId, operationId);
+					throw error;
+				}
+				let placement: UpgradedPlacement;
+				try {
+					placement = await upgrade(
+						current.id,
+						{
+							sandboxId: current.id,
+							accountId: current.accountId,
+							type: "microvm",
+							subdomain: current.subdomain,
+							...(machine.size === undefined ? {} : { size: machine.size }),
+							...(machine.shape === undefined ? {} : { shape: machine.shape }),
+							image,
+							env: starting.env,
+							eligibleHosts: hosts,
+							// Its microVM in its pool: kept to it as its host admits it.
+							...pooled(current.poolId),
+							...(fromSnapshot === undefined ? {} : { fromSnapshot }),
+							...(into === undefined ? {} : { intoSnapshot: into }),
+							...egress,
+						},
+						operationId,
+					);
+				} catch (error) {
+					if (!isUpgradeOutcomeUnknown(error)) {
+						await restoreUpgrade(sandboxId, operationId);
+						throw error;
+					}
+					// Sent, and not answered: asked what became of it, never guessed. One that can't be told yet stays
+					// `starting`, for the sweep to settle once its host answers.
+					let outcome: UpgradeOutcome | undefined;
+					try {
+						outcome = await backend.settleUpgrade?.(sandboxId, operationId);
+					} catch {
+						throw new KantelError("unavailable", UPGRADE_OUTCOME_UNKNOWN);
+					}
+					if (outcome?.state !== "done") {
+						await restoreUpgrade(sandboxId, operationId);
+						throw new KantelError("unavailable", `The upgrade didn't happen: ${outcome?.reason ?? messageOf(error)}`);
+					}
+					placement = outcome.placement;
+				}
+				return (
+					(await commitUpgrade(sandboxId, operationId, placement, { principal, role })) ??
+					(await mustGetSandbox(sandboxId))
+				);
+			} finally {
+				clearInterval(heartbeat);
+			}
+		});
+		if (body.wait === false) {
+			keepGoing(work);
+			return starting;
+		}
+		return work;
+	}
+
+	/**
+	 * Puts an upgrading record back as it was before upgrade `operationId` (its state, runs and stop times), once its
+	 * backend has said it didn't happen. Nothing happens to one no longer upgrading by that operation.
+	 *
+	 * A running isolate runs again only with its egress as it is now. A change made while it upgraded (a grant revoked, a
+	 * protected variable unbound) skipped it, as one skips any starting sandbox, so it is sent to the isolate while the
+	 * record is still `starting`, and again for each change made while that was sent, as a boot does (`boot`). Where its
+	 * host refuses it, or it can't be got there in `BOOT_RECONCILE_ROUNDS`, the isolate is stopped instead (`enforceStop`),
+	 * never run with what it had. Nothing changed meanwhile (its revision the one the upgrade read), it runs again at
+	 * once. A stopped one is put back stopped: its next start sends its egress.
+	 */
+	async function restoreUpgrade(sandboxId: string, operationId: string): Promise<void> {
+		const ours = (latest: StoredSandbox) => latest.upgrading?.operationId === operationId;
+		/** What it was before the upgrade, but its state. */
+		const before = (latest: StoredSandbox): Partial<StoredSandbox> => {
+			const upgrading = latest.upgrading;
+			if (upgrading === undefined) return {};
+			const { before } = upgrading;
+			return {
+				runs: before.runs,
+				stopsAt: before.stopsAt,
+				startedAt: before.startedAt,
+				stoppedAt: before.stoppedAt,
+				lastActiveAt: before.lastActiveAt,
+				upgrading: undefined,
+			};
+		};
+		try {
+			const read = await store.sandboxes.get(sandboxId);
+			const upgrading = read?.upgrading;
+			if (read === undefined || upgrading === undefined || !ours(read)) return;
+			const reconciles = upgrading.from === "running" && backend.updateEgress !== undefined;
+			// What the isolate's host has: the egress the upgrade read (the same as the isolate's before it), where its host
+			// had taken that; else none it can be said to have, so it is sent whatever changed.
+			let applied = upgrading.before.egressInSync === false ? undefined : upgrading.egressRevision;
+			let sent = false;
+			const restored = (latest: StoredSandbox): StoredSandbox => ({
+				...latest,
+				...before(latest),
+				state: latest.upgrading?.from ?? latest.state,
+				lifecycle: (latest.lifecycle ?? 0) + 1,
+				...(sent && applied !== undefined && (latest.egressApplied ?? Number.NEGATIVE_INFINITY) < applied
+					? { egressApplied: applied }
+					: {}),
+			});
+			const ready = (latest: StoredSandbox) =>
+				ours(latest) && (!reconciles || (applied !== undefined && latest.egressRevision === applied));
+			let result = await transition(sandboxId, "starting", restored, ready);
+			for (let round = 0; "lost" in result && result.lost.state === "starting" && ours(result.lost); round++) {
+				const lost = result.lost;
+				// Stopped, its isolate's time ending now, never running again with the egress it had.
+				const stop = (reason: string) =>
+					enforceStop(sandboxId, reason, false, lost, undefined, (latest) => {
+						const at = now();
+						const was = before(latest);
+						return {
+							...was,
+							runs: (was.runs ?? latest.runs).map((run) => (run.to === undefined ? { ...run, to: at } : run)),
+						};
+					});
+				if (round >= BOOT_RECONCILE_ROUNDS) {
+					if (await stop("Its egress couldn't be applied to it as its upgrade was undone")) return;
+				} else {
+					try {
+						await deliverEgress(lost);
+						applied = lost.egressRevision ?? applied;
+						sent = true;
+					} catch (error) {
+						// Refused for the egress it has still: stopped. One changed since is sent next round.
+						if (unenforceable(error) && (await stop(UNENFORCED))) return;
+						if (!unenforceable(error)) await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+					}
+				}
+				result = await transition(sandboxId, "starting", restored, ready);
+			}
+		} catch {
+			// Deleted meanwhile, or its store away: an upgrade still on the record is the sweep's to settle.
+		}
+	}
+
+	/**
+	 * Publishes upgrade `operationId`'s microVM as a boot publishes one (`boot`): its egress reconciled before it runs, a
+	 * delete meanwhile destroying it, then the record a microVM with its run begun; then `sandbox.upgraded`, its ports
+	 * exposed again (for a caller who may open them) and its environments set up where a microVM keeps them. `by` is who
+	 * asked; absent (the sweep), no ports, and only set-up that clones nothing.
+	 */
+	async function commitUpgrade(
+		sandboxId: string,
+		operationId: string,
+		placement: UpgradedPlacement,
+		by?: { readonly principal: Principal; readonly role: MemberRole },
+	): Promise<StoredSandbox | undefined> {
+		const latest = await store.sandboxes.get(sandboxId);
+		const upgrading = latest?.upgrading;
+		if (latest === undefined || upgrading?.operationId !== operationId) return latest;
+		const environments = await environmentsOf(latest);
+		const work = environments.flatMap(workFor);
+		const becomes = () => ({
+			type: "microvm" as const,
+			size: upgrading.size,
+			shape: upgrading.shape,
+			image: upgrading.image,
+			upgradedFrom: {
+				type: "isolate" as const,
+				at: upgrading.at,
+				...(upgrading.snapshotId === undefined ? {} : { snapshotId: upgrading.snapshotId }),
+			},
+			upgrading: undefined,
+			// The isolate's snapshots stay theirs, an isolate's: the microVM's own come with its first stop.
+			latestSnapshotId: undefined,
+			latestSnapshotAt: undefined,
+			ports: [],
+			// Its environments' files and repositories, where a microVM keeps them, once it runs.
+			...(work.length > 0 ? { pendingProvision: work } : {}),
+		});
+		const committed = await boot(
+			sandboxId,
+			async () => placement,
+			undefined,
+			{ egressRevision: upgrading.egressRevision },
+			becomes,
+		);
+		// Its host revoked after it replaced the isolate but before the microVM was published: the revocation put the record
+		// in error (strandOn) while it still said isolate, and boot found it no longer starting. The isolate is gone all the
+		// same, so the record says what replaced it, still in error (and not published: no ports, no set-up below).
+		if (committed === undefined) {
+			await store.sandboxes.update(sandboxId, (current) =>
+				current.state === "error" && current.upgrading?.operationId === operationId
+					? { ...current, ...becomes(), pendingProvision: undefined }
+					: undefined,
+			);
+		}
+		const upgraded = (sandbox: StoredSandbox) =>
+			emit("sandbox.upgraded", sandbox.accountId, {
+				sandbox,
+				data: {
+					...(by === undefined ? {} : { actor: actorOf(by.principal) }),
+					from: "isolate",
+					to: "microvm",
+					previousState: upgrading.from,
+					path: placement.path,
+					files: placement.files,
+					bytes: placement.bytes,
+					durationMs: Math.max(0, now() - upgrading.at),
+				},
+			});
+		if (committed === undefined) {
+			// Not published running (stopped because its egress couldn't be got there, or its host revoked): the microVM
+			// it became all the same, which its event says.
+			const ended = await store.sandboxes.get(sandboxId);
+			if (ended?.type === "microvm" && ended.upgradedFrom?.at === upgrading.at) await upgraded(ended);
+			return ended;
+		}
+		await upgraded(committed);
+		// Its isolate's exposed ports, on the microVM, where a caller who may open them asked.
+		if (by !== undefined && latest.ports.length > 0 && mayUse(by.principal, "access", by.role)) {
+			await copyPorts(committed, latest.ports, encodeGrantee(by.principal)).catch(() => undefined);
+		}
+		if (committed.pendingProvision !== undefined) {
+			const authorised = environments.filter(
+				(environment) => environment.repos.length === 0 || (by !== undefined && mayUse(by.principal, "exec", by.role)),
+			);
+			await provision(committed.id, authorised).catch(() => undefined);
+		}
+		return (await store.sandboxes.get(sandboxId)) ?? committed;
+	}
+
+	/**
+	 * A create (or fork) the sweep may settle: `starting`, never placed (`neverPlaced`), and no move, upgrade or stop of
+	 * its own under way, so a backend's word on its create is the only word there is to wait for.
+	 */
+	const unsettledCreate = (sandbox: StoredSandbox): boolean =>
+		sandbox.state === "starting" &&
+		neverPlaced(sandbox) &&
+		sandbox.moving === undefined &&
+		sandbox.upgrading === undefined &&
+		sandbox.stopFor === undefined;
+
+	/**
+	 * The sweep's settling of a create (or fork) whose answer was lost: its host's connection dropped before it answered
+	 * (`isCreateOutcomeUnknown`), or the gateway making it went (a stack object restarted, a replica gone), leaving it
+	 * `starting` with no host. Taken from what its host has reported since (`SandboxBackend.settleCreate`: its hello's
+	 * sandboxes once it reconnects, or an event), as a report of that machine, never by acting on the host:
+	 *
+	 * - running there, it runs, published as its boot would have (`boot`: its egress sent again, its guest's health as the
+	 *   host has it, its `sandbox.running` event, its pending set-up);
+	 * - made there and ended since, it is `error` on that host with the host's reason, as an exit its host reports is
+	 *   (`reportExit`): its machine is kept, for a start to boot again or a delete to end;
+	 * - not made, it is `error` saying so, never placed, and a start makes it again (`bootAgain`).
+	 *
+	 * One whose host hasn't said is left `starting`. A report under `CREATE_SETTLE_GRACE_MS` old is left to the gateway
+	 * that may still be finishing it.
+	 *
+	 * Everything is keyed on the attempt it read (`lifecycle`, which every move of its state moves on, and which its create
+	 * sent as `SandboxSpec.attempt`). Its evidence is the host's word on that attempt alone: its placement, stamped with
+	 * the attempt it was admitted for, and nothing from another attempt or with no stamp (`settleCreate` answers
+	 * `pending`). Each outcome is one conditional write over that attempt, and the only call to the host that can follow
+	 * (a stop for egress it can't take, `enforceStop`) is sent once a write so fenced has moved it to `stopping`. So any
+	 * number of gateways may settle the same attempt at once and one wins, and a late one, or one whose gateway went,
+	 * neither reads another attempt's word nor writes over another attempt.
+	 */
+	async function settleLostCreate(sandboxId: string): Promise<void> {
+		const settleCreate = backend.settleCreate;
+		if (settleCreate === undefined) return;
+		await track([sandboxId], async () => {
+			const read = await store.sandboxes.get(sandboxId);
+			if (read === undefined || !unsettledCreate(read)) return;
+			const lifecycle = read.lifecycle ?? 0;
+			const attempt = (current: StoredSandbox) => unsettledCreate(current) && (current.lifecycle ?? 0) === lifecycle;
+			const outcome = await settleCreate.call(backend, sandboxId, lifecycle);
+			if (outcome.state === "pending" || outcome.reportedAt + CREATE_SETTLE_GRACE_MS > now()) return;
+			if (outcome.state === "running") {
+				// What egress the lost create sent isn't known: its boot sends what it has now before it runs.
+				const booted = await boot(
+					sandboxId,
+					async () => outcome.placement,
+					undefined,
+					{ egressRevision: undefined },
+					undefined,
+					attempt,
+				);
+				// Its environments' files now it runs; their repositories wait for a start by someone who may clone them.
+				if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+				return;
+			}
+			if (outcome.state === "lost") {
+				await fail(sandboxId, new KantelError("unavailable", outcome.reason), "starting", attempt);
+				return;
+			}
+			const { placement, reason } = outcome;
+			const result = await transition(
+				sandboxId,
+				"starting",
+				(current) =>
+					withState(current, "error", {
+						reason,
+						ports: [],
+						hostId: placement.hostId,
+						...pooled(placement.poolId),
+						resources: placement.resources ?? current.resources,
+						capabilities: placement.capabilities,
+						...(placement.machineAt === undefined ? {} : { machineAt: placement.machineAt }),
+						...placedBase(placement),
+					}),
+				attempt,
+			);
+			if (!("moved" in result)) return;
+			await emit("sandbox.error", result.moved.accountId, {
+				sandbox: result.moved,
+				data: { previousState: "starting", reason },
+			});
+		});
+	}
+
+	/** What the commands a paused sandbox's memory kept running say once a start of it, never seen through, lost that memory. */
+	const START_LOST_MEMORY =
+		"kantel: killed: the sandbox's start was never seen through, and its host let go of the memory it was paused with, and its processes with it\n";
+
+	/**
+	 * An ordinary boot the sweep may settle (a start, resume, recovery or restart on the latest base): `starting`, placed
+	 * before (never a create, `unsettledCreate`), and no move, upgrade or stop of its own under way.
+	 */
+	const unsettledStart = (sandbox: StoredSandbox): boolean =>
+		sandbox.state === "starting" &&
+		!neverPlaced(sandbox) &&
+		sandbox.moving === undefined &&
+		sandbox.upgrading === undefined &&
+		sandbox.stopFor === undefined;
+
+	/**
+	 * An ordinary boot left `starting` with no lease (`booting`): one begun by a gateway from before leases were kept,
+	 * which may still be at it. Given one, said now, so it is settled only once it has gone as long quiet as a boot with
+	 * a lease would have (`settleStuckStart`).
+	 */
+	async function leaseStart(sandbox: StoredSandbox, at: number): Promise<void> {
+		const lifecycle = sandbox.lifecycle ?? 0;
+		await patchSandbox(sandbox.id, (latest) =>
+			unsettledStart(latest) && (latest.lifecycle ?? 0) === lifecycle && latest.booting === undefined
+				? { ...latest, booting: { heartbeatAt: at } }
+				: undefined,
+		);
+	}
+
+	/**
+	 * The sweep's settling of an ordinary boot whose gateway has gone quiet (`booting.heartbeatAt`): its publish failed,
+	 * its host's answer was lost (`isStartOutcomeUnknown`), or the gateway went, leaving it `starting`. Taken from what its
+	 * host has now (`SandboxBackend.settleStart`), never by acting on the host:
+	 *
+	 * - running there, it runs, published as its boot would have (`boot`: its egress sent again, a memory drop it was due
+	 *   recorded and its commands killed, its `sandbox.running` event, its pending set-up);
+	 * - stopped there, still holding the memory it was paused with, it is `paused` again, as it was before (its pause's
+	 *   time, snapshot, size and mounts), with the host's word on why;
+	 * - otherwise (failed there, stopped without that memory, or no longer there) it is `error` with the host's reason, and
+	 *   one started from paused that lost that memory has the drop recorded and the commands it ran killed, saying why.
+	 *
+	 * One whose host can't say yet (starting or stopping it, away, not answering) is left `starting`, quiet again, for a
+	 * later sweep.
+	 *
+	 * Taken on first, as a stuck upgrade is: its lease moved on from the quiet one this sweep read, and kept moving while
+	 * its host is asked, so another gateway's sweep leaves it. Each outcome is one write conditional on the boot it read
+	 * (its `lifecycle`) and on the lease being this sweep's still, so it never lands over a publish or stop that got there
+	 * first, a later boot, the original gateway coming back to it (whose heartbeat moves the lease on), or another
+	 * gateway's settling once this one's hold lapsed.
+	 */
+	async function settleStuckStart(sandbox: StoredSandbox): Promise<void> {
+		const settleStart = backend.settleStart;
+		const booting = sandbox.booting;
+		if (settleStart === undefined || booting === undefined) return;
+		const lifecycle = sandbox.lifecycle ?? 0;
+		const attempt = (current: StoredSandbox) =>
+			unsettledStart(current) && (current.lifecycle ?? 0) === lifecycle && current.booting !== undefined;
+		// The lease this gateway last wrote: moved on only from it, so a write by anyone else ends this one's hold.
+		let mine = booting.heartbeatAt;
+		const beat = async (to: number) => {
+			const from = mine;
+			const written = await patchSandbox(sandbox.id, (latest) =>
+				attempt(latest) && latest.booting?.heartbeatAt === from
+					? { ...latest, booting: { ...latest.booting, heartbeatAt: to } }
+					: undefined,
+			);
+			if (written !== undefined) mine = to;
+			return written !== undefined;
+		};
+		if (!(await beat(now()))) return;
+		const heartbeat = setInterval(() => beat(now()).catch(() => undefined), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		// Written only while the lease is the one this sweep holds: the heartbeat stops first, so it stays put.
+		const held = (current: StoredSandbox) => attempt(current) && current.booting?.heartbeatAt === mine;
+		let settled = false;
+		try {
+			await track([sandbox.id], async () => {
+				const outcome = await settleStart.call(backend, sandbox.id);
+				if (outcome.state === "pending") return;
+				settled = true;
+				clearInterval(heartbeat);
+				const read = await store.sandboxes.get(sandbox.id);
+				if (read === undefined || !held(read)) return;
+				if (outcome.state === "running") {
+					// Resumed: a kill made while it was paused reaches the command its memory kept, as its boot would have sent it.
+					if (read.memoryDropping === undefined) await sendPendingKills(sandbox.id).catch(() => undefined);
+					// What egress its boot sent isn't known: its boot sends what it has now before it runs.
+					const booted = await boot(
+						sandbox.id,
+						async () => outcome.placement,
+						undefined,
+						{ egressRevision: undefined },
+						undefined,
+						held,
+					);
+					// Its environments' files now it runs; their repositories wait for a start by someone who may clone them.
+					if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+					return;
+				}
+				const { reason } = outcome;
+				// Paused again only where its host has checked the memory it was paused with is there to resume.
+				if (outcome.hostState === "stopped" && outcome.memory === "held") {
+					const result = await transition(
+						sandbox.id,
+						"starting",
+						(current) => {
+							const paused = current.booting?.paused;
+							const restored = withState(current, "paused", {
+								reason,
+								ports: [],
+								...(paused === undefined
+									? {}
+									: {
+											pausedSnapshotId: paused.pausedSnapshotId,
+											size: paused.size,
+											shape: paused.shape,
+											mounts: paused.mounts,
+											mountsAt: paused.mountsAt,
+										}),
+							});
+							// Paused when it was, not now: its machine has been as its pause left it since.
+							const stoppedAt = paused?.stoppedAt ?? current.stoppedAt;
+							return stoppedAt === undefined ? restored : { ...restored, stoppedAt };
+						},
+						held,
+					);
+					if (!("moved" in result)) return;
+					await emit("sandbox.paused", result.moved.accountId, {
+						sandbox: result.moved,
+						data: { previousState: "starting", reason },
+					});
+					return;
+				}
+				// Started from paused and its memory gone with it: the drop recorded with its `error`, as a boot's would be. A boot
+				// begun by an older gateway didn't say it was paused: commands still running say so, as only a pause keeps them.
+				const wasPaused =
+					read.memoryDropping !== undefined ||
+					read.booting?.paused !== undefined ||
+					(await store.commands.list({ sandboxId: sandbox.id, state: "running" })).length > 0;
+				// Only where its host says that memory is gone: one it can't check is neither promised nor written off, and a
+				// resume finds out.
+				const lostMemory = (current: StoredSandbox) =>
+					outcome.memory === "gone" &&
+					(wasPaused || current.memoryDropping !== undefined || current.booting?.paused !== undefined);
+				const failed = await fail(sandbox.id, new KantelError("unavailable", reason), "starting", held, (current) =>
+					lostMemory(current) ? droppedMemory(current, current.memoryDropping ?? START_LOST_MEMORY) : {},
+				);
+				if (
+					failed?.memoryDropped !== undefined &&
+					failed.memoryDropped.generation > (read.memoryDropped?.generation ?? 0)
+				) {
+					await killDroppedOf(failed).catch(() => undefined);
+				}
+			});
+		} finally {
+			clearInterval(heartbeat);
+			// Not settled (its host can't say yet): let go, quiet as it was, for the next sweep on any gateway.
+			if (!settled) await beat(booting.heartbeatAt).catch(() => undefined);
+		}
+	}
+
+	/**
+	 * The sweep's settling of an upgrade whose gateway has gone quiet (`upgrading.heartbeatAt`), or whose outcome its
+	 * backend couldn't tell: done, published; failed, put back. One its backend still can't tell is left for next time.
+	 *
+	 * Taken on in the store every gateway shares first: its heartbeat moved on from the quiet one this sweep read, as
+	 * its upgrading gateway's would be, and kept moving while this gateway settles it. So another gateway's sweep finds
+	 * it under way and leaves it, and only one settles it at a time; one already taken on, or settled, is left.
+	 */
+	async function settleStuckUpgrade(sandbox: StoredSandbox): Promise<void> {
+		const upgrading = sandbox.upgrading;
+		if (upgrading === undefined) return;
+		const { operationId } = upgrading;
+		// The heartbeat this gateway last wrote: moved on only from it, so a write by anyone else ends this one's hold.
+		let mine = upgrading.heartbeatAt;
+		const beat = async (to: number) => {
+			const from = mine;
+			const written = await patchSandbox(sandbox.id, (latest) =>
+				latest.upgrading?.operationId === operationId && latest.upgrading.heartbeatAt === from
+					? { ...latest, upgrading: { ...latest.upgrading, heartbeatAt: to } }
+					: undefined,
+			);
+			if (written !== undefined) mine = to;
+			return written !== undefined;
+		};
+		if (!(await beat(now()))) return;
+		const heartbeat = setInterval(() => beat(now()).catch(() => undefined), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		try {
+			await track([sandbox.id], async () => {
+				const outcome: UpgradeOutcome =
+					backend.settleUpgrade === undefined
+						? { state: "failed" }
+						: await backend.settleUpgrade(sandbox.id, operationId);
+				if (outcome.state === "done") await commitUpgrade(sandbox.id, operationId, outcome.placement);
+				else await restoreUpgrade(sandbox.id, operationId);
+			});
+		} catch (error) {
+			// Not settled (its backend can't tell yet): let go, quiet as it was, for the next sweep on any gateway.
+			clearInterval(heartbeat);
+			await beat(upgrading.heartbeatAt).catch(() => undefined);
+			throw error;
+		} finally {
+			clearInterval(heartbeat);
+		}
+	}
+
+	/**
+	 * Refuses a sandbox that can't move to another host as it is: not a microVM, moving or upgrading already, not
+	 * running, stopped or paused, kept to its host by its create, or not on a host yet.
+	 */
+	function requireMovable(current: StoredSandbox): void {
+		if (current.type !== "microvm") throw new KantelError("not_supported", "Only a microVM moves to another host");
+		if (current.moving !== undefined || current.upgrading !== undefined) {
+			throw new KantelError("conflict", "The sandbox is being moved or upgraded already");
+		}
+		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "running") {
+			throw new KantelError(
+				"conflict",
+				`The sandbox is ${current.state}: only a running, stopped or paused sandbox moves to another host`,
+			);
+		}
+		if (current.hostPin !== undefined) {
+			throw new KantelError(
+				"conflict",
+				"The sandbox is kept to its host (its create named the host), so it doesn't move",
+			);
+		}
+		if (current.hostId === undefined)
+			throw new KantelError("conflict", "The sandbox isn't on a host yet; start it instead");
+	}
+
+	/**
+	 * The hosts a sandbox may move to, as a start would choose them: its labels and its pool kept (it never leaves its
+	 * pool), its own host among them, which its backend leaves out.
+	 */
+	async function moveHostsOf(principal: Principal, current: StoredSandbox): Promise<readonly string[]> {
+		return requireHosts(
+			await ensureHosts(),
+			current.accountId,
+			"microvm",
+			{ ...current.hostLabels },
+			true,
+			await mayShare(principal),
+			undefined,
+			await poolOfSandbox(current),
+		);
+	}
+
+	/**
+	 * A move's dry run (`GET /sandboxes/{id}/move`): each host it may move to now, whether a move there keeps its memory
+	 * (and why not) and the pause it takes. Refused as the move would be; nothing changes. None for a caller who may not
+	 * know its host, as its view leaves its host out.
+	 */
+	async function planMoveOf(
+		principal: Principal,
+		role: MemberRole,
+		sandboxId: string,
+	): Promise<computeSchema.SandboxMovePlan> {
+		const current = await settledFor(principal, sandboxId);
+		if (backend.move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
+		requireMovable(current);
+		requireSetupScope(principal, role, current);
+		const hosts = await moveHostsOf(principal, current);
+		const own = current.hostId;
+		const options = await backend.planMove?.(current.id, {
+			accountId: current.accountId,
+			eligibleHosts: hosts.filter((hostId) => hostId !== own),
+			...pooled(current.poolId),
+			...(current.state === "running" ? { running: true } : {}),
+		});
+		// A backend that can't say answers none: the caller lists hosts as it would without a dry run.
+		if (options === undefined) return {};
+		if ((await sandboxView(current, principal)).hostId === undefined) return {};
+		// A stopped sandbox has no memory: it boots there, as any start does.
+		const memory = current.state !== "stopped";
+		return {
+			targets: options.map((option) => ({
+				hostId: option.hostId,
+				keepsMemory: memory && option.memory.kept,
+				...(memory && option.memory.reason !== undefined ? { restartReason: option.memory.reason } : {}),
+				...(memory && option.memory.kept && option.pauseMs !== undefined
+					? {
+							pauseMs: option.pauseMs,
+							...(option.memoryBytes === undefined ? {} : { memoryBytes: option.memoryBytes }),
+							...(option.bytesPerSecond === undefined
+								? {}
+								: { bytesPerSecond: Math.max(1, Math.round(option.bytesPerSecond)) }),
+							...(option.rateMeasured === undefined ? {} : { rateMeasured: option.rateMeasured }),
+						}
+					: {}),
+			})),
+		};
+	}
+
+	/**
+	 * `POST /sandboxes/{id}/move`: a microVM moved to another host in its pool, with its ID, settings and URLs, and
+	 * started there on its disk.
+	 *
+	 * The record goes `starting` with its move (`moving`: an operation ID its backend does at most once, and what the
+	 * record was), so its commands and file calls wait for it as for a start, every other lifecycle call queues behind it
+	 * (`track`), and a gateway that dies meanwhile leaves it for the sweep to settle (`settleStuckMove`). Its backend
+	 * copies it, starts it on the new host and only then places it there (`SandboxBackend.move`); it is published as a
+	 * boot's is (`commitMove`, through `boot`), its egress reconciled first. A failure the backend is sure of puts the
+	 * record back exactly as it was, stopped (or paused) where it was. An outcome the backend can't tell is settled with
+	 * it at once where it can say, else left for the sweep. A paused or running sandbox keeps its memory unless
+	 * `keepMemory` is `false`, where its new host's CPU and runtime match its own (its backend chooses one that does
+	 * first): its backend says which as it chooses the host (`onPlanned`), before anything is copied, and the record's
+	 * move says so (`keepMemory`, and `restartReason` where it restarts), its `moved` once it runs there. Answers once it
+	 * runs on its new host, or with `wait: false` as soon as it is moving.
+	 *
+	 * A running sandbox moves with a restart (docs/design/disk-store.md, "Moving a sandbox to another host"): it stays
+	 * `running` with its move while its first copy is made, so its commands and files work on, and goes `starting` only
+	 * as its backend stops it for its final copy (`onStopping`, conditional on its being running with this move still:
+	 * a stop, pause, exit or revocation that landed first ends the move, rolled back, and the record stays as that left
+	 * it). Rolled back before it is stopped, it runs on where it was; after, it is started there again (`restoreMove`).
+	 */
+	async function moveToHost(
+		principal: Principal,
+		role: MemberRole,
+		sandboxId: string,
+		body: computeSchema.MoveSandboxBody,
+		settled = false,
+		from?: string,
+	): Promise<StoredSandbox> {
+		const current = await settledFor(principal, sandboxId);
+		const move = backend.move;
+		if (move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
+		if (current.type !== "microvm") throw new KantelError("not_supported", "Only a microVM moves to another host");
+		if (current.moving !== undefined && current.moving.heartbeatAt + UPGRADE_STALE_MS <= now()) {
+			// A move gone quiet (its gateway gone), left on it in any state: settled first, once.
+			if (settled) {
+				throw new KantelError(
+					"unavailable",
+					"The sandbox's last move can't be settled yet (a host it used doesn't answer); try the move again once it has been",
+				);
+			}
+			await settleStuckMove(current).catch(() => undefined);
+			return moveToHost(principal, role, sandboxId, body, true, from);
+		}
+		// An evacuation's move, only off the host it evacuates: one moved elsewhere meanwhile (another call) is left there.
+		if (from !== undefined && current.hostId !== from) throw new KantelError("conflict", MOVED_ELSEWHERE);
+		requireMovable(current);
+		const running = current.state === "running";
+		// Its memory too, unless asked not to: a running or paused one's, where its new host matches its own.
+		const keepMemory = body.keepMemory !== false && current.state !== "stopped";
+		// Comes back running, on its new host: it counts against the account's sandboxes as a start does (a running one
+		// counts already).
+		if (!running) await requireCapacity(current.accountId, 1);
+		const hosts = await moveHostsOf(principal, current);
+		if (body.hostId !== undefined && !hosts.includes(body.hostId)) {
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				"The host asked for isn't one this sandbox may use: an online host in its pool, within its host labels and pin",
+			);
+		}
+		if (body.hostId !== undefined && body.hostId === current.hostId) {
+			throw new KantelError("invalid", "The sandbox is on that host already");
+		}
+		requireSetupScope(principal, role, current);
+		await provisionedAgain(principal, role, current);
+		const operationId = randomId("mov");
+		const began = running
+			? // Running on while its first copy is made: only its move, and the egress revision its start on the new host
+				// sends (an update read before it is older, and loses).
+				await transition(
+					current.id,
+					"running",
+					(latest) => {
+						const egressRevision = later(latest.egressRevision);
+						return {
+							...latest,
+							egressRevision,
+							moving: {
+								operationId,
+								at: now(),
+								heartbeatAt: now(),
+								phase: "copying",
+								from: "running",
+								...(body.hostId === undefined ? {} : { to: body.hostId }),
+								before: {},
+								egressRevision,
+								// A stop it owes already (its stop's `stopFor`, which the move's own stop clears): owed still once it ends.
+								...(latest.stopFor === undefined ? {} : { stopAfter: latest.stopFor }),
+							},
+						};
+					},
+					(latest) =>
+						latest.type === "microvm" &&
+						latest.lifecycle === current.lifecycle &&
+						latest.moving === undefined &&
+						latest.upgrading === undefined &&
+						(from === undefined || latest.hostId === from),
+				)
+			: await transition(
+					current.id,
+					current.state,
+					(latest) =>
+						withState(latest, "starting", {
+							ports: [],
+							pausedSnapshotId: undefined,
+							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+							// Its egress is read afresh for its start on the new host: an update read before is older, and loses.
+							egressRevision: later(latest.egressRevision),
+							moving: {
+								operationId,
+								at: now(),
+								heartbeatAt: now(),
+								phase: "copying",
+								from: latest.state === "paused" ? "paused" : "stopped",
+								...(body.hostId === undefined ? {} : { to: body.hostId }),
+								before: {
+									...(latest.stoppedAt === undefined ? {} : { stoppedAt: latest.stoppedAt }),
+									...(latest.reason === undefined ? {} : { reason: latest.reason }),
+									...(latest.pausedSnapshotId === undefined ? {} : { pausedSnapshotId: latest.pausedSnapshotId }),
+									...(latest.mounts === undefined ? {} : { mounts: latest.mounts }),
+									...(latest.mountsAt === undefined ? {} : { mountsAt: latest.mountsAt }),
+								},
+								egressRevision: later(latest.egressRevision),
+							},
+						}),
+					(latest) =>
+						latest.type === "microvm" &&
+						latest.lifecycle === current.lifecycle &&
+						(from === undefined || latest.hostId === from),
+				);
+		if (!("moved" in began))
+			throw new KantelError("conflict", `The sandbox is ${began.lost.state}; try the move again`);
+		const starting = began.moved;
+		const provisioning = await provisionedAgain(principal, role, starting, true);
+		const work = track([current.id], async (): Promise<StoredSandbox> => {
+			// Said every so often while this gateway is at it: a record gone quiet is a gateway gone, settled by the sweep.
+			const heartbeat = setInterval(() => {
+				patchSandbox(sandboxId, (latest) =>
+					latest.moving?.operationId === operationId
+						? { ...latest, moving: { ...latest.moving, heartbeatAt: now() } }
+						: undefined,
+				).catch(() => undefined);
+			}, UPGRADE_HEARTBEAT_MS);
+			(heartbeat as { unref?: () => void }).unref?.();
+			try {
+				let egress: Awaited<ReturnType<typeof egressFor>>;
+				try {
+					egress = await egressFor(starting.accountId, starting);
+				} catch (error) {
+					await restoreMove(sandboxId, operationId);
+					throw error;
+				}
+				let placement: Placement;
+				// Whether its memory goes too, as its backend chose with the host (`onPlanned`), and why not.
+				let keptMemory = false;
+				let restartReason: string | undefined;
+				// A running one's commands as its stop for a restart found them (`onStopping`), which that stop ends.
+				let stoppedWith: StoredCommand[] | undefined;
+				try {
+					placement = await move(
+						current.id,
+						{
+							accountId: current.accountId,
+							env: starting.env,
+							eligibleHosts: hosts.filter((hostId) => hostId !== current.hostId),
+							...(body.hostId === undefined ? {} : { to: body.hostId }),
+							...pooled(current.poolId),
+							...egress,
+							egressRevision: starting.egressRevision,
+							...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+							...(running
+								? {
+										running: true,
+										onStopping: async (hostId) => {
+											await stopForMove(sandboxId, operationId, hostId);
+											// To restart it: its commands brought up to date while its machine still runs, so one that ended
+											// keeps its end, and the rest, listed now it is `starting` (none starts until it runs on its new
+											// machine), end with its stop (`onFinalCopy`).
+											if (!keptMemory) {
+												stoppedWith = (await reconciledCommands(sandboxId).catch(() => [])).filter(
+													(command) => command.state === "running",
+												);
+											}
+										},
+									}
+								: {}),
+							onFinalCopy: (hostId) => {
+								patchSandbox(sandboxId, (latest) =>
+									latest.moving?.operationId === operationId
+										? { ...latest, moving: { ...latest.moving, phase: "final-copy", to: hostId } }
+										: undefined,
+								).catch(() => undefined);
+								// Its processes ended with its stop, its commands with them; kept in its memory, they carry on. Those its
+								// stop found, not asked of its backend again (brought up to date before its stop): the move may place it
+								// on its new machine meanwhile, and a command started there is never one of them.
+								if (!keptMemory && stoppedWith !== undefined) {
+									keepGoing(
+										killCommandsOf(sandboxId, {
+											listed: stoppedWith,
+											note: restartedByMove(restartReason),
+											reconcile: false,
+										}),
+									);
+								}
+							},
+							onStarting: (hostId) => {
+								patchSandbox(sandboxId, (latest) =>
+									latest.moving?.operationId === operationId
+										? { ...latest, moving: { ...latest.moving, phase: "starting", to: hostId } }
+										: undefined,
+								).catch(() => undefined);
+							},
+							...(keepMemory ? { keepMemory: true } : {}),
+							// Said before anything is copied: where it goes, and whether its memory goes too, or why it restarts.
+							// Must land: the record says so, and its commands are kept or ended by it. Its backend gives the move up,
+							// nothing sent, if it doesn't.
+							onPlanned: async (hostId, memory) => {
+								const written = await patchSandbox(sandboxId, (latest) =>
+									latest.moving?.operationId === operationId
+										? {
+												...latest,
+												moving: {
+													...latest.moving,
+													to: hostId,
+													keepMemory: memory.kept,
+													...(memory.reason === undefined ? {} : { restartReason: memory.reason }),
+												},
+											}
+										: undefined,
+								);
+								if (written === undefined) throw new KantelError("conflict", "The sandbox changed as its move began");
+								keptMemory = memory.kept;
+								restartReason = memory.reason;
+							},
+						},
+						operationId,
+					);
+				} catch (error) {
+					if (!isUpgradeOutcomeUnknown(error)) {
+						await restoreMove(sandboxId, operationId);
+						throw error;
+					}
+					// Sent, and not answered: asked what became of it, never guessed. One that can't be told yet stays moving, for
+					// the sweep to settle once its hosts answer.
+					let outcome: MoveOutcome | undefined;
+					try {
+						outcome = await backend.settleMove?.(sandboxId, operationId);
+					} catch {
+						throw new KantelError("unavailable", MOVE_OUTCOME_UNKNOWN);
+					}
+					if (outcome?.state !== "done") {
+						await restoreMove(sandboxId, operationId);
+						throw new KantelError("unavailable", `The move didn't happen: ${outcome?.reason ?? messageOf(error)}`);
+					}
+					placement = outcome.placement;
+				}
+				const committed = await commitMove(sandboxId, operationId, placement);
+				if (committed?.state === "running" && provisioning !== undefined) {
+					await provision(committed.id, provisioning.environments).catch(() => undefined);
+				}
+				return committed ?? (await mustGetSandbox(sandboxId));
+			} finally {
+				clearInterval(heartbeat);
+			}
+		});
+		if (body.wait === false) {
+			keepGoing(work);
+			return starting;
+		}
+		return work;
+	}
+
+	// Evacuations: every sandbox moved off a draining host (docs/design/disk-store.md, "Draining a host").
+
+	/** The hosts whose evacuation this gateway is carrying on. */
+	const evacuating = new Set<string>();
+
+	const evacuationDone = (item: StoredEvacuationSandbox) =>
+		item.state === "moved" || item.state === "skipped" || item.state === "failed";
+
+	/** An evacuation's counts and state, as the host's summary and its own view have them. */
+	function evacuationProgress(evacuation: StoredEvacuation): computeSchema.HostEvacuationProgress {
+		const count = (state: StoredEvacuationSandbox["state"]) =>
+			evacuation.sandboxes.filter((item) => item.state === state).length;
+		return {
+			state: evacuation.state,
+			...(evacuation.reason === undefined ? {} : { reason: evacuation.reason }),
+			startedAt: evacuation.startedAt,
+			...(evacuation.endedAt === undefined ? {} : { endedAt: evacuation.endedAt }),
+			moved: count("moved"),
+			remaining: count("waiting") + count("moving"),
+			skipped: count("skipped"),
+			failed: count("failed"),
+		};
+	}
+
+	/**
+	 * An evacuation as the API answers it. Each sandbox is named only to a caller who may see it now: the deployment's
+	 * super-admin (`everyName`), else one who may see its record as it is (`canSee`, in the account where they have
+	 * `role`); one gone is judged as it was when taken. One moving says where its move has got, read from its record.
+	 */
+	async function evacuationView(
+		principal: Principal,
+		evacuation: StoredEvacuation,
+		everyName: boolean,
+		role?: MemberRole,
+	): Promise<computeSchema.HostEvacuation> {
+		const sandboxes = await Promise.all(
+			evacuation.sandboxes.map(async (item): Promise<computeSchema.HostEvacuationSandbox> => {
+				const record = item.state === "moving" || !everyName ? await store.sandboxes.get(item.sandboxId) : undefined;
+				const phase = item.state === "moving" ? record?.moving?.phase : undefined;
+				// Its record as it is now, deleted or not; only one gone altogether is judged as it was, and never to a key
+				// held to some sandboxes.
+				const named =
+					everyName ||
+					(record !== undefined
+						? role !== undefined && (await canSee(principal, record, role))
+						: !(principal.kind === "key" && principal.limits.sandboxIds !== undefined) &&
+							(item.visibility !== "private" || item.ownerUserId === principal.userId));
+				return {
+					sandboxId: item.sandboxId,
+					...(named && item.name !== undefined ? { name: item.name } : {}),
+					type: item.type,
+					state: item.state,
+					...(phase === undefined ? {} : { phase }),
+					...(item.hostId === undefined ? {} : { hostId: item.hostId }),
+					...(item.keptMemory === undefined ? {} : { keptMemory: item.keptMemory }),
+					...(item.reason === undefined ? {} : { reason: item.reason }),
+				};
+			}),
+		);
+		return { hostId: evacuation.id, ...evacuationProgress(evacuation), sandboxes };
+	}
+
+	/** A host's last evacuation, `not_found` when it has had none. */
+	async function evacuationOf(
+		principal: Principal,
+		hostId: string,
+		everyName: boolean,
+		role?: MemberRole,
+	): Promise<computeSchema.HostEvacuation> {
+		const read = await store.evacuations.get(hostId);
+		if (read === undefined) throw new KantelError("not_found", "The host has had no evacuation");
+		const evacuation = (await settleEndedEvacuation(read)) ?? read;
+		return evacuationView(principal, evacuation, everyName, role);
+	}
+
+	/**
+	 * `POST /hosts/{hostId}/evacuation`: drains the host, where it isn't draining, and begins moving every sandbox off
+	 * it, carried on in the background (`carryOnEvacuation`) by this gateway, and should it go, by the sweep's. The one
+	 * running already is answered as it is; one that has ended is begun again, with what is on the host now.
+	 */
+	async function startEvacuation(
+		principal: Principal,
+		host: StoredHost,
+		everyName: boolean,
+		role?: MemberRole,
+	): Promise<computeSchema.HostEvacuation> {
+		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+		if (backend.move === undefined) throw new KantelError("not_supported", MOVE_UNSUPPORTED);
+		const running = await store.evacuations.get(host.id);
+		if (running?.state === "running") return evacuationView(principal, running, everyName, role);
+		if (!(await connectedHosts()).has(host.id)) {
+			throw new KantelError("unavailable", "The host isn't connected: move its sandboxes off once it is back");
+		}
+		// Drained first, so no new sandbox lands on it as its sandboxes go.
+		if (host.state !== "draining") await changeHost(host, { draining: true });
+		// Its sandboxes listed as it begins, so the answer has them: written with the record, before any gateway holds it.
+		const sandboxes = (await store.sandboxes.list({ hostId: host.id })).flatMap((sandbox) => {
+			const item = evacuationSandboxOf(host.id, undefined, sandbox, false);
+			return item === undefined ? [] : [item];
+		});
+		const fresh: StoredEvacuation = {
+			id: host.id,
+			run: randomId("evac"),
+			state: "running",
+			startedAt: now(),
+			by: {
+				userId: principal.userId,
+				superAdmin: everyName,
+				...(principal.kind === "key"
+					? { scopes: [...principal.scopes] }
+					: principal.token?.scopes === undefined
+						? {}
+						: { scopes: [...principal.token.scopes] }),
+			},
+			sandboxes,
+		};
+		// One at a time: of two calls at once, one begins it and the other answers it.
+		const begun =
+			((await store.evacuations.insert(fresh))
+				? fresh
+				: await store.evacuations.update(host.id, (current) => (current.state === "running" ? undefined : fresh))) ??
+			(await store.evacuations.get(host.id));
+		if (begun === undefined) throw new KantelError("conflict", "The host's evacuation changed as it began; try again");
+		keepGoing(carryOnEvacuation(host.id));
+		return evacuationView(principal, begun, everyName, role);
+	}
+
+	/**
+	 * Writes an evacuation's sandboxes as `change` makes them from the record as it is now, only while it is the run
+	 * `run`: a write never lands on a later evacuation of the host. With `token`, only while that lease holds it, running,
+	 * so a gateway that lost it (its lease run out, another taking it on) looks and begins moves no more; without, a
+	 * move's outcome, which lands whoever holds it, and after it ended (undrained as the move went on).
+	 */
+	function changeEvacuation(
+		hostId: string,
+		run: string,
+		change: (sandboxes: readonly StoredEvacuationSandbox[]) => readonly StoredEvacuationSandbox[] | undefined,
+		token?: string,
+	): Promise<StoredEvacuation | undefined> {
+		return store.evacuations.update(hostId, (current) => {
+			if (current.run !== run) return undefined;
+			if (
+				token !== undefined &&
+				(current.state !== "running" || current.lease?.token !== token || current.lease.until <= now())
+			) {
+				return undefined;
+			}
+			const sandboxes = change(current.sandboxes);
+			return sandboxes === undefined ? undefined : { ...current, sandboxes };
+		});
+	}
+
+	/** One sandbox of an evacuation as its record is now (`undefined`: gone, so it is left out). */
+	function evacuationSandboxOf(
+		hostId: string,
+		item: StoredEvacuationSandbox | undefined,
+		sandbox: StoredSandbox | undefined,
+		ours: boolean,
+	): StoredEvacuationSandbox | undefined {
+		if (sandbox === undefined || sandbox.state === "deleted" || sandbox.state === "deleting") return undefined;
+		const base: StoredEvacuationSandbox = item ?? {
+			sandboxId: sandbox.id,
+			accountId: sandbox.accountId,
+			...(sandbox.name === undefined ? {} : { name: sandbox.name }),
+			type: sandbox.type,
+			visibility: sandbox.visibility,
+			ownerUserId: sandbox.ownerUserId,
+			state: "waiting",
+		};
+		if (item !== undefined && evacuationDone(item)) return item;
+		// Its move is this gateway's: its outcome is written as it ends.
+		if (ours) return base;
+		// Moved, by this evacuation or by anyone.
+		if (sandbox.hostId !== hostId && sandbox.moving === undefined) {
+			return {
+				...base,
+				state: "moved",
+				...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
+				keptMemory: sandbox.moved?.keptMemory ?? false,
+				...(sandbox.moved?.restartReason === undefined ? {} : { reason: sandbox.moved.restartReason }),
+			};
+		}
+		// A move under way, this evacuation's (its gateway gone, for the sweep to settle) or anyone's: waited for.
+		if (sandbox.moving !== undefined) return { ...base, state: "moving" };
+		const waiting = (from: StoredEvacuationSandbox): StoredEvacuationSandbox => {
+			if (sandbox.type !== "microvm") {
+				return { ...from, state: "skipped", reason: "An isolate doesn't move to another host" };
+			}
+			if (sandbox.hostPin !== undefined) {
+				return { ...from, state: "skipped", reason: "It's kept to this host: its create named the host" };
+			}
+			if (sandbox.state === "error") {
+				return { ...from, state: "skipped", reason: "It's in error: recover or delete it, then move it" };
+			}
+			return { ...from, state: "waiting" };
+		};
+		// This evacuation's move of it, ended with no answer to its gateway (gone): tried again, a few times.
+		if (base.state === "moving") {
+			const attempts = (base.attempts ?? 0) + 1;
+			if (attempts >= EVACUATION_ATTEMPTS) {
+				return {
+					...base,
+					attempts,
+					state: "failed",
+					reason: `Its move was cut short ${attempts} times; it's where it was`,
+				};
+			}
+			const { claim: _claim, ...unclaimed } = base;
+			return waiting({ ...unclaimed, attempts });
+		}
+		return waiting(base);
+	}
+
+	/**
+	 * Looks at an evacuation's host again, and writes its sandboxes as they are now (`evacuationSandboxOf`): each on it,
+	 * in the order the store has them, those it had that are elsewhere now, and those gone left out. `ours` are this
+	 * gateway's moves under way; written only while its lease (`token`) holds it.
+	 */
+	async function lookAtEvacuation(
+		hostId: string,
+		run: string,
+		token: string,
+		ours: ReadonlySet<string>,
+	): Promise<StoredEvacuation | undefined> {
+		const read = await store.evacuations.get(hostId);
+		if (read === undefined || read.run !== run || read.state !== "running") return undefined;
+		const onHost = await store.sandboxes.list({ hostId });
+		const records = new Map(onHost.map((sandbox) => [sandbox.id, sandbox]));
+		for (const item of read.sandboxes) {
+			if (!records.has(item.sandboxId) && !evacuationDone(item)) {
+				const elsewhere = await store.sandboxes.get(item.sandboxId);
+				if (elsewhere !== undefined) records.set(item.sandboxId, elsewhere);
+			}
+		}
+		return changeEvacuation(
+			hostId,
+			run,
+			(sandboxes) => {
+				const known = new Set(sandboxes.map((item) => item.sandboxId));
+				const kept = sandboxes.flatMap((item) => {
+					if (evacuationDone(item)) return [item];
+					const next = evacuationSandboxOf(hostId, item, records.get(item.sandboxId), ours.has(item.sandboxId));
+					return next === undefined ? [] : [next];
+				});
+				const added = onHost.flatMap((sandbox) => {
+					if (known.has(sandbox.id)) return [];
+					const next = evacuationSandboxOf(hostId, undefined, sandbox, false);
+					return next === undefined ? [] : [next];
+				});
+				return [...kept, ...added];
+			},
+			token,
+		);
+	}
+
+	/** Ends an evacuation as `state`, said `reason`, its lease let go. */
+	async function endEvacuation(
+		hostId: string,
+		run: string,
+		token: string,
+		state: "done" | "failed" | "stopped",
+		reason?: string,
+	): Promise<void> {
+		await store.evacuations.update(hostId, (current) => {
+			// Only by the gateway holding it: one that lost it never ends another's.
+			if (current.run !== run || current.state !== "running") return undefined;
+			if (current.lease?.token !== token || current.lease.until <= now()) return undefined;
+			const { lease: _lease, ...rest } = current;
+			return { ...rest, state, ...(reason === undefined ? {} : { reason }), endedAt: now() };
+		});
+	}
+
+	/**
+	 * The person an evacuation's moves are made as: who began it, with the rights they began it with, held to the scopes
+	 * of the key or personal access token they began it with (a move that would set up repositories needs `exec`).
+	 */
+	async function evacuatorOf(evacuation: StoredEvacuation): Promise<PersonPrincipal> {
+		const user = await store.users.get(evacuation.by.userId);
+		const { scopes } = evacuation.by;
+		return {
+			kind: "person",
+			userId: evacuation.by.userId,
+			name: user?.name ?? "",
+			superAdmin: evacuation.by.superAdmin,
+			personalAccountId: user?.personalAccountId ?? "",
+			...(scopes === undefined
+				? {}
+				: {
+						token: {
+							id: `evacuation-${evacuation.run}`,
+							name: "Host evacuation",
+							scopes: [...scopes],
+							expiresAt: Number.MAX_SAFE_INTEGER,
+						},
+					}),
+		};
+	}
+
+	/**
+	 * What a move's failure makes of its sandbox in an evacuation: `skipped` where it can't move at all (no other host in
+	 * its pool takes it, the account is at its limit, its hosts don't move sandboxes), `waiting` again where it changed
+	 * under the move (tried again, a few times), `failed` where the move began and was rolled back. Undefined where its
+	 * outcome isn't known yet: it is still moving, and looked at again.
+	 */
+	function evacuationOutcome(
+		item: StoredEvacuationSandbox,
+		error: unknown,
+	): Pick<StoredEvacuationSandbox, "state" | "reason" | "attempts"> | undefined {
+		const reason = messageOf(error);
+		if (!(error instanceof KantelError)) return { state: "failed", reason };
+		// Not known yet, or moved by another call: looked at again, from its record.
+		if (error.message === MOVE_OUTCOME_UNKNOWN || error.message === MOVED_ELSEWHERE) return undefined;
+		if (
+			placementReasonOf(error) !== undefined ||
+			error.code === "exhausted" ||
+			error.code === "not_supported" ||
+			error.code === "invalid" ||
+			error.code === "forbidden"
+		) {
+			return { state: "skipped", reason };
+		}
+		if (error.code === "conflict") {
+			const attempts = (item.attempts ?? 0) + 1;
+			return attempts >= EVACUATION_ATTEMPTS ? { state: "failed", reason, attempts } : { state: "waiting", attempts };
+		}
+		return { state: "failed", reason };
+	}
+
+	/**
+	 * Moves one sandbox off an evacuation's host as a move does by default, only while it is still there, and writes what
+	 * became of it on its claim (`claim`): never on a later claim of it, whoever holds the evacuation then.
+	 */
+	async function moveOff(
+		hostId: string,
+		run: string,
+		claim: string,
+		sandboxId: string,
+		evacuator: PersonPrincipal,
+	): Promise<void> {
+		const ours = (item: StoredEvacuationSandbox) =>
+			item.sandboxId === sandboxId && item.state === "moving" && item.claim === claim;
+		let ended: (item: StoredEvacuationSandbox) => Partial<StoredEvacuationSandbox> | undefined;
+		try {
+			const moved = await moveToHost(evacuator, "admin", sandboxId, {}, false, hostId);
+			const outcome: Partial<StoredEvacuationSandbox> =
+				moved.hostId !== undefined && moved.hostId !== hostId
+					? {
+							state: "moved",
+							hostId: moved.hostId,
+							keptMemory: moved.moved?.keptMemory ?? false,
+							...(moved.moved?.restartReason === undefined ? {} : { reason: moved.moved.restartReason }),
+						}
+					: { state: "failed", reason: "It's still on this host" };
+			ended = () => outcome;
+		} catch (error) {
+			ended = (item) => evacuationOutcome(item, error);
+		}
+		await changeEvacuation(hostId, run, (sandboxes) =>
+			sandboxes.map((item) => {
+				if (!ours(item)) return item;
+				const outcome = ended(item);
+				if (outcome === undefined) return item;
+				const { claim: _claim, ...rest } = item;
+				return { ...rest, ...outcome };
+			}),
+		);
+	}
+
+	/**
+	 * Settles the sandboxes an evacuation that has ended left `moving` (its moves inherited from a gateway gone, or under
+	 * way as its host was revoked), from their records: one moving still is left for later, one elsewhere has moved,
+	 * and one still on the host failed. Answers what was written, if anything.
+	 */
+	async function settleEndedEvacuation(evacuation: StoredEvacuation): Promise<StoredEvacuation | undefined> {
+		if (evacuation.state === "running") return undefined;
+		const moving = evacuation.sandboxes.filter((item) => item.state === "moving");
+		if (moving.length === 0) return undefined;
+		const records = new Map<string, StoredSandbox | undefined>();
+		for (const item of moving) records.set(item.sandboxId, await store.sandboxes.get(item.sandboxId));
+		return changeEvacuation(evacuation.id, evacuation.run, (sandboxes) => {
+			let changed = false;
+			const next = sandboxes.map((item): StoredEvacuationSandbox => {
+				if (item.state !== "moving") return item;
+				const sandbox = records.get(item.sandboxId);
+				if (sandbox?.moving !== undefined) return item;
+				changed = true;
+				const { claim: _claim, ...rest } = item;
+				if (sandbox !== undefined && sandbox.hostId !== evacuation.id && sandbox.state !== "deleted") {
+					return {
+						...rest,
+						state: "moved",
+						...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
+						keptMemory: sandbox.moved?.keptMemory ?? false,
+						...(sandbox.moved?.restartReason === undefined ? {} : { reason: sandbox.moved.restartReason }),
+					};
+				}
+				return { ...rest, state: "failed", reason: "Its move didn't finish; it's where it was" };
+			});
+			return changed ? next : undefined;
+		});
+	}
+
+	/**
+	 * Carries on a host's evacuation, holding it (`lease`, said every `EVACUATION_HEARTBEAT_MS`) so one gateway at a
+	 * time does. Each look at the host (`lookAtEvacuation`) takes in what changed, then up to `EVACUATION_MOVES` moves
+	 * are under way at once, counting those it finds moving that it didn't begin (a gateway gone, settled by the sweep).
+	 * It ends once each sandbox has moved, been skipped or failed, or as the host is undrained (`stopped`, once every move
+	 * under way has ended, those taken on included) or revoked (`failed`, once its own have; the rest are settled after,
+	 * `settleEndedEvacuation`). While the host isn't connected, it waits. A gateway that dies leaves it held until its lease runs out, and the
+	 * sweep then carries it on.
+	 */
+	async function carryOnEvacuation(hostId: string): Promise<void> {
+		if (evacuating.has(hostId)) return;
+		const token = randomSlug(12);
+		const claimed = await store.evacuations.update(hostId, (current) =>
+			current.state !== "running" || (current.lease !== undefined && current.lease.until > now())
+				? undefined
+				: { ...current, lease: { token, until: now() + EVACUATION_LEASE_MS } },
+		);
+		if (claimed === undefined) return;
+		evacuating.add(hostId);
+		const { run } = claimed;
+		let held = true;
+		const heartbeat = setInterval(() => {
+			store.evacuations
+				.update(hostId, (current) =>
+					current.lease?.token === token && current.state === "running"
+						? { ...current, lease: { token, until: now() + EVACUATION_LEASE_MS } }
+						: undefined,
+				)
+				.then((written) => {
+					if (written === undefined) held = false;
+				})
+				.catch(() => undefined);
+		}, EVACUATION_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		const moves = new Map<string, Promise<void>>();
+		try {
+			const evacuator = await evacuatorOf(claimed);
+			// Why it is ending (undrained, revoked): no move begins after, and it ends once those under way have.
+			let stopping: { readonly state: "stopped" | "failed"; readonly reason: string } | undefined;
+			while (!closing && held) {
+				const host = (await ensureHosts()).find((known) => known.id === hostId);
+				if (host === undefined || host.state === "revoked") {
+					stopping = { state: "failed", reason: "The host was revoked" };
+				} else if (host.state !== "draining") {
+					stopping ??= { state: "stopped", reason: "The host was undrained" };
+				}
+				const looked = await lookAtEvacuation(hostId, run, token, new Set(moves.keys()));
+				if (looked === undefined || looked.lease?.token !== token) return;
+				// Under way: those its record has moving (this gateway's, and any it took on from one gone), and this one's.
+				const underWay = new Set([
+					...looked.sandboxes.filter((item) => item.state === "moving").map((item) => item.sandboxId),
+					...moves.keys(),
+				]);
+				if (stopping !== undefined) {
+					// A revoked host's moves may never settle: they are settled after it ends (`settleEndedEvacuation`).
+					if (moves.size === 0 && (underWay.size === 0 || stopping.state === "failed")) {
+						await endEvacuation(hostId, run, token, stopping.state, stopping.reason);
+						return;
+					}
+				} else if (underWay.size === 0 && looked.sandboxes.every(evacuationDone)) {
+					await endEvacuation(
+						hostId,
+						run,
+						token,
+						looked.sandboxes.some((item) => item.state === "failed") ? "failed" : "done",
+					);
+					return;
+				} else if ((await connectedHosts()).has(hostId)) {
+					let free = EVACUATION_MOVES - underWay.size;
+					for (const item of looked.sandboxes) {
+						if (free <= 0 || !held || closing) break;
+						if (item.state !== "waiting") continue;
+						const sandbox = await store.sandboxes.get(item.sandboxId);
+						if (
+							sandbox === undefined ||
+							sandbox.hostId !== hostId ||
+							!EVACUABLE.has(sandbox.state) ||
+							sandbox.moving !== undefined ||
+							sandbox.upgrading !== undefined
+						) {
+							continue;
+						}
+						// Claimed under the lease, and only while fewer than two are moving as the record is now.
+						const claim = randomSlug(10);
+						const marked = await changeEvacuation(
+							hostId,
+							run,
+							(sandboxes) =>
+								sandboxes.some((other) => other.sandboxId === item.sandboxId && other.state === "waiting") &&
+								sandboxes.filter((other) => other.state === "moving").length < EVACUATION_MOVES
+									? sandboxes.map((other) =>
+											other.sandboxId === item.sandboxId ? { ...other, state: "moving" as const, claim } : other,
+										)
+									: undefined,
+							token,
+						);
+						if (marked === undefined) continue;
+						free--;
+						const move = moveOff(hostId, run, claim, item.sandboxId, evacuator)
+							.catch(() => undefined)
+							.finally(() => moves.delete(item.sandboxId));
+						moves.set(item.sandboxId, move);
+					}
+				}
+				const tick = delay(EVACUATION_TICK_MS);
+				await Promise.race([tick.done, ...moves.values()]);
+				tick.cancel();
+			}
+		} finally {
+			clearInterval(heartbeat);
+			evacuating.delete(hostId);
+			// Let go, so another gateway may take it on at once (a move of this one's still under way is waited for there).
+			await store.evacuations
+				.update(hostId, (current) => {
+					if (current.lease?.token !== token) return undefined;
+					const { lease: _lease, ...rest } = current;
+					return rest;
+				})
+				.catch(() => undefined);
+		}
+	}
+
+	/**
+	 * A running sandbox's move `operationId` as its backend stops it for its final copy: `starting` from here, as a boot
+	 * is (its commands and files wait, its ports' exposures end, its mounts to be made again on its new host), only while
+	 * it is running with this move still. Rejects otherwise (a stop, pause, exit or revocation landed first), and its
+	 * backend rolls the move back, never stopping it. Asked again for the same move once it is `starting`, it is done.
+	 */
+	async function stopForMove(sandboxId: string, operationId: string, hostId: string): Promise<void> {
+		const stopping = await transition(
+			sandboxId,
+			["running", "starting"],
+			(latest) =>
+				latest.state === "starting" || latest.moving === undefined
+					? latest
+					: withState(latest, "starting", {
+							ports: [],
+							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+							moving: { ...latest.moving, phase: "stopping", to: hostId },
+						}),
+			(latest) =>
+				latest.moving?.operationId === operationId &&
+				latest.moving.from === "running" &&
+				// `starting` only as this move's own stop left it (its phase on from copying), never another's start.
+				(latest.state === "running" || latest.moving.phase !== "copying") &&
+				// Its source revoked meanwhile: not stopped for a move that can only roll back there.
+				!(latest.hostId !== undefined && latest.strandedOn?.includes(latest.hostId) === true),
+		);
+		if (!("moved" in stopping)) {
+			throw new KantelError("conflict", `The sandbox is ${stopping.lost.state} now, so its move was stopped`);
+		}
+	}
+
+	/**
+	 * Puts a moving record back as it was before move `operationId` (stopped or paused, with its stop's time, reason and
+	 * mounts), once its backend has said it didn't happen: it never left its host. Nothing happens to one no longer
+	 * moving by that operation. A running sandbox's is as its move left it: running still where it was never stopped
+	 * for it (or as a stop, pause or exit meanwhile left it), else started there again (`startAfterMove`).
+	 */
+	async function restoreMove(sandboxId: string, operationId: string): Promise<void> {
+		const read = await store.sandboxes.get(sandboxId);
+		if (read?.moving?.operationId !== operationId) return;
+		if (read.moving.from === "running") {
+			if (read.state === "starting") return startAfterMove(sandboxId, operationId);
+			// Its move cleared off it, as it is: a record moved to `starting` since is the stop's for this move, and started.
+			// Running still on a source revoked while it moved (`strandOn` kept it for this): `error`, as a revocation leaves it.
+			const cleared = await patchSandbox(sandboxId, (latest) => {
+				if (latest.moving?.operationId !== operationId || latest.state === "starting") return undefined;
+				const { moving: _done, ...rest } = latest;
+				return latest.state === "running" &&
+					latest.hostId !== undefined &&
+					latest.strandedOn?.includes(latest.hostId) === true
+					? withState(rest, "error", { reason: HOST_REVOKED_REASON, ports: [] })
+					: latest.state === "running"
+						? { ...rest, ...owedStop(latest) }
+						: rest;
+			}).catch(() => undefined);
+			if (cleared === undefined && (await store.sandboxes.get(sandboxId))?.moving?.operationId === operationId) {
+				return startAfterMove(sandboxId, operationId);
+			}
+			return;
+		}
+		await transition(
+			sandboxId,
+			"starting",
+			(latest) => {
+				const moving = latest.moving;
+				if (moving === undefined) return latest;
+				const { before } = moving;
+				// Back on a source revoked while it moved: that is its state, as a revocation would have left it.
+				if (latest.hostId !== undefined && latest.strandedOn?.includes(latest.hostId) === true) {
+					return {
+						...withState(latest, "error", { reason: HOST_REVOKED_REASON, ports: [] }),
+						mounts: before.mounts,
+						mountsAt: before.mountsAt,
+						moving: undefined,
+					};
+				}
+				return {
+					...latest,
+					state: moving.from,
+					lifecycle: (latest.lifecycle ?? 0) + 1,
+					stoppedAt: before.stoppedAt,
+					reason: before.reason,
+					pausedSnapshotId: before.pausedSnapshotId,
+					mounts: before.mounts,
+					mountsAt: before.mountsAt,
+					moving: undefined,
+				};
+			},
+			(latest) => latest.moving?.operationId === operationId,
+		).catch(() => undefined);
+	}
+
+	/**
+	 * Starts a running sandbox again where it was, once its move `operationId` was rolled back after it was stopped for
+	 * it: still `starting`, its egress read afresh, it boots as a start boots it there (`boot`), and is `error` if that
+	 * fails. Its move stays on it until that boot is published (cleared with it), so a gateway gone meanwhile leaves it
+	 * for the sweep, whose settling finds the move undone and starts it again here. Back on a source revoked meanwhile,
+	 * it is `error`, as a revocation leaves it.
+	 */
+	async function startAfterMove(sandboxId: string, operationId: string): Promise<void> {
+		const cleared = await transition(
+			sandboxId,
+			"starting",
+			(latest) => {
+				if (latest.hostId !== undefined && latest.strandedOn?.includes(latest.hostId) === true) {
+					const { moving: _done, ...rest } = latest;
+					return withState(rest, "error", { reason: HOST_REVOKED_REASON, ports: [] });
+				}
+				return { ...latest, egressRevision: later(latest.egressRevision) };
+			},
+			(latest) => latest.moving?.operationId === operationId,
+		).catch(() => undefined);
+		if (cleared === undefined || !("moved" in cleared) || cleared.moved.state !== "starting") return;
+		const again = cleared.moved;
+		const hostId = again.hostId;
+		// Stopped keeping its memory for a move that kept it (its record says so before anything is sent: `onPlanned`
+		// must land): resumed from that memory, its programs carrying on. Otherwise started on its disk.
+		const resumes = again.moving?.keepMemory === true;
+		await boot(
+			sandboxId,
+			async () => {
+				if (hostId === undefined) throw new KantelError("unavailable", "The sandbox has no host to start on again");
+				const placement = await (resumes ? backend.resume : backend.start).call(backend, sandboxId, {
+					...sizingOf(again),
+					env: again.env,
+					eligibleHosts: [hostId],
+					...(await egressFor(again.accountId, again)),
+					...(again.mounts === undefined ? {} : { mounts: backendMounts(again.mounts) }),
+				});
+				// Resumed from its memory: a kill made while it was stopped for the move reaches its command now.
+				if (resumes) await sendPendingKills(sandboxId).catch(() => undefined);
+				return placement;
+			},
+			undefined,
+			{ egressRevision: again.egressRevision },
+			(latest) => ({ moving: undefined, ...owedStop(latest) }),
+		).catch(() => undefined);
+		// A boot that failed leaves it `error` with its move, which is undone: cleared, as the error leaves it.
+		await patchSandbox(sandboxId, (latest) =>
+			latest.moving?.operationId === operationId && latest.state === "error"
+				? { ...latest, moving: undefined }
+				: undefined,
+		).catch(() => undefined);
+	}
+
+	/**
+	 * Publishes move `operationId`'s sandbox, running on its new host, as a boot publishes one (`boot`): its egress
+	 * reconciled before it runs, a delete meanwhile destroying it. Its snapshots from before stay on its old host, its
+	 * history: none is what a later start or fork there takes, so its newest snapshot is let go.
+	 */
+	async function commitMove(
+		sandboxId: string,
+		operationId: string,
+		placement: Placement,
+	): Promise<StoredSandbox | undefined> {
+		const latest = await store.sandboxes.get(sandboxId);
+		const moving = latest?.moving;
+		if (latest === undefined || moving?.operationId !== operationId) return latest;
+		// Restarted there: the memory its commands ran in (a paused one's, a running one's its move stopped) is let go as
+		// it is published on its new host, in that write (`memoryDropped`): a command another gateway starts there once it
+		// runs is of the new generation, and the commands of the old one are killed, saying why, straight after (`boot`),
+		// and by any later read or sweep. Whichever gateway commits the move (its own, or the sweep's for one whose gateway went)
+		// does it, and nothing is put back.
+		const drops = moving.from !== "stopped" && moving.keepMemory !== true;
+		// Its memory kept: a kill made while it was stopped for the move (or paused before it) reaches its command, which
+		// runs on its new machine already, before it is published (whatever happens to its publishing).
+		if (moving.from !== "stopped" && moving.keepMemory === true)
+			await sendPendingKills(sandboxId).catch(() => undefined);
+		const committed = await boot(
+			sandboxId,
+			async () => placement,
+			undefined,
+			{ egressRevision: moving.egressRevision },
+			(latest) => ({
+				moving: undefined,
+				latestSnapshotId: undefined,
+				latestSnapshotAt: undefined,
+				pausedSnapshotId: undefined,
+				// What became of its memory, as its move said before it began.
+				moved: {
+					at: now(),
+					keptMemory: latest.moving?.keepMemory === true,
+					...(latest.moving?.restartReason === undefined ? {} : { restartReason: latest.moving.restartReason }),
+				},
+				...(drops ? droppedMemory(latest, restartedByMove(moving.restartReason)) : {}),
+				...owedStop(latest),
+			}),
+		);
+		return committed;
+	}
+
+	/**
+	 * The sweep's settling of a move whose gateway has gone quiet (`moving.heartbeatAt`), or whose outcome its backend
+	 * couldn't tell, as `settleStuckUpgrade` settles an upgrade: done, published; failed, put back; one its backend still
+	 * can't tell left for next time. Taken on by moving its heartbeat on from the quiet one read, so one gateway settles it.
+	 */
+	async function settleStuckMove(sandbox: StoredSandbox): Promise<void> {
+		const moving = sandbox.moving;
+		if (moving === undefined) return;
+		const { operationId } = moving;
+		let mine = moving.heartbeatAt;
+		const beat = async (to: number) => {
+			const from = mine;
+			const written = await patchSandbox(sandbox.id, (latest) =>
+				latest.moving?.operationId === operationId && latest.moving.heartbeatAt === from
+					? { ...latest, moving: { ...latest.moving, heartbeatAt: to } }
+					: undefined,
+			);
+			if (written !== undefined) mine = to;
+			return written !== undefined;
+		};
+		if (!(await beat(now()))) return;
+		const heartbeat = setInterval(() => beat(now()).catch(() => undefined), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		try {
+			await track([sandbox.id], async () => {
+				const outcome: MoveOutcome =
+					backend.settleMove === undefined ? { state: "failed" } : await backend.settleMove(sandbox.id, operationId);
+				if (outcome.state === "done") await commitMove(sandbox.id, operationId, outcome.placement);
+				else await restoreMove(sandbox.id, operationId);
+			});
+		} catch (error) {
+			clearInterval(heartbeat);
+			await beat(moving.heartbeatAt).catch(() => undefined);
+			throw error;
+		} finally {
+			clearInterval(heartbeat);
+		}
+	}
+
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
 	async function restart(
 		principal: Principal,
 		sandboxId: string,
 		body: { readonly size?: computeSchema.SandboxSizeName; readonly wait?: boolean },
 		how: "start" | "resume",
+		settled = false,
 	): Promise<Sandbox> {
 		const { sandbox, role } = await sandboxFor(principal, sandboxId, "sandboxes:write");
 		const current = await settledFor(principal, sandbox.id);
+		// A move not yet settled may have a copy running on another host: settled first (one gone quiet here, else the
+		// sweep), never booted over; a running one's too, before it is answered as running.
+		if (current.moving !== undefined && !settled && current.moving.heartbeatAt + UPGRADE_STALE_MS <= now()) {
+			await settleStuckMove(current).catch(() => undefined);
+			return restart(principal, sandboxId, body, how, true);
+		}
 		if (current.state === "running") return sandboxView(current, principal);
+		if (current.moving !== undefined) {
+			throw new KantelError("conflict", "The sandbox's move to another host isn't settled yet; try again shortly");
+		}
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
 			throw new KantelError("conflict", `The sandbox is ${current.state}`);
 		}
@@ -9014,7 +14672,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
 		requireSetupScope(principal, role, current);
-		const environment = await provisionedAgain(principal, role, current);
+		// Refused now, as its create would be; read again once it is starting, for an attach meanwhile.
+		await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
@@ -9022,9 +14681,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				shape: body.size === undefined ? latest.shape : undefined,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
 				...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
+				// Paused, and started from its disk rather than resumed: the commands its memory kept running go with that
+				// memory. (One in `error` is left as it is: its machine may still be running, as a pause whose snapshot failed
+				// resumes it, and a start finds it running.)
+				...(how === "start" && latest.state === "paused"
+					? { memoryDropping: pausedMemoryGone("started afresh from its disk") }
+					: {}),
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
 				egressRevision: later(latest.egressRevision),
+				...bootLease(latest),
 			}),
 		);
 		if (!("moved" in began)) {
@@ -9033,25 +14699,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const starting = began.moved;
-		const bootOptions = {
-			fromSnapshot,
-			...sizingOf(starting),
-			env: current.env,
-			eligibleHosts: hosts,
-			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-			...(await egressFor(starting.accountId, starting)),
-			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
-		};
-		const work = track([current.id], () =>
-			bootProvisioned(
-				current.id,
-				() =>
-					bootAgain(starting, bootOptions, (options) =>
-						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
-					),
-				environment,
-				{ egressRevision: starting.egressRevision },
-			),
+		// Its lease is kept fresh from now, through its preparation, to its end.
+		const heartbeat = bootHeartbeat(starting);
+		let provisioning: Provisioning | undefined;
+		let bootOptions: BootOptions;
+		try {
+			provisioning = await provisionedAgain(principal, role, starting, true);
+			bootOptions = {
+				fromSnapshot,
+				...sizingOf(starting),
+				env: starting.env,
+				eligibleHosts: hosts,
+				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+				...(await egressFor(starting.accountId, starting)),
+				...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+			};
+		} catch (error) {
+			heartbeat.end();
+			throw error;
+		}
+		const work = heartbeat.over(() =>
+			track([current.id], async () => {
+				// Resumed (from paused, or from error after a resume that failed): a kill made while it was paused reaches the
+				// command its memory kept, if that memory came back; a guest that doesn't know the command takes it as done.
+				const resumes = how === "resume";
+				return bootProvisioned(
+					current.id,
+					async () => {
+						const placement = await bootAgain(starting, bootOptions, (options) =>
+							how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
+						);
+						// As soon as it runs, before it is published (whatever happens to its publishing).
+						if (resumes) await sendPendingKills(current.id).catch(() => undefined);
+						return placement;
+					},
+					provisioning,
+					{ egressRevision: starting.egressRevision },
+				);
+			}),
 		);
 		if (body.wait === true) await work;
 		else keepGoing(work);
@@ -9090,11 +14775,53 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return nextDeletionDue();
 		},
 
+		async githubWebhook(integrationId, request) {
+			requireGithubRunners();
+			return githubRunners.receive(integrationId, request);
+		},
+
+		async tickGithubRunners() {
+			if (runnerSettings === undefined) return undefined;
+			const next = await githubRunners.tick();
+			runnersDueAt = next ?? now() + IDLE_RUNNER_PASS_MS;
+			return next;
+		},
+
 		async sweep() {
 			const at = now();
+			keepGoing(sweepStickyDisks().catch(() => undefined));
+			if (at - copiesKeptAt >= SNAPSHOT_COPIES_EVERY_MS) {
+				copiesKeptAt = at;
+				keepGoing(keepEverySnapshotsCopies());
+			}
+			// The GitHub runner broker's pass, when one is due: in the background, as it calls hosts and GitHub.
+			if (runnerSettings !== undefined && at >= runnersDueAt) {
+				runnersDueAt = at + IDLE_RUNNER_PASS_MS;
+				keepGoing(
+					githubRunners.tick().then(
+						(next) => {
+							runnersDueAt = next ?? now() + IDLE_RUNNER_PASS_MS;
+						},
+						() => undefined,
+					),
+				);
+			}
 			// Account deletions whose next pass is due: carried on in the background, one gateway each.
 			for (const deletion of await store.deletions.list({ stage: "running" })) {
 				if (deletion.dueAt <= at) keepGoing(carryOnDeletion(deletion.id));
+			}
+			// Evacuations no gateway holds (the one carrying it on gone, its lease run out): carried on here.
+			for (const evacuation of await store.evacuations.list({ state: "running" })) {
+				if (evacuating.has(evacuation.id) || (evacuation.lease !== undefined && evacuation.lease.until > at)) continue;
+				keepGoing(carryOnEvacuation(evacuation.id));
+			}
+			// Those that ended with sandboxes still moving: settled from their records once the moves have.
+			for (const state of ["stopped", "failed"] as const) {
+				for (const evacuation of await store.evacuations.list({ state })) {
+					if (evacuation.sandboxes.some((item) => item.state === "moving")) {
+						keepGoing(settleEndedEvacuation(evacuation));
+					}
+				}
 			}
 			// The sweep alone stops a sandbox past its time, and only where its host is connected: one on a host that is
 			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
@@ -9122,6 +14849,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							state: "running",
 							stopsAt: at,
 							stopClaimedAt: undefined,
+							// Its boot is over: running, its lease gone with it.
+							booting: undefined,
 							// The same machine: its guest agent's health (and why) as the stop found it.
 							reason: current.health === "unresponsive" ? current.reason : undefined,
 						}),
@@ -9129,9 +14858,56 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					).catch(() => undefined);
 				}
 			}
+			// Upgrades whose gateway has gone quiet (gone mid-upgrade), or whose outcome wasn't known: settled with their
+			// backend, one under way on this gateway left to it. Creates whose answer was lost likewise, in the background, as
+			// each may ask its host.
+			for (const sandbox of await store.sandboxes.list({ state: "starting" })) {
+				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) keepGoing(settleLostCreate(sandbox.id));
+				// Ordinary boots (starts, resumes, recoveries) whose gateway has gone quiet: settled from what their host has,
+				// in the background, as each may wait on its host. One with no lease (begun before leases were kept) gets one.
+				if (backend.settleStart !== undefined && !pending.has(sandbox.id) && unsettledStart(sandbox)) {
+					if (sandbox.booting === undefined) await leaseStart(sandbox, at).catch(() => undefined);
+					else if (sandbox.booting.heartbeatAt + UPGRADE_STALE_MS <= at) {
+						keepGoing(settleStuckStart(sandbox).catch(() => undefined));
+					}
+				}
+				// Moves likewise.
+				const moving = sandbox.moving;
+				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
+					await settleStuckMove(sandbox).catch(() => undefined);
+				}
+				const upgrading = sandbox.upgrading;
+				if (upgrading === undefined || pending.has(sandbox.id) || upgrading.heartbeatAt + UPGRADE_STALE_MS > at)
+					continue;
+				await settleStuckUpgrade(sandbox).catch(() => undefined);
+			}
 			// The use this gateway held back goes in first, so its own sweep never stops a sandbox that it saw used.
 			await flushActivity();
+			// A running sandbox's move whose sandbox exited meanwhile (`error`, its move left on it) and whose gateway has gone
+			// quiet: settled as one starting is, its record left as the exit left it.
+			for (const sandbox of await store.sandboxes.list({ state: "error" })) {
+				const moving = sandbox.moving;
+				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
+					await settleStuckMove(sandbox).catch(() => undefined);
+				}
+				// A boot that failed after its backend let go of its memory, lately: as for a running one below, in case the
+				// failure's own kill didn't finish.
+				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
+					keepGoing(killDroppedOf(sandbox));
+				}
+			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
+				// A running sandbox's move whose gateway has gone quiet, as for one starting above.
+				const moving = sandbox.moving;
+				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
+					await settleStuckMove(sandbox).catch(() => undefined);
+					continue;
+				}
+				// A boot let go of its memory lately: any of its commands still running from before are killed, saying why, in
+				// case the boot's own kill failed (a read of one does the same). Only lately, as each pass lists its commands.
+				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
+					keepGoing(killDroppedOf(sandbox));
+				}
 				// An egress update that didn't get through (its host away, a call that failed) is sent again, as it is now,
 				// once its host is there: a later revision the host has taken already makes this one moot.
 				if (
@@ -9149,7 +14925,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const timeUp = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
 				const due = (current: StoredSandbox) =>
 					current.stopFor !== undefined || timeUp(current) || idleStopDue(current, at, seenActivity(current.id));
-				if (!due(sandbox) || pending.has(sandbox.id)) continue;
+				// Not while it moves: its move stops it on its old host and starts it on its new, where it is stopped once due.
+				if (!due(sandbox) || pending.has(sandbox.id) || moving !== undefined) continue;
 				connected ??= await connectedHosts();
 				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;
 				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
@@ -9215,19 +14992,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return ingestInTurn(hostId, report, how?.shared === true);
 		},
 
+		async sandboxEnv(hostId, sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) return undefined;
+			return { env: { ...sandbox.env } };
+		},
+
 		async protectedTable(hostId, sandboxId) {
 			const sandbox = await store.sandboxes.get(sandboxId);
 			// Only the host the sandbox is on: another host asking learns nothing, not even that it exists.
 			if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) return undefined;
-			const environment =
-				sandbox.environmentId === undefined ? undefined : await store.environments.get(sandbox.environmentId);
-			// Its environment deleted: nothing resolves, at a version past any it was given.
-			if (environment === undefined) return { version: now(), entries: [] };
+			const environments = await environmentsOf(sandbox);
+			// No environment left (deleted, or detached): nothing resolves, at a version past any it was given.
+			if (environments.length === 0) return { version: Math.max(now(), sandbox.secretsFloor ?? 0), entries: [] };
 			const entries: ProtectedEntry[] = [];
-			for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
-				const variable = environment.variables.find((each) => each.name === name);
-				if (variable === undefined || !variable.protected || variable.sealed === undefined) continue;
-				const value = await requireSealer().openText(variable.sealed, variableAad(environment.id, name));
+			for (const { name, placeholder, winner } of protectedWinners(sandbox, resolved(environments))) {
+				const variable = winner.item;
+				if (variable.sealed === undefined) continue;
+				const value = await requireSealer().openText(variable.sealed, variableAad(winner.environment.id, name));
 				entries.push({
 					placeholder,
 					name,
@@ -9239,7 +15021,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					})),
 				});
 			}
-			return { version: environment.secretsVersion, entries };
+			return { version: secretsVersionOf(environments, sandbox.secretsFloor) ?? now(), entries };
 		},
 
 		async recordBases(hostId, reports) {
@@ -9268,12 +15050,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// indexed): only those with no base yet are written.
 			const reported = new Map<string, string>();
 			for (const { ref, base } of reports.snapshots ?? []) {
-				if (typeof ref !== "string" || !ref.startsWith(`${hostId}/`) || !valid(base)) continue;
+				if (typeof ref !== "string" || !reportsOwn(hostId, ref) || !valid(base)) continue;
 				reported.set(ref, base);
 			}
 			if (reported.size === 0) return;
 			for (const snapshot of await store.snapshots.list()) {
-				const base = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
+				const base = takenHere(hostId, snapshot) ? reported.get(snapshot.ref) : undefined;
 				if (base === undefined || snapshot.base !== undefined) continue;
 				const { ref } = snapshot;
 				await store.snapshots.update(snapshot.id, (current) =>
@@ -9283,7 +15065,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async recordSnapshotSizes(hostId, sizes, shared = []) {
-			const own = (ref: unknown): ref is string => typeof ref === "string" && ref.startsWith(`${hostId}/`);
+			const own = (ref: unknown): ref is string => typeof ref === "string" && reportsOwn(hostId, ref);
 			const whole = (value: unknown): value is number =>
 				typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 			const reported = new Map<string, number>();
@@ -9295,8 +15077,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			if (reported.size === 0) return;
 			const full = new Map(reported);
-			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written.
-			const records = await store.snapshots.list();
+			// Read in one pass, as `recordBases` does (a ref isn't indexed): only those whose size changed are written. A
+			// saved snapshot's copy on another host is named as it is, and is that host's to measure, not the snapshot's.
+			const records = (await store.snapshots.list()).filter((snapshot) => takenHere(hostId, snapshot));
 			// Each snapshot whose host says what is its own (a microVM's; an isolate's says nothing): its shared files counted
 			// once, by this plane's records. One that doesn't say keeps the size it was reported with.
 			if (unique.size > 0) {
@@ -9307,7 +15090,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				for (const ref of unique.keys()) reported.set(ref, attributed.get(ref) ?? 0);
 			}
 			for (const snapshot of records) {
-				if (snapshot.ref === undefined) continue;
 				const sizeBytes = reported.get(snapshot.ref);
 				// All its files, shared ones included: what a host's limit on saved bytes counts it at.
 				const fullSizeBytes = full.get(snapshot.ref);
@@ -9359,6 +15141,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async close() {
 			closing = true;
+			closed.abort();
 			for (const controller of runningCommands.values()) controller.abort();
 			await live.close();
 			await idle();
@@ -9381,6 +15164,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		reportExit,
 		reportHostConnection,
+
+		async poolSync(poolId) {
+			return (await store.pools.get(poolId))?.sync === true;
+		},
+
+		async poolPlacement(poolId) {
+			const pool = await store.pools.get(poolId);
+			if (pool === undefined) return undefined;
+			return {
+				...(pool.vcpusPerCpu === undefined ? {} : { vcpusPerCpu: pool.vcpusPerCpu }),
+				...(pool.placement === "balanced" ? { balanced: true } : {}),
+			};
+		},
+
+		recordHoldings: (hostId, at, report) => diskHolders.recordHoldings(hostId, at, report),
+		locateDisk: (hostId, request) => diskHolders.locate(hostId, request),
+		grantFetch: (grant) => diskHolders.grant({ ...grant, from: [...grant.from] }),
+		grantPublicKey: async () => (await diskHolders.keys())?.current.publicKey,
+		grantKeys: async () => {
+			const keys = await diskHolders.keys();
+			return keys === undefined
+				? undefined
+				: [keys.current, ...(keys.next === undefined ? [] : [keys.next]), ...keys.retired];
+		},
 
 		async serveFileUrl(token, request) {
 			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);

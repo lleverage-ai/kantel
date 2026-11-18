@@ -34,10 +34,10 @@ func (s *sandbox) busySeconds(now time.Time) float64 {
 	return d.Seconds()
 }
 
-// Shared is each account's runtime (its isolate VM, or with the native runtime its workerd) with the account's
-// running sandboxes, for the host's usage samples. workerd keeps no account of CPU or memory per isolate that the
-// host can read (its WorkerLoader limits only cap a request's CPU), so the runtime's process is measured and shared
-// out among its sandboxes (usage.Attribute).
+// Shared is each account's runtime (its isolate VM, or with the native runtime its kantel-isolate process) with the
+// account's running sandboxes, for the host's usage samples. The runtime reports no CPU or memory per isolate that the
+// host reads (it enforces each isolate's limits itself), so the runtime's process is measured and shared out among its
+// sandboxes (usage.Attribute).
 //
 // It never waits on a sandbox: one whose lock an operation holds is left out of its account's share this time (Held),
 // so the samples go on.
@@ -106,7 +106,7 @@ func (m *Manager) Shared() []usage.Shared {
 	return out
 }
 
-// pid is the runtime's process: its Firecracker, or the native runtime's workerd.
+// pid is the runtime's process: its Firecracker, or the native runtime's kantel-isolate.
 func (r *runtime) pid() int {
 	if r.machine != nil {
 		return r.machine.Pid()

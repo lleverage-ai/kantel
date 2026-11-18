@@ -83,7 +83,7 @@ func TestTemplateFromBeforeTheBalloonIsMadeAgain(t *testing.T) {
 	if !strings.HasSuffix(now, templateShape(size)) || !strings.HasSuffix(before, templateShape(size)) {
 		t.Fatalf("the shape must stay last: %q", now)
 	}
-	if cfg := m.bootConfig(shape{Size: size}, "vmlinux", "tap0", "06:00:00:00:00:01", 3, 0); cfg.BalloonStatsSeconds <= 0 {
+	if cfg := m.bootConfig(shape{Size: size}, "vmlinux", "tap0", "06:00:00:00:00:01", 3, 0, 0); cfg.BalloonStatsSeconds <= 0 {
 		t.Fatal("a microVM boots without the reporting balloon")
 	}
 }

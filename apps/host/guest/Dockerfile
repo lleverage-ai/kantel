@@ -12,7 +12,8 @@
 # /etc/kantel/image.json records every version that went in.
 #
 # Everything in the image may be redistributed: /usr/share/kantel/THIRD-PARTY-NOTICES.md (from guest/rootfs/, and
-# published beside the image) lists what it bundles, under which licences, and where each one's source is.
+# published beside the image) lists what it bundles, under which licences, and where each one's source is. The one
+# exception is a build with KANTEL_BROWSER=cft (below), which bundles Google Chrome for Testing and is never published.
 FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 ARG TARGETARCH
 ARG UBUNTU_SNAPSHOT=20261103T000000Z
@@ -39,10 +40,14 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 # that need no GPU: LXTerminal, PCManFM and Geany. hsetroot draws the background as a root pixmap, which tint2 and
 # rofi show through their rounded corners without a compositor; librsvg2-common lets GTK and rofi draw SVG icons;
 # xsettingsd hands the GTK apps the DPI a viewer's pixel ratio asks for (kantel-session).
+# While the snapshot applies, an index's own expiry date isn't checked: Debian's security suite (Chromium's, below)
+# says its index is valid for a week, so a snapshot pinned a week back would be refused as expired, though its index is
+# still checked against Debian's keys. The setting goes with APT::Snapshot, in the same file, wherever that moves.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
 	&& echo "APT::Snapshot \"$UBUNTU_SNAPSHOT\";" > /etc/apt/apt.conf.d/50kantel-snapshot \
 	&& echo 'Acquire::Snapshots::URI::Host::ports.ubuntu.com "https://snapshot.ubuntu.com/ubuntu/@SNAPSHOTID@/";' \
 		>> /etc/apt/apt.conf.d/50kantel-snapshot \
+	&& echo 'Acquire::Check-Valid-Until "false";' >> /etc/apt/apt.conf.d/50kantel-snapshot \
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		systemd systemd-sysv dbus dbus-user-session udev kmod util-linux-extra iproute2 iptables nftables iputils-ping procps psmisc \
@@ -63,12 +68,22 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 		"containerd.io=$CONTAINERD_VERSION" docker-buildx-plugin docker-compose-plugin \
 	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Chromium, as Debian 13 (trixie) builds it: open source and redistributable (Google Chrome isn't), on amd64 and arm64,
-# and without snapd (Ubuntu's chromium is a snap). Debian's security archive carries the current stable Chromium. The
-# pin lets apt take only these packages from Debian; everything else stays Ubuntu's. APT::Snapshot applies here too,
-# so the build gets Debian's archive as it was at UBUNTU_SNAPSHOT. Debian's archive keys come from Ubuntu's own
+# The browser, by KANTEL_BROWSER: `debian` (the default, and the only one Kantel publishes) or `cft`.
+#
+# debian: Chromium, as Debian 13 (trixie) builds it: open source and redistributable (Google Chrome isn't), on amd64 and
+# arm64, and without snapd (Ubuntu's chromium is a snap). Debian's security archive carries the current stable Chromium.
+# The pin lets apt take only these packages from Debian; everything else stays Ubuntu's. APT::Snapshot applies here
+# too, so the build gets Debian's archive as it was at UBUNTU_SNAPSHOT. Debian's archive keys come from Ubuntu's own
 # debian-archive-keyring.
-RUN apt-get update && apt-get install -y --no-install-recommends debian-archive-keyring \
+#
+# cft: Google Chrome for Testing at CFT_VERSION in place of Debian's Chromium, for when Debian is behind on a fix that
+# can't wait (LLE-18651). Chrome for Testing is a flavour of Google Chrome, under Google's terms, which forbid
+# redistributing it, so such an image is built only for Lleverage's own hosts and never published: release.sh --publish
+# refuses it, and the notices below say so. See README.md, "Chrome for Testing".
+ARG KANTEL_BROWSER=debian
+RUN case "$KANTEL_BROWSER" in debian | cft) ;; *) echo "KANTEL_BROWSER is debian or cft, not $KANTEL_BROWSER" >&2; exit 1 ;; esac
+RUN if [ "$KANTEL_BROWSER" = debian ]; then \
+	apt-get update && apt-get install -y --no-install-recommends debian-archive-keyring \
 	&& printf '%s\n' 'Types: deb' 'URIs: http://deb.debian.org/debian-security' 'Suites: trixie-security' \
 		'Components: main' 'Signed-By: /usr/share/keyrings/debian-archive-trixie-security-automatic.gpg' '' \
 		'Types: deb' 'URIs: http://deb.debian.org/debian' 'Suites: trixie' 'Components: main' \
@@ -77,7 +92,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends debian-archive-
 		'Package: chromium chromium-common chromium-sandbox libjpeg62-turbo' 'Pin: release o=Debian' 'Pin-Priority: 500' \
 		> /etc/apt/preferences.d/debian-chromium \
 	&& apt-get update && apt-get install -y --no-install-recommends chromium \
-	&& apt-get clean && rm -rf /var/lib/apt/lists/*
+	&& apt-get clean && rm -rf /var/lib/apt/lists/*; \
+	fi
+
+# cft: Google's zip, pinned by version and checked against its SHA-256 (Chrome for Testing publishes no checksum; these
+# match the MD5 Google Storage reports for each zip), in /opt/chrome-for-testing, with /usr/bin/chromium pointing at it
+# so everything that runs `chromium` (kantel-browser, kantel-chromium, the guest agent's capabilities) finds it. The
+# Widevine CDM it bundles goes: it may not be distributed without a separate licence from Google, and nothing here plays
+# DRM media. The libraries it needs come from Ubuntu, from the list in the zip (deb.deps, which apt resolves to 26.04's
+# t64 packages), at the snapshot. Its sandbox is Chromium's: no setuid helper, the namespace sandbox, as Debian's
+# Chromium runs here. The build fails below CFT_MIN_VERSION, the first release with every fix LLE-18651 needs. The
+# daily security refresh doesn't update it (apt doesn't manage it): a newer one is a new CFT_VERSION.
+ARG CFT_VERSION=157.0.8103.78
+ARG CFT_SHA256_AMD64=9223832977a13db3646201b1341c1f9cf08afa3ceae92540116d7b0c062364fb
+ARG CFT_SHA256_ARM64=f354d666822a11d8fe99e923c44be77dd226fab2750c5b5947e6318818bf10f1
+ARG CFT_MIN_VERSION=157.0.8103.78
+RUN if [ "$KANTEL_BROWSER" = cft ]; then \
+	case "$TARGETARCH" in \
+		amd64) cft_platform=linux64 cft_sum=$CFT_SHA256_AMD64 ;; \
+		arm64) cft_platform=linux-arm64 cft_sum=$CFT_SHA256_ARM64 ;; \
+	esac \
+	&& curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/$CFT_VERSION/$cft_platform/chrome-$cft_platform.zip" \
+		-o /tmp/cft.zip \
+	&& echo "$cft_sum  /tmp/cft.zip" | sha256sum -c - \
+	&& unzip -q /tmp/cft.zip -d /tmp/cft \
+	&& mv "/tmp/cft/chrome-$cft_platform" /opt/chrome-for-testing \
+	&& rm -rf /opt/chrome-for-testing/WidevineCdm \
+	&& chown -R root:root /opt/chrome-for-testing && chmod -R u+rwX,go+rX-w /opt/chrome-for-testing \
+	&& apt-get update \
+	&& apt-get satisfy -y --no-install-recommends "$(grep . /opt/chrome-for-testing/deb.deps | paste -sd , -)" \
+	&& ln -s /opt/chrome-for-testing/chrome /usr/bin/chromium \
+	&& install -D -m 0644 /opt/chrome-for-testing/product_logo_48.png /usr/share/icons/hicolor/48x48/apps/chromium.png \
+	&& version=$(/usr/bin/chromium --version) && echo "$version" \
+	&& version=$(echo "$version" | grep -oE '[0-9]+(\.[0-9]+){3}') \
+	&& { dpkg --compare-versions "$version" ge "$CFT_MIN_VERSION" \
+		|| { echo "Chrome for Testing $version is older than CFT_MIN_VERSION $CFT_MIN_VERSION" >&2; exit 1; }; } \
+	&& apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/cft /tmp/cft.zip; \
+	fi
 
 # Node, Go and Selkies: pinned releases, checked.
 RUN case "$TARGETARCH" in \
@@ -143,6 +194,25 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-connect \
 	&& ssh-keygen -lf /etc/ssh/ssh_known_hosts >/dev/null \
 	&& test "$(ssh -G git@github.com | sed -n 's/^proxycommand //p')" = '/usr/local/bin/kantel-connect %h %p'
+
+# cft: the notices say what the image is. Its Chromium section gives way to guest/cft/notices.md (Chrome for Testing,
+# under Google's terms, not to be redistributed), and the sentence saying everything in it may be redistributed to
+# guest/cft/intro.txt. Checked, so a change to the notices' wording fails here rather than shipping notices that say
+# otherwise.
+RUN --mount=type=bind,source=guest/cft,target=/tmp/kantel-cft if [ "$KANTEL_BROWSER" = cft ]; then \
+	notices=/usr/share/kantel/THIRD-PARTY-NOTICES.md \
+	&& awk -v section=/tmp/kantel-cft/notices.md -v intro="$(cat /tmp/kantel-cft/intro.txt)" ' \
+		/^## / { skip = 0 }; \
+		/^## Chromium$/ { while ((getline line < section) > 0) print line; print ""; skip = 1; next }; \
+		{ sub(/^Everything in them is free and open-source software that may be redistributed\. /, intro " ") }; \
+		!skip { print }' "$notices" >/tmp/notices.md \
+	&& grep -q '^## Google Chrome for Testing$' /tmp/notices.md \
+	&& grep -qF "$(cat /tmp/kantel-cft/intro.txt)" /tmp/notices.md \
+	&& ! grep -q 'may be redistributed\. This file says' /tmp/notices.md \
+	&& ! grep -q 'This is Chromium, not Google Chrome' /tmp/notices.md \
+	&& ! grep -q '^## Chromium$' /tmp/notices.md \
+	&& install -m 0644 /tmp/notices.md "$notices" && rm /tmp/notices.md; \
+	fi
 
 # What a sandbox installs: Ubuntu's live archive (archive.ubuntu.com and security.ubuntu.com, ports.ubuntu.com on
 # arm64), as any Ubuntu machine, and not the snapshot: snapshot.ubuntu.com failed for hours on 5 Nov 2026

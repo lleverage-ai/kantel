@@ -75,7 +75,7 @@ A deployment super-admin only (a key needs `hosts:admin`).
 
 `PATCH /v1/admin/hosts/{hostId}` (SDK method `updateHost`)
 
-Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
+Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
@@ -151,6 +151,82 @@ Asks the host to update its host agent to `latestVersion`, which it does when `u
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Get a host's evacuation
+
+`GET /v1/admin/hosts/{hostId}/evacuation` (SDK method `getHostEvacuation`)
+
+How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Answers**
+
+- `200`: [HostEvacuation](/api/reference/types/#hostevacuation) (`application/json`). The evacuation.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Move every sandbox off a host
+
+`POST /v1/admin/hosts/{hostId}/evacuation` (SDK method `startHostEvacuation`)
+
+It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Answers**
+
+- `200`: [HostEvacuation](/api/reference/types/#hostevacuation) (`application/json`). The evacuation, under way.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Fetch a sticky disk version onto a host
+
+`POST /v1/admin/hosts/{hostId}/sticky-disk-fetches` (SDK method `fetchHostStickyDisk`)
+
+Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Body**: [FetchHostStickyDiskBody](/api/reference/types/#fetchhoststickydiskbody)
+
+**Answers**
+
+- `204`: no body. The fetch has started.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Fetch a saved snapshot onto a host
+
+`POST /v1/admin/hosts/{hostId}/snapshot-fetches` (SDK method `fetchHostSnapshot`)
+
+Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started. `not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Body**: [FetchHostSnapshotBody](/api/reference/types/#fetchhostsnapshotbody)
+
+**Answers**
+
+- `204`: no body. The fetch has started.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Check for host updates
 
 `POST /v1/admin/hosts/check-for-updates` (SDK method `checkHostUpdates`)
@@ -188,3 +264,97 @@ Sets where hosts reach this control plane, for the join commands made from now o
 - `200`: [PublicUrl](/api/reference/types/#publicurl) (`application/json`). The public URL.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get the grant keys
+
+`GET /v1/admin/grant-key` (SDK method `getGrantKeys`)
+
+The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [GrantKeys](/api/reference/types/#grantkeys) (`application/json`). The grant keys.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Rotate the grant key
+
+`POST /v1/admin/grant-key/rotate` (SDK method `rotateGrantKey`)
+
+Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [GrantKeys](/api/reference/types/#grantkeys) (`application/json`). The grant keys after the rotation.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## List the deployment's pools
+
+`GET /v1/admin/pools` (SDK method `listPools`)
+
+The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Answers**
+
+- `200`: [PoolList](/api/reference/types/#poollist) (`application/json`). The pools.
+
+**Errors**: `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Make a pool of shared hosts
+
+`POST /v1/admin/pools` (SDK method `createPool`)
+
+An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Header parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry is `conflict` (`details.idempotencyKey` `in_progress`): retry it later. A first call that didn't finish (it failed part way, or stopped answering) is never done again under its key: a retry is `conflict` (`held`), so check, then use a new key. The same key with a different request is `refused`. (at most 255 characters) |
+
+**Body**: [CreatePoolBody](/api/reference/types/#createpoolbody)
+
+**Answers**
+
+- `201`: [Pool](/api/reference/types/#pool) (`application/json`). The pool.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `422` refused. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Change a pool of shared hosts
+
+`PATCH /v1/admin/pools/{poolId}` (SDK method `updatePool`)
+
+Renames it, or makes it the deployment's default pool. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolId` | string | yes | The pool's ID or name. |
+
+**Body**: [UpdatePoolBody](/api/reference/types/#updatepoolbody)
+
+**Answers**
+
+- `200`: [Pool](/api/reference/types/#pool) (`application/json`). The pool.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Delete a pool of shared hosts
+
+`DELETE /v1/admin/pools/{poolId}` (SDK method `deletePool`)
+
+Only an empty pool that isn't the default: `conflict` while a host is in it. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolId` | string | yes | The pool's ID or name. |
+
+**Answers**
+
+- `204`: no body. Deleted.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).

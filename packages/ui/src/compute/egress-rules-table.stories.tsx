@@ -14,6 +14,7 @@ const OVERVIEW: EgressOverview = {
 			sandboxId: DEV_STACK.id,
 			sandboxName: DEV_STACK.name,
 			accountId: DEV_STACK.accountId,
+			environments: [],
 			protectedVariables: [],
 			environmentGrants: [],
 			grants: [{ id: "grt_dev_pypi", action: "allow", host: "pypi.org", methods: [], paths: [] }],

@@ -1,6 +1,6 @@
-// Profile (compute console, under Settings): who is signed in, the theme, their personal access tokens, and deleting
-// the account. The name and email come from sign-in and can't be changed here; the theme is the same System, Light or
-// Dark as in your menu.
+// Profile (compute console, under Settings): who is signed in, the theme, the personal account's Keep saved snapshots
+// on two hosts, their personal access tokens, and deleting the account. The name and email come from sign-in and
+// can't be changed here; the theme is the same System, Light or Dark as in your menu.
 
 import type { ThemePreference } from "@kantel/contracts";
 import { useId, useState } from "react";
@@ -12,6 +12,7 @@ import type { ComputeAccount, PersonalTokensSource } from "./compute-model.ts";
 import { computePage, messageOf, SectionHeading } from "./parts.tsx";
 import { PersonalTokensSection } from "./personal-tokens.tsx";
 import { SettingsPageHeader } from "./settings-nav.tsx";
+import { SnapshotCopiesSwitch } from "./snapshot-hosts.tsx";
 
 export interface ProfilePageProps {
 	readonly name: string;
@@ -28,6 +29,11 @@ export interface ProfilePageProps {
 	readonly accounts?: readonly ComputeAccount[];
 	/** A fixed time, for stories. */
 	readonly now?: number;
+	/**
+	 * The personal account's Keep saved snapshots on two hosts: whether it's on, and the change, answering what Kantel
+	 * saved. The switch shows only with it.
+	 */
+	readonly snapshotCopies?: { readonly on: boolean; readonly onChange: (on: boolean) => Promise<boolean> };
 }
 
 /** A label and its value, read only, laid out as a field's label is. */
@@ -49,6 +55,7 @@ export function ProfilePage({
 	tokens,
 	accounts = [],
 	now,
+	snapshotCopies,
 }: ProfilePageProps) {
 	const themeId = useId();
 	const headingId = useId();
@@ -63,6 +70,9 @@ export function ProfilePage({
 			<FormField id={themeId} label="Theme">
 				<ThemeSwitch {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
 			</FormField>
+			{snapshotCopies === undefined ? null : (
+				<SnapshotCopiesSwitch on={snapshotCopies.on} manager onChange={snapshotCopies.onChange} />
+			)}
 			{tokens === undefined ? null : (
 				<PersonalTokensSection
 					source={tokens}

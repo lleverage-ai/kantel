@@ -6,7 +6,7 @@ import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/com
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BROWSER_DISPLAY_RECORD, BROWSER_SURFACE_MARK, createHostBackend } from "../src/backend.ts";
 import { createPortRouter } from "../src/ports.ts";
-import type { HostFacts, HostGuest, HostMessage, HostSandbox } from "../src/protocol.ts";
+import type { HostFacts, HostGuest, HostIsolateRuntime, HostMessage, HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -44,10 +44,16 @@ class FakeHost {
 	images?: string;
 	/** What its images' guest agent reports; absent, a host from before the guest agent said. */
 	guest: HostGuest | undefined;
+	/** What its isolate runtime says it can do, with each isolate; absent, a host from before kantel-isolate. */
+	isolate: HostIsolateRuntime | undefined;
 	/** Whether its machines run Chromium on its own display now (kantel-browser's record says :2, the display up). */
 	ownBrowserDisplay = false;
 	/** What its hello says it is: the features it reports, say. */
 	facts: HostFacts = facts;
+	/** Each sticky disk's newest version it holds. */
+	readonly stickyHeads = new Map<string, string>();
+	/** What its sticky.commit answers beside the version and its sizes (a block map's digest, say). */
+	stickyCommitExtra: Record<string, unknown> = {};
 	/** The phases a create, fork or resume answers with; absent, a host from before it said. */
 	phases?: unknown;
 	/**
@@ -55,11 +61,15 @@ class FakeHost {
 	 * guest agent is from before it could.
 	 */
 	processes?: (params: { [key: string]: unknown }) => unknown;
+	/** What its snapshots' answers say they were made on (`cpu`, `runtime`); absent, a host from before it said. */
+	madeOn?: { readonly [key: string]: unknown };
 	/** An error `snapshot.keep` answers instead of keeping, such as a conflict on its ID. */
 	keepRefusal?: { code: string; message: string };
 	/** What `snapshot.list` answers, and whether it refuses instead. */
 	listing: { id: string; sizeBytes?: number }[] = [];
 	listRefusal = false;
+	/** An error `sandbox.start` answers instead of booting: one that says its memory went, say. */
+	startRefusal?: { code: string; message: string; memoryDropped?: boolean };
 	receive!: (text: string) => void;
 
 	constructor(
@@ -102,7 +112,8 @@ class FakeHost {
 			size: s.size,
 			state: s.state,
 			createdAt: 1,
-			...(this.guest === undefined ? {} : { guest: this.guest }),
+			...(this.guest === undefined || s.tier !== "microvm" ? {} : { guest: this.guest }),
+			...(this.isolate === undefined || s.tier !== "isolate" ? {} : { isolate: this.isolate }),
 			...(this.phases === undefined ? {} : { phases: this.phases }),
 		});
 		switch (message.method) {
@@ -118,7 +129,24 @@ class FakeHost {
 					files: new Map(from ?? []),
 				};
 				this.sandboxes.set(made.id, made);
-				return answer(info(made));
+				// Its sticky disks, each a copy of the newest version the host holds, or a new disk.
+				const sticky = Array.isArray(p.stickyDisks) ? (p.stickyDisks as { diskId: string; path: string }[]) : [];
+				return answer({
+					...info(made),
+					...(sticky.length === 0
+						? {}
+						: {
+								stickyDisks: sticky.map((disk) => {
+									const version = this.stickyHeads.get(disk.diskId);
+									return {
+										diskId: disk.diskId,
+										path: disk.path,
+										...(version === undefined ? {} : { version }),
+										state: "mounted",
+									};
+								}),
+							}),
+				});
 			}
 			case "sandbox.fork": {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
@@ -126,22 +154,43 @@ class FakeHost {
 				this.sandboxes.set(made.id, made);
 				return answer(info(made));
 			}
+			case "sticky.commit": {
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				this.stickyHeads.set(String(p.diskId), String(p.version));
+				return answer({ version: p.version, sizeBytes: 100, allocatedBytes: 7, ...this.stickyCommitExtra });
+			}
+			case "sticky.delete":
+				this.stickyHeads.delete(String(p.diskId));
+				return answer({});
+			case "disk.fetch":
+				return answer({});
 			case "sandbox.stop":
 			case "snapshot.save": {
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
 				this.snapshots.set(String(p.snapshotId), new Map(sandbox.files));
 				if (message.method === "sandbox.stop") sandbox.state = "stopped";
-				return answer({ id: p.snapshotId, sandboxId: sandbox.id, kind: "auto", sizeBytes: 42, memory: true });
+				return answer({
+					id: p.snapshotId,
+					sandboxId: sandbox.id,
+					kind: "auto",
+					sizeBytes: 42,
+					memory: true,
+					...this.madeOn,
+				});
 			}
 			case "sandbox.resume":
 			case "sandbox.start":
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				if (message.method === "sandbox.start" && this.startRefusal !== undefined) {
+					return this.receive(JSON.stringify({ type: "result", id: message.id, error: this.startRefusal }));
+				}
 				sandbox.state = "running";
 				return answer(info(sandbox));
 			case "sandbox.delete":
 				this.sandboxes.delete(String(p.sandboxId));
 				return answer({ ok: true });
 			case "sandbox.egress":
+			case "sandbox.env":
 				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer({ ok: true });
 			case "sandbox.exec": {
 				const argv = p.argv as string[] | undefined;
@@ -235,7 +284,7 @@ afterEach(async () => {
 	for (const close of closers.splice(0).reverse()) await close();
 });
 
-function setup(options: { ports?: boolean } = {}) {
+function setup(options: { ports?: boolean; baseImages?: Parameters<typeof createComputeApi>[0]["baseImages"] } = {}) {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
 	const relay = createMemoryRelayStore();
 	const tickets = createTunnelTickets(relay);
@@ -259,9 +308,11 @@ function setup(options: { ports?: boolean } = {}) {
 	});
 	const api: ComputeApi = createComputeApi({
 		backend,
+		stickyDisks: true,
 		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
+		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 	});
 	compute = api;
 	service.useJoinTokens(joinTokenSpender(api.store));
@@ -535,6 +586,106 @@ describe("the compute API on kantel-host hosts", () => {
 		expect((await ports?.fetch(new Request(open.url)))?.status).toBe(404);
 	});
 
+	it("runs node and python in an isolate where its host's runtime says so, and says memory is enforced where every host's is", async () => {
+		const { service, root } = setup();
+		const runtime: HostIsolateRuntime = {
+			runtime: "deno_core",
+			version: "0.1.0",
+			javascript: true,
+			python: true,
+			memoryEnforced: true,
+		};
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts: { ...facts, isolate: runtime } });
+		const host = new FakeHost(service, hostId);
+		host.facts = { ...facts, isolate: runtime };
+		host.isolate = runtime;
+		host.connect();
+		const isolate = await root.createSandbox({ type: "isolate", wait: true });
+		expect(isolate.capabilities).toMatchObject({ javascript: true, python: true, ssh: false });
+		const vm = await root.createSandbox({ type: "microvm", wait: true });
+		expect(vm.capabilities).toMatchObject({ javascript: true, python: true });
+		expect((await root.getSandboxShapes()).isolate.enforced).toBe(true);
+		const hosts = await service.list();
+		expect(hosts.find((view) => view.id === hostId)?.isolate).toEqual(runtime);
+
+		// A second host from before kantel-isolate: an isolate may land there, so memory isn't enforced everywhere.
+		const older = await root.createHostJoinToken({});
+		const second = await service.register({ token: older.token, facts });
+		new FakeHost(service, second.hostId).connect();
+		expect((await root.getSandboxShapes()).isolate.enforced).toBe(false);
+	});
+
+	it("shows a host's CPU and runtime fingerprints, and keeps what each snapshot's memory was made on", async () => {
+		const { service, root, api } = setup();
+		const cpu = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+		const runtime = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4";
+		const template = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=4";
+		const said: HostFacts = {
+			...facts,
+			cpu,
+			runtimes: [
+				{ image: "host-images-20261103", runtime },
+				{ image: "", runtime: template },
+			],
+		};
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts: said });
+		const host = new FakeHost(service, hostId);
+		host.facts = said;
+		host.madeOn = { cpu, runtime };
+		host.connect();
+		const text = "AuthenticAMD family 25 model 97, features sha256:0123456789abcdef";
+		expect((await service.list()).find((view) => view.id === hostId)).toMatchObject({
+			cpuFingerprint: text,
+			runtimeFingerprints: [runtime, template],
+		});
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		expect(await root.getHost(hostId)).toMatchObject({
+			cpuFingerprint: text,
+			runtimeFingerprints: [runtime, template],
+		});
+
+		const saved = await root.saveSnapshot({ name: "warm", sandboxId: sandbox.id, memory: true });
+		expect(await api.store.snapshots.get(saved.id)).toMatchObject({ cpu, runtime });
+		// Never answered by the API.
+		expect(saved).not.toHaveProperty("cpu");
+		expect(saved).not.toHaveProperty("runtime");
+		await root.stopSandbox(sandbox.id, { wait: true });
+		const stopped = await root.getSandbox(sandbox.id);
+		expect(await api.store.snapshots.get(stopped.latestSnapshotId ?? "")).toMatchObject({ cpu, runtime });
+
+		// A host from before they were kept, or one saying something else: nothing is kept.
+		host.madeOn = { cpu: { vendor: "AuthenticAMD", family: "25" }, runtime: 7 };
+		await root.startSandbox(sandbox.id, { wait: true });
+		const older = await root.saveSnapshot({ name: "cold", sandboxId: sandbox.id });
+		const kept = await api.store.snapshots.get(older.id);
+		expect(kept).not.toHaveProperty("cpu");
+		expect(kept).not.toHaveProperty("runtime");
+	});
+
+	it("shows no fingerprints for a host from before it said them", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts });
+		new FakeHost(service, hostId).connect();
+		const view = (await service.list()).find((each) => each.id === hostId);
+		expect(view).not.toHaveProperty("cpuFingerprint");
+		expect(view).not.toHaveProperty("runtimeFingerprints");
+		const listed = await root.getHost(hostId);
+		expect(listed).not.toHaveProperty("cpuFingerprint");
+		expect(listed).not.toHaveProperty("runtimeFingerprints");
+	});
+
+	it("runs neither node nor python in an isolate on a host from before kantel-isolate", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({});
+		new FakeHost(service, (await service.register({ token: token.token, facts })).hostId).connect();
+		const isolate = await root.createSandbox({ type: "isolate", wait: true });
+		expect(isolate.capabilities).toMatchObject({ javascript: false, python: false });
+		expect((await root.getSandboxShapes()).isolate.enforced).toBe(false);
+	});
+
 	it("shows the browser alone where the image's guest reports a browser surface, view-only kept in the ticket", async () => {
 		const { service, root, tickets } = setup();
 		const token = await root.createHostJoinToken({});
@@ -702,6 +853,205 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(started.reason).toContain(`The host its disk is on (${first}) can't take it now`);
 	});
 
+	it("sends disk.fetch only to a host that fetches from its peers", async () => {
+		const { service, root, backend } = setup();
+		const fetch = {
+			kind: "sticky",
+			objectId: "sdk_1",
+			version: "sdv_1",
+			mapDigest: "sha256:aa",
+			holders: [{ hostId: "host_a", address: "fd00::1" }],
+			grant: "p.s",
+		};
+		const hostWith = async (name: string, features: readonly string[]) => {
+			const hostFacts = { ...facts, features };
+			const { hostId } = await service.register({
+				token: (await root.createHostJoinToken({ name })).token,
+				facts: hostFacts,
+			});
+			const host = new FakeHost(service, hostId);
+			host.facts = hostFacts;
+			host.connect();
+			while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+			return { host, hostId };
+		};
+		const old = await hostWith("old", ["sticky-disks", "mesh"]);
+		await expect(backend.fetchDisk?.(old.hostId, fetch)).rejects.toMatchObject({ code: "not_supported" });
+		expect(old.host.calls).not.toContain("disk.fetch");
+		const synced = await hostWith("new", ["sticky-disks", "mesh", "disk-sync"]);
+		await backend.fetchDisk?.(synced.hostId, fetch);
+		expect(synced.host.params.filter((call) => call.method === "disk.fetch").map((call) => call.params)).toEqual([
+			fetch,
+		]);
+		// A snapshot only to a host that fetches snapshots.
+		const snapshot = { ...fetch, kind: "snapshot", objectId: "snap_1", version: "disk" };
+		await expect(backend.fetchDisk?.(synced.hostId, snapshot)).rejects.toMatchObject({ code: "not_supported" });
+		const snapshots = await hostWith("snapshots", ["sticky-disks", "mesh", "disk-sync", "snapshot-sync"]);
+		await backend.fetchDisk?.(snapshots.hostId, snapshot);
+		expect(snapshots.host.params.filter((call) => call.method === "disk.fetch").map((call) => call.params)).toEqual([
+			snapshot,
+		]);
+	});
+
+	it("attaches sticky disks only on a host that runs them, and commits and deletes them there", async () => {
+		const { service, api, root, backend } = setup();
+		const disk = await root.createStickyDisk({ name: "ci-cache", sizeGb: 50 });
+		const plain = await service.register({ token: (await root.createHostJoinToken({ name: "old" })).token, facts });
+		new FakeHost(service, plain.hostId).connect();
+		while (!service.hub.connected(plain.hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const refused = await root.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci" }],
+			wait: true,
+		});
+		expect(refused).toMatchObject({ state: "error", reason: expect.stringContaining("sticky disks") });
+
+		const sticky = { ...facts, features: ["sticky-disks"] };
+		const { hostId } = await service.register({
+			token: (await root.createHostJoinToken({ name: "new" })).token,
+			facts: sticky,
+		});
+		const host = new FakeHost(service, hostId);
+		host.facts = sticky;
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({
+			type: "microvm",
+			stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci" }],
+			wait: true,
+		});
+		expect(sandbox.hostId).toBe(hostId);
+		const sent = (method: string) => host.params.filter((call) => call.method === method).map((call) => call.params);
+		expect(sent("sandbox.create")[0]?.stickyDisks).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50 }]);
+		expect(sandbox.stickyDisks).toEqual([{ diskId: disk.id, name: "ci-cache", path: "/var/lib/ci", state: "mounted" }]);
+		// A host from before block maps answers no digest; one with them, its version's map's, kept with the version. One
+		// that isn't a digest is left out.
+		const version = await root.commitStickyDisk(sandbox.id, "ci-cache");
+		expect(version).toMatchObject({ hostId, sandboxId: sandbox.id, sizeBytes: 100, allocatedBytes: 7 });
+		expect(sent("sticky.commit")).toEqual([{ sandboxId: sandbox.id, diskId: disk.id, version: version.id }]);
+		expect((await api.store.stickyDiskVersions.get(version.id))?.mapDigest).toBeUndefined();
+		host.stickyCommitExtra = { mapDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+		const mapped = await root.commitStickyDisk(sandbox.id, "ci-cache");
+		expect((await api.store.stickyDiskVersions.get(mapped.id))?.mapDigest).toBe(
+			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		);
+		host.stickyCommitExtra = { mapDigest: "sha256:nope" };
+		const odd = await root.commitStickyDisk(sandbox.id, "ci-cache");
+		expect((await api.store.stickyDiskVersions.get(odd.id))?.mapDigest).toBeUndefined();
+		// What a host holds, with each map digest it has: a version whose map was made after its commit gets it there.
+		host.receive(
+			JSON.stringify({
+				type: "heartbeat",
+				heartbeat: {
+					capacity: {
+						freeMemoryMiB: 30_000,
+						freeDiskGiB: 400,
+						running: 1,
+						stopped: 0,
+						load1: 0,
+						warm: {},
+						stickyDisks: [
+							{
+								diskId: disk.id,
+								versions: [
+									{
+										version: odd.id,
+										allocatedBytes: 7,
+										at: 1,
+										mapDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+									},
+									{ version: version.id, allocatedBytes: 7, at: 1, mapDigest: "not a digest" },
+								],
+							},
+						],
+					},
+				},
+			}),
+		);
+		const reported = async () => (await backend.stickyHoldings?.())?.find((report) => report.hostId === hostId);
+		while ((await reported())?.disks === undefined) await new Promise((resolve) => setTimeout(resolve, 1));
+		expect((await reported())?.disks).toEqual([
+			{
+				diskId: disk.id,
+				versions: [odd.id, version.id],
+				mapDigests: { [odd.id]: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+			},
+		]);
+		// A runner pool's beforeCommit runs as root, by the guest's own choice of user; any other command as the default.
+		await backend.exec(sandbox.id, { command: "echo prune", asRoot: true });
+		await backend.exec(sandbox.id, { command: "echo plain" });
+		expect(sent("sandbox.exec").map((params) => [params.command, params.user])).toEqual([
+			["echo prune", "root"],
+			["echo plain", undefined],
+		]);
+		await root.deleteStickyDisk(disk.id);
+		expect(sent("sticky.delete")).toEqual([{ diskId: disk.id }]);
+	});
+
+	it("places a sandbox on a host holding its sticky disk's head, and sends the head to attach", async () => {
+		const { service, root } = setup();
+		const disk = await root.createStickyDisk({ name: "ci-cache", sizeGb: 50 });
+		const sticky = { ...facts, features: ["sticky-disks"] };
+		const hostWith = async (name: string) => {
+			const token = (await root.createHostJoinToken({ name })).token;
+			const { hostId } = await service.register({ token, facts: sticky });
+			const host = new FakeHost(service, hostId);
+			host.facts = sticky;
+			host.connect();
+			while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+			return { host, hostId };
+		};
+		/** A heartbeat from a host with `freeMemoryMiB` free, holding these versions of the disk, once it has landed. */
+		const report = async (on: { host: FakeHost; hostId: string }, freeMemoryMiB: number, versions: string[]) => {
+			on.host.receive(
+				JSON.stringify({
+					type: "heartbeat",
+					heartbeat: {
+						capacity: {
+							freeMemoryMiB,
+							freeDiskGiB: 400,
+							running: 0,
+							stopped: 0,
+							load1: 0,
+							stickyDisks: [
+								{ diskId: disk.id, versions: versions.map((version) => ({ version, allocatedBytes: 7, at: 1 })) },
+							],
+						},
+					},
+				}),
+			);
+			const landed = async () =>
+				(await service.stickyReports())
+					.find((held) => held.hostId === on.hostId)
+					?.stickyDisks?.[0]?.versions.map((held) => held.version)
+					.join() === versions.join();
+			while (!(await landed())) await new Promise((resolve) => setTimeout(resolve, 1));
+		};
+		const created = (on: { host: FakeHost }) =>
+			on.host.params.filter((call) => call.method === "sandbox.create").map((call) => call.params.stickyDisks);
+		const attach = { type: "microvm", stickyDisks: [{ disk: "ci-cache", path: "/var/lib/ci" }], wait: true } as const;
+
+		const warm = await hostWith("warm");
+		const first = await root.createSandbox(attach);
+		const head = await root.commitStickyDisk(first.id, "ci-cache");
+		await root.deleteSandbox(first.id);
+		const cold = await hostWith("cold");
+		// The host holding the head wins, though the other has more memory free (while it wouldn't be half full); the head
+		// goes with the create.
+		await report(warm, 20_000, [head.id]);
+		await report(cold, 30_000, []);
+		const placed = await root.createSandbox(attach);
+		expect(placed.hostId).toBe(warm.hostId);
+		expect(created(warm).at(-1)).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50, version: head.id }]);
+		// A host holding only an older version is no better than one holding none: the emptier wins, told the head, which
+		// it attaches if it has it and else fetches for the next sandbox.
+		await root.deleteSandbox(placed.id);
+		await report(warm, 20_000, ["sdv_older"]);
+		const elsewhere = await root.createSandbox(attach);
+		expect(elsewhere.hostId).toBe(cold.hostId);
+		expect(created(cold).at(-1)).toEqual([{ diskId: disk.id, path: "/var/lib/ci", sizeGiB: 50, version: head.id }]);
+	});
+
 	it("revokes and drains a host through the API, and the registry follows", async () => {
 		const { service, root } = setup();
 		const token = await root.createHostJoinToken({});
@@ -741,6 +1091,39 @@ describe("a restart on the latest base, checked with the host first", () => {
 		host.processes = () => undefined;
 		expect((await failure(root.listSandboxProcesses(sandbox.id))).code).toBe("not_supported");
 		expect(asked()).toHaveLength(2);
+	});
+
+	it("sends a sandbox's new env to its host as sandbox.env, the whole env each time", async () => {
+		const { service, root, backend } = setup();
+		const withEnv = { ...facts, features: ["sandbox-env"] };
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts: withEnv });
+		const host = new FakeHost(service, hostId);
+		host.facts = withEnv;
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const sent = () => host.params.filter((call) => call.method === "sandbox.env").map((call) => call.params);
+
+		await backend.updateEnv?.(sandbox.id, { GH_TOKEN: "kph_attached", "WITH SPACE": 'a "b"\n' });
+		await backend.updateEnv?.(sandbox.id, {});
+		expect(sent()).toEqual([
+			{ sandboxId: sandbox.id, env: { GH_TOKEN: "kph_attached", "WITH SPACE": 'a "b"\n' } },
+			{ sandboxId: sandbox.id, env: {} },
+		]);
+		await expect(backend.updateEnv?.("sbx_nope", { A: "1" })).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("sends no env to a host from before sandbox.env: the sandbox has it from its next boot", async () => {
+		const { service, root, backend } = setup();
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		await backend.updateEnv?.(sandbox.id, { A: "1" });
+		expect(host.calls).not.toContain("sandbox.env");
 	});
 
 	it("asks a host from before processes could be listed for none", async () => {
@@ -787,6 +1170,113 @@ describe("a restart on the latest base, checked with the host first", () => {
 		await expect(prepare()).rejects.toMatchObject({ code: "unavailable" });
 		// No sandbox stopped for any of it.
 		expect(host.calls.filter((method) => method === "sandbox.stop")).toEqual([]);
+	});
+});
+
+describe("a restart on the latest base that fails on its host", () => {
+	const LATEST = "host-images-20261104.812";
+	const baseImages = {
+		indexUrl: "https://example.test/index.json",
+		index: async () => ({
+			version: 1,
+			generatedAt: "2026-11-04T02:00:00.000Z",
+			images: [
+				{
+					name: "host",
+					repository: "https://example.test/host",
+					channels: { stable: `sha256:${"c".repeat(64)}` },
+					versions: [
+						{
+							version: LATEST,
+							digest: `sha256:${"c".repeat(64)}`,
+							builtAt: "2026-11-04T00:00:00.000Z",
+							signed: true,
+						},
+					],
+				},
+			],
+		}),
+	};
+	const KILLED = "started afresh from its disk, which let go of the memory it was paused with";
+
+	/**
+	 * A paused sandbox on a host on the latest images, reporting `features`, with a command its memory kept running,
+	 * whose restart on latest the host refuses with `refusal`.
+	 */
+	async function failedRestart(
+		features: readonly string[],
+		refusal: { code: string; message: string; memoryDropped?: boolean },
+	) {
+		const { service, api, root } = setup({ baseImages });
+		const told = { ...facts, features: [...features] };
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts: told });
+		const host = new FakeHost(service, hostId);
+		host.facts = told;
+		host.images = LATEST;
+		host.connect();
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		await root.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("paused");
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		host.startRefusal = refusal;
+		await root.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect(host.params.find((call) => call.method === "sandbox.start")?.params).toMatchObject({
+			rebase: true,
+			rebaseTo: LATEST,
+		});
+		const failed = await api.store.sandboxes.get(sandbox.id);
+		expect(failed?.state).toBe("error");
+		expect(failed?.memoryDropping).toBeUndefined();
+		return { api, root, sandbox, failed };
+	}
+
+	it("kills the commands of the memory its host says it let go of, saying why", async () => {
+		const { api, root, sandbox, failed } = await failedRestart(["image-patching", "start-memory-dropped"], {
+			code: "internal",
+			message: "no free sandbox addresses",
+			memoryDropped: true,
+		});
+		expect(failed?.memoryDropped).toMatchObject({ generation: 1, why: expect.stringContaining(KILLED) });
+		expect(failed?.reason).toContain("no free sandbox addresses");
+		// Killed as it failed, not left for a read to find lost.
+		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining(KILLED),
+		});
+		expect(await root.getCommand(sandbox.id, "cmd_kept")).toMatchObject({ state: "killed" });
+	});
+
+	it("leaves them running when its host failed before letting the memory go", async () => {
+		const { api, failed } = await failedRestart(["image-patching", "start-memory-dropped"], {
+			code: "unavailable",
+			message: "this host hasn't taken host-images-20261104.812",
+		});
+		expect(failed?.memoryDropped).toBeUndefined();
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+	});
+
+	it("leaves them running on a host without the feature, whatever its error says", async () => {
+		const { api, failed } = await failedRestart(["image-patching"], {
+			code: "internal",
+			message: "no free sandbox addresses",
+			memoryDropped: true,
+		});
+		expect(failed?.memoryDropped).toBeUndefined();
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
 	});
 });
 

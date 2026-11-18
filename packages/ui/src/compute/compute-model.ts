@@ -40,6 +40,11 @@ export interface ComputeAccount {
 	readonly planId?: string;
 	/** An organisation's: `blocked` when members' personal access tokens can't act in it. Absent is allowed. */
 	readonly personalTokens?: "allowed" | "blocked";
+	/**
+	 * Whether Kantel keeps each saved snapshot on two hosts of its pool, so losing one host loses none of them. Absent
+	 * where the source doesn't say (a gateway from before it): the setting isn't offered then.
+	 */
+	readonly snapshotCopies?: boolean;
 }
 
 /** The person signed in. */
@@ -92,6 +97,8 @@ export interface AccountsSource {
 	rename?(accountId: string, name: string): Promise<ComputeAccount>;
 	/** Allows or blocks members' personal access tokens in an organisation; needs admin. Absent where it can't. */
 	setPersonalTokens?(accountId: string, policy: "allowed" | "blocked"): Promise<ComputeAccount>;
+	/** Turns keeping saved snapshots on two hosts on or off; needs admin. Absent where it can't. */
+	setSnapshotCopies?(accountId: string, on: boolean): Promise<ComputeAccount>;
 	/** Changes a member's role; needs admin, and only an owner makes or unmakes an owner. Absent where it can't. */
 	setRole?(accountId: string, memberId: string, role: AccountRole): Promise<OrganisationMember>;
 }
@@ -100,13 +107,16 @@ export interface AccountsSource {
 // Sandboxes
 
 /**
- * Where a sandbox runs. `isolate`: a V8 isolate on workerd, a shell and JavaScript, up in milliseconds. `microvm`: a
+ * Where a sandbox runs. `isolate`: a V8 isolate (kantel-isolate) running a bash written in TypeScript over its /workspace, up in milliseconds. `microvm`: a
  * Firecracker microVM with its own kernel, root, Docker and /dev/kvm inside.
  */
 export type SandboxKind = "isolate" | "microvm";
 
-/** A sandbox's state. A stop keeps the disk as a snapshot; `paused` keeps memory too (microVMs only). */
-export type SandboxState = "starting" | "running" | "paused" | "stopping" | "stopped" | "error";
+/**
+ * A sandbox's state. A stop keeps the disk as a snapshot; `paused` keeps memory too (microVMs only). `moving`: being
+ * moved to another host in its pool (its `move` says how far), then started there.
+ */
+export type SandboxState = "starting" | "running" | "paused" | "stopping" | "stopped" | "moving" | "error";
 
 export type SandboxSize = "small" | "medium" | "large" | "xlarge";
 
@@ -392,6 +402,12 @@ export interface Sandbox {
 	readonly hostId?: string;
 	/** That host's name, with `hostId`. */
 	readonly hostName?: string;
+	/** The pool it was placed in, by ID; absent for one made before pools, or where the source doesn't say. */
+	readonly poolId?: string;
+	/** The labels it was given (`ticket=PROJ-12`); absent or empty with none. */
+	readonly labels?: Readonly<Record<string, string>>;
+	/** How far its move to another host has got, while it's `moving`. */
+	readonly move?: SandboxMove;
 	/** What went wrong, when it's in `error`. */
 	readonly error?: string;
 	/**
@@ -408,8 +424,11 @@ export interface Sandbox {
 	readonly shared?: boolean;
 	/** The sandbox it was forked from. */
 	readonly forkedFrom?: string;
-	/** The environment it was made from. */
-	readonly environment?: { readonly id: string; readonly name: string };
+	/**
+	 * Its environments, in order: where two set the same variable, secret file or repository path, the later one wins.
+	 * Absent or empty: none.
+	 */
+	readonly environments?: readonly EnvironmentRef[];
 	/**
 	 * The base image it runs on, and how far that is behind the latest on its channel. Kantel never patches a running
 	 * sandbox: it moves to the latest base when it restarts on it. Absent where Kantel doesn't say (an isolate).
@@ -426,6 +445,47 @@ export interface Sandbox {
 		readonly version: number;
 		readonly start: "snapshot" | "boot";
 	};
+}
+
+/** A move to another host under way (the sandbox is `moving`). */
+export interface SandboxMove {
+	/**
+	 * How far it has got: `copying` (its disk goes to the new host) then `starting` (it starts there). A later Kantel may
+	 * say others (a running sandbox's `stopping` and `final-copy`): `movePhaseText` words any it doesn't know.
+	 */
+	readonly phase: string;
+	/** The host it is moving to, where Kantel says, and its name where the console knows it. */
+	readonly hostId?: string;
+	readonly hostName?: string;
+	/** Its memory moves too, so it carries on where it was; otherwise it boots on its disk there. */
+	readonly keepMemory: boolean;
+	/** Why it restarts there although it had memory that might have moved, as Kantel said once it chose the host. */
+	readonly restartReason?: string;
+	readonly startedAt: number;
+}
+
+/** A host a sandbox may move to, and what moving there does to it. */
+export interface MoveTarget {
+	readonly hostId: string;
+	readonly hostName: string;
+	/**
+	 * `kept`: its memory moves too, so running programs carry on (the hosts match). `restarts`: it boots on its disk
+	 * there, and running programs and memory are lost. Absent: Kantel doesn't say (no dry run yet), so it restarts.
+	 */
+	readonly memory?: "kept" | "restarts";
+	/**
+	 * How long it is expected to be unavailable while it moves there keeping its memory, in milliseconds, where Kantel
+	 * estimates it: its memory's copy.
+	 */
+	readonly pauseMs?: number;
+	/** Why it restarts there although it has memory that might have moved: the hosts' CPU or runtime differ, say. */
+	readonly restartReason?: string;
+}
+
+/** What a move asks for: the host, and whether to keep its memory where that host can (`MoveTarget.memory`). */
+export interface MoveChoice {
+	readonly hostId: string;
+	readonly keepMemory: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -596,6 +656,70 @@ export interface MountsSource {
 	removeBucketSource(id: string): Promise<void>;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Sticky disks (experimental)
+
+/** A sticky disk's name as the API takes it: lower-case letters, digits and hyphens, starting with a letter or digit. */
+export const STICKY_DISK_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+/** The largest size a sticky disk may have, in GB, as the API takes it. */
+export const STICKY_DISK_MAX_GB = 2048;
+
+/** A committed version of a sticky disk, on the host it was committed on. */
+export interface StickyDiskVersion {
+	readonly id: string;
+	/** The host it was committed on. Other hosts in its pool may have fetched a copy since; the API doesn't list them. */
+	readonly hostId: string;
+	/** The host's name; absent where the viewer may not see the host (a shared one, for anyone but a super-admin). */
+	readonly hostName?: string;
+	readonly sizeBytes: number;
+	/** What it took on the host it was committed on, the blocks it shares with other versions there included. */
+	readonly allocatedBytes: number;
+	readonly createdAt: number;
+}
+
+/**
+ * A named, versioned disk that microVMs get a copy-on-write copy of, kept warm between them: a cache such as a pnpm
+ * store or Docker's images. A commit makes a sandbox's copy its next version.
+ */
+export interface StickyDisk {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	/** Each copy's size: what a sandbox can fill. */
+	readonly sizeGb: number;
+	/** The newest committed version's ID; absent until one is. */
+	readonly head?: string;
+	/** The newest 20, newest first. */
+	readonly versions: readonly StickyDiskVersion[];
+	/** The pool it belongs to; absent until it is made in one or first attached. */
+	readonly poolId?: string;
+	readonly createdAt: number;
+}
+
+/** A pool a sticky disk may be in: the account's own, or, for a super-admin, one of the deployment's shared pools. */
+export interface StickyDiskPool extends Pool {
+	readonly shared?: boolean;
+}
+
+export interface StickyDisksSource {
+	/** The account's sticky disks, each with its versions. */
+	list(accountId: string): Promise<readonly StickyDisk[]>;
+	/** The pools a disk may be made in. None: a new disk joins the pool of the first sandbox it's attached to. */
+	pools(accountId: string): Promise<readonly StickyDiskPool[]>;
+	/** Refused (`conflict`) when the account has a disk of that name. */
+	create(input: {
+		readonly accountId: string;
+		readonly name: string;
+		readonly sizeGb: number;
+		readonly description?: string;
+		/** The pool's ID. Absent: the pool of the first sandbox it's attached to. */
+		readonly poolId?: string;
+	}): Promise<StickyDisk>;
+	/** Deletes it and its versions on every host. Sandboxes with a copy keep it until they're deleted. */
+	remove(id: string): Promise<void>;
+}
+
 /** One thing an image has or lacks: what the guest agent found, or why it isn't there. */
 export interface SandboxFeature {
 	readonly available: boolean;
@@ -673,12 +797,17 @@ export interface CreateSandboxInput {
 	readonly autoStopMinutes?: number;
 	/** Minutes unused before its idle stop; undefined is none. */
 	readonly idleStopMinutes?: number;
-	/** The environment it starts with. */
-	readonly environmentId?: string;
+	/** The environments it starts with, by ID, in order: the later one wins where two set the same thing. */
+	readonly environmentIds?: readonly string[];
 	/** The template it is made from (experimental): its newest built snapshot, or a fresh boot of its image. */
 	readonly templateId?: string;
 	/** The host it goes on, which it then stays on. Absent: Kantel picks. */
 	readonly hostId?: string;
+	/**
+	 * The pool it goes in (`Pool`'s ID), one of the account's other than its default: its host is that pool's. Absent: the
+	 * default, which is the account's default pool for its own hosts and the deployment's for shared ones.
+	 */
+	readonly poolId?: string;
 }
 
 /** A host New sandbox may put a sandbox on: one of the account's own, or for a super-admin a shared one. */
@@ -690,6 +819,8 @@ export interface HostChoice {
 	readonly kinds: readonly SandboxKind[];
 	/** One of the deployment's shared hosts, rather than the account's own. */
 	readonly shared: boolean;
+	/** The pool it is in (`Pool`'s ID), where Kantel says. */
+	readonly poolId?: string;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -889,11 +1020,15 @@ export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
 
 export interface SandboxesSource {
 	/**
-	 * What New sandbox's sliders may choose, from the hosts the account may use (or with `hostId` that one host), and
-	 * what each costs. Absent:
-	 * `DEFAULT_SANDBOX_SHAPES`.
+	 * What New sandbox's sliders may choose, from the hosts the account may use (with `hostId` that one host, with
+	 * `poolId` that pool's hosts), and what each costs. Absent: `DEFAULT_SANDBOX_SHAPES`.
 	 */
-	shapes?(accountId: string, hostId?: string): Promise<SandboxShapes>;
+	shapes?(accountId: string, hostId?: string, poolId?: string): Promise<SandboxShapes>;
+	/**
+	 * The account's pools, for New sandbox's pool picker, which it shows only for more than one. Absent: no picker, and
+	 * a sandbox goes in the default pool.
+	 */
+	pools?(accountId: string): Promise<readonly Pool[]>;
 	/**
 	 * The hosts New sandbox may put a sandbox on, for its host picker: the account's own, and for a super-admin the
 	 * shared ones. Absent, or none: no picker, and Kantel picks.
@@ -915,10 +1050,26 @@ export interface SandboxesSource {
 	/** Restarts a sandbox's machine that doesn't answer; the disk is kept. */
 	recover(id: string): Promise<Sandbox>;
 	/**
+	 * Makes an isolate a microVM with the same ID, its files (in `/home/user/workspace`, with `/workspace` linked there),
+	 * env, environments and grants, and answers it once it runs; a stopped one comes back running. A failure leaves the
+	 * isolate as it was. Absent: the console doesn't offer it.
+	 */
+	upgrade?(id: string): Promise<Sandbox>;
+	/**
 	 * Restarts a sandbox on the latest version of its base image: Kantel saves its disk, stops it and starts it again,
 	 * so running processes and memory are lost and its files stay. Absent: the console doesn't offer it.
 	 */
 	restartOnLatest?(id: string): Promise<Sandbox>;
+	/**
+	 * The hosts a microVM may move to: the other hosts of its pool that can run it, each with what a move there does to
+	 * its memory where Kantel says. Absent, or without `move`: the console doesn't offer Move to host.
+	 */
+	moveTargets?(sandbox: Sandbox): Promise<readonly MoveTarget[]>;
+	/**
+	 * Moves a sandbox to another host in its pool, with its ID, settings and URLs, and answers it once it runs there. It
+	 * is `moving` meanwhile. A failure leaves it where and as it was, and says why.
+	 */
+	move?(id: string, choice: MoveChoice): Promise<Sandbox>;
 	/** Deletes the sandbox and every snapshot of it, for good. */
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
@@ -930,6 +1081,8 @@ export interface SandboxesSource {
 	history(id: string): Promise<readonly SandboxCommand[]>;
 	/** One sandbox, for its page. */
 	get(id: string): Promise<Sandbox>;
+	/** Its environments, with what each loses to a later one, and attaching and detaching them. Absent: none offered. */
+	readonly environments?: SandboxEnvironmentsSource;
 	/** Minutes until auto-stop stops it, from now; undefined keeps it always on. */
 	setAutoStop?(id: string, minutes: number | undefined): Promise<Sandbox>;
 	/**
@@ -968,6 +1121,45 @@ export interface SandboxesSource {
 		list(id: string, path: string): Promise<SandboxFolder>;
 		read(id: string, path: string, range: FileRange): Promise<FilePart>;
 	};
+}
+
+/** At most this many environments on one sandbox, as the API allows. */
+export const MAX_SANDBOX_ENVIRONMENTS = 10;
+
+/** An environment as a sandbox or its egress names it. */
+export interface EnvironmentRef {
+	readonly id: string;
+	readonly name: string;
+}
+
+/** What of one of a sandbox's environments it doesn't take, because a later one (or its own env) sets it instead. */
+export interface SandboxEnvironmentShadowed {
+	/** Its variables a later environment, or the sandbox's own env, sets instead. */
+	readonly variables: readonly string[];
+	/** Its secret files' paths a later environment writes instead. */
+	readonly files: readonly string[];
+	/** Its repositories' paths a later environment clones into instead. */
+	readonly repos: readonly string[];
+}
+
+/** One of a sandbox's environments, in its place in their order. */
+export interface SandboxEnvironment extends EnvironmentRef {
+	readonly shadowed: SandboxEnvironmentShadowed;
+	/** Its secret files and repositories are set up when the sandbox next starts (it was attached while stopped). */
+	readonly pending: boolean;
+}
+
+/**
+ * A sandbox's environments. An attach puts one last (so it wins) unless `position` says otherwise; attaching one it
+ * has moves it. Its variables reach new commands at once, its grants and protected values apply at once, and a running
+ * sandbox gets its files and repositories now, a stopped one when it next starts. A detach takes its variables and
+ * grants away and stops its protected values resolving at once; files written and repositories cloned stay. Running
+ * processes keep the env they started with either way.
+ */
+export interface SandboxEnvironmentsSource {
+	list(sandboxId: string): Promise<readonly SandboxEnvironment[]>;
+	attach(sandboxId: string, environmentId: string, position?: number): Promise<readonly SandboxEnvironment[]>;
+	detach(sandboxId: string, environmentId: string): Promise<readonly SandboxEnvironment[]>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1018,6 +1210,21 @@ export interface SavedSnapshot {
 	readonly memory?: boolean;
 	/** The vCPUs and memory of the microVM it was saved from, where the source says. */
 	readonly machine?: { readonly vcpus: number; readonly memoryMb: number };
+}
+
+/**
+ * A host a saved snapshot is on, as its hosts last reported: the one it was saved on first, then each with a copy or
+ * fetching one. Kantel names only the hosts the viewer may know of: a shared host, for anyone but a super-admin, has
+ * no ID or name.
+ */
+export interface SnapshotHost {
+	readonly hostId?: string;
+	/** Its name, where `hostId` is given. */
+	readonly hostName?: string;
+	/** `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host. */
+	readonly state: "held" | "fetching";
+	/** Whether a sandbox made from it there restores its memory. Always false for a snapshot without memory. */
+	readonly memory: boolean;
 }
 
 /** A file or folder in a snapshot. */
@@ -1088,6 +1295,11 @@ export interface SnapshotsSource {
 	 * its files that doesn't say. Absent: such a link shows the whole of the snapshot from its root.
 	 */
 	kindOf?(snapshotId: string): Promise<SandboxKind>;
+	/**
+	 * The hosts a saved snapshot is on, or undefined where the source doesn't list them (a gateway from before it).
+	 * Absent: a saved snapshot's menu doesn't offer Hosts.
+	 */
+	hosts?(snapshotId: string): Promise<readonly SnapshotHost[] | undefined>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1319,7 +1531,7 @@ export interface DestinationBinding {
 }
 
 /**
- * A variable every new sandbox made from the environment starts with. A plain one is its value in the sandbox. A
+ * A variable every sandbox using the environment has. A plain one is its value in the sandbox. A
  * protected one is a `kph_` placeholder in the sandbox, its own per sandbox, that the host's egress proxy swaps for the
  * value on requests to its bindings: the value never enters the sandbox.
  */
@@ -1377,7 +1589,7 @@ export interface Environment {
 	readonly files: readonly EnvironmentFile[];
 	readonly repos: readonly EnvironmentRepo[];
 	readonly grants: readonly EgressGrant[];
-	/** How many sandboxes were made from it and still exist. */
+	/** How many sandboxes use it now. */
 	readonly sandboxCount: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
@@ -1410,7 +1622,10 @@ export interface EnvironmentsSource {
 	get(id: string): Promise<Environment>;
 	create(input: { accountId: string; name: string; description?: string }): Promise<Environment>;
 	update(id: string, change: { name?: string; description?: string }): Promise<Environment>;
-	/** Deletes it. Sandboxes made from it keep what they started with; their protected variables stop resolving. */
+	/**
+	 * Deletes it, and takes it off every sandbox that uses it: they keep the files and repositories it gave them, and its
+	 * protected variables stop resolving.
+	 */
 	remove(id: string): Promise<void>;
 	/** Adds or changes a variable by name. A new value for a protected one reaches its running sandboxes at once. */
 	setVariable(id: string, input: VariableInput): Promise<Environment>;
@@ -1638,6 +1853,8 @@ export interface SandboxProtectedVariable {
 	/** The first characters of its placeholder, `kph_7Qx2`, to tell it apart in a log or a command's output. */
 	readonly placeholderPrefix: string;
 	readonly bindings: readonly DestinationBinding[];
+	/** The environment whose value it takes: the last of the sandbox's that has it. */
+	readonly environmentId?: string;
 }
 
 /** A sandbox's egress: what it was made with, its own grants and its log. */
@@ -1646,11 +1863,12 @@ export interface SandboxEgress {
 	readonly sandboxName: string;
 	/** The account the sandbox is in. */
 	readonly accountId: string;
-	readonly environment?: { readonly id: string; readonly name: string };
+	/** Its environments, in order. */
+	readonly environments: readonly EnvironmentRef[];
 	readonly protectedVariables: readonly SandboxProtectedVariable[];
-	/** The environment's grants, which this sandbox has too. */
+	/** Its environments' grants, which this sandbox has too: they add up. */
 	readonly environmentGrants: readonly EgressGrant[];
-	/** This sandbox's own grants, on top of its environment's. */
+	/** This sandbox's own grants, on top of its environments'. */
 	readonly grants: readonly EgressGrant[];
 	/** Newest first. */
 	readonly entries: readonly EgressEntry[];
@@ -1678,7 +1896,9 @@ export type WebhookEvent =
 	| "sandbox.error"
 	| "sandbox.degraded"
 	| "sandbox.recovered"
+	| "sandbox.environments_changed"
 	| "sandbox.oom_kill"
+	| "sandbox.upgraded"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1691,7 +1911,9 @@ export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly l
 	{ event: "sandbox.error", label: "A sandbox failed" },
 	{ event: "sandbox.degraded", label: "A sandbox is degraded" },
 	{ event: "sandbox.recovered", label: "A sandbox recovered" },
+	{ event: "sandbox.environments_changed", label: "A sandbox's environments changed" },
 	{ event: "sandbox.oom_kill", label: "A sandbox ran out of memory" },
+	{ event: "sandbox.upgraded", label: "An isolate was upgraded to a microVM" },
 	{ event: "sandbox.deleted", label: "A sandbox was deleted" },
 	{ event: "snapshot.saved", label: "A snapshot was saved" },
 	{ event: "snapshot.deleted", label: "A snapshot was deleted" },
@@ -1811,6 +2033,134 @@ export interface Host {
 	readonly memory?: HostMemory;
 	/** The most bytes of saved snapshots each account may keep on it. Absent: no limit. */
 	readonly savedSnapshotLimitBytes?: number;
+	/** The pool it is in (`Pool`). Absent from a host the control plane hasn't put in one yet: its owner's default. */
+	readonly poolId?: string;
+	/**
+	 * The account whose own host it is, which runs only that account's sandboxes and is in that account's pools. Absent
+	 * from a deployment's shared host.
+	 */
+	readonly accountId?: string;
+	/**
+	 * How it reaches the other hosts of its pool over the pool's mesh, as it last reported it. Absent when it has no mesh
+	 * (its pool's sync is off, or an older host agent) or isn't connected.
+	 */
+	readonly mesh?: HostMesh;
+	/** How far its last move of every sandbox off it has got (`HostEvacuation`). Absent: it has had none. */
+	readonly evacuation?: HostEvacuationProgress;
+}
+
+/**
+ * `running`: its sandboxes are being moved off, two at a time. `done`: each moved, or was skipped with its reason.
+ * `failed`: it ended with a move that failed, or couldn't carry on. `stopped`: the host was undrained.
+ */
+export type HostEvacuationState = "running" | "done" | "failed" | "stopped";
+
+/** A host's evacuation in counts: how many sandboxes moved, are still to go, were skipped and failed. */
+export interface HostEvacuationProgress {
+	readonly state: HostEvacuationState;
+	/** Why it failed or stopped, where that wasn't one sandbox's move. */
+	readonly reason?: string;
+	readonly startedAt: number;
+	readonly endedAt?: number;
+	readonly moved: number;
+	/** Still to move, or moving now. */
+	readonly remaining: number;
+	readonly skipped: number;
+	readonly failed: number;
+}
+
+/**
+ * One sandbox of an evacuation. `waiting`: its turn hasn't come. `moving`: its move is under way (`phase`). `moved`: on
+ * `hostId` now. `skipped`: it can't move (`reason`). `failed`: its move failed (`reason`), and it's where it was.
+ */
+export interface HostEvacuationSandbox {
+	readonly id: string;
+	/** Absent where the viewer may not see the sandbox. */
+	readonly name?: string;
+	readonly kind: SandboxKind;
+	readonly state: "waiting" | "moving" | "moved" | "skipped" | "failed";
+	/** Where its move has got (`movePhaseText`), while it moves. */
+	readonly phase?: string;
+	/** The host it moved to. */
+	readonly hostId?: string;
+	/** Moved with its memory, so its programs carried on; false, it restarted there. */
+	readonly keptMemory?: boolean;
+	/** Why it was skipped, why its move failed, or why it restarted. */
+	readonly reason?: string;
+}
+
+/**
+ * Moving every sandbox off a draining host, so it can be updated, resized or retired without anyone losing one: each to
+ * another host in its pool, two at a time, as a move does by default.
+ */
+export interface HostEvacuation extends HostEvacuationProgress {
+	readonly sandboxes: readonly HostEvacuationSandbox[];
+}
+
+/**
+ * A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account starts
+ * with one named `default`. New hosts join the default pool unless their join names another.
+ */
+export interface Pool {
+	readonly id: string;
+	/** Lower-case letters, digits and dashes, unique among its owner's pools. */
+	readonly name: string;
+	/** Its owner's default pool: where a host joins, and a sandbox goes, naming no pool. */
+	readonly default: boolean;
+	/** How many hosts are in it. */
+	readonly hosts: number;
+	readonly createdAt: number;
+}
+
+/** A pool's name as the API takes it: lower-case letters, digits and dashes, starting and ending with a letter or digit. */
+export const POOL_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** Reads and changes the pools hosts are in. */
+export interface PoolsSource {
+	/** Every pool, the default among them. */
+	list(): Promise<readonly Pool[]>;
+	/** An empty pool; refused when the name is taken. */
+	create(name: string): Promise<Pool>;
+	rename(id: string, name: string): Promise<Pool>;
+	/** Makes it the default, in place of the one that was. */
+	makeDefault(id: string): Promise<Pool>;
+	/** Only an empty pool that isn't the default: refused otherwise, with the reason. */
+	remove(id: string): Promise<void>;
+}
+
+/** A host's place on its pool's mesh: its own address there, and each peer as it reaches it. */
+export interface HostMesh {
+	readonly address: string;
+	readonly peers: readonly HostMeshPeer[];
+}
+
+/**
+ * One mesh peer as a host reaches it. `path`: `direct` (a handshake in the last 3 minutes) or `none` (none since); a newer
+ * host may say another. `endpoint`: the address and port it uses now. `lastHandshake`: when it last completed one, absent
+ * before the first. `rttMs`: the round trip of its last probe, absent when that got no answer.
+ */
+export interface HostMeshPeer {
+	readonly hostId: string;
+	readonly path: string;
+	readonly endpoint?: string;
+	readonly lastHandshake?: number;
+	readonly rttMs?: number;
+}
+
+/**
+ * How old a peer's last handshake may be before the peer counts as unreachable whatever its path says: the host's own
+ * 3 minutes, plus a heartbeat or two for the report to reach the page.
+ */
+export const MESH_HANDSHAKE_STALE_MS = 5 * 60_000;
+
+/**
+ * Whether a host reaches a peer, as far as its last report says: a path other than `none`, and a handshake no older than
+ * `MESH_HANDSHAKE_STALE_MS`. A peer it never shook hands with isn't reached.
+ */
+export function meshPeerReachable(peer: HostMeshPeer, now: number): boolean {
+	return (
+		peer.path !== "none" && peer.lastHandshake !== undefined && now - peer.lastHandshake <= MESH_HANDSHAKE_STALE_MS
+	);
 }
 
 /**
@@ -1885,7 +2235,12 @@ export interface HostsSource {
 	/** Where hosts reach the control plane, when this person may change it: the deployment's hosts, a super-admin's. */
 	readonly publicUrl?: PublicUrlSource;
 	/** A join token for a new host, and the command with it in. */
-	join(input: { readonly name?: string; readonly labels?: Readonly<Record<string, string>> }): Promise<HostJoin>;
+	join(input: {
+		readonly name?: string;
+		readonly labels?: Readonly<Record<string, string>>;
+		/** The pool's ID. Absent: the default pool. */
+		readonly pool?: string;
+	}): Promise<HostJoin>;
 	/** Stops new sandboxes landing on it; running ones keep running. */
 	drain(id: string): Promise<Host>;
 	undrain(id: string): Promise<Host>;
@@ -1907,6 +2262,20 @@ export interface HostsSource {
 	 * refused. Absent: the limit isn't set from the console.
 	 */
 	setSnapshotLimit?(id: string, bytes: number | null): Promise<Host>;
+	/** The pools the hosts are in. Absent: the page lists the hosts without them. */
+	readonly pools?: PoolsSource;
+	/**
+	 * Moves a host to another pool. Only a draining host with no sandboxes moves; any other is refused with the reason.
+	 * It stays draining: undrain it once it should take sandboxes. Absent: hosts aren't moved from the console.
+	 */
+	move?(id: string, poolId: string): Promise<Host>;
+	/**
+	 * Drains the host, where it isn't draining, and moves every sandbox off it (`HostEvacuation`); one under way is
+	 * answered as it is. Absent: sandboxes aren't moved off hosts from the console.
+	 */
+	evacuate?(id: string): Promise<HostEvacuation>;
+	/** The host's last evacuation, or undefined when it has had none. */
+	evacuation?(id: string): Promise<HostEvacuation | undefined>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2013,6 +2382,8 @@ export interface ComputeSource {
 	readonly ownHosts?: (accountId: string) => HostsSource;
 	/** Read-only mounts' bundles and bucket sources (experimental). Absent, the deployment hasn't turned mounts on. */
 	readonly mounts?: MountsSource;
+	/** Sticky disks (experimental). Absent, the deployment hasn't turned them on. */
+	readonly stickyDisks?: StickyDisksSource;
 	/** Only when hosted. */
 	readonly billing?: BillingSource;
 	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */
@@ -2028,8 +2399,20 @@ export const SANDBOX_STATE_LABELS: Readonly<Record<SandboxState, string>> = {
 	paused: "Paused",
 	stopping: "Stopping",
 	stopped: "Stopped",
+	moving: "Moving",
 	error: "Error",
 };
+
+/**
+ * A sandbox's environments' names in their order, for a line of text: "backend-dev", "backend-dev and evals",
+ * "a, b and c". Undefined for none.
+ */
+export function environmentNamesText(environments: readonly EnvironmentRef[] | undefined): string | undefined {
+	const names = (environments ?? []).map((env) => env.name);
+	if (names.length === 0) return undefined;
+	if (names.length === 1) return names[0];
+	return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
 
 /** What a running sandbox whose guest agent doesn't answer shows for its state, in the error colour. */
 export const UNRESPONSIVE_LABEL = "Unresponsive";
@@ -2081,6 +2464,7 @@ export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
 	paused: "waiting",
 	stopping: "working",
 	stopped: "idle",
+	moving: "working",
 	error: "error",
 };
 
@@ -2138,8 +2522,39 @@ export const sizeText = (
 export const sandboxMachineText = (sandbox: Pick<Sandbox, "kind" | "shape" | "resources">): string =>
 	`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(sandboxSpec(sandbox))}`;
 
-/** A sandbox is between states, so the page reads it again soon. */
-export const sandboxMoving = (state: SandboxState): boolean => state === "starting" || state === "stopping";
+/** A sandbox is between states (moving to another host among them), so the page reads it again soon. */
+export const sandboxMoving = (state: SandboxState): boolean =>
+	state === "starting" || state === "stopping" || state === "moving";
+
+/** What a move's phase says it is doing, as a sentence's start: "Copying its disk". */
+const MOVE_PHASES: ReadonlyMap<string, string> = new Map([
+	["copying", "Copying its disk"],
+	["stopping", "Stopping it for the last copy"],
+	["final-copy", "Copying its last changes"],
+	["starting", "Starting it"],
+]);
+
+/**
+ * A move's phase in words: "Copying its disk", "Starting it". A phase this console doesn't know reads as Kantel names
+ * it, in sentence case ("final-check" is "Final check").
+ */
+export function movePhaseText(phase: string): string {
+	const known = MOVE_PHASES.get(phase);
+	if (known !== undefined) return known;
+	const words = phase.replace(/[-_]+/g, " ").trim();
+	return words === "" ? "Moving" : `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
+/**
+ * Whether a sandbox can be moved to another host now: a microVM, running, stopped or paused (a running or paused one
+ * boots on its disk there unless its memory can move; a running one is copied as it runs, then stopped for a last
+ * copy), on a host the viewer knows (its pool's other hosts are listed from it), connected.
+ */
+export const canMove = (sandbox: Pick<Sandbox, "kind" | "state" | "hostId" | "hostUnreachable">): boolean =>
+	sandbox.kind === "microvm" &&
+	sandbox.hostId !== undefined &&
+	sandbox.hostUnreachable !== true &&
+	(sandbox.state === "running" || sandbox.state === "stopped" || sandbox.state === "paused");
 
 /** "52m", "6h 10m", "Always on", or a dash when it isn't running. */
 export function stopsInText(sandbox: Pick<Sandbox, "state" | "stopsAt">, now: number): string {

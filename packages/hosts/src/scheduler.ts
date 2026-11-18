@@ -12,8 +12,17 @@
  * scratch while that's being made, or when the host keeps templates per size).
  *
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
- * VM); then the most free memory, the least loaded. Hosts keep no warm pools of running sandboxes, so no host is
- * preferred for having one ready: a create restores a snapshot wherever it lands.
+ * VM); then a host that holds the head of every sticky disk the sandbox attaches (`holdsHeads`), so it starts with a
+ * warm cache rather than its host's older version or an empty disk (docs/design/disk-store.md, 2d). That is a preference
+ * only, and only while that host wouldn't be much fuller than the emptiest (`muchFuller`), or in a pool whose placement is
+ * balanced (`Candidate.balanced`), only while it would be as full as the emptiest (`nearEmptiest`): a host without the
+ * heads starts from what it has and fetches them in the background. Then the least full once
+ * it is placed (`fullness`): the larger of the share of its memory taken and the share of
+ * its vCPUs booked, so sandboxes spread over hosts of different sizes in proportion, and a host whose CPUs are all booked
+ * by a few large sandboxes isn't picked for having memory left; then the least loaded for its CPUs. vCPUs are only
+ * ranked on, never refused on: a host admits by memory and disk, and a booked vCPU is a share of its CPU time, not a
+ * core of its own. Hosts keep no warm pools of running sandboxes, so no host is preferred for having one ready: a create
+ * restores a snapshot wherever it lands.
  */
 import type { PlacementReason } from "@kantel/contracts";
 import { HOST_FEATURES, type HostCapacity, type HostDiskLimits, type HostSize, type SandboxTier } from "./protocol.ts";
@@ -43,6 +52,31 @@ export interface PlacementRequest {
 	readonly owner?: string;
 	/** Labels the host must carry, such as `{"region": "eu"}`. */
 	readonly labels?: { readonly [key: string]: string };
+	/** The sticky disks it attaches, each with its head where it has one: a host holding every head is preferred. */
+	readonly stickyDisks?: readonly StickyHead[];
+}
+
+/** A sticky disk a sandbox attaches, and its head (`version`): absent for a disk with no version yet. */
+export interface StickyHead {
+	readonly diskId: string;
+	readonly version?: string;
+}
+
+/**
+ * Whether `host` last reported holding the head of every sticky disk in `disks` (`HostCapacity.stickyDisks`). A disk
+ * with no head yet asks for nothing, so with none every host holds them all; a host that doesn't say what it holds
+ * holds none.
+ */
+export function holdsHeads(host: HostRecord, disks: readonly StickyHead[] | undefined): boolean {
+	const held = host.capacity?.stickyDisks;
+	return (disks ?? []).every(
+		(disk) =>
+			disk.version === undefined ||
+			held?.some(
+				(holding) =>
+					holding.diskId === disk.diskId && holding.versions.some((version) => version.version === disk.version),
+			) === true,
+	);
 }
 
 export interface Candidate {
@@ -55,6 +89,22 @@ export interface Candidate {
 	readonly heldMemory?: readonly HeldMemory[];
 	/** Owners with an isolate on the host. */
 	readonly owners: ReadonlySet<string>;
+	/**
+	 * The vCPUs of the microVMs placed on the host that are live (starting, running or stopping), this replica's and every other's (the
+	 * placements are shared). Absent, none are counted: the host ranks by memory alone.
+	 */
+	readonly bookedVcpus?: number;
+	/**
+	 * The most vCPUs its pool lets a host book for each of its CPUs (`vcpusFit`): a host that would go past it with this
+	 * sandbox is full. Absent, vCPUs only rank hosts and never refuse one.
+	 */
+	readonly vcpusPerCpu?: number;
+	/**
+	 * Its pool's placement is balanced (`Pool.placement`): a host holding a create's sticky disk heads, or its template's
+	 * snapshot, wins only over hosts as full as it, within `BALANCED_TIE` of the emptiest (`nearEmptiest`), rather than
+	 * until it is much fuller (`muchFuller`).
+	 */
+	readonly balanced?: boolean;
 }
 
 export interface Placement {
@@ -63,6 +113,20 @@ export interface Placement {
 	readonly size: HostSize;
 	/** A shape off the host's named sizes: sent to it as vCPUs, memory and disk, and booted from scratch. */
 	readonly custom: boolean;
+	/** How full the host would be with it placed (`fullness`). */
+	readonly fullness: number;
+	/**
+	 * The most vCPUs its pool lets the host book (`vcpuAllowance`), which its admission checks again as it writes the
+	 * placement (`HostStore.placeOnTakingHost`), so creates at once can't both take the last of it. Absent: no cap.
+	 */
+	readonly maxVcpus?: number;
+	/** Its host's pool's placement is balanced (`Candidate.balanced`), as `bootsFreshInstead` reads it. */
+	readonly balanced?: boolean;
+	/**
+	 * How full the emptiest host that could take it would be with it placed, of the hosts this placement chose among:
+	 * `bootsFreshInstead` holds a balanced pool's restore to the emptiest of both its groups.
+	 */
+	readonly emptiest?: number;
 }
 
 /** No host can take it: why, in words, and as a `PlacementReason`. */
@@ -83,8 +147,8 @@ const STAGES: readonly PlacementReason[] = [
 /**
  * What an isolate books on its host. Isolates share their owner's VM, which the host counts in its free memory once it
  * runs, so an isolate books only this much, whatever memory it asked for (128 to 512 MB): booking what it asked for
- * would have a host full of small isolates look full long before its VMs are. The memory it asked for goes to the host
- * and is recorded, not enforced (workerd has no per-isolate memory limit).
+ * would have a host full of small isolates look full long before its VMs are. The memory it asked for goes to the host,
+ * whose runtime enforces it per isolate where it says `memoryEnforced` (`HostIsolateRuntime`).
  */
 export const ISOLATE_SIZE: HostSize = { name: "isolate", vcpus: 0, memoryMiB: 64, diskGiB: 0 };
 
@@ -248,6 +312,8 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		custom: boolean;
 		free: number;
 		owner: boolean;
+		heads: boolean;
+		fullness: number;
 	}[] = [];
 	for (const candidate of candidates) {
 		const { host } = candidate;
@@ -303,29 +369,154 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			turnedAway(`${Math.max(0, freeDisk)} GiB of disk free`, "insufficient_capacity");
 			continue;
 		}
+		if (!vcpusFit(candidate, size.vcpus)) {
+			turnedAway("its vCPUs booked", "insufficient_capacity");
+			continue;
+		}
 		fits.push({
 			candidate,
 			size,
 			custom: shaped.custom,
 			free: freeMemory,
 			owner: request.owner !== undefined && candidate.owners.has(request.owner),
+			heads: holdsHeads(host, request.stickyDisks),
+			fullness: fullness(candidate, size, freeMemory),
 		});
 	}
 	if (fits.length === 0) {
 		const why = reasons.size === 0 ? "no hosts have joined" : [...reasons].sort().join(", ");
 		return { reason: `No host can take ${asked(request)} (${why})`, code: STAGES[stage] ?? "no_host" };
 	}
+	// The heads are a warm cache, so they count only on a host not much fuller than the emptiest that fits (`muchFuller`):
+	// creates that attach the same disk spread over the hosts rather than fill the one holding its head first.
+	const emptiest = Math.min(...fits.map((fit) => fit.fullness));
+	const warm = (fit: (typeof fits)[number]) =>
+		fit.heads &&
+		(fit.candidate.balanced === true ? nearEmptiest(fit.fullness, emptiest) : !muchFuller(fit.fullness, emptiest));
 	fits.sort(
 		(a, b) =>
 			Number(b.owner) - Number(a.owner) ||
+			Number(warm(b)) - Number(warm(a)) ||
+			a.fullness - b.fullness ||
 			b.free - a.free ||
-			(a.candidate.host.capacity?.load1 ?? 0) - (b.candidate.host.capacity?.load1 ?? 0) ||
+			loadPerCpu(a.candidate.host) - loadPerCpu(b.candidate.host) ||
 			(a.candidate.host.id < b.candidate.host.id ? -1 : 1),
 	);
 	const best = fits[0];
 	if (best === undefined) return { reason: "No host", code: "no_host" };
-	return { host: best.candidate.host, size: best.size, custom: best.custom };
+	const maxVcpus = vcpuAllowance(best.candidate);
+	return {
+		host: best.candidate.host,
+		size: best.size,
+		custom: best.custom,
+		fullness: best.fullness,
+		...(maxVcpus === undefined ? {} : { maxVcpus }),
+		...(best.candidate.balanced === true ? { balanced: true } : {}),
+		emptiest,
+	};
 }
+
+/**
+ * How full a host with a template's snapshot may be, once the create is placed on it, before an emptier host without
+ * the snapshot boots the template fresh instead (`bootsFreshInstead`). Below it a restore (a few seconds) wins over a
+ * fresh boot (about 25 seconds, with the template's setup) whatever the others hold: half its memory or vCPUs is room
+ * to spare.
+ */
+export const SPREAD_FULLNESS = 0.5;
+
+/**
+ * How much fuller than the emptiest host without the snapshot a host with it must be, past `SPREAD_FULLNESS`, before
+ * the create boots fresh there instead: a quarter of a host. Hosts about as full stay with the restore, and each fresh
+ * boot narrows the gap, so creates in a row fill both by turns rather than all going to the one host emptier now.
+ */
+export const SPREAD_MARGIN = 0.25;
+
+/**
+ * Whether a host `fuller` full, once a create is placed on it, is so much fuller than one `emptier` full that a
+ * preference for it (a template snapshot it holds, the heads of the sticky disks the create attaches) gives way: when
+ * it would be at least `SPREAD_FULLNESS` full and at least `SPREAD_MARGIN` fuller. Below that, the preference decides
+ * between hosts about as full.
+ */
+export const muchFuller = (fuller: number, emptier: number): boolean =>
+	// In hundredths, as `fullness` is rounded, so 0.57 less 0.32 is a quarter.
+	Math.round(fuller * 100) >= Math.round(SPREAD_FULLNESS * 100) &&
+	Math.round((fuller - emptier) * 100) >= Math.round(SPREAD_MARGIN * 100);
+
+/**
+ * Whether a create from a template snapshot boots fresh on the emptiest host without it (`fresh`) rather than restoring
+ * on the host with it chosen (`restore`): only when the restore's host would be at least `SPREAD_FULLNESS` full, and
+ * at least `SPREAD_MARGIN` fuller than the other, each counted with the create placed (`Placement.fullness`). A fresh
+ * boot costs the create time once, where a host packed past its CPUs slows every sandbox on it for as long as they run.
+ * Until a pool's hosts all hold the snapshot (its copies still on their way after a build, or a host on another CPU or
+ * runtime building its own), this keeps the one host with it from filling while the others sit empty.
+ */
+export const bootsFreshInstead = (restore: Placement, fresh: Placement): boolean =>
+	restore.balanced === true
+		? // Never onto a host as full as the restore's or fuller (one an owner's isolates drew the fresh boot to, say).
+			fresh.fullness < restore.fullness &&
+			!nearEmptiest(restore.fullness, Math.min(restore.emptiest ?? restore.fullness, fresh.emptiest ?? fresh.fullness))
+		: muchFuller(restore.fullness, fresh.fullness);
+
+/**
+ * How much fuller than the emptiest host a host may be and still count as as full as it, in a pool whose placement is
+ * balanced (`Candidate.balanced`): a twentieth of a host, less than one sandbox of 8 vCPUs on 32 threads (a quarter).
+ */
+export const BALANCED_TIE = 0.05;
+
+/** Whether a host `fullness` full is as full as the emptiest, `emptiest` full, within `BALANCED_TIE` (in hundredths). */
+export const nearEmptiest = (fullness: number, emptiest: number): boolean =>
+	Math.round((fullness - emptiest) * 100) <= Math.round(BALANCED_TIE * 100);
+
+/**
+ * How full a host would be with `size` placed on it, from 0 (more than 1 when over-booked): the larger of the share of
+ * its memory reserved and the share of its vCPUs booked. Memory is counted in one set of units: what its sandboxes were
+ * given (`HostMemoryReport.reservedMiB`), and what was placed since the report, over what it has for sandboxes
+ * (`capacityMiB`), whichever way it admits them. Free memory as a host reports it is what it would still admit, which
+ * over-commit makes larger than what is unused, so it isn't a share of anything. A host from before memory reports
+ * counts its machine's memory less what it said was free. vCPUs are its CPUs, booked by live microVMs. Rounded to a
+ * hundredth, so two hosts about as full are ranked by what comes next (the most free memory, the least loaded).
+ */
+export function fullness(candidate: Candidate, size: HostSize, freeMemoryMiB: number): number {
+	const { host } = candidate;
+	const report = host.capacity?.memory;
+	const held = candidate.heldMemory?.reduce((sum, entry) => sum + entry.memoryMiB, 0) ?? candidate.reservedMemoryMiB;
+	const memory =
+		report !== undefined && report.capacityMiB > 0
+			? (report.reservedMiB + held + size.memoryMiB) / report.capacityMiB
+			: (host.facts?.memoryMiB ?? 0) > 0
+				? ((host.facts?.memoryMiB ?? 0) - freeMemoryMiB + size.memoryMiB) / (host.facts?.memoryMiB ?? 1)
+				: 0;
+	const cpus = host.facts?.cpus ?? 0;
+	const vcpus = cpus > 0 && candidate.bookedVcpus !== undefined ? (candidate.bookedVcpus + size.vcpus) / cpus : 0;
+	return Math.round(Math.max(memory, vcpus, 0) * 100) / 100;
+}
+
+/**
+ * Whether `vcpus` more fit on a candidate under its pool's cap (`Candidate.vcpusPerCpu`): its booked vCPUs and these at
+ * most the cap times its CPUs. A host with nothing booked always takes one, so a sandbox larger than the cap allows
+ * still runs alone. Without a cap, a report of its CPUs or a count of what is booked, it fits.
+ */
+export function vcpusFit(candidate: Candidate, vcpus: number): boolean {
+	const allowance = vcpuAllowance(candidate);
+	const booked = candidate.bookedVcpus;
+	if (allowance === undefined || booked === undefined || booked === 0 || vcpus <= 0) return true;
+	return booked + vcpus <= allowance;
+}
+
+/**
+ * The most vCPUs a candidate's pool lets it book (`Candidate.vcpusPerCpu` times its CPUs, in whole vCPUs, as a
+ * microVM's are), or undefined without a cap or a report of its CPUs. Rounded in hundredths first, so 0.7 of 10 CPUs is
+ * 7 though a float falls just short of it.
+ */
+export function vcpuAllowance(candidate: Candidate): number | undefined {
+	const cpus = candidate.host.facts?.cpus ?? 0;
+	const limit = candidate.vcpusPerCpu;
+	if (limit === undefined || cpus <= 0) return undefined;
+	return Math.floor(Math.round(limit * cpus * 100) / 100);
+}
+
+/** A host's one-minute load for each of its CPUs. */
+const loadPerCpu = (host: HostRecord): number => (host.capacity?.load1 ?? 0) / Math.max(1, host.facts?.cpus ?? 1);
 
 export function isRefusal(value: Placement | Refusal): value is Refusal {
 	return "reason" in value;

@@ -16,6 +16,8 @@ export interface Account {
 	readonly defaultVisibility: SandboxVisibility;
 	/** Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`. */
 	readonly personalTokens?: PersonalTokenPolicy;
+	/** Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it. */
+	readonly snapshotCopies?: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
 }
@@ -120,6 +122,13 @@ export interface ApproveDeviceLoginBody {
 	readonly accounts?: readonly string[];
 	/** Default 90. It stops working after it. A personal token lasts at most 366. */
 	readonly expiresInDays?: number;
+}
+
+export interface AttachSandboxEnvironmentBody {
+	/** The environment, its ID or name in the sandbox's account. */
+	readonly environment: string;
+	/** Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, so it wins over the others. */
+	readonly position?: number;
 }
 
 export interface BaseImage {
@@ -271,7 +280,7 @@ export interface BucketMountSource {
 	readonly bucketSourceId: string;
 	/** The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket. */
 	readonly prefix: string;
-	/** How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's. */
+	/** How long the host trusts its listing of the prefix before it looks again, so objects added later appear: it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call `refreshSandboxMounts`. */
 	readonly refreshTtlSeconds?: number;
 }
 
@@ -394,6 +403,24 @@ export interface Command {
 	/** Epoch milliseconds, UTC. */
 	readonly endedAt?: number;
 	readonly durationMs?: number;
+	/** In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`. */
+	readonly needsMicrovm?: CommandNeedsMicrovm;
+	/** In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`). */
+	readonly terminated?: CommandTermination;
+	/** It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run again in the microVM. */
+	readonly rerunAs?: string;
+	/** It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the command that answered `needsMicrovm` in the isolate. */
+	readonly rerunOf?: string;
+}
+
+/** In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`. */
+export interface CommandNeedsMicrovm {
+	/** What it ran that an isolate doesn't have, such as `tar`. */
+	readonly command: string;
+	/** Why, in one sentence. */
+	readonly reason: string;
+	/** Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it. */
+	readonly inferred?: boolean;
 }
 
 export interface CommandPage {
@@ -403,6 +430,9 @@ export interface CommandPage {
 }
 
 export type CommandState = "running" | "exited" | "killed" | "timed_out";
+
+/** In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`). */
+export type CommandTermination = "cpu" | "memory" | "wall";
 
 export interface ComputePageQuery {
 	/** At most this many; default 50. */
@@ -429,8 +459,22 @@ export interface CreateAccountJoinTokenBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+	/** The pool the host joins, an ID or name. Default: the account's default pool. */
+	readonly pool?: string;
 	/** Default 60. */
 	readonly expiresInMinutes?: number;
+}
+
+export interface CreateAccountPoolBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	readonly name: string;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
+	readonly sync?: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
+	readonly vcpusPerCpu?: number | null;
+	/** How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. */
+	readonly placement?: "warm" | "balanced";
 }
 
 /** Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks. */
@@ -478,11 +522,29 @@ export interface CreateEnvironmentBody {
 	readonly description?: string;
 }
 
+export interface CreateGithubRunnersBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	readonly name: string;
+	readonly appId: number;
+	/** The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered. */
+	readonly privateKey: string;
+	readonly owner: string;
+	/** Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. */
+	readonly scope?: "organization" | "repository";
+	readonly runnerGroupId?: number;
+	readonly repositories?: readonly string[];
+	/** Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it. */
+	readonly pools?: readonly GithubRunnerPool[];
+}
+
 export interface CreateHostJoinTokenBody {
 	readonly name?: string;
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+	/** The pool the host joins, an ID or name among the deployment's pools. Default: its default pool. */
+	readonly pool?: string;
 	/** Default 60. */
 	readonly expiresInMinutes?: number;
 }
@@ -514,6 +576,16 @@ export interface CreatePersonalTokenBody {
 	readonly expiresInDays?: number;
 }
 
+export interface CreatePoolBody {
+	readonly name: string;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
+	readonly sync?: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
+	readonly vcpusPerCpu?: number | null;
+	/** How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. */
+	readonly placement?: "warm" | "balanced";
+}
+
 /** Any other field is refused as `invalid`. */
 export interface CreateProjectBody {
 	/** The project's name, trimmed: not empty, and at most 100 characters. */
@@ -526,7 +598,7 @@ export interface CreateSandboxBody {
 	readonly account?: string;
 	/** Default: a generated name, such as `brave-otter`. */
 	readonly name?: string;
-	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type?: SandboxType;
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
@@ -545,24 +617,45 @@ export interface CreateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
-	/** Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. */
+	/** Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. */
 	readonly env?: {
 		readonly [key: string]: string;
 	};
-	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. */
+	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one. */
 	readonly environment?: string;
+	/** Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`. */
+	readonly environments?: readonly string[];
 	/** Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. */
 	readonly template?: string;
+	/** Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them. */
+	readonly stickyDisks?: readonly SandboxStickyDiskInput[];
 	/** Place it only on a host with each label, such as `{ site: "home" }`. */
 	readonly hostLabels?: {
 		readonly [key: string]: string;
 	};
+	/** Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. `unavailable` saying which pool when none of its hosts can take it now. Default: the account's default pool when the account has hosts of its own, else the deployment's default pool, as before pools. */
+	readonly pool?: string;
 	/** Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. */
 	readonly host?: string;
 	/** Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
 	readonly mounts?: readonly Mount[];
+	/** For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. */
+	readonly autoUpgrade?: boolean;
+	/** What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only. */
+	readonly autoUpgradeFrom?: string;
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
+}
+
+export interface CreateStickyDiskBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** Lower-case letters, digits and hyphens, unique in the account. */
+	readonly name: string;
+	readonly description?: string;
+	readonly sizeGb: number;
+	/** The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in that pool. Default: the pool of the first sandbox it is attached to. */
+	readonly pool?: string;
 }
 
 export interface CreateTemplateBody {
@@ -773,7 +866,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -785,9 +878,9 @@ export interface Event {
 
 export interface EventData {
 	readonly name?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state?: SandboxState;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly previousState?: SandboxState;
 	readonly reason?: string;
 	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
@@ -797,6 +890,24 @@ export interface EventData {
 	readonly oomKills?: number;
 	/** How its machine's latest start (a create, fork, start or resume) took its time, phase by phase, as its host measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs only, and only from a host that reports it. */
 	readonly startup?: SandboxStartup;
+	/** `sandbox.environments_changed`: the environment attached. */
+	readonly attached?: string;
+	/** `sandbox.environments_changed`: the environment detached. */
+	readonly detached?: string;
+	/** `sandbox.environments_changed`: the sandbox's environments now, in order. */
+	readonly environmentIds?: readonly string[];
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly from?: SandboxType;
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly to?: SandboxType;
+	/** `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them. */
+	readonly path?: "host" | "control-plane";
+	/** `sandbox.upgraded`: the files, links and directories moved. */
+	readonly files?: number;
+	/** `sandbox.upgraded`: the files' bytes. */
+	readonly bytes?: number;
+	/** `sandbox.upgraded`: how long the upgrade took. */
+	readonly durationMs?: number;
 }
 
 export interface EventPage {
@@ -805,7 +916,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -814,7 +925,9 @@ export type EventType =
 	| "sandbox.error"
 	| "sandbox.degraded"
 	| "sandbox.recovered"
+	| "sandbox.environments_changed"
 	| "sandbox.oom_kill"
+	| "sandbox.upgraded"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -839,7 +952,7 @@ export interface ExposePortBody {
 }
 
 export interface ExtractArchiveQuery {
-	/** The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount. */
+	/** The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
 	readonly path: string;
 }
 
@@ -854,6 +967,18 @@ export interface ExtractedArchive {
 	readonly symlinks: number;
 	/** Bytes of the files written. */
 	readonly bytes: number;
+}
+
+export interface FetchHostSnapshotBody {
+	/** The saved snapshot's ID. */
+	readonly snapshotId: string;
+}
+
+export interface FetchHostStickyDiskBody {
+	/** The sticky disk's ID. */
+	readonly stickyDiskId: string;
+	/** The version to fetch: one a host in the same pool holds. */
+	readonly version: string;
 }
 
 /** A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`. */
@@ -887,7 +1012,7 @@ export interface FileList {
 }
 
 export interface FilePathQuery {
-	/** An absolute path, or one relative to the user's home. */
+	/** An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path: string;
 }
 
@@ -904,7 +1029,7 @@ export interface FileUrl {
 }
 
 export interface FileUrlBody {
-	/** An absolute path, or one relative to the user's home. */
+	/** An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path: string;
 	/** How long the URL may be used: default 900 (15 minutes), at most 3600. */
 	readonly ttlSeconds?: number;
@@ -928,6 +1053,211 @@ export interface ForkSandboxBody {
 		readonly [key: string]: string;
 	};
 	readonly wait?: boolean;
+}
+
+export interface GithubRunnerJob {
+	/** GitHub's ID for the job. */
+	readonly id: string;
+	readonly runId: number;
+	readonly repository: string;
+	readonly name: string;
+	readonly labels: readonly string[];
+	/** The pool whose label it matched. */
+	readonly pool?: string;
+	/** `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for. */
+	readonly state: "queued" | "in_progress" | "completed" | "ignored";
+	readonly conclusion?: string;
+	/** The runner's sandbox that took it. */
+	readonly sandboxId?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly queuedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly completedAt?: number;
+	/** Why it is ignored, or why it still waits. */
+	readonly reason?: string;
+}
+
+export interface GithubRunnerJobList {
+	/** The newest 200, newest first. */
+	readonly items: readonly GithubRunnerJob[];
+}
+
+/** Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools. */
+export interface GithubRunnerKind {
+	/** The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`. */
+	readonly integration: string;
+	/** The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. */
+	readonly label: string;
+	/** The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. */
+	readonly template: string;
+	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
+	readonly resources: GithubRunnerResources;
+	/** Of the pool's hosts, run only on those with each of these labels. */
+	readonly hostLabels?: {
+		readonly [key: string]: string;
+	};
+	/** Environments each runner starts with, IDs or names in the account, such as one holding a cache token. */
+	readonly environments?: readonly string[];
+	/** The most runners the pool has at once, starting or running. Default 20. */
+	readonly maxRunners?: number;
+	/** How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. */
+	readonly timeoutMinutes?: number;
+	/** Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). */
+	readonly stickyDisks?: readonly GithubRunnerStickyDisk[];
+	/** The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. */
+	readonly runnerCommand?: string;
+	/** Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. */
+	readonly repositories?: readonly string[];
+}
+
+/** Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool. */
+export interface GithubRunnerPool {
+	/** The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. */
+	readonly label: string;
+	/** The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. */
+	readonly template: string;
+	/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
+	readonly resources: GithubRunnerResources;
+	/** Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select. */
+	readonly hostLabels?: {
+		readonly [key: string]: string;
+	};
+	/** Environments each runner starts with, IDs or names in the account, such as one holding a cache token. */
+	readonly environments?: readonly string[];
+	/** The most runners the pool has at once, starting or running. Default 20. */
+	readonly maxRunners?: number;
+	/** How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. */
+	readonly timeoutMinutes?: number;
+	/** Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). */
+	readonly stickyDisks?: readonly GithubRunnerStickyDisk[];
+	/** The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. */
+	readonly runnerCommand?: string;
+	/** Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. */
+	readonly repositories?: readonly string[];
+}
+
+export interface GithubRunnerPoolStatus {
+	readonly label: string;
+	/** Jobs waiting for a runner. */
+	readonly queued: number;
+	/** Runners being made or booting. */
+	readonly starting: number;
+	/** Runners up and waiting for GitHub to give them a job. */
+	readonly idle: number;
+	/** Runners running a job. */
+	readonly busy: number;
+	/** Epoch milliseconds, UTC. */
+	readonly waitingSince?: number;
+	/** Why the oldest queued job has no runner yet, when it has waited. */
+	readonly waitingFor?: string;
+}
+
+/** A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range. */
+export interface GithubRunnerResources {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	readonly diskGb?: number;
+}
+
+/** A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is. */
+export interface GithubRunners {
+	/** The runner integration's ID, such as `ghr_3m4n5b`. */
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	/** The GitHub App's ID. */
+	readonly appId: number;
+	/** The GitHub organization (or user) the App is installed on, such as `octo-org`. */
+	readonly owner: string;
+	/** Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. */
+	readonly scope: "organization" | "repository";
+	/** The organization's runner group the runners join. */
+	readonly runnerGroupId?: number;
+	/** Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on. */
+	readonly repositories?: readonly string[];
+	readonly pools: readonly GithubRunnerPool[];
+	readonly enabled: boolean;
+	/** Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered. */
+	readonly webhookUrl: string;
+	/** The App's installation, as the first webhook from it named it. */
+	readonly installationId?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly lastWebhookAt?: number;
+	/** The last failure talking to GitHub or making a runner. */
+	readonly lastError?: GithubRunnersError;
+	/** Each pool's queue and runners, on a get. */
+	readonly status?: readonly GithubRunnerPoolStatus[];
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+/** The last failure talking to GitHub or making a runner. */
+export interface GithubRunnersError {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	readonly message: string;
+}
+
+export interface GithubRunnersList {
+	readonly items: readonly GithubRunners[];
+}
+
+/** When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. Pull requests never commit. */
+export interface GithubRunnerStickyCommit {
+	/** Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`. */
+	readonly branches: readonly string[];
+	/** A shell command run as root in the runner before its copy is committed, such as one that prunes the cache and stops Docker. A commit is skipped when it fails. */
+	readonly beforeCommit?: string;
+}
+
+export interface GithubRunnerStickyDisk {
+	/** A sticky disk of the account, by ID or name. */
+	readonly disk: string;
+	/** Where each runner mounts it. */
+	readonly path: string;
+	/** When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. Pull requests never commit. */
+	readonly commit?: GithubRunnerStickyCommit;
+}
+
+export interface GithubRunnersWithSecret {
+	/** A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is. */
+	readonly githubRunners: GithubRunners;
+	/** The secret to give the GitHub App's webhook. Shown once. */
+	readonly webhookSecret: string;
+}
+
+export interface GrantKeys {
+	/** The key that signs grants now. */
+	readonly current: {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When it was made, on first use or by a rotation: epoch milliseconds, UTC. */
+		readonly since: number;
+	};
+	/** The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the rotation, once every connected host has it. Absent between rotations. */
+	readonly next?: {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When it begins signing: epoch milliseconds, UTC. */
+		readonly from: number;
+	};
+	/** Keys rotated out that hosts still accept, oldest first. */
+	readonly retired: readonly {
+		/** The key's ID, which each grant it signs names as `kid`. */
+		readonly id: string;
+		/** The Ed25519 public key, its 32 raw bytes in base64url. */
+		readonly publicKey: string;
+		/** When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began signing: epoch milliseconds, UTC. */
+		readonly until: number;
+	}[];
 }
 
 export interface GuestAgent {
@@ -1020,6 +1350,10 @@ export interface Host {
 	readonly tiers: readonly SandboxType[];
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
+	/** Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said. */
+	readonly cpuFingerprint?: string;
+	/** The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said. */
+	readonly runtimeFingerprints?: readonly string[];
 	readonly capacity: HostCapacity;
 	readonly allocated: HostAllocated;
 	readonly labels: {
@@ -1027,6 +1361,8 @@ export interface Host {
 	};
 	/** The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. */
 	readonly accountId?: string;
+	/** The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in. */
+	readonly poolId?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly joinedAt: number;
 	/** Epoch milliseconds, UTC. */
@@ -1037,6 +1373,10 @@ export interface Host {
 	readonly diskUsage?: HostDiskUsage;
 	/** A host's memory, in MiB, as it last reported it (every heartbeat). */
 	readonly memory?: HostMemory;
+	/** How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected. */
+	readonly mesh?: HostMesh;
+	/** How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got. */
+	readonly evacuation?: HostEvacuationProgress;
 	/** The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. */
 	readonly savedSnapshotBytesLimit?: number;
 }
@@ -1077,6 +1417,73 @@ export interface HostDiskUsage {
 	/** Epoch milliseconds, UTC. */
 	readonly measuredAt: number;
 }
+
+/** Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting it otherwise). It carries on across a control plane restart. */
+export interface HostEvacuation {
+	/** The host's ID. */
+	readonly hostId: string;
+	/** `running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes. */
+	readonly state: HostEvacuationState;
+	/** Why it failed or stopped, where that wasn't a sandbox's move (each says its own). */
+	readonly reason?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly endedAt?: number;
+	/** The sandboxes moved to another host. */
+	readonly moved: number;
+	/** Those still to move, or moving now. */
+	readonly remaining: number;
+	/** Those that can't move, each with its reason. */
+	readonly skipped: number;
+	/** Those whose move failed: each is where it was, as it was. */
+	readonly failed: number;
+	/** Each sandbox that was on the host when it began, or came onto it since, in the order taken. */
+	readonly sandboxes: readonly HostEvacuationSandbox[];
+}
+
+/** How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got. */
+export interface HostEvacuationProgress {
+	/** `running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes. */
+	readonly state: HostEvacuationState;
+	/** Why it failed or stopped, where that wasn't a sandbox's move (each says its own). */
+	readonly reason?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly endedAt?: number;
+	/** The sandboxes moved to another host. */
+	readonly moved: number;
+	/** Those still to move, or moving now. */
+	readonly remaining: number;
+	/** Those that can't move, each with its reason. */
+	readonly skipped: number;
+	/** Those whose move failed: each is where it was, as it was. */
+	readonly failed: number;
+}
+
+/** One sandbox of a host's evacuation. */
+export interface HostEvacuationSandbox {
+	/** The sandbox's ID. */
+	readonly sandboxId: string;
+	/** Its name, where the caller may see the sandbox. */
+	readonly name?: string;
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly type: SandboxType;
+	/** `waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was. */
+	readonly state: "waiting" | "moving" | "moved" | "skipped" | "failed";
+	/** Where its move has got, while it moves: as its own `move.phase`. */
+	readonly phase?: "copying" | "stopping" | "final-copy" | "starting";
+	/** The host it moved to. */
+	readonly hostId?: string;
+	/** Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there. */
+	readonly keptMemory?: boolean;
+	/** Why it was skipped, why its move failed, or why it restarted where it moved. */
+	readonly reason?: string;
+}
+
+/** `running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes. */
+export type HostEvacuationState = "running" | "done" | "failed" | "stopped";
 
 export interface HostJoinToken {
 	/** The token's ID. */
@@ -1125,6 +1532,28 @@ export interface HostMemory {
 	readonly maxRatio: number;
 	/** Epoch milliseconds, UTC. */
 	readonly measuredAt?: number;
+}
+
+/** How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected. */
+export interface HostMesh {
+	/** The host's own address on its pool's mesh, an IPv6 address. */
+	readonly address: string;
+	/** The other hosts of its pool, each as it reaches it. */
+	readonly peers: readonly HostMeshPeer[];
+}
+
+/** One mesh peer as a host reaches it, as the host last reported it. */
+export interface HostMeshPeer {
+	/** The peer's host ID: another host of the same pool. */
+	readonly hostId: string;
+	/** How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another. */
+	readonly path: string;
+	/** The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`. */
+	readonly endpoint?: string;
+	/** When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first. */
+	readonly lastHandshake?: number;
+	/** The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. */
+	readonly rttMs?: number;
 }
 
 export interface HostReleaseCheck {
@@ -1196,7 +1625,7 @@ export interface InviteList {
 
 export interface IsolateShapes {
 	readonly memoryMb: ShapeRange;
-	/** Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. */
+	/** Whether an isolate's memory is a hard limit (its heap, ArrayBuffers and WebAssembly memory together): true when every host the account's isolates may run on says its isolate runtime enforces it. Otherwise the runtime records it, and the account VM's memory, shared by its isolates, is the limit. */
 	readonly enforced: boolean;
 }
 
@@ -1223,7 +1652,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -1233,7 +1662,7 @@ export interface ListEventsQuery {
 }
 
 export interface ListFilesQuery {
-	/** Default: the user's home. */
+	/** Default: a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path?: string;
 	/** At most this many; default 50. */
 	readonly limit?: number;
@@ -1244,7 +1673,7 @@ export interface ListFilesQuery {
 export interface ListSandboxesQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state?: SandboxState;
 	/** Include stopped, paused and errored sandboxes. Default: only active ones. */
 	readonly all?: boolean;
@@ -1296,9 +1725,9 @@ export interface LiveSandboxChange {
 	readonly type: "sandbox";
 	readonly sandboxId: string;
 	readonly accountId: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly previousState?: SandboxState;
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
@@ -1349,6 +1778,16 @@ export type MountSource = BundleMountSource | BucketMountSource;
 /** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
 export type MountStatus = "pending" | "ready" | "failed";
 
+/** Where to move it, and whether its memory goes with it. Every field is optional. */
+export interface MoveSandboxBody {
+	/** The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox. */
+	readonly hostId?: string;
+	/** Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't (`hostId` names one, or there is no other), it restarts there instead, and its `move` says why (`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable only for that stop, the last copy and its boot. A stopped sandbox has no memory. */
+	readonly keepMemory?: boolean;
+	/** Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was. */
+	readonly wait?: boolean;
+}
+
 /** A personal access token (`kpt_…`). Its secret is never stored or shown after it is made. */
 export interface PersonalToken {
 	/** The token's ID, such as `pat_5n2p8r`. */
@@ -1391,6 +1830,34 @@ export type PlacementReason =
 
 export interface PollDeviceLoginBody {
 	readonly deviceCode: string;
+}
+
+/** A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the deployment start with a pool named `default`, which their hosts are in until moved. */
+export interface Pool {
+	/** The pool's ID, such as `pool_6t5r4e`. */
+	readonly id: string;
+	/** Its name, unique among its owner's pools. */
+	readonly name: string;
+	/** The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts. */
+	readonly accountId?: string;
+	/** Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. */
+	readonly default: boolean;
+	/** How many hosts are in it, revoked ones not counted. */
+	readonly hosts: number;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. */
+	readonly sync: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest. */
+	readonly vcpusPerCpu?: number;
+	/** How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds. */
+	readonly placement: "warm" | "balanced";
+	/** Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. */
+	readonly runners?: readonly GithubRunnerKind[];
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+}
+
+export interface PoolList {
+	readonly items: readonly Pool[];
 }
 
 export interface Project {
@@ -1516,6 +1983,30 @@ export interface ReadSnapshotFileQuery {
 	readonly encoding?: FileEncoding;
 }
 
+/** A bucket mount as the sandbox shows it after a refresh. */
+export interface RefreshedMount {
+	readonly path: string;
+	readonly source: MountSource;
+	/** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
+	readonly status: MountStatus;
+	/** Why it is `failed`, in words. */
+	readonly error?: string;
+	/** How many objects the listing it shows holds. */
+	readonly objects?: number;
+	/** When the listing it shows began (ms since the epoch), after the call arrived: it has every object the bucket held then. */
+	readonly listedAt?: number;
+}
+
+export interface RefreshedMountList {
+	/** Each bucket mount refreshed, in the sandbox's order. */
+	readonly items: readonly RefreshedMount[];
+}
+
+export interface RefreshMountsBody {
+	/** Just the bucket mount at this path. Default: every bucket mount of the sandbox's. */
+	readonly path?: string;
+}
+
 export interface ResumeSandboxBody {
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
@@ -1526,7 +2017,7 @@ export interface ResumeSandboxBody {
 export interface RunCommandBody {
 	/** A shell command line, run with `bash -lc` (or the isolate's shell). */
 	readonly command: string;
-	/** Default: the sandbox user's home. */
+	/** Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there. */
 	readonly cwd?: string;
 	readonly env?: {
 		readonly [key: string]: string;
@@ -1545,7 +2036,7 @@ export interface Sandbox {
 	readonly name: string;
 	/** Its name under the deployment's sandbox domain, which its public port URLs start with. */
 	readonly subdomain: string;
-	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type: SandboxType;
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
 	readonly size?: SandboxSizeName;
@@ -1554,7 +2045,7 @@ export interface Sandbox {
 	readonly resources?: SandboxResources;
 	/** The base image a microVM was made from, such as `ubuntu-26.04`. */
 	readonly image?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
 	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
 	readonly health?: SandboxHealth;
@@ -1580,20 +2071,34 @@ export interface Sandbox {
 	readonly lastActiveAt?: number;
 	/** When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. */
 	readonly idleStopsAt?: number;
+	/** An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. */
+	readonly autoUpgrade?: boolean;
+	/** The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM. */
+	readonly autoUpgradeFrom?: string;
+	/** A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings. */
+	readonly upgradedFrom?: SandboxUpgrade;
+	/** A move to another host under way (its `state` is `moving`). */
+	readonly move?: SandboxMove;
+	/** Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it. */
+	readonly moved?: SandboxMoved;
 	/** The snapshot a resume or fork would use. */
 	readonly latestSnapshotId?: string;
 	/** When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. */
 	readonly latestSnapshotAt?: number;
 	/** What it was made from. */
 	readonly source?: SandboxSource;
-	/** The environment it was made from. */
+	/** Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`. */
 	readonly environmentId?: string;
+	/** Its environments, in order: where two set the same variable, file or repository path, the later one wins. Absent: none. */
+	readonly environmentIds?: readonly string[];
 	/** The template a sandbox was made from. */
 	readonly template?: SandboxTemplate;
-	/** Its own egress grants, on top of its environment's. */
+	/** Its own egress grants, on top of its environments'. */
 	readonly grants: readonly EgressGrant[];
 	/** Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
 	readonly mounts?: readonly SandboxMount[];
+	/** Its sticky disks, each with the version its copy came from and its state. Absent: none. */
+	readonly stickyDisks?: readonly SandboxStickyDisk[];
 	readonly createdBy: CreatedBy;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -1608,6 +2113,8 @@ export interface Sandbox {
 	readonly hostId?: string;
 	/** That host's name, with `hostId`. */
 	readonly hostName?: string;
+	/** The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools. */
+	readonly poolId?: string;
 	/** Whether the host it is placed on is connected to Kantel now. `false`: it isn't, so Kantel can't reach the sandbox or confirm what its machine is doing, and `state` is its last known state. Calls that need it running (commands, files, ports, SSH, the desktop and browser) answer `unavailable` until the host reconnects; a stop waits a while for it. Answered whether or not `hostId` is shown. Absent until it is placed. */
 	readonly hostReachable?: boolean;
 	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
@@ -1651,6 +2158,10 @@ export interface SandboxBaseLatest {
 export interface SandboxCapabilities {
 	readonly exec: boolean;
 	readonly files: boolean;
+	/** Whether its commands can run JavaScript with `node`: always in a microVM; in an isolate, where its host's isolate runtime has it (each run a fresh V8 isolate, with no npm packages). */
+	readonly javascript: boolean;
+	/** Whether its commands can run Python with `python` (`python3`): always in a microVM; in an isolate, where its host's isolate runtime has it (Pyodide, with the packages it ships, none installed from the internet). */
+	readonly python: boolean;
 	readonly ssh: boolean;
 	readonly desktop: boolean;
 	readonly browser: boolean;
@@ -1671,17 +2182,26 @@ export interface SandboxEgress {
 	readonly sandboxId: string;
 	readonly sandboxName: string;
 	readonly accountId: string;
+	/** Its first environment. Deprecated: read `environments`. */
 	readonly environment?: SandboxEgressEnvironment;
+	/** Its environments, in order. */
+	readonly environments: readonly SandboxEgressEnvironmentRef[];
 	readonly protectedVariables: readonly SandboxProtectedVariable[];
-	/** Its environment's grants, which it has too. */
+	/** Its environments' grants, which it has too. */
 	readonly environmentGrants: readonly EgressGrant[];
-	/** Its own grants, on top of its environment's. */
+	/** Its own grants, on top of its environments'. */
 	readonly grants: readonly EgressGrant[];
 	/** Newest first; Kantel keeps the newest 1000. */
 	readonly entries: readonly EgressEntry[];
 }
 
+/** Its first environment. Deprecated: read `environments`. */
 export interface SandboxEgressEnvironment {
+	readonly id: string;
+	readonly name: string;
+}
+
+export interface SandboxEgressEnvironmentRef {
 	readonly id: string;
 	readonly name: string;
 }
@@ -1689,6 +2209,33 @@ export interface SandboxEgressEnvironment {
 export interface SandboxEgressQuery {
 	/** At most this many entries; default 100. */
 	readonly limit?: number;
+}
+
+/** One of a sandbox's environments. */
+export interface SandboxEnvironment {
+	readonly id: string;
+	readonly name: string;
+	/** What of an environment a sandbox doesn't take from it. */
+	readonly shadowed: SandboxEnvironmentShadowed;
+	/** Its secret files and repositories are set up when the sandbox next runs. */
+	readonly pending: boolean;
+}
+
+/** A sandbox's environments, and what each gives it. */
+export interface SandboxEnvironments {
+	readonly sandboxId: string;
+	/** In order: where two set the same variable, file or repository path, the later one wins. */
+	readonly environments: readonly SandboxEnvironment[];
+}
+
+/** What of an environment a sandbox doesn't take from it. */
+export interface SandboxEnvironmentShadowed {
+	/** Its variables a later environment, or the sandbox's own env, sets instead. */
+	readonly variables: readonly string[];
+	/** Its secret files' paths a later environment writes instead. */
+	readonly files: readonly string[];
+	/** Its repositories' paths a later environment clones into instead. */
+	readonly repos: readonly string[];
 }
 
 /** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
@@ -1704,12 +2251,59 @@ export interface SandboxMount {
 	readonly error?: string;
 }
 
+/** A move to another host under way (its `state` is `moving`). */
+export interface SandboxMove {
+	/** `copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are there, and it is starting on it. */
+	readonly phase: "copying" | "stopping" | "final-copy" | "starting";
+	/** The host it is moving to, where the caller may know it, once chosen. */
+	readonly hostId?: string;
+	/** Whether its memory moves too, so it carries on where it left off on the new host: asked for (the default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running programs ending (`restartReason` says why, where it had memory that might have moved). Said once its new host is chosen, before anything is copied. */
+	readonly keepMemory: boolean;
+	/** Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from its host's, or a host can't move memory yet. */
+	readonly restartReason?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly startedAt: number;
+}
+
+/** Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it. */
+export interface SandboxMoved {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	/** Its memory moved with it, so its programs carried on; `false`, it booted on its disk there. */
+	readonly keptMemory: boolean;
+	/** Why its memory didn't move with it although that was asked for, as its `move` said. */
+	readonly restartReason?: string;
+}
+
+/** A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory. */
+export interface SandboxMovePlan {
+	/** Each host it may move to now, as the scheduler would place it (room and all), with what a move there does with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host. */
+	readonly targets?: readonly SandboxMoveTarget[];
+}
+
+export interface SandboxMoveTarget {
+	/** A host it may move to now. */
+	readonly hostId: string;
+	/** A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it restarts there, booting on its disk. */
+	readonly keepsMemory: boolean;
+	/** Why a move there restarts it, where it has memory that might have moved. */
+	readonly restartReason?: string;
+	/** Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it wrote since its first copy and its boot. */
+	readonly pauseMs?: number;
+	/** Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its guest has touched; the rest is zero, and costs nothing), a paused one's memory file. */
+	readonly memoryBytes?: number;
+	/** The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false). */
+	readonly bytesPerSecond?: number;
+	/** `bytesPerSecond` was measured by the hosts, rather than assumed. */
+	readonly rateMeasured?: boolean;
+}
+
 /** The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call. */
 export interface SandboxNotRunning {
 	/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. */
 	readonly code: SandboxNotRunningCode;
 	readonly sandboxId: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
 	/** Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. */
 	readonly stopReason?: string;
@@ -1761,6 +2355,8 @@ export interface SandboxProtectedVariable {
 	/** The first 8 characters of its placeholder, such as `kph_7Qx2`. */
 	readonly placeholderPrefix: string;
 	readonly bindings: readonly DestinationBinding[];
+	/** The environment whose value it takes. */
+	readonly environmentId?: string;
 }
 
 export interface SandboxResources {
@@ -1819,6 +2415,8 @@ export interface SandboxShapesQuery {
 	readonly account?: string;
 	/** The shapes a sandbox pinned to this host (`CreateSandboxBody.host`, its ID or name) may be, from that host alone. Default: from every host the account's sandboxes may use. */
 	readonly host?: string;
+	/** The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. Default: from the hosts a create naming no pool may use, in the default pools. */
+	readonly pool?: string;
 }
 
 /** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
@@ -1837,6 +2435,10 @@ export interface SandboxStartup {
 	readonly disk?: "reflink" | "copy" | "move" | "new";
 	/** Making its disk, in milliseconds. */
 	readonly diskMs: number;
+	/** For a sandbox made from a saved snapshot on a host that didn't hold it: its host fetching the snapshot's disk from another host in its pool first, in milliseconds, until the host reported it (each 15 seconds or so). Not in `hostMs`. */
+	readonly fetchMs?: number;
+	/** For a sandbox made from a snapshot that holds memory: whether its memory was restored, its processes carrying on (`true`), or it booted on the snapshot's disk alone (`false`), on a host whose copy of the snapshot has no memory it can restore (another CPU or runtime, or its memory not fetched yet). */
+	readonly restoredMemory?: boolean;
 	/** For a fork of a running sandbox: the live snapshot of its source it was made from. */
 	readonly snapshotMs?: number;
 	/** Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. */
@@ -1845,20 +2447,38 @@ export interface SandboxStartup {
 	readonly agentMs: number;
 	/** The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). */
 	readonly hostMs: number;
-	/** From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. */
+	/** From Kantel's call to its host until the host answered, in milliseconds, its fetch (`fetchMs`) included. Well over `hostMs` and `fetchMs` is time on the way to and from the host, not on it. */
 	readonly totalMs: number;
 }
 
-/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
 export type SandboxState =
 	| "starting"
 	| "running"
 	| "stopping"
 	| "stopped"
 	| "paused"
+	| "moving"
 	| "error"
 	| "deleting"
 	| "deleted";
+
+export interface SandboxStickyDisk {
+	readonly diskId: string;
+	readonly name: string;
+	readonly path: string;
+	/** The version its copy was cloned from; absent for an empty disk. */
+	readonly version?: string;
+	readonly state: "pending" | "mounted" | "failed";
+	readonly reason?: string;
+}
+
+export interface SandboxStickyDiskInput {
+	/** The sticky disk, by ID or name. */
+	readonly disk: string;
+	/** Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory. */
+	readonly path: string;
+}
 
 /** The template a sandbox was made from. */
 export interface SandboxTemplate {
@@ -1873,8 +2493,18 @@ export interface SandboxTemplate {
 	readonly start: "snapshot" | "boot";
 }
 
-/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 export type SandboxType = "isolate" | "microvm";
+
+/** A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings. */
+export interface SandboxUpgrade {
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	readonly type: SandboxType;
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	/** The snapshot its microVM was started from (`upgradeSandbox`'s `from`). */
+	readonly snapshotId?: string;
+}
 
 export interface SandboxUsage {
 	readonly sandboxId: string;
@@ -2019,7 +2649,7 @@ export interface Snapshot {
 	};
 	/** The sandbox it was taken of; absent once that is deleted. */
 	readonly sandboxId?: string;
-	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
+	/** `isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly sandboxType: SandboxType;
 	readonly state: SnapshotState;
 	/** What took it. */
@@ -2033,7 +2663,7 @@ export interface Snapshot {
 	readonly minMemoryMb?: number;
 	/** The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. */
 	readonly sizeBytes?: number;
-	/** How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. */
+	/** How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it. */
 	readonly uses?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -2044,15 +2674,31 @@ export interface Snapshot {
 	readonly expiresAt?: number;
 	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
 	readonly base?: SandboxBase;
+	/** The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it. */
+	readonly poolId?: string;
+	/** Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it. */
+	readonly hosts?: readonly SnapshotHost[];
 }
 
 export interface SnapshotFilesQuery {
-	/** A directory; default the user's home. */
+	/** A directory; default a microVM's `/home/user` or an isolate's `/workspace`. */
 	readonly path?: string;
 	/** At most this many; default 50. */
 	readonly limit?: number;
 	/** A previous page's `nextCursor`. */
 	readonly cursor?: string;
+}
+
+/** A host a saved snapshot is on (`Snapshot.hosts`). */
+export interface SnapshotHost {
+	/** The host; absent where the caller may not be told it (a shared host). */
+	readonly hostId?: string;
+	/** Its name, where `hostId` is given. */
+	readonly hostName?: string;
+	/** `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host. */
+	readonly state: "held" | "fetching";
+	/** Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose memory came too, which a host fetches only where it restores. Always false for a snapshot without memory. */
+	readonly memory: boolean;
 }
 
 /** `automatic`: one of a sandbox's own history, taken as it runs and at each stop; the newest is what a resume or fork uses, and older ones expire. `saved`: kept under a name until deleted, and usable as a template for new sandboxes, even after its sandbox is deleted. */
@@ -2095,6 +2741,48 @@ export interface StartDeviceLoginBody {
 	readonly clientName?: string;
 	/** Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens. */
 	readonly personal?: boolean;
+}
+
+/** A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental. */
+export interface StickyDisk {
+	/** The sticky disk's ID, such as `sdk_3m4n5b`. */
+	readonly id: string;
+	readonly accountId: string;
+	/** Lower-case letters, digits and hyphens, unique in the account. */
+	readonly name: string;
+	readonly description?: string;
+	/** Each copy's size: what a sandbox can fill. */
+	readonly sizeGb: number;
+	/** The newest committed version; absent until one is. */
+	readonly head?: string;
+	/** The newest 20, newest first, on a get. */
+	readonly versions?: readonly StickyDiskVersion[];
+	/** The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then. */
+	readonly poolId?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+}
+
+export interface StickyDiskList {
+	readonly items: readonly StickyDisk[];
+}
+
+export interface StickyDiskVersion {
+	/** The version's ID, such as `sdv_3m4n5b`. */
+	readonly id: string;
+	/** The version it was cloned from; absent for one made empty. */
+	readonly parent?: string;
+	/** The host it was committed on. */
+	readonly hostId: string;
+	/** The sandbox it was committed from. */
+	readonly sandboxId: string;
+	readonly sizeBytes: number;
+	/** What it takes on its host's disk, blocks it shares included. */
+	readonly allocatedBytes: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
 }
 
 export interface StopSandboxBody {
@@ -2266,6 +2954,8 @@ export interface TemplateCacheKey {
 	readonly vcpus: number;
 	/** With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. */
 	readonly memoryMb: number;
+	/** The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used in. Absent for one built before pools. */
+	readonly poolId?: string;
 }
 
 /** Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address. */
@@ -2376,12 +3066,28 @@ export interface UpdateAccountBody {
 	readonly defaultVisibility?: SandboxVisibility;
 	/** Whether members' personal access tokens (`kpt_…`) may act in the organisation. `blocked`: a call made with one is `forbidden` there, and members use the console or one of the organisation's API keys. Always `allowed` in a personal account. Absent from a gateway before it: `allowed`. */
 	readonly personalTokens?: PersonalTokenPolicy;
+	/** Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; those there are stay until their snapshots are deleted. */
+	readonly snapshotCopies?: boolean;
 }
 
 export interface UpdateEnvironmentBody {
 	readonly name?: string;
 	/** Empty clears it. */
 	readonly description?: string;
+}
+
+export interface UpdateGithubRunnersBody {
+	readonly name?: string;
+	readonly appId?: number;
+	readonly privateKey?: string;
+	readonly owner?: string;
+	/** Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. */
+	readonly scope?: "organization" | "repository";
+	readonly runnerGroupId?: number | null;
+	readonly repositories?: readonly string[] | null;
+	/** Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none. */
+	readonly pools?: readonly GithubRunnerPool[];
+	readonly enabled?: boolean;
 }
 
 export interface UpdateHostBody {
@@ -2391,6 +3097,8 @@ export interface UpdateHostBody {
 	};
 	/** Stop placing new sandboxes on it. */
 	readonly draining?: boolean;
+	/** Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it. */
+	readonly pool?: string;
 	/** The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. */
 	readonly savedSnapshotBytesLimit?: number | null;
 }
@@ -2398,6 +3106,20 @@ export interface UpdateHostBody {
 export interface UpdateMemberBody {
 	/** `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`. */
 	readonly role: MemberRole;
+}
+
+export interface UpdatePoolBody {
+	readonly name?: string;
+	/** Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. */
+	readonly default?: true;
+	/** Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. */
+	readonly sync?: boolean;
+	/** The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. */
+	readonly vcpusPerCpu?: number | null;
+	/** How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. */
+	readonly placement?: "warm" | "balanced";
+	/** Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. */
+	readonly runners?: readonly GithubRunnerKind[];
 }
 
 export interface UpdateSandboxBody {
@@ -2413,6 +3135,10 @@ export interface UpdateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
+	/** Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade. */
+	readonly autoUpgrade?: boolean;
+	/** Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM. */
+	readonly autoUpgradeFrom?: string | null;
 }
 
 /** A `spec` that differs from the current one makes a new version. */
@@ -2429,6 +3155,20 @@ export interface UpdateWebhookBody {
 	readonly url?: string;
 	readonly events?: readonly EventType[];
 	readonly enabled?: boolean;
+}
+
+/** The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM. */
+export interface UpgradeSandboxBody {
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now, alone or with a disk of its own (`resources` with only `diskGb`). */
+	readonly size?: SandboxSizeName;
+	/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory and disk, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
+	readonly resources?: SandboxShapeInput;
+	/** The microVM's base image. Default: the deployment's. */
+	readonly image?: string;
+	/** Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with `resources.diskGb`. Only a snapshot whose guest agent lays files into a real directory alone (saved from a sandbox on a current host) can be upgraded into; one older is refused, `not_supported`. Default: a new microVM of `image`. */
+	readonly from?: string;
+	/** Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was. */
+	readonly wait?: boolean;
 }
 
 export interface UploadBundleQuery {
@@ -2496,7 +3236,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -2946,7 +3686,7 @@ export interface KantelClient {
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
 	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. With `host`, from that host alone. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
 	getSandboxShapes(query?: SandboxShapesQuery, options?: CallOptions): Promise<SandboxShapes>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory, and a microVM's disk (`diskGb`), which may also go alone or beside `size` (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
@@ -2960,11 +3700,17 @@ export interface KantelClient {
 	resumeSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A microVM fork is its source's machine (its `resources` from the start) unless `size` names another, and gets the source's exposed ports, each public or gated as it was, at its own URLs once it runs (only for a caller with `access`, as they are exposed as the caller). A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
+	/** Upgrade an isolate to a microVM. Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and `/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`, Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was. Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the upgrade; a `sandbox.upgraded` event records it. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/upgrade` */
+	upgradeSandbox(sandboxId: string, body?: UpgradeSandboxBody, options?: CallOptions): Promise<Sandbox>;
+	/** Move a sandbox to another host. Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs, then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with `keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first. While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless `wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots from before stay on the old host. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/move` */
+	moveSandbox(sandboxId: string, body?: MoveSandboxBody, options?: CallOptions): Promise<Sandbox>;
+	/** Plan a sandbox's move. A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused as a move would be when it can't move. A key needs `sandboxes:write`. `GET /sandboxes/{sandboxId}/move` */
+	planSandboxMove(sandboxId: string, options?: CallOptions): Promise<SandboxMovePlan>;
 	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`; one another call moves after this restart has stopped it is `aborted`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/restart-on-latest` */
 	restartSandboxOnLatest(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. Idempotent with `options.idempotencyKey`. `DELETE /sandboxes/{sandboxId}` */
+	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. One on an account's own host is deleted there, even after the host has lost track of it (its earlier delete's answer lost): while that host is offline the delete is refused (`unavailable`) and the sandbox is kept, and once the host is revoked the sandbox is written off. A key needs `sandboxes:delete`. Idempotent with `options.idempotencyKey`. `DELETE /sandboxes/{sandboxId}` */
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox's usage. CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
 	getSandboxUsage(sandboxId: string, query?: UsageQuery, options?: CallOptions): Promise<SandboxUsage>;
@@ -3100,6 +3846,20 @@ export interface KantelClient {
 	getSandboxEgress(sandboxId: string, query?: SandboxEgressQuery, options?: CallOptions): Promise<SandboxEgress>;
 	/** Set a sandbox's egress grants. Replaces its own grants, on top of its environment's. A running sandbox picks them up at once. A key needs `account:admin`. `PUT /sandboxes/{sandboxId}/grants` */
 	putSandboxGrants(sandboxId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<SandboxEgress>;
+	/** List a sandbox's environments. In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and repositories are still to be set up. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/environments` */
+	listSandboxEnvironments(sandboxId: string, options?: CallOptions): Promise<SandboxEnvironments>;
+	/** Attach an environment to a sandbox. Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out again from all its environments as they are now, then its own env: new commands see them at once (and, on a host that supports it, services that read `/etc/kantel/env`). Its grants and protected variables apply at once. A running sandbox gets the environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the environment they started with. Attaching one it has already moves it to `position`. At most 10. A key needs `exec`. `POST /sandboxes/{sandboxId}/environments` */
+	attachSandboxEnvironment(
+		sandboxId: string,
+		body: AttachSandboxEnvironmentBody,
+		options?: CallOptions,
+	): Promise<SandboxEnvironments>;
+	/** Detach an environment from a sandbox. Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop resolving at once and its grants go. Secret files it wrote and repositories it cloned stay. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/environments/{environmentId}` */
+	detachSandboxEnvironment(
+		sandboxId: string,
+		environmentId: string,
+		options?: CallOptions,
+	): Promise<SandboxEnvironments>;
 	/** List templates. The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). `GET /templates` */
 	listTemplates(query?: ListTemplatesQuery, options?: CallOptions): Promise<TemplateList>;
 	/** Create a template. A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`). Idempotent with `options.idempotencyKey`. `POST /templates` */
@@ -3144,6 +3904,32 @@ export interface KantelClient {
 		query?: ComputePageQuery,
 		options?: CallOptions,
 	): Promise<WebhookDeliveryPage>;
+	/** List GitHub runner integrations. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`. `GET /github-runners` */
+	listGithubRunners(query?: AccountScopedQuery, options?: CallOptions): Promise<GithubRunnersList>;
+	/** Connect a GitHub App for runners. From then on, each `workflow_job` the App's webhook sends whose `runs-on` labels a pool's label matches gets a runner: a microVM made from the pool's template on the account's hosts, deleted once its job ends. Answers the webhook's URL and secret (shown once) to give the App. Its runners act through an API key it makes, named for it; revoking that key stops them. Needs protected values (`KANTEL_SECRETS_KEY`), as the App's key is kept sealed. `not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`). A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /github-runners` */
+	createGithubRunners(body: CreateGithubRunnersBody, options?: CallOptions): Promise<GithubRunnersWithSecret>;
+	/** Get a GitHub runner integration. With each pool's queue and runners (`status`). A key needs `account:admin`. `GET /github-runners/{githubRunnersId}` */
+	getGithubRunners(githubRunnersId: string, options?: CallOptions): Promise<GithubRunners>;
+	/** Change a GitHub runner integration. Runners already made keep the pool they were made for; disabling it makes no more, and leaves its queue to wait. A key needs `account:admin`. `PATCH /github-runners/{githubRunnersId}` */
+	updateGithubRunners(
+		githubRunnersId: string,
+		body?: UpdateGithubRunnersBody,
+		options?: CallOptions,
+	): Promise<GithubRunners>;
+	/** Disconnect a GitHub App. Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub wait there for another runner. A key needs `account:admin`. `DELETE /github-runners/{githubRunnersId}` */
+	deleteGithubRunners(githubRunnersId: string, options?: CallOptions): Promise<void>;
+	/** List a GitHub runner integration's jobs. The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits. A key needs `account:admin`. `GET /github-runners/{githubRunnersId}/jobs` */
+	listGithubRunnerJobs(githubRunnersId: string, options?: CallOptions): Promise<GithubRunnerJobList>;
+	/** List sticky disks. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:read`. `GET /sticky-disks` */
+	listStickyDisks(query?: AccountScopedQuery, options?: CallOptions): Promise<StickyDiskList>;
+	/** Create a sticky disk. An empty disk until its first commit. Attach it to a microVM with `stickyDisks` in a create. `not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`). A key needs `account:admin`. Idempotent with `options.idempotencyKey`. `POST /sticky-disks` */
+	createStickyDisk(body: CreateStickyDiskBody, options?: CallOptions): Promise<StickyDisk>;
+	/** Get a sticky disk. With its newest versions. A key needs `account:read`. `GET /sticky-disks/{stickyDiskId}` */
+	getStickyDisk(stickyDiskId: string, options?: CallOptions): Promise<StickyDisk>;
+	/** Delete a sticky disk. Its versions go from every host. Sandboxes with a copy keep it until they are deleted. A key needs `account:admin`. `DELETE /sticky-disks/{stickyDiskId}` */
+	deleteStickyDisk(stickyDiskId: string, options?: CallOptions): Promise<void>;
+	/** Commit a sandbox's copy of a sticky disk. Makes the sandbox's copy, as it is now, the disk's next version: later sandboxes on its host start from it. The sandbox must be running; its filesystem is frozen for the moment the copy takes. Commit only from sandboxes you trust: every later sandbox reads what this one wrote. A key needs `snapshots:write`. `POST /sandboxes/{sandboxId}/sticky-disks/{stickyDiskId}/commit` */
+	commitStickyDisk(sandboxId: string, stickyDiskId: string, options?: CallOptions): Promise<StickyDiskVersion>;
 	/** Get the OpenTelemetry export. Absent: `not_found`. A key needs `account:admin`. `GET /telemetry` */
 	getTelemetry(query?: AccountScopedQuery, options?: CallOptions): Promise<TelemetryExport>;
 	/** Set the OpenTelemetry export. Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`. `PUT /telemetry` */
@@ -3160,10 +3946,18 @@ export interface KantelClient {
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get a host's usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}/usage` */
 	getHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change a host. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
+	/** Change a host. Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update a host's agent. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/update` */
 	updateHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Move every sandbox off a host. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/evacuation` */
+	startHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
+	/** Get a host's evacuation. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}/evacuation` */
+	getHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
+	/** Fetch a sticky disk version onto a host. Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started. `not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or a disk of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/sticky-disk-fetches` */
+	fetchHostStickyDisk(hostId: string, body: FetchHostStickyDiskBody, options?: CallOptions): Promise<void>;
+	/** Fetch a saved snapshot onto a host. Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started. `not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's away. Experimental. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/{hostId}/snapshot-fetches` */
+	fetchHostSnapshot(hostId: string, body: FetchHostSnapshotBody, options?: CallOptions): Promise<void>;
 	/** Check for host updates. Reads Kantel's latest kantel-host release again now, rather than within the hour, so hosts behind a release just published show `updateAvailable` at once. It reads the release itself and names no version. At most one check every 30 seconds: within that, `checked` is false and nothing more is read. `not_supported` when the deployment sets the version hosts run (`KANTEL_HOST_VERSION`) or reads no release, `unavailable` when the release can't be read. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/check-for-updates` */
 	checkHostUpdates(options?: CallOptions): Promise<HostReleaseCheck>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
@@ -3172,6 +3966,18 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
+	/** Get the grant keys. The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed and never shown. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/grant-key` */
+	getGrantKeys(options?: CallOptions): Promise<GrantKeys>;
+	/** Rotate the grant key. Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3 minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that, a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a key published and not yet signing is replaced. `not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key (`KANTEL_SECRETS_KEY`) to keep one. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/grant-key/rotate` */
+	rotateGrantKey(options?: CallOptions): Promise<GrantKeys>;
+	/** List the deployment's pools. The pools the deployment's shared hosts are in, the default first made if there is none yet. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/pools` */
+	listPools(options?: CallOptions): Promise<PoolList>;
+	/** Make a pool of shared hosts. An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A deployment super-admin only (a key needs `hosts:admin`). Idempotent with `options.idempotencyKey`. `POST /admin/pools` */
+	createPool(body: CreatePoolBody, options?: CallOptions): Promise<Pool>;
+	/** Change a pool of shared hosts. Renames it, or makes it the deployment's default pool. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/pools/{poolId}` */
+	updatePool(poolId: string, body?: UpdatePoolBody, options?: CallOptions): Promise<Pool>;
+	/** Delete a pool of shared hosts. Only an empty pool that isn't the default: `conflict` while a host is in it. A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/pools/{poolId}` */
+	deletePool(poolId: string, options?: CallOptions): Promise<void>;
 	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). Idempotent with `options.idempotencyKey`. `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
@@ -3180,12 +3986,26 @@ export interface KantelClient {
 	getAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Get one of an account's hosts' usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}/usage` */
 	getAccountHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
-	/** Change one of an account's hosts. Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
+	/** Change one of an account's hosts. Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets its limit on each account's saved snapshots. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Update the agent of one of an account's hosts. Asks the host to update its host agent to `latestVersion`, which it does when `updateAvailable` says so: it fetches that release's `kantel-host`, checks it against the release's `SHA256SUMS` and restarts into it. Its sandboxes keep running, but connections to them through Kantel (SSH, terminals, ports) drop for the few seconds it takes to connect again. Answers once the host has the new binary, with `updating` set until it connects on it. `conflict` when it's revoked or already up to date, `unavailable` when it isn't connected or the latest release can't be read, and `not_supported` when the host refuses. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/update` */
 	updateAccountHostAgent(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Move every sandbox off one of an account's hosts. It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason. It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there. `conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the deployment's hosts don't move sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/{hostId}/evacuation` */
+	startAccountHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
+	/** Get the evacuation of one of an account's hosts. How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed. `not_found` when it has had none. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}/evacuation` */
+	getAccountHostEvacuation(hostId: string, options?: CallOptions): Promise<HostEvacuation>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** List an account's pools. The pools the account's own hosts are in, the default first made if there is none yet. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /pools` */
+	listAccountPools(query?: AccountScopedQuery, options?: CallOptions): Promise<PoolList>;
+	/** Make a pool of an account's hosts. An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool of that name. A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). Idempotent with `options.idempotencyKey`. `POST /pools` */
+	createAccountPool(body: CreateAccountPoolBody, options?: CallOptions): Promise<Pool>;
+	/** Change one of an account's pools. Renames it, or makes it the account's default pool. A name is looked for in the caller's own account (its personal account, or an API key's). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /pools/{poolId}` */
+	updateAccountPool(poolId: string, body?: UpdatePoolBody, options?: CallOptions): Promise<Pool>;
+	/** Delete one of an account's pools. Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /pools/{poolId}` */
+	deleteAccountPool(poolId: string, options?: CallOptions): Promise<void>;
+	/** Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/mounts/refresh` */
+	refreshSandboxMounts(sandboxId: string, body?: RefreshMountsBody, options?: CallOptions): Promise<RefreshedMountList>;
 	/** Upload a bundle. Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bundles` */
 	uploadBundle(body: RawBody, query?: UploadBundleQuery, options?: CallOptions): Promise<Bundle>;
 	/** List bundles. The account's bundles, newest first. A key needs `sandboxes:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bundles` */
@@ -3293,6 +4113,20 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/fork`, body, idempotent: true },
 				callOptions,
 			),
+		upgradeSandbox: (sandboxId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/upgrade`, body, idempotent: true },
+				callOptions,
+			),
+		moveSandbox: (sandboxId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/move`, body, idempotent: true },
+				callOptions,
+			),
+		planSandboxMove: (sandboxId, callOptions) =>
+			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/move` }, callOptions),
 		recoverSandbox: (sandboxId, callOptions) =>
 			send(
 				options,
@@ -3516,6 +4350,23 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/egress`, query }, callOptions),
 		putSandboxGrants: (sandboxId, body, callOptions) =>
 			send(options, { method: "PUT", path: `/sandboxes/${encodeURIComponent(sandboxId)}/grants`, body }, callOptions),
+		listSandboxEnvironments: (sandboxId, callOptions) =>
+			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/environments` }, callOptions),
+		attachSandboxEnvironment: (sandboxId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/environments`, body },
+				callOptions,
+			),
+		detachSandboxEnvironment: (sandboxId, environmentId, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/environments/${encodeURIComponent(environmentId)}`,
+				},
+				callOptions,
+			),
 		listTemplates: (query, callOptions) => send(options, { method: "GET", path: "/templates", query }, callOptions),
 		createTemplate: (body, callOptions) =>
 			send(options, { method: "POST", path: "/templates", body, idempotent: true }, callOptions),
@@ -3564,6 +4415,43 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				{ method: "GET", path: `/webhooks/${encodeURIComponent(webhookId)}/deliveries`, query },
 				callOptions,
 			),
+		listGithubRunners: (query, callOptions) =>
+			send(options, { method: "GET", path: "/github-runners", query }, callOptions),
+		createGithubRunners: (body, callOptions) =>
+			send(options, { method: "POST", path: "/github-runners", body, idempotent: true }, callOptions),
+		getGithubRunners: (githubRunnersId, callOptions) =>
+			send(options, { method: "GET", path: `/github-runners/${encodeURIComponent(githubRunnersId)}` }, callOptions),
+		updateGithubRunners: (githubRunnersId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "PATCH", path: `/github-runners/${encodeURIComponent(githubRunnersId)}`, body },
+				callOptions,
+			),
+		deleteGithubRunners: (githubRunnersId, callOptions) =>
+			send(options, { method: "DELETE", path: `/github-runners/${encodeURIComponent(githubRunnersId)}` }, callOptions),
+		listGithubRunnerJobs: (githubRunnersId, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/github-runners/${encodeURIComponent(githubRunnersId)}/jobs` },
+				callOptions,
+			),
+		listStickyDisks: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sticky-disks", query }, callOptions),
+		createStickyDisk: (body, callOptions) =>
+			send(options, { method: "POST", path: "/sticky-disks", body, idempotent: true }, callOptions),
+		getStickyDisk: (stickyDiskId, callOptions) =>
+			send(options, { method: "GET", path: `/sticky-disks/${encodeURIComponent(stickyDiskId)}` }, callOptions),
+		deleteStickyDisk: (stickyDiskId, callOptions) =>
+			send(options, { method: "DELETE", path: `/sticky-disks/${encodeURIComponent(stickyDiskId)}` }, callOptions),
+		commitStickyDisk: (sandboxId, stickyDiskId, callOptions) =>
+			send(
+				options,
+				{
+					method: "POST",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/sticky-disks/${encodeURIComponent(stickyDiskId)}/commit`,
+				},
+				callOptions,
+			),
 		getTelemetry: (query, callOptions) => send(options, { method: "GET", path: "/telemetry", query }, callOptions),
 		putTelemetry: (body, callOptions) => send(options, { method: "PUT", path: "/telemetry", body }, callOptions),
 		deleteTelemetry: (query, callOptions) =>
@@ -3580,12 +4468,37 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		updateHostAgent: (hostId, callOptions) =>
 			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
+		startHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
+		getHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "GET", path: `/admin/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
+		fetchHostStickyDisk: (hostId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/sticky-disk-fetches`, body },
+				callOptions,
+			),
+		fetchHostSnapshot: (hostId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/admin/hosts/${encodeURIComponent(hostId)}/snapshot-fetches`, body },
+				callOptions,
+			),
 		checkHostUpdates: (callOptions) =>
 			send(options, { method: "POST", path: "/admin/hosts/check-for-updates" }, callOptions),
 		revokeHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
+		getGrantKeys: (callOptions) => send(options, { method: "GET", path: "/admin/grant-key" }, callOptions),
+		rotateGrantKey: (callOptions) => send(options, { method: "POST", path: "/admin/grant-key/rotate" }, callOptions),
+		listPools: (callOptions) => send(options, { method: "GET", path: "/admin/pools" }, callOptions),
+		createPool: (body, callOptions) =>
+			send(options, { method: "POST", path: "/admin/pools", body, idempotent: true }, callOptions),
+		updatePool: (poolId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/admin/pools/${encodeURIComponent(poolId)}`, body }, callOptions),
+		deletePool: (poolId, callOptions) =>
+			send(options, { method: "DELETE", path: `/admin/pools/${encodeURIComponent(poolId)}` }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/hosts/join-tokens", body, idempotent: true }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),
@@ -3597,8 +4510,25 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		updateAccountHostAgent: (hostId, callOptions) =>
 			send(options, { method: "POST", path: `/hosts/${encodeURIComponent(hostId)}/update` }, callOptions),
+		startAccountHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "POST", path: `/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
+		getAccountHostEvacuation: (hostId, callOptions) =>
+			send(options, { method: "GET", path: `/hosts/${encodeURIComponent(hostId)}/evacuation` }, callOptions),
 		removeAccountHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		listAccountPools: (query, callOptions) => send(options, { method: "GET", path: "/pools", query }, callOptions),
+		createAccountPool: (body, callOptions) =>
+			send(options, { method: "POST", path: "/pools", body, idempotent: true }, callOptions),
+		updateAccountPool: (poolId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/pools/${encodeURIComponent(poolId)}`, body }, callOptions),
+		deleteAccountPool: (poolId, callOptions) =>
+			send(options, { method: "DELETE", path: `/pools/${encodeURIComponent(poolId)}` }, callOptions),
+		refreshSandboxMounts: (sandboxId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/mounts/refresh`, body },
+				callOptions,
+			),
 		uploadBundle: (body, query, callOptions) =>
 			send(options, { method: "POST", path: "/bundles", query, raw: { body, type: "application/x-tar" } }, callOptions),
 		listBundles: (query, callOptions) => send(options, { method: "GET", path: "/bundles", query }, callOptions),

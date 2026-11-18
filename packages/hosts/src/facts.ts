@@ -4,27 +4,39 @@
  * listing, which read every host's facts. So registration and hello refuse a report that isn't shaped as kantel-host
  * sends it, and reading a stored one that isn't (kept before this check) treats it as no report at all.
  */
-import type { Placement } from "@kantel/compute";
+import { cpuFingerprintText as computeCpuFingerprintText, type Placement } from "@kantel/compute";
 import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
+	HostCpuFingerprint,
 	HostDiskLimits,
 	HostDiskMade,
 	HostDiskUsage,
 	HostFacts,
+	HostFetchProgress,
 	HostImages,
+	HostIsolateRuntime,
 	HostMemoryAdmission,
 	HostMemoryMode,
 	HostMemoryReport,
 	HostMemorySource,
 	HostMemoryState,
+	HostMeshFacts,
+	HostMeshHealth,
+	HostMeshPeerHealth,
 	HostMountStatus,
+	HostObjectHolding,
+	HostObjectKind,
+	HostObjectVersionHolding,
+	HostRuntime,
 	HostSandboxUsage,
 	HostSize,
+	HostStickyHolding,
 	HostUsageReport,
 	HostUsageTotals,
 	SandboxTier,
 } from "./protocol.ts";
+import { HOST_OBJECT_KINDS } from "./protocol.ts";
 
 const TIERS: ReadonlySet<string> = new Set<SandboxTier>(["microvm", "isolate"]);
 const MAX_TEXT = 256;
@@ -116,6 +128,119 @@ function disk(value: unknown): HostDiskLimits | undefined {
 	return min >= 1 && min <= max ? { minGiB: min, maxGiB: max } : undefined;
 }
 
+/**
+ * What a host's isolate runtime says it can do (`HostIsolateRuntime`), or undefined where it says nothing or nothing
+ * shaped as kantel-host sends it: a host from before kantel-isolate said nothing, and its isolates have neither node nor
+ * python, so a malformed report is dropped (taken as nothing) rather than refused.
+ */
+export function isolateRuntime(value: unknown): HostIsolateRuntime | undefined {
+	if (!isObject(value)) return undefined;
+	const { javascript, python, memoryEnforced, runtime, version } = value;
+	if (typeof javascript !== "boolean" || typeof python !== "boolean" || typeof memoryEnforced !== "boolean") {
+		return undefined;
+	}
+	const label = (found: unknown) =>
+		typeof found === "string" && found !== "" && found.length <= MAX_TEXT ? found : undefined;
+	const name = label(runtime);
+	const named = label(version);
+	return {
+		...(name === undefined ? {} : { runtime: name }),
+		...(named === undefined ? {} : { version: named }),
+		javascript,
+		python,
+		memoryEnforced,
+	};
+}
+
+/** The longest runtime fingerprint kept: a host image version may be 128 characters of it. */
+const MAX_RUNTIME = 512;
+
+/**
+ * A CPU fingerprint as kantel-host sends it (`HostCpuFingerprint`), or undefined where it sends none or none shaped as
+ * one: a host from before it said is taken as one whose snapshots' memory goes nowhere else, so a malformed one is
+ * dropped rather than refused.
+ */
+export function cpuFingerprint(value: unknown): HostCpuFingerprint | undefined {
+	if (!isObject(value)) return undefined;
+	const { vendor, family, model, featuresHash } = value;
+	const label = (found: unknown): found is string =>
+		typeof found === "string" && found !== "" && found.length <= MAX_TEXT;
+	const whole = (found: unknown): found is number =>
+		typeof found === "number" && Number.isSafeInteger(found) && found >= 0;
+	if (!label(vendor) || !label(featuresHash) || !whole(family) || !whole(model)) return undefined;
+	return { vendor, family, model, featuresHash };
+}
+
+/** A host's runtime fingerprints (`HostRuntime`): an entry that isn't one is left out, and none is undefined. */
+function hostRuntimes(value: unknown): HostRuntime[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const out: HostRuntime[] = [];
+	for (const entry of value.slice(0, MAX_ITEMS)) {
+		if (!isObject(entry)) continue;
+		const { image, runtime } = entry;
+		if (typeof image !== "string" || image.length > MAX_TEXT) continue;
+		if (typeof runtime !== "string" || runtime === "" || runtime.length > MAX_RUNTIME) continue;
+		out.push({ image, runtime });
+	}
+	return out.length === 0 ? undefined : out;
+}
+
+/** A WireGuard key as WireGuard writes it: 32 bytes in base64, 44 characters with the padding. */
+const WIREGUARD_KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
+
+/**
+ * A host's side of its pool's mesh (`HostMeshFacts`), or undefined where it sends none or none shaped as kantel-host
+ * sends it (a WireGuard public key and a UDP port): a host without it is left out of the mesh, as is one whose report is
+ * malformed, rather than refused. Its endpoints are kept as they came, those that aren't text of a sane length left out:
+ * peers try them all, so one Kantel can't read is the host's to fix.
+ */
+export function meshFacts(value: unknown): HostMeshFacts | undefined {
+	if (!isObject(value)) return undefined;
+	const { publicKey, listenPort, endpoints } = value;
+	if (typeof publicKey !== "string" || !WIREGUARD_KEY.test(publicKey)) return undefined;
+	if (typeof listenPort !== "number" || !Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
+		return undefined;
+	}
+	const kept = (Array.isArray(endpoints) ? endpoints : [])
+		.filter(
+			(endpoint): endpoint is string => typeof endpoint === "string" && endpoint !== "" && endpoint.length <= MAX_TEXT,
+		)
+		.slice(0, MAX_ITEMS);
+	return { publicKey, listenPort, endpoints: kept };
+}
+
+/** Two CPU fingerprints restore each other's snapshots: both known, and vendor, family, model and features all equal. */
+export function sameCpu(a: HostCpuFingerprint | undefined, b: HostCpuFingerprint | undefined): boolean {
+	return (
+		a !== undefined &&
+		b !== undefined &&
+		a.featuresHash !== "" &&
+		a.vendor === b.vendor &&
+		a.family === b.family &&
+		a.model === b.model &&
+		a.featuresHash === b.featuresHash
+	);
+}
+
+/**
+ * Whether a snapshot's memory, made on `made` (its `cpu` and `runtime`), restores on a host with these facts: the same
+ * CPU (`sameCpu`), and the snapshot's runtime among the host's. A snapshot or host from before either was kept never
+ * matches: it cold-boots on its disk instead.
+ */
+export function memoryRestoresOn(
+	facts: Pick<HostFacts, "cpu" | "runtimes"> | undefined,
+	made: { readonly cpu?: HostCpuFingerprint; readonly runtime?: string },
+): boolean {
+	if (facts === undefined || made.runtime === undefined || made.runtime === "") return false;
+	return sameCpu(facts.cpu, made.cpu) && (facts.runtimes ?? []).some((each) => each.runtime === made.runtime);
+}
+
+/**
+ * A CPU fingerprint as a host's details show it: `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`.
+ * The compute plane's, which compares a snapshot's CPU with a host's by it (`memoryRestoresOn`).
+ */
+export const cpuFingerprintText: (cpu: HostCpuFingerprint) => string = computeCpuFingerprintText;
+
 /** A string a host may leave out (Go's `omitempty`): absent when it does, or when it is empty. */
 function optionalText<K extends string>(value: Record<string, unknown>, field: K): { [key in K]?: string } {
 	const found = value[field];
@@ -130,6 +255,10 @@ function facts(value: unknown): HostFacts {
 	const kept = labels(value.labels);
 	const hostImages = images(value.images);
 	const hostDisk = disk(value.disk);
+	const isolate = isolateRuntime(value.isolate);
+	const cpu = cpuFingerprint(value.cpu);
+	const runtimes = hostRuntimes(value.runtimes);
+	const mesh = meshFacts(value.mesh);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -152,6 +281,10 @@ function facts(value: unknown): HostFacts {
 		...optionalText(value, "firecracker"),
 		...optionalText(value, "guestKernel"),
 		...(hostImages === undefined ? {} : { images: hostImages }),
+		...(isolate === undefined ? {} : { isolate }),
+		...(cpu === undefined ? {} : { cpu }),
+		...(runtimes === undefined ? {} : { runtimes }),
+		...(mesh === undefined ? {} : { mesh }),
 	};
 }
 
@@ -168,7 +301,185 @@ function capacity(value: unknown): HostCapacity {
 		...(builds.length === 0 ? {} : { builds }),
 		...diskUsage(value.disk),
 		...memoryReport(value.memory),
+		...stickyHoldings(value.stickyDisks),
+		...objectHoldings(value.holdings),
+		...fetchProgress(value.fetches),
+		...meshHealth(value.mesh),
 	};
+}
+
+/** The most mesh peers a capacity report's `mesh` keeps: more than a pool has hosts. */
+const MAX_MESH_PEERS = 1024;
+
+const meshText = (value: unknown, longest = MAX_TEXT): value is string =>
+	typeof value === "string" && value !== "" && value.length <= longest;
+
+/**
+ * A capacity's mesh health (`HostMeshHealth`): left out, not refused, when it isn't shaped as kantel-host sends it (an
+ * address and a list of peers), as the rest of the report still stands. A peer without a host ID or a path is left out,
+ * and so is a figure that isn't a number from 0, so a peer is never shown with a handshake or round trip it didn't have.
+ */
+function meshHealth(value: unknown): { mesh?: HostMeshHealth } {
+	if (!isObject(value) || !meshText(value.address)) return {};
+	const peers: HostMeshPeerHealth[] = [];
+	for (const entry of Array.isArray(value.peers) ? value.peers.slice(0, MAX_MESH_PEERS) : []) {
+		if (!isObject(entry) || !meshText(entry.hostId) || !meshText(entry.path, 32)) continue;
+		const { endpoint, lastHandshake, rttMs, fetchBytesPerSecond, fetchRateAt } = entry;
+		const stamp = (at: unknown): at is number => figure(at) && Number.isSafeInteger(at) && at > 0;
+		peers.push({
+			hostId: entry.hostId,
+			path: entry.path,
+			...(meshText(endpoint) ? { endpoint } : {}),
+			...(stamp(lastHandshake) ? { lastHandshake } : {}),
+			...(figure(rttMs) ? { rttMs } : {}),
+			// A rate only with when it was measured, and never 0: an estimate divides by it.
+			...(figure(fetchBytesPerSecond) && fetchBytesPerSecond > 0 && stamp(fetchRateAt)
+				? { fetchBytesPerSecond, fetchRateAt }
+				: {}),
+		});
+	}
+	return { mesh: { address: value.address, peers } };
+}
+
+/** Whether `value` is a block map's digest: `sha256:` and 64 lowercase hex digits. */
+export function isMapDigest(value: unknown): value is string {
+	return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+/**
+ * A capacity's sticky disk holdings: left out, not refused, when they aren't shaped as holdings. A version's map digest
+ * that isn't one is left out.
+ */
+function stickyHoldings(value: unknown): { stickyDisks?: HostStickyHolding[] } {
+	if (!Array.isArray(value)) return {};
+	const holdings: HostStickyHolding[] = [];
+	for (const entry of value) {
+		if (!isObject(entry) || typeof entry.diskId !== "string" || !Array.isArray(entry.versions)) return {};
+		const versions: HostStickyHolding["versions"][number][] = [];
+		for (const version of entry.versions) {
+			if (
+				!isObject(version) ||
+				typeof version.version !== "string" ||
+				typeof version.allocatedBytes !== "number" ||
+				typeof version.at !== "number"
+			) {
+				return {};
+			}
+			versions.push({
+				version: version.version,
+				allocatedBytes: version.allocatedBytes,
+				at: version.at,
+				...(isMapDigest(version.mapDigest) ? { mapDigest: version.mapDigest } : {}),
+			});
+		}
+		holdings.push({ diskId: entry.diskId, versions });
+	}
+	return { stickyDisks: holdings };
+}
+
+/** The most objects of one kind a report may list: one with more is left out, saying nothing of that kind. */
+export const MAX_HELD_OBJECTS = 10_000;
+
+/**
+ * A capacity's holdings of other kinds (`HostCapacity.holdings`): a kind Kantel doesn't know is left out, and so is a
+ * kind whose list isn't shaped as holdings (whose versions all have a map digest), or has more than `MAX_HELD_OBJECTS`:
+ * a kind left out says nothing of it, so it forgets nothing.
+ */
+function objectHoldings(value: unknown): { holdings?: NonNullable<HostCapacity["holdings"]> } {
+	if (!isObject(value)) return {};
+	const holdings: { [kind in HostObjectKind]?: HostObjectHolding[] } = {};
+	for (const kind of HOST_OBJECT_KINDS) {
+		const listed = (value as { readonly [kind: string]: unknown })[kind];
+		const parsed = heldObjects(listed);
+		if (parsed !== undefined) holdings[kind] = parsed;
+	}
+	return Object.keys(holdings).length === 0 ? {} : { holdings };
+}
+
+function heldObjects(value: unknown): HostObjectHolding[] | undefined {
+	if (!Array.isArray(value) || value.length > MAX_HELD_OBJECTS) return undefined;
+	const out: HostObjectHolding[] = [];
+	for (const entry of value) {
+		if (!isObject(entry) || typeof entry.objectId !== "string" || !Array.isArray(entry.versions)) return undefined;
+		const versions: HostObjectVersionHolding[] = [];
+		for (const version of entry.versions) {
+			if (
+				!isObject(version) ||
+				typeof version.version !== "string" ||
+				!isMapDigest(version.mapDigest) ||
+				typeof version.allocatedBytes !== "number"
+			) {
+				return undefined;
+			}
+			// What a template snapshot was made on: dropped, not refused, when it isn't shaped as kantel-host sends it, as
+			// such a copy then restores nowhere else.
+			const cpu = cpuFingerprint(version.cpu);
+			versions.push({
+				version: version.version,
+				mapDigest: version.mapDigest,
+				allocatedBytes: version.allocatedBytes,
+				...(typeof version.pool === "string" && version.pool !== "" && version.pool.length <= MAX_TEXT
+					? { pool: version.pool }
+					: {}),
+				...(cpu === undefined ? {} : { cpu }),
+				...(typeof version.runtime === "string" && version.runtime !== "" && version.runtime.length <= MAX_RUNTIME
+					? { runtime: version.runtime }
+					: {}),
+				...(version.copy === true ? { copy: true } : {}),
+			});
+		}
+		out.push({ objectId: entry.objectId, versions });
+	}
+	return out;
+}
+
+const FETCH_STATES: ReadonlySet<string> = new Set<HostFetchProgress["state"]>(["queued", "running", "failed"]);
+
+/** The most of a fetch's error a report keeps. */
+const MAX_FETCH_ERROR = 1024;
+
+/** Whether `value` names something: a string of 1 to `MAX_TEXT` characters. */
+const named = (value: unknown): value is string =>
+	typeof value === "string" && value !== "" && value.length <= MAX_TEXT;
+
+/** Whether `value` is a count of blocks: a whole number, 0 or more. */
+const blockCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/**
+ * A capacity's fetches (`HostCapacity.fetches`): left out, saying nothing of them so nothing is let go, when they aren't
+ * a list shaped as kantel-host sends it, or have more than `MAX_HELD_OBJECTS`. A fetch's error is cut to
+ * `MAX_FETCH_ERROR` characters.
+ */
+function fetchProgress(value: unknown): { fetches?: HostFetchProgress[] } {
+	if (!Array.isArray(value) || value.length > MAX_HELD_OBJECTS) return {};
+	const fetches: HostFetchProgress[] = [];
+	for (const entry of value) {
+		if (
+			!isObject(entry) ||
+			!named(entry.kind) ||
+			!named(entry.objectId) ||
+			!named(entry.version) ||
+			typeof entry.state !== "string" ||
+			!FETCH_STATES.has(entry.state) ||
+			!blockCount(entry.blocks) ||
+			!blockCount(entry.inPlace)
+		) {
+			return {};
+		}
+		fetches.push({
+			kind: entry.kind,
+			objectId: entry.objectId,
+			version: entry.version,
+			state: entry.state as HostFetchProgress["state"],
+			blocks: entry.blocks,
+			inPlace: Math.min(entry.inPlace, entry.blocks),
+			...(blockCount(entry.bytes) && entry.bytes > 0 ? { bytes: entry.bytes } : {}),
+			...(typeof entry.error === "string" && entry.error !== ""
+				? { error: entry.error.slice(0, MAX_FETCH_ERROR) }
+				: {}),
+		});
+	}
+	return { fetches };
 }
 
 const MEMORY_MODES: ReadonlySet<string> = new Set<HostMemoryMode>(["reserved", "used"]);

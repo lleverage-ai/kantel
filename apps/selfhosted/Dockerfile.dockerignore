@@ -9,4 +9,8 @@
 **/*.tsbuildinfo
 .env
 .env.*
+# An install's settings (deploy/compose/.env: the secrets key, a database URL with its password) are the stack's
+# runtime environment, never the image's.
+**/.env
+**/.env.*
 **/.dev.vars

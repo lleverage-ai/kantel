@@ -35,6 +35,8 @@ const SANDBOX: Sandbox = {
 	capabilities: {
 		exec: true,
 		files: true,
+		javascript: false,
+		python: false,
 		ssh: false,
 		desktop: false,
 		browser: false,
@@ -90,6 +92,7 @@ const ROUTES: {
 	readonly [route: string]: (body: unknown, signal?: AbortSignal | null, url?: URL) => Response | Promise<Response>;
 } = {
 	"POST /v1/sandboxes": () => Response.json(SANDBOX),
+	"POST /v1/sandboxes/sbx_mcp1/upgrade": () => Response.json({ ...SANDBOX, type: "microvm", size: "default" }),
 	"POST /v1/sandboxes/sbx_mcp1/commands": (body) =>
 		Response.json((body as { detached?: boolean }).detached === true ? RUNNING : COMMAND),
 	"POST /v1/sandboxes/sbx_slow/commands": (_body, signal) => later(120, () => Response.json(COMMAND), signal),
@@ -279,6 +282,7 @@ describe("the MCP server", () => {
 			"sandbox_stop",
 			"sandbox_resume",
 			"sandbox_fork",
+			"sandbox_upgrade",
 			"sandbox_delete",
 			"sandbox_exec",
 			"command_get",
@@ -303,15 +307,32 @@ describe("the MCP server", () => {
 
 	it("creates a sandbox, waiting until it runs, and runs a command in it", async () => {
 		const { mcp, calls } = server();
+		// An agent has to choose a type: the API's default, an isolate, is rarely what one that left it out wants.
+		const untyped = resultOf(
+			await mcp.handle(request(5, "tools/call", { name: "sandbox_create", arguments: { labels: { task: "T-1" } } })),
+		);
+		expect(untyped.isError).toBe(true);
+		expect(untyped.content[0]?.text).toContain("type is required");
+		// A null from is no snapshot either, so it needs a type too.
+		const nullFrom = resultOf(
+			await mcp.handle(request(9, "tools/call", { name: "sandbox_create", arguments: { from: null } })),
+		);
+		expect(nullFrom.isError).toBe(true);
+		expect(calls).toHaveLength(0);
 		const created = resultOf(
-			await mcp.handle(request(6, "tools/call", { name: "sandbox_create", arguments: { labels: { task: "T-1" } } })),
+			await mcp.handle(
+				request(6, "tools/call", {
+					name: "sandbox_create",
+					arguments: { type: "microvm", labels: { task: "T-1" } },
+				}),
+			),
 		);
 		expect(created.isError).toBeUndefined();
 		expect(created.structuredContent).toMatchObject({ id: "sbx_mcp1", state: "running" });
 		expect(calls[0]).toMatchObject({
 			method: "POST",
 			path: "/v1/sandboxes",
-			body: { labels: { task: "T-1" }, wait: true },
+			body: { type: "microvm", labels: { task: "T-1" }, wait: true },
 			authorization: "Bearer ksk_agent",
 		});
 		const ran = resultOf(
@@ -323,6 +344,12 @@ describe("the MCP server", () => {
 		expect(ran.structuredContent).toMatchObject({ exitCode: 0, stdout: "hi\n", state: "exited" });
 		expect(ran.content[0]?.text).toContain("exited with code 0");
 		expect(calls[1]).toMatchObject({ path: "/v1/sandboxes/sbx_mcp1/commands", body: { command: "echo hi" } });
+		// One made from a snapshot takes the snapshot's type, so it needs none.
+		const fromSnapshot = resultOf(
+			await mcp.handle(request(8, "tools/call", { name: "sandbox_create", arguments: { from: "base" } })),
+		);
+		expect(fromSnapshot.isError).toBeUndefined();
+		expect(calls[2]).toMatchObject({ path: "/v1/sandboxes", body: { from: "base", wait: true } });
 	});
 
 	it("sends a new Idempotency-Key with each sandbox_exec call, so a retried request runs it once", async () => {
@@ -750,7 +777,7 @@ describe("serving on stdio", () => {
 			env: { KANTEL_URL: "https://kantel.test", KANTEL_API_KEY: "ksk_agent" },
 			stdin: lines(
 				request(1, "initialize", { protocolVersion: "2025-06-18" }),
-				request(2, "tools/call", { name: "sandbox_create", arguments: {} }),
+				request(2, "tools/call", { name: "sandbox_create", arguments: { type: "isolate" } }),
 			),
 			stdout: { write: (chunk: string | Uint8Array) => out.push(String(chunk)) },
 			stderr: { write: (chunk: string | Uint8Array) => err.push(String(chunk)) },
@@ -790,5 +817,81 @@ describe("a killed command's answer", () => {
 		};
 		expect(text(old)).toContain("its host couldn't stop it");
 		expect(text(old)).toContain("pkill -f");
+	});
+});
+
+describe("upgrading an isolate from MCP", () => {
+	it("sandbox_upgrade makes the isolate a microVM and says where its files are", async () => {
+		const { mcp, calls, keys } = server();
+		const upgraded = resultOf(
+			await mcp.handle(
+				request(1, "tools/call", { name: "sandbox_upgrade", arguments: { sandboxId: "sbx_mcp1", size: "large" } }),
+			),
+		);
+		expect(upgraded.isError).toBeUndefined();
+		expect(upgraded.structuredContent).toMatchObject({ id: "sbx_mcp1", type: "microvm" });
+		expect(upgraded.content[0]?.text).toContain("/home/user/workspace");
+		expect(calls[0]).toMatchObject({
+			method: "POST",
+			path: "/v1/sandboxes/sbx_mcp1/upgrade",
+			body: { size: "large", wait: true },
+		});
+		expect(keys[0]).not.toBeNull();
+		const tool = TOOL_DEFINITIONS.find((each) => each.name === "sandbox_create");
+		expect(tool?.inputSchema.properties).toHaveProperty("autoUpgrade");
+	});
+
+	it("sandbox_create passes autoUpgrade, and the instructions say when to upgrade", async () => {
+		const { mcp, calls } = server();
+		resultOf(
+			await mcp.handle(
+				request(1, "tools/call", { name: "sandbox_create", arguments: { type: "isolate", autoUpgrade: true } }),
+			),
+		);
+		expect(calls[0]?.body).toMatchObject({ type: "isolate", autoUpgrade: true, wait: true });
+		const upgrade = TOOL_DEFINITIONS.find((each) => each.name === "sandbox_upgrade");
+		expect(upgrade?.description).toContain("needs a microVM");
+	});
+
+	it("upgrades into a snapshot, by hand and by itself", async () => {
+		const { mcp, calls } = server();
+		resultOf(
+			await mcp.handle(
+				request(1, "tools/call", {
+					name: "sandbox_upgrade",
+					arguments: { sandboxId: "sbx_mcp1", from: "monorepo-ci" },
+				}),
+			),
+		);
+		resultOf(
+			await mcp.handle(
+				request(2, "tools/call", {
+					name: "sandbox_create",
+					arguments: { type: "isolate", autoUpgrade: true, autoUpgradeFrom: "monorepo-ci" },
+				}),
+			),
+		);
+		expect(calls[0]?.body).toEqual({ from: "monorepo-ci", wait: true });
+		expect(calls[1]?.body).toMatchObject({ autoUpgrade: true, autoUpgradeFrom: "monorepo-ci" });
+	});
+
+	it("tells the agent a command needs a microVM, and what Kantel did when it upgraded the sandbox itself", () => {
+		const needs = commandResult({
+			...COMMAND,
+			exitCode: 127,
+			stderr: "bash: git: command not found\n",
+			needsMicrovm: { command: "git", reason: "An isolate has no git; a microVM does." },
+		});
+		expect(needs.content[0]?.text).toContain("It needs a microVM: An isolate has no git; a microVM does.");
+		expect(needs.content[0]?.text).toContain("sandbox_upgrade with sandboxId sbx_mcp1");
+		expect(needs.structuredContent).toMatchObject({ needsMicrovm: { command: "git" } });
+		const handedOn = commandResult({ ...COMMAND, needsMicrovm: { command: "git", reason: "x" }, rerunAs: "cmd_2" });
+		expect(handedOn.content[0]?.text).toContain("runs it again there as cmd_2");
+		expect(handedOn.content[0]?.text).not.toContain("Call sandbox_upgrade");
+		const rerun = commandResult({ ...COMMAND, id: "cmd_2", rerunOf: "cmd_1" });
+		expect(rerun.content[0]?.text).toContain("this is the command run again there");
+		expect(rerun.structuredContent).toMatchObject({ rerunOf: "cmd_1" });
+		const stopped = commandResult({ ...COMMAND, exitCode: 152, terminated: "cpu" });
+		expect(stopped.content[0]?.text).toContain("too much cpu time");
 	});
 });

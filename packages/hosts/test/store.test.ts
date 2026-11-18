@@ -1,5 +1,6 @@
 // The registry's records behave the same in memory and on every SQL driver a target uses: a join token spent once,
 // hosts found by credential hash, and placements listed per host.
+import { createRequire } from "node:module";
 import { testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -93,11 +94,233 @@ function behaves(open: () => Promise<HostStore>) {
 		await store.putPlacement(placement("s1", "host_a", 1));
 		await store.putPlacement(placement("s3", "host_b", 3));
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1", "s2"]);
+		const both = await store.placementsOnHosts(["host_a", "host_b", "host_c"]);
+		expect([...both].map(([host, list]) => [host, list.map((p) => p.sandboxId)])).toEqual([
+			["host_a", ["s1", "s2"]],
+			["host_b", ["s3"]],
+		]);
 		await store.putPlacement({ ...placement("s1", "host_a", 1), state: "stopped" });
 		expect((await store.getPlacement("s1"))?.state).toBe("stopped");
 		await store.removePlacement("s1");
 		expect(await store.getPlacement("s1")).toBeUndefined();
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
+	});
+
+	it("places a new sandbox only on a host that is neither draining nor revoked, in one write", async () => {
+		const store = await open();
+		await store.insertHost({ ...host("host_a", 1), labels: { note: '"draining":true' } });
+		await store.insertHost({ ...host("host_d", 2), draining: true });
+		await store.insertHost({ ...host("host_r", 3), revoked: true });
+		// Admitted, it answers the host's pool: none yet.
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1))).toEqual({});
+		expect(await store.placeOnTakingHost(placement("s2", "host_d", 2))).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s3", "host_r", 3))).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s4", "host_none", 4))).toBeUndefined();
+		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		expect(await store.placementsOn("host_d")).toEqual([]);
+		// Drained since it was read: refused.
+		await store.updateHost("host_a", (current) => ({ ...current, draining: true }));
+		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBeUndefined();
+	});
+
+	it("places a capped microVM only while its host's booked vCPUs and its own stay within the cap, in one write", async () => {
+		const store = await open();
+		await store.insertHost({ ...host("host_a", 1), poolId: "pool_a" });
+		const vm = (id: string, vcpus: number, change: Partial<PlacementRecord> = {}): PlacementRecord => ({
+			...placement(id, "host_a", 1),
+			vcpus,
+			state: "starting",
+			...change,
+		});
+		// Nothing booked: one larger than the cap still goes in, alone.
+		expect(await store.placeOnTakingHost(vm("big", 12), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s1", 2), "pool_a", 8)).toBe("vcpus");
+		expect(await store.getPlacement("s1")).toBeUndefined();
+		// Stopped, lost or deleting ones book nothing; isolates book nothing; another host's don't count.
+		await store.putPlacement({ ...vm("big", 12), state: "stopped" });
+		await store.putPlacement(vm("lost", 8, { state: "lost" }));
+		await store.putPlacement(vm("iso", 0, { tier: "isolate" }));
+		await store.putPlacement({ ...placement("other", "host_b", 1), vcpus: 64 });
+		expect(await store.placeOnTakingHost(vm("s2", 4), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s3", 4), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s4", 2), "pool_a", 8)).toBe("vcpus");
+		// Without a cap, or for an isolate, it goes in as before.
+		expect(await store.placeOnTakingHost(vm("s5", 2), "pool_a")).toEqual({ poolId: "pool_a" });
+		expect(await store.placeOnTakingHost(vm("s6", 0, { tier: "isolate" }), "pool_a", 8)).toEqual({ poolId: "pool_a" });
+		// A create placed again under its ID doesn't count its own earlier placement.
+		expect(await store.placeOnTakingHost(vm("s2", 4), "pool_a", 10)).toEqual({ poolId: "pool_a" });
+		// A host that doesn't admit it is still refused as such, not for its vCPUs.
+		await store.updateHost("host_a", (current) => ({ ...current, draining: true }));
+		expect(await store.placeOnTakingHost(vm("s7", 2), "pool_a", 64)).toBeUndefined();
+	});
+
+	it("lets only one of the creates at once take a host's last vCPUs, or its empty-host exception", async () => {
+		const store = await open();
+		await store.insertHost(host("host_a", 1));
+		const vm = (id: string, vcpus: number): PlacementRecord => ({
+			...placement(id, "host_a", 1),
+			vcpus,
+			state: "starting",
+		});
+		// Empty: of three larger than the cap at once, one goes in.
+		const empty = await Promise.all(["e1", "e2", "e3"].map((id) => store.placeOnTakingHost(vm(id, 16), undefined, 8)));
+		expect(empty.filter((answer) => answer !== "vcpus")).toHaveLength(1);
+		for (const id of ["e1", "e2", "e3"]) await store.removePlacement(id);
+		// 4 of 8 booked: of four 2-vCPU creates at once, two go in.
+		await store.putPlacement(vm("held", 4));
+		const last = await Promise.all(
+			["l1", "l2", "l3", "l4"].map((id) => store.placeOnTakingHost(vm(id, 2), undefined, 8)),
+		);
+		expect(last.filter((answer) => answer !== "vcpus")).toHaveLength(2);
+		expect((await store.placementsOn("host_a")).reduce((sum, p) => sum + p.vcpus, 0)).toBe(8);
+	});
+
+	it("places a new sandbox kept to a pool only on a host in that pool, where the host's pool is known", async () => {
+		const store = await open();
+		await store.insertHost({ ...host("host_a", 1), poolId: "pool_a" });
+		await store.insertHost({ ...host("host_n", 2) });
+		// Admitted, it answers the pool its host is in, which the sandbox then is.
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 1), "pool_a")).toEqual({ poolId: "pool_a" });
+		// Another pool, or one whose ID starts it or differs only where LIKE has a wildcard: refused.
+		expect(await store.placeOnTakingHost(placement("s2", "host_a", 2), "pool_b")).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s3", "host_a", 3), "pool_")).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s4", "host_a", 4), "poolXa")).toBeUndefined();
+		// Kept to no pool (one from before pools), it lands wherever its host is, and says where.
+		expect(await store.placeOnTakingHost(placement("s9", "host_a", 9))).toEqual({ poolId: "pool_a" });
+		// Its own pool, not a label that says one.
+		await store.insertHost({ ...host("host_l", 3), poolId: "pool_b", labels: { poolId: "pool_a" } });
+		expect(await store.placeOnTakingHost(placement("s6", "host_l", 6), "pool_a")).toBeUndefined();
+		expect(await store.placeOnTakingHost(placement("s7", "host_l", 7), "pool_b")).toEqual({ poolId: "pool_b" });
+		await store.insertHost({ ...host("host_m", 4), labels: { poolId: "pool_b" } });
+		expect(await store.placeOnTakingHost(placement("s8", "host_m", 8), "pool_a")).toEqual({});
+		// A host whose pool the registry hasn't been told yet takes it, and says none.
+		expect(await store.placeOnTakingHost(placement("s5", "host_n", 5), "pool_a")).toEqual({});
+		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s1", "s9"]);
+	});
+
+	it("finds everything on a host in one read: its placements, an upgrade's microVM, an isolate to delete", async () => {
+		const store = await open();
+		const upgrade = { operationId: "op1", target: "host_b", phase: "copy" as const };
+		await store.putPlacement({ ...placement("s1", "host_a", 1), tier: "isolate", upgrade });
+		await store.putPlacement({
+			...placement("s2", "host_a", 2),
+			upgrade: { ...upgrade, target: "host_a", phase: "host" },
+		});
+		// IDs that start with another's, or match it but for a LIKE wildcard, aren't it.
+		await store.putPlacement({ ...placement("s3", "host_bb", 3), upgrade: { ...upgrade, target: "host_bb" } });
+		await store.putPlacement({ ...placement("s4", "hostXb", 4), cleanup: { hostId: "hostXc", operationId: "op2" } });
+		await store.putPlacement({ ...placement("s5", "host_c", 5), cleanup: { hostId: "host_d", operationId: "op2" } });
+		await store.putPlacement({ ...placement("s6", "host_e", 6), state: "lost" });
+		const on = async (hostId: string) => (await store.occupying(hostId)).map((p) => p.sandboxId).sort();
+		expect(await on("host_a")).toEqual(["s1", "s2"]);
+		expect(await on("host_b")).toEqual(["s1"]);
+		expect(await on("host_bb")).toEqual(["s3"]);
+		expect(await on("host_d")).toEqual(["s5"]);
+		expect(await on("host_c")).toEqual(["s5"]);
+		expect(await on("hostXc")).toEqual(["s4"]);
+		// A lost one holds nothing.
+		expect(await on("host_e")).toEqual([]);
+		// The handover: the placement moves to the target, its intent ends and the isolate to delete is recorded, in one
+		// write: both hosts are held after it as before.
+		await store.updatePlacement("s1", ({ upgrade: _done, ...rest }) => ({
+			...rest,
+			hostId: "host_b",
+			tier: "microvm",
+			cleanup: { hostId: "host_a", operationId: "op1" },
+		}));
+		expect(await on("host_b")).toEqual(["s1"]);
+		expect(await on("host_a")).toEqual(["s1", "s2"]);
+	});
+
+	it("holds a move's target while it moves, and its switch and a rollback's claim never both land", async () => {
+		const store = await open();
+		const size = { name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 };
+		const move = { operationId: "mov1", target: "host_m2", phase: "copy" as const, size };
+		await store.putPlacement({ ...placement("s1", "host_m1", 1), state: "stopped", move });
+		await store.putPlacement({ ...placement("s2", "host_m3", 2), move: { ...move, target: "host_m22" } });
+		const on = async (hostId: string) => (await store.occupying(hostId)).map((p) => p.sandboxId).sort();
+		expect(await on("host_m2")).toEqual(["s1"]);
+		expect(await on("host_m1")).toEqual(["s1"]);
+		// The switch (only while the move is on it) and a rollback's claim (likewise), at once, many times over: one wins,
+		// the other finds the placement changed.
+		for (let round = 0; round < 10; round += 1) {
+			await store.putPlacement({ ...placement("s1", "host_m1", 1), state: "stopped", move });
+			const switched = store.updatePlacement("s1", (latest) => {
+				if (latest.move?.operationId !== "mov1" || latest.move.settling !== undefined) return undefined;
+				const { move: _done, ...rest } = latest;
+				return { ...rest, hostId: "host_m2", cleanup: { hostId: "host_m1", operationId: "mov1", tier: "microvm" } };
+			});
+			const claimed = store.updatePlacement("s1", (latest) =>
+				latest.move?.operationId === "mov1" && latest.move.settling === undefined
+					? { ...latest, move: { ...latest.move, settling: { by: "rbm", until: 9 } } }
+					: undefined,
+			);
+			const [won, claim] = await Promise.all([switched, claimed]);
+			expect([won, claim].filter((each) => each !== undefined)).toHaveLength(1);
+			const now = await store.getPlacement("s1");
+			if (won !== undefined) expect(now).toMatchObject({ hostId: "host_m2", cleanup: { hostId: "host_m1" } });
+			else expect(now).toMatchObject({ hostId: "host_m1", move: { settling: { by: "rbm" } } });
+		}
+	});
+
+	it("keeps a move's memory with its intent, and its memory's digest and a rollback's claim never both land", async () => {
+		const store = await open();
+		const size = { name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 };
+		const move = {
+			operationId: "mov1",
+			target: "host_m2",
+			phase: "final-copy" as const,
+			size,
+			live: true as const,
+			memory: true as const,
+		};
+		// The export's digests are written only while no rollback has begun (as the hosts service's `moveOn`), and a
+		// rollback's claim only while it is unclaimed: at once, many times over, one lands.
+		for (let round = 0; round < 10; round += 1) {
+			await store.putPlacement({ ...placement("s1", "host_m1", 1), state: "stopped", move });
+			const digests = store.updatePlacement("s1", (latest) =>
+				latest.move?.operationId === "mov1" && latest.move.rollingBack !== true && latest.move.settling === undefined
+					? { ...latest, move: { ...latest.move, mapDigest: "sha256:disk", memoryDigest: "sha256:memory" } }
+					: undefined,
+			);
+			const claimed = store.updatePlacement("s1", (latest) =>
+				latest.move?.operationId === "mov1" &&
+				latest.move.settling === undefined &&
+				latest.move.memoryDigest === undefined
+					? { ...latest, move: { ...latest.move, settling: { by: "rbm", until: 9 }, rollingBack: true } }
+					: undefined,
+			);
+			const [wrote, claim] = await Promise.all([digests, claimed]);
+			expect([wrote, claim].filter((each) => each !== undefined)).toHaveLength(1);
+			const now = await store.getPlacement("s1");
+			expect(now?.move).toMatchObject({ memory: true, live: true });
+			if (wrote !== undefined) expect(now?.move).toMatchObject({ memoryDigest: "sha256:memory" });
+			else expect(now?.move).toMatchObject({ rollingBack: true, settling: { by: "rbm" } });
+		}
+	});
+
+	it("changes and removes a placement as it is now, so a stale report never undoes a handover", async () => {
+		const store = await open();
+		await store.putPlacement(placement("s1", "host_a", 1));
+		// The sandbox moved to host_b; a report from host_a, applied to what is stored, writes nothing.
+		await store.putPlacement({ ...placement("s1", "host_b", 1), tier: "microvm" });
+		const fromA = (latest: PlacementRecord) =>
+			latest.hostId === "host_a" ? { ...latest, state: "stopped" } : undefined;
+		expect(await store.updatePlacement("s1", fromA)).toBeUndefined();
+		expect(await store.removePlacementIf("s1", (latest) => latest.hostId === "host_a")).toBe(false);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_b", state: "running" });
+		// One from host_b is applied, its other fields as they are now; its host moves the row in placementsOn too.
+		const written = await store.updatePlacement("s1", (latest) => ({ ...latest, state: "paused" }));
+		expect(written).toMatchObject({ hostId: "host_b", state: "paused" });
+		expect((await store.placementsOn("host_b")).map((p) => p.sandboxId)).toEqual(["s1"]);
+		await Promise.all([
+			store.updatePlacement("s1", (latest) => ({ ...latest, size: "large" })),
+			store.updatePlacement("s1", (latest) => ({ ...latest, state: "running" })),
+		]);
+		expect(await store.getPlacement("s1")).toMatchObject({ size: "large", state: "running" });
+		expect(await store.updatePlacement("nope", (latest) => latest)).toBeUndefined();
+		expect(await store.removePlacementIf("s1", (latest) => latest.hostId === "host_b")).toBe(true);
+		expect(await store.getPlacement("s1")).toBeUndefined();
 	});
 }
 
@@ -116,3 +339,107 @@ for (const kind of testDatabaseKinds()) {
 		});
 	});
 }
+
+// Two connections to a real Postgres (KANTEL_TEST_POSTGRES_URL): a create's placement and a drain of its host, at once.
+const postgresUrl = process.env.KANTEL_TEST_POSTGRES_URL;
+describe.skipIf(postgresUrl === undefined || postgresUrl === "")("Postgres, two connections", () => {
+	it("waits for a drain under way, then refuses the placement, and a drain waits for a placement under way", async () => {
+		const kind = testDatabaseKinds().find((candidate) => candidate.name === "Postgres");
+		if (kind === undefined) throw new Error("No Postgres kind");
+		const database = await kind.open();
+		cleanups.push(() => database.close());
+		await migrateHosts(database.driver);
+		const store = createSqlHostStore(database.driver);
+		await store.insertHost(host("host_a", 1));
+		// A second connection, in the same schema, holding a drain open.
+		// `pg` is @kantel/sql's, not this package's: its client, as much of it as this needs.
+		const pg = createRequire(import.meta.resolve("@kantel/sql/testing"))("pg") as {
+			Client: new (config: {
+				connectionString: string;
+				options: string;
+			}) => {
+				connect(): Promise<void>;
+				query(text: string, values?: unknown[]): Promise<unknown>;
+				end(): Promise<void>;
+			};
+		};
+		const [{ search_path: schema }] = (await database.driver.query("SHOW search_path")) as [{ search_path: string }];
+		const other = new pg.Client({ connectionString: postgresUrl ?? "", options: `-c search_path=${schema}` });
+		await other.connect();
+		cleanups.push(() => other.end());
+		const drained = JSON.stringify({ ...host("host_a", 1), draining: true });
+
+		await other.query("BEGIN");
+		await other.query("UPDATE compute_hosts SET data = $1 WHERE id = $2", [drained, "host_a"]);
+		let settled = false;
+		const placing = store.placeOnTakingHost(placement("s1", "host_a", 1)).finally(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(settled).toBe(false);
+		await other.query("COMMIT");
+		expect(await placing).toBeUndefined();
+		expect(await store.placementsOn("host_a")).toEqual([]);
+
+		// The other way round: a placement holding the host's row, a drain waits for it, and then sees it.
+		await store.updateHost("host_a", (current) => ({ ...current, draining: false }));
+		await other.query("BEGIN");
+		await other.query("SELECT id FROM compute_hosts WHERE id = $1 FOR UPDATE", ["host_a"]);
+		await other.query(
+			"INSERT INTO compute_placements (sandbox_id, host_id, created_at, data) VALUES ($1, $2, $3, $4)",
+			["s2", "host_a", 2, JSON.stringify(placement("s2", "host_a", 2))],
+		);
+		let drainDone = false;
+		const draining = store
+			.updateHost("host_a", (current) => ({ ...current, draining: true }))
+			.finally(() => {
+				drainDone = true;
+			});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(drainDone).toBe(false);
+		await other.query("COMMIT");
+		await draining;
+		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
+
+		// A move to another pool under way (its row written, not yet committed): a placement kept to the old pool waits
+		// for it, then is refused; one kept to no pool waits, then lands and answers the new pool.
+		await store.putHost({ ...host("host_b", 2), poolId: "pool_a" });
+		await other.query("BEGIN");
+		await other.query("UPDATE compute_hosts SET data = $1 WHERE id = $2", [
+			JSON.stringify({ ...host("host_b", 2), poolId: "pool_b" }),
+			"host_b",
+		]);
+		let keptSettled = false;
+		const kept = store.placeOnTakingHost(placement("s3", "host_b", 3), "pool_a").finally(() => {
+			keptSettled = true;
+		});
+		const loose = store.placeOnTakingHost(placement("s4", "host_b", 4));
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(keptSettled).toBe(false);
+		await other.query("COMMIT");
+		expect(await kept).toBeUndefined();
+		expect(await loose).toEqual({ poolId: "pool_b" });
+		expect((await store.placementsOn("host_b")).map((p) => p.sandboxId)).toEqual(["s4"]);
+
+		// A capped create while another holds the host and books its vCPUs (not yet committed): it waits, then sees them.
+		await store.putHost(host("host_c", 3));
+		await store.putPlacement({ ...placement("c1", "host_c", 1), vcpus: 2, state: "running" });
+		await other.query("BEGIN");
+		await other.query("SELECT id FROM compute_hosts WHERE id = $1 FOR UPDATE", ["host_c"]);
+		await other.query(
+			"INSERT INTO compute_placements (sandbox_id, host_id, created_at, data) VALUES ($1, $2, $3, $4)",
+			["c2", "host_c", 2, JSON.stringify({ ...placement("c2", "host_c", 2), vcpus: 4, state: "starting" })],
+		);
+		let cappedSettled = false;
+		const capped = store
+			.placeOnTakingHost({ ...placement("c3", "host_c", 3), vcpus: 4, state: "starting" }, undefined, 8)
+			.finally(() => {
+				cappedSettled = true;
+			});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(cappedSettled).toBe(false);
+		await other.query("COMMIT");
+		expect(await capped).toBe("vcpus");
+		expect((await store.placementsOn("host_c")).map((p) => p.sandboxId)).toEqual(["c1", "c2"]);
+	});
+});

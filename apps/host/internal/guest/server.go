@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -59,13 +60,17 @@ type Server struct {
 	upstream atomic.Value
 	// commands are those run with an ID (commands.go).
 	commands commands
-	// trimming is held while a trim of the disk runs (trimDisk): one at a time.
-	trimming sync.Mutex
+	// trimming is held while a trim of the disk runs (trimDisk): one at a time. stickyTrimming is held while a trim of a
+	// sticky disk runs (trimSticky), likewise.
+	trimming       sync.Mutex
+	stickyTrimming sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {
 	// Read at start, so a service left running with nothing connected (by an agent before this one) is stopped too.
 	s.onDemand()
+	// A sticky disk an earlier run of the agent left frozen: its lease ended with that run.
+	thawLeftoverFreezes()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /capabilities", s.capabilities)
@@ -87,6 +92,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ports/{port}", s.port)
 	mux.HandleFunc("POST /mounts", s.mounts)
 	mux.HandleFunc("POST /bundles", s.mountBundles)
+	mux.HandleFunc("POST /sticky", s.mountSticky)
+	mux.HandleFunc("POST /sticky/freeze", s.freezeSticky)
+	mux.HandleFunc("POST /sticky/thaw", s.thawSticky)
+	mux.HandleFunc("POST /sticky/trim", s.trimSticky)
 	return mux
 }
 
@@ -144,8 +153,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		id = s.identity.SandboxID
 	}
 	s.mu.Unlock()
-	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready, Expect: expect})
+	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready, Expect: expect, Features: Features})
 }
+
+// Features is what this agent reports in Health.Features.
+var Features = []string{proto.GuestFeatureRealTarget}
 
 // expected is what an injected agent's image runs, from what it has, so a template of a plain image (no ReadyFile)
 // doesn't wait for a desktop it will never have. Always ssh: the agent's own, so never empty (which would mean "the
@@ -355,7 +367,7 @@ func (s *Server) applyIdentity(id *Identity, steps map[string]float64) error {
 			_ = os.Chown(filepath.Join(dir, "authorized_keys"), uid, gid)
 		}
 	}
-	writeEnv(envFile, id.Env)
+	writeEnv(EnvFile, id.Env)
 	// dockerd and Chromium use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
 	// would stop a resumed or forked sandbox's containers and close its tabs (and, as a restored sandbox's monotonic
 	// clock carries on from its template's, soon trips systemd's start limit).
@@ -400,9 +412,26 @@ func writeAptProxy(path string, proxied bool) {
 	_ = os.WriteFile(path, []byte(conf), 0o644)
 }
 
-// envFile holds the sandbox's own variables, which every command gets, as does a systemd unit that reads it
+// EnvFile holds the sandbox's own variables, which every command gets, as does a systemd unit that reads it
 // (EnvironmentFile=-/etc/kantel/env): systemd reads its double-quoted values, though it keeps \n and \t as written.
-const envFile = "/etc/kantel/env"
+// The guest agent writes it with each identity, and the host rewrites it in a running guest when the sandbox's env
+// changes (sandbox.env).
+const EnvFile = "/etc/kantel/env"
+
+// EnvFileContent is what EnvFile holds for env: a K="v" line each (strconv.Quote), sorted by name. Empty for an empty
+// env, which has no file.
+func EnvFileContent(env map[string]string) string {
+	names := make([]string, 0, len(env))
+	for k := range env {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, k := range names {
+		fmt.Fprintf(&b, "%s=%s\n", k, strconv.Quote(env[k]))
+	}
+	return b.String()
+}
 
 // writeEnv makes path hold exactly env: an identity's Env is the sandbox's whole environment (the host resolves a
 // fork's inheritance before it sends one), so an empty one leaves none, not what the disk had from its source.
@@ -411,11 +440,7 @@ func writeEnv(path string, env map[string]string) {
 		_ = os.Remove(path)
 		return
 	}
-	var b strings.Builder
-	for k, v := range env {
-		fmt.Fprintf(&b, "%s=%s\n", k, strconv.Quote(v))
-	}
-	_ = os.WriteFile(path, []byte(b.String()), 0o644)
+	_ = os.WriteFile(path, []byte(EnvFileContent(env)), 0o644)
 }
 
 // trustCA adds a PEM certificate to the system bundle, where there's no update-ca-certificates to do it.
@@ -517,7 +542,7 @@ func (s *Server) commandEnv(req *ExecRequest, home string, username string) []st
 			}
 		}
 	}
-	if raw, err := os.ReadFile(envFile); err == nil {
+	if raw, err := os.ReadFile(EnvFile); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			if k, v, ok := strings.Cut(line, "="); ok && k != "" {
 				if unq, err := strconv.Unquote(v); err == nil {
@@ -692,9 +717,15 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		timeout = 120 * time.Second
 	}
 	// The rest of the body read, so the server notices the host closing the request (its context ends, and with it
-	// the command): a host stops a command of an older guest, which has no kill route, that way.
+	// the command): a host stops a command of an older guest, which has no kill route, that way. One kept past its
+	// connection (Keep, with an ID, not streamed) runs on instead, to its own limit or a kill.
 	_, _ = io.Copy(io.Discard, r.Body)
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	keep := req.Keep && req.ID != "" && !req.Stream
+	base := r.Context()
+	if keep {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 	cmd, err := s.buildCommand(ctx, &req)
 	if err != nil {
@@ -719,12 +750,12 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 			run.stdout, run.stderr = stdout, stderr
 		}
 		if !s.commands.add(req.ID, run) {
-			fail(w, 409, errors.New("a command with this id is already known"))
+			fail(w, 409, errors.New("a command with this id is already known, or was killed before it started"))
 			return
 		}
 		defer func() {
 			if run != nil {
-				s.commands.end(req.ID, run, ExecResult{})
+				s.commands.end(req.ID, run, ExecResult{}, false)
 			}
 		}()
 	}
@@ -748,12 +779,26 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	}
 	result := ExecResult{Stdout: string(stdout.buf), Stderr: string(stderr.buf), Truncated: stdout.truncated || stderr.truncated, DurationMs: time.Since(started).Milliseconds()}
 	result.ExitCode = exitCode(err)
+	failed := false
 	if killed() {
 		result.ExitCode = 137
 	} else if ctx.Err() == context.DeadlineExceeded {
 		result.TimedOut = true
 		result.ExitCode = 124
 	} else if err != nil && result.ExitCode == -1 {
+		failed = true
+	}
+	if run != nil && keep {
+		// Kept before it is answered: its answer may never reach the host (the sandbox pausing or moving with its memory
+		// as it is sent), so its result is there for whichever host asks for it by its ID.
+		kept := result
+		if failed {
+			kept.ExitCode, kept.Stderr = 1, kept.Stderr+err.Error()+"\n"
+		}
+		s.commands.end(req.ID, run, kept, true)
+		run = nil
+	}
+	if failed {
 		fail(w, 500, err)
 		return
 	}

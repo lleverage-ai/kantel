@@ -24,11 +24,57 @@ export interface HostRecord {
 	readonly facts?: HostFacts;
 	/** As it last said in a hello or heartbeat. */
 	readonly capacity?: HostCapacity;
+	/** When Kantel received `capacity`. Absent from a record kept before it was written. */
+	readonly capacityAt?: number;
 	/**
 	 * The account whose own host it is: only that account's sandboxes go on it. Absent for a host
 	 * the operator joined, which every account shares.
 	 */
 	readonly accountId?: string;
+	/**
+	 * The pool it is in, as the compute plane keeps pools: from the join token it spent, or a move. Absent for a host
+	 * joined before pools, or with the registry's own join token, until the compute plane says.
+	 */
+	readonly poolId?: string;
+	/**
+	 * Its address in its pool's mesh (`HOST_FEATURES.mesh`), and the pool it was given in: one /128 in the pool's /48
+	 * (`mesh.ts`), kept so it stays the same across reconnects, and given again once the host is in another pool. Its
+	 * public key and endpoints are its facts' (`HostFacts.mesh`), as its last hello said. Absent until a host with the
+	 * feature is in a pool.
+	 */
+	readonly mesh?: { readonly poolId: string; readonly address: string };
+	/**
+	 * The latest drain or undrain the compute plane ordered (`StoredHost.drainEpoch`): one older than it isn't taken, so
+	 * one held up can't undo a later one. Absent until one is ordered.
+	 */
+	readonly drainEpoch?: number;
+}
+
+/** States in which a placement's microVM books its host's CPUs. */
+export const BOOKING_STATES: readonly string[] = ["starting", "running", "stopping"];
+
+/** The vCPUs `placements`' live microVMs book on `hostId`, but `except`'s (a create placed again under its ID). */
+export function bookedOn(placements: readonly PlacementRecord[], hostId: string, except?: string): number {
+	return placements
+		.filter(
+			(placement) =>
+				placement.hostId === hostId &&
+				placement.sandboxId !== except &&
+				placement.tier === "microvm" &&
+				BOOKING_STATES.includes(placement.state),
+		)
+		.reduce((sum, placement) => sum + placement.vcpus, 0);
+}
+
+/**
+ * Whether `host` admits a new placement (a create, a snapshot's restore, a fork) or an upgrade's microVM: there, neither
+ * draining nor revoked, and, kept to `poolId`, in that pool where its pool is known here (a host the compute plane hasn't
+ * told its pool yet admits). The one rule for every admission: `placeOnTakingHost` writes under it in one statement
+ * (the SQL stores as its own predicate, kept the same), and an upgrade checks its target by it once its intent is written.
+ */
+export function admits(host: HostRecord | undefined, poolId: string | undefined): host is HostRecord {
+	if (host === undefined || host.draining === true || host.revoked === true) return false;
+	return poolId === undefined || host.poolId === undefined || host.poolId === poolId;
 }
 
 export interface JoinTokenRecord {
@@ -56,6 +102,82 @@ export interface PlacementRecord {
 	readonly state: string;
 	readonly createdAt: number;
 	readonly updatedAt: number;
+	/**
+	 * The create attempt it was admitted for (`CreateSandboxInput.attempt`), which the host's reports of it are about: a
+	 * create's settlement takes only these as word on its own attempt. Absent: none was said (a fork, a placement from
+	 * before it was kept), which settles nothing.
+	 */
+	readonly attempt?: number;
+	/**
+	 * An isolate's upgrade to a microVM under way, kept before anything is sent: its operation ID, the host its microVM
+	 * is (or may be) on and at what size, and whether that host does it itself (`host`) or Kantel copies the files to it
+	 * (`copy`), so one whose answer or gateway is lost is settled, not guessed.
+	 */
+	readonly upgrade?: {
+		readonly operationId: string;
+		readonly target: string;
+		readonly phase: "host" | "copy";
+		readonly size?: {
+			readonly name: string;
+			readonly vcpus: number;
+			readonly memoryMiB: number;
+			readonly diskGiB: number;
+		};
+		/**
+		 * Who is rolling it back (`by`, one rollback's own token) until when: the gateway that may send its compensating
+		 * calls, so two never roll back the same upgrade at once. Lapsed, its gateway is taken to be gone.
+		 */
+		readonly settling?: { readonly by: string; readonly until: number };
+	};
+	/**
+	 * A microVM's move to another host under way (docs/design/disk-store.md, "Moving a sandbox to another host"), kept
+	 * before anything is sent: its operation ID (the version its source exports, `sandbox.export`), the host it is (or
+	 * may be) copied to and at what size, how far it got (`copy`: its files being exported and fetched; for a running
+	 * sandbox's, `stop`: being stopped, then `final-copy`: copied again over the first copy; `start`: started on the
+	 * target), and the export's map digest once its source has made it, which the target's `disk.locate` is answered
+	 * from. A running sandbox's move (`live`) first exports it as it runs, as the version `moveLiveVersion` names, whose
+	 * map digest is `liveDigest`. Until the placement switches, a failure rolls it back (`settling`, as an upgrade's):
+	 * the target's copies cancelled, the source's exports deleted, the sandbox left where it was (stopped, once its move
+	 * has stopped it: the compute plane starts it again).
+	 */
+	readonly move?: {
+		readonly operationId: string;
+		readonly target: string;
+		readonly phase: "copy" | "stop" | "final-copy" | "start";
+		readonly live?: true;
+		readonly liveDigest?: string;
+		readonly size: {
+			readonly name: string;
+			readonly vcpus: number;
+			readonly memoryMiB: number;
+			readonly diskGiB: number;
+		};
+		readonly mapDigest?: string;
+		/**
+		 * Its memory moves too (`HOST_FEATURES.sandboxMoveMemory`, the hosts' fingerprints matching): a running sandbox is
+		 * stopped keeping it, and its export makes the same version of its memory's object (`sandbox-memory`), whose map
+		 * digest is `memoryDigest`.
+		 */
+		readonly memory?: true;
+		readonly memoryDigest?: string;
+		readonly settling?: { readonly by: string; readonly until: number };
+		/**
+		 * A rollback has begun (its first claim): the move never switches from then on, whatever becomes of that claim,
+		 * since a compensating call may have landed already. Only a rollback that finishes clears it, with the move.
+		 */
+		readonly rollingBack?: true;
+	};
+	/**
+	 * The last move that switched the sandbox here (its operation ID) and the host it came from: kept until another move
+	 * switches it, so a move whose gateway went after the switch (its source's copy deleted or not) is settled as done,
+	 * never taken for one rolled back.
+	 */
+	readonly moved?: { readonly operationId: string; readonly from: string };
+	/**
+	 * What is still to be deleted from another host (`hostId`), once that host can be reached: an upgraded microVM's
+	 * isolate, or a moved microVM's source copy (`tier` `microvm`; absent, an isolate).
+	 */
+	readonly cleanup?: { readonly hostId: string; readonly operationId: string; readonly tier?: SandboxTier };
 }
 
 export interface HostStore {
@@ -78,9 +200,78 @@ export interface HostStore {
 	 */
 	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
+	/**
+	 * Puts a new sandbox's placement only while its host admits it (`admits`: neither draining nor revoked, and in
+	 * `poolId` where that is given and the host's pool is known), as one write. A create that read its host before a
+	 * drain is refused here, so a host drained, found empty and moved to another pool never takes one after (the compute
+	 * plane's move). Answers the pool its host was in as it admitted it (absent where it has none yet), or undefined,
+	 * writing nothing, when it didn't. With `maxVcpus` (its pool's vCPU cap, `Placement.maxVcpus`), a microVM is put only
+	 * while the host's live microVMs' vCPUs (`bookedOn`) and its own are at most that, or the host has none booked, checked
+	 * in the same write: else it answers "vcpus", writing nothing, so creates at once can't both take the last of it.
+	 */
+	placeOnTakingHost(
+		placement: PlacementRecord,
+		poolId?: string,
+		maxVcpus?: number,
+	): Promise<{ readonly poolId?: string } | "vcpus" | undefined>;
+	/**
+	 * Everything that has something on `hostId`, in one read: its own placements (a lost one not), and placements on
+	 * other hosts with an upgrade under way whose microVM is (or may be) there, or an upgraded isolate there still to be
+	 * deleted (`cleanup`). One read, so a handover between hosts (one write) is seen on one side of it or the other.
+	 */
+	occupying(hostId: string): Promise<PlacementRecord[]>;
+	/**
+	 * Changes a placement as it is now, atomically, as `updateHost` does a host: `change` is given the stored record and
+	 * answers the next (undefined leaves it), and a write that raced another is redone on the newer record. A host's
+	 * report goes through it, so one read before an upgrade's handover never writes back the placement it read. Resolves
+	 * what was written, or undefined.
+	 */
+	updatePlacement(
+		sandboxId: string,
+		change: (placement: PlacementRecord) => PlacementRecord | undefined,
+	): Promise<PlacementRecord | undefined>;
 	getPlacement(sandboxId: string): Promise<PlacementRecord | undefined>;
 	placementsOn(hostId: string): Promise<PlacementRecord[]>;
+	/** The placements on each of `hostIds`, in one read: a host with none is absent. */
+	placementsOnHosts(hostIds: readonly string[]): Promise<Map<string, PlacementRecord[]>>;
 	removePlacement(sandboxId: string): Promise<void>;
+	/** Removes a placement only if, as it is now, `should` says so: whether it did. */
+	removePlacementIf(sandboxId: string, should: (placement: PlacementRecord) => boolean): Promise<boolean>;
+}
+
+/**
+ * Whether a placement is what is left of a sandbox deleted while its upgrade still owed its old host the isolate's
+ * removal: on that host, with its `cleanup` naming it.
+ */
+export function isLeftover(placement: PlacementRecord): boolean {
+	return placement.cleanup !== undefined && placement.cleanup.hostId === placement.hostId;
+}
+
+/**
+ * Whether a placement has something on `hostId`: it is there (and not lost), or it is elsewhere with its upgrade's
+ * microVM, its move's copy, or what is left of it to delete there.
+ */
+function occupies(placement: PlacementRecord, hostId: string): boolean {
+	if (placement.hostId === hostId) return placement.state !== "lost";
+	return (
+		placement.upgrade?.target === hostId || placement.move?.target === hostId || placement.cleanup?.hostId === hostId
+	);
+}
+
+/** `value` as a whole JSON string, escaped for a `LIKE ... ESCAPE '\'` pattern. */
+function likeValue(value: string): string {
+	return JSON.stringify(value).replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
+/** Placements grouped by their host, in the order given. */
+function byHost(placements: readonly PlacementRecord[]): Map<string, PlacementRecord[]> {
+	const grouped = new Map<string, PlacementRecord[]>();
+	for (const placement of placements) {
+		const list = grouped.get(placement.hostId);
+		if (list === undefined) grouped.set(placement.hostId, [placement]);
+		else list.push(placement);
+	}
+	return grouped;
 }
 
 /** Records in memory, for tests and a deployment with no database. */
@@ -132,6 +323,28 @@ export function createMemoryHostStore(): HostStore {
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
 		},
+		async occupying(hostId) {
+			return [...placements.values()].filter((placement) => occupies(placement, hostId)).map(copy);
+		},
+		async placeOnTakingHost(placement, poolId, maxVcpus) {
+			const host = hosts.get(placement.hostId);
+			if (!admits(host, poolId)) return undefined;
+			if (maxVcpus !== undefined && placement.tier === "microvm") {
+				const booked = bookedOn([...placements.values()], placement.hostId, placement.sandboxId);
+				if (booked > 0 && booked + placement.vcpus > maxVcpus) return "vcpus";
+			}
+			placements.set(placement.sandboxId, copy(placement));
+			return host.poolId === undefined ? {} : { poolId: host.poolId };
+		},
+		async updatePlacement(sandboxId, change) {
+			// Read, change and write with no await between them: nothing else runs in between.
+			const current = placements.get(sandboxId);
+			if (current === undefined) return undefined;
+			const next = change(copy(current));
+			if (next === undefined) return undefined;
+			placements.set(sandboxId, copy(next));
+			return copy(next);
+		},
 		async getPlacement(sandboxId) {
 			const placement = placements.get(sandboxId);
 			return placement === undefined ? undefined : copy(placement);
@@ -142,8 +355,22 @@ export function createMemoryHostStore(): HostStore {
 				.sort((a, b) => a.createdAt - b.createdAt)
 				.map(copy);
 		},
+		async placementsOnHosts(hostIds) {
+			const wanted = new Set(hostIds);
+			return byHost(
+				[...placements.values()]
+					.filter((placement) => wanted.has(placement.hostId))
+					.sort((a, b) => a.createdAt - b.createdAt)
+					.map(copy),
+			);
+		},
 		async removePlacement(sandboxId) {
 			placements.delete(sandboxId);
+		},
+		async removePlacementIf(sandboxId, should) {
+			const current = placements.get(sandboxId);
+			if (current === undefined || !should(copy(current))) return false;
+			return placements.delete(sandboxId);
 		},
 	};
 }
@@ -177,9 +404,15 @@ export function hostsSchema(dialect: SqlDriver["dialect"]): string[] {
 	];
 }
 
-/** Creates the registry's tables if they are missing. */
+/**
+ * Creates the registry's tables if they are missing, in one batch. On Postgres it takes an advisory lock first, so
+ * replicas starting together don't race to create them (`migrateRelay` takes its own).
+ */
 export async function migrateHosts(driver: SqlDriver): Promise<void> {
-	await driver.batch(hostsSchema(driver.dialect).map((text) => ({ sql: text })));
+	const statements = hostsSchema(driver.dialect).map((text) => ({ sql: text }));
+	await driver.batch(
+		driver.dialect === "postgres" ? [{ sql: "SELECT pg_advisory_xact_lock(7316102024)" }, ...statements] : statements,
+	);
 }
 
 const parse = <T>(row: Record<string, unknown>): T => JSON.parse(String(row.data)) as T;
@@ -189,6 +422,9 @@ const parse = <T>(row: Record<string, unknown>): T => JSON.parse(String(row.data
  * and facts' values are strings, so a `"revoked"` inside one is escaped.
  */
 const REVOKED_PATTERN = '%"revoked":true%';
+
+/** A draining host's row, as `JSON.stringify` writes it: as `REVOKED_PATTERN`, nothing else in a record can match. */
+const DRAINING_PATTERN = '%"draining":true%';
 
 /** How many times `updateHost` reads again after losing a write to another, before it gives up. */
 const UPDATE_ATTEMPTS = 8;
@@ -202,6 +438,66 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			values,
 		);
 	};
+	/**
+	 * A capped microVM's admission (`placeOnTakingHost` with `maxVcpus`): the placement is inserted only while its host
+	 * admits it and the vCPUs its live microVMs book (`bookedOn`, but its own ID's), with its own, are at most `maxVcpus`,
+	 * or it has none booked. On Postgres the host's row is locked first, in the same transaction, so the insert's own read
+	 * (a new snapshot under read committed) sees every placement admitted before it there; SQLite (D1 too) has one writer
+	 * at a time. Whether it went in is read back: its row as written.
+	 */
+	const placeWithinVcpus = async (
+		placement: PlacementRecord,
+		poolId: string | undefined,
+		maxVcpus: number,
+	): Promise<{ readonly poolId?: string } | "vcpus" | undefined> => {
+		const postgres = driver.dialect === "postgres";
+		const field = (name: string, table: string) =>
+			postgres ? `(${table}.data::jsonb ->> '${name}')` : `json_extract(${table}.data, '$.${name}')`;
+		const vcpus = postgres ? `(${field("vcpus", "p")})::integer` : field("vcpus", "p");
+		const states = BOOKING_STATES.map(() => "?").join(", ");
+		const booked = `(SELECT COALESCE(SUM(${vcpus}), 0) FROM compute_placements p WHERE p.host_id = h.id AND p.sandbox_id <> ? AND ${field("tier", "p")} = 'microvm' AND ${field("state", "p")} IN (${states}))`;
+		const pooled = poolId === undefined ? "" : ` AND (${field("poolId", "h")} IS NULL OR ${field("poolId", "h")} = ?)`;
+		const data = JSON.stringify(placement);
+		const insert = {
+			sql: `INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
+				SELECT ?, ?, ?, ? FROM compute_hosts h
+				WHERE h.id = ? AND h.data NOT LIKE ? AND h.data NOT LIKE ?${pooled}
+					AND (${booked} = 0 OR ${booked} + ? <= ?)
+				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
+					data = excluded.data`,
+			params: [
+				placement.sandboxId,
+				placement.hostId,
+				placement.createdAt,
+				data,
+				placement.hostId,
+				DRAINING_PATTERN,
+				REVOKED_PATTERN,
+				...(poolId === undefined ? [] : [poolId]),
+				placement.sandboxId,
+				...BOOKING_STATES,
+				placement.sandboxId,
+				...BOOKING_STATES,
+				placement.vcpus,
+				maxVcpus,
+			] satisfies SqlValue[],
+		};
+		await driver.batch([
+			...(postgres
+				? [{ sql: "SELECT id FROM compute_hosts WHERE id = ? FOR UPDATE", params: [placement.hostId] }]
+				: []),
+			insert,
+		]);
+		const [[row], [hostRow]] = await Promise.all([
+			driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [placement.sandboxId]),
+			driver.query("SELECT data FROM compute_hosts WHERE id = ?", [placement.hostId]),
+		]);
+		const host = hostRow === undefined ? undefined : parse<HostRecord>(hostRow);
+		if (row !== undefined && String(row.data) === data)
+			return host?.poolId === undefined ? {} : { poolId: host.poolId };
+		return admits(host, poolId) ? "vcpus" : undefined;
+	};
+
 	return {
 		async insertJoinToken(token) {
 			await driver.query(
@@ -284,6 +580,66 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
 			);
 		},
+		async placeOnTakingHost(placement, poolId, maxVcpus) {
+			if (maxVcpus !== undefined && placement.tier === "microvm") return placeWithinVcpus(placement, poolId, maxVcpus);
+			// The host's row is read locked on Postgres (`FOR UPDATE`), so a drain writing it waits for this placement, and
+			// one already writing it is waited for and read as it then is (draining, and refused): a move's check, made after
+			// its drain, sees every placement that got in. SQLite (D1 too) has one writer at a time, so needs no lock.
+			const lock = driver.dialect === "postgres" ? " FOR UPDATE" : "";
+			// In the pool it was chosen in, where the host's row says one: its own top-level `poolId` (not a label's).
+			const field = driver.dialect === "postgres" ? "(data::jsonb ->> 'poolId')" : "json_extract(data, '$.poolId')";
+			const pooled = poolId === undefined ? "" : ` AND (${field} IS NULL OR ${field} = ?)`;
+			// The host's pool comes back with the placement, from the row as it admitted it: the same statement.
+			const rows = await driver.query(
+				`WITH taking AS (
+					SELECT id, ${field} AS pool FROM compute_hosts
+					WHERE id = ? AND data NOT LIKE ? AND data NOT LIKE ?${pooled}${lock}
+				)
+				INSERT INTO compute_placements (sandbox_id, host_id, created_at, data)
+				SELECT ?, ?, ?, ? FROM taking WHERE true
+				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
+					data = excluded.data
+				RETURNING sandbox_id, (SELECT pool FROM taking) AS pool`,
+				[
+					placement.hostId,
+					DRAINING_PATTERN,
+					REVOKED_PATTERN,
+					...(poolId === undefined ? [] : [poolId]),
+					placement.sandboxId,
+					placement.hostId,
+					placement.createdAt,
+					JSON.stringify(placement),
+				],
+			);
+			const [row] = rows;
+			if (row === undefined) return undefined;
+			return typeof row.pool === "string" ? { poolId: row.pool } : {};
+		},
+		async occupying(hostId) {
+			// One statement, so one snapshot. Narrowed by the host's column, and by its ID as a whole JSON string value (a
+			// `target`, or a cleanup's `hostId`: quoted, so an ID that starts another's doesn't match), then checked exactly.
+			const quoted = likeValue(hostId);
+			const rows = await driver.query(
+				"SELECT data FROM compute_placements WHERE host_id = ? OR data LIKE ? ESCAPE '\\' OR data LIKE ? ESCAPE '\\'",
+				[hostId, `%"target":${quoted}%`, `%"hostId":${quoted}%`],
+			);
+			return rows.map((row) => parse<PlacementRecord>(row)).filter((placement) => occupies(placement, hostId));
+		},
+		async updatePlacement(sandboxId, change) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
+				const [row] = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+				if (row === undefined) return undefined;
+				const read = String(row.data);
+				const next = change(JSON.parse(read) as PlacementRecord);
+				if (next === undefined) return undefined;
+				const won = await driver.query(
+					"UPDATE compute_placements SET host_id = ?, data = ? WHERE sandbox_id = ? AND data = ? RETURNING sandbox_id",
+					[next.hostId, JSON.stringify(next), sandboxId, read],
+				);
+				if (won.length > 0) return next;
+			}
+			throw new KantelError("unavailable", `The placement of ${sandboxId} kept changing; try again`);
+		},
 		async getPlacement(sandboxId) {
 			const rows = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
 			return rows[0] === undefined ? undefined : parse<PlacementRecord>(rows[0]);
@@ -295,8 +651,30 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			);
 			return rows.map((row) => parse<PlacementRecord>(row));
 		},
+		async placementsOnHosts(hostIds) {
+			if (hostIds.length === 0) return new Map();
+			const rows = await driver.query(
+				`SELECT data FROM compute_placements WHERE host_id IN (${hostIds.map(() => "?").join(", ")}) ORDER BY created_at, sandbox_id`,
+				[...hostIds],
+			);
+			return byHost(rows.map((row) => parse<PlacementRecord>(row)));
+		},
 		async removePlacement(sandboxId) {
 			await driver.query("DELETE FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+		},
+		async removePlacementIf(sandboxId, should) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
+				const [row] = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [sandboxId]);
+				if (row === undefined) return false;
+				const read = String(row.data);
+				if (!should(JSON.parse(read) as PlacementRecord)) return false;
+				const won = await driver.query(
+					"DELETE FROM compute_placements WHERE sandbox_id = ? AND data = ? RETURNING sandbox_id",
+					[sandboxId, read],
+				);
+				if (won.length > 0) return true;
+			}
+			throw new KantelError("unavailable", `The placement of ${sandboxId} kept changing; try again`);
 		},
 	};
 }

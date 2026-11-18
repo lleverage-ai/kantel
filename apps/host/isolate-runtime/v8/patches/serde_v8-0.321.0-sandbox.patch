@@ -1,0 +1,136 @@
+diff -ruN -x .cargo-ok orig/serde_v8-0.321.0/lib.rs patched/serde_v8-0.321.0/lib.rs
+--- orig/serde_v8-0.321.0/lib.rs	2026-11-11 02:25:52.291736097 +0100
++++ patched/serde_v8-0.321.0/lib.rs	2026-11-11 02:27:21.144624493 +0100
+@@ -6,6 +6,7 @@
+ mod magic;
+ mod payload;
+ mod ser;
++pub mod sandbox;
+ 
+ pub use de::Deserializer;
+ pub use de::from_v8;
+diff -ruN -x .cargo-ok orig/serde_v8-0.321.0/magic/buffer.rs patched/serde_v8-0.321.0/magic/buffer.rs
+--- orig/serde_v8-0.321.0/magic/buffer.rs	2026-11-11 02:25:52.291966509 +0100
++++ patched/serde_v8-0.321.0/magic/buffer.rs	2026-11-11 03:07:48.868737101 +0100
+@@ -119,10 +119,12 @@
+       );
+     }
+     let buf_len: usize = buf.len();
+-    let backing_store =
+-      v8::ArrayBuffer::new_backing_store_from_boxed_slice(buf);
+-    let backing_store_shared = backing_store.make_shared();
+-    let ab = v8::ArrayBuffer::with_backing_store(scope, &backing_store_shared);
++    // Kantel patch: a copy in the isolate's own allocation (see sandbox.rs).
++    let Some(ab) = crate::sandbox::new_array_buffer(scope, &buf) else {
++      return Err(crate::Error::Message(
++        crate::sandbox::ALLOCATION_FAILED.into(),
++      ));
++    };
+     Ok(
+       v8::Uint8Array::new(scope, ab, 0, buf_len)
+         .expect("Failed to create Uint8Array")
+diff -ruN -x .cargo-ok orig/serde_v8-0.321.0/sandbox.rs patched/serde_v8-0.321.0/sandbox.rs
+--- orig/serde_v8-0.321.0/sandbox.rs	1970-01-01 01:00:00.000000000 +0100
++++ patched/serde_v8-0.321.0/sandbox.rs	2026-11-11 03:07:22.534238992 +0100
+@@ -0,0 +1,101 @@
++// Kantel patch: ArrayBuffers for bytes made in Rust, allocated by the isolate's own ArrayBuffer allocator and copied
++// into, instead of wrapping Rust's heap memory (new_backing_store_from_vec/_boxed_slice/_bytes). With V8's sandbox on,
++// a backing store must be inside the sandbox, so rusty_v8 leaves the wrapping constructors out of sandbox builds;
++// and with a budget allocator the bytes count against the isolate's memory limit. Costs one copy per buffer.
++//
++// The allocation is fallible: when the isolate's budget is spent these answer None, and every caller turns that into
++// an error for the guest (a RangeError) instead of V8's default of crashing the process. They need
++// kantel__ArrayBuffer__NewBackingStore__or_null from Kantel's rusty_v8 build
++// (apps/host/isolate-runtime/v8/patches/rusty_v8-150.4.0-budget-allocator.patch).
++
++unsafe extern "C" {
++  fn kantel__ArrayBuffer__NewBackingStore__or_null(
++    isolate: v8::UnsafeRawIsolatePtr,
++    byte_length: usize,
++  ) -> *mut v8::BackingStore;
++}
++
++/// The message of the RangeError a refused allocation becomes.
++pub const ALLOCATION_FAILED: &str =
++  "Array buffer allocation failed: the isolate's memory limit";
++
++/// A backing store of `byte_length` uninitialised bytes from the isolate's allocator, or None if it refuses.
++pub fn try_new_backing_store(
++  isolate: &v8::Isolate,
++  byte_length: usize,
++) -> Option<v8::UniqueRef<v8::BackingStore>> {
++  // SAFETY: the isolate is live (we hold a reference); the function returns an owned BackingStore or null.
++  let mut ptr = unsafe {
++    v8::UniquePtr::from_raw(kantel__ArrayBuffer__NewBackingStore__or_null(
++      isolate.as_raw_isolate_ptr(),
++      byte_length,
++    ))
++  };
++  ptr.take()
++}
++
++/// An ArrayBuffer holding a copy of `bytes`, or None when the isolate's allocator refuses (its budget is spent).
++/// The caller reports the failure to the guest (for example with [`throw_allocation_failed`]).
++#[must_use]
++pub fn new_array_buffer<'s, 'i>(
++  scope: &mut v8::PinScope<'s, 'i>,
++  bytes: &[u8],
++) -> Option<v8::Local<'s, v8::ArrayBuffer>> {
++  if bytes.is_empty() {
++    return Some(v8::ArrayBuffer::new(scope, 0));
++  }
++  let store = try_new_backing_store(scope, bytes.len())?;
++  let data = store.data().expect("non-empty backing store has data");
++  // SAFETY: the store is `bytes.len()` bytes long and nothing else refers to it yet.
++  unsafe {
++    std::ptr::copy_nonoverlapping(
++      bytes.as_ptr(),
++      data.as_ptr() as *mut u8,
++      bytes.len(),
++    )
++  };
++  Some(v8::ArrayBuffer::with_backing_store(scope, &store.make_shared()))
++}
++
++mod sealed {
++  pub trait Sealed {}
++}
++
++/// The element types of typed arrays: plain numbers with no padding, every bit pattern initialised and valid.
++/// Sealed, so no other type (a padded struct, a `MaybeUninit`) can expose uninitialised bytes to a guest.
++pub trait Element: Copy + sealed::Sealed {}
++
++macro_rules! element {
++  ($($t:ty),*) => { $( impl sealed::Sealed for $t {} impl Element for $t {} )* };
++}
++element!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
++
++/// [`new_array_buffer`] for a slice of typed-array elements.
++#[must_use]
++pub fn new_array_buffer_of<'s, 'i, T: Element>(
++  scope: &mut v8::PinScope<'s, 'i>,
++  items: &[T],
++) -> Option<v8::Local<'s, v8::ArrayBuffer>> {
++  // SAFETY: T is one of the primitive number types above (sealed): no padding, so every byte is initialised.
++  let bytes = unsafe {
++    std::slice::from_raw_parts(
++      items.as_ptr() as *const u8,
++      std::mem::size_of_val(items),
++    )
++  };
++  new_array_buffer(scope, bytes)
++}
++
++/// The RangeError for a refused allocation, thrown in the isolate (for conversions that can't return an error).
++pub fn throw_allocation_failed(scope: &mut v8::PinScope) {
++  let exc = allocation_failed_error(scope);
++  scope.throw_exception(exc);
++}
++
++/// The RangeError for a refused allocation, as a value.
++pub fn allocation_failed_error<'s>(
++  scope: &mut v8::PinScope<'s, '_>,
++) -> v8::Local<'s, v8::Value> {
++  let msg = v8::String::new(scope, ALLOCATION_FAILED).unwrap();
++  v8::Exception::range_error(scope, msg)
++}

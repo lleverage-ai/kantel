@@ -30,12 +30,12 @@ func manifestCmd(args []string) error {
 		return err
 	}
 	known := func(name string) bool {
-		for _, prefix := range []string{"vmlinux-", "sandbox-", "isolate-", "workerd-", "kantel-host-", "kantel-guest-"} {
+		for _, prefix := range []string{"vmlinux-", "sandbox-", "isolate-", "kantel-isolate-", "kantel-host-", "kantel-guest-"} {
 			if strings.HasPrefix(name, prefix) {
 				return true
 			}
 		}
-		return name == "isolate-bundle.tar.gz"
+		return false
 	}
 	manifest := ImageManifest{Version: version, Files: map[string]ImageFile{}}
 	for _, e := range entries {
@@ -44,7 +44,9 @@ func manifestCmd(args []string) error {
 			continue
 		}
 		name, gz := file, false
-		if strings.HasSuffix(file, ".gz") && file != "isolate-bundle.tar.gz" {
+		// A tarball (isolate-assets-<arch>.tar.gz) is fetched as it is and unpacked into a directory; any other .gz is
+		// one file, unpacked as it downloads.
+		if strings.HasSuffix(file, ".gz") && !strings.HasSuffix(file, ".tar.gz") {
 			name, gz = strings.TrimSuffix(file, ".gz"), true
 		}
 		if !known(name) {
@@ -67,7 +69,7 @@ func manifestCmd(args []string) error {
 		manifest.Files[name] = ImageFile{Path: file, SHA256: sum, Size: info.Size(), Gzip: gz}
 	}
 	if len(manifest.Files) == 0 {
-		return fmt.Errorf("no host images in %s (vmlinux-<arch>, sandbox-<arch>.ext4, isolate-<arch>.ext4, workerd-<arch>)", dir)
+		return fmt.Errorf("no host images in %s (vmlinux-<arch>, sandbox-<arch>.ext4, isolate-<arch>.ext4, kantel-isolate-<arch>)", dir)
 	}
 	out, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {

@@ -72,7 +72,7 @@ Deletes a file, or a directory and everything in it. A key needs `files`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | string | yes | An absolute path, or one relative to the user's home. |
+| `path` | string | yes | An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`. |
 
 **Answers**
 
@@ -96,7 +96,7 @@ A key needs `files`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | string | no | Default: the user's home. |
+| `path` | string | no | Default: a microVM's `/home/user` or an isolate's `/workspace`. |
 | `limit` | integer | no | At most this many; default 50. (minimum 1, maximum 500) |
 | `cursor` | string | no | A previous page's `nextCursor`. |
 
@@ -162,7 +162,7 @@ Writes every file, directory and symbolic link of a tar (or a gzipped tar) into 
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | string | yes | The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount. (at most 4096 characters) |
+| `path` | string | yes | The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. (at most 4096 characters) |
 
 **Answers**
 

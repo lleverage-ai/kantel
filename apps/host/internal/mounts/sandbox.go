@@ -53,8 +53,12 @@ type mount struct {
 	// however many refreshes later, through the proof that version's entry carried (proof, proven).
 	current     *manifest
 	refreshedAt time.Time
-	// attemptedAt is when the mount was last listed, successfully or not: one listing per MinTTL, whoever asks.
+	// listedAt is when the listing current came from began: everything in the bucket before then is in it (Sync).
+	listedAt time.Time
+	// attemptedAt is when the mount was last listed, successfully or not: one listing per MinTTL, whoever asks
+	// (Sync apart). listErr is that listing's error, nil when it listed.
 	attemptedAt time.Time
+	listErr     error
 	listing     chan struct{}
 	lists       atomic.Int64
 }
@@ -226,6 +230,91 @@ func (s *Sandbox) Refresh(ctx context.Context, path string) error {
 	return errors.Join(errs...)
 }
 
+// Sync lists the mount at path again (every mount when path is empty) unless its manifest is already from a listing
+// that began at or after since, so each has everything its prefix held at since; mounts are listed a few at a time.
+// Unlike Refresh, a listing that fails is an error even for a mount that carries on with an older manifest, and
+// MinTTL doesn't hold a listing off. The guest is shown the manifests afterwards (GuestSpecs, then Shown).
+func (s *Sandbox) Sync(ctx context.Context, path string, since time.Time) error {
+	var picked []*mount
+	for _, mt := range s.mounts {
+		if path == "" || mt.spec.Path == path {
+			picked = append(picked, mt)
+		}
+	}
+	if path != "" && len(picked) == 0 {
+		return &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("the sandbox has no bucket mount at %s", path)}
+	}
+	errs := make([]error, len(picked))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	for i, mt := range picked {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := mt.sync(ctx, since); err != nil {
+				errs[i] = fmt.Errorf("%s: %w", mt.spec.Path, err)
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// Versions are the manifest versions of the mount at path (every one when empty), by path, as they are now: what a
+// Sync just made them, for Shown.
+func (s *Sandbox) Versions(path string) map[string]int64 {
+	out := map[string]int64{}
+	for _, mt := range s.mounts {
+		if path != "" && mt.spec.Path != path {
+			continue
+		}
+		mt.mu.Lock()
+		if mt.current != nil {
+			out[mt.spec.Path] = mt.current.wire.Version
+		}
+		mt.mu.Unlock()
+	}
+	return out
+}
+
+// Shown checks the guest's answer to GuestSpecs after a Sync: each mount in synced (Versions, taken after the Sync)
+// must show that manifest, or the host's current one should a later listing have replaced it since, with no error.
+// It is an error naming each one that doesn't.
+func (s *Sandbox) Shown(synced map[string]int64, results []guest.MountResult, err error) error {
+	if err != nil {
+		return fmt.Errorf("the sandbox couldn't take the new listings: %w", err)
+	}
+	byPath := map[string]guest.MountResult{}
+	for _, r := range results {
+		byPath[r.Path] = r
+	}
+	var errs []error
+	for _, mt := range s.mounts {
+		want, picked := synced[mt.spec.Path]
+		if !picked {
+			continue
+		}
+		mt.mu.Lock()
+		now := want
+		if mt.current != nil {
+			now = mt.current.wire.Version
+		}
+		mt.mu.Unlock()
+		r, ok := byPath[mt.spec.Path]
+		switch {
+		case !ok:
+			errs = append(errs, fmt.Errorf("%s: the sandbox didn't mount it", mt.spec.Path))
+		case r.Error != "":
+			errs = append(errs, fmt.Errorf("%s: the sandbox couldn't mount it: %s", mt.spec.Path, r.Error))
+		case r.Version != want && r.Version != now:
+			errs = append(errs, fmt.Errorf("%s: the sandbox still shows an older listing", mt.spec.Path))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // GuestSpecs are the mounts the guest should show: those with a manifest.
 func (s *Sandbox) GuestSpecs() []guest.MountSpec {
 	var out []guest.MountSpec
@@ -305,6 +394,9 @@ func (s *Sandbox) Status() []proto.MountStatus {
 		if !mt.refreshedAt.IsZero() {
 			st.RefreshedAt = mt.refreshedAt.UnixMilli()
 		}
+		if mt.current != nil && !mt.listedAt.IsZero() {
+			st.ListedAt = mt.listedAt.UnixMilli()
+		}
 		mt.mu.Unlock()
 		out = append(out, st)
 	}
@@ -333,7 +425,50 @@ func (mt *mount) refresh(ctx context.Context) (listed bool, err error) {
 		defer mt.mu.Unlock()
 		return false, mt.outcome()
 	}
-	mt.attemptedAt = now
+	return true, mt.listLocked(ctx, now)
+}
+
+// sync makes the mount's manifest one whose listing began at or after since, so it has everything the bucket had
+// then (Sync): a listing already under way that began before since is waited for and then listed again, one that
+// began since is shared, and MinTTL doesn't hold it off, since the caller is waiting for exactly this. A failed
+// listing is an error even when the mount has an older manifest to carry on with.
+func (mt *mount) sync(ctx context.Context, since time.Time) error {
+	for {
+		mt.mu.Lock()
+		if mt.current != nil && !mt.listedAt.Before(since) {
+			mt.mu.Unlock()
+			return nil
+		}
+		ch := mt.listing
+		if ch == nil {
+			// Ours: it begins now, after since.
+			if err := mt.listLocked(ctx, mt.s.m.now()); err != nil {
+				return err
+			}
+			continue
+		}
+		began := mt.attemptedAt
+		mt.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if !began.Before(since) {
+			mt.mu.Lock()
+			err := mt.listErr
+			mt.mu.Unlock()
+			if err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// listLocked lists the prefix, beginning at began, and keeps the manifest. Called with mt.mu held, which it lets go
+// of while it lists and has let go of when it returns.
+func (mt *mount) listLocked(ctx context.Context, began time.Time) error {
+	mt.attemptedAt = began
 	ch := make(chan struct{})
 	mt.listing = ch
 	mt.mu.Unlock()
@@ -341,6 +476,7 @@ func (mt *mount) refresh(ctx context.Context) (listed bool, err error) {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 	mt.listing = nil
+	mt.listErr = err
 	close(ch)
 	if err != nil {
 		if mt.current == nil {
@@ -348,17 +484,18 @@ func (mt *mount) refresh(ctx context.Context) (listed bool, err error) {
 		}
 		// With a manifest already, the mount carries on with it: a failed refresh is in the log.
 		mt.s.m.log.Warn("bucket mount listing failed", "sandbox", mt.s.id, "path", mt.spec.Path, "error", err)
-		return true, err
+		return err
 	}
 	if mt.current == nil || mt.current.wire.Version != man.wire.Version {
 		mt.current = man
 	}
+	mt.listedAt = began
 	mt.refreshedAt = mt.s.m.now()
 	if mt.state == proto.MountFailed {
 		// Listed at last; the guest mounts it next (Applied says how that went).
 		mt.state, mt.err = proto.MountPending, ""
 	}
-	return true, nil
+	return nil
 }
 
 // outcome is the last listing's: its error while the mount has no manifest. Called with mt.mu held.

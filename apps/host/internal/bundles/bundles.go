@@ -443,6 +443,15 @@ func (c *Cache) linkLocked(image, dst string) (int64, error) {
 	return info.Size(), nil
 }
 
+// Images are the paths of the cache's images now: a file linked to one elsewhere is the cache's bytes.
+func (c *Cache) Images() []string {
+	var out []string
+	for _, im := range c.list() {
+		out = append(out, im.path)
+	}
+	return out
+}
+
 // Usage is the bytes the cache's images take and how many there are, and of those, the bytes not in use.
 func (c *Cache) Usage() (total int64, images int, idle int64) {
 	for _, im := range c.list() {

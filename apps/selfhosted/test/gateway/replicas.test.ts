@@ -3,7 +3,7 @@
 // replica a request lands on reaches the host; a tunnel URL either gave out works on both; revoking the host from the
 // other replica closes its connection; and in a rolling restart the host moves and the routing follows it.
 import { createReplicaKey, createSqlClusterStore } from "@kantel/hosts/cluster";
-import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
+import { HOST_CLOSE_REVOKED, HOST_FEATURES } from "@kantel/hosts/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPeerTransport } from "../../src/gateway/cluster.ts";
 import {
@@ -70,6 +70,42 @@ describe("gateway replicas behind a load balancer", { timeout: 30_000 }, () => {
 		const host = await connectHost(a, hostId, credential, cleanups);
 		await b.relay.service.revoke(hostId);
 		expect(await host.closed).toBe(HOST_CLOSE_REVOKED);
+	});
+
+	it("send a host its mesh peers from the replica it isn't connected to", async () => {
+		const driver = await sharedDatabase(cleanups);
+		const a = await startReplica(driver, cleanups);
+		const b = await startReplica(driver, cleanups);
+		for (const replica of [a, b]) {
+			replica.relay.service.useCompute({
+				secrets: async () => undefined,
+				recordEgress: async () => undefined,
+				poolSync: async () => true,
+			});
+		}
+		const key = (byte: number) => btoa(String.fromCharCode(...new Uint8Array(32).fill(byte)));
+		const meshFacts = (byte: number) => ({
+			features: [HOST_FEATURES.mesh],
+			mesh: { publicKey: key(byte), listenPort: 51820, endpoints: [`[2001:db8::${byte}]:51820`] },
+		});
+		const first = await joinHost(a);
+		await a.relay.service.update(first.hostId, { poolId: "pool_ci" });
+		const onA = await connectHost(a, first.hostId, first.credential, cleanups, [], { facts: meshFacts(1) });
+		await b.cluster.cluster.tick();
+		// A host joining on B: B asks A, over HTTP and signed, to send the host there its peers.
+		const second = await joinHost(b);
+		await b.relay.service.update(second.hostId, { poolId: "pool_ci" });
+		await connectHost(b, second.hostId, second.credential, cleanups, [], { facts: meshFacts(2) });
+		const peers = () =>
+			onA.messages
+				.filter((message) => message.type === "mesh.peers")
+				.at(-1)
+				?.peers?.map((peer) => peer.hostId);
+		// Polled by hand: `bun test` has no `vi.waitFor`.
+		for (const deadline = Date.now() + 5000; peers() === undefined && Date.now() < deadline; ) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+		expect(peers()).toEqual([second.hostId]);
 	});
 
 	it("follow a host through a rolling restart", async () => {

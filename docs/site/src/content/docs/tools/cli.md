@@ -17,7 +17,7 @@ Running a self-hosted install, and its hosts, is a separate command for operator
 
 ## Install it
 
-It needs Node.js 22 or later, on Linux or macOS. Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as one file, `kantel.js`, and kantel.dev serves an installer for it that needs no sudo. This line works in bash, zsh and fish:
+`kantel` is one binary for Linux or macOS, on x86_64 or arm64, with nothing else to install. Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as `kantel-<os>-<arch>` (`kantel-linux-amd64`, `kantel-darwin-arm64`…), and kantel.dev serves an installer for it that needs no sudo. This line works in bash, zsh and fish:
 
 ```sh
 curl -fsSL https://kantel.dev/cli.sh | sh
@@ -25,9 +25,36 @@ kantel version
 kantel login
 ```
 
-It downloads the latest release's files, checks them against its `SHA256SUMS`, puts them in `~/.local/share/kantel`, and links `~/.local/bin/kantel` to them. If `~/.local/bin` isn't on your `PATH`, it says how to put it there (`fish_add_path ~/.local/bin` in fish). `kantel update` updates it to the latest release (`--check` only says whether there is one, and `--version 0.3.2` installs that release): it runs that release's own installer, so it checks the download the same way and updates `kantel-admin` too where it is installed. Running the install line again does the same. After `| sh -s --`, `--admin` adds `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/), for self-hosting; once it's installed, updates keep it up to date unless you say `--no-admin`), `--dir DIR` links the commands in another directory, and `--version 0.1.0` installs that release. Each release also carries the same installer as `install-cli.sh`, which installs that release. `gh attestation verify ~/.local/share/kantel/kantel.mjs --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
+It downloads the latest release's binary for your machine, checks it against the release's `SHA256SUMS`, and puts it in `~/.local/bin/kantel`. If `~/.local/bin` isn't on your `PATH`, it says how to put it there: `fish_add_path ~/.local/bin` in fish, or `export PATH="$HOME/.local/bin:$PATH"` in `~/.bashrc` or `~/.zshrc`. After `| sh -s --`, `--admin` adds `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/), for self-hosting; once it's installed, updates keep it up to date unless you say `--no-admin`), `--dir DIR` installs the commands in another directory (or set `KANTEL_BIN_DIR`), and `--version 0.4.0` installs that release. Each release also carries the same installer as `install-cli.sh`, which installs that release. It replaces a `kantel` installed by an older release, when it was a Node.js program. `gh attestation verify ~/.local/bin/kantel --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
 
-It isn't on npm (publishing is on hold), so `npx kantel` doesn't work: install it as above and run `kantel`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
+To download it yourself instead, take the file for your machine and `SHA256SUMS` from a release, check one against the other and put it on your `PATH`:
+
+```sh
+curl -fsSLO https://github.com/lleverage-ai/kantel/releases/latest/download/kantel-linux-amd64
+curl -fsSLO https://github.com/lleverage-ai/kantel/releases/latest/download/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS   # shasum -a 256 --check --ignore-missing SHA256SUMS on macOS
+install -m 755 kantel-linux-amd64 ~/.local/bin/kantel
+```
+
+It isn't on npm, so `npx kantel` doesn't work. To build it from a clone of the repository, run `go build -o kantel ./cmd/kantel` in `apps/cli`.
+
+### Update it
+
+```sh
+kantel update
+```
+
+It updates `kantel` to the latest release: it downloads the release's binary for your machine, checks it against the release's `SHA256SUMS` and that it runs, and renames it over the one you ran, so a `kantel` that is running carries on. It updates `kantel-admin` too where it is installed beside `kantel`. `kantel update --check` only says whether there is a newer release, and `kantel update --version 0.3.2` installs that release, older or newer. If `kantel` is in a directory you can't write to, such as `/usr/local/bin`, it says so: run it with `sudo`, or install it for yourself in `~/.local/bin` with the line above. Running the install line again updates it too.
+
+After a command, `kantel` says on stderr when a newer release is out, in one line:
+
+```
+A new kantel is out: 0.5.0 (you have 0.4.2). kantel update installs it.
+```
+
+It asks GitHub at most once a day, in the background and for no more than a second and a half, so it never holds a command up; it remembers the answer in `~/.cache/kantel/update-check.json` (under `XDG_CACHE_HOME` if that is set). It says nothing to a script or a coding agent: not with `--json`, when stderr isn't a terminal, in CI (`CI` set), or when a coding agent runs it (`CLAUDECODE`, `CODEX_*`, `CURSOR_AGENT`, `GEMINI_CLI`, `OPENCODE` or `AI_AGENT` set), and never for `kantel update`, `kantel mcp` or `kantel completion`. To turn it off, set `KANTEL_NO_UPDATE_NOTIFIER=1` (or `NO_UPDATE_NOTIFIER=1`).
+
+`KANTEL_RELEASE_URL` points the installer, `kantel update` and the notice at a mirror instead of GitHub: a directory (`https://…` or `file://…`) holding one release's files, whose `install-cli.sh` says which release it is.
 
 ## Sign in
 
@@ -119,7 +146,7 @@ Created sbx_g2yy5jhyqr (fix-login-bug): microvm default, running.
   Stop it:        kantel stop sbx_g2yy5jhyqr
 ```
 
-It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, `--env <env>` starts it from an [environment](#environments-and-protected-variables), and `--host 3000` gives a port a URL as soon as it runs.
+It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `kantel upgrade <id>` turns an isolate into a microVM with the same ID and files when the work needs one, and `kantel new --auto-upgrade` makes an isolate that does it by itself when a command needs it; `--from` and `--auto-upgrade-from` [upgrade it into a snapshot](/sandboxes/types/#upgrade-into-a-snapshot). `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, `--env <env>` starts it from an [environment](#environments-and-protected-variables), and `--host 3000` gives a port a URL as soon as it runs.
 
 A microVM's machine is a named size (`--size large`) or a shape of its own (`--vcpus 8 --memory 16`, in GB). Which sizes there are, and what each holds, is up to the hosts: `kantel sizes` lists them, with the most `--vcpus` and `--memory` may ask for. On app.kantel.dev the sizes are `small`, `default` and `large` (4 vCPU, 8 GB); a large monorepo's type-check needs about 16 GB, so ask for that shape. From a snapshot, a sandbox is the machine the snapshot was taken of, unless you give `--size` or `--vcpus` and `--memory`: a snapshot of the disk alone (what `kantel snapshot save` keeps unless you add `--memory`) starts at any of them, as in `kantel new --from monorepo-ci --vcpus 8 --memory 16`. A snapshot that holds its sandbox's memory has that sandbox's machine, and Kantel refuses another before it makes anything.
 
@@ -235,14 +262,14 @@ Both push and scp go through Kantel's files API, so they work on isolates as wel
 ```sh
 kantel host sbx_g2yy5jhyqr 3000          # an HTTPS URL for port 3000, with a token in it
 kantel host sbx_g2yy5jhyqr 3000 --public # one anyone can open
-kantel ssh sbx_g2yy5jhyqr                # a shell (microVMs)
-kantel ssh sbx_g2yy5jhyqr -- uname -a    # one command over SSH, with its exit code
+kantel ssh sbx_g2yy5jhyqr                # a shell: SSH in a microVM, a pseudo-shell in an isolate
+kantel ssh sbx_g2yy5jhyqr -- uname -a    # one command, with its exit code
 kantel desktop sbx_g2yy5jhyqr            # opens its desktop in your browser
 kantel browser sbx_g2yy5jhyqr            # starts Chromium: opens its live view, prints its CDP URL
 ```
 
 - `host` prints the port's [URL](/sandboxes/public-ports/). Unless `--public`, it carries a token: anyone with the whole URL can open it. `kantel port list <id>` shows a sandbox's ports and `kantel port hide <id> <port>` stops one working.
-- `ssh` makes a key pair the first time and keeps it under `~/.config/kantel/ssh/`. After `--` it runs that command instead of a shell; `--print` prints the `ssh` command that connects instead of running it. `--public-key ~/.ssh/id_ed25519.pub` lets in your own key. See [SSH](/sandboxes/ssh/).
+- `ssh` makes a key pair the first time and keeps it under `~/.config/kantel/ssh/`. After `--` it runs that command instead of a shell; `--print` prints the `ssh` command that connects instead of running it. `--public-key ~/.ssh/id_ed25519.pub` lets in your own key. An isolate has no SSH, so there `ssh` is a pseudo-shell over the commands API that upgrades to a microVM and SSH when a command needs one. See [SSH](/sandboxes/ssh/).
 - `desktop` and `browser` open their page when you're at a terminal, and only print it otherwise or with `--print`. The URLs carry short-lived tokens. Drive the browser with [Playwright](/sandboxes/desktop-and-browser/#drive-it-with-playwright) and the CDP URL `browser` prints.
 
 ## Environments and protected variables
@@ -297,7 +324,7 @@ When Kantel can't be reached, or a proxy in front of it fails (a 502, 503 or 504
 
 ## Commands
 
-`kantel help` lists every command, and `kantel help <command>` (or `--help` after one) shows its flags. `ls` is short for `list` and `rm` for `delete`. The first CLI's spellings, such as `kantel sandbox create` and `kantel sandbox get`, still work.
+`kantel help` lists every command, and `kantel help <command>` (or `--help` after one) shows its flags; the [command reference](/tools/cli-reference/) has them all. `ls` is short for `list` and `rm` for `delete`. The first CLI's spellings, such as `kantel sandbox create` and `kantel sandbox get`, still work.
 
 | Group | Commands |
 | --- | --- |
@@ -313,10 +340,10 @@ When Kantel can't be reached, or a proxy in front of it fails (a 502, 503 or 504
 | [Webhooks](/monitoring/webhooks/), events and [OpenTelemetry](/monitoring/opentelemetry/) | `webhook list`, `webhook create`, `webhook rm`, `webhook test`, `events`, `telemetry get`, `telemetry set`, `telemetry rm` |
 | [Your own hosts](/own-hosts/) (experimental): machines of your own | `hosts add [name]`, `hosts list`, `hosts info`, `hosts drain [--off]`, `hosts rm` |
 | [Coding agents](/coding-agents/) | `init`, `mcp`, `agents` |
-| This command | `update [--check] [--version V]`, `version` |
+| This command | `update [--check] [--version V] [--force]`, `version`, `help`, `completion` |
 
 `kantel key create agent --preset agent` makes a key for a coding agent and prints its secret once. The other presets are `ci`, `read-only` and `admin`; `--scope` picks scopes one by one, `--sandbox` limits the key to one sandbox and `--expires-days` sets when it stops working.
 
 Listing and joining hosts moved to the operators' command: `kantel-admin host list` and `kantel-admin host add`. See [Hosts](/hosts/).
 
-<!-- Sources: packages/cli/src/commands.ts, packages/cli/src/environments.ts, packages/cli/src/login.ts, packages/cli/src/transfer.ts, packages/cli/src/agents.ts, packages/cli/src/config.ts, packages/cli/scripts/build.ts; device sign-in: packages/compute/src/service.ts (startDeviceLogin, approveDeviceLogin) -->
+<!-- Sources: apps/cli/internal/kantel/update.go, apps/cli/internal/kantel/notice.go, apps/cli/install-cli.sh, packages/cli/src/commands.ts, packages/cli/src/environments.ts, packages/cli/src/login.ts, packages/cli/src/transfer.ts, packages/cli/src/agents.ts, packages/cli/src/config.ts, packages/cli/scripts/build.ts; device sign-in: packages/compute/src/service.ts (startDeviceLogin, approveDeviceLogin) -->

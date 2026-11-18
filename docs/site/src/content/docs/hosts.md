@@ -11,7 +11,7 @@ sidebar:
 `kantel-host`, its settings and the hosts API may still change.
 :::
 
-A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boots microVMs with Firecracker, and isolates with workerd inside a microVM. The host dials out to the control plane over a WebSocket and keeps that connection open, so it needs no inbound port and can sit behind NAT. A sandbox stays on the host it started on, since its disk and memory are there.
+A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boots microVMs with Firecracker, and isolates with `kantel-isolate`, Kantel's V8 runtime, inside a microVM. The host dials out to the control plane over a WebSocket and keeps that connection open, so it needs no inbound port and can sit behind NAT. A sandbox stays on the host it started on, since its disk and memory are there.
 
 You bring the hosts, whether you use the hosted control plane at app.kantel.dev or run your own. [Quick start](/quickstart/) adds one host to app.kantel.dev, and [Self-host quick start](/self-hosting/quickstart/) joins one on the control plane's own machine. This page covers each step in full, for any number of machines.
 
@@ -61,7 +61,7 @@ ok      mkfs.erofs             mkfs.erofs (bundle mounts)
 ok      disk                   412 GiB free at /var/lib, which will hold /var/lib/kantel-host (20 GiB or more recommended)
 ok      memory                 128776 MiB (4 GiB or more recommended)
 
-This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, inside a microVM).
+This machine can run both tiers: microVMs (Firecracker) and isolates (kantel-isolate, inside a microVM).
 ```
 
 On a machine that already has `kantel-host`, `sudo kantel-host doctor` runs the same checks.
@@ -199,7 +199,7 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 ==> Install kantel-host 0.3.0
   copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
 ==> Fetch Firecracker and the sandbox images
-  check  images host-images-20261107.1 from https://kantel.example.com/v1/hosts/images/manifest.json
+  check  images host-images-20261114 from https://kantel.example.com/v1/hosts/images/manifest.json
   mkdir  /var/lib/kantel-host (mode 0755)
   mkdir  /var/lib/kantel-host/bin (mode 0755)
   get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
@@ -230,9 +230,12 @@ It ends with what install leaves to the service, as above. The real output has t
 | `--label KEY=VALUE` | A label. Repeat it, or separate several with commas |
 | `--images DIR\|URL` | Where to get the kernel and images. Default: the control plane's `/v1/hosts/images` |
 | `--tiers LIST` | `microvm`, `isolate` or both, comma-separated. Default: what the machine can run |
-| `--isolate-runtime native` | Run isolates with workerd on the host itself, with no KVM. For trusted code only |
+| `--isolate-runtime native` | Run isolates with `kantel-isolate` on the host itself, with no KVM. For trusted code only |
 | `--proxy-data-path` | Send sandboxes' traffic on to the account's [upstream proxy](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy). Experimental |
 | `--inject-guest-agent` | Boot microVMs through Kantel's initramfs, which puts the guest agent into [any Linux image](/sandboxes/custom-images/). Experimental |
+| `--mesh-port PORT` | The UDP port of the WireGuard mesh with the other hosts in the host's pool. Default `51820`; `-1` turns the mesh off. See [The pool mesh](#the-pool-mesh) |
+| `--mesh-endpoint HOST:PORT` | Where the host's pool peers reach it besides its own addresses, such as a forwarded port. Repeat it, or separate several with commas |
+| `--sync-rate MBIT` | The most the host moves to and from its pool peers over the mesh, in Mbit/s, each way. Default: half the speed of the link its default route uses (half of 1 Gbit/s when that isn't known); `-1` sets no limit |
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
@@ -240,15 +243,21 @@ It ends with what install leaves to the service, as above. The real output has t
 
 Put any of these after the token in the join command. `sudo kantel-admin host join --url … --token …` on the machine runs the same installer, and `kantel-admin host add --ssh root@builder-1` runs the printed command on the machine over SSH.
 
+### The pool mesh
+
+Hosts in a pool with sync on join a WireGuard mesh with each other, for moving disks between them. Sync is off by default: turn it on with `kantel-admin pool sync <pool> on` (or `kantel pools sync <pool> on` for an account's own hosts). Each host makes its key the first time it starts (kept in `/var/lib/kantel-host/mesh`, never sent anywhere) and brings up a device named `kmesh0` with an IPv6 address the control plane gives it. Peers connect directly to each other's addresses on UDP port 51820, IPv6 ones first, so that port must be reachable between the pool's hosts over IPv6 or IPv4. `kantel-host` accepts it itself in iptables. Over the mesh a host accepts only the peer sync port (TCP 7480) from its pool's addresses, forwards nothing, and its sandboxes can't reach it. A host in a pool without sync keeps the device down. The mesh needs `ip6tables` and `/dev/net/tun`.
+
+Over the mesh, hosts fetch sticky disk versions from each other. A host fetches only the 4 MiB blocks that differ from the newest version of the disk it already has. It checks each block against the version's block map, and it carries on from where it stopped after a restart. A sandbox never waits for a fetch: one created with a version its host doesn't have yet starts on the host's newest version, and the host fetches the one it asked for in the background. Hosts share templates' images the same way: a host that builds a template on a published base, or on a Dockerfile or image the account gave, first fetches the image's root filesystem from a host in its pool that already pulled or built it, and pulls or builds it itself only when none has. The snapshot of a template on a Kantel base (its machine, booted once with its setup run) is built on one host of the pool, then copied to the pool's other hosts on the same CPU, Firecracker and guest kernel, so a sandbox made from the template starts from it on whichever of them has the most room. A host on another CPU or runtime can't restore that snapshot's memory, so it builds its own. Until a host has its copy or its own snapshot, a sandbox goes to it and boots fresh (about 25 seconds rather than 3) only when the hosts with the snapshot would be at least half full and a quarter fuller than it, so the first host doesn't fill while the others sit empty. A template on a Dockerfile or image reference is copied the same way, but a host takes the copy only over the image the first host built: it fetches that image's root filesystem from a peer and never builds or pulls the image itself, which might give a different image. Its sandboxes then start on any host with a copy, so draining the host that built it doesn't stop them. Saved snapshots travel the same way: a host told to fetch one (`POST /v1/admin/hosts/{hostId}/snapshot-fetches`, or a create from it that no holder has room for) first gets the image its disk is a layer over (the host image version from its release, which needs image patching, or the template's root filesystem from a peer), then the disk, and the memory only when its CPU and its Firecracker, kernel and image are the same as the host it was saved on; otherwise a sandbox made from its copy boots on the disk. The snapshot's sticky disks come with it, so a sandbox made from a copy has them either way. When the snapshot's sandbox had bundles mounted, its memory restores on the other host only once that host has the same bundle images, the very files the sandbox had mounted, fetched from a peer (starting from the host's own copy of each bundle, so only the blocks that differ travel); until then a sandbox made from the copy boots on its disk and mounts its bundles again. Kantel keeps each saved snapshot on a second host of its pool this way, and copies it again when a host with a copy is revoked or away for a day ([Two copies](/snapshots/saved/#two-copies)). Deleting a saved snapshot deletes the copies too. Peer sync is held to `--sync-rate` each way (`syncRateMbit` in the config), and a host fetches at most two versions at once (`syncFetches`).
+
 ### Without KVM
 
-A machine with no usable `/dev/kvm` can still run isolates, with workerd straight on the host rather than inside a microVM:
+A machine with no usable `/dev/kvm` can still run isolates, with `kantel-isolate` straight on the host rather than inside a microVM:
 
 ```sh
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_… --tiers isolate --isolate-runtime native --images …
 ```
 
-workerd isn't a hardened sandbox, so give such a host only code you trust. Its images need `workerd-amd64` (or `workerd-arm64`) in the manifest, and the repository has no script yet that puts it there.
+Every isolate of an account then runs in one process on the host, with no VM around it, so give such a host only code you trust. `kantel-host` keeps accounts' runtimes apart as far as it can without one: each runs as a uid of its own (from 1900000000), in a cgroup of its own (`/sys/fs/cgroup/kantel-isolate`, with the account's memory as `memory.max` and a `pids.max`), and reaches the host only through Unix sockets in its own directory under `/run/kantel-isolate`. A host installed with workerd and updated by its binary alone keeps running workerd, with a warning in its log, until the install command is run again. The install fetches `kantel-isolate-amd64` (or `-arm64`) and `isolate-assets-amd64.tar.gz` from the images, which image releases carry from the first one built with `kantel-isolate`; older releases have neither. The binary needs glibc 2.36 or later.
 
 ## Check on a host
 
@@ -277,6 +286,8 @@ host_u7nfa06bgsim  builder-1  online  dev      microvm  1          just now
 
 A host is `online`, `draining`, `unreachable` (registered, but not connected now) or `revoked`. `host info` adds its machine, whether it has KVM, its labels and when it joined.
 
+A connected host sends a heartbeat every 15 seconds. If nothing at all arrives from a host for three heartbeats (45 seconds), for example because the network between it and Kantel drops packets without closing the connection, Kantel closes the connection. The host then shows as `unreachable`, and calls to it fail straight away instead of waiting for their own timeouts. The host's sandboxes keep running, and the host reconnects as soon as it can reach Kantel again.
+
 Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each running sandbox's CPU and memory, and a microVM's disk and IO pressure. It measures CPU and memory from its own side and runs nothing in a sandbox to do it; only the guest knows its disk and IO, so its agent answers those:
 
 - A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is what the guest itself counts as used, its total less its available memory, as `free -m` shows it in the guest. The guest's kernel reports those figures to Firecracker through a virtio-balloon device that only reports (it never takes memory from the guest), and the host reads them from Firecracker, so nothing runs in the sandbox. Page cache isn't counted, and the figure falls when the guest frees memory.
@@ -298,7 +309,7 @@ A host's admin can also limit how much each account keeps in saved snapshots on 
 
 ### Memory
 
-Every heartbeat also carries the host's memory, which the host record has as `memory`, `kantel hosts info` prints and the console shows when you open a host's row: the machine's memory (or the smallest limit of the control groups kantel-host runs in), what it keeps for itself (`reserveMiB`) and the rest, for sandboxes (`capacityMiB`); what its sandboxes were given (`reservedMiB`) and what its microVMs count for (`committedMiB`, below); what their guests use (`guestUsedMiB`) and what their Firecracker processes hold of the machine, page cache included (`residentMiB`); and the machine's available memory, swap in use and memory pressure (PSI, the share of the last 10 seconds some task, or every task, waited on memory). Available memory is never more than any of those control groups has left: a larger limit above, such as a slice shared with other services, can have the least. The host reads these figures for each heartbeat even with usage readings off. `mode` says how the host admits sandboxes, `reserved` or `used`, and `state` how short of memory it is: `ok`, `tight`, `refusing` or `critical`. A host that predates this sends none.
+Every heartbeat also carries the host's memory, which the host record has as `memory`, `kantel hosts info` prints and the console shows when you open a host's row: the machine's memory (or the smallest limit of the control groups kantel-host runs in), what it keeps for itself (`reserveMiB`) and the rest, for sandboxes (`capacityMiB`); what its sandboxes were given (`reservedMiB`) and what its microVMs count for (`committedMiB`, below); what their guests use (`guestUsedMiB`) and what their Firecracker processes hold of the machine, page cache included (`residentMiB`); and the machine's available memory, swap in use and memory pressure (PSI, the share of the last 10 seconds some task, or every task, waited on memory). Available memory is never more than any of those control groups has left, counting the page cache the kernel can drop there as left, as the machine's available memory does (clean file cache: not tmpfs or shared memory, and not cache still to be written): a larger limit above, such as a slice shared with other services, can have the least. The host reads these figures for each heartbeat even with usage readings off. `mode` says how the host admits sandboxes, `reserved` or `used`, and `state` how short of memory it is: `ok`, `tight`, `refusing` or `critical`. A host that predates this sends none.
 
 ### Memory over-commit
 
@@ -317,9 +328,11 @@ When sandboxes all want their memory at once, the host acts in steps. It reads t
 1. Its VMs' balloons report the memory their guests free (free page reporting), so Firecracker gives it back to the machine.
 2. `tight`, with less than twice `reserveMemoryMiB` available or memory pressure above 5%: it takes page cache back from the VMs holding the most of it, inflating each one's balloon for a few seconds and then giving the memory back, empty.
 3. `refusing`, with less than `reserveMemoryMiB` available, pressure above 20% or the machine swapping (256 MiB more swapped out within a minute): it refuses new sandboxes (`exhausted`) and reports no free memory.
-4. `critical`, with less than half `reserveMemoryMiB` available or every task waiting on memory 20% of the time or more, twice in a row (a second apart), or its control group within a quarter of `reserveMemoryMiB` of its limit: the guest of the VM holding the most memory now kills its largest process, as its own kernel would when out of memory, so a command running then says the sandbox ran out of memory. Then, every 5 seconds while it stays critical, the next VM holding the most (one asked in the last 10 seconds is left while what it freed comes back, and with every VM asked that recently, the host waits), and every second while the group is at its limit. A VM asked twice in a minute that still holds the most, or whose guest doesn't answer, is stopped, with the error that the host ran short of memory. A VM that started or resumed since the last reading counts from its first, and one taking page cache back (step 2), being snapshotted or stopping is still considered. A step against a VM whose sandbox has since been recovered onto a new VM is dropped, never taken out on the new one, and one against a sandbox a stop, snapshot or recovery holds isn't taken or waited for: the next step passes that VM over for 5 seconds.
+4. `critical`, with less than half `reserveMemoryMiB` available or every task waiting on memory 20% of the time or more, twice in a row (a second apart), or its control group within a quarter of `reserveMemoryMiB` of its limit, the page cache the kernel can drop there counted as room: the guest of the VM holding the most memory now kills its largest process, as its own kernel would when out of memory, so a command running then says the sandbox ran out of memory. Then, every 5 seconds while it stays critical, the next VM holding the most (one asked in the last 10 seconds is left while what it freed comes back, and with every VM asked that recently, the host waits), and every second while the group keeps reaching its limit with less than half `reserveMemoryMiB` of that cache left to drop. A group that has read or written a lot fills with page cache up to its limit, which the kernel drops as its VMs need the room, so that alone isn't short of memory; the VMs' own memory taking the room is, and so is the kernel stalling them to reclaim cache they keep reading back (the pressure). Each of the guard's warnings in the host's log says why it is critical (`why=`: `available`, `pressureFull`, `atLimit` or `groupHeadroom`), with the figures it went by: `availableMiB`, `reserveMiB`, `pressureFull`, `groupMaxMiB`, `groupHeadroomMiB` (the room to the limit), `groupCacheMiB` (the cache it can drop) and `groupLimitHits`. A VM asked twice in a minute that still holds the most, or whose guest doesn't answer, is stopped, with the error that the host ran short of memory. A VM that started or resumed since the last reading counts from its first, and one taking page cache back (step 2), being snapshotted or stopping is still considered. A step against a VM whose sandbox has since been recovered onto a new VM is dropped, never taken out on the new one, and one against a sandbox a stop, snapshot or recovery holds isn't taken or waited for: the next step passes that VM over for 5 seconds.
 
-Every VM's Firecracker process is also the machine's own out-of-memory killer's first choice, so the host's processes are never the ones it ends.
+Every VM's Firecracker process is also the machine's own out-of-memory killer's first choice (`oom_score_adj` 500, set as it starts, over-commit on or off), so the host's own processes are left while a VM can be ended instead. A VM the kernel ends that way stops with the error that the host ran out of memory, from the kernel's log, also when it happens while kantel-host restarts. The service keeps running past it (`OOMPolicy=continue` in its systemd unit): by default systemd fails a unit whose process the kernel kills for memory and restarts kantel-host, which dropped its connection to Kantel for the loss of one VM. A host installed before this reads its unit at start and, where it is the one an earlier release installed, unchanged, brings it up to date itself.
+
+By default nothing else stops a host whose guests fill the memory they were given (CI runners do, with page cache) from running out: with `overcommitMemory` 1.5, a host of 128 GiB admits about 168 GiB of sandboxes. For such work, set `overcommitMemory` to `1`, or turn memory over-commit on so the steps above act first.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -343,7 +356,7 @@ An isolate's processes aren't listed: an account's isolates share one runtime, s
 
 Kantel picks a host when a sandbox is created. A host can take the sandbox if it is connected, not draining or revoked, runs the sandbox's type, offers its size, has every label the sandbox asks for, and has the memory and disk free. Among those, Kantel prefers, for an isolate, a host already running the account's isolates, then the most free memory, then the lowest load.
 
-Once placed, a sandbox stays on its host. Stop, start, resume and fork all happen there, and so does a sandbox made from one of its snapshots.
+Once placed, a sandbox stays on its host. Stop, start, resume and fork all happen there. A sandbox made from a saved snapshot can go on any host of the snapshot's pool: one holding it with room first (the host it was saved on, or one with a copy), preferring a host whose copy restores the snapshot's memory. With none, another host in the pool fetches the snapshot from a holder first, its disk only unless its memory also restores there, and the sandbox starts there once it has. The sandbox's `startup` then says how long the fetch took (`fetchMs`), and, for a snapshot with memory, whether the memory was restored (`restoredMemory`); one that wasn't booted on the snapshot's disk. That needs hosts that sync snapshots (current `kantel-host`, in a pool with sync on), and a saved snapshot made on such a host: older ones stay on the host they were saved on and its copies.
 
 To keep a sandbox on certain hosts, give the create `hostLabels`. The host must have every label:
 
@@ -377,7 +390,7 @@ A microVM's disk can be chosen apart from its vCPUs and memory: `resources.diskG
 
 Hosts keep no warm microVMs waiting for a create, hosted or self-hosted: an idle VM holds its memory, and the machine may be doing other things. A create restores a template snapshot from the host's disk instead, in a few hundred milliseconds. A host keeps one template per vCPU count, whatever the memory and disk: a sandbox restored from it is given the rest of its memory (virtio-mem) and has its disk grown. The host makes the sizes' counts in the background when it starts, about a gigabyte of disk each; the first create of another count boots from scratch, in a few seconds, while that count's template is made for the next. Once one is made, the host removes any template it kept per size (an update from a version before these), as no create uses them. With `microvm.sharedTemplate` set to `false` in the settings file, a host keeps a template per size instead, made the first time the size is asked for, and a shape off the sizes always boots from scratch. `KANTEL_COMPUTE_POOLS`, which once set warm pools, is ignored with a warning. A `kantel-host` from before then is told to keep none, so it makes no more. It can't end a warm VM it already has: its next create of that size takes it, and updating the host (the new version clears them when it starts) ends the rest.
 
-An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 by default); it shares its account's VM's CPU. Kantel records what it asked for, but workerd can't hold one isolate to a memory limit yet: the account's VM's memory is the limit its isolates share.
+An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 by default); it shares its account's VM's CPU. A host whose `kantel-isolate` says so holds each isolate to it, its heap, ArrayBuffers and WebAssembly memory together, and `GET /v1/sandbox-shapes` says `isolate.enforced: true` when every host your isolates may go to does. A host from before only records it. Either way the account's VM's memory is the limit its isolates share.
 
 ## Update a host
 
@@ -418,10 +431,11 @@ Every connected host on another version then fetches that version from Kantel's 
 
 ```sh
 kantel-admin host drain host_u7nfa06bgsim          # no new sandboxes; --undo takes it back
+kantel-admin host evacuate host_u7nfa06bgsim --wait  # drain it and move its sandboxes off
 kantel-admin host revoke host_u7nfa06bgsim --yes   # its credential stops working
 ```
 
-Draining stops new sandboxes going on a host, and the ones already there keep running. Revoking closes its connection and refuses its credential, so its sandboxes can't be reached until it joins again with a new token. Removing a host on the console's **Hosts** page revokes it.
+Draining stops new sandboxes going on a host, and the ones already there keep running. To update, resize or retire a host without anyone losing a sandbox, move its sandboxes off: `host evacuate`, or **Move sandboxes off** in a host's menu on the console's **Hosts** page, drains it and moves each running, stopped and paused sandbox to another host in its pool, two at a time. Each moves as `kantel move` does by default: with its memory where the two hosts' CPU and runtime match, restarted otherwise, and a stopped one boots on its new host. One that can't move is skipped with the reason: an isolate, one whose create named the host, one in error, or one no other host in its pool can take. It carries on through a control plane restart; `host evacuation <id>` and the host's row show how far it has got, and undraining the host stops it once the moves under way finish. Revoking closes its connection and refuses its credential, so its sandboxes can't be reached until it joins again with a new token. Removing a host on the console's **Hosts** page revokes it.
 
 To take `kantel-host` off the machine:
 

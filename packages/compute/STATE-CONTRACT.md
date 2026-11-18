@@ -30,6 +30,7 @@ opaque JSON document.
 | `telemetry`, `proxies` | OTLP export and egress proxy settings per account | as configured |
 | `hosts`, `joinTokens` | the API's view of hosts (name, labels, drain, revoke) and join tokens | SHA-256 only |
 | `events` | the event log | none |
+| `eventOutbox` | events whose webhook deliveries may not be queued yet, written with the event (`eventWrites`) | none |
 | `idempotency` | an idempotent call's claim on its key while it works, then its first answer, by caller, operation and key | none |
 | `deviceLogins` | device sign-in (RFC 8628 style) | a key secret, until collected (at most 15 minutes) |
 
@@ -122,7 +123,12 @@ protect anything across gateways.
 go together: the membership and the account; the host registry, the API's host records and the proxy settings; an
 event and its webhook lookup. Writes another record depends on don't: the sandbox is stored before its
 `sandbox.created` event (who may see an event is decided by its sandbox, so an event must never be visible before it),
-and an event before its webhook deliveries (`enqueue(event, written)` queues nothing if the event's write fails). The backend's hosts are read once per create, not
+and an event before its webhook deliveries (`enqueue(event, written)` queues nothing if the event's write fails). An
+event's outbox record (§5) is written in the event's own request, so it costs the create no round: one statement in
+Postgres (the event's upsert a data-modifying `WITH`, since a Postgres batch is a request a statement), one batch in D1
+and SQLite; the record's insert is
+conditional on a webhook that wants the event, so an event none wants (the create's, here) needs no statement to clear
+it either. The backend's hosts are read once per create, not
 twice, and without their placements. Nothing written is read back: the host registry answers the placement it wrote,
 `boot()` moves the sandbox to `running` from the record as written (`update` with `expected`, §2), and the call
 answers the record `boot()` wrote. `packages/hosts/test/create-statements.test.ts` fails if the create needs more.
@@ -171,7 +177,7 @@ across gateways.
   memory. A create of a named size restores that size's template snapshot on the host (about 210 ms); a shape off the
   sizes cold-boots. There is nothing to claim, so nothing two gateways could double-claim. The welcome still sends
   `pools: {}` so a host from before pools were removed ends any it kept; `KANTEL_COMPUTE_POOLS` is ignored. Inside an
-  isolate tier VM, workerd still keeps isolates pre-loaded for its account (`ISOLATE_POOL_SIZE`).
+  isolate tier VM, kantel-isolate still keeps isolates pre-loaded for its account (`ISOLATE_POOL_SIZE`).
 - **Placement.** The scheduler (`packages/hosts/src/scheduler.ts`) picks among the hosts *this gateway* sees as
   connected. It subtracts what it has placed since each host's last heartbeat (`reserved`, kept in memory per process).
   Two gateways placing at once don't see each other's reservations, so they can place more on one host than its
@@ -193,6 +199,16 @@ across gateways.
 - **Webhook deliveries** are leased. A dispatcher claims a due delivery by moving `nextAttemptAt` past its request
   timeout plus 5 s, with `update`. If the dispatcher dies, the delivery falls due again when that lease expires, so a
   delivery is sent at least once and normally exactly once.
+- **Every stored event is delivered (LLE-19603).** An event and its outbox record (`eventOutbox`, the event's ID) are
+  written together or not at all (`eventWrites.put`: one statement in Postgres, one batch in D1 and SQLite, one turn in
+  memory), when a webhook wants the
+  event. Its deliveries are queued once the write has landed, and only then is the record deleted. A record still
+  there `OUTBOX_GRACE_MS` (30 s) after its event is one whose gateway died, or failed to queue, in between: any
+  dispatcher's `drain()` claims it (leased, as deliveries are), queues the event's deliveries and deletes it. A
+  delivery's ID comes from its event's and its webhook's, and is `insert`ed, so queueing an event twice (that
+  catch-up, a retry, or an event stored again under its ID) adds no delivery. Receivers drop the duplicates that
+  at-least-once delivery still allows by `webhook-id`, which is the event's ID on every attempt. A webhook created as
+  an event is written may or may not get it.
 - **Device sign-ins** move `pending` → `approved`/`denied` with `update`. The secret is collected once.
 
 ## 6. Relay: tunnel tickets, port exposures and grants

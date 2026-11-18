@@ -209,6 +209,51 @@ describe.skipIf(databaseUrl === "")("the gateway on Postgres", () => {
 		);
 	});
 
+	test("gateways starting together on an empty database all start, and the schema they make is complete", {
+		timeout: 120_000,
+	}, async () => {
+		// No schema yet: each gateway creates it and runs every migration (audit, identity, compute, hosts, relay) at
+		// once. Without the advisory locks some of them fail on a duplicate key in the catalogue.
+		const computeHosts = { publicUrl: "http://127.0.0.1:58090", portsDomain: "kantel-ports.test" };
+		// A schema's tables and indexes, by name.
+		const tables = async (schema: string) =>
+			(
+				await sql(
+					`SELECT tablename AS name FROM pg_tables WHERE schemaname = '${schema}'
+					 UNION ALL SELECT indexname FROM pg_indexes WHERE schemaname = '${schema}' ORDER BY name`,
+				)
+			).rows.map((row) => String(row.name));
+		// What one gateway on hosts makes, alone.
+		const alone = `${config.schema}_alone`;
+		schemas.push(alone);
+		await (await createDurableGatewayComponents({ ...config, schema: alone, computeHosts })).close();
+		const expected = await tables(alone);
+		expect(expected).toEqual(
+			expect.arrayContaining([
+				"audit_events",
+				"identity_organisations",
+				"compute_api_records",
+				"compute_hosts",
+				"compute_relay_tickets",
+			]),
+		);
+		const gateways = 8;
+		for (let round = 0; round < 3; round++) {
+			const schema = `${config.schema}_together_${round}`;
+			schemas.push(schema);
+			const started = await Promise.allSettled(
+				Array.from({ length: gateways }, () =>
+					createDurableGatewayComponents({ ...config, schema, computeHosts, cluster: { heartbeatMs: 60_000 } }),
+				),
+			);
+			for (const result of started) if (result.status === "fulfilled") await result.value.close();
+			expect(started.filter((result) => result.status === "rejected").map((result) => String(result.reason))).toEqual(
+				[],
+			);
+			expect(await tables(schema)).toEqual(expected);
+		}
+	});
+
 	test("the bootstrap makes its named projects once, and a new name brings a new key over them all", {
 		timeout: 60_000,
 	}, async () => {

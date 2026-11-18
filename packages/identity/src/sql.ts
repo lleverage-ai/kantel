@@ -105,6 +105,8 @@ export interface SqlIdentityOptions extends MemoryIdentityOptions {
 
 /** The advisory lock every Postgres project insert takes, so projects commit in `seq` order. */
 const PROJECT_ORDER_LOCK = "SELECT pg_advisory_xact_lock(7316102019)";
+/** The advisory lock a Postgres migration takes, so gateways starting at once don't race to create the tables. */
+const MIGRATE_LOCK = "SELECT pg_advisory_xact_lock(7316102023)";
 
 /** The tables and indexes, for `migrateIdentity` or a target's own migrations. Every statement is idempotent. */
 export function identitySchema(dialect: SqlDialect): readonly string[] {
@@ -243,9 +245,13 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 	];
 }
 
-/** Creates the identity tables if they are missing. */
+/**
+ * Creates the identity tables if they are missing, in one batch. On Postgres the batch takes an advisory lock first: two
+ * `CREATE ... IF NOT EXISTS` at once can still both try to create, and one fail.
+ */
 export async function migrateIdentity(driver: SqlDriver): Promise<void> {
-	await driver.batch(identitySchema(driver.dialect).map((text) => ({ sql: text })));
+	const statements = identitySchema(driver.dialect).map((text) => ({ sql: text }));
+	await driver.batch(driver.dialect === "postgres" ? [{ sql: MIGRATE_LOCK }, ...statements] : statements);
 }
 
 /** `column` is one of the strings in the JSON array bound as one parameter, so a list never meets D1's 100-parameter cap. */

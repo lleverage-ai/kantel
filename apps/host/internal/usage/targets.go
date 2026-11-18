@@ -37,7 +37,7 @@ type GuestStats struct {
 }
 
 // Shared is a process that runs several sandboxes, which can't be measured apart from the host's side: an account's
-// isolate VM (or, with the native runtime, its workerd). Its CPU and memory are shared out among its sandboxes
+// isolate VM (or, with the native runtime, its kantel-isolate). Its CPU and memory are shared out among its sandboxes
 // (Attribute).
 type Shared struct {
 	// Key names the process's run for the counters, apart from its pid (an account's VM, then another one).
@@ -63,7 +63,7 @@ type Busy struct {
 
 // Attribute shares out a shared process's CPU seconds over an interval among its sandboxes by the time each spent
 // running commands in it in that interval (busy, in seconds). With no sandbox busy, none is given any: what the
-// process used then (workerd idling, the VM's kernel) was no sandbox's doing. Sandboxes busy at the same time get the
+// process used then (the runtime idling, the VM's kernel) was no sandbox's doing. Sandboxes busy at the same time get the
 // CPU in proportion to their busy time, which is fair only on average: one busy sandbox spinning and another waiting
 // on its files look the same from outside.
 func Attribute(cpuSeconds float64, busy map[string]float64) map[string]float64 {

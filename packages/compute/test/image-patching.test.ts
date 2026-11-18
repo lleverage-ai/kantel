@@ -2,7 +2,7 @@ import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { BootOptions, SandboxBackend } from "../src/backend.ts";
+import { type BootOptions, bootDroppedMemory, type SandboxBackend } from "../src/backend.ts";
 import type { BaseImages } from "../src/base-status.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { CLAIM_LAPSED } from "../src/service.ts";
@@ -39,6 +39,8 @@ function versionedStub(ready?: () => void | Promise<void>) {
 	const calls: string[] = [];
 	const running = new Set<string>();
 	const prepared: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string }[] = [];
+	/** For a test: an error a start fails with instead of booting. */
+	let refuseStart: ((how: BootOptions) => Error | undefined) | undefined;
 	const backend: SandboxBackend = {
 		...stub,
 		async prepareRebase(sandboxId, how) {
@@ -56,6 +58,8 @@ function versionedStub(ready?: () => void | Promise<void>) {
 		async start(sandboxId, how) {
 			starts.push(how);
 			calls.push("start");
+			const refused = refuseStart?.(how);
+			if (refused !== undefined) throw refused;
 			const placement = await stub.start(sandboxId, how);
 			running.add(sandboxId);
 			if (how.rebase === true) bases.set(sandboxId, { base: HOST_LATEST, baseAt: tick() });
@@ -70,11 +74,19 @@ function versionedStub(ready?: () => void | Promise<void>) {
 			return on === undefined ? taken : { ...taken, base: on.base };
 		},
 	};
-	return { backend, starts, prepared, calls };
+	return {
+		backend,
+		starts,
+		prepared,
+		calls,
+		refuseStartWith: (refuse: typeof refuseStart) => {
+			refuseStart = refuse;
+		},
+	};
 }
 
 function setup(baseImages?: BaseImages, ready?: () => void | Promise<void>) {
-	const { backend, starts, prepared, calls } = versionedStub(ready);
+	const { backend, starts, prepared, calls, refuseStartWith } = versionedStub(ready);
 	const api = createComputeApi({
 		backend,
 		authenticatePerson: async (request) => {
@@ -92,7 +104,16 @@ function setup(baseImages?: BaseImages, ready?: () => void | Promise<void>) {
 			fetch: (input, init) =>
 				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 		});
-	return { api, backend, starts, prepared, calls, tom: client("tom-token"), root: client("root-token") };
+	return {
+		api,
+		backend,
+		starts,
+		prepared,
+		calls,
+		refuseStartWith,
+		tom: client("tom-token"),
+		root: client("root-token"),
+	};
 }
 
 const indexed: BaseImages = { indexUrl: "https://example.test/index.json", index: async () => INDEX };
@@ -170,6 +191,27 @@ describe("image patching on", () => {
 		await api.service.idle();
 		expect((await api.store.sandboxes.get(sandbox.id))?.lifecycle).toBe(lifecycle);
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+	});
+
+	it("never restarts a sandbox whose move is under way, as another gateway would find it", async () => {
+		const { api, tom, starts } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		// Its machine exited as a running sandbox's first copy was made: `error`, its move still on it.
+		const at = Date.now();
+		await api.store.sandboxes.update(sandbox.id, (latest) => ({
+			...latest,
+			state: "error",
+			moving: { operationId: "mov_1", at, heartbeatAt: at, phase: "copying", from: "running", before: {} },
+		}));
+		const before = starts.length;
+		const refused = await failure(tom.restartSandboxOnLatest(sandbox.id));
+		expect(refused.code).toBe("conflict");
+		expect(refused.message).toContain("moving");
+		expect(starts.length).toBe(before);
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({
+			state: "error",
+			moving: { operationId: "mov_1" },
+		});
 	});
 
 	it("keeps a restart's key when its stop fails part way, so a retry never ends commands again", async () => {
@@ -347,6 +389,162 @@ describe("image patching on", () => {
 		await api.service.idle();
 		expect(calls).toEqual(["start"]);
 		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
+	});
+
+	it("kills the commands a paused sandbox kept running when it restarts on the latest base, saying why", async () => {
+		const { api, tom } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const accountId = (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "";
+		// Older than a command its backend doesn't know is taken as lost after: killed all the same, never asked.
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId,
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		// Its kill can't be written: it restarts all the same, and a read of the command then kills it.
+		const update = api.store.commands.update.bind(api.store.commands);
+		api.store.commands.update = async () => {
+			throw new Error("the store went away");
+		};
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		api.store.commands.update = update;
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		expect(await tom.getCommand(sandbox.id, "cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("started afresh from its disk, which let go of the memory it was paused with"),
+		});
+	});
+
+	/** A paused sandbox with a command its memory kept running, whose restart on latest its backend fails with `error`. */
+	async function failedRestartFromPaused(error: Error) {
+		const { api, tom, refuseStartWith } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		refuseStartWith((how) => (how.rebase === true ? error : undefined));
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		refuseStartWith(undefined);
+		const failed = await api.store.sandboxes.get(sandbox.id);
+		expect(failed?.state).toBe("error");
+		expect(failed?.memoryDropping).toBeUndefined();
+		return { api, tom, sandbox, failed };
+	}
+
+	it("kills a paused sandbox's commands when its restart on latest fails after its backend let go of the memory", async () => {
+		const { api, tom, sandbox, failed } = await failedRestartFromPaused(
+			bootDroppedMemory(new KantelError("unavailable", "no free sandbox addresses")),
+		);
+		const why = "started afresh from its disk, which let go of the memory it was paused with";
+		expect(failed?.memoryDropped).toMatchObject({ generation: 1, why: expect.stringContaining(why) });
+		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining(why),
+		});
+		// Started again from its disk: a command now is of its new memory, and the killed one stays killed.
+		await tom.startSandbox(sandbox.id, { wait: true });
+		expect((await api.store.sandboxes.get(sandbox.id))?.memoryDropped?.generation).toBe(1);
+		expect((await tom.getCommand(sandbox.id, "cmd_kept")).state).toBe("killed");
+	});
+
+	it("kills them by the sweep when its failed restart's own kill couldn't be written", async () => {
+		const { api, tom, refuseStartWith } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		refuseStartWith((how) =>
+			how.rebase === true ? bootDroppedMemory(new KantelError("unavailable", "no free sandbox addresses")) : undefined,
+		);
+		const update = api.store.commands.update.bind(api.store.commands);
+		api.store.commands.update = async () => {
+			throw new Error("the store went away");
+		};
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		api.store.commands.update = update;
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("error");
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("started afresh from its disk"),
+		});
+	});
+
+	it("kills them when a retry from error, after a restart that failed before the drop, fails after it", async () => {
+		const { api, tom, refuseStartWith } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { keepMemory: true, wait: true });
+		await api.store.commands.put({
+			id: "cmd_kept",
+			sandboxId: sandbox.id,
+			accountId: (await api.store.sandboxes.get(sandbox.id))?.accountId ?? "",
+			command: "./serve",
+			state: "running",
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now() - 120_000,
+			detached: true,
+		});
+		// First refused before the host let the memory go: still running, nothing pending.
+		refuseStartWith(() => new KantelError("exhausted", "no room"));
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "error", memoryDropping: undefined });
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
+		// Retried from error, it fails after the drop.
+		refuseStartWith(() => bootDroppedMemory(new KantelError("unavailable", "no free sandbox addresses")));
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		refuseStartWith(undefined);
+		const failed = await api.store.sandboxes.get(sandbox.id);
+		expect(failed?.state).toBe("error");
+		expect(failed?.memoryDropped?.generation).toBe(1);
+		expect(await api.store.commands.get("cmd_kept")).toMatchObject({
+			state: "killed",
+			stderr: expect.stringContaining("started afresh from its disk"),
+		});
+	});
+
+	it("leaves a paused sandbox's commands running when its restart on latest fails before its memory went", async () => {
+		const { api, failed } = await failedRestartFromPaused(new KantelError("unavailable", "not on that version yet"));
+		expect(failed?.memoryDropped).toBeUndefined();
+		expect((await api.store.commands.get("cmd_kept"))?.state).toBe("running");
 	});
 
 	it("keeps a custom-shape sandbox's vCPUs, memory and disk when it restarts on the latest base", async () => {

@@ -2,9 +2,11 @@
  * The compute API's `SandboxBackend` over the hosts that joined: each call is placed by the scheduler or relayed to the
  * sandbox's host over its WebSocket. The compute API keeps every record; this keeps only placements (the registry's).
  *
- * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
- * it goes on that host. A template snapshot's `ref` is the same, and a sandbox made from it goes on its host too, or
- * boots the template fresh elsewhere when that host is full. Desktops, browsers and SSH are reached through tunnel URLs
+ * A snapshot's `ref` is `{hostId}/{snapshotId}`, or a saved snapshot's ID alone (`snapshot-refs.ts`). A sandbox made
+ * from one goes on a host holding it with room (`SandboxSpec.snapshotCopies`), else on another eligible host that
+ * fetches it first; a sandbox forked or upgraded from one goes on the host its ref names. A template snapshot's `ref`
+ * is `{hostId}/{snapshotId}`, and a sandbox made from it goes on its host, or any other with a copy of it
+ * (`SandboxTemplateBoot.snapshotHosts`), or boots the template fresh elsewhere when those are full. Desktops, browsers and SSH are reached through tunnel URLs
  * with tickets (`tunnel.ts`): the desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced
  * there when the ticket says so, Chromium's DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
@@ -21,11 +23,16 @@ import {
 	type BackendFileEntry,
 	type BackendHost,
 	type BackendMount,
+	type BackendMountRefresh,
 	type BackendProcessList,
 	type BackendSize,
+	type BackendStickyDiskStatus,
 	type BootOptions,
 	type BuiltTemplate,
+	bootDroppedMemory,
 	type CommandProgress,
+	type CreateOutcome,
+	createOutcomeUnknown,
 	DetachedWaitEnded,
 	type ExecRequest,
 	type ExecResult,
@@ -36,12 +43,25 @@ import {
 	type SandboxBackend,
 	type SandboxSpec,
 	type SandboxTemplateBoot,
+	type SnapshotCopies,
+	type SnapshotMadeOn,
+	type StartOutcome,
+	startOutcomeUnknown,
 	type TakenSnapshot,
 	type TemplateRuntime,
+	type UpgradedPlacement,
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
-import { parseMountsAt, parseStartPhases, withoutAdmission } from "./facts.ts";
+import {
+	cpuFingerprint,
+	isMapDigest,
+	isolateRuntime,
+	parseMountStatuses,
+	parseMountsAt,
+	parseStartPhases,
+	withoutAdmission,
+} from "./facts.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -52,18 +72,26 @@ import {
 	HOST_WRITE_FILE_MAX_BYTES,
 	type HostDiskUsage,
 	type HostEgress,
+	type HostEnvParams,
 	type HostExecParams,
 	type HostExecRef,
 	type HostExecResult,
 	type HostExecStatus,
 	type HostGuest,
+	type HostIsolateRuntime,
 	HostMethods,
 	type HostMount,
+	type HostMountStatus,
+	type HostMountsRefresh,
 	type HostProcessList,
 	type HostSandbox,
+	type HostSandboxMemory,
 	type HostSnapshotKeep,
+	type HostStickyCommitResult,
+	type HostStickyDiskStatus,
 	type HostTemplateBoot,
 	type SandboxTier,
+	SNAPSHOT_VERSIONS,
 } from "./protocol.ts";
 import {
 	type CreateSandboxInput,
@@ -71,10 +99,13 @@ import {
 	type HostsService,
 	hostWasAway,
 	kantelErrorFromHost,
+	memoryDroppedOnHost,
 	mountHandoff,
 	type SandboxPlacement,
+	suspendedOnHost,
 	unanswered,
 } from "./service.ts";
+import { parseSnapshotRef, savedSnapshotId, snapshotRef } from "./snapshot-refs.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { BROWSER_STREAM_PORT, DESKTOP_PORT } from "./desktop.ts";
@@ -96,6 +127,15 @@ const PUBLIC_KEY =
 	/^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$/;
 const FINGERPRINT_MARK = "--kantel-host-key--";
 
+/** What a create whose answer was lost is failed with once its host reconnects without it (`settleCreate`). */
+export const CREATE_LOST =
+	"Its host's connection dropped before it answered the create, and on reconnecting the host didn't have it: start it to make it again";
+/** What a create whose answer was lost is failed with when its host made it and it ended since (`settleCreate`). */
+const CREATE_ENDED =
+	"Its host's connection dropped before it answered the create, and the sandbox it made has ended since";
+/** What a start whose gateway went quiet begins with when its host has it ended (`settleStart`). */
+export const START_ENDED = "Its start was never seen through (its gateway went, or its host's answer was lost)";
+
 /** How long each `sandbox.exec.get` of a detached command asks the host to hold its answer for the command to end. */
 export const EXEC_WAIT_MS = 30_000;
 /** How long a stop whose host is away waits for it to connect again before it fails (`whileHostAway`). */
@@ -109,6 +149,16 @@ const STOP_ATTEMPTS = 3;
 const HOST_SETTLE_MS = 3_000;
 /** How long a stop waiting for its host waits between looks, and between sends. */
 const HOST_RECONNECT_POLL_MS = 1_000;
+/**
+ * How long a create waits for the host it chose to fetch the snapshot it starts from: its disk's blocks over the pool's
+ * mesh, and the root image it is over first where the host lacks it (a host images release, a template's root
+ * filesystem from a peer).
+ */
+export const SNAPSHOT_FETCH_TIMEOUT_MS = 15 * 60_000;
+/** How many hosts a create fetches its snapshot on at most, each one that had no room once it had it passed over. */
+const SNAPSHOT_FETCH_TRIES = 3;
+/** How often a create waiting for a snapshot's fetch reads whether its host has reported it. */
+const SNAPSHOT_FETCH_POLL_MS = 1_000;
 /** A detached command's host out of reach is asked again after this, doubling to `EXEC_RETRY_MAX_MS`. */
 const EXEC_RETRY_MIN_MS = 1_000;
 const EXEC_RETRY_MAX_MS = 30_000;
@@ -130,6 +180,14 @@ export const OLD_HOST_RECONNECT =
  * back and say how it ended.
  */
 export const FOREGROUND_RECONNECT_GRACE_MS = 120_000;
+/**
+ * Why a foreground command's call ended early when its host said its sandbox was stopped keeping its memory as it ran
+ * (`suspendedOnHost`): the command carries on in that memory, and is followed by its ID wherever the sandbox runs next.
+ */
+export const SUSPENDED_COMMAND =
+	"The sandbox was paused or moved to another host keeping its memory as this command ran";
+/** A command followed so, that the sandbox's guest then doesn't know: one from before carrying commands on ended it. */
+export const SUSPENDED_COMMAND_LOST = `${SUSPENDED_COMMAND}, and its guest agent ended it then (its image is from before commands carried on across a pause or a move), so its result is lost`;
 /** A foreground command's limit when it gave none: the guest's default. */
 const GUEST_DEFAULT_LIMIT_MS = 120_000;
 /** Why a kill can't reach the process on a host from before kills. */
@@ -138,11 +196,25 @@ export const OLD_HOST_KILL =
 
 /** A host's `sandbox.exec` answer as the compute API takes it. */
 function execResult(result: HostExecResult): ExecResult {
+	const needs = result.needsMicrovm;
+	const terminated = result.terminated;
 	return {
 		exitCode: result.exitCode,
 		stdout: result.stdout,
 		stderr: result.stderr,
 		timedOut: result.timedOut === true,
+		// From an isolate, as its host said: what it needed a microVM for, and why its runtime stopped it. One the host only
+		// inferred from the shell's answer stays inferred: a hint, which autoUpgrade never acts on.
+		...(needs !== undefined && typeof needs.command === "string" && typeof needs.reason === "string"
+			? {
+					needsMicrovm: {
+						command: needs.command,
+						reason: needs.reason,
+						...(needs.inferred === true ? { inferred: true as const } : {}),
+					},
+				}
+			: {}),
+		...(terminated === "cpu" || terminated === "memory" || terminated === "wall" ? { terminated } : {}),
 	};
 }
 
@@ -203,6 +275,8 @@ export interface HostBackendOptions {
 	readonly now?: () => number;
 	/** Where it warns of what it works around (a host too old for a call); default `console.warn`. */
 	readonly log?: (message: string) => void;
+	/** How long a create waits for a snapshot's fetch (default `SNAPSHOT_FETCH_TIMEOUT_MS`). */
+	readonly snapshotFetchTimeoutMs?: number;
 }
 
 /**
@@ -251,6 +325,9 @@ interface HostSnapshot {
 	/** What of `sizeBytes` is its own, and the files it shares, by holder (`HOST_FEATURES.snapshotSizes`, a keep). */
 	readonly uniqueBytes?: number;
 	readonly shared?: readonly { readonly snapshots: readonly string[]; readonly bytes: number }[] | null;
+	/** What it was made on (`HostSnapshot.cpu` and `runtime` in protocol.ts), checked before it is kept (`madeOn`). */
+	readonly cpu?: unknown;
+	readonly runtime?: unknown;
 }
 
 /** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
@@ -261,25 +338,40 @@ function diskByRef(hostId: string, usage: HostDiskUsage): BackendDiskUsage {
 	return {
 		...rest,
 		snapshotOwnBytes: Object.fromEntries(
-			Object.entries(snapshotOwnBytes).map(([id, bytes]) => [`${hostId}/${id}`, bytes]),
+			Object.entries(snapshotOwnBytes).map(([id, bytes]) => [snapshotRef(hostId, id), bytes]),
 		),
 		snapshotShared: (snapshotShared ?? []).map((group) => ({
-			refs: group.snapshots.map((id) => `${hostId}/${id}`),
+			refs: group.snapshots.map((id) => snapshotRef(hostId, id)),
 			bytes: group.bytes,
 		})),
 	};
 }
 
+/** The longest runtime fingerprint kept from a host's answer. */
+const MAX_RUNTIME_FINGERPRINT = 512;
+
+/** What a host says a snapshot or template snapshot was made on, where it says it as kantel-host does. */
+const madeOn = (made: { readonly cpu?: unknown; readonly runtime?: unknown }): SnapshotMadeOn => {
+	const cpu = cpuFingerprint(made.cpu);
+	const runtime = made.runtime;
+	return {
+		...(cpu === undefined ? {} : { cpu }),
+		...(typeof runtime === "string" && runtime !== "" && runtime.length <= MAX_RUNTIME_FINGERPRINT ? { runtime } : {}),
+	};
+};
+
 const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
-	ref: `${hostId}/${snap.id}`,
+	ref: snapshotRef(hostId, snap.id),
+	hostId,
 	sizeBytes: snap.sizeBytes,
 	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
+	...madeOn(snap),
 	...(snap.memory === true ? { memory: true } : {}),
 	...(typeof snap.uniqueBytes === "number"
 		? {
 				uniqueBytes: snap.uniqueBytes,
 				shared: (snap.shared ?? []).map((group) => ({
-					refs: group.snapshots.map((id) => `${hostId}/${id}`),
+					refs: group.snapshots.map((id) => snapshotRef(hostId, id)),
 					bytes: group.bytes,
 				})),
 			}
@@ -297,13 +389,44 @@ interface HostFileEntry {
 const snapshotId = () =>
 	`snap_${[...crypto.getRandomValues(new Uint8Array(8))].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 
-function parseRef(ref: string): { hostId: string; snapshotId: string } {
-	const [hostId, id, extra] = ref.split("/");
-	if (hostId === undefined || id === undefined || extra !== undefined || hostId === "" || id === "") {
-		throw new KantelError("not_found", "No such snapshot");
-	}
-	return { hostId, snapshotId: id };
+/**
+ * A saved snapshot's ID on a host with `features`: one that syncs snapshots (`HOST_FEATURES.snapshotSync`) names it so
+ * that its ref is the ID alone (`savedSnapshotId`), its holders the catalogue's; any other, as before, by its host.
+ */
+const savedIdOn = (features: readonly string[]): string =>
+	features.includes(HOST_FEATURES.snapshotSync) ? savedSnapshotId() : snapshotId();
+
+/** A ref's parts (`parseSnapshotRef`): its host absent for a saved snapshot's ID alone. `not_found` for any other. */
+function parseRef(ref: string): { readonly hostId?: string; readonly snapshotId: string } {
+	const parsed = parseSnapshotRef(ref);
+	if (parsed === undefined) throw new KantelError("not_found", "No such snapshot");
+	return parsed;
 }
+
+/**
+ * A ref naming its host, for a call to that host (its files, its delete, a fork or upgrade from it): the compute plane
+ * names a copy on a host so. `not_found` for a saved snapshot's ID alone.
+ */
+function onHostRef(ref: string): { readonly hostId: string; readonly snapshotId: string } {
+	const { hostId, snapshotId } = parseRef(ref);
+	if (hostId === undefined) throw new KantelError("not_found", "No such snapshot on a host");
+	return { hostId, snapshotId };
+}
+
+/**
+ * Whether a create from a snapshot restored its memory, as its host's timings say (kantel-host's create from a snapshot
+ * times a `restore` of its memory, or a `boot` on its disk alone); undefined where they say neither.
+ */
+function restoredMemory(sandbox: HostSandbox): boolean | undefined {
+	const timings = sandbox.timings;
+	if (timings?.restore !== undefined) return true;
+	if (timings?.boot !== undefined) return false;
+	return undefined;
+}
+
+/** The ways to place among `hostIds`: all at once (the registry picks the one with most room), then each in turn. */
+const inTurn = (hostIds: readonly string[]): (readonly string[])[] =>
+	hostIds.length > 1 ? [hostIds, ...hostIds.map((hostId) => [hostId])] : [hostIds];
 
 /** A template's base image as a host takes it: its name, and its digest unless there is none (the host's own image). */
 function hostTemplateBase(baseImage: string, baseDigest: string): Pick<HostTemplateBoot, "baseImage" | "baseDigest"> {
@@ -399,14 +522,25 @@ export function fileStreamEnd(reason: string): { readonly size: number } | Kante
  * What a sandbox can do. A microVM's guest report, where its host sent one, says what its image has: an image without
  * a desktop, a browser or Docker can't offer them, and `/dev/kvm` must open inside for nesting. With no report (a host
  * from before the guest agent said), a microVM is Kantel's own image, which has them all. The browser alone
- * (`browserSurface`) only where the report says so: images from before it show the browser on the desktop.
+ * (`browserSurface`) only where the report says so: images from before it show the browser on the desktop. A microVM
+ * runs JavaScript and Python (Node and Python are in Kantel's image, and any image can install them); an isolate only
+ * where its runtime says its shell has `node` and `python` (`HostIsolateRuntime`), none from a host from before.
  */
-export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean, guest?: HostGuest) {
+export function capabilitiesOf(
+	tier: SandboxTier,
+	nested: boolean,
+	ports: boolean,
+	guest?: HostGuest,
+	isolate?: HostIsolateRuntime,
+) {
 	const vm = tier === "microvm";
 	const report = vm ? guest : undefined;
+	const runtime = vm ? undefined : isolateRuntime(isolate);
 	return {
 		exec: true,
 		files: true,
+		javascript: vm || runtime?.javascript === true,
+		python: vm || runtime?.python === true,
 		ssh: vm,
 		desktop: vm && (report?.desktop.available ?? true),
 		browser: vm && (report?.browser.available ?? true),
@@ -508,7 +642,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
+			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest, sandbox.isolate),
 			...(sandbox.base === undefined || sandbox.base === ""
 				? {}
 				: {
@@ -516,6 +650,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
 					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
+			...(sandbox.stickyDisks === undefined ? {} : { stickyDisks: stickyStatuses(sandbox.stickyDisks) }),
 			// A running machine's health stamp names it, from a host that stamps every exit too (`HOST_FEATURES.exitStamps`);
 			// one that stamps only its health (`guestHealth`) doesn't stamp its exits, so its boots name no machine.
 			...(sandbox.state === "running" && stamped && host?.features.includes(HOST_FEATURES.exitStamps) === true
@@ -525,12 +660,102 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				? {}
 				: { mountsAt: parseMountsAt(sandbox.mountsAt) }),
 			...(startup === undefined ? {} : { startup }),
+			// The pool its host was in as it admitted it (a create's or fork's), which the sandbox is in.
+			...(known.poolId === undefined ? {} : { poolId: known.poolId }),
 		};
 	}
+
+	/**
+	 * A machine its host reports running, which no boot's answer published (a create or start settled from what the host
+	 * has): placed as a boot's answer is, with its mounts and its guest's health as the host has them. An unresponsive
+	 * guest stays so, stamped, rather than taken for a fresh boot's.
+	 */
+	async function reportedRunning(
+		sandboxId: string,
+		sandbox: HostSandbox,
+		placement: NonNullable<SandboxPlacement["placement"]>,
+	): Promise<Placement> {
+		const mounts = parseMountStatuses(sandbox.mounts);
+		const healthAt =
+			typeof sandbox.healthAt === "number" && Number.isSafeInteger(sandbox.healthAt) && sandbox.healthAt > 0
+				? sandbox.healthAt
+				: undefined;
+		const reason =
+			typeof sandbox.healthReason === "string" && sandbox.healthReason !== ""
+				? sandbox.healthReason.slice(0, 1000)
+				: undefined;
+		return {
+			...(await placed(sandboxId, sandbox, placement.hostId, {
+				placement,
+				...(mounts === undefined ? {} : { mounts }),
+			})),
+			reportedHealth: {
+				unresponsive: sandbox.health === "unresponsive",
+				...(reason === undefined ? {} : { reason }),
+				...(healthAt === undefined ? {} : { healthAt }),
+			},
+		};
+	}
+
+	/**
+	 * Whether a stopped sandbox's host holds the memory image it was paused with, there to resume, as the host checks it
+	 * (`sandbox.memory`, `HOST_FEATURES.sandboxMoveMemory`): `unknown` where the host can't check it.
+	 */
+	async function memoryHeld(sandboxId: string, hostId: string): Promise<"held" | "gone" | "unknown"> {
+		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.sandboxMoveMemory)) return "unknown";
+		try {
+			const told = await call<HostSandboxMemory>(sandboxId, HostMethods.sandboxMemory, { sandboxId });
+			return told.memory ? "held" : "gone";
+		} catch (error) {
+			// One configured not to move memory refuses it: it can't check.
+			if (isKantelError(error, "not_supported")) return "unknown";
+			throw error;
+		}
+	}
+
+	/** A host's sticky disk statuses, those shaped as statuses. */
+	const stickyStatuses = (statuses: readonly HostStickyDiskStatus[]): BackendStickyDiskStatus[] =>
+		statuses
+			.filter((status) => typeof status.diskId === "string" && typeof status.path === "string")
+			.map((status) => ({
+				diskId: status.diskId,
+				path: status.path,
+				...(typeof status.version === "string" && status.version !== "" ? { version: status.version } : {}),
+				state: status.state === "mounted" ? "mounted" : "failed",
+				...(typeof status.reason === "string" ? { reason: status.reason } : {}),
+			}));
 
 	/** What the host reports doing beyond protocol 1 (`HOST_FEATURES`). */
 	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
 	const warn = options.log ?? ((message: string) => console.warn(message));
+
+	/** The host the sandbox is placed on now, if any. */
+	const placedOn = async (sandboxId: string): Promise<string | undefined> =>
+		(await hosts.sandboxes.placement(sandboxId).catch(() => undefined))?.hostId;
+
+	/**
+	 * Asks the sandbox's host about one of its commands by its ID (`sandbox.exec.get`, `sandbox.exec.kill`). A host that
+	 * doesn't know it answers `not_found`; one asked as the sandbox moved to another host (it read its placement, and
+	 * the move switched it before the call came) is no longer its host, so that is `unavailable` instead, to ask again
+	 * where it runs now: a sandbox that moved with its memory has its commands there.
+	 */
+	async function callForCommand<T>(
+		sandboxId: string,
+		method: string,
+		params: HostExecRef,
+		signal?: AbortSignal,
+		timeoutMs?: number,
+	): Promise<T> {
+		const asked = await placedOn(sandboxId);
+		try {
+			return await call<T>(sandboxId, method, params, signal, timeoutMs);
+		} catch (error) {
+			if (isKantelError(error) && error.code === "not_found" && (await placedOn(sandboxId)) !== asked) {
+				throw new KantelError("unavailable", `${error.message}; the sandbox moved to another host meanwhile`);
+			}
+			throw error;
+		}
+	}
 
 	/** Whether the sandbox's host runs commands by Kantel's ID (`execControl`): detached ones, and kills. */
 	async function controlsCommands(sandboxId: string): Promise<boolean> {
@@ -541,7 +766,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	/**
 	 * A detached command's end, from its host (`sandbox.exec.get`, each held up to `EXEC_WAIT_MS` for it to end): not one
 	 * call, so it survives the host's connection dropping and coming back, a gateway taking the host over, and however
-	 * long the command runs. A host out of reach is asked again, from 1 s doubling to 30 s apart; one that no longer
+	 * long the command runs, or the sandbox moving to another host with its memory (it is asked of the host the sandbox
+	 * is on as it asks). A host out of reach is asked again, from 1 s doubling to 30 s apart; one that no longer
 	 * knows the command (it, or the sandbox, restarted) ends it with that said, or, after a start that went unanswered
 	 * (`unanswered`), with that start's error: it never started. `signal` ends the wait, not the command
 	 * (`DetachedWaitEnded`).
@@ -551,16 +777,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		commandId: string,
 		signal: AbortSignal | undefined,
 		unanswered?: unknown,
+		/** Told each time its host answers that the sandbox isn't running there (`conflict`: paused, stopping, starting). */
+		notRunning?: () => void,
 	): Promise<ExecResult> {
 		let backoff = EXEC_RETRY_MIN_MS;
 		for (;;) {
 			if (signal?.aborted) throw new DetachedWaitEnded();
 			let status: HostExecStatus | undefined;
 			try {
-				status = await call<HostExecStatus>(
+				status = await callForCommand<HostExecStatus>(
 					sandboxId,
 					HostMethods.execGet,
-					{ commandId, waitMs: EXEC_WAIT_MS } satisfies HostExecRef,
+					{ commandId, waitMs: EXEC_WAIT_MS },
 					signal,
 					EXEC_WAIT_MS + 15_000,
 				);
@@ -574,12 +802,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						stderr:
 							"The sandbox's host no longer knows this command (it or the sandbox restarted), so its result is lost\n",
 						timedOut: false,
+						unknown: true,
 					};
 				}
 				// Asked again only while the host is out of reach (`unavailable`), or busy with the sandbox (`conflict`),
 				// or for a peer replica's plain error: any other refusal (`not_supported`, `forbidden`,
 				// `invalid`) is final, and ends the command with it rather than leave it running.
 				if (isKantelError(error) && error.code !== "unavailable" && error.code !== "conflict") throw error;
+				if (isKantelError(error) && error.code === "conflict") notRunning?.();
 				await pause(backoff, signal);
 				backoff = Math.min(backoff * 2, EXEC_RETRY_MAX_MS);
 				continue;
@@ -592,25 +822,30 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
-	 * A foreground command's end after its host's connection went while it ran (`lost`, that call's error): followed by
-	 * its ID as a detached one is, until its own limit and `FOREGROUND_RECONNECT_GRACE_MS` more have passed. A host that
-	 * doesn't come back by then, or no longer knows the command (one from before keeping a foreground command past its
-	 * connection), ends it with `lost`, said so.
+	 * A foreground command's end after its host's connection went while it ran, or its sandbox was stopped keeping its
+	 * memory (`lost`, why its call ended): followed by its ID as a detached one is, until its own limit and
+	 * `FOREGROUND_RECONNECT_GRACE_MS` more have passed since its host last said the sandbox isn't running (a pause, or
+	 * a move, holds the command, and its limit, for as long as it lasts). A host that doesn't come back by then ends it
+	 * with `lost`, said so; one that no longer knows the command (one from before keeping a foreground command past its
+	 * connection, or a guest from before keeping it past a pause or move) with `forgotten`.
 	 */
 	async function foregroundEnd(
 		sandboxId: string,
 		commandId: string,
 		request: ExecRequest,
 		lost: KantelError,
+		forgotten: KantelError = lost,
 	): Promise<ExecResult> {
 		const deadline = new AbortController();
-		const timer = setTimeout(
-			() => deadline.abort(),
-			(request.timeoutMs ?? GUEST_DEFAULT_LIMIT_MS) + FOREGROUND_RECONNECT_GRACE_MS,
-		);
+		const waitMs = (request.timeoutMs ?? GUEST_DEFAULT_LIMIT_MS) + FOREGROUND_RECONNECT_GRACE_MS;
+		let timer = setTimeout(() => deadline.abort(), waitMs);
+		const held = () => {
+			clearTimeout(timer);
+			timer = setTimeout(() => deadline.abort(), waitMs);
+		};
 		const signal = request.signal === undefined ? deadline.signal : AbortSignal.any([request.signal, deadline.signal]);
 		try {
-			return await commandEnd(sandboxId, commandId, signal, lost);
+			return await commandEnd(sandboxId, commandId, signal, forgotten, held);
 		} catch (error) {
 			// Stopped waiting by the caller (a kill, the gateway closing): as any aborted call.
 			if (request.signal?.aborted) throw error;
@@ -650,8 +885,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	};
 
 	/**
-	 * A disk is where it is: a sandbox or snapshot runs again only on its own host, and only when that host is one the
-	 * service named eligible (online or draining, the account's own or shared, the type and labels).
+	 * A disk is where it is: a sandbox runs again only on its own host, and a fork or upgrade from a snapshot only on the
+	 * host its ref names, and only when that host is one the service named eligible (online or draining, the account's
+	 * own or shared, the type and labels). A create from a snapshot goes on any host holding it, or fetching it
+	 * (`createFromSnapshot`).
 	 */
 	const mayUse = (hostId: string, eligible: readonly string[]) => {
 		if (!eligible.includes(hostId)) {
@@ -677,19 +914,37 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const mounts = mountHandoff(wanted === undefined ? undefined : await featuresOf(hostId), wanted);
 		// With a revision the host takes the boot's egress as stated, none being its default (a clear); an update read
 		// before this boot, with an older revision, is refused after it.
-		const sandbox = await call<HostSandbox>(sandboxId, method, {
-			...egressOf(how.egress),
-			...(revision === undefined ? {} : { revision }),
-			// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
-			// to land anywhere else.
-			...(method === "sandbox.start" && how.rebase === true
-				? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
-				: {}),
-			// A recovery: a machine the host has running is reset and booted cold from its disk (`HOST_FEATURES.guestHealth`;
-			// a host without it ignores the field).
-			...(reset ? { reset: true } : {}),
-			...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
-		});
+		let sandbox: HostSandbox;
+		try {
+			sandbox = await call<HostSandbox>(sandboxId, method, {
+				...egressOf(how.egress),
+				...(revision === undefined ? {} : { revision }),
+				// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
+				// to land anywhere else.
+				...(method === "sandbox.start" && how.rebase === true
+					? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
+					: {}),
+				// A recovery: a machine the host has running is reset and booted cold from its disk
+				// (`HOST_FEATURES.guestHealth`; a host without it ignores the field).
+				...(reset ? { reset: true } : {}),
+				...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
+			});
+		} catch (error) {
+			// A start that failed after its host let go of the sandbox's memory, as a host with the feature says: its
+			// commands end with it. A host without the feature never says, and its failed start kept the memory.
+			if (
+				method === "sandbox.start" &&
+				isKantelError(error) &&
+				memoryDroppedOnHost(error) &&
+				(await featuresOf(hostId).catch((): readonly string[] => [])).includes(HOST_FEATURES.startMemoryDropped)
+			) {
+				throw bootDroppedMemory(error);
+			}
+			// Sent and never answered: its host may have booted it, or let its memory go, so it is settled from what the host
+			// says (`settleStart`), never failed on a guess.
+			if (isKantelError(error) && unanswered(error)) throw startOutcomeUnknown(error);
+			throw error;
+		}
 		const statuses = mounts.status(sandbox);
 		return placed(sandboxId, sandbox, hostId, statuses === undefined ? {} : { mounts: statuses });
 	}
@@ -734,62 +989,254 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	}
 
 	/**
-	 * Places and makes one sandbox. A snapshot, the sandbox's or its template's, is on one host's disk: the sandbox goes
-	 * there. A template snapshot only speeds a create up, so when its host has no room (`exhausted`) the template boots
-	 * fresh on another eligible host instead (`bootedFresh`); a sandbox's own snapshot has nowhere else to go.
+	 * Places and makes one sandbox. From a snapshot, on a host that holds it, or one that fetches it first
+	 * (`createFromSnapshot`). A template snapshot is on its host and the others with a copy of it (`snapshotHosts`): the
+	 * sandbox goes on one of them. It only speeds a create up, so when they have no room (`exhausted`), or would be much
+	 * fuller than another eligible host (`bootsFreshInstead`), the template boots fresh on another eligible host instead
+	 * (`bootedFresh`).
 	 */
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
-		const templateFrom = spec.template?.snapshot === undefined ? undefined : parseRef(spec.template.snapshot);
-		const pinned = from ?? templateFrom;
-		if (pinned !== undefined) mayUse(pinned.hostId, spec.eligibleHosts);
+		const templateFrom = spec.template?.snapshot === undefined ? undefined : onHostRef(spec.template.snapshot);
+		// The hosts with a copy of the template's snapshot that restores there (its own host's, else the others'): the
+		// registry places it on the one with the most room.
+		const withSnapshot =
+			templateFrom === undefined
+				? []
+				: (spec.template?.snapshotHosts ?? [templateFrom.hostId]).filter((hostId) =>
+						spec.eligibleHosts.includes(hostId),
+					);
+		if (from === undefined && withSnapshot.length === 0 && templateFrom !== undefined) {
+			mayUse(templateFrom.hostId, spec.eligibleHosts);
+		}
 		const mounts = mountsOf(spec.mounts);
 		// The service sends the mounts the host it chooses can do, and answers each one's status.
-		const create = (hostIds: readonly string[], templateSnapshot: string | undefined) =>
-			hosts.sandboxes.create({
-				sandboxId: spec.sandboxId,
-				tier: spec.type,
-				...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
-				// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
-				// custom shape; a template's snapshot is restored only where it was built as that shape. A memory snapshot's
-				// host makes it as the snapshot's own size wherever the shape is that machine's, whatever name it resolves to.
-				...(spec.shape === undefined
-					? {}
-					: {
-							shape: {
-								vcpus: spec.shape.vcpus,
-								memoryMiB: spec.shape.memoryMb,
-								// A microVM's disk, where one was chosen or kept: else its host gives the shape's.
-								...(spec.type === "microvm" && spec.shape.diskGb !== undefined ? { diskGiB: spec.shape.diskGb } : {}),
-							},
-						}),
-				owner: spec.accountId,
-				env: spec.env,
-				hostIds,
-				...(from === undefined ? {} : { from: from.snapshotId }),
-				...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
-				...egressOf(spec.egress),
-				...(mounts === undefined ? {} : { mounts }),
-			});
+		const input = (
+			hostIds: readonly string[],
+			templateSnapshot: string | undefined,
+			freshHosts: readonly string[] = [],
+		): CreateSandboxInput => ({
+			sandboxId: spec.sandboxId,
+			...(spec.attempt === undefined ? {} : { attempt: spec.attempt }),
+			tier: spec.type,
+			...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+			// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a
+			// custom shape; a template's snapshot is restored only where it was built as that shape. A memory snapshot's
+			// host makes it as the snapshot's own size wherever the shape is that machine's, whatever name it resolves to.
+			...(spec.shape === undefined
+				? {}
+				: {
+						shape: {
+							vcpus: spec.shape.vcpus,
+							memoryMiB: spec.shape.memoryMb,
+							// A microVM's disk, where one was chosen or kept: else its host gives the shape's.
+							...(spec.type === "microvm" && spec.shape.diskGb !== undefined ? { diskGiB: spec.shape.diskGb } : {}),
+						},
+					}),
+			owner: spec.accountId,
+			env: spec.env,
+			hostIds,
+			...(freshHosts.length === 0 ? {} : { freshHosts }),
+			...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+			...(from === undefined ? {} : { from: from.snapshotId }),
+			...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
+			...egressOf(spec.egress),
+			...(mounts === undefined ? {} : { mounts }),
+			...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
+				? {}
+				: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
+		});
+		const create = (
+			hostIds: readonly string[],
+			templateSnapshot: string | undefined,
+			freshHosts: readonly string[] = [],
+		) => hosts.sandboxes.create(input(hostIds, templateSnapshot, freshHosts));
+		if (from !== undefined) return createFromSnapshot(spec, from, (hostIds) => input(hostIds, undefined));
 		if (templateFrom !== undefined) {
-			const elsewhere = spec.eligibleHosts.filter((hostId) => hostId !== templateFrom.hostId);
-			try {
-				const { sandbox, hostId, ...known } = await create([templateFrom.hostId], templateFrom.snapshotId);
-				const placement = await placed(spec.sandboxId, sandbox, hostId, known);
-				// Its host couldn't restore the snapshot (gone, broken, made for another machine) and booted the template
-				// fresh, running its setup.
-				return sandbox.source === "boot" ? { ...placement, bootedFresh: true } : placement;
-			} catch (error) {
-				if (!isKantelError(error, "exhausted") || elsewhere.length === 0) throw error;
+			const elsewhere = spec.eligibleHosts.filter((hostId) => !withSnapshot.includes(hostId));
+			// All the hosts with it at once (the registry picks the one with most room), the others booting it fresh instead
+			// should those be much fuller. Then, should the one it picked refuse for want of room itself (another replica's
+			// work), each host with it in turn, restoring there: a refused fresh boot still leaves the restores to try.
+			const tries = withSnapshot.length > 1 ? withSnapshot.map((hostId) => [hostId]) : [withSnapshot];
+			let refused: unknown;
+			for (const [index, hostIds] of [withSnapshot, ...tries].entries()) {
+				try {
+					const { sandbox, hostId, ...known } = await create(
+						hostIds,
+						templateFrom.snapshotId,
+						index === 0 ? elsewhere : [],
+					);
+					const placement = await placed(spec.sandboxId, sandbox, hostId, known);
+					// On a host without the snapshot, or its host couldn't restore it (gone, broken, made for another machine):
+					// booted fresh, running the template's setup.
+					return sandbox.source === "boot" || !withSnapshot.includes(hostId)
+						? { ...placement, bootedFresh: true }
+						: placement;
+				} catch (error) {
+					if (!isKantelError(error, "exhausted")) throw error;
+					refused = error;
+				}
 			}
+			if (elsewhere.length === 0) throw refused;
 			const { sandbox, hostId, ...known } = await create(elsewhere, undefined);
 			return { ...(await placed(spec.sandboxId, sandbox, hostId, known)), bootedFresh: true };
 		}
-		const { sandbox, hostId, ...known } = await create(
-			pinned === undefined ? spec.eligibleHosts : [pinned.hostId],
-			undefined,
-		);
+		const { sandbox, hostId, ...known } = await create(spec.eligibleHosts, undefined);
 		return placed(spec.sandboxId, sandbox, hostId, known);
+	}
+
+	/**
+	 * Places and makes a sandbox from a snapshot (docs/design/disk-store.md, "Phase 3 notes"): on a host holding it with
+	 * room (`SandboxSpec.snapshotCopies`, else the host its ref names), those whose copy restores its memory first, each
+	 * group all at once (the registry picks the one with most room) and then each in turn, should the one it picked refuse
+	 * for want of room itself. With none, and the snapshot one that may be fetched, on another eligible host with room
+	 * that fetches it first (`fetchSnapshot`), which its startup reports as `fetchMs`. A copy without the snapshot's memory
+	 * boots on its disk, which its startup says (`restoredMemory`).
+	 */
+	async function createFromSnapshot(
+		spec: SandboxSpec,
+		from: { readonly hostId?: string; readonly snapshotId: string },
+		input: (hostIds: readonly string[]) => CreateSandboxInput,
+	): Promise<Placement> {
+		const copies: SnapshotCopies | undefined =
+			spec.snapshotCopies ??
+			(from.hostId === undefined
+				? undefined
+				: { holders: [{ hostId: from.hostId, memory: false }], memory: false, fetch: false });
+		if (copies === undefined || (copies.holders.length === 0 && !copies.fetch)) {
+			throw placementError("unavailable", "host_unavailable", "No host holds the snapshot's disk now");
+		}
+		const holders = copies.holders.filter((holder) => spec.eligibleHosts.includes(holder.hostId));
+		const restoring = holders.filter((holder) => holder.memory).map((holder) => holder.hostId);
+		const diskOnly = holders.filter((holder) => !holder.memory).map((holder) => holder.hostId);
+		const made = async (hostIds: readonly string[], fetchMs?: number): Promise<Placement> => {
+			const { sandbox, hostId, ...known } = await hosts.sandboxes.create(input(hostIds));
+			const placement = await placed(spec.sandboxId, sandbox, hostId, known);
+			if (placement.startup === undefined) return placement;
+			return {
+				...placement,
+				startup: {
+					...placement.startup,
+					...(fetchMs === undefined ? {} : { fetchMs }),
+					// Only a snapshot with memory says: as its host's timings say it started (a restore of the memory, or a boot
+					// on the disk), else as its copy there was, one with its memory restoring it.
+					...(copies.memory ? { restoredMemory: restoredMemory(sandbox) ?? restoring.includes(hostId) } : {}),
+				},
+			};
+		};
+		let refused: unknown;
+		for (const group of [restoring, diskOnly]) {
+			if (group.length === 0) continue;
+			for (const hostIds of inTurn(group)) {
+				try {
+					return await made(hostIds);
+				} catch (error) {
+					if (!isKantelError(error, "exhausted")) throw error;
+					refused = error;
+				}
+			}
+		}
+		// Only a saved snapshot's ID alone is fetched: an older ref's host-local ID may name another snapshot elsewhere.
+		const fetchers =
+			copies.fetch && from.hostId === undefined
+				? await fetchersAmong(spec.eligibleHosts, holders, copies.architectures)
+				: [];
+		if (fetchers.length === 0) {
+			if (refused !== undefined) throw refused;
+			const named = copies.holders.map((holder) => holder.hostId).join(", ");
+			throw placementError(
+				"unavailable",
+				"host_unavailable",
+				copies.holders.length === 1
+					? `The host its disk is on (${named}) can't take it now`
+					: `None of the hosts its disk is on (${named}) can take it now`,
+			);
+		}
+		// The one the registry would place it on now, which fetches it; placed there once it has it. One whose fetch fails,
+		// or that has no room by then (another create took it while it fetched), is passed over for the next, up to
+		// `SNAPSHOT_FETCH_TRIES`; the last one's fetch failing fails the create with its host's error.
+		const started = now();
+		let left = fetchers;
+		for (let tries = 1; ; tries++) {
+			const hostId = await hosts.sandboxes.choose(input(left));
+			left = left.filter((each) => each !== hostId);
+			const last = tries >= SNAPSHOT_FETCH_TRIES || left.length === 0;
+			const failed = await fetchSnapshot(hostId, from.snapshotId);
+			if (failed !== undefined) {
+				if (last) {
+					throw new KantelError(
+						"unavailable",
+						`The host ${hostId} couldn't fetch the snapshot's disk (${failed}): try again, or start it on a host that holds it`,
+					);
+				}
+				warn(`hosts: ${hostId} couldn't fetch snapshot ${from.snapshotId} (${failed}); fetching it on another host`);
+				continue;
+			}
+			try {
+				return await made([hostId], now() - started);
+			} catch (error) {
+				if (!isKantelError(error, "exhausted") || last) throw error;
+			}
+		}
+	}
+
+	/**
+	 * The hosts among `eligible` that may fetch a snapshot for a create: those that don't hold it (`holders`), fetch
+	 * saved snapshots from their peers (`HOST_FEATURES.snapshotSync`), and are of an architecture a holder serves
+	 * (`architectures`, where said).
+	 */
+	async function fetchersAmong(
+		eligible: readonly string[],
+		holders: readonly { readonly hostId: string }[],
+		architectures: SnapshotCopies["architectures"],
+	): Promise<string[]> {
+		const others = eligible.filter((hostId) => !holders.some((holder) => holder.hostId === hostId));
+		if (others.length === 0) return [];
+		const fetching = new Set(
+			(await hosts.list({ allocations: false }))
+				.filter(
+					(host) =>
+						host.features.includes(HOST_FEATURES.diskSync) &&
+						host.features.includes(HOST_FEATURES.snapshotSync) &&
+						(architectures === undefined || (host.arch !== undefined && architectures.includes(host.arch))),
+				)
+				.map((host) => host.id),
+		);
+		return others.filter((hostId) => fetching.has(hostId));
+	}
+
+	/**
+	 * Has `hostId` fetch a saved snapshot's disk from the hosts in its pool that hold it (`disk.fetch`, which the host
+	 * answers once it has started, asking `disk.locate` where it is), and waits until the host reports holding it
+	 * (`HostCapacity.holdings`, each heartbeat), for `SNAPSHOT_FETCH_TIMEOUT_MS` at most. Answers the host's error instead
+	 * once a report received after the host answered lists the fetch as `failed` (`HostCapacity.fetches`): one received
+	 * before, however late it was kept, is of an earlier fetch, which this one goes on from. A host that doesn't report
+	 * its fetches is waited for until the timeout. Its memory follows on its own where the host restores it; a create
+	 * before then boots on the disk.
+	 */
+	async function fetchSnapshot(hostId: string, snapshotId: string): Promise<string | undefined> {
+		const version = SNAPSHOT_VERSIONS.disk;
+		const answered = await hosts
+			.diskFetch(hostId, { kind: "snapshot", objectId: snapshotId, version })
+			.catch((error: unknown) => {
+				throw kantelErrorFromHost(error);
+			});
+		const timeout = options.snapshotFetchTimeoutMs ?? SNAPSHOT_FETCH_TIMEOUT_MS;
+		const until = now() + timeout;
+		for (;;) {
+			const state = await hosts.objectFetch(hostId, "snapshot", snapshotId, version);
+			if (state.held) return undefined;
+			if (state.fetch?.state === "failed" && state.at !== undefined && state.at > answered) {
+				return state.fetch.error ?? "its fetch failed";
+			}
+			if (now() >= until) {
+				throw new KantelError(
+					"unavailable",
+					`The host ${hostId} didn't fetch the snapshot's disk within ${Math.round(timeout / 60_000)} minutes: try again, or start it on a host that holds it`,
+				);
+			}
+			await pause(SNAPSHOT_FETCH_POLL_MS, undefined);
+		}
 	}
 
 	return {
@@ -825,17 +1272,33 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
 					features: [...host.features],
+					...(host.isolate === undefined
+						? {}
+						: {
+								isolate: {
+									javascript: host.isolate.javascript,
+									python: host.isolate.python,
+									memoryEnforced: host.isolate.memoryEnforced,
+								},
+							}),
+					...(host.cpuFingerprint === undefined ? {} : { cpuFingerprint: host.cpuFingerprint }),
+					...(host.runtimeFingerprints === undefined ? {} : { runtimeFingerprints: [...host.runtimeFingerprints] }),
 					capacity: { ...host.capacity },
 					...(host.freeDiskGb === undefined ? {} : { freeDiskGb: host.freeDiskGb }),
 					...(host.diskUsage === undefined ? {} : { diskUsage: diskByRef(host.id, host.diskUsage) }),
 					// What it admits against is the scheduler's (`freeMemoryOn`), not the API's.
 					...(host.memory === undefined ? {} : { memory: withoutAdmission(host.memory) }),
+					...(host.mesh === undefined
+						? {}
+						: { mesh: { address: host.mesh.address, peers: host.mesh.peers.map((peer) => ({ ...peer })) } }),
 					sizes: own,
 					...(host.disk === undefined ? {} : { disk: { minGb: host.disk.minGiB, maxGb: host.disk.maxGiB } }),
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+					...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+					...(host.meshAddress === undefined ? {} : { meshAddress: host.meshAddress }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
@@ -851,7 +1314,78 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				? false
 				: undefined;
 		},
-		create: createOne,
+		async create(spec) {
+			try {
+				return await createOne(spec);
+			} catch (error) {
+				// Sent and never answered: its host may have made it, so it is settled from what the host says (`settleCreate`).
+				throw isKantelError(error) && unanswered(error) ? createOutcomeUnknown(error) : error;
+			}
+		},
+		async settleCreate(sandboxId, attempt): Promise<CreateOutcome> {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			// Word on this attempt only: its placement, admitted for it, once its host has said. Not placed yet, another
+			// attempt's (a previous one, lost or ended), one that names none (from before attempts were kept), or one whose
+			// host hasn't said: nothing to go by.
+			if (placement === undefined || placement.attempt !== attempt || placement.state === "starting") {
+				return { state: "pending" };
+			}
+			const reportedAt = placement.updatedAt;
+			// Its host's hello didn't name it: never made there, or gone with its create.
+			if (placement.state === "lost") return { state: "lost", reason: CREATE_LOST, reportedAt };
+			// Made there: as the host has it now.
+			const sandbox = await call<HostSandbox>(sandboxId, HostMethods.get);
+			if (sandbox.state !== "running") {
+				// Made, and ended since: kept there as the host has it, for a start to boot again.
+				const error =
+					typeof sandbox.error === "string" && sandbox.error !== "" ? `: ${sandbox.error.slice(0, 1000)}` : "";
+				return {
+					state: "ended",
+					placement: await placed(sandboxId, sandbox, placement.hostId, { placement }),
+					reason: `${CREATE_ENDED} (${String(sandbox.state)}${error}): start it to boot it again`,
+					reportedAt,
+				};
+			}
+			return { state: "running", placement: await reportedRunning(sandboxId, sandbox, placement), reportedAt };
+		},
+		async settleStart(sandboxId): Promise<StartOutcome> {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			// No host has it: nothing runs it, and nothing holds its memory.
+			if (placement === undefined) {
+				return { state: "ended", hostState: "error", memory: "gone", reason: `${START_ENDED}, and no host has it` };
+			}
+			// As its host has it now. A host still booting it answers once it is done (kantel-host holds the sandbox for the
+			// whole boot); one away, or not answering, is asked again by a later sweep.
+			let sandbox: HostSandbox;
+			try {
+				sandbox = await call<HostSandbox>(sandboxId, HostMethods.get);
+			} catch (error) {
+				if (!isKantelError(error, "not_found")) throw error;
+				return {
+					state: "ended",
+					hostState: "error",
+					memory: "gone",
+					reason: `${START_ENDED}, and its host has it no more`,
+				};
+			}
+			if (sandbox.state === "running") {
+				return { state: "running", placement: await reportedRunning(sandboxId, sandbox, placement) };
+			}
+			if (sandbox.state !== "stopped" && sandbox.state !== "error" && sandbox.state !== "deleted") {
+				return { state: "pending" };
+			}
+			const error =
+				typeof sandbox.error === "string" && sandbox.error !== "" ? `: ${sandbox.error.slice(0, 1000)}` : "";
+			const stopped = sandbox.state === "stopped";
+			return {
+				state: "ended",
+				hostState: stopped ? "stopped" : "error",
+				// A boot that let its memory go, or a machine that exited, cleared its flag (`HostSandbox.memory`). One still set
+				// is only the record's word: its memory image may be gone since (a reboot empties the spool it is in).
+				memory: sandbox.memory !== true ? "gone" : stopped ? await memoryHeld(sandboxId, placement.hostId) : "unknown",
+				reason: `${START_ENDED}, and its host has it ${String(sandbox.state)}${error}`,
+			};
+		},
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		async prepareRebase(sandboxId, { eligibleHosts, rebaseTo }) {
 			const { hostId } = await tierOf(sandboxId);
@@ -902,6 +1436,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// The host drops its copy; its next request that needs one fetches the new values.
 			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
 		},
+		async updateEnv(sandboxId, env) {
+			// A host from before it could has the sandbox take its new env with its next boot, which sends it.
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.sandboxEnv)) return;
+			const params: HostEnvParams = { sandboxId, env: { ...env } };
+			await call(sandboxId, HostMethods.env, params);
+		},
 		async stop(sandboxId, { keepMemory, waitForHost }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
@@ -938,15 +1479,112 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					// Its own placeholders, not its source's: the host gives the guest this environment.
 					env: target.env,
 					...(mounts === undefined ? {} : { mounts }),
+					// Admitted on its source's host only while that host is in the fork's pool.
+					...(target.poolId === undefined ? {} : { poolId: target.poolId }),
 				});
 				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}
 			return out;
 		},
-		async destroy(sandboxId) {
+		// On its own host where it can (the files never leave it), else on another the files are moved to.
+		async upgrade(sandboxId, spec, operationId): Promise<UpgradedPlacement> {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "isolate") throw new KantelError("conflict", "The sandbox is a microVM already");
+			// From a snapshot, on its host only, as a create from it.
+			const from = spec.intoSnapshot === undefined ? undefined : onHostRef(spec.intoSnapshot);
+			if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
+			const { sandbox, hostId, path, files, bytes, ...known } = await hosts.sandboxes.upgrade(sandboxId, {
+				...(spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+				...(spec.shape === undefined
+					? {}
+					: {
+							shape: {
+								vcpus: spec.shape.vcpus,
+								memoryMiB: spec.shape.memoryMb,
+								...(spec.shape.diskGb === undefined ? {} : { diskGiB: spec.shape.diskGb }),
+							},
+						}),
+				owner: spec.accountId,
+				env: spec.env,
+				hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
+				...(from === undefined ? {} : { from: from.snapshotId }),
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+				...egressOf(spec.egress),
+				operationId,
+			});
+			return { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes };
+		},
+		async settleUpgrade(sandboxId, operationId) {
+			const outcome = await hosts.sandboxes.settleUpgrade(sandboxId, operationId);
+			if (outcome.state === "failed") return outcome;
+			const { sandbox, hostId, path, files, bytes, ...known } = outcome.upgraded;
+			return { state: "done", placement: { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes } };
+		},
+		// Started on its new host as a boot starts it there: its egress, its revision, the mounts that host takes.
+		async move(sandboxId, spec, operationId): Promise<Placement> {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("conflict", "Only a microVM moves to another host");
+			// Its ports' exposures end as it boots again, as at any boot: a running sandbox's once it is stopped, as it
+			// serves them until then.
+			if (spec.running !== true) await options.ports?.forget(sandboxId);
+			const revision = spec.egressRevision ?? spec.egress?.revision;
+			const wanted = mountsOf(spec.mounts);
+			const { sandbox, hostId, ...known } = await hosts.sandboxes.move(sandboxId, {
+				operationId,
+				owner: spec.accountId,
+				hostIds: spec.eligibleHosts,
+				...(spec.to === undefined ? {} : { to: spec.to }),
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+				...(spec.onStarting === undefined ? {} : { onStarting: spec.onStarting }),
+				...(spec.running === true
+					? {
+							running: true,
+							onStopping: async (target: string) => {
+								await spec.onStopping?.(target);
+								await options.ports?.forget(sandboxId);
+							},
+						}
+					: {}),
+				...(spec.onFinalCopy === undefined ? {} : { onFinalCopy: spec.onFinalCopy }),
+				...(spec.keepMemory === true ? { keepMemory: true } : {}),
+				...(spec.onPlanned === undefined ? {} : { onPlanned: spec.onPlanned }),
+				start: (features) => {
+					const mounts = mountHandoff(wanted === undefined ? undefined : features, wanted);
+					return {
+						params: {
+							...egressOf(spec.egress),
+							...(revision === undefined ? {} : { revision }),
+							...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
+						},
+						mounts: (started) => mounts.status(started),
+					};
+				},
+			});
+			return placed(sandboxId, sandbox, hostId, known);
+		},
+		async planMove(sandboxId, spec) {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("conflict", "Only a microVM moves to another host");
+			return hosts.sandboxes.planMove(sandboxId, {
+				owner: spec.accountId,
+				hostIds: spec.eligibleHosts,
+				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
+				...(spec.running === true ? { running: true } : {}),
+			});
+		},
+		async settleMove(sandboxId, operationId) {
+			const outcome = await hosts.sandboxes.settleMove(sandboxId, operationId);
+			if (outcome.state === "failed") return outcome;
+			const { sandbox, hostId, ...known } = outcome.moved;
+			return { state: "done", placement: await placed(sandboxId, sandbox, hostId, known) };
+		},
+		async destroy(sandboxId, destroyOptions) {
 			await options.ports?.forget(sandboxId);
 			try {
-				await hosts.sandboxes.delete(sandboxId);
+				await hosts.sandboxes.delete(
+					sandboxId,
+					destroyOptions?.hostId === undefined ? undefined : { hostId: destroyOptions.hostId },
+				);
 			} catch (error) {
 				if (!(error instanceof KantelError && error.code === "not_found")) throw error;
 			}
@@ -961,6 +1599,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
 				// Only to a host that takes them: an older one would run a "detached" command as a foreground one anyway.
 				...(controls ? { commandId: request.commandId } : {}),
+				...(request.asRoot === true ? { user: "root" } : {}),
 			};
 			if (controls && request.detached === true && request.commandId !== undefined) {
 				let started: HostExecStatus;
@@ -999,6 +1638,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				// Only the wait ended (the gateway closing, or a kill already recorded): a host that runs commands by ID runs it on
 				// past this call, and its end is fetched by its ID, as a detached one's is.
 				if (request.signal?.aborted && controls && request.commandId !== undefined) throw new DetachedWaitEnded();
+				// Its sandbox was stopped keeping its memory as it ran (a pause, or a move to another host that keeps it): the
+				// command carries on in that memory, and is followed by its ID wherever the sandbox runs next.
+				if (!request.signal?.aborted && controls && request.commandId !== undefined && suspendedOnHost(error)) {
+					return foregroundEnd(
+						sandboxId,
+						request.commandId,
+						request,
+						new KantelError("unavailable", SUSPENDED_COMMAND),
+						new KantelError("unavailable", SUSPENDED_COMMAND_LOST),
+					);
+				}
 				if (request.signal?.aborted || !isKantelError(error) || !unanswered(error) || error.code !== "unavailable") {
 					throw error;
 				}
@@ -1018,13 +1668,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async killCommand(sandboxId, commandId) {
 			if (!(await controlsCommands(sandboxId))) throw new KantelError("not_supported", OLD_HOST_KILL);
-			await call<{ killed: boolean }>(sandboxId, HostMethods.execKill, { commandId } satisfies HostExecRef);
+			await callForCommand<{ killed: boolean }>(sandboxId, HostMethods.execKill, { commandId });
 		},
 		async commandResult(sandboxId, commandId) {
 			if (!(await controlsCommands(sandboxId))) {
 				throw new KantelError("not_supported", "This sandbox's host keeps no command results");
 			}
-			const status = await call<HostExecStatus>(sandboxId, HostMethods.execGet, { commandId } satisfies HostExecRef);
+			const status = await callForCommand<HostExecStatus>(sandboxId, HostMethods.execGet, { commandId });
 			if (status.state === "exited" && status.result !== undefined) return execResult(status.result);
 			// A host that reports a running command's output so far (`HostExecStatus.stdout`): what attach shows.
 			if (status.stdout === undefined && status.stderr === undefined) return undefined;
@@ -1051,7 +1701,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { bytes, size: answer.fileSize };
 		},
-		async writeFile(sandboxId, path, content, mode) {
+		async writeFile(sandboxId, path, content, mode, options) {
 			// Past the host's message limit the host would drop its whole link, every sandbox's calls and streams on it.
 			if (content.length > HOST_WRITE_FILE_MAX_BYTES) {
 				throw new KantelError(
@@ -1059,12 +1709,20 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					`This sandbox's host takes files of at most ${HOST_WRITE_FILE_MAX_BYTES} bytes in one write; it can't stream larger ones`,
 				);
 			}
-			await call(sandboxId, "sandbox.files.write", {
+			const answer = await call<{ readonly fenced?: boolean } | null>(sandboxId, "sandbox.files.write", {
 				path,
 				data: toBase64(content),
 				...(mode === undefined ? {} : { mode }),
+				...(options?.fence === undefined ? {} : { fence: options.fence }),
 			});
-			return { name: path.split("/").pop() ?? path, path, kind: "file", size: content.length, modifiedAt: now() };
+			return {
+				name: path.split("/").pop() ?? path,
+				path,
+				kind: "file",
+				size: content.length,
+				modifiedAt: now(),
+				...(answer?.fenced === true ? { fenced: true } : {}),
+			};
 		},
 		async readFileStream(sandboxId, path): Promise<FileStream> {
 			await streamingHost(sandboxId);
@@ -1164,9 +1822,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async placedOn(sandboxId) {
 			const placement = await hosts.sandboxes.placement(sandboxId);
 			// A lost one is an earlier attempt its host said it doesn't have: not where it is placed now.
-			return placement === undefined || placement.state === "deleted" || placement.state === "lost"
-				? undefined
-				: placement.hostId;
+			if (placement === undefined || placement.state === "deleted" || placement.state === "lost") return undefined;
+			// A move starting it on its target (its files there, its rollback not begun): it boots there, so that host
+			// fetches its mounts' sources, though it is placed on its source until it runs.
+			const move = placement.move;
+			if (move?.phase === "start" && move.rollingBack !== true && move.settling === undefined) return move.target;
+			return placement.hostId;
 		},
 		async writeFileStream(sandboxId, path, body, mode) {
 			await streamingHost(sandboxId);
@@ -1246,15 +1907,33 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				total: list.total,
 			};
 		},
+		// Asked only of a host that promises a refresh is current when it answers (`mountsSync`): one with bucket mounts
+		// from before it would answer with whatever listing it had from the last few seconds.
+		async refreshMounts(sandboxId, path): Promise<BackendMountRefresh[]> {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.mountsSync)) {
+				throw new KantelError("not_supported", "This sandbox's host can't refresh its mounts: update kantel-host");
+			}
+			const params: HostMountsRefresh = { sandboxId, ...(path === undefined ? {} : { path }), sync: true };
+			const statuses = await call<HostMountStatus[] | null>(sandboxId, HostMethods.mountsRefresh, params);
+			return (statuses ?? []).map(({ path, status, error, objects, listedAt }) => ({
+				path,
+				status,
+				...(error === undefined || error === "" ? {} : { error }),
+				...(typeof objects === "number" ? { objects } : {}),
+				...(typeof listedAt === "number" && listedAt > 0 ? { listedAt } : {}),
+			}));
+		},
 		async takeSnapshot(sandboxId, options): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
+			const id = savedIdOn(await featuresOf(hostId));
 			// As long as a fork: a live save writes the machine's memory and copies its whole disk. Given up on sooner, it
 			// went on and saved a snapshot no one knew the ID of. The disk only unless memory is asked for: a host from before
 			// `memory` keeps memory either way, and says so.
 			const snap = await call<HostSnapshot>(
 				sandboxId,
 				"snapshot.save",
-				{ snapshotId: snapshotId(), ...(options?.memory === true ? { memory: true } : {}) },
+				{ snapshotId: id, ...(options?.memory === true ? { memory: true } : {}) },
 				undefined,
 				DISK_COPY_TIMEOUT_MS,
 			);
@@ -1265,14 +1944,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		// before it could (hosts are updated apart from the control plane) is answered `undefined`, so the save shares the
 		// automatic snapshot's ref as it did before, and the host may still prune it.
 		async keepSnapshot(ref): Promise<TakenSnapshot | undefined> {
-			const { hostId, snapshotId: from } = parseRef(ref);
-			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.snapshotKeep)) {
+			const { hostId, snapshotId: from } = onHostRef(ref);
+			const features = await featuresOf(hostId);
+			if (!features.includes(HOST_FEATURES.snapshotKeep)) {
 				warn(
 					`hosts: ${hostId} can't keep snapshot ${from} as a copy of its own (no ${HOST_FEATURES.snapshotKeep}): the saved snapshot shares it, and goes when the host prunes it; update kantel-host`,
 				);
 				return undefined;
 			}
-			const params: HostSnapshotKeep = { snapshotId: snapshotId(), from };
+			const params: HostSnapshotKeep = { snapshotId: savedIdOn(features), from };
 			// The host's errors as Kantel's (a pruned source is `not_found`, a host away `unavailable`), an unanswered call
 			// still marked as one: the host may have made the snapshot.
 			const snap = await hosts.hub
@@ -1300,12 +1980,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				const { id, sizeBytes } = snap;
 				if (typeof id !== "string" || typeof sizeBytes !== "number") continue;
 				if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) continue;
-				sizes.set(`${hostId}/${id}`, sizeBytes);
+				sizes.set(snapshotRef(hostId, id), sizeBytes);
 			}
 			return sizes;
 		},
 		async listSnapshotFiles(ref, path) {
-			const { hostId, snapshotId: id } = parseRef(ref);
+			const { hostId, snapshotId: id } = onHostRef(ref);
 			const { entries } = await hosts.hub.call<{ entries: HostFileEntry[] | null }>(hostId, "snapshot.tree", {
 				snapshotId: id,
 				path,
@@ -1313,12 +1993,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return (entries ?? []).map(fileEntry);
 		},
 		async readSnapshotFile(ref, path) {
-			const { hostId, snapshotId: id } = parseRef(ref);
+			const { hostId, snapshotId: id } = onHostRef(ref);
 			const { data } = await hosts.hub.call<{ data: string }>(hostId, "snapshot.read", { snapshotId: id, path });
 			return fromBase64(data);
 		},
 		async deleteSnapshot(ref) {
-			const { hostId, snapshotId: id } = parseRef(ref);
+			const { hostId, snapshotId: id } = onHostRef(ref);
 			await hosts.hub.call(hostId, "snapshot.delete", { snapshotId: id });
 		},
 		async templateRuntimes(): Promise<TemplateRuntime[]> {
@@ -1335,6 +2015,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...hostTemplateBase(spec.baseImage, spec.baseDigest),
 				...(spec.setup === undefined ? {} : { setup: spec.setup }),
 				...(spec.image === undefined ? {} : { image: { ...spec.image } }),
+				...(spec.copy === undefined ? {} : { copy: { ...spec.copy } }),
 				env: { ...spec.env },
 				vcpus: spec.shape.vcpus,
 				memoryMiB: spec.shape.memoryMb,
@@ -1348,12 +2029,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(built.imageDigest === undefined ? {} : { imageDigest: built.imageDigest }),
 				sizeBytes: built.sizeBytes,
 				...(built.rootfsKey === undefined || spec.image === undefined ? {} : { rootfsKey: built.rootfsKey }),
+				...madeOn(built),
 			};
 		},
 		async deleteTemplateSnapshot(bytes) {
 			// A host names a template snapshot's bytes by its ID, which its ref is too.
 			const { hostId, snapshotId: id } =
-				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : parseRef(bytes.ref);
+				bytes.ref === undefined ? { hostId: bytes.hostId, snapshotId: bytes.snapshotId } : onHostRef(bytes.ref);
 			await hosts.templates.delete(hostId, id);
 		},
 		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee, ifAbsent }) {
@@ -1442,6 +2124,59 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee), cdpUrl, surface: "desktop" };
 		},
+		async commitStickyDisk(sandboxId, diskId, version) {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.stickyDisks)) {
+				throw new KantelError("not_supported", "This sandbox's host has no sticky disks; upgrade kantel-host");
+			}
+			const result = await hosts.sandboxes.call<HostStickyCommitResult>(sandboxId, HostMethods.stickyCommit, {
+				diskId,
+				version,
+			});
+			return {
+				hostId,
+				sizeBytes: Number.isSafeInteger(result.sizeBytes) ? result.sizeBytes : 0,
+				allocatedBytes: Number.isSafeInteger(result.allocatedBytes) ? result.allocatedBytes : 0,
+				...(isMapDigest(result.mapDigest) ? { mapDigest: result.mapDigest } : {}),
+			};
+		},
+		async deleteStickyDisk(diskId) {
+			// Every connected host that runs sticky disks: one away keeps its copy until it deletes it itself (it keeps two).
+			const all = await hosts.list({ allocations: false });
+			await Promise.all(
+				all
+					.filter((host) => host.state === "online" && host.features.includes(HOST_FEATURES.stickyDisks))
+					.map((host) =>
+						hosts
+							.stickyDelete(host.id, diskId)
+							.catch((error: unknown) =>
+								warn(`[hosts] sticky disk ${diskId} not deleted from ${host.id}: ${String(error)}`),
+							),
+					),
+			);
+		},
+		async stickyHoldings() {
+			return (await hosts.stickyReports()).map((report) => ({
+				hostId: report.hostId,
+				reportedAt: report.at,
+				...(report.stickyDisks === undefined
+					? {}
+					: {
+							disks: report.stickyDisks.map((holding) => {
+								const mapDigests = Object.fromEntries(
+									holding.versions.flatMap((held) =>
+										held.mapDigest === undefined ? [] : [[held.version, held.mapDigest] as const],
+									),
+								);
+								return {
+									diskId: holding.diskId,
+									versions: holding.versions.map((held) => held.version),
+									...(Object.keys(mapDigests).length === 0 ? {} : { mapDigests }),
+								};
+							}),
+						}),
+			}));
+		},
 		async revokeHost(hostId) {
 			await hosts.revoke(hostId).catch((error: unknown) => {
 				if (!(error instanceof KantelError && error.code === "not_found")) throw error;
@@ -1450,8 +2185,37 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async updateHostAgent(hostId) {
 			return hosts.updateAgent(hostId);
 		},
+		async fetchDisk(hostId, fetch) {
+			const features = await featuresOf(hostId);
+			if (!features.includes(HOST_FEATURES.diskSync)) {
+				throw new KantelError(
+					"not_supported",
+					"This host doesn't fetch disk versions from its peers; upgrade kantel-host, and turn on sync in its pool",
+				);
+			}
+			if (fetch.kind === "snapshot" && !features.includes(HOST_FEATURES.snapshotSync)) {
+				throw new KantelError("not_supported", "This host doesn't fetch snapshots from its peers; upgrade kantel-host");
+			}
+			await hosts.diskFetch(hostId, {
+				kind: fetch.kind,
+				objectId: fetch.objectId,
+				version: fetch.version,
+				...(fetch.mapDigest === undefined ? {} : { mapDigest: fetch.mapDigest }),
+				holders: fetch.holders,
+				...(fetch.grant === undefined ? {} : { grant: fetch.grant }),
+			});
+		},
 		async checkHostUpdates() {
 			return hosts.checkForUpdates();
+		},
+		async hostHolds(hostId) {
+			return hosts.holds(hostId);
+		},
+		async updatePool(poolId) {
+			await hosts.poolChanged(poolId);
+		},
+		async grantKeysChanged() {
+			await hosts.grantKeysChanged();
 		},
 		async updateHost(hostId, change) {
 			await hosts.update(hostId, change).catch((error: unknown) => {

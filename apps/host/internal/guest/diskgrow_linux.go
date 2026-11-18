@@ -127,6 +127,11 @@ func TrimFS(dev string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return trimMount(mount)
+}
+
+// trimMount discards every free block of the file system mounted at mount (FITRIM), as TrimFS does.
+func trimMount(mount string) (uint64, error) {
 	dir, err := os.Open(mount)
 	if err != nil {
 		return 0, err

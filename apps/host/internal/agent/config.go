@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
@@ -29,17 +30,24 @@ type Config struct {
 	// Root holds sandboxes, snapshots and templates (default /var/lib/kantel-host).
 	Root string `json:"root,omitempty"`
 	// Images: the guest kernel and root filesystems (default Root/images/...).
-	Kernel        string `json:"kernel,omitempty"`
-	SandboxImage  string `json:"sandboxImage,omitempty"`
-	IsolateImage  string `json:"isolateImage,omitempty"`
-	Firecracker   string `json:"firecracker,omitempty"`
+	Kernel       string `json:"kernel,omitempty"`
+	SandboxImage string `json:"sandboxImage,omitempty"`
+	IsolateImage string `json:"isolateImage,omitempty"`
+	Firecracker  string `json:"firecracker,omitempty"`
+	// IsolateBinary and IsolateAssets are the native isolate runtime's kantel-isolate and its assets directory
+	// (default Root/bin/kantel-isolate and Root/isolate-assets); the VM runtime has both in its image.
+	IsolateBinary string `json:"isolateBinary,omitempty"`
+	IsolateAssets string `json:"isolateAssets,omitempty"`
+	// Workerd and IsolateBundle are the native isolate runtime from before kantel-isolate: workerd and its worker's
+	// directory. A native host runs them only while it has no IsolateBinary and IsolateAssets (one updated to this
+	// version by the binary alone), until the install is run again.
 	Workerd       string `json:"workerd,omitempty"`
 	IsolateBundle string `json:"isolateBundle,omitempty"`
 
 	// Tiers to run; default every tier the host can.
 	Tiers []string `json:"tiers,omitempty"`
-	// IsolateRuntime is "microvm" (default) or "native": workerd on the host itself, for a host without KVM, and
-	// only for code you trust (workerd is not a hardened sandbox).
+	// IsolateRuntime is "microvm" (default) or "native": kantel-isolate on the host itself, for a host without KVM,
+	// and only for code you trust (every isolate of an account is in one process, with no VM around it).
 	IsolateRuntime string       `json:"isolateRuntime,omitempty"`
 	Sizes          []proto.Size `json:"sizes,omitempty"`
 	// ReserveMemoryMiB is kept back for the host itself (default 2048 or a tenth of memory, whichever is more).
@@ -112,6 +120,20 @@ type Config struct {
 	// only (default DefaultControlSocket; "off" serves none).
 	ControlSocket string `json:"controlSocket,omitempty"`
 
+	// MeshPort is the UDP port of the host's WireGuard mesh with the other hosts of its pool (default 51820; -1 turns
+	// the mesh off, and the host doesn't offer it). The mesh comes up only once the control plane puts the host in one,
+	// when its pool has sync on.
+	MeshPort int `json:"meshPort,omitempty"`
+	// MeshEndpoints are where the host's peers reach it besides its interface addresses: "host:port", or a host with
+	// MeshPort, such as a forwarded port or a name. Peers try them first.
+	MeshEndpoints []string `json:"meshEndpoints,omitempty"`
+	// SyncRateMbit is the most peer sync may move over the mesh, in Mbit/s, each way: what the host serves its peers, and
+	// what it fetches from them (default 0: half the link of its default route, or of 1 Gbit/s when that isn't known;
+	// -1: no limit).
+	SyncRateMbit int `json:"syncRateMbit,omitempty"`
+	// SyncFetches is how many disk versions the host fetches from its peers at once (default 2); others wait their turn.
+	SyncFetches int `json:"syncFetches,omitempty"`
+
 	// ImagePatching is the switch for versioned host images (experimental, default off): the host keeps each version
 	// of the kernel and images side by side under ImagesDir, takes new ones from the control plane's image channel,
 	// checks their signatures, and keeps every sandbox on the images it was made on until it is restarted on the
@@ -128,10 +150,41 @@ type Config struct {
 	// ImageKey is a cosign public key to check signatures with instead of the identity (an install that builds and
 	// signs its own images).
 	ImageKey string `json:"imageKey,omitempty"`
+	// ImageSource, with image patching on, is a private source of host images the host follows instead of the
+	// control plane's image channel (experimental; unset: off). See ImageSourceConfig.
+	ImageSource *ImageSourceConfig `json:"imageSource,omitempty"`
 	// Cosign is the cosign binary signatures are checked with (default Root/bin/cosign, fetched at start).
 	Cosign string `json:"cosign,omitempty"`
 	// ImagesDir holds the versioned images (default Root/images).
 	ImagesDir string `json:"imagesDir,omitempty"`
+}
+
+// ImageSourceConfig is a private source of host images (images.Source): images Kantel doesn't publish, such as a
+// sandbox image with Chrome for Testing, for the operator's own hosts. Its versions are checked like the channel's:
+// the manifest's signature (against ImageKey, for images the operator signs), every file's digest, then one rename
+// makes the version current for new sandboxes, and every sandbox stays on the version it was made on.
+type ImageSourceConfig struct {
+	// Type is "http" (the default: a directory, local or over HTTPS, with channel.json naming the version) or
+	// "github-release" (a repository's API URL: its latest release is the version).
+	Type string `json:"type,omitempty"`
+	URL  string `json:"url"`
+	// HeadersFile holds the headers every request to URL's origin carries (`Name: value` lines), such as
+	// `Authorization: Bearer …` or a Cloudflare Access service token. Only its owner may read it (mode 600 or 400), and it must belong to the user the
+	// host runs as; otherwise the source isn't followed. Its values are never logged.
+	HeadersFile string `json:"headersFile,omitempty"`
+	// IntervalMinutes is how often the host asks the source for its version (default 60, at least 5).
+	IntervalMinutes int `json:"intervalMinutes,omitempty"`
+}
+
+// interval is how often the source is checked.
+func (c ImageSourceConfig) interval() time.Duration {
+	switch {
+	case c.IntervalMinutes == 0:
+		return time.Hour
+	case c.IntervalMinutes < 5:
+		return 5 * time.Minute
+	}
+	return time.Duration(c.IntervalMinutes) * time.Minute
 }
 
 // MicroVMConfig is the microVM tier's template settings.
@@ -198,8 +251,8 @@ func (c *Config) Defaults() {
 	set(&c.IsolateImage, filepath.Join(imageDir, "isolate.ext4"))
 	set(&c.GuestAgent, filepath.Join(imageDir, "kantel-guest"))
 	set(&c.Firecracker, filepath.Join(c.Root, "bin", "firecracker"))
-	set(&c.Workerd, filepath.Join(c.Root, "bin", "workerd"))
-	set(&c.IsolateBundle, filepath.Join(c.Root, "isolate"))
+	set(&c.IsolateBinary, filepath.Join(c.Root, "bin", "kantel-isolate"))
+	set(&c.IsolateAssets, filepath.Join(c.Root, "isolate-assets"))
 	set(&c.IsolateRuntime, "microvm")
 	set(&c.Subnet, "10.231.0.0/16")
 	set(&c.Egress, "open")
@@ -219,6 +272,26 @@ func (c *Config) Defaults() {
 	set(&c.Cosign, filepath.Join(c.Root, "bin", "cosign"))
 	set(&c.ImagesDir, imageDir)
 	set(&c.ControlSocket, DefaultControlSocket)
+}
+
+// legacyNativeRuntime is the workerd binary and isolate worker directory a native host installed before
+// kantel-isolate has (Workerd and IsolateBundle as its config saved them, else their old defaults), or empty when
+// it has none.
+func (c *Config) legacyNativeRuntime() (workerd, bundle string) {
+	workerd, bundle = c.Workerd, c.IsolateBundle
+	if workerd == "" {
+		workerd = filepath.Join(c.Root, "bin", "workerd")
+	}
+	if bundle == "" {
+		bundle = filepath.Join(c.Root, "isolate")
+	}
+	if st, err := os.Stat(workerd); err != nil || st.IsDir() {
+		return "", ""
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "config.capnp")); err != nil {
+		return "", ""
+	}
+	return workerd, bundle
 }
 
 func (c *Config) autoUpdate() bool { return c.AutoUpdate == nil || *c.AutoUpdate }

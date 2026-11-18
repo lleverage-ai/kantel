@@ -165,6 +165,20 @@ const TAGS: {
 		order: 10,
 		about: "Signed event deliveries to your endpoints, with retries.",
 	},
+	"sticky-disks": {
+		title: "Sticky disks",
+		order: 8.8,
+		about:
+			"An account's named, versioned disks for caches: each sandbox gets a copy-on-write copy of the newest version its host holds, and a commit makes a sandbox's copy the next version.",
+		note: "Experimental: a deployment serves these only with `KANTEL_STICKY_DISKS=experimental`.",
+	},
+	"github-runners": {
+		title: "GitHub runners",
+		order: 10.5,
+		about:
+			"GitHub Apps whose `workflow_job` webhooks get an ephemeral microVM runner per job, made from a pool's template on the account's hosts, with a queue for jobs that find no room.",
+		note: "Experimental: a deployment serves these only with `KANTEL_GITHUB_RUNNERS=experimental`.",
+	},
 	telemetry: {
 		title: "OpenTelemetry",
 		order: 11,

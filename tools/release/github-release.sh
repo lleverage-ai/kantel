@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # github-release.sh [--dry-run] <version> [out]: makes Kantel's GitHub Release v<version>, at this checkout's commit,
-# with the files pack.sh wrote to out/github (default dist/release/github): kantel-host for Linux x86_64 and arm64,
-# kantel.js, kantel-admin.js, install.sh, install-cli.sh and SHA256SUMS.
+# with the files pack.sh wrote to out/github (default dist/release/github): each file SHA256SUMS lists (kantel-host for
+# Linux x86_64 and arm64, kantel and kantel-admin for Linux and macOS on x86_64 and arm64, install.sh and
+# install-cli.sh) and SHA256SUMS itself.
 #
 # A version without a prerelease part (0.1.0) is marked the latest release, so
 # https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh, the host join command Kantel prints,
@@ -24,8 +25,18 @@ out=${2:-$root/dist/release}
 repo=${GITHUB_REPOSITORY:-lleverage-ai/kantel}
 tag="v$version"
 commit=$(git -C "$root" rev-parse HEAD)
-files=(kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js install.sh install-cli.sh
-	SHA256SUMS)
+[[ -f "$out/github/SHA256SUMS" ]] || {
+	echo "github-release.sh: no $out/github/SHA256SUMS; run pack.sh first" >&2
+	exit 1
+}
+# Every file SHA256SUMS lists, and it; those a release can't do without first.
+files=(kantel-host-linux-amd64 kantel-host-linux-arm64 kantel-linux-amd64 kantel-linux-arm64 kantel-darwin-amd64
+	kantel-darwin-arm64 install.sh install-cli.sh)
+while read -r _ name; do
+	name=${name#\*}
+	[[ " ${files[*]} " == *" $name "* ]] || files+=("$name")
+done <"$out/github/SHA256SUMS"
+files+=(SHA256SUMS)
 
 for file in "${files[@]}"; do
 	[[ -f "$out/github/$file" ]] || {
@@ -48,9 +59,9 @@ notes=$(
 	cat <<EOF
 Kantel $version.
 
-**Use sandboxes**: install the \`kantel\` command for yourself (Linux or macOS, with Node.js 22 or later; no sudo). This
-installs this release (\`curl -fsSL https://kantel.dev/cli.sh | sh\` installs the latest), and \`sh -s -- --admin\` adds
-the operator's \`kantel-admin\`:
+**Use sandboxes**: install the \`kantel\` command for yourself (Linux or macOS, x86_64 or arm64: one binary, with
+nothing else to install and no sudo). This installs this release in \`~/.local/bin\` (\`curl -fsSL https://kantel.dev/cli.sh | sh\`
+installs the latest, and \`kantel update\` updates it), and \`sh -s -- --admin\` adds the operator's \`kantel-admin\`:
 
 \`\`\`sh
 curl -fsSL $base/install-cli.sh | sh
@@ -63,10 +74,11 @@ with \`kantel-admin host add\`, then run the command it prints on the machine. T
 curl -fsSL $base/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_...
 \`\`\`
 
-**Operate a self-hosted Kantel**: \`kantel-admin\` comes with the command above. For it alone, system-wide:
+**Operate a self-hosted Kantel**: \`kantel-admin\` comes with the command above. For it alone, system-wide, on a
+Linux x86_64 server (\`kantel-admin-linux-arm64\`, \`kantel-admin-darwin-arm64\`… for others):
 
 \`\`\`sh
-sudo curl -fsSLo /usr/local/bin/kantel-admin $base/kantel-admin.js
+sudo curl -fsSLo /usr/local/bin/kantel-admin $base/kantel-admin-linux-amd64
 sudo chmod 755 /usr/local/bin/kantel-admin
 \`\`\`
 

@@ -4,7 +4,7 @@
 // else uses, and the routes answer `not_supported` while the switch is off.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender, type PersonIdentity } from "@kantel/compute";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService } from "../src/service.ts";
@@ -267,5 +267,105 @@ describe("Account hosts", () => {
 			service.sandboxes.create({ sandboxId: "sbx_other", tier: "microvm", owner: "acc_other", hostIds: [own.hostId] }),
 		).rejects.toThrow();
 		expect(own.sandboxes.has("sbx_other")).toBe(false);
+	});
+
+	it("joins a host to the pool its token names, which the registry keeps, and moves it once drained", async () => {
+		const { tom, join, service } = setup();
+		const ci = await tom.createAccountPool({ name: "ci" });
+		const inCi = await join((await tom.createAccountJoinToken({ name: "builder", pool: "ci" })).token);
+		const inDefault = await join((await tom.createAccountJoinToken({ name: "laptop" })).token);
+		const [first] = (await tom.listAccountPools()).items;
+		expect((await service.get(inCi.hostId)).poolId).toBe(ci.id);
+		expect((await tom.getAccountHost(inCi.hostId)).poolId).toBe(ci.id);
+		expect((await tom.getAccountHost(inDefault.hostId)).poolId).toBe(first?.id);
+
+		// Drained and empty, it moves, here and in the registry.
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const holder = inDefault.sandboxes.has(sandbox.id) ? inDefault : inCi;
+		const to = holder === inCi ? "default" : "ci";
+		await tom.updateAccountHost(holder.hostId, { draining: true });
+		expect((await service.get(holder.hostId)).state).toBe("draining");
+		expect((await failure(tom.updateAccountHost(holder.hostId, { pool: to }))).code).toBe("conflict");
+		await tom.deleteSandbox(sandbox.id);
+		await vi.waitFor(async () => {
+			expect(holder.sandboxes.has(sandbox.id)).toBe(false);
+		});
+		const moved = await tom.updateAccountHost(holder.hostId, { pool: to });
+		const target = holder === inCi ? first?.id : ci.id;
+		expect(moved.poolId).toBe(target);
+		expect((await service.get(holder.hostId)).poolId).toBe(target);
+		await tom.updateAccountHost(holder.hostId, { draining: false });
+		expect((await service.get(holder.hostId)).state).toBe("online");
+	});
+
+	it("takes a drain or undrain only over an older one, so an undrain held up can't undo a later drain", async () => {
+		const { tom, join, service } = setup();
+		const host = await join((await tom.createAccountJoinToken({ name: "box" })).token);
+		await tom.createAccountPool({ name: "ci" });
+		await tom.updateAccountHost(host.hostId, { draining: true });
+		// An undrain held up on its way to the registry while another call drains the host again.
+		const update = service.update.bind(service);
+		let meanwhile: (() => Promise<unknown>) | undefined = () => tom.updateAccountHost(host.hostId, { draining: true });
+		service.update = async (hostId, change) => {
+			const run = change.draining === false ? meanwhile : undefined;
+			if (run !== undefined) {
+				meanwhile = undefined;
+				await run();
+			}
+			return update(hostId, change);
+		};
+		await tom.updateAccountHost(host.hostId, { draining: false });
+		// The later drain stands, in the registry and here, and the host moves under it.
+		expect((await service.get(host.hostId)).state).toBe("draining");
+		expect((await tom.getAccountHost(host.hostId)).state).toBe("draining");
+		const moved = await tom.updateAccountHost(host.hostId, { pool: "ci" });
+		expect(moved.state).toBe("draining");
+		expect((await service.get(host.hostId)).state).toBe("draining");
+	});
+
+	it("places a create naming a pool only on that pool's hosts, and says which pool when none can take it", async () => {
+		const { tom, root, join, api } = setup();
+		const shared = await join((await root.createHostJoinToken({ name: "shared" })).token);
+		await tom.createAccountPool({ name: "ci" });
+		const inDefault = await join((await tom.createAccountJoinToken({ name: "laptop" })).token);
+		const inCi = await join(
+			(await tom.createAccountJoinToken({ name: "builder", pool: "ci", labels: { size: "big" } })).token,
+		);
+		const ci = (await tom.listAccountPools()).items.find((pool) => pool.name === "ci");
+		for (let i = 0; i < 4; i++) {
+			const named = await tom.createSandbox({ type: "microvm", pool: "ci", wait: true });
+			expect(inCi.sandboxes.has(named.id)).toBe(true);
+			expect(named.poolId).toBe(ci?.id);
+			// Naming none: the account's default pool, as before pools.
+			const plain = await tom.createSandbox({ type: "microvm", wait: true });
+			expect(inDefault.sandboxes.has(plain.id)).toBe(true);
+			expect(inCi.sandboxes.has(plain.id)).toBe(false);
+			expect(shared.sandboxes.has(plain.id)).toBe(false);
+		}
+		// Labels choose among the pool's hosts only: none in ci has these.
+		const refused = await failure(tom.createSandbox({ type: "microvm", pool: "ci", hostLabels: { size: "small" } }));
+		expect(refused.code).toBe("unavailable");
+		expect(refused.details).toMatchObject({ reason: "no_host_with_labels" });
+		expect(refused.message).toContain("pool ci");
+		// One the default pool's host lacks isn't found in ci either, and no shared host takes it.
+		const elsewhere = await failure(tom.createSandbox({ type: "microvm", hostLabels: { size: "big" } }));
+		expect(elsewhere.code).toBe("unavailable");
+		expect((await failure(tom.createSandbox({ type: "microvm", pool: "nowhere" }))).code).toBe("not_found");
+		// A host it names decides, in whichever of the account's pools it is, as before pools.
+		const pinned = await tom.createSandbox({ type: "microvm", host: inCi.hostId, wait: true });
+		expect(inCi.sandboxes.has(pinned.id)).toBe(true);
+		expect(pinned.poolId).toBe(ci?.id);
+		expect((await failure(tom.createSandbox({ type: "microvm", host: inCi.hostId, pool: "default" }))).code).toBe(
+			"unavailable",
+		);
+		// A fork stays in its pool.
+		const source = await tom.createSandbox({ type: "microvm", pool: "ci", wait: true });
+		const [fork] = (await tom.forkSandbox(source.id, {})).items ?? [];
+		expect(fork?.poolId).toBe(ci?.id);
+		// A fork of a sandbox from before pools is kept to none, and is recorded in the pool of the host that admitted it.
+		await api.store.sandboxes.update(source.id, ({ poolId: _pool, ...rest }) => rest);
+		const [landed] = (await tom.forkSandbox(source.id, { wait: true })).items ?? [];
+		expect(landed).toMatchObject({ state: "running", poolId: ci?.id });
+		expect(inCi.sandboxes.has(landed?.id ?? "")).toBe(true);
 	});
 });

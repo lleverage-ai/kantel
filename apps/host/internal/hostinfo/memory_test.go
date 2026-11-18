@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -135,6 +136,67 @@ func TestReadMemorySharedLimitAbove(t *testing.T) {
 	})
 	if m := paths.read(); m.Limited || m.TotalMiB != 128000 || m.AvailableMiB != 113664 {
 		t.Fatalf("%+v", m)
+	}
+}
+
+// The production host of LLE-19010: an operator's MemoryMax of 48 GiB on kantel-host.service, the group at its
+// limit, nearly all of it clean page cache from copying disk images and the VMs' disk files (the kernel keeps about a
+// twentieth of that much file cache inactive), about 10 GiB anonymous, no swap, and the machine with over 100 GiB
+// available.
+const (
+	incidentMeminfo = "MemTotal:       131072000 kB\nMemAvailable:   110100480 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\n"
+	incidentGroup   = "cgroup/system.slice/kantel-host.service/"
+	incidentStat    = "anon 11005853696\nfile 40231763968\nkernel 268435456\nshmem 16777216\nfile_mapped 1073741824\n" +
+		"file_dirty 50331648\nfile_writeback 0\nactive_anon 11005853696\ninactive_anon 16777216\n" +
+		"active_file 38168166400\ninactive_file 2046820352\n"
+)
+
+func incidentFiles() map[string]string {
+	return map[string]string{
+		"proc/meminfo":                        incidentMeminfo,
+		"proc/vmstat":                         "pswpout 0\n",
+		"proc/self/cgroup":                    "0::/system.slice/kantel-host.service\n",
+		"cgroup/system.slice/memory.max":      "max\n",
+		incidentGroup + "memory.max":          "51539607552\n",
+		incidentGroup + "memory.current":      "51505004544\n",
+		incidentGroup + "memory.stat":         incidentStat,
+		incidentGroup + "memory.events":       "low 0\nhigh 0\nmax 1200\noom 0\noom_kill 0\n",
+		incidentGroup + "memory.pressure":     "some avg10=3.10 avg60=1 avg300=0 total=1\nfull avg10=0.40 avg60=0 avg300=0 total=1\n",
+		incidentGroup + "memory.swap.current": "0\n",
+	}
+}
+
+// The incident's group has 38 GiB it can still take before the kernel ends a VM: its page cache, clean, can be
+// dropped at the limit. Which share of it the kernel keeps inactive doesn't change that.
+func TestReadMemoryIncident(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, incidentFiles())
+	paths := memoryPaths{proc: filepath.Join(root, "proc"), cgroup: filepath.Join(root, "cgroup")}
+	// 36400 active and 1952 inactive, 48 of it dirty.
+	const cache = 36400 + 1952 - 48
+	want := Memory{TotalMiB: 49152, AvailableMiB: 33 + cache, PressureSome: 3.1, PressureFull: 0.4, Limited: true,
+		GroupMaxMiB: 49152, GroupHeadroomMiB: 33, GroupCacheMiB: cache, GroupLimitHits: 1200}
+	if m := paths.read(); m != want {
+		t.Fatalf("got %+v\nwant %+v", m, want)
+	}
+	half := strings.NewReplacer("active_file 38168166400", "active_file 20115881984", "inactive_file 2046820352",
+		"inactive_file 20099104768").Replace(incidentStat)
+	writeFiles(t, root, map[string]string{incidentGroup + "memory.stat": half})
+	if m := paths.read(); m != want {
+		t.Fatalf("half inactive: got %+v\nwant %+v", m, want)
+	}
+}
+
+// Page cache that must reach the disk first (dirty, under writeback) isn't droppable, nor is tmpfs or shared memory,
+// which memory.stat counts as file but keeps on the anonymous lists.
+func TestDroppableCache(t *testing.T) {
+	stat := parseKeyed(strings.NewReader("file 12884901888\nshmem 4294967296\nactive_file 6442450944\n" +
+		"inactive_file 2147483648\nfile_dirty 1073741824\nfile_writeback 536870912\n"))
+	if got := droppableCacheMiB(stat); got != 6144+2048-1024-512 {
+		t.Fatalf("droppable %d", got)
+	}
+	if got := droppableCacheMiB(map[string]int64{"inactive_file": 1 << 20, "file_dirty": 2 << 20}); got != 0 {
+		t.Fatalf("more dirty than on the lists: %d", got)
 	}
 }
 

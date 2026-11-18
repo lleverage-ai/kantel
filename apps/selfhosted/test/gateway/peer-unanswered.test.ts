@@ -49,6 +49,15 @@ describe("a relayed call's failure", () => {
 		).toBe(false);
 	});
 
+	it("carries the host's word that a failed start let go of the sandbox's memory", async () => {
+		const dropped = { error: { code: "internal", message: "no free sandbox addresses", memoryDropped: true } };
+		expect((await failureOf(answering(`${JSON.stringify(dropped)}\n`))).memoryDropped).toBe(true);
+		expect(
+			(await failureOf(answering(`${JSON.stringify({ error: { code: "capacity", message: "full" } })}\n`)))
+				.memoryDropped,
+		).toBe(false);
+	});
+
 	it("is unanswered when the peer's answer never comes", async () => {
 		expect((await failureOf(answering(""))).unanswered).toBe(true);
 		expect((await failureOf(answering("", 502))).unanswered).toBe(true);

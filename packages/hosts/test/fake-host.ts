@@ -5,6 +5,9 @@ import {
 	decodeStreamFrame,
 	encodeStreamFrame,
 	FILE_STREAM_WINDOW_BYTES,
+	type HostError,
+	type HostExecResult,
+	type HostExecStatus,
 	type HostFacts,
 	type HostFileOpen,
 	type HostMessage,
@@ -51,10 +54,12 @@ export class FakeHost {
 	closedWith: { code: number; reason: string } | undefined;
 	connection!: AcceptedHost;
 	freeMemoryMiB = 20_000;
+	/** What its template builds' answers say they were made on (`cpu`, `runtime`); absent, a host from before it said. */
+	madeOn?: { readonly [key: string]: unknown };
 	/** Every call's method and params, as sent. */
 	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
 	/** For a test: a call of a method it answers a promise for is answered once that settles (a slow host). */
-	hold?: (method: string) => Promise<void> | undefined;
+	hold?: (method: string, params: { readonly [key: string]: unknown }) => Promise<void> | undefined;
 	/** Files `sandbox.files.open` streams, by path; a write lands here once all of it has arrived. */
 	readonly files = new Map<string, Uint8Array>();
 	/** How many bytes a read's frames carry each. */
@@ -84,18 +89,72 @@ export class FakeHost {
 	/** For a test: the size a create is answered as made, instead of the one asked for (a restore's own size). */
 	madeSize?: string;
 	/** For a test: a call of a method it answers an error for fails with it. */
-	refuse?: (method: string) => { readonly code: string; readonly message: string } | undefined;
+	refuse?: (
+		method: string,
+		params: { readonly [key: string]: unknown },
+	) => { readonly code: string; readonly message: string } | undefined;
 	/** For a test: what a call of a method it answers a result for is answered, instead of the usual. */
 	answer?: (method: string) => unknown;
 	/** Facts it reports beyond the usual: its Firecracker and guest kernel, say. */
 	moreFacts: Partial<HostFacts> = {};
+	/** What is on each sandbox's disk and sticky drives here, by sandbox, which a move takes with it. */
+	readonly disks = new Map<string, string>();
+	/** The sandboxes' exports for a move (`sandbox.export`), by `<sandboxId>/<version>`: what was on their disks. */
+	readonly exports = new Map<string, string>();
+	/** The move each sandbox here was last exported by (`sandbox.export`), which a delete with `exported` must name. */
+	readonly exportedBy = new Map<string, string>();
+	/** The moves whose import was cancelled here (`sandbox.import.cancel`), by `<sandboxId>/<version>`. */
+	readonly cancelled = new Set<string>();
+	/** Versions fetched and kept staged here (`sandbox.import` with `stage`), by `<sandboxId>/<version>`: what they hold. */
+	readonly staged = new Map<string, string>();
+	/**
+	 * What each running sandbox here runs (its processes, as a test names them): a start boots it afresh (`booted`), a
+	 * resume carries on with what its kept memory ran.
+	 */
+	readonly processes = new Map<string, string>();
+	/** What each sandbox stopped keeping its memory here ran, which a resume carries on with. */
+	readonly memories = new Map<string, string>();
+	/** The memories exported with a move (`sandbox.export` with `memory`), by `<sandboxId>/<version>`. */
+	readonly memoryExports = new Map<string, string>();
+	/** The runtime its sandboxes' memory is of, as `sandbox.memory` answers it (`HOST_FEATURES.sandboxMoveMemory`). */
+	runtime = "firecracker=v1.17.0;kernel=6.1.155;sticky=2";
+	/** Every host made, by ID: a move's target reads its holder's export from it, as from a peer. */
+	static readonly byId = new Map<string, FakeHost>();
+	/**
+	 * Runs commands by Kantel's ID as kantel-host does with a guest that keeps them (`HOST_FEATURES.execControl`): each
+	 * kept in `FakeHost.guestCommands`, a foreground one answered only once a test ends it there, or with `suspended`
+	 * once its sandbox is stopped keeping its memory (and with its guest's broken call when it isn't). Off, a command is
+	 * answered at once, `hi`.
+	 */
+	keepsCommands = false;
+	/**
+	 * For a test: a stop asked to keep its sandbox's memory stops it cold instead, as a host whose Firecracker won't
+	 * pause does: its commands end with its machine, and the stop is answered a moment later, `memory: false`.
+	 */
+	stopsCold = false;
+	/**
+	 * The commands each sandbox's guest keeps by ID (`<sandboxId>/<commandId>`), in its memory: every host's, as a
+	 * sandbox moved with its memory has the same guest. A test ends one by setting its result.
+	 */
+	static readonly guestCommands = new Map<string, HostExecStatus>();
+	/** Foreground calls waiting for their command to end, by `<sandboxId>/<commandId>`: answered with what ended it. */
+	private readonly foreground = new Map<string, (end: { result?: HostExecResult; error?: HostError }) => void>();
+
+	/** Ends a guest's command with `result`, answering its foreground call where one waits for it here. */
+	static endCommand(sandboxId: string, commandId: string, result: HostExecResult) {
+		const key = `${sandboxId}/${commandId}`;
+		FakeHost.guestCommands.set(key, { commandId, state: "exited", result });
+		for (const host of FakeHost.byId.values()) host.foreground.get(key)?.({ result });
+	}
 
 	constructor(
 		readonly service: HostsService,
 		readonly hostId: string,
 		/** What it reports doing beyond protocol 1 as first released; absent, an older host's report. */
 		readonly features?: readonly string[],
-	) {}
+	) {
+		FakeHost.byId.set(hostId, this);
+	}
 
 	connect(held: HostSandbox[] = []) {
 		for (const sandbox of held) this.sandboxes.set(sandbox.id, sandbox);
@@ -189,7 +248,7 @@ export class FakeHost {
 		}
 		if (message.type !== "call") return;
 		this.calls.push({ method: message.method ?? "", params: message.params as { [key: string]: unknown } });
-		const wait = this.hold?.(message.method ?? "");
+		const wait = this.hold?.(message.method ?? "", message.params as { [key: string]: unknown });
 		if (wait !== undefined) {
 			void wait.then(() => this.answerCall(message));
 			return;
@@ -238,7 +297,7 @@ export class FakeHost {
 						mounts: this.mountStatus(params.mounts ?? []),
 						...(this.mountsAt === undefined ? {} : { mountsAt: this.mountsAt }),
 					};
-		const refused = this.refuse?.(message.method ?? "");
+		const refused = this.refuse?.(message.method ?? "", (message.params ?? {}) as { [key: string]: unknown });
 		if (refused !== undefined) return fail(refused.code, refused.message);
 		const answered = this.answer?.(message.method ?? "");
 		if (answered !== undefined) return answer(answered);
@@ -267,17 +326,59 @@ export class FakeHost {
 			case "sandbox.stop": {
 				const sandbox = this.sandboxes.get(params.sandboxId);
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
-				const stopped = { ...sandbox, state: "stopped" as const, memory: true };
+				const cold = this.stopsCold && (message.params as { memory?: boolean }).memory !== false;
+				const keeps = (message.params as { memory?: boolean }).memory !== false && !cold;
+				// Its commands' calls break with its machine: kept in its memory they carry on, else they end with it.
+				for (const [key, end] of this.foreground) {
+					if (!key.startsWith(`${sandbox.id}/`)) continue;
+					if (!keeps) FakeHost.guestCommands.delete(key);
+					end({
+						error: keeps
+							? { code: "suspended", message: `sandbox ${sandbox.id} was stopped keeping its memory` }
+							: { code: "internal", message: 'Post "http://guest/exec": EOF' },
+					});
+				}
+				if (!keeps) {
+					for (const key of FakeHost.guestCommands.keys()) {
+						if (key.startsWith(`${sandbox.id}/`)) FakeHost.guestCommands.delete(key);
+					}
+				}
+				const ran = this.processes.get(sandbox.id);
+				if (keeps && sandbox.state === "running") this.memories.set(sandbox.id, ran ?? "booted");
+				if (!keeps) this.memories.delete(sandbox.id);
+				this.processes.delete(sandbox.id);
+				const stopped = { ...sandbox, state: "stopped" as const, memory: keeps };
 				this.sandboxes.set(sandbox.id, stopped);
+				if (cold) {
+					setTimeout(() => answer(stopped), 200);
+					return;
+				}
 				return answer(stopped);
 			}
 			case "sandbox.start":
 			case "sandbox.resume": {
 				const sandbox = this.sandboxes.get(params.sandboxId);
 				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				if (sandbox.state !== "running") {
+					const kept = message.method === "sandbox.resume" ? this.memories.get(sandbox.id) : undefined;
+					this.processes.set(sandbox.id, kept ?? "booted");
+					this.memories.delete(sandbox.id);
+					// Booted afresh, its guest knows none of the commands its memory ran.
+					if (kept === undefined) {
+						for (const key of FakeHost.guestCommands.keys()) {
+							if (key.startsWith(`${sandbox.id}/`)) FakeHost.guestCommands.delete(key);
+						}
+					}
+				}
 				const running = { ...sandbox, state: "running" as const };
 				this.sandboxes.set(sandbox.id, running);
 				return answer(withMounts(running));
+			}
+			case "sandbox.memory": {
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				const has = sandbox.state === "running" || this.memories.has(sandbox.id);
+				return answer({ memory: has, bytes: has ? 512 * 1024 * 1024 : 0, ...(has ? { runtime: this.runtime } : {}) });
 			}
 			case "sandbox.files.open": {
 				const open = message.params as HostFileOpen;
@@ -297,14 +398,138 @@ export class FakeHost {
 				return answer({});
 			}
 			case "sandbox.exec": {
+				const exec = message.params as { commandId?: string; detached?: boolean };
+				if (this.keepsCommands && exec.commandId !== undefined) {
+					const key = `${params.sandboxId}/${exec.commandId}`;
+					FakeHost.guestCommands.set(key, { commandId: exec.commandId, state: "running", stdout: "so far\n" });
+					if (exec.detached === true) return answer({ commandId: exec.commandId, state: "running", pid: 7 });
+					this.foreground.set(key, (end) => {
+						this.foreground.delete(key);
+						if (end.error !== undefined) fail(end.error.code, end.error.message);
+						else answer(end.result);
+					});
+					return;
+				}
 				this.send({ type: "event", call: message.id, event: { kind: "exec.output", stdout: btoa("hi\n"), at: 1 } });
 				return answer({ exitCode: 0, stdout: "hi\n", stderr: "", durationMs: 3 });
 			}
+			case "sandbox.exec.get":
+			case "sandbox.exec.kill": {
+				if (!this.keepsCommands) return fail("unsupported", `unknown method ${message.method}`);
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				if (sandbox.state !== "running")
+					return fail("conflict", `sandbox ${sandbox.id} is ${sandbox.state}, not running`);
+				const { commandId } = message.params as { commandId: string };
+				const key = `${sandbox.id}/${commandId}`;
+				const known = FakeHost.guestCommands.get(key);
+				if (message.method === "sandbox.exec.get") {
+					return known === undefined ? fail("not_found", `no command ${commandId}`) : answer(known);
+				}
+				const running = known?.state === "running";
+				if (running)
+					FakeHost.endCommand(sandbox.id, commandId, { exitCode: 137, stdout: "so far\n", stderr: "", durationMs: 5 });
+				return answer({ killed: running });
+			}
 			case "sandbox.delete":
+				if (
+					typeof (message.params as { exported?: unknown }).exported === "string" &&
+					this.exportedBy.get(params.sandboxId) !== (message.params as { exported: string }).exported
+				) {
+					return fail("not_found", "not the copy that move exported");
+				}
+				this.exportedBy.delete(params.sandboxId);
 				this.sandboxes.delete(params.sandboxId);
+				this.disks.delete(params.sandboxId);
+				this.memories.delete(params.sandboxId);
+				this.processes.delete(params.sandboxId);
+				for (const key of this.exports.keys()) if (key.startsWith(`${params.sandboxId}/`)) this.exports.delete(key);
 				return answer({ ok: true });
+			case "sandbox.get": {
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer(sandbox);
+			}
+			case "sandbox.export": {
+				const { version, live, memory } = message.params as { version: string; live?: boolean; memory?: boolean };
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				if (sandbox.state !== "stopped" && !(live === true && sandbox.state === "running")) {
+					return fail("conflict", `sandbox ${sandbox.id} is ${sandbox.state}`);
+				}
+				const kept = this.memories.get(params.sandboxId);
+				if (memory === true && kept === undefined) return fail("conflict", "it was stopped without its memory");
+				this.exports.set(`${params.sandboxId}/${version}`, this.disks.get(params.sandboxId) ?? "");
+				if (memory === true && kept !== undefined) this.memoryExports.set(`${params.sandboxId}/${version}`, kept);
+				this.exportedBy.set(params.sandboxId, version);
+				return answer({
+					mapDigest: `sha256:${"a".repeat(64)}`,
+					allocatedBytes: 4096,
+					...(memory === true ? { memoryMapDigest: `sha256:${"b".repeat(64)}`, memoryAllocatedBytes: 8192 } : {}),
+				});
+			}
+			case "sandbox.export.delete": {
+				const { version } = message.params as { version?: string };
+				for (const key of this.exports.keys()) {
+					if (
+						key === `${params.sandboxId}/${version}` ||
+						(version === undefined && key.startsWith(`${params.sandboxId}/`))
+					)
+						this.exports.delete(key);
+				}
+				return answer({});
+			}
+			case "sandbox.import": {
+				const { version, holders, grant, mapDigest, stage, base, memory } = message.params as {
+					version: string;
+					holders: { hostId: string; address: string }[];
+					grant: string;
+					mapDigest: string;
+					stage?: boolean;
+					base?: string;
+					memory?: { mapDigest: string; holders: { hostId: string; address: string }[]; grant: string };
+				};
+				const key = `${params.sandboxId}/${version}`;
+				if (this.cancelled.has(key)) return fail("conflict", "the move was cancelled here");
+				const held = this.sandboxes.get(params.sandboxId);
+				if (held !== undefined) return stage === true ? fail("conflict", "the sandbox is here already") : answer(held);
+				const from = FakeHost.byId.get(holders[0]?.hostId ?? "");
+				const disk = from?.exports.get(key);
+				if (disk === undefined || grant === "" || mapDigest === "") return fail("unavailable", "no holder has it");
+				const memoryOf =
+					memory === undefined ? undefined : FakeHost.byId.get(memory.holders[0]?.hostId ?? "")?.memoryExports.get(key);
+				if (memory !== undefined && (memoryOf === undefined || memory.grant === "" || memory.mapDigest === "")) {
+					return fail("unavailable", "no holder has its memory");
+				}
+				if (stage === true) {
+					this.staged.set(key, disk);
+					return answer({});
+				}
+				// Its staged base goes once this version is the sandbox here.
+				if (base !== undefined) this.staged.delete(`${params.sandboxId}/${base}`);
+				const sandbox: HostSandbox = {
+					id: params.sandboxId,
+					tier: "microvm",
+					size: "default",
+					state: "stopped",
+					createdAt: 1,
+				};
+				this.sandboxes.set(params.sandboxId, sandbox);
+				this.disks.set(params.sandboxId, disk);
+				if (memoryOf !== undefined) this.memories.set(params.sandboxId, memoryOf);
+				return answer(sandbox);
+			}
+			case "sandbox.import.cancel": {
+				const { version } = message.params as { version: string };
+				this.cancelled.add(`${params.sandboxId}/${version}`);
+				this.staged.delete(`${params.sandboxId}/${version}`);
+				this.sandboxes.delete(params.sandboxId);
+				this.disks.delete(params.sandboxId);
+				this.memories.delete(params.sandboxId);
+				return answer({});
+			}
 			case "port.open":
 			case "sandbox.egress":
+			case "sandbox.env":
 				return answer({ ok: true });
 			case "sandbox.secrets":
 				return answer({});
@@ -321,7 +546,7 @@ export class FakeHost {
 				});
 			case "template.build": {
 				const build = message.params as { snapshotId: string };
-				return answer({ ref: build.snapshotId, imageDigest: "sha256:feed", sizeBytes: 42 });
+				return answer({ ref: build.snapshotId, imageDigest: "sha256:feed", sizeBytes: 42, ...this.madeOn });
 			}
 			case "template.delete":
 				return answer({ ok: true });

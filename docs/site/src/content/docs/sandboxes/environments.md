@@ -1,6 +1,6 @@
 ---
 title: Environments and protected variables
-description: Give sandboxes the variables, secret files, repositories and grants they need from one named environment. A protected variable never enters the sandbox; the host's egress proxy puts the value into requests to the places you bind it to.
+description: Give sandboxes the variables, secret files, repositories and grants they need from named environments, one or several in order. A protected variable never enters the sandbox; the host's egress proxy puts the value into requests to the places you bind it to.
 sidebar:
   badge:
     text: Experimental
@@ -11,7 +11,7 @@ sidebar:
 Environments are part of Kantel's API, which every control plane serves. Protected variables and grants work on sandboxes on [your own hosts](/hosts/), whose egress proxy does the work, not on the built-in stand-in (`KANTEL_COMPUTE_BACKEND=stub`). Their shapes may still change.
 :::
 
-An environment is a named set of things a new sandbox starts with. Make one for each kind of work, such as `work` or `ci`, and start sandboxes from it with `kantel new --env work`.
+An environment is a named set of things a sandbox gets. Make one for each kind of work, such as `work` or `ci`, and start sandboxes with it: `kantel new --env work`. A sandbox can have [several](#several-environments), in order, and you can [attach and detach](#attach-and-detach) them while it exists.
 
 ## What an environment holds
 
@@ -22,7 +22,7 @@ An environment is a named set of things a new sandbox starts with. Make one for 
 | Repositories | `https://` git repositories cloned into the sandbox once it runs, through the egress proxy |
 | Grants | Rules that allow or refuse requests by host, method and path, on top of the account's [proxy settings](/sandboxes/egress-proxy/#grants) |
 
-Changes apply to sandboxes made after them. The exceptions are a protected variable's value and bindings, and grants, which running sandboxes pick up within seconds.
+Changes apply to sandboxes made with the environment, or that it's attached to, after them. The exceptions are a protected variable's value and bindings, and grants, which running sandboxes pick up within seconds.
 
 An [isolate](/sandboxes/types/) sandbox gets the variables, protected ones included, and the grants. Secret files and repositories need a microVM: an isolate keeps files only under `/workspace` and has no `git`. Kantel doesn't skip them silently. Each one that can't be written or cloned is a `sandbox.degraded` event saying why, and the sandbox keeps running.
 
@@ -67,7 +67,45 @@ Grants: none
 
 Secret files and repositories are added after the sandbox starts. If one fails, such as a clone of a repository that doesn't exist, the sandbox still runs, and the failure is recorded in its [events](/api/reference/events/).
 
-A sandbox can still have variables of its own: `kantel new --env work -e DEBUG=1`. They come after the environment's and win over its plain ones, but may not name one of its protected variables. Kantel keeps some names for itself and refuses them in an environment: `KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, in any case.
+A sandbox can still have variables of its own: `kantel new --env work -e DEBUG=1`. They come after its environments' and win over their plain ones, but may not name one of their protected variables. Kantel keeps some names for itself and refuses them in an environment: `KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, in any case.
+
+## Several environments
+
+A sandbox can have up to 10 environments, in order. Keep each one to one thing, such as `work` for a project's settings and `lleverage-github` for a GitHub token, and combine them:
+
+```sh
+kantel new --type microvm --env work --env lleverage-github
+```
+
+Where two set the same variable, secret file path or repository path, the later one wins: here `lleverage-github`'s `GH_TOKEN` over any `GH_TOKEN` in `work`. A protected variable's value comes from the environment that wins its name. Grants add up: the sandbox has every environment's, and where a deny and an allow both match a request, the deny wins. The sandbox's own variables come last, over all of them.
+
+`kantel env ls --sandbox <sandbox>` lists a sandbox's environments in order, with what each loses to a later one, as the console's sandbox page does.
+
+## Attach and detach
+
+Attach an environment to a sandbox that exists, or detach one from it:
+
+```sh
+kantel env attach sbx_g2yy5jhyqr lleverage-github
+kantel env attach sbx_g2yy5jhyqr ci --position 0
+kantel env detach sbx_g2yy5jhyqr ci
+```
+
+An attached environment goes last, so it wins over the others, unless `--position` puts it somewhere else: 0 is first, so every other one wins over it. Attaching one the sandbox has already moves it.
+
+When you attach one:
+
+- The sandbox's variables are worked out again from all of its environments as they are now, then its own. New commands see them at once, and so do services that read `/etc/kantel/env`, on hosts that support it. An SSH session or the desktop's terminal sees them once the sandbox restarts.
+- Its grants and protected variables apply at once.
+- A running sandbox gets its secret files and repositories now, in the background. A stopped one gets them when it next starts, and is shown as pending until then. Only its own files are written, and those whose winner the attach changed: files you've edited at other paths stay as they are.
+- Attaching one the sandbox has already moves it, and writes the files the move gives it. Its repositories aren't cloned again.
+- Running processes keep the variables they started with. Restart them to pick up the change.
+
+When you detach one, its variables go from new commands, its protected variables stop resolving at once, and its grants go. Secret files it wrote and repositories it cloned stay in the sandbox: remove them yourself if they shouldn't be there. Running processes keep the variables they started with, placeholders included, but a placeholder of the environment's no longer gets its value.
+
+Deleting an environment takes it off every sandbox that has it, as a detach does. Each attach and detach is a `sandbox.environments_changed` [event](/api/reference/events/).
+
+A sandbox made before sandboxes could have several environments keeps the variables it was made with as its lowest layer. An environment you attach wins over them where both set a name, never the other way round.
 
 ## Plain and protected variables
 
@@ -238,16 +276,23 @@ Environments belong to the account, as the [proxy settings](/sandboxes/egress-pr
 | `PUT /v1/environments/{environmentId}/grants` | Replace its grants |
 | `GET /v1/sandboxes/{sandboxId}/egress` | A sandbox's egress log, its protected variables (names and the first 8 characters of their placeholders) and its grants |
 | `PUT /v1/sandboxes/{sandboxId}/grants` | Replace a sandbox's own grants |
+| `GET /v1/sandboxes/{sandboxId}/environments` | A sandbox's environments, in order, each with what a later one sets instead (`shadowed`) and whether its files and repositories are still to come (`pending`) |
+| `POST /v1/sandboxes/{sandboxId}/environments` | Attach one: `{"environment": "ci", "position": 0}`. Without `position`, it goes last |
+| `DELETE /v1/sandboxes/{sandboxId}/environments/{environmentId}` | Detach one |
 
-To start a sandbox from an environment, send its name or ID as `environment` when you [create the sandbox](/sandboxes/lifecycle/):
+Reading a sandbox's environments needs `sandboxes:read`, and attaching or detaching one `exec`.
+
+To start a sandbox with environments, send their names or IDs, in order, as `environments` when you [create the sandbox](/sandboxes/lifecycle/). `environment` still takes one.
 
 ```sh
 curl -s "$KANTEL_URL/v1/sandboxes" \
   -H "authorization: Bearer $KANTEL_API_KEY" -H "content-type: application/json" \
-  -d '{"type": "microvm", "environment": "work", "wait": true}'
+  -d '{"type": "microvm", "environments": ["work", "lleverage-github"], "wait": true}'
 ```
 
-The [API reference](/api/reference/) has every field. The console edits the same environments.
+A sandbox answers with `environmentIds`, in order. Its `environmentId` is the first of them, kept for older clients.
+
+The [API reference](/api/reference/) has every field. The console edits the same environments, and a sandbox's page lists its environments, attaches them and detaches them.
 
 Protected values and secret files need the deployment to have a secrets key. Where it has none, setting one is refused with `not_supported` ("This deployment doesn't support protected variables or secret files"), plain variables still work, and `GET /v1/whoami` says `protectedValues: false`: the CLI and console check it and say so before writing anything. On a self-hosted install the key is `KANTEL_SECRETS_KEY` on the control plane; see [Your own settings](/self-hosting/install/#your-own-settings).
 

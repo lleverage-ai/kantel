@@ -7,9 +7,13 @@
  * One connection per host: a newer one takes over, and the older is closed with 4008. Only the current connection's
  * close marks the host gone, so a takeover never reads as a disconnect.
  *
- * A welcomed host may call Kantel for two things, `secrets.fetch` and `bucket.fetch`: the hub answers them through
- * `secrets` and `bucketSource`, naming the host the connection was checked against, never one the host names, so a
- * host is given only its own sandboxes' values and bucket sources. Its egress proxy's `egress` events go to
+ * A welcomed connection that carries nothing from the host for longer than the heartbeat deadline (three heartbeats by
+ * default) is closed with 4009, so a host cut off without a close (a silent partition) is marked gone within it, rather
+ * than whenever the runtime's socket or TCP notices (about two minutes under Bun, longer elsewhere).
+ *
+ * A welcomed host may call Kantel for `secrets.fetch`, `env.fetch`, `bucket.fetch` and `disk.locate`: the hub answers
+ * them through `secrets`, `env`, `bucketSource` and `diskLocate`, naming the host the connection was checked against,
+ * never one the host names, so a host is given only its own sandboxes' values and bucket sources, and grants naming it. Its egress proxy's `egress` events go to
  * `onEgress`, and its `sandbox.mounts` events, checked, to `onMounts`.
  *
  * A file stream (`openFile`) is a port stream carrying a file of a sandbox's: the host sends a read's bytes and ends it
@@ -19,6 +23,7 @@
  *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
+import { isKantelError } from "@kantel/contracts";
 import { parseMountStatuses, parseMountsAt } from "./facts.ts";
 import {
 	decodeStreamFrame,
@@ -26,15 +31,20 @@ import {
 	FILE_STREAM_WINDOW_BYTES,
 	HOST_CLOSE_PROTOCOL,
 	HOST_CLOSE_REPLACED,
+	HOST_CLOSE_SILENT,
 	HOST_EVENT_MOUNTS,
 	HOST_PROTOCOL_VERSION,
 	type HostBucketSource,
 	type HostCapacity,
+	type HostDiskLocateParams,
+	type HostDiskLocateResult,
 	type HostEgressRecord,
+	type HostEnvAnswer,
 	type HostError,
 	type HostEvent,
 	type HostFileOpen,
 	type HostHello,
+	type HostMeshPeer,
 	type HostMessage,
 	HostMethods,
 	type HostMountStatus,
@@ -74,12 +84,15 @@ export class HostCallError extends Error {
 	 * left (not connected) is `disconnected` only; one whose host went while it waited is both.
 	 */
 	readonly unanswered: boolean;
+	/** The host said its failed start let go of the sandbox's memory (`HostError.memoryDropped`). */
+	readonly memoryDropped: boolean;
 	constructor(error: HostError, how: { readonly disconnected?: boolean } = {}) {
 		super(error.message);
 		this.name = "HostCallError";
 		this.code = error.code;
 		this.disconnected = how.disconnected === true;
 		this.unanswered = error.unanswered === true;
+		this.memoryDropped = error.memoryDropped === true;
 	}
 }
 
@@ -177,6 +190,11 @@ export interface HostHubOptions {
 	 * `not_found`). Absent, every fetch is answered `unavailable`.
 	 */
 	secrets?(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
+	/**
+	 * A host's `env.fetch`: the sandbox's env as Kantel has it now, or `undefined` unless the sandbox is on `hostId`
+	 * (answered `not_found`). Absent, every fetch is answered `unsupported`, and the host applies the env it was sent.
+	 */
+	env?(hostId: string, sandboxId: string): Promise<HostEnvAnswer | undefined>;
 	/** A batch of what a host's egress proxy handled (an `egress` event). */
 	onEgress?(hostId: string, records: readonly HostEgressRecord[]): void | Promise<void>;
 	/**
@@ -184,6 +202,12 @@ export interface HostHubOptions {
 	 * and mounts it (answered `not_found`). Absent, every fetch is answered `unavailable`.
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
+	/**
+	 * A host's `disk.locate`: where the version is, and a grant to fetch it naming `hostId`. A `KantelError` it throws
+	 * (`not_found`, `not_supported`, `invalid`) is answered with its code and message, anything else `unavailable`.
+	 * Absent, every call is answered `unsupported`.
+	 */
+	diskLocate?(hostId: string, params: HostDiskLocateParams): Promise<HostDiskLocateResult>;
 	/**
 	 * A sandbox's mounts changed status (a `sandbox.mounts` event), checked and clipped, with when the host set them
 	 * (`HostSandbox.mountsAt`; absent from a host too old to say).
@@ -200,10 +224,22 @@ export interface HostHubOptions {
 	 * while a hello is being answered are read again once it is welcomed.
 	 */
 	welcomeNow?(hostId: string): Promise<HostWelcome>;
+	/**
+	 * The host's mesh peers as its pool has them now (`HOST_FEATURES.mesh`): what `remesh` sends as `mesh.peers`, read
+	 * afresh in turn with the welcomes, so an older list never lands after a newer one. Undefined sends nothing (a host
+	 * without the mesh); an empty list is no peers (its pool's sync is off).
+	 */
+	meshPeersNow?(hostId: string): Promise<readonly HostMeshPeer[] | undefined>;
 	/** Default 120 s: a cold boot and a template build are slow. */
 	readonly callTimeoutMs?: number;
 	/** How long a host may take to say hello. Default 30 s. */
 	readonly helloTimeoutMs?: number;
+	/**
+	 * How long a welcomed connection may carry nothing from the host (no heartbeat, nor any other message or frame)
+	 * before it is closed as lost (4009, `HOST_CLOSE_SILENT`). Default three heartbeats: 3 × the welcome's
+	 * `heartbeatSeconds`, 45 s at the default 15 s. `0` turns it off.
+	 */
+	readonly heartbeatDeadlineMs?: number;
 }
 
 export interface HostHub {
@@ -221,6 +257,11 @@ export interface HostHub {
 	openFile(hostId: string, params: FileOpenParams, sink: PortSink): Promise<OpenedFile>;
 	/** Sends a welcome again, such as with a drain or a desired version. */
 	rewelcome(hostId: string, welcome: HostWelcome): void;
+	/**
+	 * Sends the host its mesh peers as they are now (`mesh.peers`, read with `meshPeersNow`). Mid-hello it waits for the
+	 * welcome, which is read again once sent (with `welcomeNow`) and carries the peers.
+	 */
+	remesh(hostId: string): void;
 	disconnect(hostId: string, code: number, reason: string): void;
 	closeAll(code: number, reason: string): void;
 }
@@ -252,13 +293,26 @@ interface Connection {
 	usageAcks: boolean;
 	/** The newest `seq` acknowledged on it, so acks only go forward. */
 	usageAcked: number;
+	/** When the last frame from the host arrived (`Date.now()`). */
+	heardAt: number;
+	/** Closes it once it has been silent for longer than the heartbeat deadline; set once it is welcomed. */
+	silence?: ReturnType<typeof setTimeout>;
 }
 
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
+/** What kantel-host beats at when its welcome names no interval (apps/host/internal/agent/conn.go). */
+const DEFAULT_HEARTBEAT_SECONDS = 15;
+/** Heartbeats a welcomed connection may miss in a row before it is taken as lost: the default deadline. */
+const HEARTBEATS_MISSED = 3;
 
 /** A payload a host sent that is an object, which is all its type claims until it's checked further. */
 const isObject = <T>(value: T): value is NonNullable<T> & object => typeof value === "object" && value !== null;
+
+/** The errors of `diskLocate` a host is answered with as they are; any other is `unavailable`. */
+const LOCATE_ERRORS: ReadonlySet<string> = new Set(["not_found", "not_supported", "invalid"]);
+/** The longest kind, object ID or version a `disk.locate` may name. */
+const LOCATE_NAME_LIMIT = 200;
 
 /** A WebSocket close reason is at most 123 bytes of UTF-8 (RFC 6455); a longer one makes `close` throw. */
 const CLOSE_REASON_BYTES = 123;
@@ -302,10 +356,11 @@ export function closeQuietly(
 /** A host error as it came, made safe to throw: its code and message strings, or plain ones in their place. */
 function hostError(error: unknown): HostError {
 	if (!isObject(error)) return { code: "internal", message: `The host's call failed: ${typeof error}` };
-	const { code, message } = error as { code?: unknown; message?: unknown };
+	const { code, message, memoryDropped } = error as { code?: unknown; message?: unknown; memoryDropped?: unknown };
 	return {
 		code: typeof code === "string" ? code : "internal",
 		message: typeof message === "string" ? message : "The host's call failed",
+		...(memoryDropped === true ? { memoryDropped: true } : {}),
 	};
 }
 
@@ -337,6 +392,24 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		});
 	};
 
+	/**
+	 * Sends the host its mesh peers as they are now (`meshPeersNow`), in turn with its welcomes: the list sent last was
+	 * read after the last change that asked for one.
+	 */
+	const sendPeers = (connection: Connection) => {
+		const read = options.meshPeersNow;
+		if (read === undefined) return;
+		connection.rewelcoming = (connection.rewelcoming ?? Promise.resolve()).then(async () => {
+			if (connection.closed) return;
+			try {
+				const peers = await read(connection.hostId);
+				if (peers !== undefined) send(connection, { type: "mesh.peers", peers });
+			} catch {
+				// A host revoked meanwhile is disconnected by its revoke.
+			}
+		});
+	};
+
 	/** Closes the socket and forgets the connection; a socket that is already gone (`close` throws) is the same. */
 	const shut = (connection: Connection, code: number, reason: string) => {
 		try {
@@ -350,6 +423,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 	const teardown = (connection: Connection, reason: string) => {
 		if (connection.closed) return;
 		connection.closed = true;
+		if (connection.silence !== undefined) clearTimeout(connection.silence);
 		for (const [id, pending] of connection.pending) {
 			clearTimeout(pending.timer);
 			pending.reject(
@@ -368,6 +442,28 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			held.delete(connection.hostId);
 			options.onDisconnected?.(connection.hostId);
 		}
+	};
+
+	/**
+	 * Closes a welcomed connection that carries nothing from the host for longer than the heartbeat deadline: by default
+	 * three of the heartbeats its welcome asked for, which the host beats at for as long as the connection lasts.
+	 */
+	const watchSilence = (connection: Connection, welcome: HostWelcome) => {
+		const beat = welcome.heartbeatSeconds > 0 ? welcome.heartbeatSeconds : DEFAULT_HEARTBEAT_SECONDS;
+		const deadline = options.heartbeatDeadlineMs ?? HEARTBEATS_MISSED * beat * 1000;
+		if (!(deadline > 0) || !Number.isFinite(deadline)) return;
+		connection.heardAt = Date.now();
+		const check = () => {
+			connection.silence = undefined;
+			if (connection.closed) return;
+			const quiet = Date.now() - connection.heardAt;
+			if (quiet < deadline) {
+				connection.silence = setTimeout(check, deadline - quiet);
+				return;
+			}
+			shut(connection, HOST_CLOSE_SILENT, `Nothing from the host for ${Math.round(quiet / 1000)} s`);
+		};
+		connection.silence = setTimeout(check, deadline);
 	};
 
 	const current = (hostId: string): Connection => {
@@ -436,7 +532,75 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 	};
 
-	/** Answers a host's call (`secrets.fetch` or `bucket.fetch`) for the host its connection was checked against. */
+	/** Answers a host's `env.fetch`, for the host the connection was checked against, as `secrets.fetch` is. */
+	const answerEnv = async (
+		connection: Connection,
+		params: unknown,
+		reply: (body: { readonly result: unknown } | { readonly error: HostError }) => void,
+	) => {
+		const sandboxId = (params as { readonly sandboxId?: unknown } | null | undefined)?.sandboxId;
+		if (typeof sandboxId !== "string" || sandboxId === "") {
+			reply({ error: { code: "not_found", message: "env.fetch names no sandbox" } });
+			return;
+		}
+		if (options.env === undefined) {
+			reply({ error: { code: "unsupported", message: "Kantel answers no env.fetch call" } });
+			return;
+		}
+		if (!connection.welcomed) {
+			reply({ error: { code: "unavailable", message: "Kantel has no env to give now" } });
+			return;
+		}
+		try {
+			const answer = await options.env(connection.hostId, sandboxId);
+			if (answer === undefined)
+				reply({ error: { code: "not_found", message: `No sandbox ${sandboxId} on this host` } });
+			else reply({ result: answer });
+		} catch {
+			reply({ error: { code: "unavailable", message: "The sandbox's env is unavailable now" } });
+		}
+	};
+
+	/** Answers a host's `disk.locate`, for the host the connection was checked against. */
+	const answerDiskLocate = async (
+		connection: Connection,
+		params: unknown,
+		reply: (body: { readonly result: unknown } | { readonly error: HostError }) => void,
+	) => {
+		const named: { readonly kind?: unknown; readonly objectId?: unknown; readonly version?: unknown } = isObject(params)
+			? params
+			: {};
+		const name = (value: unknown) =>
+			typeof value === "string" && value !== "" && value.length <= LOCATE_NAME_LIMIT ? value : undefined;
+		const kind = name(named.kind);
+		const objectId = name(named.objectId);
+		const version = name(named.version);
+		if (kind === undefined || objectId === undefined || version === undefined) {
+			reply({ error: { code: "invalid", message: "disk.locate names a kind, an object and a version" } });
+			return;
+		}
+		if (options.diskLocate === undefined) {
+			reply({ error: { code: "unsupported", message: "Kantel answers no disk.locate call" } });
+			return;
+		}
+		if (!connection.welcomed) {
+			reply({ error: { code: "unavailable", message: "Kantel can't locate disks now" } });
+			return;
+		}
+		try {
+			reply({
+				result: await options.diskLocate(connection.hostId, { kind, objectId, version }),
+			});
+		} catch (error) {
+			if (isKantelError(error) && LOCATE_ERRORS.has(error.code)) {
+				reply({ error: { code: error.code, message: error.message } });
+			} else {
+				reply({ error: { code: "unavailable", message: "Kantel can't locate disks now" } });
+			}
+		}
+	};
+
+	/** Answers a host's call (`secrets.fetch`, `env.fetch`, `bucket.fetch` or `disk.locate`) for the host its connection was checked against. */
 	const answer = async (connection: Connection, message: HostMessage) => {
 		const id = message.id;
 		if (typeof id !== "string" || id === "") return;
@@ -444,6 +608,14 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			send(connection, { type: "result", id, ...body });
 		if (message.method === HostMethods.bucketFetch) {
 			await answerBucket(connection, message.params, reply);
+			return;
+		}
+		if (message.method === HostMethods.envFetch) {
+			await answerEnv(connection, message.params, reply);
+			return;
+		}
+		if (message.method === HostMethods.diskLocate) {
+			await answerDiskLocate(connection, message.params, reply);
 			return;
 		}
 		if (message.method !== HostMethods.secretsFetch) {
@@ -550,6 +722,8 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			// replica, without it, changes nothing.
 			connection.usageAcks = welcome.usageAcks === true;
 			send(connection, { type: "welcome", welcome });
+			// The host beats at its first welcome's interval for as long as the connection lasts.
+			watchSilence(connection, welcome);
 			options.onWelcomed?.(connection.hostId);
 			const later = connection.later;
 			connection.later = undefined;
@@ -572,6 +746,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				acks: new Map(),
 				usageAcks: false,
 				usageAcked: 0,
+				heardAt: Date.now(),
 			};
 			const older = held.get(hostId);
 			held.set(hostId, connection);
@@ -688,6 +863,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				 */
 				receive(frame) {
 					if (connection.closed) return;
+					connection.heardAt = Date.now();
 					try {
 						handle(frame);
 					} catch (error) {
@@ -850,6 +1026,16 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			if (!connection.welcomed) connection.later = read ? true : welcome;
 			else if (read) refresh(connection);
 			else send(connection, { type: "welcome", welcome });
+		},
+		remesh(hostId) {
+			const connection = held.get(hostId);
+			if (connection === undefined || connection.closed) return;
+			// Mid-hello, the welcome read again once it is sent carries the peers as they are then.
+			if (!connection.welcomed) {
+				if (options.welcomeNow !== undefined) connection.later = true;
+				return;
+			}
+			sendPeers(connection);
 		},
 		disconnect(hostId, code, reason) {
 			const connection = held.get(hostId);

@@ -27,9 +27,11 @@ import {
 	type PersonalToken as ApiPersonalToken,
 	type EnvironmentRepo as ApiRepo,
 	type SandboxEgress as ApiSandboxEgress,
+	type SandboxEnvironments as ApiSandboxEnvironments,
 	type SandboxMount as ApiSandboxMount,
 	type SandboxProcess as ApiSandboxProcess,
 	type SandboxShapes as ApiSandboxShapes,
+	type StickyDisk as ApiStickyDisk,
 	type Template as ApiTemplate,
 	type TemplateSnapshot as ApiTemplateSnapshot,
 	type TemplateSpec as ApiTemplateSpec,
@@ -43,11 +45,13 @@ import {
 	type ExposedPort,
 	type FileEntry,
 	type Host,
+	type HostEvacuation,
 	type Invite,
 	KantelApiError,
 	type KantelClient,
 	type KantelClientOptions,
 	type Member,
+	type Pool,
 	type ProxySettings,
 	type PublicUrl,
 	type PutProxySettingsBody,
@@ -72,6 +76,7 @@ import type {
 	DeviceLogin,
 	DeviceLoginsSource,
 	EgressSource,
+	EnvironmentRef,
 	EnvironmentsSource,
 	FilePart,
 	FileRange,
@@ -90,6 +95,7 @@ import type {
 	EgressGrant as UiGrant,
 	PersonalToken as UiPersonalToken,
 	SandboxEgress as UiSandboxEgress,
+	SandboxEnvironment as UiSandboxEnvironment,
 	SandboxImage as UiSandboxImage,
 	SandboxProcess as UiSandboxProcess,
 	SandboxShapes as UiSandboxShapes,
@@ -117,6 +123,8 @@ type UiInvite = Awaited<ReturnType<AccountsSource["invites"]>>[number];
 type UiSandbox = Awaited<ReturnType<SandboxesSource["list"]>>[number];
 type UiSandboxSize = UiSandbox["size"];
 type UiSandboxState = UiSandbox["state"];
+type UiSandboxMove = NonNullable<UiSandbox["move"]>;
+type UiMoveTarget = Awaited<ReturnType<NonNullable<SandboxesSource["moveTargets"]>>>[number];
 type UiCommand = Awaited<ReturnType<SandboxesSource["history"]>>[number];
 type UiPort = Awaited<ReturnType<NonNullable<SandboxesSource["ports"]>>>[number];
 type UiSandboxSnapshot = Awaited<ReturnType<SnapshotsSource["history"]>>[number];
@@ -132,7 +140,10 @@ type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
 type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
+type UiHostEvacuation = Awaited<ReturnType<NonNullable<HostsSource["evacuate"]>>>;
+type UiHostEvacuationProgress = NonNullable<UiHost["evacuation"]>;
 type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get"]>>;
+type UiPool = Awaited<ReturnType<NonNullable<HostsSource["pools"]>["list"]>>[number];
 type UiEnvironmentFile = UiEnvironment["files"][number];
 type UiRepo = UiEnvironment["repos"][number];
 type UiMethod = UiBinding["methods"][number];
@@ -231,6 +242,11 @@ interface Context {
 	 * Every environment the console reads goes in.
 	 */
 	readonly environmentNames: Map<string, string>;
+	/**
+	 * Hosts' names by ID, as last read: a sandbox's move names only the host it is moving to, and the UI shows its name.
+	 * Every host the console lists for a move, and every sandbox's own host, goes in.
+	 */
+	readonly hostNames: Map<string, string>;
 	/** One raw call with the client's options, for a route the generated SDK doesn't have yet. */
 	readonly call: <T>(call: ApiCall) => Promise<T>;
 	/**
@@ -247,6 +263,12 @@ interface Context {
 
 /** The most pages a list follows before it stops: 20 of the API's default 50 is 1000 records. */
 const MAX_PAGES = 20;
+
+/**
+ * The most a sandbox list asks for at once, the API's longest page: each page is a request of its own, read in turn, so
+ * an organisation with hundreds of sandboxes loads in one rather than one per 50.
+ */
+const LIST_PAGE = 500;
 
 /** Every page of a list, following `nextCursor` up to `MAX_PAGES` pages. */
 async function allPages<T>(
@@ -306,6 +328,8 @@ function accountOf(account: Account): ComputeAccount {
 		...(account.kind === "organisation" && account.personalTokens !== undefined
 			? { personalTokens: account.personalTokens }
 			: {}),
+		// A gateway from before it doesn't say: the console doesn't offer the setting then.
+		...(account.snapshotCopies === undefined ? {} : { snapshotCopies: account.snapshotCopies }),
 	};
 }
 
@@ -369,6 +393,14 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			}
 			return accountOf(updated);
 		},
+		setSnapshotCopies: async (accountId, on) => {
+			const updated = await api.updateAccount(accountId, { snapshotCopies: on });
+			// As for personal tokens: a gateway from before it drops the field and changes nothing.
+			if (updated.snapshotCopies !== on) {
+				throw new Error("This Kantel doesn't support keeping saved snapshots on two hosts yet.");
+			}
+			return accountOf(updated);
+		},
 		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }
@@ -389,20 +421,25 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	stopping: "stopping",
 	stopped: "stopped",
 	paused: "paused",
+	moving: "moving",
 	error: "error",
 	// The UI has no deleting or deleted: one being erased is on its way out, and a deleted one is gone.
 	deleting: "stopping",
 	deleted: "stopped",
 };
 
-/** The environment a sandbox was made from, when its name is known: none for one deleted since. */
-function environmentRefOf(
-	sandbox: Sandbox,
-	context: Context,
-): { readonly environment?: { readonly id: string; readonly name: string } } {
-	if (sandbox.environmentId === undefined) return {};
-	const name = context.environmentNames.get(sandbox.environmentId);
-	return name === undefined ? {} : { environment: { id: sandbox.environmentId, name } };
+/** A sandbox's environments' IDs, in order: `environmentIds`, or the one `environmentId` of a gateway from before. */
+const environmentIdsOf = (sandbox: Sandbox): readonly string[] =>
+	sandbox.environmentIds ?? (sandbox.environmentId === undefined ? [] : [sandbox.environmentId]);
+
+/**
+ * A sandbox's environments, in order, each by its name where the console knows it and by its ID where it doesn't (a
+ * caller that can't list the account's environments).
+ */
+function environmentRefsOf(sandbox: Sandbox, context: Context): { readonly environments?: readonly EnvironmentRef[] } {
+	const ids = environmentIdsOf(sandbox);
+	if (ids.length === 0) return {};
+	return { environments: ids.map((id) => ({ id, name: context.environmentNames.get(id) ?? id })) };
 }
 
 /**
@@ -414,8 +451,8 @@ async function learnEnvironmentNames(
 	accountId: string,
 	sandboxes: readonly Sandbox[],
 ): Promise<void> {
-	const unknown = sandboxes.some(
-		(sandbox) => sandbox.environmentId !== undefined && !context.environmentNames.has(sandbox.environmentId),
+	const unknown = sandboxes.some((sandbox) =>
+		environmentIdsOf(sandbox).some((id) => !context.environmentNames.has(id)),
 	);
 	if (!unknown) return;
 	try {
@@ -563,6 +600,27 @@ function imageOf(sandbox: Sandbox): { image?: UiSandboxImage } {
 	};
 }
 
+/** A moving sandbox's `move`, its target named where the console has read that host. */
+function moveOf(sandbox: Sandbox, context: Context): { readonly move?: UiSandboxMove } {
+	if (sandbox.hostId !== undefined && sandbox.hostName !== undefined) {
+		context.hostNames.set(sandbox.hostId, sandbox.hostName);
+	}
+	const { move } = sandbox;
+	if (sandbox.state !== "moving" || move === undefined) return {};
+	const hostName = move.hostId === undefined ? undefined : context.hostNames.get(move.hostId);
+	return {
+		move: {
+			// Phases a later Kantel adds (a running sandbox's) pass through: the UI words any it doesn't know.
+			phase: move.phase,
+			...(move.hostId === undefined ? {} : { hostId: move.hostId }),
+			...(hostName === undefined ? {} : { hostName }),
+			keepMemory: move.keepMemory,
+			...(move.restartReason === undefined ? {} : { restartReason: move.restartReason }),
+			startedAt: move.startedAt,
+		},
+	};
+}
+
 function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	return {
 		id: sandbox.id,
@@ -614,6 +672,9 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		usage: sandbox.usage.recentCpu,
 		...(sandbox.hostId === undefined ? {} : { hostId: sandbox.hostId }),
 		...(sandbox.hostName === undefined ? {} : { hostName: sandbox.hostName }),
+		...(sandbox.poolId === undefined ? {} : { poolId: sandbox.poolId }),
+		...(Object.keys(sandbox.labels).length === 0 ? {} : { labels: sandbox.labels }),
+		...moveOf(sandbox, context),
 		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
 		// Running, but its guest agent doesn't answer: why, for the page's notice and its Recover.
 		...(sandbox.state === "running" && sandbox.health === "unresponsive"
@@ -623,7 +684,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.hostReachable === false ? { hostUnreachable: true } : {}),
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
-		...environmentRefOf(sandbox, context),
+		...environmentRefsOf(sandbox, context),
 		...baseFieldOf(sandbox),
 		...mountsOf(sandbox, context),
 		...imageOf(sandbox),
@@ -678,7 +739,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 		watch: (accountId, changed) => context.live.watch(accountId, changed),
 		list: async (accountId) => {
 			const sandboxes = await allPages((cursor) =>
-				api.listSandboxes({ account: accountId, all: true, ...after(cursor) }),
+				api.listSandboxes({ account: accountId, all: true, limit: LIST_PAGE, ...after(cursor) }),
 			);
 			await Promise.all([
 				learnEnvironmentNames(context, accountId, sandboxes),
@@ -686,9 +747,16 @@ function sandboxesSource(context: Context): SandboxesSource {
 			]);
 			return sandboxes.map(view);
 		},
-		shapes: async (accountId, hostId) =>
-			shapesOf(await api.getSandboxShapes({ account: accountId, ...(hostId === undefined ? {} : { host: hostId }) })),
+		shapes: async (accountId, hostId, poolId) =>
+			shapesOf(
+				await api.getSandboxShapes({
+					account: accountId,
+					...(hostId === undefined ? {} : { host: hostId }),
+					...(poolId === undefined ? {} : { pool: poolId }),
+				}),
+			),
 		hosts: (accountId) => hostChoices(context, accountId),
+		pools: (accountId) => sandboxPools(context, accountId),
 		create: async (input) => {
 			const made = await api.createSandbox({
 				account: input.accountId,
@@ -711,16 +779,20 @@ function sandboxesSource(context: Context): SandboxesSource {
 						}),
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),
-				// The API takes an environment's ID or its name; the UI picks by ID.
-				...(input.environmentId === undefined || input.environmentId === ""
+				// The API takes an environment's ID or its name; the UI picks by ID. One goes as `environment`, which every
+				// gateway takes; several as `environments`, in order.
+				...(input.environmentIds === undefined || input.environmentIds.length === 0
 					? {}
-					: { environment: input.environmentId }),
+					: input.environmentIds.length === 1
+						? { environment: input.environmentIds[0] }
+						: { environments: [...input.environmentIds] }),
 				// The API takes a template's ID or its name; the UI picks by ID.
 				...(input.templateId === undefined || input.templateId === "" ? {} : { template: input.templateId }),
 				// The UI's absent auto-stop is always on, the API's `null`.
 				autoStopMinutes: input.autoStopMinutes ?? null,
 				...(input.idleStopMinutes === undefined ? {} : { idleStopMinutes: input.idleStopMinutes }),
 				...(input.hostId === undefined ? {} : { host: input.hostId }),
+				...(input.poolId === undefined ? {} : { pool: input.poolId }),
 			});
 			await learnEnvironmentNames(context, made.accountId, [made]);
 			return view(made);
@@ -733,6 +805,13 @@ function sandboxesSource(context: Context): SandboxesSource {
 			return view(fork);
 		},
 		recover: async (id) => view(await api.recoverSandbox(id)),
+		// Answers once the microVM runs with the isolate's files; a failure leaves the isolate as it was.
+		upgrade: async (id) => view(await api.upgradeSandbox(id, { wait: true })),
+		moveTargets: (sandbox) => moveTargets(context, sandbox),
+		// Answers once it runs on its new host, so a failure comes back with its reason; it is `moving` meanwhile, which
+		// the live feed says, and the pages read it again while it is.
+		move: async (id, choice) =>
+			view(await api.moveSandbox(id, { hostId: choice.hostId, keepMemory: choice.keepMemory, wait: true })),
 		// Not in the generated SDK yet: the raw route, as `recoverSandbox` calls its own.
 		restartOnLatest: async (id) =>
 			view(
@@ -818,6 +897,19 @@ function sandboxesSource(context: Context): SandboxesSource {
 			};
 		},
 		history: async (id) => (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf),
+		environments: {
+			list: async (sandboxId) => sandboxEnvironmentsOf(await api.listSandboxEnvironments(sandboxId), context),
+			attach: async (sandboxId, environmentId, position) =>
+				sandboxEnvironmentsOf(
+					await api.attachSandboxEnvironment(sandboxId, {
+						environment: environmentId,
+						...(position === undefined ? {} : { position }),
+					}),
+					context,
+				),
+			detach: async (sandboxId, environmentId) =>
+				sandboxEnvironmentsOf(await api.detachSandboxEnvironment(sandboxId, environmentId), context),
+		},
 		get: async (id) => {
 			const sandbox = await api.getSandbox(id);
 			await Promise.all([
@@ -1009,7 +1101,7 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 			// The API names a snapshot's sandbox by ID; the account's sandboxes give the names.
 			const [snapshots, sandboxes] = await Promise.all([
 				allPages((cursor) => api.listSnapshots({ account: accountId, kind: "saved", ...after(cursor) })),
-				allPages((cursor) => api.listSandboxes({ account: accountId, all: true, ...after(cursor) })),
+				allPages((cursor) => api.listSandboxes({ account: accountId, all: true, limit: LIST_PAGE, ...after(cursor) })),
 			]);
 			const names = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox.name]));
 			return snapshots.map((snapshot) =>
@@ -1056,6 +1148,14 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 		downloadUrl: () => undefined,
 		// Where a link to a snapshot's files doesn't say, the API does: an isolate's start at /workspace.
 		kindOf: async (snapshotId) => (await api.getSnapshot(snapshotId)).sandboxType,
+		// Only a saved snapshot's details list them; a gateway from before them doesn't.
+		hosts: async (snapshotId) =>
+			(await api.getSnapshot(snapshotId)).hosts?.map((host) => ({
+				...(host.hostId === undefined ? {} : { hostId: host.hostId }),
+				...(host.hostName === undefined ? {} : { hostName: host.hostName }),
+				state: host.state,
+				memory: host.memory,
+			})),
 	};
 }
 
@@ -1407,17 +1507,40 @@ const egressEntryOf = (entry: ApiEgressEntry): UiEgressEntry => {
 	};
 };
 
+/** A sandbox's environments, as its own route answers them; their names go in the console's, for its other views. */
+function sandboxEnvironmentsOf(answer: ApiSandboxEnvironments, context: Context): readonly UiSandboxEnvironment[] {
+	return answer.environments.map((environment) => {
+		context.environmentNames.set(environment.id, environment.name);
+		return {
+			id: environment.id,
+			name: environment.name,
+			shadowed: {
+				variables: environment.shadowed.variables,
+				files: environment.shadowed.files,
+				repos: environment.shadowed.repos,
+			},
+			pending: environment.pending,
+		};
+	});
+}
+
+/** A sandbox's environments, in order; a gateway from before `environments` named its one as `environment`. */
+const egressEnvironmentsOf = (egress: ApiSandboxEgress): readonly EnvironmentRef[] =>
+	(egress.environments ?? (egress.environment === undefined ? [] : [egress.environment])).map((environment) => ({
+		id: environment.id,
+		name: environment.name,
+	}));
+
 const sandboxEgressOf = (egress: ApiSandboxEgress): UiSandboxEgress => ({
 	sandboxId: egress.sandboxId,
 	sandboxName: egress.sandboxName,
 	accountId: egress.accountId,
-	...(egress.environment === undefined
-		? {}
-		: { environment: { id: egress.environment.id, name: egress.environment.name } }),
+	environments: egressEnvironmentsOf(egress),
 	protectedVariables: egress.protectedVariables.map((variable) => ({
 		name: variable.name,
 		placeholderPrefix: variable.placeholderPrefix,
 		bindings: variable.bindings.map(bindingOf),
+		...(variable.environmentId === undefined ? {} : { environmentId: variable.environmentId }),
 	})),
 	environmentGrants: egress.environmentGrants.map(grantOf),
 	grants: egress.grants.map(grantOf),
@@ -1486,7 +1609,8 @@ function environmentsSource(context: Context): EnvironmentsSource {
 function egressSource(context: Context): EgressSource {
 	const { api } = context;
 	const view = (egress: ApiSandboxEgress): UiSandboxEgress => {
-		if (egress.environment !== undefined) context.environmentNames.set(egress.environment.id, egress.environment.name);
+		for (const environment of egressEnvironmentsOf(egress))
+			context.environmentNames.set(environment.id, environment.name);
 		return sandboxEgressOf(egress);
 	};
 	return {
@@ -1701,7 +1825,83 @@ async function hostChoices({ api, caller }: Context, accountId: string): Promise
 			state: UI_HOST_STATES[host.state],
 			kinds: host.tiers,
 			shared: host.accountId === undefined,
+			...(host.poolId === undefined ? {} : { poolId: host.poolId }),
 		}));
+}
+
+/**
+ * The hosts a microVM may move to, as a move's dry run answers them (`planSandboxMove`): each with whether a move there keeps
+ * its memory (and why not) and the pause Kantel expects, by name where the console has read the host. A Kantel that
+ * can't say answers no `targets` (or, from before plans, no such route): then the hosts are as far as the console can tell, the other online hosts that
+ * run microVMs in the pool its own host is in (a move never leaves its pool), with the same architecture where both
+ * say, each with no estimate, and Kantel checks the rest as it moves it. None where its host isn't one the viewer may
+ * see.
+ */
+async function moveTargets(context: Context, sandbox: UiSandbox): Promise<readonly UiMoveTarget[]> {
+	// Read first: the host names, and nothing to ask for where the viewer may see none of them.
+	const listed = await listedMoveTargets(context, sandbox);
+	if (listed.length === 0) return listed;
+	let plan: Awaited<ReturnType<typeof context.api.planSandboxMove>>;
+	try {
+		plan = await context.api.planSandboxMove(sandbox.id);
+	} catch (caught) {
+		// A Kantel from before moves were planned has no such route: the hosts as the console tells them.
+		if (caught instanceof KantelApiError && (caught.status === 404 || caught.status === 405)) return listed;
+		throw caught;
+	}
+	if (plan.targets === undefined) return listed;
+	const name = (hostId: string) => context.hostNames.get(hostId) ?? hostId;
+	return plan.targets
+		.map((target) => ({
+			hostId: target.hostId,
+			hostName: name(target.hostId),
+			memory: target.keepsMemory ? ("kept" as const) : ("restarts" as const),
+			...(target.pauseMs === undefined ? {} : { pauseMs: target.pauseMs }),
+			...(target.restartReason === undefined ? {} : { restartReason: target.restartReason }),
+		}))
+		.sort((a, b) => a.hostName.localeCompare(b.hostName));
+}
+
+/** The hosts a microVM may move to as far as the console can tell from the hosts it reads (`moveTargets`). */
+async function listedMoveTargets(context: Context, sandbox: UiSandbox): Promise<readonly UiMoveTarget[]> {
+	const { api, caller } = context;
+	let hosts: readonly Host[];
+	try {
+		hosts = caller.superAdmin
+			? (await api.listHosts()).items
+			: (await api.listAccountHosts({ account: sandbox.accountId })).items;
+	} catch (caught) {
+		if (caught instanceof KantelApiError && (caught.code === "not_supported" || caught.code === "forbidden")) return [];
+		throw caught;
+	}
+	for (const host of hosts) context.hostNames.set(host.id, host.name);
+	const own = hosts.find((host) => host.id === sandbox.hostId);
+	if (own === undefined) return [];
+	return hosts
+		.filter(
+			(host) =>
+				host.id !== own.id &&
+				host.state === "online" &&
+				host.tiers.includes("microvm") &&
+				host.poolId === own.poolId &&
+				(host.accountId === undefined || host.accountId === sandbox.accountId) &&
+				(host.arch === undefined || own.arch === undefined || host.arch === own.arch),
+		)
+		.sort((a, b) => a.name.localeCompare(b.name))
+		.map((host) => ({ hostId: host.id, hostName: host.name }));
+}
+
+/**
+ * The account's pools, for New sandbox's pool picker: none where the deployment has account hosts off (`not_supported`)
+ * or the caller may not read them (`forbidden`), so there is no picker, as with one pool.
+ */
+async function sandboxPools({ api }: Context, accountId: string): Promise<readonly UiPool[]> {
+	try {
+		return (await api.listAccountPools({ account: accountId })).items.map(poolOf);
+	} catch (caught) {
+		if (caught instanceof KantelApiError && (caught.code === "not_supported" || caught.code === "forbidden")) return [];
+		throw caught;
+	}
 }
 
 function hostOf(host: Host): UiHost {
@@ -1775,7 +1975,68 @@ function hostOf(host: Host): UiHost {
 					},
 				}),
 		...(host.savedSnapshotBytesLimit === undefined ? {} : { savedSnapshotLimitBytes: host.savedSnapshotBytesLimit }),
+		...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+		...(host.accountId === undefined ? {} : { accountId: host.accountId }),
+		...(host.evacuation === undefined ? {} : { evacuation: evacuationProgressOf(host.evacuation) }),
+		...(host.mesh === undefined
+			? {}
+			: {
+					mesh: {
+						address: host.mesh.address,
+						peers: host.mesh.peers.map((peer) => ({
+							hostId: peer.hostId,
+							path: peer.path,
+							...(peer.endpoint === undefined ? {} : { endpoint: peer.endpoint }),
+							...(peer.lastHandshake === undefined ? {} : { lastHandshake: peer.lastHandshake }),
+							...(peer.rttMs === undefined ? {} : { rttMs: peer.rttMs }),
+						})),
+					},
+				}),
 	};
+}
+
+/** An evacuation's counts and state, as a host's summary and the evacuation itself both have them. */
+function evacuationProgressOf(evacuation: Omit<HostEvacuation, "hostId" | "sandboxes">): UiHostEvacuationProgress {
+	return {
+		state: evacuation.state,
+		...(evacuation.reason === undefined ? {} : { reason: evacuation.reason }),
+		startedAt: evacuation.startedAt,
+		...(evacuation.endedAt === undefined ? {} : { endedAt: evacuation.endedAt }),
+		moved: evacuation.moved,
+		remaining: evacuation.remaining,
+		skipped: evacuation.skipped,
+		failed: evacuation.failed,
+	};
+}
+
+function evacuationOf(evacuation: HostEvacuation): UiHostEvacuation {
+	return {
+		...evacuationProgressOf(evacuation),
+		sandboxes: evacuation.sandboxes.map((item) => ({
+			id: item.sandboxId,
+			...(item.name === undefined ? {} : { name: item.name }),
+			kind: item.type,
+			state: item.state,
+			...(item.phase === undefined ? {} : { phase: item.phase }),
+			...(item.hostId === undefined ? {} : { hostId: item.hostId }),
+			...(item.keptMemory === undefined ? {} : { keptMemory: item.keptMemory }),
+			...(item.reason === undefined ? {} : { reason: item.reason }),
+		})),
+	};
+}
+
+/** A host's last evacuation, read with `read`: undefined when it has had none. */
+async function lastEvacuation(read: () => Promise<HostEvacuation>): Promise<UiHostEvacuation | undefined> {
+	try {
+		return evacuationOf(await read());
+	} catch (error) {
+		if (isCode(error, "not_found")) return undefined;
+		throw error;
+	}
+}
+
+function poolOf(pool: Pool): UiPool {
+	return { id: pool.id, name: pool.name, default: pool.default, hosts: pool.hosts, createdAt: pool.createdAt };
 }
 
 function hostsSource({ api }: Context): HostsSource {
@@ -1786,6 +2047,7 @@ function hostsSource({ api }: Context): HostsSource {
 			const made = await api.createHostJoinToken({
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.labels === undefined ? {} : { labels: input.labels }),
+				...(input.pool === undefined ? {} : { pool: input.pool }),
 			});
 			return { token: made.token, expiresAt: made.expiresAt, command: made.command };
 		},
@@ -1797,6 +2059,17 @@ function hostsSource({ api }: Context): HostsSource {
 		update: async (id) => hostOf(await api.updateHostAgent(id)),
 		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateHost(id, { savedSnapshotBytesLimit: bytes })),
 		checkForUpdates: () => api.checkHostUpdates(),
+		// The deployment's pools, which its shared hosts are in.
+		pools: {
+			list: async () => (await api.listPools()).items.map(poolOf),
+			create: async (name) => poolOf(await api.createPool({ name })),
+			rename: async (id, name) => poolOf(await api.updatePool(id, { name })),
+			makeDefault: async (id) => poolOf(await api.updatePool(id, { default: true })),
+			remove: (id) => api.deletePool(id),
+		},
+		move: async (id, poolId) => hostOf(await api.updateHost(id, { pool: poolId })),
+		evacuate: async (id) => evacuationOf(await api.startHostEvacuation(id)),
+		evacuation: (id) => lastEvacuation(() => api.getHostEvacuation(id)),
 		publicUrl: {
 			get: async () => publicUrlOf(await api.getPublicUrl()),
 			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
@@ -1884,6 +2157,7 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 				account: accountId,
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.labels === undefined ? {} : { labels: input.labels }),
+				...(input.pool === undefined ? {} : { pool: input.pool }),
 			});
 			return { token: made.token, expiresAt: made.expiresAt, command: made.command };
 		},
@@ -1894,6 +2168,17 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 		},
 		update: async (id) => hostOf(await api.updateAccountHostAgent(id)),
 		setSnapshotLimit: async (id, bytes) => hostOf(await api.updateAccountHost(id, { savedSnapshotBytesLimit: bytes })),
+		// The account's pools, which its own hosts are in. A pool is changed by its ID, which names it in any account.
+		pools: {
+			list: async () => (await api.listAccountPools({ account: accountId })).items.map(poolOf),
+			create: async (name) => poolOf(await api.createAccountPool({ account: accountId, name })),
+			rename: async (id, name) => poolOf(await api.updateAccountPool(id, { name })),
+			makeDefault: async (id) => poolOf(await api.updateAccountPool(id, { default: true })),
+			remove: (id) => api.deleteAccountPool(id),
+		},
+		move: async (id, poolId) => hostOf(await api.updateAccountHost(id, { pool: poolId })),
+		evacuate: async (id) => evacuationOf(await api.startAccountHostEvacuation(id)),
+		evacuation: (id) => lastEvacuation(() => api.getAccountHostEvacuation(id)),
 	};
 }
 
@@ -2113,6 +2398,116 @@ async function offersMounts({ api }: Context): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Sticky disks (experimental): an account's named, versioned disks. The list answers no versions, so each disk is read
+// as well; versions name their host by ID, named here from the hosts the caller may see (a super-admin's every host,
+// anyone else's their account's own). A shared host they can't see is left unnamed, as a saved snapshot's is.
+
+type UiStickyDisks = NonNullable<ComputeSource["stickyDisks"]>;
+type UiStickyDisk = Awaited<ReturnType<UiStickyDisks["list"]>>[number];
+type UiStickyDiskPool = Awaited<ReturnType<UiStickyDisks["pools"]>>[number];
+
+/** Answers `fallback` where the deployment has the feature off (`not_supported`) or the caller may not (`forbidden`). */
+async function unlessRefused<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+	try {
+		return await read();
+	} catch (caught) {
+		if (caught instanceof KantelApiError && (caught.code === "not_supported" || caught.code === "forbidden")) {
+			return fallback;
+		}
+		throw caught;
+	}
+}
+
+/** The names of the hosts the caller may see, by ID, kept in `hostNames` too. */
+async function readHostNames(context: Context, accountId: string): Promise<ReadonlyMap<string, string>> {
+	const { api, caller } = context;
+	const hosts = await unlessRefused(
+		async () => (caller.superAdmin ? await api.listHosts() : await api.listAccountHosts({ account: accountId })).items,
+		[] as readonly Host[],
+	);
+	for (const host of hosts) context.hostNames.set(host.id, host.name);
+	return new Map(hosts.map((host) => [host.id, host.name]));
+}
+
+const stickyDiskOf = (disk: ApiStickyDisk, names: ReadonlyMap<string, string>): UiStickyDisk => ({
+	id: disk.id,
+	accountId: disk.accountId,
+	name: disk.name,
+	...(disk.description === undefined || disk.description === "" ? {} : { description: disk.description }),
+	sizeGb: disk.sizeGb,
+	...(disk.head === undefined ? {} : { head: disk.head }),
+	versions: (disk.versions ?? []).map((version) => {
+		const hostName = names.get(version.hostId);
+		return {
+			id: version.id,
+			hostId: version.hostId,
+			...(hostName === undefined ? {} : { hostName }),
+			sizeBytes: version.sizeBytes,
+			allocatedBytes: version.allocatedBytes,
+			createdAt: version.createdAt,
+		};
+	}),
+	...(disk.poolId === undefined ? {} : { poolId: disk.poolId }),
+	createdAt: disk.createdAt,
+});
+
+function stickyDisksSource(context: Context): UiStickyDisks {
+	const { api, caller } = context;
+	return {
+		list: async (accountId) => {
+			const [{ items }, names] = await Promise.all([
+				api.listStickyDisks({ account: accountId }),
+				readHostNames(context, accountId),
+			]);
+			// A disk deleted between the list and its read is gone.
+			const read = await Promise.all(
+				items.map((disk) =>
+					api.getStickyDisk(disk.id).catch((caught: unknown) => {
+						if (caught instanceof KantelApiError && caught.code === "not_found") return undefined;
+						throw caught;
+					}),
+				),
+			);
+			return read.flatMap((disk) => (disk === undefined ? [] : [stickyDiskOf(disk, names)]));
+		},
+		// The account's own pools, and a super-admin's the deployment's shared ones too: a create names either.
+		pools: async (accountId) => {
+			const [own, shared] = await Promise.all([
+				unlessRefused(async () => (await api.listAccountPools({ account: accountId })).items, [] as readonly Pool[]),
+				caller.superAdmin ? unlessRefused(async () => (await api.listPools()).items, [] as readonly Pool[]) : [],
+			]);
+			return [...own.map(poolOf), ...shared.map((pool): UiStickyDiskPool => ({ ...poolOf(pool), shared: true }))];
+		},
+		// A new disk has no versions, so no host to name.
+		create: async (input) =>
+			stickyDiskOf(
+				await api.createStickyDisk({
+					account: input.accountId,
+					name: input.name,
+					sizeGb: input.sizeGb,
+					...(input.description === undefined ? {} : { description: input.description }),
+					...(input.poolId === undefined ? {} : { pool: input.poolId }),
+				}),
+				context.hostNames,
+			),
+		remove: (id) => api.deleteStickyDisk(id),
+	};
+}
+
+/**
+ * Whether the deployment has turned sticky disks on: it answers `not_supported` when it hasn't, and a gateway from
+ * before them answers 404. Any other answer leaves them on, as with mounts.
+ */
+async function offersStickyDisks({ api }: Context): Promise<boolean> {
+	try {
+		await api.listStickyDisks({});
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && (caught.code === "not_supported" || caught.status === 404));
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Everything
 
 /** The page's own host, outside a browser none. */
@@ -2160,15 +2555,17 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		},
 		caller,
 		environmentNames: new Map(),
+		hostNames: new Map(),
 		call: <T>(call: ApiCall) => send<T>(clientOptions, call),
 		bucketSources: new Map(),
 		live: liveSandboxes(api),
 	};
 	// What the deployment offers beyond the core, each asked once: an account's own hosts, for anyone but a super-admin,
-	// and read-only mounts.
-	const [ownHostsOffered, mountsOffered] = await Promise.all([
+	// read-only mounts and sticky disks.
+	const [ownHostsOffered, mountsOffered, stickyDisksOffered] = await Promise.all([
 		caller.superAdmin ? false : offersOwnHosts(context),
 		offersMounts(context),
+		offersStickyDisks(context),
 	]);
 	// The live graphs' reads, all in live-usage.ts.
 	const usage = liveUsage(api);
@@ -2199,6 +2596,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 			: {}),
 		// Bundles and bucket sources, where the deployment has turned mounts on; absent, nothing about mounts is shown.
 		...(mountsOffered ? { mounts: mountsSource(context) } : {}),
+		// Sticky disks, where the deployment has turned them on; absent, there is no Disks page.
+		...(stickyDisksOffered ? { stickyDisks: stickyDisksSource(context) } : {}),
 		// Only a person approves a device; a console signed in with a key or a personal token has nothing to approve with.
 		...(caller.apiKey === undefined && caller.personalToken === undefined ? { devices: devicesSource(context) } : {}),
 		// A person's own tokens, which a key has none of.

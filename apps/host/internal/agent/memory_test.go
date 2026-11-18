@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -176,6 +178,66 @@ func TestGuardAtTheGroupLimit(t *testing.T) {
 	g.runAll(h, plan, act, t0.Add(2*time.Second))
 	if !slices.Equal(act.asked, []string{"a", "b"}) {
 		t.Fatalf("second: %+v", act)
+	}
+}
+
+// lockedBuffer is a log the guard's steps write to from their goroutines.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) lines() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Split(strings.TrimSpace(b.buf.String()), "\n")
+}
+
+// Each of the guard's warnings says which reading made the host critical, with the figures: here the VMs' group
+// within a quarter of the reserve of its limit, with little page cache left to drop.
+func TestGuardLogsWhyTheHostIsCritical(t *testing.T) {
+	plan := memplan.New(memplan.Settings{Enabled: true}, 10000, 2000, 1.5)
+	t0 := time.Now()
+	near := hostinfo.Memory{AvailableMiB: 60000, PressureFull: 1.5, GroupMaxMiB: 9500, GroupHeadroomMiB: 100,
+		GroupCacheMiB: 300, GroupLimitHits: 4}
+	log := &lockedBuffer{}
+	h := &Host{log: slog.New(slog.NewTextHandler(log, nil))}
+	act := &fakeGuardActions{oomErr: errors.New("sandbox.exec took longer than 5000 ms")}
+	g := &memoryGuard{readRSS: func(int) (int64, error) { return 0, errors.New("unread") }}
+	plan.Observe(t0, guardReadings, near)
+	plan.Observe(t0.Add(5*time.Second), guardReadings, near)
+	g.runAll(h, plan, act, t0.Add(5*time.Second))
+	plan.Observe(t0.Add(10*time.Second), guardReadings, near)
+	g.runAll(h, plan, act, t0.Add(10*time.Second))
+	plan.Observe(t0.Add(20*time.Second), guardReadings, near)
+	g.runAll(h, plan, act, t0.Add(20*time.Second))
+	act.oomErr = nil
+	plan.Observe(t0.Add(30*time.Second), guardReadings, near)
+	g.runAll(h, plan, act, t0.Add(30*time.Second))
+	const figures = "why=groupHeadroom availableMiB=60000 reserveMiB=2000 pressureFull=1.5 groupMaxMiB=9500 " +
+		"groupHeadroomMiB=100 groupCacheMiB=300 groupLimitHits=4"
+	var warned []string
+	for _, line := range log.lines() {
+		if !strings.Contains(line, "level=WARN") {
+			continue
+		}
+		warned = append(warned, line)
+		if !strings.HasSuffix(line, figures) {
+			t.Errorf("a warning without why: %s", line)
+		}
+	}
+	// b's guest asked to kill its largest process and, not answering, stopped; then c's likewise; then b, asked twice in
+	// a minute, stopped outright.
+	for _, want := range []string{"is killing its largest process", "didn't answer; stopping it", "still critically short"} {
+		if !slices.ContainsFunc(warned, func(l string) bool { return strings.Contains(l, want) }) {
+			t.Errorf("no warning %q in %q", want, warned)
+		}
 	}
 }
 

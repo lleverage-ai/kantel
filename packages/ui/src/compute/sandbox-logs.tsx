@@ -37,17 +37,12 @@ const FOLLOW_MS = 5000;
  * snapshot in its history, a stop's as Stopped.
  */
 export function sandboxTimeline(
-	sandbox: Pick<Sandbox, "id" | "createdAt" | "createdBy" | "environment" | "forkedFrom">,
+	sandbox: Pick<Sandbox, "id" | "createdAt" | "createdBy" | "forkedFrom">,
 	commands: readonly SandboxCommand[],
 	snapshots: readonly SandboxSnapshot[],
 ): readonly LogEntry[] {
-	// A fork keeps its parent's environment, so being forked comes first.
-	const made =
-		sandbox.forkedFrom !== undefined
-			? `Forked from ${sandbox.forkedFrom}`
-			: sandbox.environment !== undefined
-				? `Started from ${sandbox.environment.name}`
-				: "Created";
+	// Its environments aren't named: an attach or a detach changes them after it's made, and Overview lists them.
+	const made = sandbox.forkedFrom !== undefined ? `Forked from ${sandbox.forkedFrom}` : "Created";
 	const entries: LogEntry[] = [
 		...commands.map((command) => ({ kind: "command" as const, id: command.id, at: command.startedAt, command })),
 		{ kind: "event", id: `made-${sandbox.id}`, at: sandbox.createdAt, text: made, by: sandbox.createdBy },

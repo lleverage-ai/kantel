@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
@@ -33,6 +34,8 @@ type fakeTemplateTier struct {
 	held map[string]proto.Size
 	// builder: it builds custom images in a build microVM.
 	builder bool
+	// gate, when set, holds every build until it is closed.
+	gate chan struct{}
 }
 
 func (f *fakeTemplateTier) CanBuildTemplates(context.Context) error { return f.noDocker }
@@ -52,6 +55,9 @@ func (f *fakeTemplateTier) TemplateBuildMachine(p proto.TemplateBuildParams) (pr
 }
 
 func (f *fakeTemplateTier) BuildTemplate(_ context.Context, p proto.TemplateBuildParams) (proto.TemplateBuildResult, error) {
+	if f.gate != nil {
+		<-f.gate
+	}
 	f.buildMu.Lock()
 	f.builds = append(f.builds, p)
 	f.buildMu.Unlock()
@@ -266,5 +272,32 @@ func TestTemplateRegistryIsTheSettingsFiles(t *testing.T) {
 		if err != nil || cfg.TemplateRegistry != want {
 			t.Fatalf("%s: templateRegistry %q %v, want %q", raw, cfg.TemplateRegistry, err, want)
 		}
+	}
+}
+
+// A template.build call counts as building from its arrival until its answer is sent, so a reconnect to report new
+// runtimes (reconnectOnRuntimes) waits for it.
+func TestTemplateBuildCallsHoldTheRuntimesReconnect(t *testing.T) {
+	tier := &fakeTemplateTier{fakeTier: fakeTier{running: map[string]bool{}}, gate: make(chan struct{})}
+	h := templateHost(t, map[string]Tier{microvm.Tier: tier}, []string{microvm.Tier})
+	_, c := connectSession(t, h)
+	raw, _ := json.Marshal(proto.TemplateBuildParams{SnapshotID: "tsn_1", BaseImage: "kantel/sandbox", VCPUs: 2, MemoryMiB: 2048, KeyHash: "k"})
+	c.send(proto.Message{Type: "call", ID: "1", Method: proto.MethodTemplateBuild, Params: raw})
+	deadline := time.Now().Add(5 * time.Second)
+	for !h.buildingTemplates() {
+		if time.Now().After(deadline) {
+			t.Fatal("a template.build call under way doesn't count")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(tier.gate)
+	if m := c.result("1"); m.Error != nil {
+		t.Fatalf("build: %+v", m.Error)
+	}
+	for h.buildingTemplates() {
+		if time.Now().After(deadline) {
+			t.Fatal("an answered template.build call still counts")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

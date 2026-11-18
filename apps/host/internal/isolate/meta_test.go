@@ -47,3 +47,42 @@ func TestARetriedBootSavesWhatTheFailedOneCouldNot(t *testing.T) {
 		t.Fatalf("a no-op retry wrote meta.json: %v", err)
 	}
 }
+
+// sandbox.env replaces an isolate's whole env in meta.json, which its next command and a fork with none read; an
+// empty one leaves none.
+func TestSetEnvReplacesTheRecordedEnv(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "iso_1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &sandbox{meta: meta{ID: "iso_1", State: proto.StateRunning, Env: map[string]string{"OLD": "1"}}, dir: dir}
+	m := &Manager{sandboxes: map[string]*sandbox{"iso_1": s}}
+	read := func() meta {
+		raw, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got meta
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	given := map[string]string{"NEW": "2"}
+	if err := m.SetEnv("iso_1", given); err != nil {
+		t.Fatal(err)
+	}
+	given["NEW"] = "changed by the caller"
+	if got := read().Env; len(got) != 1 || got["NEW"] != "2" || s.meta.Env["NEW"] != "2" {
+		t.Fatalf("meta.json env %v, in memory %v", got, s.meta.Env)
+	}
+	if err := m.SetEnv("iso_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := read().Env; got != nil || s.meta.Env != nil {
+		t.Fatalf("an empty env kept %v", got)
+	}
+	if err := m.SetEnv("iso_nope", nil); err == nil {
+		t.Fatal("an unknown sandbox's env was set")
+	}
+}

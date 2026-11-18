@@ -109,9 +109,6 @@
 	--kt-shadow-raised: 0 1px 3px rgb(0 0 0 / 0.4); /* shadow-raised */
 	--kt-shadow-float: 0 10px 30px rgb(0 0 0 / 0.45), 0 0 0 1px var(--kt-border-strong); /* shadow-float, and an edge */
 	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
-	/* Content cut off at a scroller's edge (SideScroll), cast inward from the start or the end. */
-	--kt-shadow-edge-start: inset 14px 0 12px -12px rgb(0 0 0 / 0.7);
-	--kt-shadow-edge-end: inset -14px 0 12px -12px rgb(0 0 0 / 0.7);
 	--kt-glass-outline: color-mix(in srgb, var(--kt-text) 8%, transparent);
 	--kt-glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.03);
 	/* A service's logo, drawn with no tile: a hairline in the text's colour around it, so a dark logo keeps an edge. */

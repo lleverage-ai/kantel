@@ -185,7 +185,7 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 			shape: { vcpus: 4, memoryMb: 8192, diskGb: 80 },
 			shapeChosen: false,
 			from: "",
-			environment: "",
+			environments: [],
 			autoStop: "never",
 		};
 		expect(newSandboxInput(form).shape).toEqual({ vcpus: 4, memoryMb: 8192, diskGb: 80 });

@@ -152,6 +152,9 @@ export function watchSandboxes(
 			before.state === record.state &&
 			before.lifecycle === record.lifecycle &&
 			before.health === record.health &&
+			// A move beginning, going on a phase or ending (not its heartbeat): its API state and `move` change.
+			before.moving?.operationId === record.moving?.operationId &&
+			before.moving?.phase === record.moving?.phase &&
 			// What an unresponsive one says of why (out of memory now, say), which the console shows.
 			(record.health !== "unresponsive" || before.reason === record.reason)
 		) {
@@ -175,7 +178,7 @@ export function watchSandboxes(
 		});
 	return {
 		get: (id) => sandboxes.get(id),
-		list: (where) => sandboxes.list(where),
+		list: (where, anyOf) => sandboxes.list(where, anyOf),
 		// A put is how a sandbox is made (a create, a fork, each with a new ID): it is published as made, without reading
 		// first, which a create would pay for in a statement. Changes go through `update`.
 		async put(record) {

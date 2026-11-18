@@ -3,6 +3,7 @@
 //
 //   POST /v1/hosts/cluster/call         a host call; the answer is NDJSON: {"event"} lines, then {"result"} or {"error"}
 //   POST /v1/hosts/cluster/rewelcome    sends a host its welcome again
+//   POST /v1/hosts/cluster/remesh       sends a host its mesh peers as they are now
 //   POST /v1/hosts/cluster/disconnect   closes a host's connection (its credential was revoked)
 //   POST /v1/hosts/cluster/usage        a usage tick from a host connected to the sender, kept here too
 //   GET  /v1/hosts/cluster/port         a WebSocket: "open" once the sandbox's port is, then its bytes both ways
@@ -147,7 +148,13 @@ export function createPeerTransport(options: {
 					const message = JSON.parse(line) as {
 						event?: HostEvent;
 						result?: unknown;
-						error?: { code: string; message: string; unanswered?: boolean; disconnected?: boolean };
+						error?: {
+							code: string;
+							message: string;
+							unanswered?: boolean;
+							disconnected?: boolean;
+							memoryDropped?: boolean;
+						};
 					};
 					if (message.event !== undefined) callOptions.onEvent?.(message.event);
 					else if (message.error !== undefined) {
@@ -164,6 +171,9 @@ export function createPeerTransport(options: {
 		},
 		async rewelcome(peer, hostId, welcome) {
 			await post(peer, "rewelcome", { hostId, welcome });
+		},
+		async remesh(peer, hostId) {
+			await post(peer, "remesh", { hostId });
 		},
 		async disconnect(peer, hostId, code, reason) {
 			await post(peer, "disconnect", { hostId, code, reason });
@@ -262,7 +272,7 @@ export async function createGatewayCluster(options: {
 			const path = new URL(request.url).pathname;
 			if (!path.startsWith(`${CLUSTER_PATH}/`)) return undefined;
 			const operation = path.slice(CLUSTER_PATH.length + 1);
-			if (request.method !== "POST" || !["call", "rewelcome", "disconnect", "usage"].includes(operation)) {
+			if (request.method !== "POST" || !["call", "rewelcome", "remesh", "disconnect", "usage"].includes(operation)) {
 				return notFound();
 			}
 			const body = await request.text();
@@ -294,6 +304,10 @@ export async function createGatewayCluster(options: {
 			};
 			if (operation === "rewelcome") {
 				if (input.welcome !== undefined) local.rewelcome(input.hostId, input.welcome);
+				return new Response(null, { status: 204 });
+			}
+			if (operation === "remesh") {
+				local.remesh(input.hostId);
 				return new Response(null, { status: 204 });
 			}
 			if (operation === "disconnect") {
@@ -331,6 +345,8 @@ export async function createGatewayCluster(options: {
 													...(error.unanswered ? { unanswered: true } : {}),
 													// Whether the host wasn't there (gone while it waited), for a stop to wait for it.
 													...(error.disconnected ? { disconnected: true } : {}),
+													// Whether a failed start let go of the sandbox's memory, for its commands to end with it.
+													...(error.memoryDropped ? { memoryDropped: true } : {}),
 												}
 											: { code: "internal", message: "The call failed on the replica holding the host" },
 								}),

@@ -28,6 +28,7 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 | Protected variables | A protected `GH_TOKEN` swapped on the way out to the real `api.github.com`, with the sandbox only ever holding the placeholder, on a real Firecracker host |
 | Account hosts | With `KANTEL_ACCOUNT_HOSTS=experimental` on a local install, a member who isn't an admin added a machine of her own and ran a microVM on it. Other people's sandboxes stayed on the shared host, they couldn't see hers, and drain and removal worked. Under `wrangler dev`, the printed join command installed a released `kantel-host` in a systemd container, which registered and ran an isolate |
 | Organisations and API keys | Making an organisation, an invite code, an email invite accepted through the mail catcher, and a key whose secret shows once, on local installs |
+| Mounts | With `KANTEL_MOUNTS=experimental` on a local install with a real host: bundle mounts, and bucket mounts from MinIO and from a real Google Cloud Storage bucket read with a service account's JSON key. The files matched the store's checksums, every write failed as read-only, a second sandbox read them from the host's cache, and the mount came back after a stop and resume. The key was nowhere in the guest, or in the host's or gateway's logs. Signed file URLs and archive extraction worked on the same kind of install |
 | Usage graphs | Live CPU and memory graphs for a microVM, isolates and their host on a local install with `kantel-host` from main, compared against `top` |
 | Self-hosted install | The Compose installer from nothing, upgrades with `--upgrade` that keep data, and `kantel-admin`, on local machines |
 | Hosted service | At app.kantel.dev: email-code sign-in to a new personal space, and **Add a host** printing the join command. New without a host refuses, as it should |
@@ -36,14 +37,16 @@ Kantel is still being built, and this page is the plain summary. Read it before 
 
 ## Shown in tests only
 
+- **The deno_core isolate runtime** (`kantel-isolate`): its integration suite covers the shell, `node` and `python`, egress tagging, and stopping runaway loops and memory bombs without slowing a neighbouring sandbox, on the stock V8 and on the build with V8's heap sandbox. Its real-VM test, through `kantel-host` in Firecracker, ran files, `node`, `python`, loop containment and restores from a template on the sandboxed build. Neither has been recorded on the bare-metal host or a deployed install.
+- **Upgrading an isolate to a microVM**: on one host, a real-VM test moved files, a link, an executable and a 4 MB file into the microVM. Across hosts, only with stand-in hosts.
 - **Snapshot history and restore**, and **saved snapshots**: their API and CLI run against the stub backend and the host stand-in.
 - **Webhooks**: an endpoint was added on a local install, but delivery and signing are checked in tests only.
 - **OpenTelemetry**: export is unit-tested. No run has checked a real collector receiving the data.
 - **Public ports**: tested against the stand-in and in real-VM tests. A port served at `kantel.run` on the hosted service hasn't been checked live.
 - **Custom sandbox sizes** (the console's vCPU and memory sliders): a real-VM test exists, but wasn't run on VMs for the change. Preset sizes run on real hosts.
 - **The MCP server**: `initialize`, `tools/list` and `tools/call` against the stub backend.
-- **Mounts** (`KANTEL_MOUNTS=experimental`): bundles, bucket sources, signed file URLs and archive extraction work on a local install with a real host, but mounting itself does not yet: every mount on a real host reports `failed`.
 - **GitHub and Google sign-in**: tested against mock providers.
+- **[GitHub Actions runners](/sandboxes/github-runners/)**: the webhook, the queue and its waits for room, and runners' registration and deletion are tested against stand-ins for GitHub and the hosts. No real job has run on one yet.
 
 ## Not shown yet
 
@@ -55,7 +58,7 @@ Read these before relying on Kantel for real work.
 - **SSH and public ports on app.kantel.dev.** Their live checks were planned after deploy, and no result is recorded.
 - **Host updates.** `kantel-host update`, automatic updates, the console's **Update to** (tested against a host stand-in only), `revoke`, `uninstall` and the systemd service on a bare-metal host have not been run. Running sandboxes keeping going through an update is untested.
 - **arm64 hosts.** The arm64 `kantel-host` and images are boot-checked in emulation only, never on arm64 hardware.
-- **Hosts without KVM.** The `--isolate-runtime native` path hasn't been run, and there's no script yet to put `workerd` in a host's images.
+- **Hosts without KVM.** The `--isolate-runtime native` path has run only in `kantel-host`'s own tests, with an early build of `kantel-isolate`, not installed on a machine without KVM.
 - **macOS hosts.** Not built. A host is Linux only.
 - **Kantel Connect**, the link through kantel.dev for hosts and control planes that can't reach each other directly, is coming.
 - **Snapshots across image updates.** A snapshot is a layer over the image it was made on, so a host that replaces its image orphans older snapshots.
@@ -70,7 +73,7 @@ Read these before relying on Kantel for real work.
 - **Stock images**: a custom image without systemd has no Docker, and one without the desktop packages has no desktop or browser.
 - **Chromium and the egress proxy**: if the proxy intercepts TLS, Chromium reads its own certificate store, not the system one.
 - **The self-hosted control plane**: Linux or macOS with Docker and Compose v2. Hosts are Linux whichever you use.
-- **The CLI**: Node.js 22 or later, on Linux or macOS.
+- **The CLI**: one binary for Linux or macOS, on x86_64 or arm64.
 
 ## Next
 

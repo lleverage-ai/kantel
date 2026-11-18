@@ -18,11 +18,16 @@ import { messageOf } from "./parts.tsx";
 /** How often the wait reads the hosts again. */
 const POLL_MS = 3000;
 
-export type HostJoinInput = { readonly name?: string; readonly labels?: Readonly<Record<string, string>> };
+export type HostJoinInput = {
+	readonly name?: string;
+	readonly labels?: Readonly<Record<string, string>>;
+	/** The pool's ID; absent, the default pool. */
+	readonly pool?: string;
+};
 
 export interface HostJoinCommandProps {
 	readonly source: HostsSource;
-	/** The new host's name and labels, which go with its token: a change makes the command again. */
+	/** The new host's name, labels and pool, which go with its token: a change makes the command again. */
 	readonly input?: HostJoinInput;
 	/** A fixed time, for stories. */
 	readonly now?: number;

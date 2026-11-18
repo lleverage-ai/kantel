@@ -23,7 +23,7 @@
 		"build": "astro build && node scripts/check-links.mjs && node scripts/llms-txt.mjs",
 		"preview": "wrangler dev",
 		"deploy:dry-run": "wrangler deploy --dry-run",
-		"lint:install": "sh -n public/install.sh && sh -n ../../packages/cli/install-cli.sh"
+		"lint:install": "sh -n public/install.sh && sh -n ../../apps/cli/install-cli.sh"
 	},
 	"devDependencies": {
 		"@astrojs/starlight": "0.42.8",

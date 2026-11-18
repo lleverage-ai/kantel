@@ -138,14 +138,20 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 	}
 
 	/**
-	 * Carries on account deletions whose pass is due, then arms the alarm for the next one: they finish though no request
-	 * comes. (An alarm an older version armed, for a session's wake or a schedule, finds nothing due and isn't armed
-	 * again.)
+	 * Carries on account deletions whose pass is due, and runs the GitHub runner broker's pass, then arms the alarm for
+	 * whichever is next: they go on though no request comes. (An alarm an older version armed, for a session's wake or a
+	 * schedule, finds nothing due and isn't armed again.)
 	 */
 	override async alarm(): Promise<void> {
 		const { stack } = await this.ready();
-		const next = await stack.compute.api.service.carryOnDeletions();
-		if (next !== undefined) await this.wakeAt(next);
+		const service = stack.compute.api.service;
+		const deletion = await service.carryOnDeletions();
+		const runners = await service.tickGithubRunners().catch((error: unknown) => {
+			console.error("kantel: the GitHub runner pass failed", error);
+			return Date.now() + 60_000;
+		});
+		const next = [deletion, runners].filter((at): at is number => at !== undefined);
+		if (next.length > 0) await this.wakeAt(Math.min(...next));
 	}
 
 	override async fetch(request: Request): Promise<Response> {

@@ -21,6 +21,7 @@ An account the caller may act in, with the caller's role in it.
 | `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `personalTokens` | [PersonalTokenPolicy](/api/reference/types/#personaltokenpolicy) | no |  |
+| `snapshotCopies` | boolean | no | Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### AccountJoinToken
@@ -113,6 +114,13 @@ What the device gets. A sign-in that asked for a personal token is approved with
 | `personal` | boolean | no | True to approve a sign-in that asked for a personal token, which then acts as the approver in `accounts` or all of theirs. Required for one: an approval without it, as from a console that showed an API key, is refused. |
 | `accounts` | string[] | no | For a personal token: only these accounts. Absent: every account of the approver's. |
 | `expiresInDays` | integer | no | Default 90. It stops working after it. A personal token lasts at most 366. (minimum 1, maximum 3650) |
+
+### AttachSandboxEnvironmentBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `environment` | string | yes | The environment, its ID or name in the sandbox's account. |
+| `position` | integer | no | Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, so it wins over the others. (minimum 0) |
 
 ### BaseImage
 
@@ -245,7 +253,7 @@ An object-store prefix, through a bucket source the account holds. The host read
 | `kind` | `"bucket"` | yes |  |
 | `bucketSourceId` | string | yes | A bucket source of the sandbox's account, such as `bks_4kq9x2mt`. |
 | `prefix` | string | yes | The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket. (at most 1024 characters) |
-| `refreshTtlSeconds` | integer | no | How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's. (minimum 0, maximum 86400) |
+| `refreshTtlSeconds` | integer | no | How long the host trusts its listing of the prefix before it looks again, so objects added later appear: it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call `refreshSandboxMounts`. (minimum 0, maximum 86400) |
 
 ### BucketProvider
 
@@ -371,6 +379,20 @@ The personal access token the call was signed in with, when it was one, and its 
 | `startedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `endedAt` | integer | no | Epoch milliseconds, UTC. |
 | `durationMs` | integer | no |  |
+| `needsMicrovm` | [CommandNeedsMicrovm](/api/reference/types/#commandneedsmicrovm) | no |  |
+| `terminated` | [CommandTermination](/api/reference/types/#commandtermination) | no |  |
+| `rerunAs` | string | no | It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run again in the microVM. |
+| `rerunOf` | string | no | It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the command that answered `needsMicrovm` in the isolate. |
+
+### CommandNeedsMicrovm
+
+In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | string | yes | What it ran that an isolate doesn't have, such as `tar`. |
+| `reason` | string | yes | Why, in one sentence. |
+| `inferred` | boolean | no | Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it. |
 
 ### CommandPage
 
@@ -382,6 +404,12 @@ The personal access token the call was signed in with, when it was one, and its 
 ### CommandState
 
 One of: `"running"` or `"exited"` or `"killed"` or `"timed_out"`.
+
+### CommandTermination
+
+In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`).
+
+One of: `"cpu"` or `"memory"` or `"wall"`.
 
 ### Cost
 
@@ -400,7 +428,18 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
 | `name` | string | no | The host's name. Default: the machine's hostname. (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
+| `pool` | string | no | The pool the host joins, an ID or name. Default: the account's default pool. |
 | `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
+
+### CreateAccountPoolBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
+| `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
+| `placement` | `"warm"` or `"balanced"` | no | How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. |
 
 ### CreateApiKeyBody
 
@@ -443,12 +482,27 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `name` | string | yes | Unique in the account: lower-case letters, digits and dashes, at most 63. |
 | `description` | string | no |  (at most 500 characters) |
 
+### CreateGithubRunnersBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes |  (at most 100 characters) |
+| `appId` | integer | yes |  (minimum 1) |
+| `privateKey` | string | yes | The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered. (at least 64 characters, at most 16384 characters) |
+| `owner` | string | yes |  (at most 100 characters) |
+| `scope` | `"organization"` or `"repository"` | no | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
+| `runnerGroupId` | integer | no |  (minimum 1) |
+| `repositories` | string[] | no |  (at most 500 items) |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | no | Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it. (at most 20 items) |
+
 ### CreateHostJoinTokenBody
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
+| `pool` | string | no | The pool the host joins, an ID or name among the deployment's pools. Default: its default pool. |
 | `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
 
 ### CreateInviteBody
@@ -478,6 +532,15 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `accounts` | string[] | no | Absent: every account of yours. |
 | `expiresInDays` | integer | no | Default 90, at most 366. (minimum 1, maximum 366) |
 
+### CreatePoolBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
+| `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
+| `placement` | `"warm"` or `"balanced"` | no | How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. |
+
 ### CreateSandboxBody
 
 Every field is optional: `{}` makes a running isolate in the caller's account.
@@ -495,13 +558,28 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `idleStopMinutes` | integer or null | no | Stop it once it has gone this long without use (`idle-stop`), whatever its auto-stop says; with `autoStopMinutes: null`, it runs while it is used. Default `null`: no idle stop. See the sandbox's `idleStopMinutes` for what counts as use. |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no |  |
-| `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
-| `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
+| `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
+| `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. Give `environments` for more than one. |
+| `environments` | string[] | no | Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and where two set the same variable, file or repository path, the later one wins. Not with `environment`. (at most 10 items) |
 | `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
+| `stickyDisks` | [SandboxStickyDiskInput](/api/reference/types/#sandboxstickydiskinput)[] | no | Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted at its path. Needs a host that runs them. (at most 2 items) |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
+| `pool` | string | no | Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. `unavailable` saying which pool when none of its hosts can take it now. Default: the account's default pool when the account has hosts of its own, else the deployment's default pool, as before pools. |
 | `host` | string | no | Place it on this host, a host's ID or name: one of the account's own hosts, or for a super-admin a shared one (any other is `not_found`). It stays on that host, as every sandbox stays where it was placed. `unavailable` (`host_unavailable`) when that host is offline, draining, doesn't run the type, lacks a `hostLabels` label or (for a create from a snapshot) doesn't hold the snapshot. Default: whichever host placement picks. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
+| `autoUpgrade` | boolean | no | For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. |
+| `autoUpgradeFrom` | string | no | What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only. |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
+
+### CreateStickyDiskBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes | Lower-case letters, digits and hyphens, unique in the account. |
+| `description` | string | no |  (at most 500 characters) |
+| `sizeGb` | integer | yes |  (minimum 1, maximum 2048) |
+| `pool` | string | no | The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in that pool. Default: the pool of the first sandbox it is attached to. |
 
 ### CreateTemplateBody
 
@@ -725,6 +803,15 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `oomKills` | integer | no | `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading. (minimum 1) |
 | `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
+| `attached` | string | no | `sandbox.environments_changed`: the environment attached. |
+| `detached` | string | no | `sandbox.environments_changed`: the environment detached. |
+| `environmentIds` | string[] | no | `sandbox.environments_changed`: the sandbox's environments now, in order. |
+| `from` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
+| `to` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
+| `path` | `"host"` or `"control-plane"` | no | `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them. |
+| `files` | integer | no | `sandbox.upgraded`: the files, links and directories moved. (minimum 0) |
+| `bytes` | integer | no | `sandbox.upgraded`: the files' bytes. (minimum 0) |
+| `durationMs` | integer | no | `sandbox.upgraded`: how long the upgrade took. (minimum 0) |
 
 ### EventPage
 
@@ -735,9 +822,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
-One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.oom_kill"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.oom_kill"` or `"sandbox.upgraded"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
 ### ExposedPort
 
@@ -770,6 +857,19 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 | `directories` | integer | yes | Directories made. |
 | `symlinks` | integer | yes | Symbolic links made. |
 | `bytes` | integer | yes | Bytes of the files written. |
+
+### FetchHostSnapshotBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `snapshotId` | string | yes | The saved snapshot's ID. |
+
+### FetchHostStickyDiskBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stickyDiskId` | string | yes | The sticky disk's ID. |
+| `version` | string | yes | The version to fetch: one a host in the same pool holds. |
 
 ### FileContent
 
@@ -820,7 +920,7 @@ A short-lived URL for one file of one sandbox, streamed to or from the sandbox's
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | string | yes | An absolute path, or one relative to the user's home. (at most 4096 characters) |
+| `path` | string | yes | An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`. (at most 4096 characters) |
 | `ttlSeconds` | integer | no | How long the URL may be used: default 900 (15 minutes), at most 3600. (minimum 1, maximum 3600) |
 
 ### ForkedSandboxes
@@ -840,6 +940,158 @@ A short-lived URL for one file of one sandbox, streamed to or from the sandbox's
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `wait` | boolean | no |  |
+
+### GithubRunnerJob
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | GitHub's ID for the job. |
+| `runId` | integer | yes |  |
+| `repository` | string | yes |  |
+| `name` | string | yes |  |
+| `labels` | string[] | yes |  |
+| `pool` | string | no | The pool whose label it matched. |
+| `state` | `"queued"` or `"in_progress"` or `"completed"` or `"ignored"` | yes | `queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for. |
+| `conclusion` | string | no |  |
+| `sandboxId` | string | no | The runner's sandbox that took it. |
+| `queuedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `startedAt` | integer | no | Epoch milliseconds, UTC. |
+| `completedAt` | integer | no | Epoch milliseconds, UTC. |
+| `reason` | string | no | Why it is ignored, or why it still waits. |
+
+### GithubRunnerJobList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [GithubRunnerJob](/api/reference/types/#githubrunnerjob)[] | yes | The newest 200, newest first. |
+
+### GithubRunnerKind
+
+Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of the pool. An integration's labels are unique across its pools.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `integration` | string | yes | The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`. |
+| `label` | string | yes | The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. |
+| `template` | string | yes | The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. |
+| `resources` | [GithubRunnerResources](/api/reference/types/#githubrunnerresources) | yes |  |
+| `hostLabels` | Record&lt;string, string&gt; | no | Of the pool's hosts, run only on those with each of these labels. |
+| `environments` | string[] | no | Environments each runner starts with, IDs or names in the account, such as one holding a cache token. (at most 10 items) |
+| `maxRunners` | integer | no | The most runners the pool has at once, starting or running. Default 20. (minimum 1, maximum 500) |
+| `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
+| `stickyDisks` | [GithubRunnerStickyDisk](/api/reference/types/#githubrunnerstickydisk)[] | no | Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). (at most 2 items) |
+| `runnerCommand` | string | no | The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
+| `repositories` | string[] | no | Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. (at most 500 items) |
+
+### GithubRunnerPool
+
+Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `label` | string | yes | The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case. |
+| `template` | string | yes | The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub Actions runner at `runnerCommand`'s path. |
+| `resources` | [GithubRunnerResources](/api/reference/types/#githubrunnerresources) | yes |  |
+| `hostLabels` | Record&lt;string, string&gt; | no | Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in the pool whose hosts they select. |
+| `environments` | string[] | no | Environments each runner starts with, IDs or names in the account, such as one holding a cache token. (at most 10 items) |
+| `maxRunners` | integer | no | The most runners the pool has at once, starting or running. Default 20. (minimum 1, maximum 500) |
+| `timeoutMinutes` | integer | no | How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360. (minimum 5, maximum 4320) |
+| `stickyDisks` | [GithubRunnerStickyDisk](/api/reference/types/#githubrunnerstickydisk)[] | no | Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`). (at most 2 items) |
+| `runnerCommand` | string | no | The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY runuser -u runner -- /home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`. (at most 4096 characters) |
+| `repositories` | string[] | no | Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners only with `scope: repository`: a runner registered on the organization may take any job with its labels. (at most 500 items) |
+
+### GithubRunnerPoolStatus
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `label` | string | yes |  |
+| `queued` | integer | yes | Jobs waiting for a runner. |
+| `starting` | integer | yes | Runners being made or booting. |
+| `idle` | integer | yes | Runners up and waiting for GitHub to give them a job. |
+| `busy` | integer | yes | Runners running a job. |
+| `waitingSince` | integer | no | Epoch milliseconds, UTC. |
+| `waitingFor` | string | no | Why the oldest queued job has no runner yet, when it has waited. |
+
+### GithubRunnerResources
+
+A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes |  (minimum 1, maximum 32) |
+| `memoryMb` | integer | yes |  (minimum 512) |
+| `diskGb` | integer | no |  (minimum 1, maximum 4096) |
+
+### GithubRunners
+
+A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job ends. Jobs that find no room wait in a queue until there is.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The runner integration's ID, such as `ghr_3m4n5b`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `appId` | integer | yes | The GitHub App's ID. |
+| `owner` | string | yes | The GitHub organization (or user) the App is installed on, such as `octo-org`. |
+| `scope` | `"organization"` or `"repository"` | yes | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
+| `runnerGroupId` | integer | no | The organization's runner group the runners join. |
+| `repositories` | string[] | no | Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on. |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | yes |  |
+| `enabled` | boolean | yes |  |
+| `webhookUrl` | string | yes | Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered. |
+| `installationId` | integer | no | The App's installation, as the first webhook from it named it. |
+| `lastWebhookAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastError` | [GithubRunnersError](/api/reference/types/#githubrunnerserror) | no |  |
+| `status` | [GithubRunnerPoolStatus](/api/reference/types/#githubrunnerpoolstatus)[] | no | Each pool's queue and runners, on a get. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### GithubRunnersError
+
+The last failure talking to GitHub or making a runner.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `message` | string | yes |  |
+
+### GithubRunnersList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [GithubRunners](/api/reference/types/#githubrunners)[] | yes |  |
+
+### GithubRunnerStickyCommit
+
+When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. Pull requests never commit.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `branches` | string[] | yes | Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`. (at most 20 items) |
+| `beforeCommit` | string | no | A shell command run as root in the runner before its copy is committed, such as one that prunes the cache and stops Docker. A commit is skipped when it fails. (at most 4096 characters) |
+
+### GithubRunnerStickyDisk
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | string | yes | A sticky disk of the account, by ID or name. |
+| `path` | string | yes | Where each runner mounts it. (at most 255 characters) |
+| `commit` | [GithubRunnerStickyCommit](/api/reference/types/#githubrunnerstickycommit) | no |  |
+
+### GithubRunnersWithSecret
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `githubRunners` | [GithubRunners](/api/reference/types/#githubrunners) | yes |  |
+| `webhookSecret` | string | yes | The secret to give the GitHub App's webhook. Shown once. |
+
+### GrantKeys
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `current` | object | yes | The key that signs grants now. |
+| `next` | object | no | The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the rotation, once every connected host has it. Absent between rotations. |
+| `retired` | object[] | yes | Keys rotated out that hosts still accept, oldest first. |
 
 ### GuestAgent
 
@@ -922,15 +1174,20 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `tiers` | [SandboxType](/api/reference/types/#sandboxtype)[] | yes | The sandbox types it runs. |
 | `kvm` | boolean | yes |  |
 | `nestedVirtualisation` | boolean | yes |  |
+| `cpuFingerprint` | string | no | Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores only onto a host with the same. Absent for a host without microVMs, or one from before it said. |
+| `runtimeFingerprints` | string[] | no | The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest kernel, image, sticky drives and balloon, such as `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's memory restores only onto a host with its runtime among these and the same CPU. Absent for a host without microVMs, or one from before it said. |
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |
 | `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
+| `poolId` | string | no | The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent only from a host this control plane hasn't seen since pools came in. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 | `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 | `diskUsage` | [HostDiskUsage](/api/reference/types/#hostdiskusage) | no |  |
 | `memory` | [HostMemory](/api/reference/types/#hostmemory) | no |  |
+| `mesh` | [HostMesh](/api/reference/types/#hostmesh) | no |  |
+| `evacuation` | [HostEvacuationProgress](/api/reference/types/#hostevacuationprogress) | no |  |
 | `savedSnapshotBytesLimit` | integer | no | The most bytes of saved snapshots each account may keep on this host. Each saved snapshot counts at its full size, the files it shares with other snapshots included, so copies that share files count separately. A save past it answers `exhausted`. Absent: no limit. (minimum 0) |
 
 ### HostAllocated
@@ -966,6 +1223,59 @@ What takes the space on a host's disk, as the host measured it last (every few m
 | `bundlesBytes` | integer | yes | The cache of bundle images that sandboxes mount. (minimum 0) |
 | `otherBytes` | integer | yes | The rest of the used space: the operating system, logs and other programs. (minimum 0) |
 | `measuredAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### HostEvacuation
+
+Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting it otherwise). It carries on across a control plane restart.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+| `state` | [HostEvacuationState](/api/reference/types/#hostevacuationstate) | yes |  |
+| `reason` | string | no | Why it failed or stopped, where that wasn't a sandbox's move (each says its own). |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `moved` | integer | yes | The sandboxes moved to another host. (minimum 0) |
+| `remaining` | integer | yes | Those still to move, or moving now. (minimum 0) |
+| `skipped` | integer | yes | Those that can't move, each with its reason. (minimum 0) |
+| `failed` | integer | yes | Those whose move failed: each is where it was, as it was. (minimum 0) |
+| `sandboxes` | [HostEvacuationSandbox](/api/reference/types/#hostevacuationsandbox)[] | yes | Each sandbox that was on the host when it began, or came onto it since, in the order taken. |
+
+### HostEvacuationProgress
+
+How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | [HostEvacuationState](/api/reference/types/#hostevacuationstate) | yes |  |
+| `reason` | string | no | Why it failed or stopped, where that wasn't a sandbox's move (each says its own). |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `moved` | integer | yes | The sandboxes moved to another host. (minimum 0) |
+| `remaining` | integer | yes | Those still to move, or moving now. (minimum 0) |
+| `skipped` | integer | yes | Those that can't move, each with its reason. (minimum 0) |
+| `failed` | integer | yes | Those whose move failed: each is where it was, as it was. (minimum 0) |
+
+### HostEvacuationSandbox
+
+One sandbox of a host's evacuation.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+| `name` | string | no | Its name, where the caller may see the sandbox. |
+| `type` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
+| `state` | `"waiting"` or `"moving"` or `"moved"` or `"skipped"` or `"failed"` | yes | `waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its move failed (`reason`), and it is where it was. |
+| `phase` | `"copying"` or `"stopping"` or `"final-copy"` or `"starting"` | no | Where its move has got, while it moves: as its own `move.phase`. |
+| `hostId` | string | no | The host it moved to. |
+| `keptMemory` | boolean | no | Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there. |
+| `reason` | string | no | Why it was skipped, why its move failed, or why it restarted where it moved. |
+
+### HostEvacuationState
+
+`running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the host was undrained, which ends it; a move under way then finishes.
+
+One of: `"running"` or `"done"` or `"failed"` or `"stopped"`.
 
 ### HostJoinToken
 
@@ -1003,6 +1313,27 @@ A host's memory, in MiB, as it last reported it (every heartbeat).
 | `pressureFull` | number | yes | The share of the last 10 seconds every task waited on memory. (minimum 0, maximum 100) |
 | `maxRatio` | number | yes | The most sandboxes may be given, as a multiple of `capacityMiB`. (minimum 0) |
 | `measuredAt` | integer | no | Epoch milliseconds, UTC. |
+
+### HostMesh
+
+How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one that isn't connected.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | yes | The host's own address on its pool's mesh, an IPv6 address. |
+| `peers` | [HostMeshPeer](/api/reference/types/#hostmeshpeer)[] | yes | The other hosts of its pool, each as it reaches it. |
+
+### HostMeshPeer
+
+One mesh peer as a host reaches it, as the host last reported it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The peer's host ID: another host of the same pool. |
+| `path` | string | yes | How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. `none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another. |
+| `endpoint` | string | no | The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`. |
+| `lastHandshake` | integer | no | When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first. (minimum 0) |
+| `rttMs` | number | no | The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer. (minimum 0) |
 
 ### HostReleaseCheck
 
@@ -1073,7 +1404,7 @@ A way into an organisation: whoever joins with its code becomes a member.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
-| `enforced` | boolean | yes | Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. |
+| `enforced` | boolean | yes | Whether an isolate's memory is a hard limit (its heap, ArrayBuffers and WebAssembly memory together): true when every host the account's isolates may run on says its isolate runtime enforces it. Otherwise the runtime records it, and the account VM's memory, shared by its isolates, is the limit. |
 
 ### IssuedApiKey
 
@@ -1177,6 +1508,16 @@ One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketM
 
 One of: `"pending"` or `"ready"` or `"failed"`.
 
+### MoveSandboxBody
+
+Where to move it, and whether its memory goes with it. Every field is optional.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | no | The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for a create, among the pool's hosts that can take a moved sandbox. |
+| `keepMemory` | boolean | no | Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't (`hostId` names one, or there is no other), it restarts there instead, and its `move` says why (`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable only for that stop, the last copy and its boot. A stopped sandbox has no memory. |
+| `wait` | boolean | no | Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). Either way a failed move leaves it where and as it was. |
+
 ### PersonalToken
 
 A personal access token (`kpt_…`). Its secret is never stored or shown after it is made.
@@ -1216,6 +1557,29 @@ One of: `"no_host"` or `"no_host_for_type"` or `"no_host_with_labels"` or `"no_h
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `deviceCode` | string | yes |  |
+
+### Pool
+
+A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the deployment start with a pool named `default`, which their hosts are in until moved.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The pool's ID, such as `pool_6t5r4e`. |
+| `name` | string | yes | Its name, unique among its owner's pools. |
+| `accountId` | string | no | The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts. |
+| `default` | boolean | yes | Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool. |
+| `hosts` | integer | yes | How many hosts are in it, revoked ones not counted. (minimum 0) |
+| `sync` | boolean | yes | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Off by default. |
+| `vcpusPerCpu` | number | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs than threads: a microVM that would take a host past it goes on another, or waits for room, as one that doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs only decide which host is emptiest. |
+| `placement` | `"warm"` or `"balanced"` | yes | How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs (the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, so sandboxes spread evenly over the pool's hosts whatever each holds. |
+| `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the deployment runs GitHub runners. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### PoolList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Pool](/api/reference/types/#pool)[] | yes |  |
 
 ### ProxySettings
 
@@ -1305,6 +1669,31 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `headers` | Record&lt;string, string&gt; | no |  |
 | `signals` | `"metrics"` or `"logs"`[] | no |  |
 
+### RefreshedMount
+
+A bucket mount as the sandbox shows it after a refresh.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes |  |
+| `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
+| `status` | [MountStatus](/api/reference/types/#mountstatus) | yes |  |
+| `error` | string | no | Why it is `failed`, in words. |
+| `objects` | integer | no | How many objects the listing it shows holds. (minimum 0) |
+| `listedAt` | integer | no | When the listing it shows began (ms since the epoch), after the call arrived: it has every object the bucket held then. |
+
+### RefreshedMountList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [RefreshedMount](/api/reference/types/#refreshedmount)[] | yes | Each bucket mount refreshed, in the sandbox's order. |
+
+### RefreshMountsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | no | Just the bucket mount at this path. Default: every bucket mount of the sandbox's. (at least 2 characters, at most 1024 characters) |
+
 ### ResumeSandboxBody
 
 | Field | Type | Required | Description |
@@ -1317,7 +1706,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `command` | string | yes | A shell command line, run with `bash -lc` (or the isolate's shell). |
-| `cwd` | string | no | Default: the sandbox user's home. |
+| `cwd` | string | no | Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there. |
 | `env` | Record&lt;string, string&gt; | no |  |
 | `stdin` | string | no |  |
 | `timeoutMs` | integer | no | Default 30 000; at most 600 000 (10 minutes). A detached command has no limit unless this gives one. (minimum 1, maximum 600000) |
@@ -1348,13 +1737,20 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `idleStopMinutes` | integer or null | no | How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, and its hosted ports. Stopping keeps its disk, as any stop does. |
 | `lastActiveAt` | integer | no | When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds. |
 | `idleStopsAt` | integer | no | When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. |
+| `autoUpgrade` | boolean | no | An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. |
+| `autoUpgradeFrom` | string | no | The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM. |
+| `upgradedFrom` | [SandboxUpgrade](/api/reference/types/#sandboxupgrade) | no |  |
+| `move` | [SandboxMove](/api/reference/types/#sandboxmove) | no |  |
+| `moved` | [SandboxMoved](/api/reference/types/#sandboxmoved) | no |  |
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `latestSnapshotAt` | integer | no | When `latestSnapshotId` was taken (its `createdAt`), in milliseconds. Absent from a gateway before it, and where that snapshot's record is gone. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
-| `environmentId` | string | no | The environment it was made from. |
+| `environmentId` | string | no | Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`. |
+| `environmentIds` | string[] | no | Its environments, in order: where two set the same variable, file or repository path, the later one wins. Absent: none. |
 | `template` | [SandboxTemplate](/api/reference/types/#sandboxtemplate) | no |  |
-| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environment's. |
+| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environments'. |
 | `mounts` | [SandboxMount](/api/reference/types/#sandboxmount)[] | no | Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). |
+| `stickyDisks` | [SandboxStickyDisk](/api/reference/types/#sandboxstickydisk)[] | no | Its sticky disks, each with the version its copy came from and its state. Absent: none. |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `startedAt` | integer | no | Epoch milliseconds, UTC. |
@@ -1363,6 +1759,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `usage` | [UsageSummary](/api/reference/types/#usagesummary) | yes |  |
 | `hostId` | string | no | The host it runs on (or last ran on): shown to a super-admin, and to anyone who can see the sandbox when it is one of its account's own hosts. Absent until it is placed, and for a shared host to anyone else. |
 | `hostName` | string | no | That host's name, with `hostId`. |
+| `poolId` | string | no | The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools. |
 | `hostReachable` | boolean | no | Whether the host it is placed on is connected to Kantel now. `false`: it isn't, so Kantel can't reach the sandbox or confirm what its machine is doing, and `state` is its last known state. Calls that need it running (commands, files, ports, SSH, the desktop and browser) answer `unavailable` until the host reconnects; a stop waits a while for it. Answered whether or not `hostId` is shown. Absent until it is placed. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 | `startup` | [SandboxStartup](/api/reference/types/#sandboxstartup) | no |  |
@@ -1406,6 +1803,8 @@ What this sandbox can do, from its type and its host, and for a microVM from wha
 | --- | --- | --- | --- |
 | `exec` | boolean | yes |  |
 | `files` | boolean | yes |  |
+| `javascript` | boolean | yes | Whether its commands can run JavaScript with `node`: always in a microVM; in an isolate, where its host's isolate runtime has it (each run a fresh V8 isolate, with no npm packages). |
+| `python` | boolean | yes | Whether its commands can run Python with `python` (`python3`): always in a microVM; in an isolate, where its host's isolate runtime has it (Pyodide, with the packages it ships, none installed from the internet). |
 | `ssh` | boolean | yes |  |
 | `desktop` | boolean | yes |  |
 | `browser` | boolean | yes |  |
@@ -1426,17 +1825,57 @@ A sandbox's egress: what it was made with, its own grants and its log.
 | `sandboxName` | string | yes |  |
 | `accountId` | string | yes |  |
 | `environment` | [SandboxEgressEnvironment](/api/reference/types/#sandboxegressenvironment) | no |  |
+| `environments` | [SandboxEgressEnvironmentRef](/api/reference/types/#sandboxegressenvironmentref)[] | yes | Its environments, in order. |
 | `protectedVariables` | [SandboxProtectedVariable](/api/reference/types/#sandboxprotectedvariable)[] | yes |  |
-| `environmentGrants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its environment's grants, which it has too. |
-| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own grants, on top of its environment's. |
+| `environmentGrants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its environments' grants, which it has too. |
+| `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own grants, on top of its environments'. |
 | `entries` | [EgressEntry](/api/reference/types/#egressentry)[] | yes | Newest first; Kantel keeps the newest 1000. |
 
 ### SandboxEgressEnvironment
+
+Its first environment. Deprecated: read `environments`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | string | yes |  |
 | `name` | string | yes |  |
+
+### SandboxEgressEnvironmentRef
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+
+### SandboxEnvironment
+
+One of a sandbox's environments.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `shadowed` | [SandboxEnvironmentShadowed](/api/reference/types/#sandboxenvironmentshadowed) | yes |  |
+| `pending` | boolean | yes | Its secret files and repositories are set up when the sandbox next runs. |
+
+### SandboxEnvironments
+
+A sandbox's environments, and what each gives it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes |  |
+| `environments` | [SandboxEnvironment](/api/reference/types/#sandboxenvironment)[] | yes | In order: where two set the same variable, file or repository path, the later one wins. |
+
+### SandboxEnvironmentShadowed
+
+What of an environment a sandbox doesn't take from it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `variables` | string[] | yes | Its variables a later environment, or the sandbox's own env, sets instead. |
+| `files` | string[] | yes | Its secret files' paths a later environment writes instead. |
+| `repos` | string[] | yes | Its repositories' paths a later environment clones into instead. |
 
 ### SandboxHealth
 
@@ -1454,6 +1893,48 @@ A mount of a sandbox's, and whether its files are in place.
 | `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
 | `status` | [MountStatus](/api/reference/types/#mountstatus) | yes |  |
 | `error` | string | no | Why it is `failed`, in words. |
+
+### SandboxMove
+
+A move to another host under way (its `state` is `moving`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `phase` | `"copying"` or `"stopping"` or `"final-copy"` or `"starting"` | yes | `copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are there, and it is starting on it. |
+| `hostId` | string | no | The host it is moving to, where the caller may know it, once chosen. |
+| `keepMemory` | boolean | yes | Whether its memory moves too, so it carries on where it left off on the new host: asked for (the default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running programs ending (`restartReason` says why, where it had memory that might have moved). Said once its new host is chosen, before anything is copied. |
+| `restartReason` | string | no | Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from its host's, or a host can't move memory yet. |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### SandboxMoved
+
+Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a sandbox never moved, and from one moved before Kantel kept it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `keptMemory` | boolean | yes | Its memory moved with it, so its programs carried on; `false`, it booted on its disk there. |
+| `restartReason` | string | no | Why its memory didn't move with it although that was asked for, as its `move` said. |
+
+### SandboxMovePlan
+
+A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `targets` | [SandboxMoveTarget](/api/reference/types/#sandboxmovetarget)[] | no | Each host it may move to now, as the scheduler would place it (room and all), with what a move there does with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host. |
+
+### SandboxMoveTarget
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | A host it may move to now. |
+| `keepsMemory` | boolean | yes | A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it restarts there, booting on its disk. |
+| `restartReason` | string | no | Why a move there restarts it, where it has memory that might have moved. |
+| `pauseMs` | integer | no | Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it wrote since its first copy and its boot. (minimum 0) |
+| `memoryBytes` | integer | no | Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its guest has touched; the rest is zero, and costs nothing), a paused one's memory file. (minimum 0) |
+| `bytesPerSecond` | integer | no | The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false). (minimum 1) |
+| `rateMeasured` | boolean | no | `bytesPerSecond` was measured by the hosts, rather than assumed. |
 
 ### SandboxNotRunning
 
@@ -1505,6 +1986,7 @@ A protected variable as one sandbox has it: never its value.
 | `name` | string | yes |  |
 | `placeholderPrefix` | string | yes | The first 8 characters of its placeholder, such as `kph_7Qx2`. |
 | `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | yes |  |
+| `environmentId` | string | no | The environment whose value it takes. |
 
 ### SandboxResources
 
@@ -1579,17 +2061,37 @@ How its machine's latest start (a create, fork, start or resume) took its time, 
 | --- | --- | --- | --- |
 | `disk` | `"reflink"` or `"copy"` or `"move"` or `"new"` | no | How its disk was made: `reflink`, a clone of the snapshot's disk that shares its blocks (at once, on a host whose disk is XFS or btrfs); `copy`, a full copy of the snapshot's data (a host on ext4, which has no reflinks); `move`, a live fork's own snapshot's disk; `new`, an empty disk. Absent when it kept its own (a resume). |
 | `diskMs` | number | yes | Making its disk, in milliseconds. |
+| `fetchMs` | number | no | For a sandbox made from a saved snapshot on a host that didn't hold it: its host fetching the snapshot's disk from another host in its pool first, in milliseconds, until the host reported it (each 15 seconds or so). Not in `hostMs`. |
+| `restoredMemory` | boolean | no | For a sandbox made from a snapshot that holds memory: whether its memory was restored, its processes carrying on (`true`), or it booted on the snapshot's disk alone (`false`), on a host whose copy of the snapshot has no memory it can restore (another CPU or runtime, or its memory not fetched yet). |
 | `snapshotMs` | number | no | For a fork of a running sandbox: the live snapshot of its source it was made from. |
 | `bootMs` | number | yes | Its machine booted, or its snapshot loaded into it (a restore with memory), in milliseconds. |
 | `agentMs` | number | yes | From then until its guest agent answered, in milliseconds: on a cold boot, the guest's kernel and init too. |
 | `hostMs` | number | yes | The whole start on its host, in milliseconds: these phases and the rest (its network, identity and mounts). |
-| `totalMs` | number | yes | From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the way to and from the host, not on it. |
+| `totalMs` | number | yes | From Kantel's call to its host until the host answered, in milliseconds, its fetch (`fetchMs`) included. Well over `hostMs` and `fetchMs` is time on the way to and from the host, not on it. |
 
 ### SandboxState
 
-`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
 
-One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"error"` or `"deleting"` or `"deleted"`.
+One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"moving"` or `"error"` or `"deleting"` or `"deleted"`.
+
+### SandboxStickyDisk
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `diskId` | string | yes |  |
+| `name` | string | yes |  |
+| `path` | string | yes |  |
+| `version` | string | no | The version its copy was cloned from; absent for an empty disk. |
+| `state` | `"pending"` or `"mounted"` or `"failed"` | yes |  |
+| `reason` | string | no |  |
+
+### SandboxStickyDiskInput
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `disk` | string | yes | The sticky disk, by ID or name. |
+| `path` | string | yes | Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory. (at most 255 characters) |
 
 ### SandboxTemplate
 
@@ -1605,9 +2107,19 @@ The template a sandbox was made from.
 
 ### SandboxType
 
-`isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
+`isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
 
 One of: `"isolate"` or `"microvm"`.
+
+### SandboxUpgrade
+
+A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `snapshotId` | string | no | The snapshot its microVM was started from (`upgradeSandbox`'s `from`). |
 
 ### SandboxUsage
 
@@ -1747,12 +2259,25 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
 | `minMemoryMb` | integer | no | A saved microVM snapshot's least memory, in MB, as its save gave it (`SaveSnapshotBody.minMemoryMb`): a create or fork from it with less is refused (`invalid`) before anything is made, rather than started on a machine its work can't run in. Absent: any. (minimum 1) |
 | `sizeBytes` | integer | no | The space it takes on its host's disk now, kept up to date from what the host measures: the blocks its files have allocated, each file linked into several snapshots counted once, for one of them (a saved snapshot before an automatic one, then the oldest). So a saved snapshot kept from a sandbox's history counts the files it shares with its source, and its source only what is its own; a size can change when a snapshot it shares files with is deleted. A copy that shares disk blocks without sharing the file (a reflinked copy) counts in full. Memory not yet written to the disk counts nothing. Absent while it is unknown. |
-| `uses` | integer | no | How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it. (minimum 0) |
+| `uses` | integer | no | How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it. (minimum 0) |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `takenAt` | integer | no | When the state it holds was taken, in milliseconds. `createdAt` (when it was taken or saved), except for a saved snapshot copied from an earlier one (a stopped sandbox's newest, or `snapshotId` from its history), which keeps that one's time. Absent for a saved snapshot from before this was kept. |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | no |  |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
 | `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+| `poolId` | string | no | The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in that pool. Absent for one taken before pools, which is in the pool of the host holding it. |
+| `hosts` | [SnapshotHost](/api/reference/types/#snapshothost)[] | no | Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it. |
+
+### SnapshotHost
+
+A host a saved snapshot is on (`Snapshot.hosts`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | no | The host; absent where the caller may not be told it (a shared host). |
+| `hostName` | string | no | Its name, where `hostId` is given. |
+| `state` | `"held"` or `"fetching"` | yes | `held`: the host has the snapshot's disk. `fetching`: it is copying it from another host. |
+| `memory` | boolean | yes | Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose memory came too, which a host fetches only where it restores. Always false for a snapshot without memory. |
 
 ### SnapshotKind
 
@@ -1797,6 +2322,41 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | --- | --- | --- | --- |
 | `clientName` | string | no | What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`. (at most 100 characters) |
 | `personal` | boolean | no | Ask for a personal access token, which acts in every account its approver belongs to, rather than an API key in one account. Default false, for a device from before personal tokens. |
+
+### StickyDisk
+
+A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The sticky disk's ID, such as `sdk_3m4n5b`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes | Lower-case letters, digits and hyphens, unique in the account. |
+| `description` | string | no |  |
+| `sizeGb` | integer | yes | Each copy's size: what a sandbox can fill. |
+| `head` | string | no | The newest committed version; absent until one is. |
+| `versions` | [StickyDiskVersion](/api/reference/types/#stickydiskversion)[] | no | The newest 20, newest first, on a get. |
+| `poolId` | string | no | The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was attached to. It is attached only to sandboxes in that pool. Absent until then. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### StickyDiskList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [StickyDisk](/api/reference/types/#stickydisk)[] | yes |  |
+
+### StickyDiskVersion
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The version's ID, such as `sdv_3m4n5b`. |
+| `parent` | string | no | The version it was cloned from; absent for one made empty. |
+| `hostId` | string | yes | The host it was committed on. |
+| `sandboxId` | string | yes | The sandbox it was committed from. |
+| `sizeBytes` | integer | yes |  |
+| `allocatedBytes` | integer | yes | What it takes on its host's disk, blocks it shares included. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### StopSandboxBody
 
@@ -1970,6 +2530,7 @@ What a template snapshot is for: a change to any part builds another. A create s
 | `firecracker` | string | yes |  |
 | `vcpus` | integer | yes |  |
 | `memoryMb` | integer | yes | With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. |
+| `poolId` | string | no | The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used in. Absent for one built before pools. |
 
 ### TemplateDockerfileImage
 
@@ -2092,6 +2653,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  (at most 100 characters) |
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `personalTokens` | [PersonalTokenPolicy](/api/reference/types/#personaltokenpolicy) | no |  |
+| `snapshotCopies` | boolean | no | Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; those there are stay until their snapshots are deleted. |
 
 ### UpdateEnvironmentBody
 
@@ -2100,6 +2662,20 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  |
 | `description` | string | no | Empty clears it. (at most 500 characters) |
 
+### UpdateGithubRunnersBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 100 characters) |
+| `appId` | integer | no |  (minimum 1) |
+| `privateKey` | string | no |  (at least 64 characters, at most 16384 characters) |
+| `owner` | string | no |  (at most 100 characters) |
+| `scope` | `"organization"` or `"repository"` | no | Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository. |
+| `runnerGroupId` | integer or null | no |  |
+| `repositories` | string[] or null | no |  |
+| `pools` | [GithubRunnerPool](/api/reference/types/#githubrunnerpool)[] | no | Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none. (at most 20 items) |
+| `enabled` | boolean | no |  |
+
 ### UpdateHostBody
 
 | Field | Type | Required | Description |
@@ -2107,6 +2683,7 @@ A template version's definition, never changed once made. Answered with every de
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `draining` | boolean | no | Stop placing new sandboxes on it. |
+| `pool` | string | no | Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` otherwise): drain it, let its sandboxes go, move it, then undrain it. |
 | `savedSnapshotBytesLimit` | integer or null | no | The most bytes of saved snapshots each account may keep on this host (`Host.savedSnapshotBytesLimit`); `null` removes the limit. |
 
 ### UpdateMemberBody
@@ -2114,6 +2691,17 @@ A template version's definition, never changed once made. Answered with every de
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
+
+### UpdatePoolBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  |
+| `default` | `true` | no | Makes it its owner's default pool, in place of the one that was. Another pool is made the default to change it again. |
+| `sync` | boolean | no | Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the pool's hosts alone. Turned off, they leave it. |
+| `vcpusPerCpu` | number or null | no | The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: `1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or waits for room. `null` removes the cap. |
+| `placement` | `"warm"` or `"balanced"` | no | How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache. |
+| `runners` | [GithubRunnerKind](/api/reference/types/#githubrunnerkind)[] | no | Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its label in another pool moves here; runners already made finish where they are. (at most 100 items) |
 
 ### UpdateSandboxBody
 
@@ -2125,6 +2713,8 @@ A template version's definition, never changed once made. Answered with every de
 | `extendMinutes` | integer | no | Move `stopsAt` to this long from now. (minimum 1, maximum 43200) |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |
+| `autoUpgrade` | boolean | no | Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade. |
+| `autoUpgradeFrom` | string or null | no | Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM. |
 
 ### UpdateTemplateBody
 
@@ -2144,6 +2734,18 @@ A `spec` that differs from the current one makes a new version.
 | `url` | string | no |  |
 | `events` | [EventType](/api/reference/types/#eventtype)[] | no |  |
 | `enabled` | boolean | no |  |
+
+### UpgradeSandboxBody
+
+The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is optional: `{}` makes the deployment's default microVM.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxShapeInput](/api/reference/types/#sandboxshapeinput) | no |  |
+| `image` | string | no | The microVM's base image. Default: the deployment's. |
+| `from` | string | no | Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's disk, so not with `resources.diskGb`. Only a snapshot whose guest agent lays files into a real directory alone (saved from a sandbox on a current host) can be upgraded into; one older is refused, `not_supported`. Default: a new microVM of `image`. |
+| `wait` | boolean | no | Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has begun (`starting`). Either way a failed upgrade leaves the isolate as it was. |
 
 ### UsageSparklines
 

@@ -44,6 +44,12 @@ export interface DurableConfig {
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
+/**
+ * The advisory lock `CREATE SCHEMA` takes, so gateways starting together on an empty database don't race to create it:
+ * two `CREATE SCHEMA IF NOT EXISTS` at once can both try, and one fail. Each component's migration takes a lock of its
+ * own (audit 7316102022, identity 7316102023, compute 7316102020, hosts 7316102024, relay 7316102021).
+ */
+const SCHEMA_LOCK = 7316102025;
 
 /**
  * The connection settings for `databaseUrl`, with `search_path` set for every connection: audit's and identity's tables
@@ -71,7 +77,10 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const setup = new pg.Client({ connectionString: config.databaseUrl });
 		await setup.connect();
 		try {
+			await setup.query("BEGIN");
+			await setup.query(`SELECT pg_advisory_xact_lock(${SCHEMA_LOCK})`);
 			await setup.query(`CREATE SCHEMA IF NOT EXISTS ${config.schema}`);
+			await setup.query("COMMIT");
 		} finally {
 			await setup.end();
 		}
@@ -133,6 +142,19 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		});
 		closers.push(async () => liveRelay.stop());
 
+		// One check at a time, on the pool every call uses, so it fails when calls would: a database that is down, or a
+		// pool with no connection to give. The pool has no timeouts of its own, so `/readyz` bounds the wait, and a check
+		// still waiting is shared by those after it rather than piling more on the pool.
+		let checking: Promise<void> | undefined;
+		const ready = () => {
+			checking ??= (async () => {
+				await pool.query("SELECT 1");
+			})().finally(() => {
+				checking = undefined;
+			});
+			return checking;
+		};
+
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
 		const identity = createSqlIdentity({ driver, audit });
@@ -155,6 +177,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 					? {}
 					: { computeHosts: "postgres", computeRelay: "postgres", computeCluster: "postgres" }),
 			},
+			ready,
 			close,
 		};
 	} catch (error) {

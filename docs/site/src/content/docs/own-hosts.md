@@ -55,7 +55,40 @@ kantel hosts drain host_… --off # take new sandboxes again
 kantel hosts rm host_…          # revoke its credential and close its connection
 ```
 
+Deleting a sandbox on one of your hosts deletes it there. While its host is offline, the delete fails with `unavailable` and the sandbox is kept, since its disk may still be on the host: delete it again once the host is back, or remove the host first, after which deleting the sandbox writes it off. A sandbox whose delete failed after its host had already deleted it (the host's connection dropped before it answered, say) is left in `error`; deleting it again asks its host once more and finishes, so the host can then move to another pool.
+
 Asking for a host in another account gives `not_found`, so nobody can learn whether a host exists. Once a host is removed, `kantel-host` stops and doesn't retry. `kantel host <id> <port>` (singular) is a different command: it gives a sandbox's port a URL.
+
+## Pools
+
+An account's hosts are in pools, each host in exactly one. Every account starts with a pool named `default`, which its hosts join unless their token names another, so an account with one pool sees no change. Pools are the boundary that sharing data between hosts will keep to (see the disk store's design), so a CI pool and a pool for agent sandboxes don't mix.
+
+```sh
+kantel pools add ci                    # an empty pool
+kantel hosts add builder-1 --pool ci   # a token whose host joins ci
+kantel hosts drain host_…              # stop new sandboxes going there
+kantel hosts move host_… ci            # once it has no sandboxes: it stays draining
+kantel hosts drain host_… --off        # take sandboxes again, in ci
+kantel pools default ci                # where hosts join, naming no pool
+kantel pools sync ci on                # its hosts join the pool's mesh (off by default)
+kantel pools vcpus ci 1                # each host books at most 1 vCPU per CPU thread (off by default)
+kantel pools placement ci balanced     # spread sandboxes evenly over its hosts (default warm)
+kantel pools rm ci                     # only an empty pool that isn't the default
+```
+
+A sandbox goes in a pool too: `kantel new --pool ci` (`pool` on create) places it only on that pool's hosts, and its labels choose among them. Naming none, it goes in the account's default pool, as before pools. A sandbox keeps its pool (`poolId`), and a fork stays in it.
+
+Data belongs to one pool too. A snapshot is in the pool of the host it was taken on, and a sandbox made or forked from it goes only in that pool. A sticky disk is in the pool its create names (`pool`), else the pool of the first sandbox it's attached to, and it's attached only to sandboxes in that pool: naming no pool, a sandbox with it goes there, and naming another is refused. Each answers its `poolId`. A template stays one definition for the account, and is built once in each pool whose hosts can build it, which that pool's hosts share. Names stay unique across the account, whatever the pool, and nothing is copied between pools.
+
+[GitHub runners](/sandboxes/github-runners/) live in a pool too: a pool's `runners` are its runner kinds, one for each `runs-on` label, whose runners go only on its hosts.
+
+A move is explicit, and only a drained host with no sandboxes moves: drain it, let its sandboxes go, move it, then undrain it. The deployment's shared hosts are in pools of their own, which `kantel-admin pool` manages the same way.
+
+A pool's sync is off by default. With it on (`kantel pools sync ci on`, or `sync` on the pool in the API), each of the pool's hosts whose kantel-host runs the mesh joins the pool's mesh: a WireGuard network between that pool's hosts alone, each with an IPv6 address of its own in the pool's range. Kantel hands each host the others' keys, addresses and the endpoints they reported, and tells them at once when a host joins, leaves, is moved or removed. Hosts of different pools never peer. Turning sync off takes the pool's hosts out of the mesh.
+
+A pool has no vCPU cap by default: placement ranks its hosts by how full they would be, the larger of their memory and their vCPUs booked against their CPUs, and a host whose memory has room takes a microVM however many vCPUs it has booked. A cap (`kantel pools vcpus ci 1.5`, or `vcpusPerCpu` on the pool in the API, from 0.25 to 16) makes a host that would book more than that many vCPUs per CPU thread full: the microVM goes on another of the pool's hosts, or waits for room, as one that doesn't fit a host's memory does. A GitHub runner's job waits for a runner, and a create says `insufficient_capacity`. A host with nothing booked always takes one. Use it for CPU-bound work such as CI, where a runner that shares its host's CPUs with more runners takes longer, and its tests' timeouts can fail: `1` books no more vCPUs than a host has threads. `kantel pools vcpus ci off` removes it. MicroVMs already running stay where they are.
+
+A pool's placement says how a host is chosen among its hosts. With `warm`, the default, placement prefers a host that already holds what a create needs: the newest version (head) of each sticky disk it attaches, or its template's snapshot, which restores in a few seconds where another host boots the template fresh. That host wins until it would be half full and a quarter fuller than the emptiest. With `balanced` (`kantel pools placement ci balanced`, or `placement` on the pool in the API), such a host wins only over hosts as full as it, within a twentieth of a host, so sandboxes spread evenly over the pool's hosts and the others start from the version of the disk they have, or boot the template fresh. Choose it for work whose time is set by the CPUs it shares more than by a warm cache, such as CI runners.
 
 ## Turn it on
 
@@ -65,4 +98,4 @@ Asking for a host in another account gives `not_found`, so nobody can learn whet
 
 ## API
 
-The routes are in the API reference under [Your hosts](/api/reference/account-hosts/): `POST /v1/hosts/join-tokens`, `GET /v1/hosts`, and `GET`, `PATCH` and `DELETE /v1/hosts/{hostId}`. A host's `accountId` says which account it belongs to. A host the super-admin joined has no `accountId`.
+The routes are in the API reference under [Your hosts](/api/reference/account-hosts/): `POST /v1/hosts/join-tokens`, `GET /v1/hosts`, and `GET`, `PATCH` and `DELETE /v1/hosts/{hostId}`. A host's `accountId` says which account it belongs to. A host the super-admin joined has no `accountId`. Its `poolId` says which pool it is in; the pools are `GET` and `POST /v1/pools` and `PATCH` and `DELETE /v1/pools/{poolId}`.

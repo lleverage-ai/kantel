@@ -38,7 +38,7 @@ function Rows({ rows, columns = COLUMNS, long = false }: { rows: number; columns
 
 const frame = "min-w-0 rounded-panel border border-border bg-raised";
 
-/** Wider than its card: the right edge is shaded, and the bar sits under it. */
+/** Wider than its card: the right edge fades, and its scrollbar is inside its frame. */
 export const Overflowing: Story = () => (
 	<div className="flex max-w-card flex-col gap-2 p-4">
 		<SideScroll className={frame}>

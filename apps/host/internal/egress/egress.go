@@ -656,8 +656,8 @@ func (p *Proxy) handleWith(conn net.Conn, resolve Resolver) {
 		host = h
 		port, _ = strconv.Atoi(ps)
 	} else {
-		// Proxy form: http:// from a process's HTTP_PROXY, or https:// too from the isolate worker (workerd's proxy
-		// style), which leaves the TLS to the proxy.
+		// Proxy form: http:// from a process's HTTP_PROXY, or https:// too from the isolate runtime, which leaves the TLS
+		// to the proxy.
 		if req.URL == nil || !req.URL.IsAbs() || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
 			_ = refusal{status: http.StatusBadRequest, message: "only proxy-form http(s):// requests and CONNECT"}.write(conn)
 			return

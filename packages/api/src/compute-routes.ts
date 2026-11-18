@@ -19,6 +19,7 @@ import {
 	ApiKeyList,
 	ApiKeyPath,
 	ApproveDeviceLoginBody,
+	AttachSandboxEnvironmentBody,
 	BaseImageList,
 	BrowserAccess,
 	BucketSource,
@@ -31,15 +32,20 @@ import {
 	Command,
 	CommandPage,
 	CommandPath,
+	CommitStickyDiskPath,
 	CreateAccountJoinTokenBody,
+	CreateAccountPoolBody,
 	CreateApiKeyBody,
 	CreateBucketSourceBody,
 	CreateEnvironmentBody,
+	CreateGithubRunnersBody,
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
 	CreateOrganisationBody,
 	CreatePersonalTokenBody,
+	CreatePoolBody,
 	CreateSandboxBody,
+	CreateStickyDiskBody,
 	CreateTemplateBody,
 	CreateWebhookBody,
 	DesktopAccess,
@@ -58,6 +64,8 @@ import {
 	ExposePortBody,
 	ExtractArchiveQuery,
 	ExtractedArchive,
+	FetchHostSnapshotBody,
+	FetchHostStickyDiskBody,
 	FileContent,
 	FileEntry,
 	FileList,
@@ -66,7 +74,14 @@ import {
 	FileUrlBody,
 	ForkedSandboxes,
 	ForkSandboxBody,
+	GithubRunnerJobList,
+	GithubRunners,
+	GithubRunnersList,
+	GithubRunnersPath,
+	GithubRunnersWithSecret,
+	GrantKeys,
 	Host,
+	HostEvacuation,
 	HostJoinToken,
 	HostList,
 	HostPath,
@@ -88,11 +103,15 @@ import {
 	Member,
 	MemberList,
 	MemberPath,
+	MoveSandboxBody,
 	PageQueryCompute,
 	PersonalToken,
 	PersonalTokenList,
 	PersonalTokenPath,
 	PollDeviceLoginBody,
+	Pool,
+	PoolList,
+	PoolPath,
 	PortPath,
 	ProxySettings,
 	PublicUrl,
@@ -103,11 +122,16 @@ import {
 	PutTelemetryBody,
 	ReadFileQuery,
 	ReadSnapshotFileQuery,
+	RefreshedMountList,
+	RefreshMountsBody,
 	ResumeSandboxBody,
 	RunCommandBody,
 	Sandbox,
 	SandboxEgress,
 	SandboxEgressQuery,
+	SandboxEnvironmentPath,
+	SandboxEnvironments,
+	SandboxMovePlan,
 	SandboxPage,
 	SandboxPath,
 	SandboxProcessesQuery,
@@ -126,6 +150,10 @@ import {
 	SshAccess,
 	SshAccessBody,
 	StartDeviceLoginBody,
+	StickyDisk,
+	StickyDiskList,
+	StickyDiskPath,
+	StickyDiskVersion,
 	StopSandboxBody,
 	TakeSnapshotBody,
 	TelemetryExport,
@@ -139,11 +167,14 @@ import {
 	TemplateVersionList,
 	UpdateAccountBody,
 	UpdateEnvironmentBody,
+	UpdateGithubRunnersBody,
 	UpdateHostBody,
 	UpdateMemberBody,
+	UpdatePoolBody,
 	UpdateSandboxBody,
 	UpdateTemplateBody,
 	UpdateWebhookBody,
+	UpgradeSandboxBody,
 	UploadBundleQuery,
 	UsageQuery,
 	ViewAccessBody,
@@ -443,7 +474,7 @@ export const createSandbox = defineRoute({
 		"Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no",
 		"host able to run the type is `unavailable`.",
 		"`mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate",
-		"is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket",
+		"is a shell over files the host keeps, with no file system of its own to mount a drive or a bucket",
 		"into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's",
 		"`KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`.",
 		scope("sandboxes:write"),
@@ -558,6 +589,80 @@ export const forkSandbox = defineRoute({
 	errors: [...lifecycleErrors, "exhausted"],
 });
 
+export const upgradeSandbox = defineRoute({
+	operationId: "upgradeSandbox",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/upgrade",
+	tag: "sandboxes",
+	summary: "Upgrade an isolate to a microVM",
+	description: describe(
+		"Turns a running or stopped isolate into a microVM with the same ID, name, labels, env, environments, egress",
+		"grants and protected variables. Its `/workspace` files are put in the microVM at `/home/user/workspace`, and",
+		"`/workspace` there is a link to them, so paths an agent used keep working. A stopped isolate comes back as a",
+		"running microVM. Upgrade when a command answers `needsMicrovm`, or before work an isolate can't do (`git`,",
+		"Node or Python packages, a build, Docker). Answers once the microVM runs (unless `wait` is `false`), and a",
+		"microVM is answered as it is. If the microVM can't be made, the call fails and the isolate is left as it was.",
+		"Commands and file calls made meanwhile wait for it. Its isolate time ends and its microVM time starts at the",
+		"upgrade; a `sandbox.upgraded` event records it.",
+		scope("sandboxes:write"),
+	),
+	params: SandboxPath,
+	body: UpgradeSandboxBody,
+	idempotent: true,
+	answer: { status: 200, description: "The sandbox, now a microVM.", schema: Sandbox },
+	errors: [...lifecycleErrors, "exhausted"],
+});
+
+export const moveSandbox = defineRoute({
+	operationId: "moveSandbox",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/move",
+	tag: "sandboxes",
+	summary: "Move a sandbox to another host",
+	description: describe(
+		"Moves a microVM to another host in its pool, with the same ID, name, settings and URLs: its disk and its sticky",
+		"disks' copies (their uncommitted writes too) are copied to that host, it is started there, and only then is it",
+		"placed there and its copy on the old host deleted. It never leaves its pool. A running or paused one keeps its",
+		"memory (`keepMemory`, default true) where both hosts' CPU and runtime match: a running one is copied as it runs,",
+		"then stopped keeping its memory, what it wrote since and its memory are copied, and it is restored there, its",
+		"programs carrying on after a pause of about its memory's copy. Between hosts that don't match, or with",
+		"`keepMemory` `false`, it restarts: it is copied as it runs, stopped (its processes end), what it wrote since is",
+		"copied, and it boots on the new host, unavailable for seconds rather than for the whole copy; its `move` says",
+		"why before anything is copied (`restartReason`), and its `moved` after; `GET /sandboxes/{sandboxId}/move` says",
+		"beforehand, for each host it may move to, whether its memory is kept there and the pause expected. `hostId` picks",
+		"the host; else the scheduler does, among the pool's hosts that can take it, one that keeps its memory first.",
+		"While it moves its `state` is `moving`, and `move` says how far. Answers once it runs on the new host (unless",
+		"`wait` is `false`). If it can't be moved, the call fails and it is left where it was: a running sandbox that was",
+		"stopped for the move is started there again (from its memory, where the move kept it). Its automatic snapshots",
+		"from before stay on the old host.",
+		scope("sandboxes:write"),
+	),
+	params: SandboxPath,
+	body: MoveSandboxBody,
+	idempotent: true,
+	answer: { status: 200, description: "The sandbox, running on its new host (or `moving`).", schema: Sandbox },
+	errors: [...lifecycleErrors, "exhausted"],
+});
+
+export const planSandboxMove = defineRoute({
+	operationId: "planSandboxMove",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/move",
+	tag: "sandboxes",
+	summary: "Plan a sandbox's move",
+	description: describe(
+		"A move's dry run: moves nothing, and answers each host in its pool a move may take it to now (as the scheduler",
+		"would place it, room and all), whether a move there keeps its memory (both hosts' CPU and runtime match) or",
+		"restarts it, and why, and the pause expected where it keeps it: its memory (a running sandbox's resident",
+		"memory, a paused one's memory file) over the rate the hosts last measured their link at, else 1 Gbit/s. Refused",
+		"as a move would be when it can't move.",
+		scope("sandboxes:write"),
+	),
+	params: SandboxPath,
+	answer: { status: 200, description: "Where it may move, and what each way does.", schema: SandboxMovePlan },
+	errors: [...lifecycleErrors],
+});
+
 export const recoverSandbox = defineRoute({
 	operationId: "recoverSandbox",
 	method: "POST",
@@ -606,7 +711,7 @@ export const deleteSandbox = defineRoute({
 	tag: "sandboxes",
 	summary: "Delete a sandbox permanently",
 	description: describe(
-		"Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone.",
+		"Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. One on an account's own host is deleted there, even after the host has lost track of it (its earlier delete's answer lost): while that host is offline the delete is refused (`unavailable`) and the sandbox is kept, and once the host is revoked the sandbox is written off.",
 		scope("sandboxes:delete"),
 	),
 	params: SandboxPath,
@@ -663,6 +768,9 @@ export const sandboxRoutes = {
 	stopSandbox,
 	resumeSandbox,
 	forkSandbox,
+	upgradeSandbox,
+	moveSandbox,
+	planSandboxMove,
 	recoverSandbox,
 	restartSandboxOnLatest,
 	deleteSandbox,
@@ -1525,6 +1633,58 @@ export const putSandboxGrants = defineRoute({
 	errors: changeErrors,
 });
 
+export const listSandboxEnvironments = defineRoute({
+	operationId: "listSandboxEnvironments",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/environments",
+	tag: "environments",
+	summary: "List a sandbox's environments",
+	description: describe(
+		"In order, each with what a later one (or the sandbox's own env) sets instead, and whether its secret files and",
+		"repositories are still to be set up.",
+		scope("sandboxes:read"),
+	),
+	params: SandboxPath,
+	answer: { status: 200, description: "Its environments.", schema: SandboxEnvironments },
+	errors: readErrors,
+});
+
+export const attachSandboxEnvironment = defineRoute({
+	operationId: "attachSandboxEnvironment",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/environments",
+	tag: "environments",
+	summary: "Attach an environment to a sandbox",
+	description: describe(
+		"Adds an environment to a sandbox that exists, last unless `position` says otherwise. Its variables are worked out",
+		"again from all its environments as they are now, then its own env: new commands see them at once (and, on a host",
+		"that supports it, services that read `/etc/kantel/env`). Its grants and protected variables apply at once. A running sandbox gets the",
+		"environment's secret files and repositories now; a stopped one when it next runs. Running processes keep the",
+		"environment they started with. Attaching one it has already moves it to `position`. At most 10.",
+		scope("exec"),
+	),
+	params: SandboxPath,
+	body: AttachSandboxEnvironmentBody,
+	answer: { status: 200, description: "Its environments.", schema: SandboxEnvironments },
+	errors: changeErrors,
+});
+
+export const detachSandboxEnvironment = defineRoute({
+	operationId: "detachSandboxEnvironment",
+	method: "DELETE",
+	path: "/sandboxes/{sandboxId}/environments/{environmentId}",
+	tag: "environments",
+	summary: "Detach an environment from a sandbox",
+	description: describe(
+		"Takes an environment off a sandbox: its variables are worked out again without it, its protected variables stop",
+		"resolving at once and its grants go. Secret files it wrote and repositories it cloned stay.",
+		scope("exec"),
+	),
+	params: SandboxEnvironmentPath,
+	answer: { status: 200, description: "Its environments.", schema: SandboxEnvironments },
+	errors: readErrors,
+});
+
 export const environmentComputeRoutes = {
 	listEnvironments,
 	createEnvironment,
@@ -1539,6 +1699,9 @@ export const environmentComputeRoutes = {
 	putEnvironmentGrants,
 	getSandboxEgress,
 	putSandboxGrants,
+	listSandboxEnvironments,
+	attachSandboxEnvironment,
+	detachSandboxEnvironment,
 } as const;
 
 // Templates (experimental): microVM profiles, versioned, and the snapshots built from them.
@@ -1901,6 +2064,195 @@ export const watchEvents = defineRoute({
 });
 
 export const eventRoutes = { listEvents, watchEvents } as const;
+// Sticky disks.
+
+const STICKY_OFF = "`not_supported` while sticky disks are off (`KANTEL_STICKY_DISKS=experimental`).";
+
+export const listStickyDisks = defineRoute({
+	operationId: "listStickyDisks",
+	method: "GET",
+	path: "/sticky-disks",
+	tag: "sticky-disks",
+	summary: "List sticky disks",
+	description: describe(STICKY_OFF, scope("account:read")),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The account's sticky disks.", schema: StickyDiskList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createStickyDisk = defineRoute({
+	operationId: "createStickyDisk",
+	method: "POST",
+	path: "/sticky-disks",
+	tag: "sticky-disks",
+	summary: "Create a sticky disk",
+	description: describe(
+		"An empty disk until its first commit. Attach it to a microVM with `stickyDisks` in a create.",
+		STICKY_OFF,
+		scope("account:admin"),
+	),
+	body: CreateStickyDiskBody,
+	idempotent: true,
+	answer: { status: 201, description: "The sticky disk.", schema: StickyDisk },
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
+});
+
+export const getStickyDisk = defineRoute({
+	operationId: "getStickyDisk",
+	method: "GET",
+	path: "/sticky-disks/{stickyDiskId}",
+	tag: "sticky-disks",
+	summary: "Get a sticky disk",
+	description: describe("With its newest versions.", scope("account:read")),
+	params: StickyDiskPath,
+	answer: { status: 200, description: "The sticky disk.", schema: StickyDisk },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const deleteStickyDisk = defineRoute({
+	operationId: "deleteStickyDisk",
+	method: "DELETE",
+	path: "/sticky-disks/{stickyDiskId}",
+	tag: "sticky-disks",
+	summary: "Delete a sticky disk",
+	description: describe(
+		"Its versions go from every host. Sandboxes with a copy keep it until they are deleted.",
+		scope("account:admin"),
+	),
+	params: StickyDiskPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const commitStickyDisk = defineRoute({
+	operationId: "commitStickyDisk",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/sticky-disks/{stickyDiskId}/commit",
+	tag: "sticky-disks",
+	summary: "Commit a sandbox's copy of a sticky disk",
+	description: describe(
+		"Makes the sandbox's copy, as it is now, the disk's next version: later sandboxes on its host start from it. The",
+		"sandbox must be running; its filesystem is frozen for the moment the copy takes. Commit only from sandboxes you",
+		"trust: every later sandbox reads what this one wrote.",
+		scope("snapshots:write"),
+	),
+	params: CommitStickyDiskPath,
+	answer: { status: 201, description: "The new version.", schema: StickyDiskVersion },
+	errors: [...lifecycleErrors],
+});
+
+export const stickyDiskRoutes = {
+	listStickyDisks,
+	createStickyDisk,
+	getStickyDisk,
+	deleteStickyDisk,
+	commitStickyDisk,
+} as const;
+
+// GitHub Actions runners.
+
+const GITHUB_RUNNERS_OFF = "`not_supported` while GitHub runners are off (`KANTEL_GITHUB_RUNNERS=experimental`).";
+
+export const listGithubRunners = defineRoute({
+	operationId: "listGithubRunners",
+	method: "GET",
+	path: "/github-runners",
+	tag: "github-runners",
+	summary: "List GitHub runner integrations",
+	description: describe(GITHUB_RUNNERS_OFF, scope("account:admin")),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The integrations.", schema: GithubRunnersList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createGithubRunners = defineRoute({
+	operationId: "createGithubRunners",
+	method: "POST",
+	path: "/github-runners",
+	tag: "github-runners",
+	summary: "Connect a GitHub App for runners",
+	description: describe(
+		"From then on, each `workflow_job` the App's webhook sends whose `runs-on` labels a pool's label matches gets a",
+		"runner: a microVM made from the pool's template on the account's hosts, deleted once its job ends. Answers the",
+		"webhook's URL and secret (shown once) to give the App. Its runners act through an API key it makes, named for it;",
+		"revoking that key stops them. Needs protected values (`KANTEL_SECRETS_KEY`), as the App's key is kept sealed.",
+		GITHUB_RUNNERS_OFF,
+		scope("account:admin"),
+	),
+	body: CreateGithubRunnersBody,
+	idempotent: true,
+	answer: { status: 201, description: "The integration and its webhook secret.", schema: GithubRunnersWithSecret },
+	errors: ["invalid", "forbidden", "not_found", "not_supported"],
+});
+
+export const getGithubRunners = defineRoute({
+	operationId: "getGithubRunners",
+	method: "GET",
+	path: "/github-runners/{githubRunnersId}",
+	tag: "github-runners",
+	summary: "Get a GitHub runner integration",
+	description: describe("With each pool's queue and runners (`status`).", scope("account:admin")),
+	params: GithubRunnersPath,
+	answer: { status: 200, description: "The integration.", schema: GithubRunners },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const updateGithubRunners = defineRoute({
+	operationId: "updateGithubRunners",
+	method: "PATCH",
+	path: "/github-runners/{githubRunnersId}",
+	tag: "github-runners",
+	summary: "Change a GitHub runner integration",
+	description: describe(
+		"Runners already made keep the pool they were made for; disabling it makes no more, and leaves its queue to wait.",
+		scope("account:admin"),
+	),
+	params: GithubRunnersPath,
+	body: UpdateGithubRunnersBody,
+	answer: { status: 200, description: "The integration.", schema: GithubRunners },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const deleteGithubRunners = defineRoute({
+	operationId: "deleteGithubRunners",
+	method: "DELETE",
+	path: "/github-runners/{githubRunnersId}",
+	tag: "github-runners",
+	summary: "Disconnect a GitHub App",
+	description: describe(
+		"Deletes its runners' sandboxes, whatever they are running, and revokes its API key. Jobs still queued on GitHub",
+		"wait there for another runner.",
+		scope("account:admin"),
+	),
+	params: GithubRunnersPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listGithubRunnerJobs = defineRoute({
+	operationId: "listGithubRunnerJobs",
+	method: "GET",
+	path: "/github-runners/{githubRunnersId}/jobs",
+	tag: "github-runners",
+	summary: "List a GitHub runner integration's jobs",
+	description: describe(
+		"The jobs it knows of (those its webhook told it of, and those it found queued on GitHub when it compared queues), newest first, and why any still waits.",
+		scope("account:admin"),
+	),
+	params: GithubRunnersPath,
+	answer: { status: 200, description: "Its jobs.", schema: GithubRunnerJobList },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const githubRunnerRoutes = {
+	listGithubRunners,
+	createGithubRunners,
+	getGithubRunners,
+	updateGithubRunners,
+	deleteGithubRunners,
+	listGithubRunnerJobs,
+} as const;
+
 export const webhookRoutes = {
 	listWebhooks,
 	createWebhook,
@@ -1945,7 +2297,8 @@ export const updateHost = defineRoute({
 	tag: "hosts",
 	summary: "Change a host",
 	description: describe(
-		"Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots.",
+		"Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets",
+		"its limit on each account's saved snapshots.",
 		SUPER_ADMIN,
 	),
 	params: HostPath,
@@ -1989,6 +2342,92 @@ export const updateHostAgent = defineRoute({
 	params: HostPath,
 	answer: { status: 200, description: "The host, updating.", schema: Host },
 	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
+});
+
+export const startHostEvacuation = defineRoute({
+	operationId: "startHostEvacuation",
+	method: "POST",
+	path: "/admin/hosts/{hostId}/evacuation",
+	tag: "hosts",
+	summary: "Move every sandbox off a host",
+	description: describe(
+		"It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it",
+		"to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory",
+		"kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved",
+		"one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in",
+		"its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason.",
+		"It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again",
+		"while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there.",
+		"`conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the",
+		"deployment's hosts don't move sandboxes.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation, under way.", schema: HostEvacuation },
+	errors: lifecycleErrors,
+});
+
+export const getHostEvacuation = defineRoute({
+	operationId: "getHostEvacuation",
+	method: "GET",
+	path: "/admin/hosts/{hostId}/evacuation",
+	tag: "hosts",
+	summary: "Get a host's evacuation",
+	description: describe(
+		"How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed.",
+		"`not_found` when it has had none.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation.", schema: HostEvacuation },
+	errors: readErrors,
+});
+
+export const fetchHostStickyDisk = defineRoute({
+	operationId: "fetchHostStickyDisk",
+	method: "POST",
+	path: "/admin/hosts/{hostId}/sticky-disk-fetches",
+	tag: "hosts",
+	summary: "Fetch a sticky disk version onto a host",
+	description: describe(
+		"Has the host fetch a version of a sticky disk from the hosts in its pool that hold it, over the pool's mesh",
+		"(its pool needs sync on). The host moves only the blocks that differ from the newest version of the disk it",
+		"holds, and lists the version among its sticky disks once it has it. Answers once the fetch has started.",
+		"`not_found` for a disk or version the catalogue doesn't have, or one the host may not hold (another account's, or",
+		"a disk of another pool);",
+		"`conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host doesn't",
+		"fetch from its peers (an older kantel-host) or the deployment can't sign fetch grants; `unavailable` while it's",
+		"away. Experimental.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	body: FetchHostStickyDiskBody,
+	answer: { status: 204, description: "The fetch has started." },
+	errors: lifecycleErrors,
+});
+
+export const fetchHostSnapshot = defineRoute({
+	operationId: "fetchHostSnapshot",
+	method: "POST",
+	path: "/admin/hosts/{hostId}/snapshot-fetches",
+	tag: "hosts",
+	summary: "Fetch a saved snapshot onto a host",
+	description: describe(
+		"Has the host fetch a copy of a saved snapshot from the hosts in its pool that hold it, over the pool's mesh (its",
+		"pool needs sync on). The host first makes sure it has the root image the snapshot's disk is a layer over (the host",
+		"image version, downloaded from its release, or the template's root filesystem, fetched from a peer), then fetches",
+		"the disk, and the memory too only when its CPU and runtime match the ones the snapshot was made on; otherwise its",
+		"copy boots on its disk. It lists the snapshot among its holdings once it has it. Answers once the fetch has started.",
+		"`not_found` for a snapshot that isn't a saved one, or one the host may not hold (another account's, or of another",
+		"pool); `conflict` when no other host in its pool holds it, or the host is revoked; `not_supported` when the host",
+		"doesn't fetch snapshots from its peers (an older kantel-host) or the deployment can't sign fetch grants;",
+		"`unavailable` while it's away. Experimental.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	body: FetchHostSnapshotBody,
+	answer: { status: 204, description: "The fetch has started." },
+	errors: lifecycleErrors,
 });
 
 export const checkHostUpdates = defineRoute({
@@ -2075,6 +2514,109 @@ export const setPublicUrl = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
+// The grant key: what the control plane signs fetch grants with (docs/design/disk-store.md, 2c).
+
+const GRANT_KEYS =
+	"`not_supported` when the deployment has no grant key: sticky disks are off, or there is no secrets key " +
+	"(`KANTEL_SECRETS_KEY`) to keep one.";
+
+export const getGrantKeys = defineRoute({
+	operationId: "getGrantKeys",
+	method: "GET",
+	path: "/admin/grant-key",
+	tag: "hosts",
+	summary: "Get the grant keys",
+	description: describe(
+		"The Ed25519 key the control plane signs hosts' fetch grants with, made on first use; the key a rotation made, until",
+		"it begins signing; and the keys rotated out that hosts still accept. Only public keys: private keys are kept sealed",
+		"and never shown.",
+		GRANT_KEYS,
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The grant keys.", schema: GrantKeys },
+	errors: ["forbidden", "unavailable", "not_supported"],
+});
+
+export const rotateGrantKey = defineRoute({
+	operationId: "rotateGrantKey",
+	method: "POST",
+	path: "/admin/grant-key/rotate",
+	tag: "hosts",
+	summary: "Rotate the grant key",
+	description: describe(
+		"Makes a new grant key and sends connected hosts their welcome again with it (`next`). It signs grants from 3",
+		"minutes on, once every connected host has it, and the key it replaces is still accepted for 16 minutes after that,",
+		"a grant's lifetime and a minute, so fetches under way finish. Hosts too old to hold more than one key take the new",
+		"one when it begins signing, and fetch again with a new grant one the old key signed. Each call rotates again: a",
+		"key published and not yet signing is replaced.",
+		GRANT_KEYS,
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The grant keys after the rotation.", schema: GrantKeys },
+	errors: ["forbidden", "unavailable", "not_supported"],
+});
+
+// Pools: sets of hosts, each host in exactly one, where sandboxes are placed (docs/design/disk-store.md, "Pools").
+
+const POOL_MOVE =
+	"A host is moved between pools with `pool` on a host's change, once it is drained and has no sandboxes.";
+
+export const listPools = defineRoute({
+	operationId: "listPools",
+	method: "GET",
+	path: "/admin/pools",
+	tag: "hosts",
+	summary: "List the deployment's pools",
+	description: describe(
+		"The pools the deployment's shared hosts are in, the default first made if there is none yet.",
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The pools.", schema: PoolList },
+	errors: ["forbidden"],
+});
+
+export const createPool = defineRoute({
+	operationId: "createPool",
+	method: "POST",
+	path: "/admin/pools",
+	tag: "hosts",
+	summary: "Make a pool of shared hosts",
+	description: describe(
+		"An empty pool, for join tokens and moves to put shared hosts in. `conflict` when the name is taken.",
+		POOL_MOVE,
+		SUPER_ADMIN,
+	),
+	body: CreatePoolBody,
+	idempotent: true,
+	answer: { status: 201, description: "The pool.", schema: Pool },
+	errors: ["invalid", "forbidden", "conflict"],
+});
+
+export const updatePool = defineRoute({
+	operationId: "updatePool",
+	method: "PATCH",
+	path: "/admin/pools/{poolId}",
+	tag: "hosts",
+	summary: "Change a pool of shared hosts",
+	description: describe("Renames it, or makes it the deployment's default pool.", SUPER_ADMIN),
+	params: PoolPath,
+	body: UpdatePoolBody,
+	answer: { status: 200, description: "The pool.", schema: Pool },
+	errors: changeErrors,
+});
+
+export const deletePool = defineRoute({
+	operationId: "deletePool",
+	method: "DELETE",
+	path: "/admin/pools/{poolId}",
+	tag: "hosts",
+	summary: "Delete a pool of shared hosts",
+	description: describe("Only an empty pool that isn't the default: `conflict` while a host is in it.", SUPER_ADMIN),
+	params: PoolPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: changeErrors,
+});
+
 export const hostRoutes = {
 	listHosts,
 	createHostJoinToken,
@@ -2082,10 +2624,20 @@ export const hostRoutes = {
 	getHostUsage,
 	updateHost,
 	updateHostAgent,
+	startHostEvacuation,
+	getHostEvacuation,
+	fetchHostStickyDisk,
+	fetchHostSnapshot,
 	checkHostUpdates,
 	revokeHost,
 	getPublicUrl,
 	setPublicUrl,
+	getGrantKeys,
+	rotateGrantKey,
+	listPools,
+	createPool,
+	updatePool,
+	deletePool,
 } as const;
 
 // Kantel's base images and how far behind each is (image patching, experimental): the deployment's super-admins only.
@@ -2189,7 +2741,8 @@ export const updateAccountHost = defineRoute({
 	tag: "account-hosts",
 	summary: "Change one of an account's hosts",
 	description: describe(
-		"Renames it, replaces its labels, drains it, or sets its limit on each account's saved snapshots.",
+		"Renames it, replaces its labels, drains it, moves it to another pool (a drained host with no sandboxes), or sets",
+		"its limit on each account's saved snapshots.",
 		scope("account:admin"),
 		ACCOUNT_HOSTS,
 	),
@@ -2220,6 +2773,47 @@ export const updateAccountHostAgent = defineRoute({
 	errors: [...readErrors, "conflict", "unavailable", "not_supported"],
 });
 
+export const startAccountHostEvacuation = defineRoute({
+	operationId: "startAccountHostEvacuation",
+	method: "POST",
+	path: "/hosts/{hostId}/evacuation",
+	tag: "account-hosts",
+	summary: "Move every sandbox off one of an account's hosts",
+	description: describe(
+		"It drains the host first, where it isn't draining yet, then moves each running, stopped and paused sandbox on it",
+		"to another host in its pool, two at a time, each as `POST /sandboxes/{sandboxId}/move` does by default: its memory",
+		"kept where the hosts' CPU and runtime match, restarted otherwise. A stopped sandbox boots on its new host, as a moved",
+		"one does. Those that can't move (an isolate, one kept to its host by its create, one in error, one no other host in",
+		"its pool can take) are skipped with the reason; a move that fails leaves its sandbox where it was, with the reason.",
+		"It carries on across a control plane restart. Undrain the host to stop it: a move under way finishes. Asked again",
+		"while one is running, it answers that one; after one has ended, it begins again with the sandboxes still there.",
+		"`conflict` when the host is revoked, `unavailable` while it isn't connected, `not_supported` where the",
+		"deployment's hosts don't move sandboxes.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation, under way.", schema: HostEvacuation },
+	errors: lifecycleErrors,
+});
+
+export const getAccountHostEvacuation = defineRoute({
+	operationId: "getAccountHostEvacuation",
+	method: "GET",
+	path: "/hosts/{hostId}/evacuation",
+	tag: "account-hosts",
+	summary: "Get the evacuation of one of an account's hosts",
+	description: describe(
+		"How far its last evacuation has got: each sandbox's state, where it went, and why one was skipped or failed.",
+		"`not_found` when it has had none.",
+		scope("account:read"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The evacuation.", schema: HostEvacuation },
+	errors: [...readErrors, "not_supported"],
+});
+
 export const removeAccountHost = defineRoute({
 	operationId: "removeAccountHost",
 	method: "DELETE",
@@ -2235,6 +2829,75 @@ export const removeAccountHost = defineRoute({
 	params: HostPath,
 	answer: { status: 200, description: "The host, revoked.", schema: Host },
 	errors: [...readErrors, "not_supported"],
+});
+
+export const listAccountPools = defineRoute({
+	operationId: "listAccountPools",
+	method: "GET",
+	path: "/pools",
+	tag: "account-hosts",
+	summary: "List an account's pools",
+	description: describe(
+		"The pools the account's own hosts are in, the default first made if there is none yet.",
+		scope("account:read"),
+		ACCOUNT_HOSTS,
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The pools.", schema: PoolList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createAccountPool = defineRoute({
+	operationId: "createAccountPool",
+	method: "POST",
+	path: "/pools",
+	tag: "account-hosts",
+	summary: "Make a pool of an account's hosts",
+	description: describe(
+		"An empty pool, for join tokens and moves to put the account's hosts in. `conflict` when the account has a pool",
+		"of that name.",
+		POOL_MOVE,
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	body: CreateAccountPoolBody,
+	idempotent: true,
+	answer: { status: 201, description: "The pool.", schema: Pool },
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
+});
+
+export const updateAccountPool = defineRoute({
+	operationId: "updateAccountPool",
+	method: "PATCH",
+	path: "/pools/{poolId}",
+	tag: "account-hosts",
+	summary: "Change one of an account's pools",
+	description: describe(
+		"Renames it, or makes it the account's default pool. A name is looked for in the caller's own account (its",
+		"personal account, or an API key's).",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: PoolPath,
+	body: UpdatePoolBody,
+	answer: { status: 200, description: "The pool.", schema: Pool },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const deleteAccountPool = defineRoute({
+	operationId: "deleteAccountPool",
+	method: "DELETE",
+	path: "/pools/{poolId}",
+	tag: "account-hosts",
+	summary: "Delete one of an account's pools",
+	description: describe(
+		"Only an empty pool that isn't the default: `conflict` while a host is in it.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: PoolPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...changeErrors, "not_supported"],
 });
 
 // Bundles and bucket sources: what mounts are made from (experimental, behind the deployment's KANTEL_MOUNTS switch).
@@ -2363,7 +3026,32 @@ export const deleteBucketSource = defineRoute({
 	errors: [...changeErrors, "not_supported"],
 });
 
+export const refreshSandboxMounts = defineRoute({
+	operationId: "refreshSandboxMounts",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/mounts/refresh",
+	tag: "mounts",
+	summary: "Bring a sandbox's bucket mounts up to date",
+	description: describe(
+		"Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that",
+		"listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything",
+		"deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill,",
+		"before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the",
+		"listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the",
+		"mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another",
+		"digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped",
+		"or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items.",
+		scope("sandboxes:write"),
+		MOUNTS,
+	),
+	params: SandboxPath,
+	body: RefreshMountsBody,
+	answer: { status: 200, description: "Each bucket mount, as the sandbox shows it now.", schema: RefreshedMountList },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
 export const mountRoutes = {
+	refreshSandboxMounts,
 	uploadBundle,
 	listBundles,
 	getBundle,
@@ -2381,7 +3069,13 @@ export const accountHostRoutes = {
 	getAccountHostUsage,
 	updateAccountHost,
 	updateAccountHostAgent,
+	startAccountHostEvacuation,
+	getAccountHostEvacuation,
 	removeAccountHost,
+	listAccountPools,
+	createAccountPool,
+	updateAccountPool,
+	deleteAccountPool,
 } as const;
 
 /** Every compute-plane route, in the order the document and the SDK list them. */
@@ -2400,6 +3094,8 @@ export const computeRoutes = {
 	...templateRoutes,
 	...eventRoutes,
 	...webhookRoutes,
+	...githubRunnerRoutes,
+	...stickyDiskRoutes,
 	...telemetryRoutes,
 	// Before the hosts' `/admin/hosts/{hostId}`, which would otherwise take `images` for a host's ID.
 	...baseImageRoutes,

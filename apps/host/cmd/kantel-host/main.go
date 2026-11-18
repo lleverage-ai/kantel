@@ -1,5 +1,5 @@
-// kantel-host runs Kantel sandboxes on a Linux machine: Firecracker microVMs and workerd isolates behind one sandbox
-// interface. It dials out to the control plane, so it needs no inbound port.
+// kantel-host runs Kantel sandboxes on a Linux machine: Firecracker microVMs and V8 isolates (kantel-isolate) behind one
+// sandbox interface. It dials out to the control plane, so it needs no inbound port.
 //
 //	kantel-host install --url https://kantel.example.com --token kth_…   install, register and start (as root)
 //	kantel-host install --dry-run --url … --token …                     what install would do, changing nothing
@@ -151,6 +151,16 @@ func run(args []string) error {
 	prepareCtx, cancelPrepare := context.WithTimeout(context.Background(), 10*time.Minute)
 	agent.PrepareImages(prepareCtx, cfg, FirecrackerVersion, log)
 	cancelPrepare()
+	// Under systemd, a unit an earlier release installed gets this one's settings (OOMPolicy=continue): an update
+	// replaces only the binary.
+	if os.Getenv("INVOCATION_ID") != "" {
+		reload := func() error { return exec.Command("systemctl", "daemon-reload").Run() }
+		if upgraded, err := upgradeUnit(unitPath, reload); err != nil {
+			log.Warn("couldn't bring the kantel-host unit up to date", "path", unitPath, "error", err)
+		} else if upgraded {
+			log.Info("brought the kantel-host unit up to date: a VM the kernel kills for memory no longer restarts the host", "path", unitPath)
+		}
+	}
 	host, err := agent.New(cfg, version, log)
 	if err != nil {
 		return err
@@ -207,7 +217,7 @@ func doctor(args []string) error {
 	configPath := fs.String("config", defaultConfigPath, "The settings `file`")
 	asJSON := fs.Bool("json", false, "Print the checks as JSON")
 	root := fs.String("root", "", "Where sandboxes will live (default: the config's, or /var/lib/kantel-host)")
-	isolateRuntime := fs.String("isolate-runtime", "", `Check for "native" isolates (workerd on the host itself, no KVM) rather than microVMs (default: the config's)`)
+	isolateRuntime := fs.String("isolate-runtime", "", `Check for "native" isolates (kantel-isolate on the host itself, no KVM) rather than microVMs (default: the config's)`)
 	if err := fs.parse(args); err != nil {
 		return err
 	}
@@ -259,11 +269,11 @@ func printChecks(w io.Writer, checks []hostinfo.Check, native bool) {
 	fmt.Fprintln(w)
 	switch {
 	case microvm:
-		fmt.Fprintln(w, "This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, inside a microVM).")
+		fmt.Fprintln(w, "This machine can run both tiers: microVMs (Firecracker) and isolates (kantel-isolate, inside a microVM).")
 	case native && hostinfo.Passed(checks):
-		fmt.Fprintln(w, "This machine can run isolates natively (workerd on the host itself, for code you trust), but not microVMs.")
+		fmt.Fprintln(w, "This machine can run isolates natively (kantel-isolate on the host itself, for code you trust), but not microVMs.")
 	default:
-		fmt.Fprintln(w, "This machine can't run microVMs. It can run isolates only with isolateRuntime \"native\" (workerd on the")
+		fmt.Fprintln(w, "This machine can't run microVMs. It can run isolates only with isolateRuntime \"native\" (kantel-isolate on the")
 		fmt.Fprintln(w, "host itself, for code you trust): check that with --isolate-runtime native. Fix the FAIL lines above for both tiers.")
 	}
 }

@@ -22,7 +22,9 @@ import {
 	CUSTOM_SHAPES_FEATURE,
 	type ExecRequest,
 	type ExecResult,
+	ISOLATE_UPGRADE_FEATURE,
 	type Placement,
+	SANDBOX_ENV_FEATURE,
 	type SandboxBackend,
 	type SandboxSpec,
 	SNAPSHOT_KEEP_FEATURE,
@@ -30,10 +32,14 @@ import {
 	type TakenSnapshot,
 	type TemplateBuildSpec,
 	type TemplateRuntime,
+	UPGRADE_WORKSPACE,
+	type UpgradedPlacement,
+	type UpgradeSpec,
 	type UsageSample,
 } from "./backend.ts";
+import { needsMicrovmOf } from "./needs-microvm.ts";
 import { type BackendUsageReport, RAW_WINDOW_MS, USAGE_INTERVAL_MS } from "./usage-series.ts";
-import { baseName, HOME, randomId, randomSecret, sha256Hex, sliceRange } from "./util.ts";
+import { baseName, HOME, homeFor, randomId, randomSecret, sha256Hex, sliceRange } from "./util.ts";
 
 /** The stub's one host. */
 export const STUB_HOST_ID = "host_stub";
@@ -54,7 +60,16 @@ export interface StubBackendOptions {
 	readonly sandboxDomain?: string;
 	/** For its usage readings' times. Default `Date.now`. */
 	readonly now?: () => number;
+	/**
+	 * Refs of snapshots saved with a guest agent from before it extracted into a real directory alone (`realTarget`):
+	 * an upgrade into one is refused, as kantel-host refuses it, before anything is written. It may change as it runs.
+	 */
+	readonly olderGuestSnapshots?: ReadonlySet<string>;
 }
+
+/** What kantel-host answers an upgrade into a snapshot whose guest agent predates `realTarget`. */
+const OLDER_GUEST_AGENT =
+	"the snapshot was saved with an older Kantel guest agent, which can't lay an isolate's files into it safely: save it again from a sandbox started afresh on a current host to upgrade into it";
 
 /** The stub host's memory and disk, as its usage reports them. */
 const STUB_HOST_MEMORY_BYTES = 256 * 1024 ** 3;
@@ -108,9 +123,12 @@ const SIZES: readonly BackendSize[] = [
 	{ name: "xlarge", vcpus: 8, memoryMb: 16384, diskGb: 80 },
 ];
 
+// The stub's isolates are just-bash alone, with no node or python (kantel-isolate's have both).
 const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: false,
+	python: false,
 	ssh: false,
 	desktop: false,
 	browser: false,
@@ -124,6 +142,8 @@ const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	exec: true,
 	files: true,
+	javascript: true,
+	python: true,
 	ssh: true,
 	desktop: true,
 	browser: true,
@@ -134,6 +154,9 @@ const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	// The stub's browser view is its own page, apart from its desktop's.
 	browserSurface: true,
 };
+
+/** An isolate's files, which an upgrade moves to `UPGRADE_WORKSPACE`. */
+const WORKSPACE = "/workspace";
 
 /** just-bash's own directories, which a snapshot leaves out. */
 const RESERVED = ["/bin", "/usr", "/dev", "/proc"];
@@ -265,6 +288,11 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const killers = new Map<string, () => void>();
 	const commandKey = (sandboxId: string, commandId: string) => `${sandboxId}\u0000${commandId}`;
 	const snapshots = new Map<string, Tree>();
+	/** Sticky disks, as a host would hold them: each disk's newest version here, and each sandbox's disks. */
+	const stickyHeads = new Map<string, string>();
+	const stickyAttached = new Map<string, readonly string[]>();
+	/** Each sandbox's latest upgrade by its operation ID: its microVM, or why it failed. */
+	const upgrades = new Map<string, { operationId: string; placement?: UpgradedPlacement; reason?: string }>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
 
@@ -279,11 +307,19 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		nestedVirtualisation: false,
 		capacity: { vcpus: 64, memoryMb: 262_144, diskGb: 2048 },
 		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
-		features: ["egress-policy", CUSTOM_SHAPES_FEATURE, SNAPSHOT_KEEP_FEATURE],
+		features: [
+			"egress-policy",
+			CUSTOM_SHAPES_FEATURE,
+			SNAPSHOT_KEEP_FEATURE,
+			SANDBOX_ENV_FEATURE,
+			ISOLATE_UPGRADE_FEATURE,
+		],
 		sizes: SIZES,
 		// The disk it gives a shape off its sizes, as kantel-host's defaults: its smallest size's, up to 1024 GB.
 		disk: { minGb: 10, maxGb: 1024 },
 		labels: { site: "local" },
+		// Its isolates run in-process: neither node nor python, and no memory limit of their own.
+		isolate: { javascript: false, python: false, memoryEnforced: false },
 	};
 
 	const machineOf = (sandboxId: string): Machine => {
@@ -336,9 +372,15 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			capabilities: machine.type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
 		};
 	};
-	const boot = (machine: Machine, fs: InMemoryFs) => {
+	/** The machine's shell on its disk, with its env, starting in its type's home. */
+	const shellOf = (machine: Machine, fs: InMemoryFs) => {
+		const home = homeFor(machine.type);
+		return new Bash({ fs, cwd: home, env: { HOME: home, USER: "user", ...machine.env } });
+	};
+	const boot = async (machine: Machine, fs: InMemoryFs) => {
+		await fs.mkdir(homeFor(machine.type), { recursive: true });
 		machine.fs = fs;
-		machine.bash = new Bash({ fs, cwd: HOME, env: { HOME, USER: "user", ...machine.env } });
+		machine.bash = shellOf(machine, fs);
 		machine.state = "running";
 		machine.runningSince = now();
 	};
@@ -403,15 +445,170 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		// A template snapshot the stub no longer holds (lost with the process, as the records outlast it) boots fresh, and
 		// says so (`bootedFresh`).
 		const prepared = template?.snapshot === undefined ? undefined : templateSnapshots.get(template.snapshot);
-		if (prepared !== undefined) boot(machine, await restore(prepared));
-		else boot(machine, await fromSnapshot(spec.fromSnapshot));
+		if (prepared !== undefined) await boot(machine, await restore(prepared));
+		else await boot(machine, await fromSnapshot(spec.fromSnapshot));
 		// A fresh boot from a template: its setup runs in the new machine, as a build would have run it.
 		if (template !== undefined && prepared === undefined && template.setup !== undefined) {
 			await runSetup((machine as LiveMachine).bash, template.setup, machine.env);
 		}
 		machines.set(spec.sandboxId, machine);
-		const placed = placement(machine);
+		// Its sticky disks: a copy of each one's newest version here, or a new disk. The stub keeps no disk bytes.
+		const sticky = spec.stickyDisks ?? [];
+		if (sticky.length > 0)
+			stickyAttached.set(
+				spec.sandboxId,
+				sticky.map((disk) => disk.diskId),
+			);
+		const statuses = sticky.map((disk) => {
+			const version = stickyHeads.get(disk.diskId);
+			return {
+				diskId: disk.diskId,
+				path: disk.path,
+				...(version === undefined ? {} : { version }),
+				state: "mounted" as const,
+			};
+		});
+		const placed = { ...placement(machine), ...(statuses.length === 0 ? {} : { stickyDisks: statuses }) };
 		return template?.snapshot !== undefined && prepared === undefined ? { ...placed, bootedFresh: true } : placed;
+	};
+
+	/**
+	 * An isolate made a microVM, as kantel-host's `sandbox.upgrade` does: a new machine with the same ID whose disk has the
+	 * isolate's `/workspace` (its live files, or a stopped one's stop snapshot) under `UPGRADE_WORKSPACE`, and `/workspace`
+	 * a link to it; one from a snapshot (`intoSnapshot`) starts with that snapshot's disk, the isolate's files laid over
+	 * it. The isolate is replaced only once the microVM is made, so a failure leaves it as it was.
+	 */
+	const upgrade = async (sandboxId: string, spec: UpgradeSpec, operationId: string): Promise<UpgradedPlacement> => {
+		// Sent again: the first's outcome, as a host keeps it.
+		const done = upgrades.get(sandboxId);
+		if (done?.operationId === operationId) {
+			if (done.placement === undefined) throw new KantelError("unavailable", done.reason ?? "The upgrade failed");
+			return done.placement;
+		}
+		const isolate = machineOf(sandboxId);
+		if (isolate.type !== "isolate") throw new KantelError("conflict", `${sandboxId} is a microVM already`);
+		if (spec.type !== "microvm") throw new KantelError("invalid", "An isolate is upgraded to a microVM");
+		if (spec.template !== undefined) throw new KantelError("invalid", "An upgrade makes a microVM from no template");
+		placeable(spec.eligibleHosts, "microvm");
+		if (creating.has(sandboxId)) throw new KantelError("conflict", `${sandboxId} is being made already`);
+		creating.add(sandboxId);
+		try {
+			const tree =
+				isolate.fs !== undefined
+					? await capture(isolate.fs)
+					: spec.fromSnapshot === undefined
+						? undefined
+						: snapshotTree(spec.fromSnapshot);
+			// From a microVM's snapshot, as a create from it, the isolate's files laid over what it has, only by a guest agent
+			// that extracts into a real directory alone: one older is refused once the machine is made, before anything is
+			// written into it.
+			const fs = await restore(spec.intoSnapshot === undefined ? undefined : snapshotTree(spec.intoSnapshot));
+			if (spec.intoSnapshot !== undefined && options.olderGuestSnapshots?.has(spec.intoSnapshot) === true) {
+				throw new KantelError("not_supported", OLDER_GUEST_AGENT);
+			}
+			const moved = (path: string) =>
+				path === WORKSPACE || path.startsWith(`${WORKSPACE}/`)
+					? `${UPGRADE_WORKSPACE}${path.slice(WORKSPACE.length)}`
+					: undefined;
+			// Each entry is laid over what is there as the guest's extractor lays it: a directory replaces a file or link
+			// and merges with a directory; a file or link replaces a file or link, never written through; a file or link
+			// where a directory is, or anything under a link, fails the upgrade, so no directory's files are lost.
+			const clear = async (path: string, to: string, kind: "directory" | "file" | "link") => {
+				let at = UPGRADE_WORKSPACE;
+				const parts = to.slice(UPGRADE_WORKSPACE.length + 1).split("/");
+				for (const part of parts.slice(0, -1)) {
+					at = `${at}/${part}`;
+					const parent = await fs.lstat(at).catch(() => undefined);
+					if (parent === undefined) await fs.mkdir(at);
+					else if (parent.isSymbolicLink || !parent.isDirectory)
+						throw new KantelError("invalid", `${path} can't be laid over ${at}, which isn't a directory`);
+				}
+				const there = await fs.lstat(to).catch(() => undefined);
+				if (there === undefined) return true;
+				if (there.isDirectory && !there.isSymbolicLink) {
+					if (kind === "directory") return false;
+					throw new KantelError("invalid", `${path} can't be laid over the directory ${to}`);
+				}
+				await fs.rm(to);
+				return true;
+			};
+			let files = 0;
+			let bytes = 0;
+			try {
+				// A link at UPGRADE_WORKSPACE or above it (a snapshot's) is refused before anything goes in, as the guest agent's
+				// extraction into a real directory refuses it: the files would land wherever it points.
+				let at = "";
+				for (const part of UPGRADE_WORKSPACE.split("/").filter((each) => each !== "")) {
+					at = `${at}/${part}`;
+					const there = await fs.lstat(at).catch(() => undefined);
+					if (there === undefined) break;
+					if (there.isSymbolicLink) {
+						throw new KantelError("invalid", `${at} is a symbolic link; nothing is extracted through one`);
+					}
+					if (!there.isDirectory) throw new KantelError("invalid", `${at} isn't a directory`);
+				}
+				await fs.mkdir(UPGRADE_WORKSPACE, { recursive: true });
+				for (const dir of [...(tree?.dirs.keys() ?? [])].sort()) {
+					const to = moved(dir);
+					if (to === undefined || to === UPGRADE_WORKSPACE) continue;
+					if (await clear(dir, to, "directory")) await fs.mkdir(to);
+					files += 1;
+				}
+				for (const [path, file] of tree?.files ?? []) {
+					const to = moved(path);
+					if (to === undefined) continue;
+					await clear(path, to, "file");
+					await fs.writeFile(to, new Uint8Array(file.bytes));
+					await fs.chmod(to, file.mode).catch(() => undefined);
+					await fs.utimes(to, new Date(file.mtime), new Date(file.mtime)).catch(() => undefined);
+					files += 1;
+					bytes += file.bytes.byteLength;
+				}
+				for (const [path, target] of tree?.links ?? []) {
+					const to = moved(path);
+					if (to === undefined) continue;
+					await clear(path, to, "link");
+					await fs.symlink(target, to);
+					files += 1;
+				}
+			} catch (error) {
+				fsError(error, UPGRADE_WORKSPACE);
+			}
+			// A link or an empty directory there is replaced (a snapshot's own), anything else refused, as a host does.
+			const there = await fs.lstat(WORKSPACE).catch(() => undefined);
+			if (there !== undefined) {
+				if (there.isDirectory && (await fs.readdir(WORKSPACE)).length > 0) {
+					throw new KantelError(
+						"unavailable",
+						`${WORKSPACE} is a directory of files; it can't be linked to ${UPGRADE_WORKSPACE}`,
+					);
+				}
+				await fs.rm(WORKSPACE, { recursive: true, force: true });
+			}
+			await fs.symlink(UPGRADE_WORKSPACE, WORKSPACE);
+			const microvm: Machine = {
+				id: sandboxId,
+				type: "microvm",
+				size: spec.size,
+				shape: spec.shape,
+				env: { ...spec.env },
+				fs: undefined,
+				bash: undefined,
+				state: "stopped",
+				runningSince: now(),
+				ports: new Map(),
+			};
+			await boot(microvm, fs);
+			machines.set(sandboxId, microvm);
+			const placed: UpgradedPlacement = { ...placement(microvm), path: "host", files, bytes };
+			upgrades.set(sandboxId, { operationId, placement: placed });
+			return placed;
+		} catch (error) {
+			upgrades.set(sandboxId, { operationId, reason: error instanceof Error ? error.message : String(error) });
+			throw error;
+		} finally {
+			creating.delete(sandboxId);
+		}
 	};
 
 	const reboot = async (sandboxId: string, options: BootOptions, keepMemory: boolean): Promise<Placement> => {
@@ -422,8 +619,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		if (machine.type === "microvm") machine.shape = options.shape;
 		machine.size = options.size ?? machine.size;
 		machine.env = { ...options.env };
-		if (keepMemory && machine.state === "paused" && machine.fs !== undefined) boot(machine, machine.fs);
-		else boot(machine, await fromSnapshot(options.fromSnapshot));
+		if (keepMemory && machine.state === "paused" && machine.fs !== undefined) await boot(machine, machine.fs);
+		else await boot(machine, await fromSnapshot(options.fromSnapshot));
 		return placement(machine);
 	};
 
@@ -433,6 +630,20 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		},
 
 		create,
+
+		async commitStickyDisk(sandboxId, diskId, version) {
+			const machine = machineOf(sandboxId);
+			if (machine.state !== "running") throw new KantelError("conflict", "The sandbox isn't running");
+			if (!(stickyAttached.get(sandboxId) ?? []).includes(diskId)) {
+				throw new KantelError("not_found", "The sandbox has no such sticky disk");
+			}
+			stickyHeads.set(diskId, version);
+			return { hostId: STUB_HOST_ID, sizeBytes: 0, allocatedBytes: 0 };
+		},
+
+		async deleteStickyDisk(diskId) {
+			stickyHeads.delete(diskId);
+		},
 
 		start: (sandboxId, options) => reboot(sandboxId, options, false),
 
@@ -473,12 +684,35 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			placeable(options.eligibleHosts, machine.type);
 			machine.env = { ...options.env };
 			machine.ports.clear();
-			boot(machine, machine.fs ?? (await fromSnapshot(options.fromSnapshot)));
+			await boot(machine, machine.fs ?? (await fromSnapshot(options.fromSnapshot)));
 			return placement(machine);
 		},
 
 		async destroy(sandboxId) {
+			stickyAttached.delete(sandboxId);
 			machines.delete(sandboxId);
+		},
+
+		upgrade,
+
+		// The stub's upgrades end in the call: one it never saw is failed now, so it can't start after.
+		async settleUpgrade(sandboxId, operationId) {
+			const done = upgrades.get(sandboxId);
+			if (done?.operationId === operationId && done.placement !== undefined) {
+				return { state: "done", placement: done.placement };
+			}
+			if (done?.operationId !== operationId) upgrades.set(sandboxId, { operationId, reason: "Settled before it ran" });
+			return { state: "failed", reason: done?.reason ?? "The upgrade never ran" };
+		},
+
+		// As a host does: the machine keeps it, and a running one's shell has exactly it from its next command (its disk
+		// stays, as a guest's env file is rewritten in place).
+		async updateEnv(sandboxId, env) {
+			const machine = machineOf(sandboxId);
+			machine.env = { ...env };
+			if (machine.state === "running" && machine.fs !== undefined) {
+				machine.bash = shellOf(machine, machine.fs);
+			}
 		},
 
 		async exec(sandboxId, request: ExecRequest): Promise<ExecResult> {
@@ -489,18 +723,23 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			const races: Promise<ExecResult>[] = [
 				machine.bash
 					.exec(request.command, {
-						cwd: request.cwd ?? HOME,
+						cwd: request.cwd ?? homeFor(machine.type),
 						signal: controller.signal,
 						...(request.env === undefined ? {} : { env: { ...request.env } }),
 						...(request.stdin === undefined ? {} : { stdin: request.stdin }),
 					})
 					.then(
-						(result): ExecResult => ({
-							exitCode: result.exitCode,
-							stdout: result.stdout,
-							stderr: result.stderr,
-							timedOut: false,
-						}),
+						(result): ExecResult => {
+							// An isolate's command that ran a program only a microVM has says so, as an isolate host's does.
+							const needsMicrovm = machine.type === "isolate" ? needsMicrovmOf(result) : undefined;
+							return {
+								exitCode: result.exitCode,
+								stdout: result.stdout,
+								stderr: result.stderr,
+								timedOut: false,
+								...(needsMicrovm === undefined ? {} : { needsMicrovm }),
+							};
+						},
 						(error: unknown): ExecResult => ({
 							exitCode: 1,
 							stdout: "",

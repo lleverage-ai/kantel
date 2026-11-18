@@ -6,6 +6,7 @@
 import { createKantelClient } from "@kantel/api/sdk";
 import {
 	type AuthenticatePerson,
+	type BackendHost,
 	type ComputeApi,
 	createComputeApi,
 	type PersonIdentity,
@@ -48,6 +49,7 @@ function setup(
 		backend?: SandboxBackend;
 		baseImages?: Parameters<typeof createComputeApi>[0]["baseImages"];
 		sandboxDomain?: string;
+		stickyDisks?: boolean;
 		templates?: boolean;
 	} = {},
 ) {
@@ -528,8 +530,8 @@ describe("sandboxes", () => {
 		await sdk.writeFile(made.id, { path: "work/readme.txt", content: "Hello" });
 		const files = source.sandboxes.files;
 		if (files === undefined) throw new Error("No files");
-		const folder = await files.list(made.id, "home/user/work");
-		expect(folder.entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "home/user/work/readme.txt"]]);
+		const folder = await files.list(made.id, "workspace/work");
+		expect(folder.entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "workspace/work/readme.txt"]]);
 		expect(folder.more).toBe(false);
 		// A folder that runs on past the pages it reads says so, rather than looking complete.
 		let pages = 0;
@@ -546,9 +548,9 @@ describe("sandboxes", () => {
 		expect(pages).toBe(20);
 		// A part at a time, as the preview reads it: the bytes asked for, and the whole file's size.
 		const text = (part: { bytes: Uint8Array }) => new TextDecoder().decode(part.bytes);
-		const whole = await files.read(made.id, "home/user/work/readme.txt", { offset: 0, length: 256 * 1024 });
+		const whole = await files.read(made.id, "workspace/work/readme.txt", { offset: 0, length: 256 * 1024 });
 		expect([text(whole), whole.size]).toEqual(["Hello", 5]);
-		const part = await files.read(made.id, "home/user/work/readme.txt", { offset: 1, length: 3 });
+		const part = await files.read(made.id, "workspace/work/readme.txt", { offset: 1, length: 3 });
 		expect([text(part), part.size]).toEqual(["ell", 5]);
 
 		await sdk.runCommand(made.id, { command: "echo fine" });
@@ -659,13 +661,13 @@ describe("snapshots", () => {
 		expect(taken).toMatchObject({ sandboxId: sandbox.id, reason: "stop" });
 		if (taken === undefined) throw new Error("No snapshot");
 
-		const entries = await source.snapshots.list(taken.id, "home/user/work");
+		const entries = await source.snapshots.list(taken.id, "workspace/work");
 		expect(entries.map((entry) => [entry.kind, entry.path])).toEqual([
-			["folder", "home/user/work/notes"],
-			["file", "home/user/work/readme.txt"],
+			["folder", "workspace/work/notes"],
+			["file", "workspace/work/readme.txt"],
 		]);
 		expect(entries[1]?.sizeBytes).toBe(5);
-		const read = await source.snapshots.read(taken.id, "home/user/work/readme.txt", { offset: 0, length: 1024 });
+		const read = await source.snapshots.read(taken.id, "workspace/work/readme.txt", { offset: 0, length: 1024 });
 		expect([new TextDecoder().decode(read.bytes), read.size]).toEqual(["Hello", 5]);
 
 		const saved = await source.snapshots.save(sandbox.id, "golden");
@@ -694,6 +696,39 @@ describe("snapshots", () => {
 		expect(await source.snapshots.kindOf?.(taken.id)).toBe("isolate");
 		const gone = await source.snapshots.list(taken.id, "home/user/nowhere").catch((error: unknown) => error);
 		expect(gone).toBeInstanceOf(FilesRefusedError);
+	});
+});
+
+describe("a saved snapshot's hosts", () => {
+	it("lists them from its details, and none from a gateway from before them", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate" });
+		await api.service.idle();
+		const saved = await source.snapshots.save(sandbox.id, "golden");
+		await api.service.idle();
+		// An isolate's is on the host it was taken on.
+		const hosts = await source.snapshots.hosts?.(saved.id);
+		expect(hosts).toHaveLength(1);
+		expect(hosts?.[0]).toMatchObject({ state: "held", memory: false });
+
+		// A gateway from before them answers the snapshot without its hosts.
+		const legacy: typeof fetch = async (input, init) => {
+			const request =
+				typeof input === "string" || input instanceof URL
+					? new Request(new URL(input, ORIGIN), init)
+					: new Request(input, init);
+			const answer = await fetchApi(request);
+			if (request.method !== "GET" || !new URL(request.url).pathname.startsWith("/v1/snapshots/")) return answer;
+			const snapshot = (await answer.json()) as Record<string, unknown>;
+			delete snapshot.hosts;
+			return new Response(JSON.stringify(snapshot), {
+				status: answer.status,
+				headers: { "content-type": "application/json" },
+			});
+		};
+		expect(await (await open(legacy)).snapshots.hosts?.(saved.id)).toBeUndefined();
 	});
 });
 
@@ -1026,16 +1061,16 @@ describe("egress", () => {
 		const sandbox = await source.sandboxes.create({
 			accountId,
 			kind: "isolate",
-			environmentId: environment.id,
+			environmentIds: [environment.id],
 		});
-		expect(sandbox.environment).toEqual({ id: environment.id, name: "backend" });
+		expect(sandbox.environments).toEqual([{ id: environment.id, name: "backend" }]);
 		await api.service.idle();
 		const [listed] = await source.sandboxes.list(accountId);
-		expect(listed?.environment).toEqual({ id: environment.id, name: "backend" });
+		expect(listed?.environments).toEqual([{ id: environment.id, name: "backend" }]);
 		// A console that hasn't read the environment learns its name from the list.
 		const fresh = await open(fetchApi);
 		const [named] = await fresh.sandboxes.list(accountId);
-		expect(named?.environment).toEqual({ id: environment.id, name: "backend" });
+		expect(named?.environments).toEqual([{ id: environment.id, name: "backend" }]);
 
 		await api.service.recordEgress(STUB_HOST_ID, [
 			{
@@ -1072,7 +1107,7 @@ describe("egress", () => {
 			sandboxId: sandbox.id,
 			sandboxName: sandbox.name,
 			accountId,
-			environment: { id: environment.id, name: "backend" },
+			environments: [{ id: environment.id, name: "backend" }],
 			environmentGrants: [{ action: "allow", host: "registry.npmjs.org", methods: [], paths: [] }],
 			grants: [],
 		});
@@ -1081,6 +1116,7 @@ describe("egress", () => {
 				name: "GH_TOKEN",
 				placeholderPrefix: expect.stringMatching(/^kph_[0-9A-Za-z]{4}$/),
 				bindings: [{ host: "api.github.com", pathPrefixes: [], methods: [] }],
+				environmentId: environment.id,
 			},
 		]);
 		expect(egress.entries).toEqual([
@@ -1133,6 +1169,61 @@ describe("egress", () => {
 		// A write from the read before that grant was added is refused, so it can't take the grant away.
 		await expect(source.egress.setGrants(sandbox.id, [], egress.grants)).rejects.toMatchObject({ code: "conflict" });
 		expect((await source.egress.get(sandbox.id)).grants).toEqual(granted.grants);
+	});
+});
+
+describe("a sandbox's environments", () => {
+	it("makes a sandbox with several, in order, lists what each loses to a later one, and attaches and detaches", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const plain = (name: string, value: string) => ({ name, protected: false, value, bindings: [] });
+		const backend = await source.environments.create({ accountId, name: "backend" });
+		await source.environments.setVariable(backend.id, plain("LOG_LEVEL", "debug"));
+		await source.environments.setVariable(backend.id, plain("REGION", "eu"));
+		const tokens = await source.environments.create({ accountId, name: "tokens" });
+		await source.environments.setVariable(tokens.id, plain("LOG_LEVEL", "info"));
+		const evals = await source.environments.create({ accountId, name: "evals" });
+
+		// Several go in the order picked.
+		const sandbox = await source.sandboxes.create({
+			accountId,
+			kind: "isolate",
+			environmentIds: [backend.id, tokens.id],
+		});
+		expect(sandbox.environments).toEqual([
+			{ id: backend.id, name: "backend" },
+			{ id: tokens.id, name: "tokens" },
+		]);
+		await api.service.idle();
+		const environments = source.sandboxes.environments;
+		if (environments === undefined) throw new Error("The console offers no sandbox environments.");
+		const none = { variables: [], files: [], repos: [] };
+		// The later one wins LOG_LEVEL, so backend loses it.
+		expect(await environments.list(sandbox.id)).toEqual([
+			{ id: backend.id, name: "backend", shadowed: { ...none, variables: ["LOG_LEVEL"] }, pending: false },
+			{ id: tokens.id, name: "tokens", shadowed: none, pending: false },
+		]);
+
+		// Attached, it goes last; at a position, there.
+		const attached = await environments.attach(sandbox.id, evals.id);
+		expect(attached.map((env) => env.name)).toEqual(["backend", "tokens", "evals"]);
+		const moved = await environments.attach(sandbox.id, evals.id, 0);
+		expect(moved.map((env) => env.name)).toEqual(["evals", "backend", "tokens"]);
+		expect((await source.sandboxes.get(sandbox.id)).environments?.map((env) => env.name)).toEqual([
+			"evals",
+			"backend",
+			"tokens",
+		]);
+
+		const detached = await environments.detach(sandbox.id, tokens.id);
+		expect(detached.map((env) => env.name)).toEqual(["evals", "backend"]);
+		// Nothing wins over backend's LOG_LEVEL now.
+		expect(detached.find((env) => env.id === backend.id)?.shadowed.variables).toEqual([]);
+		expect((await source.egress.get(sandbox.id)).environments).toEqual([
+			{ id: evals.id, name: "evals" },
+			{ id: backend.id, name: "backend" },
+		]);
 	});
 });
 
@@ -1293,6 +1384,377 @@ describe("hosts", () => {
 		await expect(adas.list()).rejects.toMatchObject({ code: "forbidden" });
 		// A super-admin manages the deployment's hosts instead.
 		expect(ada.ownHosts).toBeUndefined();
+	});
+});
+
+/** A host like the stub's, by another ID and name, with `change` over it. */
+async function hostLike(id: string, change: Partial<BackendHost> = {}): Promise<BackendHost> {
+	const [template] = (await createStubBackend().capabilities()).hosts;
+	if (template === undefined) throw new Error("The stub has no host");
+	return { ...template, id, name: id, ...change };
+}
+
+/** What a moved microVM can do on its new host, as the stub's microVMs can. */
+const MICROVM_CAPABILITIES = {
+	exec: true,
+	files: true,
+	javascript: true,
+	python: true,
+	ssh: true,
+	desktop: false,
+	browser: false,
+	ports: true,
+	docker: true,
+	kvm: false,
+	pause: true,
+} as const;
+
+/**
+ * The stub backend with more hosts beside its own (`extra`) and a move: each waits for `gate` between its copy and
+ * its start, so a test can read it mid-move, then lands on the host asked for, or fails with `refuse` where given.
+ */
+function movesBackend(extra: readonly BackendHost[], gate: Promise<void>, refuse?: string) {
+	const stub = createStubBackend();
+	const backend: SandboxBackend = {
+		...stub,
+		capabilities: async () => {
+			const base = await stub.capabilities();
+			return { ...base, hosts: [...base.hosts, ...extra] };
+		},
+		move: async (_id, spec) => {
+			await gate;
+			if (refuse !== undefined) throw new KantelError("unavailable", refuse);
+			const to = spec.to ?? spec.eligibleHosts?.[0];
+			if (to === undefined) throw new KantelError("exhausted", "No host to move to");
+			spec.onStarting?.(to);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			return { hostId: to, capabilities: MICROVM_CAPABILITIES };
+		},
+	};
+	return backend;
+}
+
+describe("moving a sandbox to another host", () => {
+	it("lists the other online microVM hosts of its pool it may use, by name", async () => {
+		const extra = [
+			await hostLike("host_c"),
+			await hostLike("host_b"),
+			await hostLike("host_isolates", { tiers: ["isolate"] }),
+			await hostLike("host_arm", { arch: "aarch64" }),
+			await hostLike("host_other_pool"),
+		];
+		const { api, fetchApi } = setup({ backend: movesBackend(extra, Promise.resolve()) });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		const pool = await source.hosts?.pools?.create("elsewhere");
+		if (pool === undefined) throw new Error("No pools for a super-admin");
+		await api.store.hosts.update("host_other_pool", (host) => ({ ...host, poolId: pool.id }));
+		const sandbox = await source.sandboxes.get(made.id);
+		expect(sandbox.hostId).toBe(STUB_HOST_ID);
+		const targets = await source.sandboxes.moveTargets?.(sandbox);
+		// Its own host, an isolates-only host, another architecture and another pool's host aren't offered; none says
+		// what a move does to memory yet (no dry run), so each restarts.
+		expect(targets).toEqual([
+			{ hostId: "host_b", hostName: "host_b" },
+			{ hostId: "host_c", hostName: "host_c" },
+		]);
+		// Someone who can't see its host has nothing listed.
+		const bob = await open(fetchApi, "person-bob");
+		expect(await bob.sandboxes.moveTargets?.({ ...sandbox, hostId: "host_unseen" })).toEqual([]);
+	});
+
+	it("lists the hosts a move's dry run answers, with whether each keeps its memory and the pause expected", async () => {
+		const backend = movesBackend([await hostLike("host_b"), await hostLike("host_c")], Promise.resolve());
+		const plan: SandboxBackend = {
+			...backend,
+			planMove: async (_id, spec) =>
+				spec.eligibleHosts.map((hostId) =>
+					hostId === "host_b"
+						? {
+								hostId,
+								memory: { kept: true },
+								pauseMs: 4295,
+								memoryBytes: 536_870_912,
+								bytesPerSecond: 125_000_000,
+								rateMeasured: false,
+							}
+						: {
+								hostId,
+								memory: {
+									kept: false,
+									reason: "The new host has another CPU than its host, so its memory can't be restored there",
+								},
+							},
+				),
+		};
+		const { api, fetchApi } = setup({ backend: plan });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		const running = await source.sandboxes.get(made.id);
+		expect(running.state).toBe("running");
+		expect(await source.sandboxes.moveTargets?.(running)).toEqual([
+			{ hostId: "host_b", hostName: "host_b", memory: "kept", pauseMs: 4295 },
+			{
+				hostId: "host_c",
+				hostName: "host_c",
+				memory: "restarts",
+				restartReason: "The new host has another CPU than its host, so its memory can't be restored there",
+			},
+		]);
+		// Nothing moved.
+		expect((await source.sandboxes.get(made.id)).state).toBe("running");
+	});
+
+	it("shows it moving, by phase and to which host, and answers it running there", async () => {
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { api, fetchApi } = setup({ backend: movesBackend([await hostLike("host_b")], gate) });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		await source.sandboxes.stop(made.id);
+		await api.service.idle();
+		const stopped = await source.sandboxes.get(made.id);
+		expect(stopped.state).toBe("stopped");
+		const [target] = (await source.sandboxes.moveTargets?.(stopped)) ?? [];
+		if (target === undefined || source.sandboxes.move === undefined) throw new Error("Nowhere to move it");
+
+		const moving = source.sandboxes.move(made.id, { hostId: target.hostId, keepMemory: false });
+		await vi.waitFor(async () => expect((await source.sandboxes.get(made.id)).state).toBe("moving"));
+		const copying = await source.sandboxes.get(made.id);
+		expect(copying.move).toMatchObject({ phase: "copying", hostId: "host_b", hostName: "host_b", keepMemory: false });
+		expect(sandboxActions(copying.state)).toEqual({
+			connect: false,
+			stop: false,
+			resume: false,
+			fork: false,
+			recover: false,
+		});
+		release();
+		const moved = await moving;
+		expect(moved).toMatchObject({ id: made.id, state: "running", hostId: "host_b" });
+		expect(moved.move).toBeUndefined();
+	});
+
+	it("says why a move failed, and leaves it stopped where it was", async () => {
+		const reason = "host_b refused the sandbox's root image: it has no room for it";
+		const { api, fetchApi } = setup({ backend: movesBackend([await hostLike("host_b")], Promise.resolve(), reason) });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "mover", kind: "microvm" });
+		await api.service.idle();
+		await source.sandboxes.stop(made.id);
+		await api.service.idle();
+		await expect(source.sandboxes.move?.(made.id, { hostId: "host_b", keepMemory: false })).rejects.toThrow(reason);
+		expect(await source.sandboxes.get(made.id)).toMatchObject({ state: "stopped", hostId: STUB_HOST_ID });
+	});
+});
+
+describe("pools", () => {
+	it("lists, makes, renames, makes default and deletes a super-admin's pools", async () => {
+		const source = await open(setup().fetchApi);
+		const pools = source.hosts?.pools;
+		if (pools === undefined) throw new Error("No pools for a super-admin");
+		const [first] = await pools.list();
+		expect(first).toMatchObject({ name: "default", default: true });
+		if (first === undefined) throw new Error("No default pool");
+
+		const ci = await pools.create("ci");
+		expect(ci).toMatchObject({ name: "ci", default: false, hosts: 0 });
+		await expect(pools.create("ci")).rejects.toMatchObject({ code: "conflict" });
+		expect((await pools.rename(ci.id, "ci-runners")).name).toBe("ci-runners");
+		expect((await pools.makeDefault(ci.id)).default).toBe(true);
+		expect((await pools.list()).find((pool) => pool.id === first.id)?.default).toBe(false);
+		// The default isn't deleted, with Kantel's reason.
+		await expect(pools.remove(ci.id)).rejects.toMatchObject({
+			code: "conflict",
+			message: expect.stringContaining("default"),
+		});
+		await pools.makeDefault(first.id);
+		await pools.remove(ci.id);
+		expect((await pools.list()).map((pool) => pool.name)).toEqual(["default"]);
+	});
+
+	it("moves a host only once it's drained, showing Kantel's reason before", async () => {
+		const source = await open(setup().fetchApi);
+		const hosts = source.hosts;
+		if (hosts?.pools === undefined || hosts.move === undefined) throw new Error("No moves for a super-admin");
+		const [defaultPool] = await hosts.pools.list();
+		const ci = await hosts.pools.create("ci");
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.poolId).toBe(defaultPool?.id);
+
+		await expect(hosts.move(STUB_HOST_ID, ci.id)).rejects.toMatchObject({
+			code: "conflict",
+			message: expect.stringContaining("Drain the host"),
+		});
+		await hosts.drain(STUB_HOST_ID);
+		const moved = await hosts.move(STUB_HOST_ID, ci.id);
+		expect(moved.poolId).toBe(ci.id);
+		expect(moved.state).toBe("draining");
+		expect((await hosts.pools.list()).find((pool) => pool.id === ci.id)?.hosts).toBe(1);
+		// A pool with a host in it isn't deleted.
+		await expect(hosts.pools.remove(ci.id)).rejects.toMatchObject({ code: "conflict" });
+	});
+
+	it("reads a host with no evacuation as none, and shows why sandboxes can't be moved off", async () => {
+		const source = await open(setup().fetchApi);
+		const hosts = source.hosts;
+		if (hosts?.evacuate === undefined || hosts.evacuation === undefined) throw new Error("No evacuations");
+		expect(await hosts.evacuation(STUB_HOST_ID)).toBeUndefined();
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.evacuation).toBeUndefined();
+		// The stub's hosts don't move sandboxes: Kantel's reason, and the host not drained by it.
+		await expect(hosts.evacuate(STUB_HOST_ID)).rejects.toMatchObject({
+			code: "not_supported",
+			message: expect.stringContaining("move sandboxes"),
+		});
+		expect((await hosts.list()).find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
+	});
+
+	it("names the chosen pool in a join token", async () => {
+		const source = await open(setup().fetchApi);
+		const hosts = source.hosts;
+		if (hosts?.pools === undefined) throw new Error("No pools for a super-admin");
+		const ci = await hosts.pools.create("ci");
+		expect((await hosts.join({ pool: ci.id })).token).toMatch(/^kth_/);
+		// The pool goes with the token: one Kantel doesn't have is refused.
+		await expect(hosts.join({ pool: "pool_missing" })).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("manages an account's own pools where the deployment has account hosts on", async () => {
+		const { fetchApi } = setup({ accountHosts: true });
+		const bob = await open(fetchApi, "person-bob");
+		if (bob.ownHosts === undefined) throw new Error("No own hosts with account hosts on");
+		const own = bob.ownHosts(await personalAccount(bob));
+		if (own.pools === undefined || own.move === undefined) throw new Error("No pools for an account's own hosts");
+		expect((await own.pools.list()).map((pool) => [pool.name, pool.default])).toEqual([["default", true]]);
+		const agents = await own.pools.create("agents");
+		expect((await own.join({ pool: agents.id })).token).toMatch(/^kth_/);
+		expect((await own.pools.makeDefault(agents.id)).default).toBe(true);
+		expect((await own.pools.rename(agents.id, "agent-sandboxes")).name).toBe("agent-sandboxes");
+		// Not another account's: Ada's personal account's pools aren't Bob's to read.
+		const ada = await open(fetchApi);
+		await expect(bob.ownHosts(await personalAccount(ada)).pools?.list()).rejects.toMatchObject({ code: "forbidden" });
+	});
+
+	it("gives New sandbox the account's pools, and names the one picked in its shapes and its create", async () => {
+		const { fetchApi } = setup({ accountHosts: true });
+		const bob = await open(fetchApi, "person-bob");
+		const accountId = await personalAccount(bob);
+		const pools = bob.ownHosts?.(accountId).pools;
+		if (pools === undefined || bob.sandboxes.pools === undefined) throw new Error("No pools for New sandbox");
+		expect((await bob.sandboxes.pools(accountId)).map((pool) => [pool.name, pool.default])).toEqual([
+			["default", true],
+		]);
+		const ci = await pools.create("ci");
+		expect((await bob.sandboxes.pools(accountId)).map((pool) => pool.name).sort()).toEqual(["ci", "default"]);
+		// ci has no hosts: its shapes have no microVMs, and a create in it is refused, naming it.
+		expect((await bob.sandboxes.shapes?.(accountId, undefined, ci.id))?.microvm.available).toBe(false);
+		await expect(bob.sandboxes.create({ accountId, kind: "isolate", poolId: ci.id })).rejects.toMatchObject({
+			code: "unavailable",
+			message: expect.stringContaining("No host in pool ci"),
+		});
+		await expect(bob.sandboxes.shapes?.(accountId, undefined, "pool_missing")).rejects.toMatchObject({
+			code: "not_found",
+		});
+		// Naming none, it goes in the default pools as before: the deployment's shared host takes it.
+		expect((await bob.sandboxes.create({ accountId, kind: "isolate" })).kind).toBe("isolate");
+	});
+
+	it("gives New sandbox no pools where the deployment has account hosts off, so it shows no picker", async () => {
+		const { fetchApi } = setup();
+		const bob = await open(fetchApi, "person-bob");
+		expect(await bob.sandboxes.pools?.(await personalAccount(bob))).toEqual([]);
+	});
+});
+
+describe("sticky disks", () => {
+	it("has none where the deployment has sticky disks off", async () => {
+		const { fetchApi } = setup();
+		expect((await open(fetchApi)).stickyDisks).toBeUndefined();
+		expect((await open(fetchApi, "person-bob")).stickyDisks).toBeUndefined();
+	});
+
+	it("has none behind a gateway from before sticky disks, which answers 404", async () => {
+		const { fetchApi } = setup({ stickyDisks: true });
+		const older: typeof fetch = async (input, init) => {
+			const url = new URL(input instanceof Request ? input.url : input, ORIGIN);
+			return url.pathname.startsWith("/v1/sticky-disks") ? notFound() : fetchApi(input, init);
+		};
+		expect((await open(older)).stickyDisks).toBeUndefined();
+	});
+
+	it("makes one in a shared pool, refuses a name taken, names its versions' hosts and deletes it", async () => {
+		const { fetchApi } = setup({ stickyDisks: true });
+		// The API lists versions only once a sandbox commits, which the stub can't: a read of one gains two here, on the
+		// stub's host and on a host the caller can't see.
+		const withVersions: typeof fetch = async (input, init) => {
+			const response = await fetchApi(input, init);
+			const request = input instanceof Request ? input : new Request(new URL(input, ORIGIN), init);
+			if (request.method !== "GET" || !/^\/v1\/sticky-disks\/sdk_/.test(new URL(request.url).pathname)) return response;
+			const disk = (await response.json()) as Record<string, unknown>;
+			const version = (id: string, hostId: string, allocatedBytes: number) => ({
+				id,
+				hostId,
+				sandboxId: "sbx_ci",
+				sizeBytes: 150 * 1024 ** 3,
+				allocatedBytes,
+				createdAt: 1_000,
+			});
+			return new Response(
+				JSON.stringify({
+					...disk,
+					head: "sdv_2",
+					versions: [version("sdv_2", STUB_HOST_ID, 9_000), version("sdv_1", "hst_elsewhere", 8_000)],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const ada = await open(withVersions);
+		const disks = ada.stickyDisks;
+		const pools = ada.hosts?.pools;
+		if (disks === undefined || pools === undefined) throw new Error("No sticky disks with them on");
+		const accountId = await personalAccount(ada);
+		// A super-admin may make one in the deployment's shared pools, marked so.
+		const ci = await pools.create("ci");
+		const choices = await disks.pools(accountId);
+		expect(choices.find((pool) => pool.id === ci.id)).toMatchObject({ name: "ci", shared: true, default: false });
+
+		const made = await disks.create({ accountId, name: "ci-cache", sizeGb: 150, poolId: ci.id, description: "CI" });
+		expect(made).toMatchObject({ name: "ci-cache", sizeGb: 150, poolId: ci.id, description: "CI", versions: [] });
+		await expect(disks.create({ accountId, name: "ci-cache", sizeGb: 10 })).rejects.toMatchObject({ code: "conflict" });
+
+		const [listed] = await disks.list(accountId);
+		expect(listed?.versions.map((each) => [each.hostId, each.hostName, each.allocatedBytes])).toEqual([
+			[STUB_HOST_ID, expect.any(String), 9_000],
+			["hst_elsewhere", undefined, 8_000],
+		]);
+		expect(listed?.head).toBe("sdv_2");
+
+		await disks.remove(made.id);
+		expect(await disks.list(accountId)).toEqual([]);
+	});
+
+	it("offers someone else only their account's own pools, none with account hosts off", async () => {
+		const { fetchApi } = setup({ stickyDisks: true });
+		const bob = await open(fetchApi, "person-bob");
+		const disks = bob.stickyDisks;
+		if (disks === undefined) throw new Error("No sticky disks with them on");
+		const accountId = await personalAccount(bob);
+		expect(await disks.pools(accountId)).toEqual([]);
+		// Naming no pool, it joins the first sandbox's it is attached to.
+		expect((await disks.create({ accountId, name: "pnpm-store", sizeGb: 20 })).poolId).toBeUndefined();
+
+		const own = setup({ stickyDisks: true, accountHosts: true });
+		const bobOwn = await open(own.fetchApi, "person-bob");
+		const pools = await bobOwn.stickyDisks?.pools(await personalAccount(bobOwn));
+		expect(pools?.map((pool) => [pool.name, pool.default, pool.shared])).toEqual([["default", true, undefined]]);
 	});
 });
 
@@ -1513,5 +1975,50 @@ describe("an organisation's personal tokens", () => {
 		// And nothing was blocked.
 		const listed = await (await open(fetchApi)).accounts.list();
 		expect(listed.find((account) => account.id === org.id)?.personalTokens).toBe("allowed");
+	});
+});
+
+describe("an account's snapshot copies", () => {
+	it("turns them off and on, taking only the setting Kantel answers as saved", async () => {
+		const { fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		// On by default.
+		expect((await source.accounts.list())[0]?.snapshotCopies).toBe(true);
+		expect((await source.accounts.setSnapshotCopies?.(accountId, false))?.snapshotCopies).toBe(false);
+		expect((await source.accounts.list())[0]?.snapshotCopies).toBe(false);
+		expect((await source.accounts.setSnapshotCopies?.(accountId, true))?.snapshotCopies).toBe(true);
+
+		// A gateway from before them drops the field from the request and the answer, and changes nothing.
+		const legacy: typeof fetch = async (input, init) => {
+			const request =
+				typeof input === "string" || input instanceof URL
+					? new Request(new URL(input, ORIGIN), init)
+					: new Request(input, init);
+			if (!new URL(request.url).pathname.startsWith("/v1/accounts")) return fetchApi(request);
+			const body = request.method === "PATCH" ? ((await request.json()) as Record<string, unknown>) : undefined;
+			if (body !== undefined) delete body.snapshotCopies;
+			const answer = await fetchApi(
+				body === undefined
+					? request
+					: new Request(request.url, { method: "PATCH", headers: request.headers, body: JSON.stringify(body) }),
+			);
+			const read = (await answer.json()) as Record<string, unknown>;
+			const drop = (account: Record<string, unknown>) => {
+				delete account.snapshotCopies;
+			};
+			if (Array.isArray(read.items)) for (const account of read.items as Record<string, unknown>[]) drop(account);
+			else drop(read);
+			return new Response(JSON.stringify(read), {
+				status: answer.status,
+				headers: { "content-type": "application/json" },
+			});
+		};
+		const old = await open(legacy);
+		// The console doesn't offer it there.
+		expect((await old.accounts.list())[0]?.snapshotCopies).toBeUndefined();
+		await expect(old.accounts.setSnapshotCopies?.(accountId, false)).rejects.toThrow("doesn't support keeping");
+		// And nothing was turned off.
+		expect((await source.accounts.list())[0]?.snapshotCopies).toBe(true);
 	});
 });

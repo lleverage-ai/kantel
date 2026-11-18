@@ -5,7 +5,7 @@
   Content-Type: text/plain; charset=utf-8
   Cache-Control: public, max-age=300
 
-# The CLI's installer, packages/cli/install-cli.sh, copied in as the site builds (scripts/sync-installers.mjs).
+# The CLI's installer, apps/cli/install-cli.sh, copied in as the site builds (scripts/sync-installers.mjs).
 /cli.sh
   Content-Type: text/plain; charset=utf-8
   Cache-Control: public, max-age=300

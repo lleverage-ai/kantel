@@ -2,7 +2,7 @@
  * The public API's shared wire shapes as JSON Schema (TypeBox), each mirroring a type in `@kantel/contracts`. A schema
  * with a `title` is a named type: a component in the OpenAPI document and a named type in the SDK. `test/types.test.ts`
  * checks at compile time that each schema's static type and its contract type match, so the two can't drift. The
- * compute plane's own shapes are in `compute-schema.ts`, and the environments' in `environments-schema.ts`.
+ * compute plane's own shapes are in `compute-schema.ts`.
  */
 import Type from "typebox";
 

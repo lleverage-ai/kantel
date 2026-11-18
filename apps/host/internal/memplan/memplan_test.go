@@ -1,6 +1,7 @@
 package memplan
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +284,88 @@ func TestGroupLimitIsCritical(t *testing.T) {
 	p.ObserveHost(t0.Add(3*time.Second), near)
 	if level, _ := p.Level(); level != LevelCritical {
 		t.Fatalf("near its limit: %v", level)
+	}
+}
+
+// The production host of LLE-19010 (Kantel 0.5.0): a 48 GiB group limit, 4915 MiB kept back, its microVMs resident
+// about 10 GiB, the rest of the group clean page cache, the machine with 105 GiB available. These are the figures
+// hostinfo reads from that group (TestReadMemoryIncident).
+const (
+	incidentTotal   = int64(49152)
+	incidentReserve = int64(4915)
+	incidentCache   = int64(38304)
+)
+
+var incidentReadings = []Reading{
+	{ID: "sbx_sxnqh685ul", UsedMiB: 6454, RSSMiB: 7413, Guest: true},
+	{ID: "sbx_acgjzi17s0", UsedMiB: 1110, RSSMiB: 2236, Guest: true},
+}
+
+func incidentMemory(limitHits int64) hostinfo.Memory {
+	return hostinfo.Memory{TotalMiB: incidentTotal, AvailableMiB: 33 + incidentCache, PressureSome: 3.1, PressureFull: 0.4,
+		Limited: true, GroupMaxMiB: incidentTotal, GroupHeadroomMiB: 33, GroupCacheMiB: incidentCache, GroupLimitHits: limitHits}
+}
+
+func incidentPlan() *Plan { return New(on(), incidentTotal-incidentReserve, incidentReserve, 1.5) }
+
+func whyOf(p *Plan) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.criticalLocked()
+}
+
+// The incident's group, at its limit with 38 GiB of page cache to drop, isn't short of memory, nor when a write
+// through that cache meets the limit. Before LLE-19010 it was critical by its headroom (33 MiB, the cache counted
+// used), by what was available (only the inactive twentieth of the cache counted free) and by the limit.
+func TestIncidentReadings(t *testing.T) {
+	p := incidentPlan()
+	p.Observe(t0, incidentReadings, incidentMemory(1200))
+	p.Observe(t0.Add(time.Second), incidentReadings, incidentMemory(1201))
+	if level, _ := p.Level(); level != LevelOK || p.AtLimit() || len(whyOf(p)) != 0 {
+		t.Fatalf("%v, at the limit %v, for %v", level, p.AtLimit(), whyOf(p))
+	}
+}
+
+// A group whose VMs' own memory is within a quarter of the reserve of its limit is critical: its little cache left is
+// no room. Reaching the limit then is too, the kernel ending a VM next. Here the limit is the one kantel-host sets
+// itself, so the machine's 105 GiB available stands, and only the group's own figures say so.
+func TestGroupOfVMsNearItsLimitIsCritical(t *testing.T) {
+	p := incidentPlan()
+	near := incidentMemory(1200)
+	near.Limited, near.AvailableMiB, near.GroupCacheMiB = false, 105*gib, incidentReserve/4-100
+	p.Observe(t0, incidentReadings, near)
+	if level, _ := p.Level(); level != LevelCritical || !slices.Equal(whyOf(p), []string{WhyGroupHeadroom}) {
+		t.Fatalf("%v for %v", level, whyOf(p))
+	}
+	near.GroupLimitHits++
+	p.ObserveHost(t0.Add(time.Second), near)
+	if level, _ := p.Level(); level != LevelCritical || !p.AtLimit() || !slices.Equal(whyOf(p), []string{WhyAtLimit, WhyGroupHeadroom}) {
+		t.Fatalf("at the limit: %v for %v", level, whyOf(p))
+	}
+	// More than a quarter of the reserve to drop, but less than half when it meets the limit.
+	near.GroupCacheMiB = incidentReserve/2 - 1
+	near.GroupLimitHits++
+	p.ObserveHost(t0.Add(2*time.Second), near)
+	if level, _ := p.Level(); level != LevelCritical || !slices.Equal(whyOf(p), []string{WhyAtLimit}) {
+		t.Fatalf("at the limit with a little cache: %v for %v", level, whyOf(p))
+	}
+	near.GroupLimitHits++
+	near.GroupCacheMiB = incidentReserve / 2
+	p.ObserveHost(t0.Add(3*time.Second), near)
+	if level, _ := p.Level(); level != LevelOK {
+		t.Fatalf("at the limit with half the reserve of cache: %v for %v", level, whyOf(p))
+	}
+}
+
+// A group of page cache the kernel stalls tasks to reclaim (the VMs' disks' working set) is still critical, by
+// pressure.
+func TestGroupOfCacheUnderPressureIsCritical(t *testing.T) {
+	p := incidentPlan()
+	stalled := incidentMemory(1200)
+	stalled.PressureSome, stalled.PressureFull = 45, 25
+	p.Observe(t0, incidentReadings, stalled)
+	if level, _ := p.Level(); level != LevelCritical || !slices.Equal(whyOf(p), []string{WhyPressure}) {
+		t.Fatalf("%v for %v", level, whyOf(p))
 	}
 }
 

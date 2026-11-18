@@ -31,6 +31,7 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
 and where each part's source is: [`rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md`](rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md),
 at the same path in the image and published beside it. Everything in it may be redistributed; keep it that way (no
 Google Chrome, nothing from Ubuntu's `restricted` or `multiverse`), and update the notices when a component is added.
+The one exception is a private build with Chrome for Testing ("Chrome for Testing" below), which is never published.
 
 The sandbox user is `user` (uid 1000): passwordless sudo, and in the `docker` and `kvm` groups, so it runs
 containers and nested VMs without root.
@@ -186,6 +187,118 @@ Point a host's `sandboxImage` at the result (or publish it, below). Keep `kantel
 the `user` account: the host relies on them. The host fingerprints Firecracker, the kernel and the image, and
 rebuilds its templates when any of them changes.
 
+## Chrome for Testing
+
+When Debian's Chromium is behind on a security fix that can't wait (LLE-18651: CVE-2026-125350, exploited in the wild,
+while Debian had no 157), `KANTEL_BROWSER=cft` builds the sandbox image with Google Chrome for Testing in place of
+Debian's Chromium. `debian`, the default, builds as before. The `cft` image has `CFT_VERSION`'s zip (pinned by version
+and SHA-256 in the `Dockerfile`) in `/opt/chrome-for-testing`, without its Widevine CDM, with `/usr/bin/chromium`
+pointing at it, the libraries its `deb.deps` names from Ubuntu, and Chromium's icon. The build fails below
+`CFT_MIN_VERSION`. Everything that looks for `chromium` finds it (`kantel-browser`, `kantel-chromium`, the guest agent's
+capabilities), the window class `Chromium-browser` is matched where Chromium's is, `image.json` records it as
+`chromeForTesting`, and Chromium's sandbox stays on. The daily security refresh doesn't touch it: a newer one is a new
+`CFT_VERSION`.
+
+Chrome for Testing is a flavour of Google Chrome, under Google's terms, which forbid redistributing it
+(GoogleChromeLabs/chrome-for-testing#21). So a `cft` image is **never published**, and never served through a
+control plane (the hosted one's `/v1/hosts/images` and a self-hosted gateway's `KANTEL_COMPUTE_IMAGES` ask no
+credential, so serving it there would distribute it). `release.sh --publish` refuses it, `out/BUILD` records the
+browser, no workflow sets `KANTEL_BROWSER` (a test in `internal/guest` fails if one does), and the image's
+`THIRD-PARTY-NOTICES.md` says what it bundles and that it may not be redistributed (`cft/notices.md`).
+
+Hosts you run yourself take it in one of two ways: automatically from a private image source (below), or by hand
+through `sandboxImage`.
+
+### From a private image source
+
+A host with `imagePatching` on can follow a private source of host images instead of the control plane's image
+channel: `imageSource` in `/etc/kantel-host/config.json`. It is off unless set. The host asks the source for its
+version every `intervalMinutes` (default 60) and takes a new one as it takes the channel's: it checks the manifest's
+signature against `imageKey` before fetching anything else, checks every file against the manifest's SHA-256, installs
+the version beside the others, and one rename makes it current. Sandboxes stay on the version they were made on; new
+sandboxes, and the templates rebuilt for the new image, start on it. Anything that fails leaves the current images as
+they are and is logged. Pointing the source back at a version the host still has (it keeps the newest two, and any a
+sandbox or snapshot is on) rolls back without downloading the images again.
+
+Build the whole set with `release.sh`, never with `--publish` (which refuses a `cft` build anyway). Without it,
+`release.sh` builds every image the host takes (kernels, the sandbox and isolate images, the guest agent, the isolate
+runtime), writes `manifest.json` with each file's SHA-256, and `SHA256SUMS`:
+
+```sh
+VERSION=host-images-20261117.cft-157.0.8103.78   # release.sh wants host-images-<yyyymmdd>; a new one for every build
+KANTEL_BROWSER=cft apps/host/guest/release.sh out "$VERSION"
+apps/host/guest/boot-check-arm64.sh out
+(cd out && sha256sum -c SHA256SUMS)
+```
+
+Sign the manifest with your own key (a `cosign generate-key-pair` key kept off the hosts; each host has only
+`cosign.pub`, as `imageKey`). Kantel's workflow signs its public images keylessly, as its own GitHub workflow, which a
+private build can't be. `cosign` records the signature in Sigstore's public transparency log, as the host's check
+expects: the entry holds the manifest's digest and your public key, not the images.
+
+```sh
+cosign sign-blob --yes --key cosign.key --bundle out/manifest.json.sigstore.json out/manifest.json
+cosign verify-blob --key cosign.pub --bundle out/manifest.json.sigstore.json out/manifest.json
+```
+
+Then upload it where only your hosts can read it. Either:
+
+- **A directory over HTTPS** (`"type": "http"`, the default): any static file server, such as an R2 or S3 bucket
+  behind Cloudflare Access. Upload `manifest.json`, `manifest.json.sigstore.json`, `SHA256SUMS` and the files
+  `release.sh` listed under `<url>/$VERSION/`. Then, last, write `<url>/channel.json` as `{"version": "$VERSION"}`:
+  that is what moves the hosts, so a half-uploaded version is never taken.
+- **A private GitHub repository's releases** (`"type": "github-release"`, `url`
+  `https://api.github.com/repos/<owner>/<repo>`): make a release tagged `$VERSION` with the same files as assets,
+  as a draft, and publish it once every asset is up. Its latest release (never a draft or a prerelease) is the version
+  the hosts take. Assets are fetched through the API by name, with `Accept: application/octet-stream`.
+
+`headersFile` names a file of `Name: value` lines sent with every request to the source's own origin, and nowhere
+else (a redirect to another origin, such as a release asset's storage, goes without them). Only its owner may read
+it (mode 600 or 400), and it must belong to the user kantel-host runs as (root); a file the group or anyone else can
+read is refused, the reason is logged, and the host stays on its images until it's fixed. The values are never logged. The file is read again at
+every check, so a rotated token needs no restart. Headers need an `https://` URL.
+
+```sh
+# Cloudflare Access service token
+printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$ID" "$SECRET" | sudo install -m 600 /dev/stdin /etc/kantel-host/image-source.headers
+# or a GitHub token that can read the repository's contents
+printf 'Authorization: Bearer %s\n' "$TOKEN" | sudo install -m 600 /dev/stdin /etc/kantel-host/image-source.headers
+```
+
+```json
+{
+  "imagePatching": true,
+  "imageKey": "/etc/kantel-host/cosign.pub",
+  "imageSource": {
+    "type": "http",
+    "url": "https://images.example.com/kantel",
+    "headersFile": "/etc/kantel-host/image-source.headers",
+    "intervalMinutes": 60
+  }
+}
+```
+
+Restart kantel-host after changing the config. It logs `following the image source` and, after each version,
+`host images updated`. Remove `imageSource` (and `imageKey`) to go back to Kantel's channel once Debian's Chromium has
+the fix and the public images carry it. The control plane's channel and `kantel-host install` never send the source's
+headers, and a host on a source doesn't follow the channel.
+
+### By hand
+
+Build it locally and copy it to the hosts you run yourself, which boot it through `sandboxImage`:
+
+```sh
+KANTEL_BROWSER=cft apps/host/guest/rootfs.sh out sandbox amd64   # out/sandbox-amd64.ext4
+KANTEL_BROWSER=cft apps/host/guest/rootfs.sh out sandbox arm64   # under QEMU user emulation, about an hour
+apps/host/guest/boot-check-arm64.sh out                           # with out/vmlinux-aarch64 (kernel/build.sh)
+```
+
+On each host, copy `sandbox-<arch>.ext4` to
+`/var/lib/kantel-host/private/sandbox-cft-<CFT_VERSION>-<arch>.ext4`, set `"sandboxImage"` to that path in
+`/etc/kantel-host/config.json`, and restart kantel-host, which makes its templates again for the new image. A
+reinstall keeps an operator's own `sandboxImage`. Remove the setting once Debian's Chromium has the fix and the public
+images carry it.
+
 ## Bucket mounts
 
 A bucket mount (experimental) is a read-only FUSE file system the guest agent serves at the mount's path, mounted
@@ -214,6 +327,22 @@ overlay's upper directory can't sit on an overlay). A snapshot is that disk plus
 memory. Restoring one needs the same base image and kernel underneath: a snapshot is a layer over a specific image,
 not a whole one. Replacing a host's image therefore orphans the snapshots taken on the old one, until the host keeps
 old images for them.
+
+## The isolate image
+
+`isolate.Dockerfile` is the isolate tier's VM: Debian 13 slim with systemd, the guest agent and `kantel-isolate`
+(Kantel's isolate runtime, `apps/host/isolate-runtime`: deno_core and V8), whose `kantel-isolate.service` runs it as
+its own unprivileged user. `/usr/local/bin/kantel-isolate` is the binary, `/opt/kantel-isolate` its assets (the
+guest bundles, Pyodide and its memory snapshot), read-only. It has no network device: the runtime reaches the host's
+blob store and egress proxy through the guest agent's vsock bridges (`127.0.0.1:7001` and `7002`), and the host
+reaches it on `127.0.0.1:8080` (the `isolate` ready name).
+
+`rootfs.sh <out> isolate <arch>` builds both through `isolate-runtime.sh`, which compiles the runtime in a Rust
+container (glibc, cross-compiled for the other architecture; the script says why) and runs the crate's
+`build-assets.sh`. `KANTEL_ISOLATE_BINARY` and `KANTEL_ISOLATE_ASSETS` build the image around a binary and assets made
+elsewhere. With an early build of the runtime the image is about 560 MB (80 MB gzipped), against about 600 MB (87 MB)
+when it ran workerd; the runtime (about 70 MB) and Pyodide with its snapshot (about 45 MB) are most of it.
+`test/isolate.sh <images> <firecracker>` boots it through `kantel-host`'s own code and runs commands in it.
 
 ## The kernel
 

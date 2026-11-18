@@ -25,10 +25,13 @@ import type {
 	EgressEntry,
 	EgressGrant,
 	Environment,
+	EnvironmentRef,
 	FilePart,
 	FileRange,
 	Host,
 	HostDisk,
+	HostEvacuation,
+	HostEvacuationSandbox,
 	HostingMode,
 	ImageBuildReason,
 	ImageFinding,
@@ -39,6 +42,7 @@ import type {
 	OrganisationMember,
 	PersonalToken,
 	Plan,
+	Pool,
 	ProxySettings,
 	PublicUrl,
 	Sandbox,
@@ -46,6 +50,7 @@ import type {
 	SandboxCommand,
 	SandboxCreator,
 	SandboxEgress,
+	SandboxEnvironment,
 	SandboxImage,
 	SandboxKind,
 	SandboxPort,
@@ -53,6 +58,10 @@ import type {
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
+	SnapshotHost,
+	StickyDisk,
+	StickyDiskPool,
+	StickyDiskVersion,
 	TelemetrySettings,
 	UsageRange,
 	UsageSeries,
@@ -64,6 +73,8 @@ import {
 	cliSshCommand,
 	DEFAULT_SANDBOX_SHAPES,
 	FilesRefusedError,
+	MAX_SANDBOX_ENVIRONMENTS,
+	POOL_NAME_PATTERN,
 	presetOf,
 	type SandboxSize,
 	sameProxySettings,
@@ -99,6 +110,7 @@ export const PERSONAL: ComputeAccount = {
 	role: "owner",
 	members: 1,
 	planId: "plan_starter",
+	snapshotCopies: true,
 };
 
 export const LLEVERAGE: ComputeAccount = {
@@ -109,6 +121,7 @@ export const LLEVERAGE: ComputeAccount = {
 	role: "admin",
 	members: 6,
 	planId: "plan_team",
+	snapshotCopies: true,
 };
 
 export const EVALS: ComputeAccount = {
@@ -119,6 +132,7 @@ export const EVALS: ComputeAccount = {
 	role: "member",
 	members: 3,
 	planId: "plan_team",
+	snapshotCopies: true,
 };
 
 /** A day of CPU use, shaped by `seed`: a few busy stretches on a quiet line. */
@@ -226,6 +240,10 @@ const sandbox = (
 		...(rest.kind === "microvm" && rest.resources === undefined && rest.size !== undefined
 			? { resources: sampleResources(rest.size) }
 			: {}),
+		// Its host's pool, as `HOSTS` puts them: the Hetzner machines in ci, the rest in default.
+		...(rest.hostId === undefined
+			? {}
+			: { poolId: rest.hostId.startsWith("hst_hetzner") ? "pool_ci" : "pool_default" }),
 		...rest,
 		hostname: `${rest.name}.${slug}.kantel.example.com`,
 	};
@@ -312,6 +330,7 @@ export const DEBIAN_DOCKER_IMAGE: SandboxImage = {
 export const API_SERVER = sandbox({
 	id: "sbx_7f3k2m9qa1",
 	name: "api-server",
+	labels: { team: "platform" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "microvm",
@@ -326,7 +345,11 @@ export const API_SERVER = sandbox({
 	hostName: "hetzner-fsn1-01",
 	shared: true,
 	createdBy: "Alex Kemp",
-	environment: { id: "env_backend", name: "backend-dev" },
+	// lleverage-github is later, so its GH_TOKEN and its clone of kantel win over backend-dev's.
+	environments: [
+		{ id: "env_backend", name: "backend-dev" },
+		{ id: "env_github", name: "lleverage-github" },
+	],
 	// Six days behind, with the openssl fix the latest was rebuilt for.
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.29.809", { days: 6, versions: 3 }, true),
 	mounts: [
@@ -368,7 +391,7 @@ export const DEV_STACK = sandbox({
 	hostId: "hst_hetzner_1",
 	hostName: "hetzner-fsn1-01",
 	shared: true,
-	environment: { id: "env_backend", name: "backend-dev" },
+	environments: [{ id: "env_backend", name: "backend-dev" }],
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
 	mounts: [
 		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
@@ -412,6 +435,7 @@ export const ALPINE_WORKER = sandbox({
 export const DEBIAN_CI = sandbox({
 	id: "sbx_2m6v9r3kd4",
 	name: "ci-docker",
+	labels: { team: "platform", ticket: "LLE-412" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "microvm",
@@ -469,6 +493,8 @@ export const RENDER = sandbox({
 	shared: true,
 	createdBy: "Bethan Price",
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.11.02.811", { days: 2, versions: 1 }),
+	// lleverage-github was attached while it was stopped: its file and repository come when it next starts.
+	environments: [{ id: "env_github", name: "lleverage-github" }],
 });
 
 export const BROWSER_AGENT = sandbox({
@@ -490,6 +516,7 @@ export const BROWSER_AGENT = sandbox({
 export const EVAL_RUNNER = sandbox({
 	id: "sbx_1o9p4a7se6",
 	name: "eval-runner-12",
+	labels: { team: "research" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "microvm",
@@ -502,12 +529,13 @@ export const EVAL_RUNNER = sandbox({
 	hostName: "home-server",
 	error: "The machine stopped answering. Its disk is safe: recover it, or resume it on another host.",
 	forkedFrom: DEV_STACK.id,
-	environment: { id: "env_evals", name: "evals" },
+	environments: [{ id: "env_evals", name: "evals" }],
 });
 
 export const NEW_ONE = sandbox({
 	id: "sbx_8f2g5h3jd7",
 	name: "preview-pr-412",
+	labels: { ticket: "LLE-412" },
 	slug: "lleverage",
 	accountId: LLEVERAGE.id,
 	kind: "isolate",
@@ -634,6 +662,30 @@ export const SAVED: readonly SavedSnapshot[] = [
 		uses: 2,
 	},
 ];
+
+/**
+ * The hosts each saved snapshot is on, as a super-admin sees them: most on two, the one saved with memory restoring it
+ * on both, one with its copy still on its way, and an isolate on its own host.
+ */
+export const SAVED_HOSTS: Readonly<Record<string, readonly SnapshotHost[]>> = {
+	ssn_node22_base: [
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: false },
+		{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "held", memory: false },
+	],
+	ssn_dev_stack_warm: [
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: true },
+		{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "held", memory: true },
+	],
+	ssn_playwright: [
+		{ hostId: "hst_hetzner_2", hostName: "hetzner-fsn1-02", state: "held", memory: false },
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "fetching", memory: false },
+	],
+	ssn_py_tools: [{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: false }],
+	ssn_wine: [
+		{ hostId: "hst_home", hostName: "home-server", state: "held", memory: false },
+		{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: false },
+	],
+};
 
 /**
  * Lleverage's bundles, newest first: skills its agents read, the attachments a host couldn't mount, and model weights no
@@ -1007,7 +1059,7 @@ export const PROXY: ProxySettings = {
 
 const GITHUB: DestinationBinding = { host: "api.github.com", pathPrefixes: [], methods: [] };
 
-/** The organisation's environments: one for backend work, one for evals. */
+/** The organisation's environments: one for backend work, one for evals, and one for GitHub that goes with others. */
 export const ENVIRONMENTS: readonly Environment[] = [
 	{
 		id: "env_backend",
@@ -1080,6 +1132,27 @@ export const ENVIRONMENTS: readonly Environment[] = [
 		sandboxCount: 1,
 		createdAt: FIXTURE_NOW - 2 * DAY,
 		updatedAt: FIXTURE_NOW - 2 * DAY,
+	},
+	{
+		id: "env_github",
+		accountId: LLEVERAGE.id,
+		name: "lleverage-github",
+		description: "A GitHub token for the lleverage-ai organisation, to put after any environment that needs one.",
+		variables: [
+			{
+				name: "GH_TOKEN",
+				protected: true,
+				bindings: [GITHUB, { host: "github.com", pathPrefixes: ["/lleverage-ai/"], methods: [] }],
+				updatedAt: FIXTURE_NOW - DAY,
+			},
+			{ name: "GIT_AUTHOR_NAME", protected: false, value: "Kantel", bindings: [], updatedAt: FIXTURE_NOW - DAY },
+		],
+		files: [{ path: "/home/user/.config/gh/hosts.yml", mode: 0o600, sizeBytes: 164, updatedAt: FIXTURE_NOW - DAY }],
+		repos: [{ url: "https://github.com/lleverage-ai/kantel" }],
+		grants: [{ id: "grt_gh_org", action: "allow", host: "github.com", methods: [], paths: ["/lleverage-ai/*"] }],
+		sandboxCount: 2,
+		createdAt: FIXTURE_NOW - 3 * DAY,
+		updatedAt: FIXTURE_NOW - DAY,
 	},
 ];
 
@@ -1369,6 +1442,21 @@ export const HOSTS: readonly Host[] = [
 			templates: 96,
 			bundles: 9,
 		}),
+		poolId: "pool_ci",
+		// Its pool syncs: it reaches the other Hetzner host directly, and the home server not at all.
+		mesh: {
+			address: "fd4b:91c2:7e10:0:5a1e:3f20:9c4d:1b07",
+			peers: [
+				{
+					hostId: "hst_hetzner_2",
+					path: "direct",
+					endpoint: "203.0.113.24:51820",
+					lastHandshake: FIXTURE_NOW - 42_000,
+					rttMs: 0.4,
+				},
+				{ hostId: "hst_home", path: "none", endpoint: "198.51.100.7:51820", lastHandshake: FIXTURE_NOW - 26 * MINUTE },
+			],
+		},
 	},
 	{
 		id: "hst_hetzner_2",
@@ -1397,6 +1485,7 @@ export const HOSTS: readonly Host[] = [
 			bundles: 4,
 		}),
 		savedSnapshotLimitBytes: 200 * 1024 ** 3,
+		poolId: "pool_ci",
 	},
 	{
 		id: "hst_home",
@@ -1417,6 +1506,7 @@ export const HOSTS: readonly Host[] = [
 		joinedAt: FIXTURE_NOW - 6 * DAY,
 		disk: sampleDiskUsage(1_000, { saved: 41, automatic: 66, sandboxes: 187, images: 21, templates: 24, bundles: 2 }),
 		savedSnapshotLimitBytes: 50 * 1024 ** 3,
+		poolId: "pool_default",
 	},
 	{
 		id: "hst_mac",
@@ -1436,6 +1526,84 @@ export const HOSTS: readonly Host[] = [
 		labels: { owner: "tom", site: "laptop" },
 		lastSeenAt: FIXTURE_NOW - 14 * HOUR,
 		joinedAt: FIXTURE_NOW - 3 * DAY,
+		poolId: "pool_default",
+	},
+];
+
+const GIB = 1024 ** 3;
+
+/** A sample sticky disk version, named by its host as Kantel's source names it. */
+const diskVersion = (id: string, hostId: string, allocatedGb: number, age: number): StickyDiskVersion => {
+	const hostName = HOSTS.find((host) => host.id === hostId)?.name;
+	return {
+		id,
+		hostId,
+		...(hostName === undefined ? {} : { hostName }),
+		sizeBytes: 150 * GIB,
+		allocatedBytes: Math.round(allocatedGb * GIB),
+		createdAt: FIXTURE_NOW - age,
+	};
+};
+
+/**
+ * Lleverage's sticky disks: CI's cache and Docker images in the `ci` pool, committed on both Hetzner hosts; a pnpm store
+ * in the default pool on the home server and the MacBook; a git mirror there with no commit yet; and a scratch disk in no
+ * pool, never attached.
+ */
+export const STICKY_DISKS: readonly StickyDisk[] = [
+	{
+		id: "sdk_ci_cache",
+		accountId: LLEVERAGE.id,
+		name: "ci-cache",
+		description: "pnpm store, Turbo cache and Docker layers for Lleverage CI",
+		sizeGb: 150,
+		head: "sdv_ci4",
+		versions: [
+			diskVersion("sdv_ci4", "hst_hetzner_1", 9.4, 40 * MINUTE),
+			diskVersion("sdv_ci3", "hst_hetzner_2", 8.8, 2 * HOUR),
+			diskVersion("sdv_ci2", "hst_hetzner_1", 8.9, 3 * HOUR),
+			diskVersion("sdv_ci1", "hst_hetzner_2", 7.6, 5 * HOUR),
+		],
+		poolId: "pool_ci",
+		createdAt: FIXTURE_NOW - 12 * DAY,
+	},
+	{
+		id: "sdk_docker",
+		accountId: LLEVERAGE.id,
+		name: "docker-images",
+		sizeGb: 200,
+		head: "sdv_dk1",
+		versions: [diskVersion("sdv_dk1", "hst_hetzner_1", 31.2, 2 * DAY)],
+		poolId: "pool_ci",
+		createdAt: FIXTURE_NOW - 9 * DAY,
+	},
+	{
+		id: "sdk_pnpm",
+		accountId: LLEVERAGE.id,
+		name: "pnpm-store",
+		description: "Shared pnpm store for agent sandboxes",
+		sizeGb: 40,
+		head: "sdv_pn2",
+		versions: [diskVersion("sdv_pn2", "hst_home", 2.1, 6 * HOUR), diskVersion("sdv_pn1", "hst_mac", 1.8, 3 * DAY)],
+		poolId: "pool_default",
+		createdAt: FIXTURE_NOW - 20 * DAY,
+	},
+	{
+		id: "sdk_git",
+		accountId: LLEVERAGE.id,
+		name: "git-mirror",
+		sizeGb: 20,
+		versions: [],
+		poolId: "pool_default",
+		createdAt: FIXTURE_NOW - HOUR,
+	},
+	{
+		id: "sdk_scratch",
+		accountId: LLEVERAGE.id,
+		name: "scratch",
+		sizeGb: 10,
+		versions: [],
+		createdAt: FIXTURE_NOW - 2 * DAY,
 	},
 ];
 
@@ -1736,6 +1904,8 @@ export interface ComputeFixtureOptions {
 	readonly empty?: boolean;
 	/** The deployment hasn't turned mounts on: no Mounts page, and no sandbox mounts anything. */
 	readonly noMounts?: boolean;
+	/** The deployment hasn't turned sticky disks on: no Disks page. */
+	readonly noStickyDisks?: boolean;
 	/** How long a sandbox takes to start or stop, in milliseconds. Default 1200. */
 	readonly settleMs?: number;
 	/** The viewer is not a super-admin. */
@@ -1749,6 +1919,11 @@ export interface ComputeFixtureOptions {
 	 * of a host that went away under its sandboxes.
 	 */
 	readonly hostsAway?: readonly string[];
+	/**
+	 * Sample sandboxes, by ID, moving to another host, at the phase given (a move's `phase`): for a story of a move under
+	 * way. Each is moving to the other host of its pool, and stays moving.
+	 */
+	readonly moving?: Readonly<Record<string, string>>;
 	/**
 	 * Where hosts reach the control plane, as the deployment set it. Default a default install's loopback address
 	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
@@ -1766,6 +1941,34 @@ export interface ComputeFixtureOptions {
 	 * files, the Environments pages offer neither, and setting one is refused as the API refuses it.
 	 */
 	readonly noProtectedValues?: boolean;
+	/**
+	 * The pools the sample hosts are in: `many` (default) the default pool, `ci` with the Hetzner hosts and an empty
+	 * `workflows`; `one` the default alone, with every host in it; `long-names` the three with names as long as a name
+	 * may be; `none` a source with no pools, as an older gateway's; `fail` pools that can't be read.
+	 */
+	readonly pools?: "many" | "one" | "long-names" | "none" | "fail";
+}
+
+/** The sample pools, by the `pools` option: the default first. */
+function samplePools(kind: "many" | "one" | "long-names", at: (time: number) => number): Pool[] {
+	const pool = (id: string, name: string, made: number): Pool => ({
+		id,
+		name,
+		default: id === "pool_default",
+		hosts: 0,
+		createdAt: at(FIXTURE_NOW - made),
+	});
+	if (kind === "one") return [pool("pool_default", "default", 30 * DAY)];
+	const long = kind === "long-names";
+	return [
+		pool("pool_default", long ? "default-pool-for-the-analytical-engines-research-and-dev-team" : "default", 30 * DAY),
+		pool("pool_ci", long ? "continuous-integration-runners-for-every-repository-we-maintain" : "ci", 20 * DAY),
+		pool(
+			"pool_workflows",
+			long ? "workflow-runtimes-and-scheduled-jobs-for-the-production-stack" : "workflows",
+			2 * DAY,
+		),
+	];
 }
 
 /** What the fixtures refuse a protected value or a secret file with under `noProtectedValues`, as the API does. */
@@ -1815,6 +2018,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	};
 	const empty = options.empty === true;
 	const mountsOn = options.noMounts !== true;
+	const stickyOn = options.noStickyDisks !== true;
 
 	const moved = <T extends object>(record: T, keys: readonly (keyof T)[]): T => {
 		const copy = { ...record } as Record<string, unknown>;
@@ -1849,7 +2053,21 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				box.snapshot?.takenAt === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
 			const away =
 				box.hostId !== undefined && options.hostsAway?.includes(box.hostId) === true ? { hostUnreachable: true } : {};
-			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot, ...away })))];
+			const phase = options.moving?.[box.id];
+			const move: Partial<Sandbox> =
+				phase === undefined
+					? {}
+					: {
+							state: "moving",
+							move: {
+								phase,
+								hostId: "hst_hetzner_1",
+								hostName: "hetzner-fsn1-01",
+								keepMemory: false,
+								startedAt: at(FIXTURE_NOW - 3 * MINUTE),
+							},
+						};
+			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot, ...away, ...move })))];
 		}),
 	);
 	// Bundles by account and digest: a digest names a bundle only within its account.
@@ -1858,6 +2076,12 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		(empty || !mountsOn ? [] : BUNDLES).map((bundle) => [
 			bundleKey(bundle.accountId, bundle.digest),
 			moved(bundle, ["createdAt"]),
+		]),
+	);
+	const stickyDisks = new Map<string, StickyDisk>(
+		(empty || !stickyOn ? [] : STICKY_DISKS).map((disk) => [
+			disk.id,
+			{ ...moved(disk, ["createdAt"]), versions: disk.versions.map((version) => moved(version, ["createdAt"])) },
 		]),
 	);
 	const bucketSources = new Map<string, BucketSource>(
@@ -1908,12 +2132,80 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				...moved(host, ["lastSeenAt", "joinedAt"]),
 				...(host.disk === undefined ? {} : { disk: moved(host.disk, ["measuredAt"]) }),
 				...(options.hostsAway?.includes(host.id) === true ? { state: "offline" as const } : {}),
+				...(options.pools === "one" ? { poolId: "pool_default" } : {}),
 				...options.hostOverrides?.[host.id],
 			},
 		]),
 	);
+	const poolKind = options.pools ?? "many";
+	const pools = new Map<string, Pool>(
+		poolKind === "none" || poolKind === "fail" ? [] : samplePools(poolKind, at).map((pool) => [pool.id, pool]),
+	);
+	/** A pool as the API answers it: how many hosts are in it now. */
+	const poolView = (pool: Pool): Pool => ({
+		...pool,
+		hosts: [...hosts.values()].filter((host) => host.poolId === pool.id).length,
+	});
+	const poolNamed = (name: string, except?: string) => {
+		if (!POOL_NAME_PATTERN.test(name)) {
+			throw new Error("A pool's name is lower-case letters, digits and dashes, such as ci");
+		}
+		if ([...pools.values()].some((pool) => pool.name === name && pool.id !== except)) {
+			throw Object.assign(new Error(`The account has a pool named ${name}`), { code: "conflict" });
+		}
+	};
+	/** A pool's hosts that are up and run `kind`. */
+	const poolHosts = (poolId: string, kind: SandboxKind): Host[] =>
+		[...hosts.values()].filter(
+			(host) => host.poolId === poolId && host.state === "online" && (kind === "isolate" || host.kvm),
+		);
+	/** "a microvm", "an isolate". */
+	const article = (kind: SandboxKind): string => `${kind === "isolate" ? "an" : "a"} ${kind}`;
 	/** When each host updating comes back on its new version (wall-clock, so a story sees it finish). */
 	const updateDone = new Map<string, number>();
+	/**
+	 * Each host's sandboxes moving off, as begun (wall-clock, so a story sees it go): two at a time, each taking a few
+	 * seconds, to the other online hosts of its pool; isolates skipped, and every microVM where there is no other host.
+	 */
+	const evacuations = new Map<
+		string,
+		{ readonly startedAt: number; readonly items: readonly HostEvacuationSandbox[]; readonly to: readonly string[] }
+	>();
+	const EVACUATION_STEP_MS = 4_000;
+	const evacuationView = (id: string): HostEvacuation | undefined => {
+		const begun = evacuations.get(id);
+		if (begun === undefined) return undefined;
+		const elapsed = Date.now() - begun.startedAt;
+		let turn = 0;
+		const sandboxes = begun.items.map((item, index): HostEvacuationSandbox => {
+			if (item.state !== "waiting") return item;
+			const slot = Math.floor(turn++ / 2);
+			const to = begun.to[index % Math.max(1, begun.to.length)] as string;
+			if (elapsed >= (slot + 1) * EVACUATION_STEP_MS) {
+				return { ...item, state: "moved", hostId: to, keptMemory: index % 3 !== 2 };
+			}
+			if (elapsed >= slot * EVACUATION_STEP_MS) return { ...item, state: "moving", phase: "copying", hostId: to };
+			return item;
+		});
+		const counted = (state: HostEvacuationSandbox["state"]) => sandboxes.filter((item) => item.state === state).length;
+		const remaining = counted("waiting") + counted("moving");
+		return {
+			state: remaining > 0 ? "running" : "done",
+			startedAt: begun.startedAt,
+			...(remaining > 0 ? {} : { endedAt: begun.startedAt + Math.ceil(turn / 2) * EVACUATION_STEP_MS }),
+			moved: counted("moved"),
+			remaining,
+			skipped: counted("skipped"),
+			failed: counted("failed"),
+			sandboxes,
+		};
+	};
+	const withEvacuation = (host: Host): Host => {
+		const view = evacuationView(host.id);
+		if (view === undefined) return host;
+		const { sandboxes: _sandboxes, ...progress } = view;
+		return { ...host, evacuation: progress };
+	};
 	const deploymentUrl =
 		options.publicUrl ?? (hosting === "hosted" ? "https://kantel.example.com" : "http://127.0.0.1:58090");
 	let publicUrlSet: string | undefined;
@@ -2025,22 +2317,75 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		environments.set(env.id, next);
 		return next;
 	};
+	/** A sandbox's environments as they are now, in order: one deleted since is gone. */
+	const environmentsOf = (box: Sandbox): Environment[] =>
+		(box.environments ?? []).flatMap((ref) => {
+			const env = environments.get(ref.id);
+			return env === undefined ? [] : [env];
+		});
+	/** Refs to environments by ID, in order, with their names now. */
+	const refsOf = (ids: readonly string[]): EnvironmentRef[] =>
+		ids.map((id) => ({ id, name: find(environments, id, "environment").name }));
+	/** Each name's (or path's) environment: the last that has it, as the API's resolver decides. */
+	const winners = (envs: readonly Environment[], keys: (env: Environment) => readonly string[]) => {
+		const won = new Map<string, Environment>();
+		for (const env of envs) for (const key of keys(env)) won.set(key, env);
+		return won;
+	};
+	const repoPath = (repo: Environment["repos"][number]): string =>
+		repo.path ??
+		`~/${
+			repo.url
+				.replace(/\.git$/, "")
+				.split("/")
+				.at(-1) ?? ""
+		}`;
+	const variableNames = (env: Environment) => env.variables.map((variable) => variable.name);
+	const filePaths = (env: Environment) => env.files.map((file) => file.path);
+	const repoPaths = (env: Environment) => env.repos.map(repoPath);
+	// The environments whose files and repositories a stopped sandbox gets when it next starts.
+	const pendingEnvironments = new Map<string, Set<string>>(empty ? [] : [[RENDER.id, new Set(["env_github"])]]);
+	const sandboxEnvironmentsOf = (sandboxId: string): readonly SandboxEnvironment[] => {
+		const envs = environmentsOf(find(sandboxes, sandboxId, "sandbox"));
+		const lost = (env: Environment, keys: (env: Environment) => readonly string[]) => {
+			const won = winners(envs, keys);
+			return keys(env).filter((key) => won.get(key)?.id !== env.id);
+		};
+		return envs.map((env) => ({
+			id: env.id,
+			name: env.name,
+			shadowed: {
+				variables: lost(env, variableNames),
+				files: lost(env, filePaths),
+				repos: lost(env, repoPaths),
+			},
+			pending: pendingEnvironments.get(sandboxId)?.has(env.id) === true,
+		}));
+	};
 	const egressOf = (sandboxId: string): SandboxEgress => {
 		const box = find(sandboxes, sandboxId, "sandbox");
-		const env = box.environment === undefined ? undefined : environments.get(box.environment.id);
+		const envs = environmentsOf(box);
+		const won = winners(envs, variableNames);
 		return {
 			sandboxId: box.id,
 			sandboxName: box.name,
 			accountId: box.accountId,
-			...(box.environment === undefined ? {} : { environment: box.environment }),
-			protectedVariables: (env?.variables ?? [])
-				.filter((variable) => variable.protected)
-				.map((variable) => ({
-					name: variable.name,
-					placeholderPrefix: placeholderOf(box.id, variable.name),
-					bindings: variable.bindings,
-				})),
-			environmentGrants: env?.grants ?? [],
+			environments: envs.map((env) => ({ id: env.id, name: env.name })),
+			// The protected one of each name, from the environment that wins it.
+			protectedVariables: [...won].flatMap(([name, env]) => {
+				const variable = env.variables.find((each) => each.name === name);
+				return variable?.protected === true
+					? [
+							{
+								name,
+								placeholderPrefix: placeholderOf(box.id, name),
+								bindings: variable.bindings,
+								environmentId: env.id,
+							},
+						]
+					: [];
+			}),
+			environmentGrants: envs.flatMap((env) => env.grants),
 			grants: sandboxGrants.get(box.id) ?? [],
 			entries: (EGRESS_LOGS[box.id] ?? []).map((entry) => moved(entry, ["at"])),
 		};
@@ -2171,6 +2516,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					accounts[at] = changed;
 					return changed;
 				}),
+			setSnapshotCopies: (accountId, on) =>
+				gate(() => {
+					const at = accounts.findIndex((account) => account.id === accountId);
+					const account = accounts[at];
+					if (account === undefined) throw new Error(`No account ${accountId}.`);
+					const changed = { ...account, snapshotCopies: on };
+					accounts[at] = changed;
+					return changed;
+				}),
 			setRole: (accountId, memberId, role) =>
 				gate(() => {
 					const list = members.get(accountId) ?? [];
@@ -2185,10 +2539,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 		},
 		sandboxes: {
-			shapes: () =>
+			// A pool's shapes are the sample's, with no microVMs where none of its hosts that are up runs them.
+			shapes: (_accountId: string, _hostId?: string, poolId?: string) =>
 				gate(() => ({
 					isolate: DEFAULT_SANDBOX_SHAPES.isolate,
-					microvm: DEFAULT_SANDBOX_SHAPES.microvm,
+					microvm:
+						poolId === undefined || poolHosts(poolId, "microvm").length > 0
+							? DEFAULT_SANDBOX_SHAPES.microvm
+							: { ...DEFAULT_SANDBOX_SHAPES.microvm, available: false },
 					...(hosting === "hosted" && DEFAULT_SANDBOX_SHAPES.rates !== undefined
 						? { rates: DEFAULT_SANDBOX_SHAPES.rates }
 						: {}),
@@ -2196,22 +2554,46 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			// The sample's hosts as a super-admin sees them: each one shared, so any account may be put on one.
 			hosts: () =>
 				gate(() =>
-					HOSTS.map((host) => ({
-						id: host.id,
-						name: host.name,
-						state: host.state,
-						kinds: host.kvm ? (["microvm", "isolate"] as const) : (["isolate"] as const),
-						shared: true,
-					})),
+					HOSTS.map((sample) => {
+						const host = hosts.get(sample.id) ?? sample;
+						return {
+							id: host.id,
+							name: host.name,
+							state: host.state,
+							kinds: host.kvm ? (["microvm", "isolate"] as const) : (["isolate"] as const),
+							shared: true,
+							...(host.poolId === undefined ? {} : { poolId: host.poolId }),
+						};
+					}),
 				),
+			// The pools the Hosts page has, which the `pools` option chooses: `fail` can't be read.
+			pools: () =>
+				gate(() => {
+					if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
+					return [...pools.values()].map(poolView);
+				}),
+			// Each in its host's pool as the `pools` option puts the hosts.
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
 						.filter((box) => box.accountId === accountId)
+						.map((box) => {
+							const poolId = box.hostId === undefined ? undefined : hosts.get(box.hostId)?.poolId;
+							return poolId === undefined || poolId === box.poolId ? box : { ...box, poolId };
+						})
 						.sort((a, b) => b.createdAt - a.createdAt),
 				),
 			create: (input: CreateSandboxInput) =>
 				gate(async () => {
+					// In a pool, on one of its hosts that is up and runs the type; refused as Kantel refuses it, naming the pool.
+					const pooled = input.poolId === undefined ? undefined : poolHosts(input.poolId, input.kind);
+					if (input.poolId !== undefined && pooled?.length === 0) {
+						const name = pools.get(input.poolId)?.name ?? input.poolId;
+						throw Object.assign(new Error(`No host in pool ${name} can run ${article(input.kind)} sandbox now`), {
+							code: "unavailable",
+						});
+					}
+					const hostId = input.hostId ?? pooled?.[0]?.id;
 					const made = input.templateId === undefined ? undefined : await templates?.get(input.templateId);
 					// A template's own vCPUs and memory when the sliders weren't moved off them.
 					const shape =
@@ -2252,23 +2634,18 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						usage: flat(),
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
 						// The host asked for, else where the sample's placement puts each type.
-						...((input.hostId ?? (input.kind === "isolate" ? "hst_home" : "hst_hetzner_1")) === "hst_home"
+						...((hostId ?? (input.kind === "isolate" ? "hst_home" : "hst_hetzner_1")) === "hst_home"
 							? { hostId: "hst_home", hostName: "home-server" }
-							: input.hostId === undefined || input.hostId === "hst_hetzner_1"
+							: hostId === undefined || hostId === "hst_hetzner_1"
 								? { hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01" }
 								: {
-										hostId: input.hostId,
-										hostName: HOSTS.find((host) => host.id === input.hostId)?.name ?? input.hostId,
+										hostId,
+										hostName: HOSTS.find((host) => host.id === hostId)?.name ?? hostId,
 									}),
 						shared: input.accountId !== PERSONAL.id,
-						...(input.environmentId === undefined
+						...(input.environmentIds === undefined || input.environmentIds.length === 0
 							? {}
-							: {
-									environment: {
-										id: input.environmentId,
-										name: find(environments, input.environmentId, "environment").name,
-									},
-								}),
+							: { environments: refsOf(input.environmentIds) }),
 						...(made === undefined
 							? {}
 							: {
@@ -2307,7 +2684,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				gate(() => {
 					const { error: _, ...current } = find(sandboxes, id, "sandbox");
 					const box = put({ ...current, state: "starting", stopsAt: now() + HOUR });
-					settle(id, (latest) => ({ ...latest, state: "running", usage: usageSeries(id.length + 3, 0.3) }));
+					settle(id, (latest) => {
+						// Running, it has its pending environments' files and repositories.
+						pendingEnvironments.delete(id);
+						return { ...latest, state: "running", usage: usageSeries(id.length + 3, 0.3) };
+					});
 					return box;
 				}),
 			fork: (id) =>
@@ -2333,6 +2714,36 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					history.set(forkId, []);
 					settle(forkId, (current) => ({ ...current, state: "running", usage: usageSeries(forkId.length, 0.3) }));
 					return box;
+				}),
+			// As Kantel does: the same sandbox, a microVM now, running once its files are in.
+			upgrade: (id) =>
+				gate(() => {
+					const current = find(sandboxes, id, "sandbox");
+					if (current.kind !== "isolate") return current;
+					const box = put({ ...current, kind: "microvm", state: "running" });
+					return box;
+				}),
+			// The other online hosts of its host's pool that run microVMs. No dry run: each restarts, with no estimate.
+			moveTargets: (box) =>
+				gate(() => {
+					const own = hosts.get(box.hostId ?? "");
+					if (own === undefined) return [];
+					return [...hosts.values()]
+						.filter((host) => host.id !== own.id && host.poolId === own.poolId && host.state === "online" && host.kvm)
+						.map((host) => ({ hostId: host.id, hostName: host.name }));
+				}),
+			// As Kantel does: `moving` while its disk is copied, then while it starts there, and running there once moved.
+			move: (id, choice) =>
+				gate(async () => {
+					const current = find(sandboxes, id, "sandbox");
+					const hostName = hosts.get(choice.hostId)?.name ?? choice.hostId;
+					const move = { hostId: choice.hostId, hostName, keepMemory: false, startedAt: now() };
+					put({ ...current, state: "moving", move: { ...move, phase: "copying" } });
+					await new Promise((resolve) => setTimeout(resolve, settleMs * 2));
+					put({ ...find(sandboxes, id, "sandbox"), move: { ...move, phase: "starting" } });
+					await new Promise((resolve) => setTimeout(resolve, settleMs));
+					const { move: _, ...moved } = find(sandboxes, id, "sandbox");
+					return put({ ...moved, state: "running", hostId: choice.hostId, hostName, stopsAt: now() + HOUR });
 				}),
 			recover: (id) =>
 				gate(() => {
@@ -2419,6 +2830,39 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						: COMMANDS.map((command) => moved(command, ["startedAt"]));
 				}),
 			get: (id) => gate(() => find(sandboxes, id, "sandbox")),
+			environments: {
+				list: (sandboxId) => gate(() => sandboxEnvironmentsOf(sandboxId)),
+				attach: (sandboxId, environmentId, position) =>
+					gate(() => {
+						const box = find(sandboxes, sandboxId, "sandbox");
+						const env = find(environments, environmentId, "environment");
+						if (env.accountId !== box.accountId) throw new Error(`No environment ${environmentId}.`);
+						// Attaching one it has moves it.
+						const ids = (box.environments ?? []).map((ref) => ref.id).filter((id) => id !== env.id);
+						if (ids.length >= MAX_SANDBOX_ENVIRONMENTS) {
+							throw new Error(`A sandbox has at most ${MAX_SANDBOX_ENVIRONMENTS} environments.`);
+						}
+						ids.splice(position ?? ids.length, 0, env.id);
+						put({ ...box, environments: refsOf(ids) });
+						// A running sandbox gets its files and repositories now; a stopped one when it next starts.
+						const pending = pendingEnvironments.get(box.id) ?? new Set<string>();
+						if (box.state === "running") pending.delete(env.id);
+						else pending.add(env.id);
+						pendingEnvironments.set(box.id, pending);
+						return sandboxEnvironmentsOf(box.id);
+					}),
+				detach: (sandboxId, environmentId) =>
+					gate(() => {
+						const box = find(sandboxes, sandboxId, "sandbox");
+						const ids = (box.environments ?? []).map((ref) => ref.id);
+						if (!ids.includes(environmentId)) throw new Error("That environment isn't one of this sandbox's.");
+						const left = ids.filter((id) => id !== environmentId);
+						const { environments: _, ...rest } = box;
+						put(left.length === 0 ? rest : { ...rest, environments: refsOf(left) });
+						pendingEnvironments.get(box.id)?.delete(environmentId);
+						return sandboxEnvironmentsOf(box.id);
+					}),
+			},
 			setAutoStop: (id, minutes) =>
 				gate(() => {
 					const { stopsAt: _, ...box } = find(sandboxes, id, "sandbox");
@@ -2546,6 +2990,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			list: (snapshotId, path) =>
 				gate(() => sampleFolder(snapshotKind(snapshotId), path).map((entry) => moved(entry, ["modifiedAt"]))),
 			kindOf: (snapshotId) => gate(() => snapshotKind(snapshotId) ?? "microvm"),
+			// One saved here is on the sandbox's host alone until a copy is asked for.
+			hosts: (snapshotId) =>
+				gate(() => {
+					const entry = saved.get(snapshotId);
+					if (entry === undefined) throw new Error(`No saved snapshot ${snapshotId}.`);
+					return (
+						SAVED_HOSTS[snapshotId] ?? [
+							{ hostId: "hst_hetzner_1", hostName: "hetzner-fsn1-01", state: "held", memory: entry.memory === true },
+						]
+					);
+				}),
 			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,
@@ -2698,10 +3153,18 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						...(description === undefined || description === "" ? {} : { description }),
 					});
 				}),
+			// It comes off every sandbox that has it.
 			remove: (id) =>
 				gate(() => {
 					find(environments, id, "environment");
 					environments.delete(id);
+					for (const box of sandboxes.values()) {
+						if (box.environments?.some((ref) => ref.id === id) !== true) continue;
+						const left = box.environments.filter((ref) => ref.id !== id);
+						const { environments: _, ...rest } = box;
+						put(left.length === 0 ? rest : { ...rest, environments: left });
+						pendingEnvironments.get(box.id)?.delete(id);
+					}
 				}),
 			setVariable: (id, input) =>
 				gate(() => {
@@ -2904,6 +3367,49 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					},
 				}
 			: {}),
+		...(stickyOn
+			? {
+					stickyDisks: {
+						list: (accountId) => gate(() => [...stickyDisks.values()].filter((disk) => disk.accountId === accountId)),
+						// The account's pools, as the Hosts page has them: `fail` can't be read, `none` has none.
+						pools: () =>
+							gate((): StickyDiskPool[] => {
+								if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
+								return [...pools.values()].map(poolView);
+							}),
+						create: (input) =>
+							gate(() => {
+								if (
+									[...stickyDisks.values()].some(
+										(disk) => disk.accountId === input.accountId && disk.name === input.name,
+									)
+								) {
+									throw Object.assign(new Error(`The account has a sticky disk named ${input.name}`), {
+										code: "conflict",
+									});
+								}
+								if (input.poolId !== undefined) find(pools, input.poolId, "pool");
+								const disk: StickyDisk = {
+									id: nextId("sdk"),
+									accountId: input.accountId,
+									name: input.name,
+									...(input.description === undefined ? {} : { description: input.description }),
+									sizeGb: input.sizeGb,
+									versions: [],
+									...(input.poolId === undefined ? {} : { poolId: input.poolId }),
+									createdAt: now(),
+								};
+								stickyDisks.set(disk.id, disk);
+								return disk;
+							}),
+						remove: (id) =>
+							gate(() => {
+								find(stickyDisks, id, "sticky disk");
+								stickyDisks.delete(id);
+							}),
+					},
+				}
+			: {}),
 		...(options.notSuperAdmin === true
 			? {}
 			: {
@@ -2918,8 +3424,47 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									hosts.set(id, { ...rest, version: updating.version });
 									updateDone.delete(id);
 								}
-								return [...hosts.values()];
+								return [...hosts.values()].map(withEvacuation);
 							}),
+						evacuate: (id) =>
+							gate(() => {
+								const host = find(hosts, id, "host");
+								if (host.state === "offline" || host.state === "joining") {
+									throw new Error(`${host.name} isn't connected: move its sandboxes off once it's back.`);
+								}
+								const under = evacuationView(id);
+								if (under?.state === "running") return under;
+								const to = [...hosts.values()]
+									.filter((other) => other.id !== id && other.poolId === host.poolId && other.state === "online")
+									.map((other) => other.id);
+								const items: HostEvacuationSandbox[] = [
+									...Array.from(
+										{ length: host.sandboxes.microvms },
+										(_, index): HostEvacuationSandbox => ({
+											id: `sbx_${id.slice(4, 10)}${index}`,
+											name: `${host.name.split("-")[0]}-agent-${index + 1}`,
+											kind: "microvm",
+											...(to.length === 0
+												? { state: "skipped" as const, reason: "No other host in its pool can take it now" }
+												: { state: "waiting" as const }),
+										}),
+									),
+									...Array.from(
+										{ length: Math.min(host.sandboxes.isolates, 3) },
+										(_, index): HostEvacuationSandbox => ({
+											id: `sbx_${id.slice(4, 10)}i${index}`,
+											name: `script-${index + 1}`,
+											kind: "isolate",
+											state: "skipped",
+											reason: "An isolate doesn't move to another host",
+										}),
+									),
+								];
+								evacuations.set(id, { startedAt: Date.now(), items, to });
+								hosts.set(id, { ...host, state: "draining" });
+								return evacuationView(id) as HostEvacuation;
+							}),
+						evacuation: (id) => gate(() => evacuationView(id)),
 						update: (id) =>
 							gate(() => {
 								const host = find(hosts, id, "host");
@@ -2978,7 +3523,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							gate(() => {
 								const host = { ...find(hosts, id, "host"), state: "draining" as const };
 								hosts.set(id, host);
-								return host;
+								return withEvacuation(host);
 							}),
 						undrain: (id) =>
 							gate(() => {
@@ -2997,6 +3542,79 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								hosts.set(id, host);
 								return host;
 							}),
+						// As Kantel's API moves a host: only a draining one with no sandboxes, refused otherwise with the reason.
+						...(poolKind === "none"
+							? {}
+							: {
+									move: (id: string, poolId: string) =>
+										gate(() => {
+											const host = find(hosts, id, "host");
+											const into = find(pools, poolId, "pool");
+											if (host.poolId === into.id) return host;
+											if (host.state !== "draining") {
+												throw Object.assign(
+													new Error(
+														"Drain the host before moving it to another pool, and move it once it has no sandboxes",
+													),
+													{ code: "conflict" },
+												);
+											}
+											if (host.sandboxes.isolates + host.sandboxes.microvms > 0) {
+												throw Object.assign(new Error("The host still has sandboxes: move it once they are deleted"), {
+													code: "conflict",
+												});
+											}
+											const moved = { ...host, poolId: into.id };
+											hosts.set(id, moved);
+											return moved;
+										}),
+									pools: {
+										list: () =>
+											gate(() => {
+												if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
+												return [...pools.values()].map(poolView);
+											}),
+										create: (name: string) =>
+											gate(() => {
+												poolNamed(name);
+												const pool: Pool = { id: nextId("pool"), name, default: false, hosts: 0, createdAt: now() };
+												pools.set(pool.id, pool);
+												return poolView(pool);
+											}),
+										rename: (id: string, name: string) =>
+											gate(() => {
+												poolNamed(name, id);
+												const pool = { ...find(pools, id, "pool"), name };
+												pools.set(id, pool);
+												return poolView(pool);
+											}),
+										makeDefault: (id: string) =>
+											gate(() => {
+												find(pools, id, "pool");
+												for (const [key, pool] of pools) pools.set(key, { ...pool, default: key === id });
+												return poolView(find(pools, id, "pool"));
+											}),
+										remove: (id: string) =>
+											gate(() => {
+												const pool = poolView(find(pools, id, "pool"));
+												if (pool.default) {
+													throw Object.assign(
+														new Error(`${pool.name} is the default pool: make another the default first`),
+														{ code: "conflict" },
+													);
+												}
+												if (pool.hosts > 0) {
+													throw Object.assign(
+														new Error(
+															`${pool.name} still has ${pool.hosts === 1 ? "a host" : `${pool.hosts} hosts`} in it: move them to another pool first`,
+														),
+														{ code: "conflict" },
+													);
+												}
+												pools.delete(id);
+											}),
+									},
+								}),
 					},
 					images: {
 						overview: () =>

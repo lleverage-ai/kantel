@@ -2,7 +2,7 @@
 // on a wide screen, after boat.dev's (Tom, 5 Nov 2026): the name (renamed in place) with its address under it, its ID
 // to copy, state, when it was made, its type, a countdown to its auto-stop, its latest snapshot, its cost (hosted) and
 // its CPU, RAM, disk and IO as one small chart, which opens its metrics dialog. A search over names, addresses and IDs,
-// and State, Snapshot, Type and Created by filters, sit over it. In an organisation, or where more than one person or
+// and State, Snapshot, Type, Created by, Pool, Host and Label filters, sit over it. In an organisation, or where more than one person or
 // API key made them, each row says who made it under when ("You" for the viewer). Rows on a phone; each row opens the
 // sandbox's page. Browser and Desktop show on a running microVM's row under the pointer and open in the console,
 // Recover on a failed one's, and ⋯ has Stop, Fork, Save snapshot, Auto-stop, Restart on latest base (beside the state,
@@ -21,6 +21,7 @@ import { ChevronDownIcon, ChevronRightIcon, GlobeIcon, PencilIcon, PlusIcon, Sto
 import { useLoad } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
+import { OrderedSelectField } from "../primitives/ordered-select.tsx";
 import { SideScroll } from "../primitives/side-scroll.tsx";
 import { SliderField } from "../primitives/slider.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -36,14 +37,17 @@ import {
 	DEFAULT_SANDBOX_SHAPES,
 	diskRangeFor,
 	type Environment,
+	environmentNamesText,
 	fitDisk,
 	fitMemory,
 	type HostChoice,
 	type HostingMode,
+	MAX_SANDBOX_ENVIRONMENTS,
 	memoryRangeFor,
 	memoryText,
 	microvmsAvailable,
 	onGrid,
+	type Pool,
 	presetOf,
 	SANDBOX_KIND_LABELS,
 	type Sandbox,
@@ -65,6 +69,7 @@ import {
 	type Template,
 	vcpuRangeFor,
 } from "./compute-model.ts";
+import { PoolPicker } from "./host-pools.tsx";
 import { useFollowSandboxes } from "./live-sandboxes.ts";
 import { seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, SandboxStateLabel, tableFrame, td, th } from "./parts.tsx";
@@ -82,7 +87,10 @@ import {
 	creatorText,
 	filterCounts,
 	filtered,
+	hostFilters,
+	labelFilters,
 	NO_FILTERS,
+	poolFilters,
 	type SandboxFilters,
 	SNAPSHOT_FILTERS,
 	STATE_FILTERS,
@@ -120,6 +128,8 @@ export interface SandboxesPageProps {
 	readonly templates?: (accountId: string) => Promise<readonly Template[]>;
 	/** The template New sandbox starts with picked: a template page's New sandbox. */
 	readonly template?: string;
+	/** The pool New sandbox starts with picked, by ID, where the account has it; absent, the default. */
+	readonly pool?: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 	/** How often the list is read again while a sandbox is starting or stopping, in milliseconds. Default 1000. */
@@ -205,6 +215,7 @@ export function SandboxesPage({
 	environments,
 	templates,
 	template,
+	pool,
 	now: fixedNow,
 	pollMs = 1000,
 	creating = false,
@@ -216,6 +227,14 @@ export function SandboxesPage({
 	firstRun,
 }: SandboxesPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
+	// The account's pools, only to name them in the Pool filter: without them it goes by ID.
+	const poolsRead = useLoad(() => source.pools?.(account.id) ?? Promise.resolve([]), [source, account.id]);
+	// Every host name the list has said, so a chosen host keeps its name once no sandbox is on it.
+	const hostNames = useRef(new Map<string, string>()).current;
+	const poolNames = useMemo(
+		() => new Map(poolsRead.state.status === "ready" ? poolsRead.state.value.map((each) => [each.id, each.name]) : []),
+		[poolsRead.state],
+	);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New is pressed.
 	const [local, setLocal] = useState<ReadonlyMap<string, Sandbox | null>>(new Map());
 	const [filters, setFilters] = useState<SandboxFilters>(initialFilters ?? NO_FILTERS);
@@ -402,41 +421,47 @@ export function SandboxesPage({
 					own kernel. Press New, or run kantel new.
 				</EmptyState>
 			) : (
-				<>
-					<SandboxToolbar
-						sandboxes={sandboxes}
-						filters={filters}
-						viewerId={viewerId}
-						now={now}
-						narrow={narrow}
-						onChange={setFilters}
-					/>
-					<SandboxList
-						sandboxes={shown ?? []}
-						{...(creatorOf === undefined ? {} : { creatorOf })}
-						hosting={hosting}
-						now={now}
-						fixedNow={fixedNow !== undefined}
-						narrow={narrow}
-						filtered={filtered(filters)}
-						onClearFilters={() => setFilters(NO_FILTERS)}
-						onMetrics={setMetricsId}
-						source={source}
-						{...(snapshots === undefined ? {} : { save: snapshots.save })}
-						{...(sandboxHref === undefined ? {} : { sandboxHref })}
-						{...(navigate === undefined ? {} : { navigate })}
-						onChange={change}
-						asked={(id) => changes.ask(id)}
-						onNotice={setNotice}
-					/>
-				</>
+				<SandboxList
+					toolbar={
+						<SandboxToolbar
+							sandboxes={sandboxes}
+							filters={filters}
+							viewerId={viewerId}
+							poolNames={poolNames}
+							hostNames={hostNames}
+							now={now}
+							narrow={narrow}
+							onChange={setFilters}
+						/>
+					}
+					sandboxes={shown ?? []}
+					{...(creatorOf === undefined ? {} : { creatorOf })}
+					hosting={hosting}
+					now={now}
+					fixedNow={fixedNow !== undefined}
+					narrow={narrow}
+					filtered={filtered(filters)}
+					onClearFilters={() => setFilters(NO_FILTERS)}
+					onMetrics={setMetricsId}
+					source={source}
+					{...(snapshots === undefined ? {} : { save: snapshots.save })}
+					{...(sandboxHref === undefined ? {} : { sandboxHref })}
+					{...(navigate === undefined ? {} : { navigate })}
+					onChange={change}
+					asked={(id) => changes.ask(id)}
+					onNotice={setNotice}
+				/>
 			)}
 			<NewSandboxDialog
 				open={newOpen}
 				account={account}
 				hosting={hosting}
-				{...(source.shapes === undefined ? {} : { shapes: (hostId) => readShapes(source, account.id, hostId) })}
+				{...(source.shapes === undefined
+					? {}
+					: { shapes: (hostId, poolId) => readShapes(source, account.id, hostId, poolId) })}
 				{...(source.hosts === undefined ? {} : { hosts: () => source.hosts?.(account.id) ?? Promise.resolve([]) })}
+				{...(source.pools === undefined ? {} : { pools: () => source.pools?.(account.id) ?? Promise.resolve([]) })}
+				{...(pool === undefined ? {} : { pool })}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
 				{...(environments === undefined ? {} : { environments: () => environments(account.id) })}
 				{...(templates === undefined ? {} : { templates: () => templates(account.id) })}
@@ -493,13 +518,15 @@ function FilterMenu<V extends string>({
 }
 
 /**
- * Over the table: the search, then the State, Snapshot, Type and Created by filters, and Clear while any narrows the
- * list.
+ * Over the table: the search, then the State, Snapshot, Type, Created by, Pool, Host and Label filters, and Clear while
+ * any narrows the list.
  */
 function SandboxToolbar({
 	sandboxes,
 	filters,
 	viewerId,
+	poolNames,
+	hostNames,
 	now,
 	narrow,
 	onChange,
@@ -507,11 +534,15 @@ function SandboxToolbar({
 	sandboxes: readonly Sandbox[];
 	filters: SandboxFilters;
 	viewerId: string | undefined;
+	/** Each pool's name, by ID. */
+	poolNames: ReadonlyMap<string, string>;
+	/** Every host name the list has said, by ID: added to as it renders. */
+	hostNames: Map<string, string>;
 	now: number;
 	narrow: boolean;
 	onChange: (filters: SandboxFilters) => void;
 }) {
-	const counts = <K extends "state" | "snapshot" | "type" | "creator">(
+	const counts = <K extends "state" | "snapshot" | "type" | "creator" | "pool" | "host" | "label">(
 		key: K,
 		options: readonly { value: NonNullable<SandboxFilters[K]> }[],
 	) => filterCounts(sandboxes, filters, key, options, now);
@@ -519,9 +550,19 @@ function SandboxToolbar({
 	const types = new Set(sandboxes.map((box) => box.kind)).size > 1;
 	const creator = filters.creator ?? "all";
 	const creators = creatorCount(sandboxes) > 1 || creator !== "all" ? creatorFilters(sandboxes, viewerId) : undefined;
+	// Pool and Host tell apart only where the sandboxes are in more than one, and Label where any has a label. Each stays
+	// while it's chosen, so it can be cleared.
+	const pool = filters.pool ?? "all";
+	const host = filters.host ?? "all";
+	const label = filters.label ?? "all";
+	const pools = poolFilters(sandboxes, poolNames, pool);
+	for (const box of sandboxes)
+		if (box.hostId !== undefined && box.hostName !== undefined) hostNames.set(box.hostId, box.hostName);
+	const hosts = hostFilters(sandboxes, host, hostNames);
+	const labels = labelFilters(sandboxes, label);
 	return (
 		<div className="kt-sandbox-toolbar flex flex-wrap items-center gap-2">
-			<div className={narrow ? "w-full" : "w-(--kt-popover-width) max-w-full"}>
+			<div className={narrow ? "w-full" : "min-w-48 grow basis-48 max-w-(--kt-popover-width)"}>
 				<TextField
 					label="Search sandboxes"
 					hideLabel
@@ -563,12 +604,35 @@ function SandboxToolbar({
 					onChange={(value) => onChange({ ...filters, creator: value })}
 				/>
 			)}
+			{pools.length > 2 || pool !== "all" ? (
+				<FilterMenu
+					name="Pool"
+					value={pool}
+					options={pools}
+					counts={counts("pool", pools)}
+					onChange={(value) => onChange({ ...filters, pool: value })}
+				/>
+			) : null}
+			{hosts.length > 2 || host !== "all" ? (
+				<FilterMenu
+					name="Host"
+					value={host}
+					options={hosts}
+					counts={counts("host", hosts)}
+					onChange={(value) => onChange({ ...filters, host: value })}
+				/>
+			) : null}
+			{labels.length > 1 || label !== "all" ? (
+				<FilterMenu
+					name="Label"
+					value={label}
+					options={labels}
+					counts={counts("label", labels)}
+					onChange={(value) => onChange({ ...filters, label: value })}
+				/>
+			) : null}
 			{filtered({ ...filters, search: "" }) ? (
-				<Button
-					size="sm"
-					variant="ghost"
-					onClick={() => onChange({ ...filters, state: "all", snapshot: "all", type: "all", creator: "all" })}
-				>
+				<Button size="sm" variant="ghost" onClick={() => onChange({ ...NO_FILTERS, search: filters.search })}>
 					Clear filters
 				</Button>
 			) : null}
@@ -601,8 +665,12 @@ type RowCalls = {
 	onMetrics?: (id: string) => void;
 };
 
-/** The table on a wide screen, rows on a phone, and what acts on the ticked ones. */
+/**
+ * The filters, the table on a wide screen or rows on a phone, and what acts on the ticked ones: on a wide screen at the
+ * end of the filters' row, so ticking a row doesn't move the table under the pointer.
+ */
 function SandboxList({
+	toolbar,
 	sandboxes,
 	hosting,
 	now,
@@ -620,6 +688,8 @@ function SandboxList({
 	asked,
 	onNotice,
 }: {
+	/** The search and filters, which the selection's actions share a row with. */
+	toolbar: ReactNode;
 	sandboxes: readonly Sandbox[];
 	hosting: HostingMode;
 	now: number;
@@ -668,16 +738,55 @@ function SandboxList({
 		const failed = results.filter((result) => result.status === "rejected").length;
 		if (failed > 0) onNotice({ level: "error", text: `Kantel couldn't stop ${failed} of them. Try again.` });
 	};
+	const selectionBar = (
+		<SelectionBar
+			narrow={narrow}
+			count={selected.length}
+			all={allTicked}
+			some={someTicked}
+			disabled={selectable.length === 0}
+			onAll={tickAll}
+			actions={
+				<>
+					<Button
+						size="sm"
+						icon={<StopIcon size="sm" />}
+						disabled={stoppable.length === 0}
+						busy={stopping}
+						onClick={() => void stopSelected()}
+					>
+						Stop
+					</Button>
+					<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
+						Delete
+					</Button>
+				</>
+			}
+		/>
+	);
+	// The filters' own row is unpacked into this one, so the selection's actions take the end of their last line. The
+	// same element whether or not anything matches, so the search field keeps its focus as the last match goes.
+	const filterRow = narrow ? (
+		toolbar
+	) : (
+		<div className="flex min-w-0 flex-wrap items-center gap-2 [&>.kt-sandbox-toolbar]:contents">
+			{toolbar}
+			{selectionBar}
+		</div>
+	);
 	if (sandboxes.length === 0) {
 		return (
-			<p className="m-0 flex items-center gap-2 text-sm text-muted">
-				No sandboxes match.
-				{narrowed ? (
-					<Button size="xs" variant="ghost" onClick={onClearFilters}>
-						Clear search and filters
-					</Button>
-				) : null}
-			</p>
+			<>
+				{filterRow}
+				<p className="m-0 flex items-center gap-2 text-sm text-muted">
+					No sandboxes match.
+					{narrowed ? (
+						<Button size="xs" variant="ghost" onClick={onClearFilters}>
+							Clear search and filters
+						</Button>
+					) : null}
+				</p>
+			</>
 		);
 	}
 	const calls: RowCalls = {
@@ -782,58 +891,38 @@ function SandboxList({
 		</SideScroll>
 	);
 	return (
-		// Select all sits right over the rows it ticks, closer to them than the page's gap. The table fills the room under
-		// the header and filters (`kt-fill`, base.css), so New and the filters stay in view down a long list.
-		<div className="kt-fill flex min-w-0 flex-col gap-2">
-			<SelectionBar
-				narrow={narrow}
-				count={selected.length}
-				all={allTicked}
-				some={someTicked}
-				disabled={selectable.length === 0}
-				onAll={tickAll}
-				actions={
-					<>
-						<Button
-							size="sm"
-							icon={<StopIcon size="sm" />}
-							disabled={stoppable.length === 0}
-							busy={stopping}
-							onClick={() => void stopSelected()}
-						>
-							Stop
-						</Button>
-						<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
-							Delete
-						</Button>
-					</>
-				}
-			/>
-			{list}
-			<DeleteDialog
-				sandboxes={deleting}
-				onClose={() => setDeleting(undefined)}
-				onDelete={async (boxes) => {
-					const results = await Promise.allSettled(boxes.map((box) => source.remove(box.id)));
-					const gone = boxes.filter((_, at) => results[at]?.status === "fulfilled");
-					for (const box of gone) onChange(null, box.id);
-					const failure = results.find((result) => result.status === "rejected");
-					if (failure !== undefined) {
-						// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted, unless it was
-						// closed meanwhile or opened again on others.
-						setDeleting((current) => retryTargets(current, boxes, results));
-						throw failure.reason;
-					}
-					onNotice({
-						level: "info",
-						text:
-							gone.length === 1
-								? `Deleted ${gone[0]?.name} and its snapshots.`
-								: `Deleted ${gone.length} sandboxes and their snapshots.`,
-					});
-				}}
-			/>
-		</div>
+		<>
+			{filterRow}
+			{/* The table fills the room under the header and filters (`kt-fill`, base.css), so New and the filters stay in
+			    view down a long list. On a phone, Select all sits right over the rows it ticks, closer than the page's gap. */}
+			<div className="kt-fill flex min-w-0 flex-col gap-2">
+				{narrow ? selectionBar : null}
+				{list}
+				<DeleteDialog
+					sandboxes={deleting}
+					onClose={() => setDeleting(undefined)}
+					onDelete={async (boxes) => {
+						const results = await Promise.allSettled(boxes.map((box) => source.remove(box.id)));
+						const gone = boxes.filter((_, at) => results[at]?.status === "fulfilled");
+						for (const box of gone) onChange(null, box.id);
+						const failure = results.find((result) => result.status === "rejected");
+						if (failure !== undefined) {
+							// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted, unless it was
+							// closed meanwhile or opened again on others.
+							setDeleting((current) => retryTargets(current, boxes, results));
+							throw failure.reason;
+						}
+						onNotice({
+							level: "info",
+							text:
+								gone.length === 1
+									? `Deleted ${gone[0]?.name} and its snapshots.`
+									: `Deleted ${gone.length} sandboxes and their snapshots.`,
+						});
+					}}
+				/>
+			</div>
+		</>
 	);
 }
 
@@ -1002,6 +1091,7 @@ function NameCell({
 			</a>
 		);
 	const address = sandbox.hostname === "" ? undefined : sandbox.hostname;
+	const envNames = environmentNamesText(sandbox.environments);
 	return (
 		<span className="flex min-w-0 items-center gap-1">
 			<span className="flex min-w-0 flex-col">
@@ -1014,9 +1104,7 @@ function NameCell({
 						content={
 							<span className="flex flex-col">
 								<span className="font-mono text-code">{address}</span>
-								{sandbox.environment === undefined ? null : (
-									<span className="text-muted">From {sandbox.environment.name}</span>
-								)}
+								{envNames === undefined ? null : <span className="text-muted">Using {envNames}</span>}
 							</span>
 						}
 					>
@@ -1164,6 +1252,7 @@ function SandboxRow({
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
 	const tone = ticked ? "bg-selected" : "hover:bg-hover";
 	const spec = sandboxSpec(sandbox);
+	const envNames = environmentNamesText(sandbox.environments);
 	const row = (
 		// A link under the whole row opens the sandbox; the tick box, the name, the ID, the chart and the buttons sit above
 		// it, and so do the bits with tooltips.
@@ -1208,9 +1297,7 @@ function SandboxRow({
 				)}
 			</td>
 			<td className={td}>
-				<Tooltip
-					content={`${sandboxMachineText(sandbox)}${sandbox.environment === undefined ? "" : `, from ${sandbox.environment.name}`}`}
-				>
+				<Tooltip content={`${sandboxMachineText(sandbox)}${envNames === undefined ? "" : `, using ${envNames}`}`}>
 					<span className="relative z-1 flex flex-col">
 						<span>{SANDBOX_KIND_LABELS[sandbox.kind]}</span>
 						<span className="text-sm text-muted">{sizeText(spec)}</span>
@@ -1310,6 +1397,7 @@ function SandboxPhoneRow({
 }) {
 	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
+	const envNames = environmentNamesText(sandbox.environments);
 	// Who made it, on a failed one's row too, where its error takes the machine's line.
 	const made = creator === undefined || creator === "" ? undefined : creator === "You" ? "Yours" : `By ${creator}`;
 	const body = (
@@ -1326,7 +1414,7 @@ function SandboxPhoneRow({
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>{sandboxMachineText(sandbox)}</span>
-					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
+					{envNames === undefined ? null : <span className="min-w-0 truncate">{envNames}</span>}
 					{made === undefined ? null : <span>{made}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
 					<BaseOutdatedBadge base={sandbox.base} now={now} />
@@ -1405,8 +1493,9 @@ function TickBox({
 }
 
 /**
- * Over the list: what acts on the ticked sandboxes, once any are, and on a phone Select all, which the table's head has
- * on a wide screen. Nothing on a wide screen until something is ticked.
+ * What acts on the ticked sandboxes, once any are. On a wide screen it ends the filters' row, which is as tall with it
+ * as without, so the table doesn't move when a row is ticked. On a phone it sits over the rows, with Select all, which
+ * the table's head has on a wide screen.
  */
 function SelectionBar({
 	narrow,
@@ -1426,28 +1515,44 @@ function SelectionBar({
 	actions: ReactNode;
 }) {
 	const allId = useId();
-	if (!narrow && count === 0) return null;
-	return (
-		<div className="kt-selection-bar flex min-h-control-sm flex-wrap items-center gap-x-3 gap-y-2">
-			{narrow ? (
-				<span className="flex items-center gap-3 text-sm text-muted">
-					<TickBox
-						id={allId}
-						label="Select all"
-						checked={all}
-						indeterminate={some}
-						disabled={disabled}
-						onChange={onAll}
-					/>
-					<label htmlFor={allId} className="cursor-pointer">
-						{count === 0 ? "Select all" : `${count} selected`}
-					</label>
+	if (!narrow) {
+		return (
+			// Its room is kept while nothing is ticked, only hidden (and so out of the tab order), so the row wraps the same
+			// way either side of the first tick and the table under it stays put.
+			<div className="kt-selection-bar ml-auto flex items-center gap-3 pl-2">
+				<span className="kt-sr-only" aria-live="polite">
+					{count === 0 ? "" : `${count} selected`}
 				</span>
-			) : (
-				<span className="text-sm text-fg tabular-nums" aria-live="polite">
+				<span
+					aria-hidden="true"
+					className={`text-sm whitespace-nowrap text-fg tabular-nums ${count === 0 ? "invisible" : ""}`}
+				>
 					{count} selected
 				</span>
-			)}
+				<span className={`flex items-center gap-2 ${count === 0 ? "invisible" : ""}`}>
+					{actions}
+					<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
+						Clear
+					</Button>
+				</span>
+			</div>
+		);
+	}
+	return (
+		<div className="kt-selection-bar flex min-h-control-sm flex-wrap items-center gap-x-3 gap-y-2">
+			<span className="flex items-center gap-3 text-sm text-muted">
+				<TickBox
+					id={allId}
+					label="Select all"
+					checked={all}
+					indeterminate={some}
+					disabled={disabled}
+					onChange={onAll}
+				/>
+				<label htmlFor={allId} className="cursor-pointer">
+					{count === 0 ? "Select all" : `${count} selected`}
+				</label>
+			</span>
 			{count === 0 ? null : (
 				<span className="ml-auto flex flex-wrap items-center gap-2">
 					{actions}
@@ -1460,9 +1565,14 @@ function SelectionBar({
 	);
 }
 
-/** The account's shapes from its source, or one host's; the dialog asks only where the source can say. */
-const readShapes = (source: SandboxesSource, accountId: string, hostId?: string): Promise<SandboxShapes> =>
-	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId, hostId);
+/** The account's shapes from its source, or one host's or pool's; the dialog asks only where the source can say. */
+const readShapes = (
+	source: SandboxesSource,
+	accountId: string,
+	hostId?: string,
+	poolId?: string,
+): Promise<SandboxShapes> =>
+	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId, hostId, poolId);
 
 /**
  * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold, then its
@@ -1686,7 +1796,8 @@ export interface NewSandboxForm {
 	readonly from: string;
 	/** Whether the snapshot it starts from holds memory, so the sandbox is that snapshot's machine. */
 	readonly fromMemory?: boolean;
-	readonly environment: string;
+	/** The environments it starts with, by ID, in the order picked: the later one wins where two set the same thing. */
+	readonly environments: readonly string[];
 	/** The template a microVM is made from, resolved by `requestedTemplate`. */
 	readonly template?: Template;
 	readonly autoStop: string;
@@ -1694,6 +1805,8 @@ export interface NewSandboxForm {
 	readonly idleStop?: string;
 	/** The host it goes on; absent or empty: Kantel picks. */
 	readonly host?: string;
+	/** The pool it goes in, by ID; absent or empty: the default (`CreateSandboxInput.poolId`). */
+	readonly pool?: string;
 }
 
 /**
@@ -1715,11 +1828,12 @@ export function newSandboxInput(form: NewSandboxForm): CreateSandboxInput {
 		kind: form.kind,
 		...((template !== undefined && !form.shapeChosen) || keepsMachine ? {} : { shape }),
 		...(from === undefined ? {} : { fromSnapshot: from }),
-		...(form.environment === "" ? {} : { environmentId: form.environment }),
+		...(form.environments.length === 0 ? {} : { environmentIds: form.environments }),
 		...(template === undefined ? {} : { templateId: template.id }),
 		...(form.autoStop === "never" ? {} : { autoStopMinutes: Number(form.autoStop) }),
 		...(form.idleStop === undefined || form.idleStop === "never" ? {} : { idleStopMinutes: Number(form.idleStop) }),
 		...(form.host === undefined || form.host === "" ? {} : { hostId: form.host }),
+		...(form.pool === undefined || form.pool === "" ? {} : { poolId: form.pool }),
 	};
 }
 
@@ -1745,6 +1859,38 @@ export function hostOptions(
 			.filter((host) => why(host) === undefined || host.id === picked)
 			.map((host) => ({ value: host.id, label: label(host) })),
 	];
+}
+
+/**
+ * The hosts New sandbox's host picker offers in the pool picked: every host for the default (a host picked there goes
+ * on that host, in whatever pool it is), else that pool's hosts alone.
+ */
+export const hostsInPool = (hosts: readonly HostChoice[], pool: string): readonly HostChoice[] =>
+	pool === "" ? hosts : hosts.filter((host) => host.poolId === pool);
+
+/** What New sandbox knows of the account's pools: being read, read, or not read (it goes in the default). */
+export type PoolsRead =
+	| { readonly status: "loading" }
+	| { readonly status: "ready"; readonly pools: readonly Pool[] }
+	| { readonly status: "failed" };
+
+/**
+ * The pools New sandbox's picker offers, or undefined for no picker: only once they're read and there's more than one,
+ * so an account with one pool (or pools not read yet, or not read at all) sees nothing new.
+ */
+export function poolChoices(read: PoolsRead): readonly Pool[] | undefined {
+	return read.status === "ready" && read.pools.length > 1 ? read.pools : undefined;
+}
+
+/**
+ * The pool New sandbox sends for the one picked (`pool`, an ID; empty is the default): none for the default, or for
+ * one the account no longer has, so the create goes in the default pools as it would naming none. Naming the account's
+ * default pool would keep the sandbox off the deployment's shared hosts, which a create naming none may use.
+ */
+export function poolSent(pools: readonly Pool[] | undefined, pool: string): string {
+	if (pools === undefined || pool === "") return "";
+	const picked = pools.find((each) => each.id === pool);
+	return picked === undefined || picked.default ? "" : picked.id;
 }
 
 /** Why the picked host can't take a sandbox of `kind` now, or undefined when it can (or none is picked). */
@@ -1812,6 +1958,8 @@ export function NewSandboxDialog({
 	templates,
 	template: initialTemplate,
 	hosts: loadHosts,
+	pools: loadPools,
+	pool: initialPool,
 	now,
 	onClose,
 	onCreate,
@@ -1819,10 +1967,14 @@ export function NewSandboxDialog({
 	open: boolean;
 	account: ComputeAccount;
 	hosting: HostingMode;
-	/** What the hosts offer: all the account may use, or with `hostId` that one host's. */
-	shapes?: (hostId?: string) => Promise<SandboxShapes>;
+	/** What the hosts offer: all the account may use, or with `hostId` that one host's, or with `poolId` that pool's. */
+	shapes?: (hostId?: string, poolId?: string) => Promise<SandboxShapes>;
 	/** The hosts it may be put on (`SandboxesSource.hosts`); absent or none, no picker. */
 	hosts?: () => Promise<readonly HostChoice[]>;
+	/** The account's pools (`SandboxesSource.pools`); absent, or one, no picker. */
+	pools?: () => Promise<readonly Pool[]>;
+	/** The pool picked at first, by ID; absent, the default. */
+	pool?: string;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
 	environments?: () => Promise<readonly Environment[]>;
 	templates?: () => Promise<readonly Template[]>;
@@ -1842,11 +1994,16 @@ export function NewSandboxDialog({
 	const [autoStop, setAutoStop] = useState("60");
 	const [idleStop, setIdleStop] = useState("never");
 	const [from, setFrom] = useState("");
-	const [environment, setEnvironment] = useState("");
+	const [environmentIds, setEnvironmentIds] = useState<readonly string[]>([]);
 	const [saved, setSaved] = useState<readonly SavedSnapshot[]>([]);
 	const [envs, setEnvs] = useState<readonly Environment[]>([]);
 	const [hostList, setHostList] = useState<readonly HostChoice[]>([]);
 	const [host, setHost] = useState("");
+	const [poolsRead, setPoolsRead] = useState<PoolsRead>(
+		loadPools === undefined ? { status: "ready", pools: [] } : { status: "loading" },
+	);
+	// The pool picked, by ID; empty is the default.
+	const [pool, setPool] = useState(initialPool ?? "");
 	// A source that says what its hosts offer: nothing may be chosen or created until it has, so a create never goes
 	// with the sample's figures. One that can't say keeps the defaults.
 	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
@@ -1858,11 +2015,11 @@ export function NewSandboxDialog({
 	// The newest read of the shapes: one for a host picked before it lands is dropped.
 	const shapesReads = useRef(0);
 	const readShapesNow = useCallback(
-		(hostId?: string) => {
+		(hostId: string, poolId: string) => {
 			if (loadShapes === undefined) return;
 			const read = ++shapesReads.current;
 			setShapesRead("reading");
-			loadShapes(hostId === undefined || hostId === "" ? undefined : hostId).then(
+			loadShapes(hostId === "" ? undefined : hostId, poolId === "" ? undefined : poolId).then(
 				(shapesOf) => {
 					if (read !== shapesReads.current) return;
 					// Set on each read, before any slider can move: the controls show only once this lands.
@@ -1891,6 +2048,20 @@ export function NewSandboxDialog({
 		},
 		[loadShapes],
 	);
+	// Pools it can't read leave the sandbox to go in the default pool, and the dialog says so.
+	const readPools = useCallback(() => {
+		if (loadPools === undefined) return;
+		setPoolsRead({ status: "loading" });
+		loadPools().then(
+			(pools) => setPoolsRead({ status: "ready", pools }),
+			() => setPoolsRead({ status: "failed" }),
+		);
+	}, [loadPools]);
+	// The pool the create names, and the shapes are read for: none for the default (`poolSent`).
+	const choices = poolChoices(poolsRead);
+	const sentPool = poolSent(choices, pool);
+	// The shapes were last read for this pool: a change of pool (or the pools landing with one picked) reads them again.
+	const shapesPool = useRef("");
 	useEffect(() => {
 		if (!open || asked.current) return;
 		asked.current = true;
@@ -1898,8 +2069,20 @@ export function NewSandboxDialog({
 		environments?.().then(setEnvs, () => setEnvs([]));
 		// Hosts it can't read leave Kantel to pick, as with none.
 		loadHosts?.().then(setHostList, () => setHostList([]));
-		readShapesNow();
-	}, [open, savedSnapshots, environments, loadHosts, readShapesNow]);
+		readPools();
+		readShapesNow("", "");
+	}, [open, savedSnapshots, environments, loadHosts, readPools, readShapesNow]);
+	useEffect(() => {
+		if (!open || sentPool === shapesPool.current) return;
+		shapesPool.current = sentPool;
+		// A host picked in another pool isn't this one's (picked by hand, or before the pools landed with one picked at
+		// first): Kantel picks among this pool's again.
+		const kept = host === "" || hostsInPool(hostList, sentPool).some((each) => each.id === host) ? host : "";
+		if (kept !== host) setHost(kept);
+		// What that pool's hosts offer, or the default pools' again: the sliders start over from its defaults.
+		setShapeChosen(false);
+		readShapesNow(kept, sentPool);
+	}, [open, sentPool, host, hostList, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
 	const type = newSandboxType(chosenKind, !noMicrovms);
@@ -1926,9 +2109,17 @@ export function NewSandboxDialog({
 				: { vcpus, memoryMb, ...disk };
 	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds, and any disk in range.
 	const hostError = hostProblem(hostList, kind, host);
+	const pooledHosts = hostsInPool(hostList, sentPool);
+	const pickedPool = choices?.find((each) => each.id === sentPool);
+	// A pool with no hosts can't take a sandbox: said here rather than refused once Create is pressed.
+	const poolError =
+		pickedPool !== undefined && pickedPool.hosts === 0
+			? `No host is in ${pickedPool.name} yet. Add one to it under Hosts, or pick another pool.`
+			: undefined;
 	const ready =
 		valid &&
 		hostError === undefined &&
+		poolError === undefined &&
 		shapesRead === "ready" &&
 		(ownShape || keepsMachine || shapeCreatable(shapes, kind, shape)) &&
 		!requested.pending &&
@@ -1944,16 +2135,17 @@ export function NewSandboxDialog({
 				shapeChosen,
 				from,
 				fromMemory: keepsMachine,
-				environment,
+				environments: environmentIds,
 				...(picked === undefined ? {} : { template: picked }),
 				autoStop,
 				idleStop,
 				host,
+				pool: sentPool,
 			}),
 		);
 		setName("");
 		setFrom("");
-		setEnvironment("");
+		setEnvironmentIds([]);
 		setTemplateId("");
 		setShapeChosen(false);
 	};
@@ -1994,10 +2186,14 @@ export function NewSandboxDialog({
 					/>
 					<span className="text-xs text-muted">
 						{noMicrovms
-							? "None of this organisation's hosts run microVMs, so only isolates can be made here."
+							? pickedPool !== undefined
+								? poolError !== undefined
+									? `No host is in ${pickedPool.name} yet, so nothing can be made in it.`
+									: `None of the hosts in ${pickedPool.name} run microVMs, so only isolates can be made in it.`
+								: "None of this organisation's hosts run microVMs, so only isolates can be made here."
 							: kind === "microvm"
 								? "A Firecracker microVM: root, Docker, systemd and /dev/kvm inside. Up in about a second."
-								: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
+								: "A shell with node and python for HTTP calls, data work and short scripts. Up in milliseconds, nearly free. No git, packages or Docker."}
 					</span>
 				</div>
 				{/* A requested template stays in view when an isolate was picked for the user, refused until they choose. */}
@@ -2038,7 +2234,7 @@ export function NewSandboxDialog({
 					<Notice
 						level="error"
 						action={
-							<Button size="sm" onClick={() => readShapesNow(host)}>
+							<Button size="sm" onClick={() => readShapesNow(host, sentPool)}>
 								Try again
 							</Button>
 						}
@@ -2088,7 +2284,31 @@ export function NewSandboxDialog({
 						}}
 					/>
 				)}
-				{hostList.length === 0 ? null : (
+				{choices === undefined ? null : (
+					<PoolPicker
+						pools={choices}
+						value={sentPool === "" ? (choices.find((each) => each.default)?.id ?? "") : sentPool}
+						onChange={(picked) => {
+							const next = choices.find((each) => each.id === picked)?.default === true ? "" : picked;
+							setPool(next);
+						}}
+						hint="It runs on this pool's hosts, and stays in the pool."
+						{...(poolError === undefined ? {} : { error: poolError })}
+					/>
+				)}
+				{poolsRead.status === "failed" ? (
+					<Notice
+						level="warning"
+						action={
+							<Button size="sm" onClick={readPools}>
+								Try again
+							</Button>
+						}
+					>
+						Kantel couldn't read the pools, so the sandbox goes in the default pool.
+					</Notice>
+				) : null}
+				{pooledHosts.length === 0 ? null : (
 					<SelectField
 						label="Host"
 						value={host}
@@ -2097,19 +2317,26 @@ export function NewSandboxDialog({
 							setHost(picked);
 							// What that host offers, or every host's again: the sliders start over from its defaults.
 							setShapeChosen(false);
-							readShapesNow(picked);
+							readShapesNow(picked, sentPool);
 						}}
-						options={hostOptions(hostList, kind, host)}
+						options={hostOptions(pooledHosts, kind, host)}
 						hint="It stays on the host it starts on."
 						{...(hostError === undefined ? {} : { error: hostError })}
 					/>
 				)}
 				{envs.length === 0 ? null : (
-					<SelectField
-						label="Environment"
-						value={environment}
-						onChange={(event) => setEnvironment(event.currentTarget.value)}
-						options={[{ value: "", label: "None" }, ...envs.map((env) => ({ value: env.id, label: env.name }))]}
+					<OrderedSelectField
+						label="Environments"
+						value={environmentIds}
+						onChange={setEnvironmentIds}
+						options={envs.map((env) => ({ value: env.id, label: env.name }))}
+						placeholder="Pick an environment"
+						max={MAX_SANDBOX_ENVIRONMENTS}
+						hint={
+							environmentIds.length > 1
+								? "In this order: where two set the same variable, file or repository, the later one wins. Grants add up."
+								: undefined
+						}
 					/>
 				)}
 				<SelectField

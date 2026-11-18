@@ -6,14 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
+	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -79,6 +83,7 @@ func (h *Host) Run(ctx context.Context, update Updater) error {
 	usageCtx, stopUsage := context.WithCancel(ctx)
 	defer stopUsage()
 	go h.RunUsage(usageCtx)
+	h.awaitIsolateRuntime(ctx, isolateRuntimeWait)
 	backoff := time.Second
 	for {
 		started := time.Now()
@@ -97,6 +102,99 @@ func (h *Host) Run(ctx context.Context, update Updater) error {
 		case <-time.After(wait):
 		}
 		backoff = min(backoff*2, 30*time.Second)
+	}
+}
+
+// isolateRuntimeWait is how long a starting host waits for its isolate runtime before its first hello.
+const isolateRuntimeWait = 30 * time.Second
+
+// awaitIsolateRuntime waits, at most wait, for the isolate tier to be ready (isolate.Manager.Prepare), so the first
+// hello's facts say what its runtime can do: the control plane reads node, python and enforced memory from them. A
+// template already made for the host's images is ready at once; a host that must make one connects without it after
+// wait, and reports it at its next hello.
+func (h *Host) awaitIsolateRuntime(ctx context.Context, wait time.Duration) {
+	iso, ok := h.tiers[isolate.Tier].(*isolate.Manager)
+	if !ok || iso.RuntimeInfo() != nil {
+		return
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-iso.Prepared():
+	case <-timer.C:
+		h.log.Warn("connecting before the isolate runtime is ready: its facts follow at the next connection")
+	case <-ctx.Done():
+	}
+}
+
+// isolateRuntimeCheck is how often a connection checks whether its hello's isolate runtime facts still hold.
+const isolateRuntimeCheck = 10 * time.Second
+
+// reconnectOnIsolateRuntime ends the connection (Run connects again, with a new hello) once what the isolate runtime
+// says it can do differs from what the hello said. Facts go only in a hello, so a runtime that became ready after
+// awaitIsolateRuntime gave up would otherwise go unreported, and the control plane say no isolate memory is enforced,
+// until the next reconnect.
+func (h *Host) reconnectOnIsolateRuntime(ctx context.Context, sent *proto.IsolateRuntime, every time.Duration, reconnect func()) {
+	iso, ok := h.tiers[isolate.Tier].(*isolate.Manager)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if now := iso.RuntimeInfo(); now != nil && (sent == nil || *now != *sent) {
+			h.log.Info("the isolate runtime's facts changed: reconnecting to report them")
+			reconnect()
+			return
+		}
+	}
+}
+
+// runtimesCheck is how often a connection checks whether its hello's microVM runtimes still hold.
+const runtimesCheck = time.Minute
+
+// runtimesBusyWait is the longest a reconnect to report new runtimes waits for the template builds under way: longer
+// than a build with a custom image may take (Kantel's TEMPLATE_IMAGE_BUILD_TIMEOUT_MS, 100 minutes).
+const runtimesBusyWait = 2 * time.Hour
+
+// reconnectOnRuntimes ends the connection (Run connects again, with a new hello) once the microVM runtimes the host
+// would report now (current: Facts.Runtimes) differ from what the hello said (sent): an image update adds one, a prune
+// takes one away, and a new Firecracker changes them all. Facts go only in a hello, so the control plane would
+// otherwise go on with the old ones until the next reconnect. A reconnect ends the calls under way, so it waits while
+// busy says template builds are (whose calls run for many minutes, and fail with the connection), up to busyWait.
+func reconnectOnRuntimes(ctx context.Context, log *slog.Logger, sent []proto.HostRuntime, every time.Duration, current func() []proto.HostRuntime, busy func() bool, reconnect func()) {
+	reconnectOnRuntimesWithin(ctx, log, sent, every, runtimesBusyWait, current, busy, reconnect)
+}
+
+func reconnectOnRuntimesWithin(ctx context.Context, log *slog.Logger, sent []proto.HostRuntime, every, busyWait time.Duration, current func() []proto.HostRuntime, busy func() bool, reconnect func()) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	var changedAt time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		now := current()
+		if slices.Equal(now, sent) {
+			changedAt = time.Time{}
+			continue
+		}
+		if changedAt.IsZero() {
+			changedAt = time.Now()
+		}
+		if busy() && time.Since(changedAt) < busyWait {
+			continue
+		}
+		log.Info("the microVM runtimes changed: reconnecting to report them", "had", len(sent), "have", len(now))
+		reconnect()
+		return
 	}
 }
 
@@ -141,9 +239,14 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		}
 		s.mu.Unlock()
 	}()
-	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.Facts(), Sandboxes: h.List(), Capacity: h.Capacity()}}
+	facts := h.Facts()
+	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: facts, Sandboxes: h.List(), Capacity: h.Capacity()}}
 	if err := s.send(ctx, hello); err != nil {
 		return err
+	}
+	go h.reconnectOnIsolateRuntime(ctx, facts.Isolate, isolateRuntimeCheck, cancel)
+	if _, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
+		go reconnectOnRuntimes(ctx, h.log, facts.Runtimes, runtimesCheck, h.runtimes, h.buildingTemplates, cancel)
 	}
 	kind, raw, err := ws.Read(ctx)
 	if err != nil {
@@ -170,6 +273,8 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	h.mu.Unlock()
 	// Mounts of sandboxes adopted at start can resolve their bucket sources now.
 	go h.reconcileMounts(ctx)
+	// Fetches a previous run left unfinished go on, now disk.locate can be asked.
+	go h.resumeFetches()
 	// Mounts that settled while no connection carried their event. In the background: a sandbox's lock can be held
 	// for a while (one mounting its bundles), and the connection's messages mustn't wait for it.
 	go h.replayMounts()
@@ -226,6 +331,11 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 		if m.Welcome != nil {
 			s.host.applyWelcome(ctx, m.Welcome, update)
 		}
+	case "mesh.peers":
+		// The pool's hosts now: the mesh's peers made to match.
+		if s.host.mesh != nil {
+			s.host.mesh.SetPeers(m.Peers)
+		}
 	case "usage.ack":
 		// Kantel has taken the usage ticks up to this one: the backlog lets them go.
 		s.host.usageAcked(uint64(max(m.Acked, 0)))
@@ -244,6 +354,16 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
 	h.followImages(ctx, w.Images)
+	// The mesh and the peer sync server follow one welcome at a time: the server listens where the mesh is now.
+	h.welcomeMu.Lock()
+	if h.mesh != nil {
+		// Up with the welcome's mesh, or down without one (the host's pool has sync off).
+		if err := h.mesh.Apply(w.Mesh); err != nil {
+			h.log.Error("the mesh couldn't be brought up", "error", err)
+		}
+	}
+	h.followPeerSync(w)
+	h.welcomeMu.Unlock()
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {
@@ -263,6 +383,18 @@ func (h *Host) gatewayUpdate(ctx context.Context, p proto.UpdateParams, update U
 }
 
 func toError(err error) *proto.Error {
+	pe := protoError(err)
+	// A start that let go of the sandbox's memory before it failed says so (FeatureStartMemoryDropped).
+	var dropped *proto.MemoryDroppedError
+	if errors.As(err, &dropped) && !pe.MemoryDropped {
+		out := *pe
+		out.MemoryDropped = true
+		return &out
+	}
+	return pe
+}
+
+func protoError(err error) *proto.Error {
 	var pe *proto.Error
 	if errors.As(err, &pe) {
 		return pe
@@ -274,6 +406,10 @@ func toError(err error) *proto.Error {
 }
 
 func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
+	if m.Method == proto.MethodTemplateBuild {
+		s.host.templateBuilds.Add(1)
+		defer s.host.templateBuilds.Add(-1)
+	}
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error

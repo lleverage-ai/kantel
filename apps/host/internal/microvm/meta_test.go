@@ -49,6 +49,45 @@ func TestARetriedBootSavesWhatTheFailedOneCouldNot(t *testing.T) {
 	}
 }
 
+// sandbox.env replaces a sandbox's whole env in meta.json, stopped or running: what its identity carries from its next
+// boot and what a fork with none of its own inherits. An empty one leaves none.
+func TestSetEnvReplacesTheRecordedEnv(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sbx_1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &sandbox{meta: meta{ID: "sbx_1", State: proto.StateStopped, Env: map[string]string{"OLD": "1"}}, dir: dir}
+	m := &Manager{sandboxes: map[string]*sandbox{"sbx_1": s}}
+	read := func() meta {
+		raw, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got meta
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	given := map[string]string{"NEW": "2"}
+	if err := m.SetEnv("sbx_1", given); err != nil {
+		t.Fatal(err)
+	}
+	given["NEW"] = "changed by the caller"
+	if got := read(); len(got.Env) != 1 || got.Env["NEW"] != "2" || s.meta.Env["NEW"] != "2" || got.State != proto.StateStopped {
+		t.Fatalf("meta.json %+v, in memory %v", got, s.meta.Env)
+	}
+	if err := m.SetEnv("sbx_1", map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read().Env; got != nil || s.meta.Env != nil {
+		t.Fatalf("an empty env kept %v", got)
+	}
+	if err := m.SetEnv("sbx_nope", nil); err == nil {
+		t.Fatal("an unknown sandbox's env was set")
+	}
+}
+
 func TestLiveSnapshotRefusesABadIDBeforeWriting(t *testing.T) {
 	root := t.TempDir()
 	m := &Manager{cfg: Config{Root: root}}

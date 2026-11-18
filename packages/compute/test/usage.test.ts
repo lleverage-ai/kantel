@@ -10,7 +10,7 @@ import type { SandboxBackend, UsageSample } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { FALLBACK_INTERVAL_MS, HOURLY_SAMPLES, keptSamples, MAX_SAMPLES, spanMean } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore } from "../src/store.ts";
+import { type AnyOf, type ComputeStore, createMemoryStore, type StoredSandbox } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID, stubReading } from "../src/stub-backend.ts";
 import {
 	createUsageSeries,
@@ -761,11 +761,11 @@ describe("usage ticks across gateway replicas over one store", () => {
 			clock += USAGE_INTERVAL_MS;
 			await a.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
 		};
-		const put = store.events.put.bind(store.events);
+		const put = store.eventWrites.put.bind(store.eventWrites);
 		await on(0);
 		// The event's write fails: the kill stays pending, and the tick is still taken.
 		let failing = 1;
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("store unavailable");
 			return put(event);
 		};
@@ -781,7 +781,7 @@ describe("usage ticks across gateway replicas over one store", () => {
 		await on(2);
 		expect(await oomEvents(tom, id)).toEqual([1, 1]);
 		// Written, but its answer lost: stored again under the same ID, so still one event.
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			await put(event);
 			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("answer lost");
 		};
@@ -800,10 +800,10 @@ describe("usage ticks across gateway replicas over one store", () => {
 			clock += USAGE_INTERVAL_MS;
 			await a.service.recordUsage(STUB_HOST_ID, tick(clock, [oom(id, kills)]));
 		};
-		const put = store.events.put.bind(store.events);
+		const put = store.eventWrites.put.bind(store.eventWrites);
 		await on(0);
 		let failing = 3;
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.oom_kill" && failing-- > 0) throw new Error("store unavailable");
 			return put(event);
 		};
@@ -827,13 +827,13 @@ describe("usage ticks across gateway replicas over one store", () => {
 		};
 		await on(a, 0);
 		// A's write of its event is slow; meanwhile the host moves to B, which stores it too and counts a kill since.
-		const put = store.events.put.bind(store.events);
+		const put = store.eventWrites.put.bind(store.eventWrites);
 		let release: () => void = () => undefined;
 		const slow = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		let first = true;
-		store.events.put = async (event) => {
+		store.eventWrites.put = async (event) => {
 			if (event.type === "sandbox.oom_kill" && first) {
 				first = false;
 				await slow;
@@ -1696,5 +1696,51 @@ describe("the stub's own ticks", () => {
 		expect(host.memTotalBytes).toBeGreaterThan(0);
 		expect(stubReading("sbx_a", 1_000_000, 0)).toEqual(stubReading("sbx_a", 1_000_000, 0));
 		expect(stubReading("sbx_a", 1_000_000, 0)).not.toEqual(stubReading("sbx_b", 1_000_000, 0));
+	});
+});
+
+describe("a host's tick", () => {
+	it("reads the host's sandboxes without its deleted ones", async () => {
+		let clock = Date.UTC(2026, 10, 16, 13, 0, 0);
+		const { backend } = hostless(() => clock);
+		const store = createMemoryStore();
+		const reads: { readonly where: Partial<StoredSandbox>; readonly anyOf?: AnyOf<StoredSandbox> }[] = [];
+		const watched: ComputeStore = {
+			...store,
+			sandboxes: {
+				...store.sandboxes,
+				list: (where, anyOf) => {
+					reads.push({ where: { ...where }, ...(anyOf === undefined ? {} : { anyOf }) });
+					return store.sandboxes.list(where, anyOf);
+				},
+			},
+		};
+		const { api, tom } = setup(backend, () => clock, watched);
+		const box = await tom.createSandbox({ wait: true });
+		const gone = await tom.createSandbox({ wait: true });
+		await tom.deleteSandbox(gone.id);
+		expect((await store.sandboxes.get(gone.id))?.state).toBe("deleted");
+
+		reads.splice(0);
+		const reading = (id: string) => ({
+			id,
+			kind: "microvm" as const,
+			cpu: 0.2,
+			memUsedBytes: 100 * MIB,
+			memLimitBytes: 0,
+		});
+		for (let at = clock; at < clock + 3 * USAGE_INTERVAL_MS; at += USAGE_INTERVAL_MS) {
+			await api.service.recordUsage(STUB_HOST_ID, tick(at, [reading(box.id), reading(gone.id)]));
+		}
+		const byHost = reads.filter(({ where }) => where.hostId === STUB_HOST_ID);
+		expect(byHost.length).toBeGreaterThan(0);
+		for (const { anyOf } of byHost) {
+			expect(anyOf?.state).toContain("running");
+			expect(anyOf?.state).not.toContain("deleted");
+		}
+		// The live sandbox's readings are taken; the deleted one's aren't.
+		clock += 3 * USAGE_INTERVAL_MS;
+		const since = clock - 10 * USAGE_INTERVAL_MS;
+		expect((await tom.getSandboxUsage(box.id, { since })).series.points).toHaveLength(3);
 	});
 });

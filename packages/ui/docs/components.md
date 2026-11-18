@@ -237,18 +237,20 @@ row scrolls sideways when the tabs don't fit, as on a phone.
 ### SideScroll
 
 **For** content that is wider than its column and scrolls sideways: a table with more columns than the window has
-room for. A plain `overflow-x-auto` puts its scrollbar at the content's bottom, which in a long list is below the
-window, so nobody knows there is more to the right. `SideScroll` hides that bar and draws its own as its next sibling,
-sticky to the bottom of whatever scrolls the page, back under the content once its end is in view. An edge with more
-past it casts a shadow inward from that edge (`--kt-shadow-edge-*`), which shades the cut-off column under its text
-rather than over it. `surface` (`raised` for a card, `canvas` for a table on the page) is the ground a stuck header
-row is painted in. With nothing to scroll there is no bar and no shadow. `className` styles the scroller itself; wheel, trackpad, touch and keys scroll it as usual.
+room for. Its own scrollbar shows inside its frame. In a long list that bar is below the window, so nobody would know
+there is more to the right: while it is out of view, a pinned bar shows at the bottom of whatever scrolls the page, and
+it goes once the scroller's own bar comes into view, so one bar shows at a time. An edge with more past it fades the
+content into its ground; the fade deepens over the first 32px of scroll and thins over the last 32px, so it never
+switches on or off. `surface` (`raised` for a card, `canvas` for a table on the page) is the ground the fades, the pinned
+bar and a stuck header row are painted in. With nothing to scroll there is no bar and no fade. `className` styles the
+scroller itself, which sits with its fades and pinned bar in a wrapper of their own; wheel, trackpad, touch and keys
+scroll it as usual.
 
 `fill`, for a page that is a list (Sandboxes, Snapshots, Environments, the egress log; `TableFrame` passes it on): the
 content takes the room its page leaves under the header, filters and notices, and scrolls down in it too, so New and
-the filters stay in view down a long list. While it scrolls down, its table's header row sticks and its own vertical
-scrollbar shows; the pinned bar stays its horizontal one, so its height doesn't change with the bars it shows and it
-can't flicker between them (Firefox, which can't hide one axis, shows both of its own beside it). Every flex column from the console's page down to it carries `kt-fill`
+the filters stay in view down a long list. Its bottom is then always in view, so it shows its own scrollbars inside its
+frame and the pinned bar doesn't show, and while it scrolls down its table's header row sticks. Every flex column from the
+console's page down to it carries `kt-fill`
 (`tokens/base.css`), which lets one holding a filling table shrink; the rest keep their height. A short list stays
 as tall as its rows. A phone (the console puts no `kt-fill` on its page), a window under 36rem tall, and a table shown
 as cards all scroll the page as before.
@@ -278,6 +280,19 @@ and an optional hint, read as its description.
 
 **Not for** a setting that applies the moment it changes (use a `Switch`), or a choice of one from several (use a
 `SegmentedControl` or a `SelectField`).
+
+### OrderedSelectField
+
+**For** a choice of several from a list where their order matters: a new sandbox's environments, where the later one
+wins. The ones picked are a numbered list, each with a cross that takes it out (focus moves to the select); under them
+the browser's own select and Add put one more at the end. Add, or Enter in the select, adds: not the select's change,
+which a closed select fires on every arrow key. An option picked already isn't offered again; `max` takes the select
+away once that many are picked. A picked value no longer among the options is still listed, by its value.
+
+**Not for** a choice of one (use a `SelectField`), an unordered set of a few (use `CheckboxField`s), or reordering a
+long list.
+
+**Costs** nothing beyond its elements: no listeners or timers.
 
 ### Switch
 
@@ -378,10 +393,157 @@ memory shows nothing.
 
 **Cost:** none: the host sends it with every heartbeat.
 
+### Pools on the Hosts page
+
+The hosts grouped by the pool they are in (`src/compute/host-pools.tsx`), where the `HostsSource` has `pools`. Each
+pool has a heading over its hosts (`PoolHeading`): its name, which wraps rather than being cut short, Default on the
+default pool, a line of what its hosts hold (hosts, online, vCPU in use of the total, sandboxes), and its menu: Add host
+here, Rename, Make default (not on the default) and Delete, greyed out with why ("Default", "Has hosts") unless the pool
+is empty and not the default. A pool with no hosts says so under its heading, with Add host here (`EmptyPool`). The
+default pool comes first, then the rest by name, and a host in no pool the page has read is in the default, as Kantel
+puts it. Every pool shows, even with no hosts at all, so a new account's one pool can be renamed. On a super-admin's
+page, accounts' own hosts are in their accounts' pools, not the deployment's: they're listed after the deployment's
+pools under their own heading (`AccountHostsHeading`), with no pool menu and no Move to pool. New pool and Rename take a name the API takes (lower-case letters, digits and dashes), checked as it's typed
+(`PoolNameDialog`); Delete asks first, and says that a join command made for the pool and not yet used still works,
+its host joining the default (`DeletePoolDialog`). Make default runs one change at a time, greyed out on every pool
+while one is under way (`oneAtATime`), as Kantel makes the change it handles last the default.
+
+A host's menu has Move to pool where the source has `move` and there's another pool. Kantel moves only a drained host
+with no sandboxes, so `MoveHostDialog` says so first, then what stands in the way as the page last read it (not
+drained, with a Drain button; or drained with sandboxes left), then the pool to move it to. Kantel checks again as it
+moves it, and its reason shows in the dialog as an error notice when it refuses. A moved host stays drained.
+
+Add host has a pool picker (`PoolPicker`) where there is more than one pool, starting on the default, or on the pool
+whose menu opened it; the pool goes with the join token, so changing it makes the command again. With one pool there
+is no picker and the host joins the default. Where the pools can't be read, the page lists the hosts ungrouped under
+an error notice with Try again, and Add host says the host joins the default pool; a later read that fails keeps the
+pools last read, so a pool chosen in Add host stays chosen. A source with no `pools` (an older gateway) lists the hosts
+ungrouped with no pool actions.
+
+**Don't use it for** where a sandbox goes when it's created (New sandbox's pool picker, below) or a host's labels.
+
+**States:** many pools with an empty one, one pool, one pool with no hosts, long names, pools that can't be read, no
+pools, accounts' own hosts on a super-admin's page, New pool, Rename, Delete, Move to pool (not drained, with sandboxes,
+ready), Add host in a pool and with one pool, and a phone; all in the Hosts page's stories.
+
+**Cost:** one read of the pools with each read of the hosts (when the page opens, then every minute), and one after
+each change made on it.
+
+### New sandbox's pool picker
+
+New sandbox (`NewSandboxDialog` in `src/compute/sandboxes-page.tsx`) picks the pool a sandbox goes in with the Hosts
+page's `PoolPicker`, where the `SandboxesSource` has `pools` and the account has more than one, starting on the default
+(or on the page's `pool`). With one pool, while the pools are being read, or with none (account hosts off) there is no
+picker and nothing else changes: the sandbox goes in the default pool. The default sends no `pool`, so a create goes
+where one naming none goes, the deployment's shared hosts included; another pool goes as `pool`, and the sandbox runs on
+that pool's hosts and stays in it. Picking a pool reads the sizes again for its hosts (`shapes` with the pool), and the
+host picker then offers only that pool's hosts, letting go of a host picked in another. A pool with no hosts says so
+under the picker, and Create waits for another. Where the pools can't be read, a warning notice says the sandbox goes in
+the default pool, with Try again. When Kantel refuses the create (none of the pool's hosts can take it now), its reason,
+which names the pool, shows in the error notice over the list.
+
+**Don't use it for** a host's pool (the Hosts page's Move to pool and Add host).
+
+**States:** several pools, one pool (no picker), a pool picked, an empty pool, a refusal naming the pool, the pools
+being read, the pools not read, long names and a phone; the Sandboxes page's `Create…` stories.
+
+**Cost:** one read of the pools the first time New sandbox opens, and a read of the sizes each time the pool changes.
+
+### HostPeers
+
+A host's mesh peers (`src/compute/host-peers.tsx`), under its disk when its row on the Hosts page is opened: each other
+host of its pool by name (its ID where the page has no name for it), whether the host reaches it, the path (direct, or
+none), the endpoint it uses, its last handshake as a relative time and the round trip of its last probe, as the host
+last reported them. A peer is unreachable when its path is none or its last handshake is more than 5 minutes old
+(`meshPeerReachable`: the host's own 3 minutes and a heartbeat or two); unreachable peers come first, in the error
+colour, and the heading counts them. `narrow` gives a short row per peer instead of the table. A host without a mesh
+(its pool's sync off, or an older host agent) says so plainly, as does one that isn't connected, and one alone on its
+pool's mesh says it has no peers yet.
+
+**Don't use it for** a pool's mesh as a whole (each host shows its own view of it) or a sandbox's network.
+
+**States:** reachable, unreachable (no path, a stale handshake, never shaken hands), many peers, long names, no peers,
+no mesh, not connected, and a phone; all in its stories. Loading and a failed read are the Hosts page's, whose list
+brings the peers.
+
+**Cost:** none: the host sends it with every heartbeat.
+
+### HostEvacuationPanel and EvacuateDialog
+
+Move sandboxes off a host (`src/compute/host-evacuation.tsx`), from Move sandboxes off in its ⋯ menu on the Hosts page
+where the `HostsSource` has `evacuate`: `EvacuateDialog` says what it does (the host is drained, each sandbox moves to
+another host in its pool two at a time, keeping its memory where the hosts match and restarting otherwise, and any that
+can't move stay with the reason), then begins it and opens the host's row. `HostEvacuationPanel`, at the top of the
+opened row of a draining host or one that has had an evacuation (`HostEvacuationSection` reads it from
+`HostsSource.evacuation`, every 2 seconds while it runs), shows a heading with its state in words (2 of 8 sandboxes
+moved; Done; Ended, with what failed; Stopped, as an undrain does), a bar of how much has ended while it runs, and a row
+per sandbox: its name (A private sandbox, where the viewer may not see it) and ID, its state (Waiting, the move's phase
+worded as Move to host words it, Moved to the host by name, Skipped, Failed) and the detail: whether its memory was kept
+or why it restarted, and why it was skipped or failed. Before one begins it says what it does, with Move sandboxes off;
+after one failed or stopped, it offers it again (Try again). The host's row shows the count under its state while it
+runs (`evacuationRowText`). `narrow` gives a short row per sandbox instead of the table.
+
+**Don't use it for** moving one sandbox (`MoveDialog`) or a host to another pool (Move to pool).
+
+**States:** idle, idle while away, in progress (copying, a last copy, waiting, moved with memory kept and restarted),
+some skipped with reasons (kept to its host, an isolate, in error) and a private sandbox, done, done with nothing on
+it, failed (a move, and the host revoked), stopped, loading, a failed read, long content, a phone, and the dialog and
+its refusal; all in its stories. The Hosts page's stories open the dialog on a phone and a wide screen.
+
+**Cost:** one read of the evacuation when a draining host's row opens, then one every 2 seconds while it runs; the page
+reads the hosts every 5 seconds meanwhile, for the rows' counts.
+
+### SnapshotHosts and SnapshotCopiesSwitch
+
+A saved snapshot's hosts (`src/compute/snapshot-hosts.tsx`), in a dialog from Hosts in its menu on the Snapshots page:
+the host it was saved on first, then each with a copy or fetching one, as they last reported. Each row is the host's
+name, Held or Fetching, and for a snapshot saved with memory, whether a sandbox made from it there restores it (With
+memory) or starts from the disk (Disk only). A shared host, for anyone but a super-admin, is listed as Shared host,
+since the API doesn't name it. `SavedSnapshotHosts` reads them from `SnapshotsSource.hosts`: a skeleton while it does,
+the reason with Try again where it can't, and a line where the gateway is from before it.
+
+`SnapshotCopiesSwitch` is the account's Keep saved snapshots on two hosts (`snapshotCopies`): on an organisation's
+General page and, for the personal account, on Profile. It applies at once, keeps what Kantel answers as saved, and
+is read only for a member. Neither shows where the account doesn't say (a gateway from before it).
+
+**Don't use it for** a host's own disk (use `HostDiskUsage`) or an automatic snapshot, which is on its sandbox's host
+alone.
+
+**States:** loading, one host, two hosts, fetching, with memory, shared hosts, not on a host yet, long names, a failed
+read, an older gateway and a phone; the switch on, off, read only and refused. All in its stories.
+
+**Cost:** one read of the snapshot (`getSnapshot`) each time its hosts open.
+
+### MoveDialog
+
+Move to host (`src/compute/sandbox-move.tsx`), from a microVM's menu on its page and its row in the Sandboxes list,
+where the `SandboxesSource` has `move` and `moveTargets`. The item is there for every microVM, greyed out unless it can
+move now (`canMove`: running, stopped or paused, on a host the viewer can see, connected). The dialog lists the hosts it may move
+to (`moveTargets`: the other hosts of its pool that run microVMs), one radio row each with the host's name, cut short
+with the whole name in its tooltip, and what a move there does: Keeps memory or Restarts, and the pause Kantel expects
+(`pauseMs`) where it gives one. Until Kantel answers a move's dry run, `memory` and `pauseMs` are absent: every host
+says Restarts and there is no pause. Where the chosen host keeps memory, Restart it instead sends `keepMemory: false`.
+A paused sandbox whose chosen host restarts it says its memory is lost.
+
+Move switches the dialog to the move's progress: its phase from the sandbox's reads (`moving` and its `move`), worded by
+`movePhaseText` (`copying`, `starting`, and a running sandbox's `stopping` and `final-copy`; a phase it doesn't know
+reads as Kantel names it), with the time it has taken. Close leaves it moving: the page shows Moving, and on the sandbox's
+page its phase, and the result comes as the page's notice, also when the dialog went because a list's filter took its
+row away. A failure keeps the dialog open with Kantel's reason and the hosts to try again; the sandbox is where it was.
+
+**Don't use it for** a host's pool (the Hosts page's Move to pool) or where a new sandbox goes (New sandbox's pickers).
+
+**States:** loading, no hosts, several hosts, the dry run (memory kept, a pause), paused, in progress and each phase
+(copying, starting, stopping, final copy, one it doesn't know), failed with the reason (in the dialog, and on the page
+once the dialog has gone), hosts not read, long names and a phone; all in its stories.
+
+**Cost:** one read of the hosts each time it opens (`listHosts`, or the account's own); while it moves, the page reads the
+sandbox as it does for any state change.
+
 ### SandboxStateLabel
 
 A sandbox's state in words with its status dot (`src/compute/parts.tsx`), as the Sandboxes list and a sandbox's page
-show it: its lifecycle state in its colour, "Unresponsive" in the error colour for a running one whose guest agent
+show it: its lifecycle state in its colour (Moving, pulsing, while it moves to another host), "Unresponsive" in the error colour for a running one whose guest agent
 doesn't answer, and "Host unreachable" in the warning colour for one whose host isn't connected to Kantel
 (`showsHostUnreachable`: starting, running, stopping or paused; a stopped one, or one in error, keeps its state). With
 its host away, the page says why in a warning notice and offers only Stop (`sandboxActions`), and the pages read it
@@ -393,3 +555,19 @@ again every 15 seconds besides the live feed's word.
 `HostUnreachable` stories, on a wide screen and a phone.
 
 **Cost:** none: it shows what the sandbox's answer says (`hostReachable`).
+
+### SandboxEnvironments
+
+A sandbox's environments (`src/compute/sandbox-environments.tsx`), on its Overview after its ports: in order, each a
+link to the environment. Under each, quietly, what it loses to a later one (or to the sandbox's own env): variables,
+secret files and repositories set by a later one instead. "On next start" marks one attached while the sandbox was
+stopped, whose files and repositories come when it next starts. Attach picks one of the account's environments and
+puts it last, so it wins; Detach asks first, since the environment's protected variables stop resolving at once.
+Without the source's `environments` the section isn't shown; without the account's list there's no Attach.
+
+**Don't use it for** editing an environment (its own page) or a sandbox's egress grants (its Egress tab).
+
+**States:** several, shadowed, pending, one, none, loading, error, attaching, an attach refused, nothing left to
+attach, long content and a phone; all in its stories.
+
+**Cost:** one read when the page opens, and again when the sandbox starts or stops or its environments change.

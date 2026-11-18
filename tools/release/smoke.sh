@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # smoke.sh <version> [out]: checks what pack.sh wrote to out (default dist/release) before anything is published:
 #   - SHA256SUMS matches the release's files, and lists each of them;
-#   - kantel-host (this machine's architecture), kantel.js, kantel-admin.js and the npm package's kantel all print
-#     <version>;
+#   - kantel-host, kantel and kantel-admin (this machine's architecture) print <version>, and the macOS binaries are
+#     Mach-O ones;
 #   - install.sh, pointed at out/github, downloads this machine's kantel-host, checks it against SHA256SUMS and installs
 #     it (--no-join), refuses a binary whose SHA-256 doesn't match, hands its options on to `kantel-host install`
 #     (with a stand-in binary), and refuses to join without root;
 #   - install-cli.sh, pointed at out/github with a HOME of its own, installs kantel and kantel-admin that print
-#     <version>, again over the first, and into --dir; it refuses a file whose SHA-256 doesn't match and a Node.js
-#     older than 22;
-# Runs on Linux x86_64 or arm64, such as the release workflow's runner, as a user other than root.
+#     <version>, again over the first (an update), over a Node.js release's install, and into --dir; it refuses a
+#     binary whose SHA-256 doesn't match, and a link it didn't make;
+#   - `kantel update`, pointed at out/github, replaces kantel (and kantel-admin beside it) with the release's, and
+#     refuses a binary whose SHA-256 doesn't match.
+# Runs on Linux x86_64 or arm64, such as the release workflow's runner, as a user other than root. kantel-admin is
+# checked when apps/cli/cmd/kantel-admin is there (pack.sh skips it until it is).
 set -euo pipefail
 
 version=${1:?usage: smoke.sh <version> [out]}
@@ -32,10 +35,24 @@ expect() {
 	echo "ok      $what $got"
 }
 
+admin=0
+[[ -d "$root/apps/cli/cmd/kantel-admin" ]] && admin=1
+platforms=(linux-amd64 linux-arm64 darwin-amd64 darwin-arm64)
+files=(kantel-host-linux-amd64 kantel-host-linux-arm64 install.sh install-cli.sh)
+for platform in "${platforms[@]}"; do
+	files+=("kantel-$platform")
+	[[ "$admin" == 1 ]] && files+=("kantel-admin-$platform")
+done
 (cd "$github" && sha256sum --check --strict SHA256SUMS) || fail "SHA256SUMS doesn't match the files"
-for file in kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js install.sh install-cli.sh; do
+for file in "${files[@]}"; do
+	[[ -f "$github/$file" ]] || fail "there is no $file"
 	grep -q "  $file\$" "$github/SHA256SUMS" || fail "SHA256SUMS has no line for $file"
 done
+for file in "$github"/*-darwin-*; do
+	# A 64-bit Mach-O binary starts cf fa ed fe.
+	[[ "$(head -c 4 "$file" | od -An -tx1 | tr -d ' \n')" == cffaedfe ]] || fail "$(basename "$file") isn't a macOS binary"
+done
+echo "ok      the macOS binaries are Mach-O"
 
 case "$(uname -m)" in
 	x86_64) arch=amd64 ;;
@@ -43,10 +60,9 @@ case "$(uname -m)" in
 	*) fail "runs on x86_64 or arm64, not $(uname -m)" ;;
 esac
 expect "kantel-host-linux-$arch" "$github/kantel-host-linux-$arch" version
-expect "kantel.js" node "$github/kantel.js" --version
-expect "kantel-admin.js" node "$github/kantel-admin.js" version
-tar -xzf "$out"/npm/kantel-*.tgz -C "$work"
-expect "kantel (npm)" node "$work/package/kantel.js" --version
+expect "kantel-linux-$arch" "$github/kantel-linux-$arch" --version
+expect "kantel-linux-$arch version" "$github/kantel-linux-$arch" version
+[[ "$admin" == 1 ]] && expect "kantel-admin-linux-$arch" "$github/kantel-admin-linux-$arch" --version
 
 # install.sh: the happy path, with curl reading the files from disk.
 export KANTEL_RELEASE_URL="file://$github"
@@ -111,45 +127,93 @@ if [[ "$(id -u)" != 0 ]]; then
 	echo "ok      install.sh needs root to join"
 fi
 
-# install-cli.sh: for a user of its own, whose HOME has a package.json without "type" (the commands must still run as
-# ES modules), with curl reading the files from disk. It installs kantel alone, then kantel-admin with --admin, then
-# again with no flag (an update), which keeps kantel-admin up to date.
+# install-cli.sh: for a user of its own, with curl reading the files from disk. It installs kantel alone, then
+# kantel-admin with --admin, then again with no flag (an update), which keeps kantel-admin up to date.
 cli_home="$work/cli-home"
 mkdir -p "$cli_home"
-echo '{}' >"$cli_home/package.json"
 HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh failed: $(cat "$work/err")"
 expect "install-cli.sh, then kantel" "$cli_home/.local/bin/kantel" --version
+[[ -f "$cli_home/.local/bin/kantel" && ! -L "$cli_home/.local/bin/kantel" ]] || fail "install-cli.sh didn't install a binary"
 [[ ! -e "$cli_home/.local/bin/kantel-admin" ]] || fail "install-cli.sh installed kantel-admin without --admin"
-HOME="$cli_home" sh "$github/install-cli.sh" --admin 2>"$work/err" ||
-	fail "install-cli.sh --admin failed: $(cat "$work/err")"
-touch -d 2000-01-01 "$cli_home/.local/share/kantel/kantel-admin.mjs"
+grep -q "isn't on your PATH" "$work/err" || fail "install-cli.sh didn't say ~/.local/bin isn't on the PATH"
+grep -q "fish_add_path $cli_home/.local/bin" "$work/err" || fail "install-cli.sh didn't say how to add it in fish"
+if [[ "$admin" == 1 ]]; then
+	HOME="$cli_home" sh "$github/install-cli.sh" --admin 2>"$work/err" ||
+		fail "install-cli.sh --admin failed: $(cat "$work/err")"
+	expect "install-cli.sh --admin, then kantel-admin" "$cli_home/.local/bin/kantel-admin" --version
+	touch -d 2000-01-01 "$cli_home/.local/bin/kantel-admin"
+fi
+touch -d 2000-01-01 "$cli_home/.local/bin/kantel"
 touch -d 2001-01-01 "$work/before-update"
 HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh (update) failed: $(cat "$work/err")"
-[[ "$cli_home/.local/share/kantel/kantel-admin.mjs" -nt "$work/before-update" ]] ||
-	fail "install-cli.sh (update) didn't update the kantel-admin it installed before"
-grep -q "isn't on your PATH" "$work/err" || fail "install-cli.sh didn't say ~/.local/bin isn't on the PATH"
-expect "install-cli.sh, then kantel" "$cli_home/.local/bin/kantel" --version
-expect "install-cli.sh, then kantel-admin" "$cli_home/.local/bin/kantel-admin" --version
+[[ "$cli_home/.local/bin/kantel" -nt "$work/before-update" ]] || fail "install-cli.sh (update) didn't update kantel"
+if [[ "$admin" == 1 ]]; then
+	[[ "$cli_home/.local/bin/kantel-admin" -nt "$work/before-update" ]] ||
+		fail "install-cli.sh (update) didn't update the kantel-admin it installed before"
+	expect "install-cli.sh (update), then kantel-admin" "$cli_home/.local/bin/kantel-admin" --version
+fi
+expect "install-cli.sh (update), then kantel" "$cli_home/.local/bin/kantel" --version
 
 HOME="$cli_home" sh "$github/install-cli.sh" --no-admin --dir "$work/cli-bin" 2>"$work/err" ||
 	fail "install-cli.sh --dir failed: $(cat "$work/err")"
 expect "install-cli.sh --dir, then kantel" "$work/cli-bin/kantel" --version
 [[ ! -e "$work/cli-bin/kantel-admin" ]] || fail "install-cli.sh --no-admin installed kantel-admin"
 
-# A file that doesn't match SHA256SUMS must not be installed.
-printf 'x' >>"$work/bad/kantel.js"
+# Over a Node.js release's install: ~/.local/bin/kantel a link to ~/.local/share/kantel/kantel.mjs. The binary takes
+# the link's place and the .mjs goes.
+node_home="$work/node-home"
+mkdir -p "$node_home/.local/share/kantel" "$node_home/.local/bin"
+printf '#!/usr/bin/env node\n' >"$node_home/.local/share/kantel/kantel.mjs"
+ln -s "$node_home/.local/share/kantel/kantel.mjs" "$node_home/.local/bin/kantel"
+HOME="$node_home" sh "$github/install-cli.sh" 2>"$work/err" ||
+	fail "install-cli.sh over a Node.js install failed: $(cat "$work/err")"
+[[ ! -L "$node_home/.local/bin/kantel" ]] || fail "install-cli.sh left the Node.js release's link"
+[[ ! -e "$node_home/.local/share/kantel" ]] || fail "install-cli.sh left the Node.js release's files"
+expect "install-cli.sh over a Node.js install, then kantel" "$node_home/.local/bin/kantel" --version
+echo "ok      install-cli.sh replaces a Node.js release's install"
+
+# A link it didn't make is left alone.
+mkdir -p "$work/other-bin"
+ln -s /bin/true "$work/other-bin/kantel"
+if HOME="$work/other-home" sh "$github/install-cli.sh" --dir "$work/other-bin" 2>"$work/err"; then
+	fail "install-cli.sh replaced a link it didn't make"
+fi
+grep -q "that this script didn't make" "$work/err" || fail "install-cli.sh failed, but not on the link: $(cat "$work/err")"
+echo "ok      install-cli.sh leaves a link it didn't make alone"
+
+# A binary that doesn't match SHA256SUMS must not be installed.
+printf 'x' >>"$work/bad/kantel-linux-$arch"
 if KANTEL_RELEASE_URL="file://$work/bad" HOME="$work/cli-bad" sh "$github/install-cli.sh" 2>"$work/err"; then
-	fail "install-cli.sh installed a kantel.js whose SHA-256 doesn't match"
+	fail "install-cli.sh installed a kantel whose SHA-256 doesn't match"
 fi
 grep -q "SHA256SUMS says" "$work/err" || fail "install-cli.sh failed, but not on the checksum: $(cat "$work/err")"
 [[ ! -e "$work/cli-bad/.local/bin/kantel" ]] || fail "install-cli.sh left a kantel that doesn't match"
-echo "ok      install-cli.sh refuses a file that doesn't match SHA256SUMS"
+echo "ok      install-cli.sh refuses a binary that doesn't match SHA256SUMS"
 
-# An older Node.js can't run the commands.
-printf '#!/bin/sh\necho 20.18.0\n' >"$work/shim/node"
-chmod 755 "$work/shim/node"
-if PATH="$work/shim:$PATH" HOME="$work/cli-old" sh "$github/install-cli.sh" 2>"$work/err"; then
-	fail "install-cli.sh installed for Node.js 20"
+# kantel update, from the release's files on disk: up to date, then --force replaces kantel (and kantel-admin beside
+# it) through a link, atomically, and refuses a binary that doesn't match SHA256SUMS.
+up="$work/update"
+mkdir -p "$up/real" "$up/bin"
+cp "$github/kantel-linux-$arch" "$up/real/kantel"
+[[ "$admin" == 1 ]] && cp "$github/kantel-admin-linux-$arch" "$up/real/kantel-admin"
+ln -s "$up/real/kantel" "$up/bin/kantel"
+got=$(KANTEL_RELEASE_URL="file://$github" "$up/bin/kantel" update 2>"$work/err") ||
+	fail "kantel update failed: $(cat "$work/err")"
+[[ "$got" == "kantel $version is up to date." ]] || fail "kantel update said '$got'"
+touch -d 2000-01-01 "$up/real/kantel"
+KANTEL_RELEASE_URL="file://$github" "$up/bin/kantel" update --force >"$work/out" 2>"$work/err" ||
+	fail "kantel update --force failed: $(cat "$work/err")"
+[[ "$up/real/kantel" -nt "$work/before-update" && -L "$up/bin/kantel" ]] || fail "kantel update didn't replace kantel"
+grep -q "Updated kantel to $version: $up/real/kantel" "$work/out" || fail "kantel update said: $(cat "$work/out")"
+if [[ "$admin" == 1 ]]; then
+	grep -q "Updated kantel-admin to $version" "$work/out" || fail "kantel update didn't update kantel-admin"
 fi
-grep -q "needs Node.js 22 or later" "$work/err" || fail "install-cli.sh failed, but not on Node's version: $(cat "$work/err")"
-echo "ok      install-cli.sh needs Node.js 22 or later"
+expect "kantel update --force, then kantel" "$up/bin/kantel" --version
+[[ -z "$(find "$up" -name '.kantel-update-*')" ]] || fail "kantel update left a temporary file"
+touch -d 2000-01-01 "$up/real/kantel"
+if KANTEL_RELEASE_URL="file://$work/bad" "$up/bin/kantel" update --force 2>"$work/err" >/dev/null; then
+	fail "kantel update installed a kantel whose SHA-256 doesn't match"
+fi
+grep -q "SHA256SUMS says" "$work/err" || fail "kantel update failed, but not on the checksum: $(cat "$work/err")"
+[[ ! "$up/real/kantel" -nt "$work/before-update" ]] || fail "kantel update replaced kantel with a bad binary"
+echo "ok      kantel update replaces kantel, and refuses a binary that doesn't match SHA256SUMS"

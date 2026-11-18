@@ -2,7 +2,8 @@
 # Boots the arm64 guest kernel and sandbox image from a release build in QEMU's aarch64 emulation (TCG, in Docker,
 # so it runs on an x86_64 machine with no arm64 hardware) and checks the sandbox comes up: the kernel, kantel-init's
 # overlay, systemd with no failed units, the guest agent, Docker (hello-world, pulled over QEMU's network), the
-# desktop, Chromium's DevTools (CDP) and Selkies. release.sh's arm64 images are published only after this passes.
+# desktop, Chromium's DevTools (CDP) and its sandbox, and Selkies. release.sh's arm64 images are published only after
+# this passes. A KANTEL_BROWSER=cft build (Chrome for Testing in place of Debian's Chromium) is checked the same way.
 #
 #   apps/host/guest/boot-check-arm64.sh <out-dir>
 #
@@ -41,8 +42,9 @@ docker run --rm -i -v "$OUT:/out" -e TIMEOUT="$TIMEOUT" -e DEBIAN_FRONTEND=nonin
 	d=$work/disk
 	mkdir -p "$d/root/usr/local/bin" "$d/root/etc/systemd/system/multi-user.target.wants" \
 		"$d/root/etc/systemd/system/docker.service.d"
-	# No host egress proxy here: Docker pulls directly over QEMU user networking.
-	printf "%s\n" "[Service]" "Environment=HTTP_PROXY= HTTPS_PROXY=" \
+	# No host egress proxy here: Docker pulls directly over QEMU user networking. Both spellings, since every service
+	# gets the lowercase ones too (system.conf.d/kantel-proxy.conf), and dockerd reads either.
+	printf "%s\n" "[Service]" "Environment=HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy=" \
 		>"$d/root/etc/systemd/system/docker.service.d/zz-boot-check.conf"
 	printf "%s\n" "[Unit]" "Description=Kantel arm64 boot check" "After=multi-user.target kantel-browser.service" \
 		"[Service]" "Type=oneshot" "ExecStart=/usr/local/bin/kantel-boot-check" "StandardOutput=tty" \
@@ -72,14 +74,20 @@ echo "BOOTCHECK nic ok ${nic:-none} of $(ls /sys/class/net | tr "\n" " ")"
 ip link set "$nic" up && ip addr add 10.0.2.15/24 dev "$nic" && ip route add default via 10.0.2.2
 rm -f /etc/resolv.conf && echo "nameserver 10.0.2.3" >/etc/resolv.conf
 echo "BOOTCHECK boot ok kernel=$(uname -r) arch=$(uname -m) uptime=$(cut -d" " -f1 /proc/uptime)s"
-check arch sh -c "test \"\$(uname -m)\" = aarch64 && file -L /usr/local/bin/kantel-guest /usr/lib/chromium/chromium | grep -c aarch64"
+# The browser binary: Debian Chromium, or Chrome for Testing in a KANTEL_BROWSER=cft build.
+browser=/usr/lib/chromium/chromium
+if [ -e /opt/chrome-for-testing/chrome ]; then browser=/opt/chrome-for-testing/chrome; fi
+check arch sh -c "test \"\$(uname -m)\" = aarch64 && file -L /usr/local/bin/kantel-guest $browser | grep -c aarch64"
 check overlay sh -c "findmnt -n -o FSTYPE / | grep -x overlay && findmnt -n /var/lib/docker"
-check image-info jq -c "{os, chromium, selkies, docker}" /etc/kantel/image.json
+check image-info jq -c "{os, chromium, chromeForTesting, selkies, docker}" /etc/kantel/image.json
 check guest-agent systemctl is-active kantel-guest.service
 check docker-daemon wait_for 300 "docker info --format {{.Architecture}}"
 check docker-hello-world runuser -u user -- sh -c "docker run --rm hello-world | grep -m1 \"Hello from Docker\""
 check desktop wait_for 300 "systemctl is-active kantel-desktop.service && test -e /tmp/.X11-unix/X1"
 check cdp wait_for 600 "curl -fsS -m 5 http://127.0.0.1:9222/json/version | grep -o \"\\\"Browser\\\": *\\\"[^\\\"]*\\\"\""
+# The Chromium sandbox is on: a renderer of the browser runs in a PID namespace of its own (both the namespace and the
+# setuid sandbox make one), which --no-sandbox would leave it without.
+check sandbox wait_for 120 "pid=\$(pgrep -u user -f -- --type=renderer | head -n 1) && test -n \"\$pid\" && test \"\$(readlink /proc/\$pid/ns/pid)\" != \"\$(readlink /proc/1/ns/pid)\" && echo renderer \$pid in \$(readlink /proc/\$pid/ns/pid)"
 check stream wait_for 600 "curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6080/"
 # The display of the browser alone, with Chromium on it; its stream starts only for a viewer (the guest agent), so here by hand.
 check browser-display wait_for 300 "systemctl is-active kantel-browser-display.service && test -e /tmp/.X11-unix/X2 && runuser -u user -- env DISPLAY=:2 xdotool search --onlyvisible --class chromium | head -n 1"

@@ -10,9 +10,12 @@
  * endpoint's) are kept but never answered. An environment's protected variable values and secret files are kept sealed
  * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
+
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { BackendDiskUsage, SandboxTemplateBoot } from "./backend.ts";
+import type { BackendDiskUsage, CpuFingerprint, SandboxTemplateBoot, SnapshotMadeOn } from "./backend.ts";
+import type { StoredGithubRunnerJob, StoredGithubRunnerMachine, StoredGithubRunners } from "./github-runners.ts";
+import type { DiskKind } from "./grants.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /**
@@ -55,9 +58,15 @@ export interface Collection<T extends { readonly id: string }> {
 	 * answers whether it did. `should` may run more than once.
 	 */
 	deleteIf(id: string, should: (current: T) => boolean): Promise<boolean>;
-	/** The records whose fields equal each defined field of `where`, oldest first. */
-	list(where?: Partial<T>): Promise<T[]>;
+	/**
+	 * The records whose fields equal each defined field of `where` and are one of each defined field's values in
+	 * `anyOf`, oldest first: one read, so a record that changes between two of the values is answered once.
+	 */
+	list(where?: Partial<T>, anyOf?: AnyOf<T>): Promise<T[]>;
 }
+
+/** For a list, the values a field may have: a record with any one of them. An empty list matches nothing. */
+export type AnyOf<T> = { readonly [K in keyof T]?: readonly T[K][] };
 
 export interface StoredUser {
 	readonly id: string;
@@ -92,6 +101,8 @@ export interface StoredAccount {
 	readonly defaultVisibility: computeSchema.SandboxVisibility;
 	/** An organisation's members' personal tokens may act in it unless `blocked`; absent is `allowed`. */
 	readonly personalTokens?: computeSchema.PersonalTokenPolicy;
+	/** Each saved snapshot is kept on two hosts of its pool (`snapshot-copies.ts`) unless this is false; absent is on. */
+	readonly snapshotCopies?: boolean;
 	readonly createdAt: number;
 	/**
 	 * When its person's account deletion closed it (`deleteCaller`), for good: from then on nothing new is stored in it,
@@ -127,6 +138,11 @@ export interface StoredInvite {
 export interface RunPeriod {
 	readonly from: number;
 	readonly to?: number;
+	/**
+	 * What an hour of it cost, where that isn't the sandbox's rate now: an upgraded sandbox's isolate run, priced as the
+	 * isolate it was. Absent: the sandbox's rate.
+	 */
+	readonly ratePerHour?: number;
 }
 
 /** A CPU and memory reading of a running sandbox. */
@@ -169,11 +185,26 @@ export interface StoredPeak {
 	readonly cpu: number;
 }
 
+/** One piece of a sandbox's environment set-up (`StoredSandbox.pendingProvision`). */
+export interface ProvisionWork {
+	readonly id: string;
+	/**
+	 * `files`: the environment's secret files at the paths it wins. `repos`: its repositories, cloned (only by a set-up a
+	 * caller who may run commands started). `paths`: whatever file wins each of `paths` now (a move changed the winner).
+	 */
+	readonly kind: "files" | "repos" | "paths";
+	readonly environmentId?: string;
+	readonly paths?: readonly string[];
+}
+
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
-export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base" | "hostReachable"> & {
+export type StoredSandbox = Omit<
+	computeSchema.Sandbox,
+	"cost" | "usage" | "grants" | "base" | "hostReachable" | "move"
+> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
-	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
+	/** What every command sees: its environments' plain variables and placeholders, in order, then the create's own. */
 	readonly env: { readonly [name: string]: string };
 	/**
 	 * Moves on (`Math.max(now, previous + 1)`) with every change to what its egress is made of (its grants, its
@@ -186,6 +217,37 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * `egressRevision`, an update didn't get through (its host away, say), and the sweep sends the egress as it is now.
 	 */
 	readonly egressApplied?: number;
+	/**
+	 * The last time a boot let go of the memory its commands ran in, so they were ended though it runs again (a start or
+	 * a restart on the latest base from paused, a move that restarted it): `generation` counts these (absent: 0), and
+	 * `why` is what each command killed so says (`StoredCommand.memoryGeneration`). Written as its new machine is
+	 * published (`boot`), once the host has booted it fresh.
+	 */
+	readonly memoryDropped?: { readonly at: number; readonly generation: number; readonly why: string };
+	/**
+	 * A boot from its disk under way that lets go of the memory it was paused with once it has booted fresh: `why`, as
+	 * `memoryDropped.why` becomes when it is published. Only while it is `starting`: a boot that fails leaves the memory
+	 * where it was, and its commands running.
+	 */
+	readonly memoryDropping?: string;
+	/**
+	 * An ordinary boot of a placed sandbox under way (a start, resume, recovery or restart on the latest base; it is
+	 * `starting`): when its gateway last said it was at it (`heartbeatAt`), so one gone quiet (its publish failed, its
+	 * host's answer was lost, or the gateway went) is settled by the sweep from what its host has; and, started from
+	 * paused, what it was paused as (`paused`), which settling it back to `paused` puts back. Written with its move to
+	 * `starting`; any change of its state clears it. A record from before these were kept is given one by the sweep.
+	 */
+	readonly booting?: {
+		readonly heartbeatAt: number;
+		readonly paused?: {
+			readonly stoppedAt?: number;
+			readonly pausedSnapshotId?: string;
+			readonly size?: computeSchema.SandboxSizeName;
+			readonly shape?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };
+			readonly mounts?: StoredSandbox["mounts"];
+			readonly mountsAt?: number;
+		};
+	};
 	/**
 	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
 	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).
@@ -250,6 +312,31 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * never changed. Not a secret: the sandbox sees it. Absent: none.
 	 */
 	readonly placeholders?: { readonly [name: string]: string };
+	/**
+	 * What `env` is made of besides its environments, kept so an attach or detach can work it out again: `base` (its
+	 * template's variables) under its environments, `own` (its create's `env`) over them. Absent on a sandbox made before
+	 * environments could be attached: its `env` as it was, but its placeholders, is then its `base`.
+	 */
+	readonly envLayers?: {
+		readonly base: { readonly [name: string]: string };
+		readonly own: { readonly [name: string]: string };
+	};
+	/**
+	 * The least version its protected values are answered at (`protectedTable`), moved on when an environment is detached
+	 * from it or deleted, so its host drops what it held of that environment's. Absent: none.
+	 */
+	readonly secretsFloor?: number;
+	/**
+	 * Environment set-up it still has to do, recorded when the change that needs it is (a create, an attach, a move), and
+	 * taken off by its ID once a set-up has done it: never before, so a stopped set-up leaves it for the next, and never
+	 * an item another change added. Absent: none.
+	 */
+	readonly pendingProvision?: readonly ProvisionWork[];
+	/**
+	 * The fence of its newest set-up, moved on (in the store) by each one as it starts: its file writes carry it, and its
+	 * host drops a write with a lower one than it has taken, so an older set-up's write never lands over a newer one's.
+	 */
+	readonly provisionFence?: number;
 	readonly hostLabels: { readonly [key: string]: string };
 	/**
 	 * The one host its create asked for (`CreateSandboxBody.host`), which a boot that has to place it again keeps to.
@@ -285,7 +372,73 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * snapshot: a retry boots fresh. A custom image's (`rootfsKey`) names the hosts holding it (`holders`), the only ones
 	 * a retry may boot it on, among those the sandbox may use then.
 	 */
-	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
+	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot" | "snapshotHosts"> & {
+		readonly holders?: readonly string[];
+	};
+	/**
+	 * An upgrade to a microVM under way (it is `starting`): its operation ID, which its backend does at most once and can
+	 * settle (`SandboxBackend.settleUpgrade`), when it began and when its gateway last said it was at it (`heartbeatAt`:
+	 * one gone quiet is settled by the sweep), what it was before (`from`, `before`: what a rollback puts back), the
+	 * microVM asked for and the snapshot it starts from, and the egress revision sent with it.
+	 */
+	readonly upgrading?: {
+		readonly operationId: string;
+		readonly at: number;
+		readonly heartbeatAt: number;
+		readonly from: "running" | "stopped";
+		readonly before: {
+			readonly runs: readonly RunPeriod[];
+			readonly stopsAt?: number;
+			readonly startedAt?: number;
+			readonly stoppedAt?: number;
+			readonly lastActiveAt?: number;
+			/** Whether its backend had its egress as it was then (`egressApplied` no earlier than its `egressRevision`). */
+			readonly egressInSync?: boolean;
+		};
+		readonly size?: computeSchema.SandboxSizeName;
+		readonly shape?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb?: number };
+		readonly image?: string;
+		/** The snapshot its microVM starts from (`upgradeSandbox`'s `from`), which it depends on while it is under way. */
+		readonly snapshotId?: string;
+		readonly egressRevision?: number;
+	};
+	/**
+	 * A move to another host under way (it is `starting`, or `running` while a running sandbox's first copy is made; the
+	 * API answers it `moving`): its operation ID, which its backend does at most once and can settle
+	 * (`SandboxBackend.settleMove`), when it began and when its gateway last said it was at it (`heartbeatAt`: one gone
+	 * quiet is settled by the sweep), how far it got (`phase`), the host asked for, what it was before (`from`, `before`:
+	 * what a rollback puts back; a running sandbox stopped for its move is started again), and the egress revision its
+	 * start sends.
+	 */
+	readonly moving?: {
+		readonly operationId: string;
+		readonly at: number;
+		readonly heartbeatAt: number;
+		readonly phase: "copying" | "stopping" | "final-copy" | "starting";
+		readonly from: "stopped" | "paused" | "running";
+		/** The host asked for, or once it starts there, the one it is moving to. */
+		readonly to?: string;
+		readonly before: {
+			readonly stoppedAt?: number;
+			readonly reason?: string;
+			readonly pausedSnapshotId?: string;
+			readonly mounts?: StoredSandbox["mounts"];
+			readonly mountsAt?: number;
+		};
+		readonly egressRevision?: number;
+		/**
+		 * Whether its memory goes with it, once its new host is chosen (said before anything is copied), and why not where
+		 * it was asked to and might have: the API's `move.keepMemory` and `restartReason`. Absent before then, and on a move
+		 * from before Kantel kept it: it isn't kept.
+		 */
+		readonly keepMemory?: boolean;
+		readonly restartReason?: string;
+		/**
+		 * A stop owed once the move ends, wherever it runs then (its person left the organisation as it moved): its
+		 * reason, which becomes its `stopFor` as it runs again, for the sweep to carry out.
+		 */
+		readonly stopAfter?: string;
+	};
 };
 
 export type StoredCommand = computeSchema.Command & {
@@ -294,14 +447,39 @@ export type StoredCommand = computeSchema.Command & {
 	readonly detached?: boolean;
 	/** Killed, and its kill not yet taken by its backend: a later kill sends it again. */
 	readonly killPending?: boolean;
+	/**
+	 * Its sandbox's `memoryDropped.generation` (absent: 0) as it started: the memory it runs in. One still running once
+	 * its sandbox's generation is past it ran in a memory let go, and is killed, saying why, never taken as lost.
+	 */
+	readonly memoryGeneration?: number;
+	/** Its sandbox was an isolate with `autoUpgrade` when it started: a needsMicrovm end may be run again. */
+	readonly autoUpgrade?: true;
+	/**
+	 * When its end, needing a microVM, was first seen while its sandbox upgrades and it runs again: until its owner records
+	 * that end with its run again (`rerunAs`), or `RERUN_CLAIM_MS` passes, no other reader records it ended.
+	 */
+	readonly rerunPending?: number;
+	/**
+	 * The ID its run again takes, written while it still runs once its sandbox is upgraded and before its run again is
+	 * recorded: only a command still running gets one, so one killed first is never run again, and a kill landing after
+	 * it reaches its run again (`killCommand`), which itself starts only while this one still runs.
+	 */
+	readonly rerunStarting?: string;
 };
 
 /**
- * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
- * file system is (`TakenSnapshot.base`), answered as the API's `base`.
+ * A snapshot and the backend's reference to its bytes (absent until it is ready), the base image version its root
+ * file system is (`TakenSnapshot.base`), answered as the API's `base`, and what a microVM's was made on where its host
+ * said (`SnapshotMadeOn`), which the API doesn't answer.
  */
-export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base" | "hosts"> & {
 	readonly ref?: string;
+	/**
+	 * The host it was taken on, as its backend said (`TakenSnapshot.hostId`): its first holder where `ref` names none (a
+	 * saved snapshot's ID alone), its copy there named `<hostId>/<ref>`. Absent for one taken before this was kept, whose
+	 * ref names its host, and for a backend with no hosts.
+	 */
+	readonly hostId?: string;
 	readonly base?: string;
 	/**
 	 * All its files take on its host's disk, those it shares with other snapshots included, as the host last said (a
@@ -319,7 +497,12 @@ export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & {
 		readonly at: number;
 		readonly settling?: boolean;
 	};
-};
+	/**
+	 * A saved snapshot's last ask of a host to keep a copy of it (`snapshot-copies.ts`): the host told to fetch it, and
+	 * when. Written over the record as it was read, so of the gateways that find a copy missing at once, one asks.
+	 */
+	readonly copying?: { readonly hostId: string; readonly at: number };
+} & SnapshotMadeOn;
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
@@ -468,8 +651,9 @@ export interface StoredTemplateVersion {
 }
 
 /**
- * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, and the backend's reference
- * to its bytes once it is built.
+ * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, the backend's reference
+ * to its bytes once it is built, and what it was made on where its host said (`SnapshotMadeOn`), which the API doesn't
+ * answer.
  */
 export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state"> & {
 	/**
@@ -499,7 +683,7 @@ export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state
 	readonly claimHash?: string;
 	/** A custom image's root filesystem on its host, which a fresh boot there boots (`SandboxTemplateBoot.rootfsKey`). */
 	readonly rootfsKey?: string;
-};
+} & SnapshotMadeOn;
 
 /** A template as `TemplateWrites.update` changes it, and the version the change makes when it makes one. */
 export interface TemplateChange {
@@ -537,7 +721,22 @@ export type StoredEgressEntry = computeSchema.EgressEntry & {
 };
 
 /** A host, its disk as it measured it (`BackendDiskUsage`), answered split by the snapshot records (`hostView`). */
-export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & { readonly diskUsage?: BackendDiskUsage };
+export type StoredHost = Omit<computeSchema.Host, "diskUsage"> & {
+	readonly diskUsage?: BackendDiskUsage;
+	/**
+	 * Counts its drains and undrains, each taking the next here before its registry is told, with it: the registry takes
+	 * a drain or undrain only over an older one's, so one held up can't undo a later one there. A move to another pool
+	 * lands only under the count its check of the host's sandboxes was made under, still draining, so admission stayed
+	 * shut from the check to the move.
+	 */
+	readonly drainEpoch?: number;
+	/**
+	 * When it was last moved to another pool (`moveHost`); absent for a host never moved. A template's root filesystem it
+	 * reports with no pool stamp (made before hosts stamped them) is its pool's only while this is absent
+	 * (`DiskHolders.recordHoldings`).
+	 */
+	readonly poolSince?: number;
+};
 
 export interface StoredJoinToken {
 	readonly id: string;
@@ -557,9 +756,94 @@ export interface StoredJoinToken {
 	readonly createdBy?: string;
 	/** The host that spent it. */
 	readonly hostId?: string;
+	/** The pool the host joins (`StoredPool`); absent, its owner's default pool. */
+	readonly poolId?: string;
 }
 
+/** Whose pools the deployment's own are: its shared hosts'. No account's ID is this. */
+export const OPERATOR_POOLS = "operator";
+
+/**
+ * A pool: a set of an account's hosts, or of the deployment's shared hosts, each host in exactly one
+ * (`StoredHost.poolId`). docs/design/disk-store.md, "Pools".
+ */
+export interface StoredPool {
+	readonly id: string;
+	/** The account whose pool it is, or `OPERATOR_POOLS` for the deployment's. */
+	readonly owner: string;
+	/** Unique among its owner's pools (`poolNameKey`). */
+	readonly name: string;
+	readonly createdAt: number;
+	/**
+	 * When it was made its owner's default pool: of an owner's pools, the one made so latest is the default. Absent from
+	 * a pool that never was.
+	 */
+	readonly defaultAt?: number;
+	/**
+	 * Whether its hosts sync with each other: those that run the mesh peer over WireGuard (docs/design/disk-store.md,
+	 * "2a. The mesh"). Off (absent) by default.
+	 */
+	readonly sync?: boolean;
+	/**
+	 * The most vCPUs each of its hosts may book for each of its CPUs: placement counts a host past it as full
+	 * (`Pool.vcpusPerCpu`). Absent: no cap.
+	 */
+	readonly vcpusPerCpu?: number;
+	/**
+	 * How placement chooses among its hosts (`Pool.placement`): `balanced` spreads its sandboxes evenly, a sticky disk's
+	 * head or a template's snapshot only deciding between hosts as full. Absent: `warm`, the default.
+	 */
+	readonly placement?: "balanced";
+}
+
+/** The key no two pools may share: an owner's and a name, so the store refuses a second pool of a name in an owner. */
+export const poolNameKey = (pool: { readonly owner: string; readonly name: string }) => `${pool.owner}\n${pool.name}`;
+
 export type StoredEvent = computeSchema.Event;
+
+/**
+ * An event whose webhook deliveries may not be queued yet: its outbox record, whose ID is the event's. It is written with
+ * the event (`EventWrites.put`) and deleted once the event's deliveries are queued, so one still there after a while is
+ * an event a gateway stored and then died (or failed to queue) before queueing them. A dispatcher's `drain()` queues
+ * those (`webhooks.ts`).
+ */
+export interface StoredEventOutbox {
+	readonly id: string;
+	readonly accountId: string;
+	/** The event's `createdAt`: a dispatcher leaves the record to the gateway that wrote it for a grace period from it. */
+	readonly createdAt: number;
+	/** Until when a dispatcher queueing its deliveries holds it, so others leave it; absent, nobody does. */
+	readonly claimedUntil?: number;
+}
+
+/** The outbox record written with `event`. */
+export const eventOutboxOf = (event: StoredEvent): StoredEventOutbox => ({
+	id: event.id,
+	accountId: event.accountId,
+	createdAt: event.createdAt,
+});
+
+/**
+ * Whether `webhook` takes `event`: its account's, enabled, and subscribed to its type. What a dispatcher queues a
+ * delivery for, and what `EventWrites.put` writes an outbox record for.
+ */
+export const webhookWants = (webhook: StoredWebhook, event: StoredEvent): boolean =>
+	webhook.accountId === event.accountId && webhook.enabled && webhook.events.includes(event.type);
+
+/**
+ * An event's write: the event and its outbox record (`StoredEventOutbox`) together or not at all, so no event is stored
+ * that nothing will queue the deliveries of.
+ */
+export interface EventWrites {
+	/**
+	 * Stores the event, replacing one with its ID, and in the same write its outbox record (unclaimed), when a webhook
+	 * wants it then (`webhookWants`): an event no webhook wants has no delivery to queue, and costs no record. A store may
+	 * write the record for an event no webhook wants (the SQL store matches webhooks' JSON as text, and may match too
+	 * much), never skip it for one a webhook wants. Storing an event again under its ID adds no delivery: deliveries' IDs
+	 * come from the event's and the webhook's.
+	 */
+	put(event: StoredEvent): Promise<void>;
+}
 
 /**
  * A delete's claim on a record (mounts): while it is fresh, a create mounting the source refuses, so the delete's count
@@ -630,8 +914,29 @@ export interface StoredFileUrl {
  * bundle store, which any gateway's must hold for it to keep, serve or remove bundles' bytes (`BundleBlobStore.mark`).
  */
 export interface StoredSetting {
-	readonly id: "publicUrl" | "bundleStore";
+	/**
+	 * `grantKey`: the control plane's Ed25519 key for fetch grants (`grants.ts`), made by the first gateway that needs it
+	 * and claimed (`insert`), so every gateway over one database signs with the same key. `value` is its public key, and
+	 * `sealed` its private key, sealed with the deployment's secrets key. A rotation writes `next` in one conditional
+	 * write (`update`); once `next.from` has passed it is the key that signs and the one before it is retired, whether or
+	 * not a later write has moved them into `value` and `retired` yet (`disk-holders.ts`).
+	 */
+	readonly id: "publicUrl" | "bundleStore" | "grantKey";
 	readonly value: string;
+	/** A value kept sealed beside `value`: the grant key's private key. */
+	readonly sealed?: SealedValue;
+	/** When the grant key in `value` began signing (absent: `updatedAt`). Only `grantKey` has it. */
+	readonly since?: number;
+	/**
+	 * The grant key a rotation published, which signs from `from` (milliseconds since the epoch): its public key and its
+	 * private key, sealed as `sealed` is. Only `grantKey` has it.
+	 */
+	readonly next?: { readonly publicKey: string; readonly sealed: SealedValue; readonly from: number };
+	/**
+	 * The grant keys rotated out, by their public keys, each still accepted until `until` (milliseconds since the epoch)
+	 * so grants signed with it just before stay good for their lifetime. Only `grantKey` has them.
+	 */
+	readonly retired?: readonly { readonly publicKey: string; readonly until: number }[];
 	readonly updatedAt: number;
 	readonly updatedBy: string;
 }
@@ -658,6 +963,53 @@ export interface StoredDeletion {
 	readonly dueAt: number;
 	readonly attempts: number;
 	readonly lastError?: string;
+	/** Who is carrying it on, until when: one gateway at a time. */
+	readonly lease?: { readonly token: string; readonly until: number };
+}
+
+/** One sandbox of a host's evacuation (`StoredEvacuation`), as the API's `HostEvacuationSandbox` and what it was. */
+export interface StoredEvacuationSandbox {
+	readonly sandboxId: string;
+	readonly accountId: string;
+	readonly name?: string;
+	readonly type: computeSchema.SandboxType;
+	/** Who may see it, as its record said when taken: the view names it only to them. */
+	readonly visibility?: StoredSandbox["visibility"];
+	readonly ownerUserId?: string;
+	readonly state: computeSchema.HostEvacuationSandbox["state"];
+	readonly reason?: string;
+	readonly hostId?: string;
+	readonly keptMemory?: boolean;
+	/** The moves of it begun and ended without an answer (a gateway gone): it is tried again up to a few times. */
+	readonly attempts?: number;
+	/** Its claim while `moving`, this evacuation's: a move's outcome lands only on the claim that began it. */
+	readonly claim?: string;
+}
+
+/**
+ * Moving every sandbox off a draining host (`POST /hosts/{hostId}/evacuation`): its ID is the host's, one at a time,
+ * the last kept once it ends. Carried on by one gateway at a time (`lease`), by the call that began it and then by the
+ * sweep, so it outlives a control plane restart: each move is the sandbox's own (`StoredSandbox.moving`), settled as
+ * any is, and read back from the sandbox's record.
+ */
+export interface StoredEvacuation {
+	readonly id: string;
+	/** This evacuation, of those the host has had: a later one's writes never land on an earlier one's record. */
+	readonly run: string;
+	readonly state: computeSchema.HostEvacuationState;
+	readonly reason?: string;
+	readonly startedAt: number;
+	readonly endedAt?: number;
+	/**
+	 * Who began it, whose moves it makes: a super-admin (the deployment's hosts) or the account's admin, and the scopes
+	 * their key or personal access token was held to (`scopes`), which its moves are held to as well.
+	 */
+	readonly by: {
+		readonly userId: string;
+		readonly superAdmin: boolean;
+		readonly scopes?: readonly computeSchema.ApiKeyScope[];
+	};
+	readonly sandboxes: readonly StoredEvacuationSandbox[];
 	/** Who is carrying it on, until when: one gateway at a time. */
 	readonly lease?: { readonly token: string; readonly until: number };
 }
@@ -750,7 +1102,13 @@ export interface ComputeStore {
 	readonly proxies: Collection<StoredProxy>;
 	readonly hosts: Collection<StoredHost>;
 	readonly joinTokens: Collection<StoredJoinToken>;
+	/** No two with one owner and name (`poolNameKey`): a write that would make two throws. */
+	readonly pools: Collection<StoredPool>;
 	readonly events: Collection<StoredEvent>;
+	/** Events whose webhook deliveries may not be queued yet. An event is written with its record through `eventWrites`. */
+	readonly eventOutbox: Collection<StoredEventOutbox>;
+	/** An event and its outbox record, written together. */
+	readonly eventWrites: EventWrites;
 	readonly idempotency: Collection<StoredIdempotency>;
 	readonly deviceLogins: Collection<StoredDeviceLogin>;
 	/** No two with one account and name (`environmentNameKey`): a write that would make two throws. */
@@ -776,6 +1134,27 @@ export interface ComputeStore {
 	readonly usageClaims: Collection<StoredUsageClaim>;
 	/** Account deletions under way (`StoredDeletion`). */
 	readonly deletions: Collection<StoredDeletion>;
+	/** Each host's last evacuation (`StoredEvacuation`), by the host's ID. */
+	readonly evacuations: Collection<StoredEvacuation>;
+	/** GitHub Actions runners (`github-runners.ts`): the integrations, the jobs their webhooks told of, and their runners. */
+	readonly githubRunners: Collection<StoredGithubRunners>;
+	readonly githubRunnerJobs: Collection<StoredGithubRunnerJob>;
+	readonly githubRunnerMachines: Collection<StoredGithubRunnerMachine>;
+	/**
+	 * Sticky disks and their versions (docs/design/disk-store.md). A write that makes a disk, tombstones one or records a
+	 * version goes through `stickyDiskWrites`, with the disk's name claim or its version.
+	 */
+	readonly stickyDisks: Collection<StoredStickyDisk>;
+	readonly stickyDiskVersions: Collection<StoredStickyDiskVersion>;
+	/** Each live sticky disk's name in its account (`stickyDiskNameId`), claimed and released with its disk. */
+	readonly stickyDiskNames: Collection<StoredStickyDiskName>;
+	/** A sticky disk with its name's claim or its version, written together. */
+	readonly stickyDiskWrites: StickyDiskWrites;
+	/** Which hosts hold which versions of the disk store's objects (`StoredDiskHolder`). */
+	readonly diskHolders: Collection<StoredDiskHolder>;
+	/** Each host's newest holdings report, and holders reconciled from reports, written together. */
+	readonly diskReports: Collection<StoredDiskReport>;
+	readonly diskHolderWrites: DiskHolderWrites;
 	/** A person's first records, only while they are active. */
 	readonly personWrites: PersonWrites;
 }
@@ -784,10 +1163,225 @@ export interface ComputeStore {
  * Whether each defined field of `where` is `===` the record's top-level field of that name: what `list` answers by. The
  * SQL store (`sql-store.ts`) checks every row with it too, so both answer the same.
  */
-export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
-	if (where === undefined) return true;
+export function matches<T>(record: T, where: Partial<T> | undefined, anyOf?: AnyOf<T>): boolean {
 	const fields = record as { readonly [key: string]: unknown };
-	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);
+	const equal = Object.entries(where ?? {}).every(([key, value]) => value === undefined || fields[key] === value);
+	return (
+		equal &&
+		Object.entries(anyOf ?? {}).every(
+			([key, values]) => values === undefined || (values as readonly unknown[]).includes(fields[key]),
+		)
+	);
+}
+
+/** A sticky disk: an account's named, versioned disk (docs/design/disk-store.md). */
+export interface StoredStickyDisk {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly sizeGb: number;
+	/** The newest committed version. */
+	readonly head?: string;
+	/** How many versions have been committed: the next one's `seq` is one more. */
+	readonly commits?: number;
+	/**
+	 * The pool it belongs to (`StoredPool`): the one its create named, else the first sandbox's it was attached to, set
+	 * once and never changed. It is attached only to sandboxes in that pool. Absent until then.
+	 */
+	readonly poolId?: string;
+	/**
+	 * The hosts a sandbox with it started on lately, each with when one last did (to within `STICKY_RAN_EVERY_MS`): those
+	 * within `STICKY_PREFETCH_MS` are sent each new head (docs/design/disk-store.md, 2d). Older entries go as one is written.
+	 */
+	readonly ranOn?: { readonly [hostId: string]: number };
+	/**
+	 * When it was deleted: from then it is gone to every caller and its name is free, and the record is kept so passes
+	 * delete its versions from hosts that were away (`STICKY_TOMBSTONE_MS`).
+	 */
+	readonly deletedAt?: number;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+}
+
+/** A sticky disk's claim on its name in its account. */
+export interface StoredStickyDiskName {
+	/** `stickyDiskNameId(accountId, name)`. */
+	readonly id: string;
+	readonly accountId: string;
+	readonly diskId: string;
+}
+
+export const stickyDiskNameId = (accountId: string, name: string): string => `${accountId}:${name}`;
+
+/**
+ * One committed version of a sticky disk: where it was made, from what. Never changed, but for its `mapDigest` given
+ * after its commit.
+ */
+export interface StoredStickyDiskVersion {
+	readonly id: string;
+	readonly diskId: string;
+	readonly accountId: string;
+	readonly parent?: string;
+	readonly hostId: string;
+	readonly sandboxId: string;
+	readonly sizeBytes: number;
+	readonly allocatedBytes: number;
+	/**
+	 * Its block map's digest (`sha256:` and hex; docs/design/disk-store.md, 2b): from the commit's answer, or, when the
+	 * map took longer, from its host's next report of what it holds. Absent until then, and for a host from before maps.
+	 */
+	readonly mapDigest?: string;
+	/** Its place among its disk's commits, from 1: what orders them, as two may share a millisecond. */
+	readonly seq: number;
+	readonly createdAt: number;
+	/** The write that recorded it, in SQL: how that write tells it landed (`StickyDiskWrites.commit`). */
+	readonly writeId?: string;
+}
+
+/**
+ * A host's copy of one version of a disk store object (docs/design/disk-store.md, 2c): what the host reports it holds,
+ * reconciled from each of its capacity reports, so these are the copies there are rather than the ones asked for. A
+ * version's own `hostId` stays the host it was made on; this is every host that has it. Its ID is `diskHolderId`.
+ */
+export interface StoredDiskHolder {
+	readonly id: string;
+	readonly kind: DiskKind;
+	/**
+	 * The object: a sticky disk's ID, a template root filesystem's key, a template snapshot's ID, or a saved snapshot's ID
+	 * on its host.
+	 */
+	readonly objectId: string;
+	readonly version: string;
+	readonly hostId: string;
+	/**
+	 * `held`: the host has it in full. `fetching`: it is fetching it from others (its reports' `fetches`: under way,
+	 * waiting its turn, or failed with what it fetched left to go on), and reports it held once it has it; it is never
+	 * offered to fetch from, and isn't a copy anything can count on. `deleting`: it has been told to let it go.
+	 */
+	readonly state: "fetching" | "held" | "deleting";
+	/** When it reached `state`. */
+	readonly since: number;
+	/**
+	 * The digest of its block map as its host reported it, for a kind whose copies may differ or whose versions have no
+	 * record with one (a template's root filesystem, a template snapshot: a host that built its own holds other bytes
+	 * than one that fetched it; a saved snapshot's disk or memory); absent for a sticky disk's, whose version has it.
+	 */
+	readonly mapDigest?: string;
+	/**
+	 * The pool the copy was made in, as its host stamped it, for a template's root filesystem or snapshot: it is offered
+	 * only there, so a host moved to another pool doesn't take the old pool's copies with it.
+	 */
+	readonly poolId?: string;
+	/**
+	 * What a template snapshot's copy was made on, as its host reported it: its CPU and its runtime fingerprint. Its
+	 * memory restores, and it is offered to fetch, only on a host they match (`memoryRestoresOn`).
+	 */
+	readonly cpu?: CpuFingerprint;
+	readonly runtime?: string;
+	/**
+	 * For a saved snapshot's holder, the ref of the snapshot it is a copy of (`{hostId}/{id}`, the host that saved it):
+	 * the snapshot is found by it once that host holds it no longer.
+	 */
+	readonly ref?: string;
+}
+
+export const diskHolderId = (kind: DiskKind, objectId: string, version: string, hostId: string): string =>
+	`${kind}:${objectId}:${version}:${hostId}`;
+
+/** The newest holdings report a host's holders were reconciled from (`DiskHolderWrites`); its ID is the host's. */
+export interface StoredDiskReport {
+	readonly id: string;
+	readonly at: number;
+}
+
+/**
+ * Reconciling a host's holders from its reports, fenced so the newest report wins on every gateway:
+ *
+ * - `claim` makes a report the host's newest (`StoredDiskReport`), unless one as new or newer has been claimed.
+ * - `reconcile` deletes the holders `release` names, each only as it was read, and inserts those `hold` names, a sticky
+ *   disk's each only while its version's record is there; all of it only while `at` is still the host's newest report. So a report
+ *   held up behind a newer one, here or on another gateway, changes nothing. Recording a holder changes its version's
+ *   record (in SQL, its row's version), so a `StickyDiskWrites.forget` that read the holders before it reads them again.
+ */
+export interface DiskHolderWrites {
+	/** Whether the report received at `at` is now the host's newest. */
+	claim(hostId: string, at: number): Promise<boolean>;
+	reconcile(
+		hostId: string,
+		at: number,
+		changes: { readonly hold: readonly StoredDiskHolder[]; readonly release: readonly StoredDiskHolder[] },
+	): Promise<void>;
+}
+
+/**
+ * Writes of a sticky disk that must land with another record or not at all, so no interruption leaves a name claimed
+ * without its live disk, or a disk's head without its version:
+ *
+ * - `create` inserts a disk and its name's claim together.
+ * - `tombstone` marks a disk deleted and releases its name's claim together, only a claim that names that disk, so a
+ *   delayed delete never frees a newer disk's name.
+ * - `commit` records a version and makes it the disk's head, numbered after its other commits, together, and only while
+ *   the disk is there and not tombstoned: once a tombstone lands, no version of the disk is recorded again.
+ * - `forget` deletes a version's record only while it isn't its disk's head, so the head always has its version, and,
+ *   given `keep`, only while `keep` passes over its holders as they are when it lands: a holder recorded meanwhile
+ *   (`DiskHolderWrites.reconcile` changes the version's record as it records one) means it reads them again.
+ * - `pool` gives a sandbox's disks its pool, all of them or none: those with none get it only while every one of them
+ *   still has none or that pool, so a set refused for one disk in another pool leaves no other with its pool.
+ */
+export interface StickyDiskWrites {
+	/** Inserts `disk` and claims its name in its account; false, writing neither, when the name or the ID is taken. */
+	create(disk: StoredStickyDisk): Promise<boolean>;
+	/**
+	 * Tombstones the disk (`deletedAt`) and releases its name's claim; one tombstoned already keeps its time and has its
+	 * claim released again. Answers the tombstoned disk, or undefined when there is none.
+	 */
+	tombstone(id: string, at: number): Promise<StoredStickyDisk | undefined>;
+	/**
+	 * Records `version` (its `seq` set to the disk's next) as its live disk's head. Answers the version recorded, or
+	 * undefined, writing nothing, when the disk is gone or tombstoned.
+	 */
+	commit(version: StoredStickyDiskVersion, at: number): Promise<StoredStickyDiskVersion | undefined>;
+	/**
+	 * Deletes the version `id`'s record (its host no longer holds it) unless it is its disk's head, or `keep` says to keep
+	 * it given its holders (`StoredDiskHolder`). Answers whether it is gone, false leaving it as it was.
+	 */
+	forget(id: string, keep?: (holders: readonly StoredDiskHolder[]) => boolean): Promise<boolean>;
+	/**
+	 * Gives each of the disks `ids` with no pool yet `poolId`, in one write, only while none is in another pool (a
+	 * missing or tombstoned one is passed over). Answers a disk in another pool and that pool, writing nothing, or
+	 * undefined once every one is in `poolId`.
+	 */
+	pool(
+		ids: readonly string[],
+		poolId: string,
+	): Promise<{ readonly diskId: string; readonly poolId: string } | undefined>;
+	/**
+	 * Notes that a sandbox with the live disk `id` started on `hostId` at `at` (`stickyRunNoted`), over the disk as it is
+	 * now, so a commit or tombstone meanwhile is kept. Never fenced by its account: a note neither adds a disk nor takes
+	 * one out, so it can't remove a disk or tombstone while the account closes.
+	 */
+	noteRun(id: string, hostId: string, at: number): Promise<void>;
+}
+
+/** How lately a host must have started a sandbox with a sticky disk to be sent each new head of it. */
+export const STICKY_PREFETCH_MS = 7 * 24 * 3_600_000;
+/**
+ * How often a host's start of a sandbox with a sticky disk is written down (`StoredStickyDisk.ranOn`): at most once an
+ * hour for each host and disk, so a burst of jobs costs a read each, not a write.
+ */
+export const STICKY_RAN_EVERY_MS = 3_600_000;
+
+/**
+ * `disk` with `hostId`'s start at `at` in its `ranOn`, entries past `STICKY_PREFETCH_MS` dropped; undefined, to write
+ * nothing, for a tombstoned disk or a host noted within `STICKY_RAN_EVERY_MS`.
+ */
+export function stickyRunNoted(disk: StoredStickyDisk, hostId: string, at: number): StoredStickyDisk | undefined {
+	if (disk.deletedAt !== undefined || (disk.ranOn?.[hostId] ?? Number.NEGATIVE_INFINITY) > at - STICKY_RAN_EVERY_MS) {
+		return undefined;
+	}
+	const recent = Object.entries(disk.ranOn ?? {}).filter(([, when]) => when > at - STICKY_PREFETCH_MS);
+	return { ...disk, ranOn: { ...Object.fromEntries(recent), [hostId]: at } };
 }
 
 /** A memory collection, its records and its unique-key check: for writes over two collections at once. */
@@ -847,8 +1441,10 @@ function memoryTable<T extends { readonly id: string }>(unique?: (record: T) => 
 			if (current === undefined || !should(structuredClone(current))) return false;
 			return records.delete(id);
 		},
-		async list(where) {
-			return [...records.values()].filter((record) => matches(record, where)).map((record) => structuredClone(record));
+		async list(where, anyOf) {
+			return [...records.values()]
+				.filter((record) => matches(record, where, anyOf))
+				.map((record) => structuredClone(record));
 		},
 	};
 	return { collection, records, check };
@@ -885,6 +1481,117 @@ function memoryTemplateWrites(
 	};
 }
 
+/** `StickyDiskWrites` over memory tables: each write is made in one turn, so nothing reads half of it. */
+function memoryStickyDiskWrites(
+	disks: MemoryTable<StoredStickyDisk>,
+	names: MemoryTable<StoredStickyDiskName>,
+	versions: MemoryTable<StoredStickyDiskVersion>,
+	holders: MemoryTable<StoredDiskHolder>,
+): StickyDiskWrites {
+	return {
+		async create(disk) {
+			const claim = stickyDiskNameId(disk.accountId, disk.name);
+			if (disks.records.has(disk.id) || names.records.has(claim)) return false;
+			disks.records.set(disk.id, structuredClone(disk));
+			names.records.set(claim, { id: claim, accountId: disk.accountId, diskId: disk.id });
+			return true;
+		},
+		async tombstone(id, at) {
+			const current = disks.records.get(id);
+			if (current === undefined) return undefined;
+			const tombstoned = current.deletedAt === undefined ? { ...current, deletedAt: at, updatedAt: at } : current;
+			disks.records.set(id, structuredClone(tombstoned));
+			const claim = stickyDiskNameId(current.accountId, current.name);
+			if (names.records.get(claim)?.diskId === id) names.records.delete(claim);
+			return structuredClone(tombstoned);
+		},
+		async commit(version, at) {
+			const current = disks.records.get(version.diskId);
+			if (current === undefined || current.deletedAt !== undefined || versions.records.has(version.id)) {
+				return undefined;
+			}
+			const commits = (current.commits ?? 0) + 1;
+			const recorded = { ...version, seq: commits };
+			disks.records.set(current.id, { ...current, head: version.id, commits, updatedAt: at });
+			versions.records.set(version.id, structuredClone(recorded));
+			return structuredClone(recorded);
+		},
+		async forget(id, keep) {
+			const version = versions.records.get(id);
+			if (version === undefined) return true;
+			if (disks.records.get(version.diskId)?.head === id) return false;
+			if (keep?.(memoryHoldersOf(holders, version)) === true) return false;
+			versions.records.delete(id);
+			return true;
+		},
+		async pool(ids, poolId) {
+			const live = ids.flatMap((id) => {
+				const disk = disks.records.get(id);
+				return disk === undefined || disk.deletedAt !== undefined ? [] : [disk];
+			});
+			const other = live.find((disk) => disk.poolId !== undefined && disk.poolId !== poolId);
+			if (other?.poolId !== undefined) return { diskId: other.id, poolId: other.poolId };
+			for (const disk of live) {
+				if (disk.poolId === undefined) disks.records.set(disk.id, { ...structuredClone(disk), poolId });
+			}
+			return undefined;
+		},
+		async noteRun(id, hostId, at) {
+			await disks.collection.update(id, (disk) => stickyRunNoted(disk, hostId, at));
+		},
+	};
+}
+
+/** `EventWrites` over memory tables: the event and its outbox record in one turn, so nothing reads one without the other. */
+function memoryEventWrites(
+	events: MemoryTable<StoredEvent>,
+	outbox: MemoryTable<StoredEventOutbox>,
+	webhooks: MemoryTable<StoredWebhook>,
+): EventWrites {
+	return {
+		async put(event) {
+			events.records.set(event.id, structuredClone(event));
+			if ([...webhooks.records.values()].some((webhook) => webhookWants(webhook, event))) {
+				outbox.records.set(event.id, eventOutboxOf(event));
+			}
+		},
+	};
+}
+
+/** A sticky version's holders in a memory table. */
+const memoryHoldersOf = (holders: MemoryTable<StoredDiskHolder>, version: StoredStickyDiskVersion) =>
+	[...holders.records.values()]
+		.filter((holder) => holder.kind === "sticky" && holder.objectId === version.diskId && holder.version === version.id)
+		.map((holder) => structuredClone(holder));
+
+/** `DiskHolderWrites` over memory tables: each write is made in one turn, so nothing reads half of it. */
+function memoryDiskHolderWrites(
+	reports: MemoryTable<StoredDiskReport>,
+	holders: MemoryTable<StoredDiskHolder>,
+	versions: MemoryTable<StoredStickyDiskVersion>,
+): DiskHolderWrites {
+	return {
+		async claim(hostId, at) {
+			const newest = reports.records.get(hostId);
+			if (newest !== undefined && newest.at >= at) return false;
+			reports.records.set(hostId, { id: hostId, at });
+			return true;
+		},
+		async reconcile(hostId, at, { hold, release }) {
+			if (reports.records.get(hostId)?.at !== at) return;
+			for (const holder of release) {
+				if (JSON.stringify(holders.records.get(holder.id)) === JSON.stringify(holder))
+					holders.records.delete(holder.id);
+			}
+			for (const holder of hold) {
+				if (holders.records.has(holder.id)) continue;
+				if (holder.kind === "sticky" && !versions.records.has(holder.version)) continue;
+				holders.records.set(holder.id, structuredClone(holder));
+			}
+		},
+	};
+}
+
 /** A `ComputeStore` in memory. */
 export function createMemoryStore(): ComputeStore {
 	const templates = memoryTable<StoredTemplate>(templateNameKey);
@@ -892,6 +1599,14 @@ export function createMemoryStore(): ComputeStore {
 	const users = memoryTable<StoredUser>();
 	const accounts = memoryTable<StoredAccount>();
 	const members = memoryTable<StoredMember>();
+	const stickyDisks = memoryTable<StoredStickyDisk>();
+	const stickyDiskNames = memoryTable<StoredStickyDiskName>();
+	const stickyDiskVersions = memoryTable<StoredStickyDiskVersion>();
+	const diskHolders = memoryTable<StoredDiskHolder>();
+	const diskReports = memoryTable<StoredDiskReport>();
+	const events = memoryTable<StoredEvent>();
+	const eventOutbox = memoryTable<StoredEventOutbox>();
+	const webhooks = memoryTable<StoredWebhook>();
 	// Read and written with no await between, so nothing else runs in the middle.
 	const active = (userId: string) => {
 		const user = users.records.get(userId);
@@ -919,13 +1634,16 @@ export function createMemoryStore(): ComputeStore {
 		snapshots: memoryCollection(),
 		apiKeys: memoryCollection(),
 		personalTokens: memoryCollection(),
-		webhooks: memoryCollection(),
+		webhooks: webhooks.collection,
 		deliveries: memoryCollection(),
 		telemetry: memoryCollection(),
 		proxies: memoryCollection(),
 		hosts: memoryCollection(),
 		joinTokens: memoryCollection(),
-		events: memoryCollection(),
+		pools: memoryCollection<StoredPool>(poolNameKey),
+		events: events.collection,
+		eventOutbox: eventOutbox.collection,
+		eventWrites: memoryEventWrites(events, eventOutbox, webhooks),
 		idempotency: memoryCollection(),
 		deviceLogins: memoryCollection(),
 		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
@@ -936,17 +1654,28 @@ export function createMemoryStore(): ComputeStore {
 		settings: memoryCollection(),
 		usageClaims: memoryCollection(),
 		deletions: memoryCollection(),
+		evacuations: memoryCollection(),
 		templates: templates.collection,
 		templateVersions: templateVersions.collection,
 		templateWrites: memoryTemplateWrites(templates, templateVersions),
 		templateSnapshots: memoryCollection(),
 		templateBases: memoryCollection(),
+		githubRunners: memoryCollection(),
+		githubRunnerJobs: memoryCollection(),
+		githubRunnerMachines: memoryCollection(),
+		stickyDisks: stickyDisks.collection,
+		stickyDiskVersions: stickyDiskVersions.collection,
+		stickyDiskNames: stickyDiskNames.collection,
+		stickyDiskWrites: memoryStickyDiskWrites(stickyDisks, stickyDiskNames, stickyDiskVersions, diskHolders),
+		diskHolders: diskHolders.collection,
+		diskReports: diskReports.collection,
+		diskHolderWrites: memoryDiskHolderWrites(diskReports, diskHolders, stickyDiskVersions),
 	};
 }
 
 /**
  * Spends a host join token the compute API minted, once: for the host registry (`@kantel/hosts`), which registers the
- * host. Answers its name and labels, or undefined when it is unknown, used or expired.
+ * host. Answers its name, labels, account and pool, or undefined when it is unknown, used or expired.
  */
 export function joinTokenSpender(store: ComputeStore) {
 	return {
@@ -971,6 +1700,7 @@ export function joinTokenSpender(store: ComputeStore) {
 				labels: { ...spent.labels },
 				...(spent.name === undefined ? {} : { name: spent.name }),
 				...(spent.accountId === undefined ? {} : { accountId: spent.accountId }),
+				...(spent.poolId === undefined ? {} : { poolId: spent.poolId }),
 			};
 		},
 	};
@@ -984,7 +1714,7 @@ export const ACCOUNT_CLOSED_MESSAGE = "This account is being deleted";
 
 /**
  * The store, with the records an account keeps beside its sandboxes (environments, bucket sources, webhooks and their
- * deliveries, telemetry, proxy settings, join tokens, events) fenced against its deletion: a write is checked once it
+ * deliveries, telemetry, proxy settings, join tokens, pools, events and their outbox, GitHub runner integrations and their jobs, new sticky disks) fenced against its deletion: a write is checked once it
  * has landed, and one that landed in an account that has closed or gone is taken out again and refused. So a write
  * already under way when the account closed, however late it lands, never leaves a record behind, and an update never
  * brings a deleted record back (`update` writes only a record that is there). Sandboxes, snapshots and commands have
@@ -1004,6 +1734,11 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		 * path. A record that landed in a closed account is still taken out again, a moment later.
 		 */
 		behind = false,
+		/**
+		 * Fence changes to records that exist, not only new ones. Off for records whose own cleanup must outlive the
+		 * account's closing (GitHub runners: their leases and ending runners), which a closed account's writes can't add to.
+		 */
+		updates = true,
 	): Collection<T> {
 		const refuse = async (record: T): Promise<never> => {
 			await collection.delete(record.id).catch(() => false);
@@ -1016,7 +1751,7 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		};
 		return {
 			get: (id) => collection.get(id),
-			list: (where) => collection.list(where),
+			list: (where, anyOf) => collection.list(where, anyOf),
 			delete: (id) => collection.delete(id),
 			deleteIf: (id, should) => collection.deleteIf(id, should),
 			async put(record) {
@@ -1034,7 +1769,7 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 			},
 			async update(id, change, expected) {
 				const updated = await collection.update(id, change, expected);
-				await check(updated);
+				if (updates) await check(updated);
 				return updated;
 			},
 		};
@@ -1048,10 +1783,50 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 		webhooks: fenced(store.webhooks, byAccount),
 		deliveries: fenced(store.deliveries, byAccount),
 		joinTokens: fenced(store.joinTokens, byAccount),
+		pools: fenced(store.pools, (pool) => (pool.owner === OPERATOR_POOLS ? undefined : pool.owner)),
 		// Written on every sandbox's change, so checked behind the write: one read more, no round trip more for the caller.
 		events: fenced(store.events, byAccount, true),
+		eventOutbox: fenced(store.eventOutbox, byAccount),
+		// The same, for an event written with its outbox record: one that landed in a closed account is taken out again, its
+		// outbox record first, behind the write.
+		eventWrites: {
+			async put(event) {
+				await store.eventWrites.put(event);
+				open(event.accountId)
+					.then(async (yes) => {
+						if (yes) return;
+						await store.eventOutbox.delete(event.id);
+						await store.events.delete(event.id);
+					})
+					.catch(() => undefined);
+			},
+		},
 		// Keyed by their account.
 		telemetry: fenced(store.telemetry, isAccount),
 		proxies: fenced(store.proxies, isAccount),
+		// New ones only: their cleanup (leases, ending runners) runs on while their account closes, and consumes them.
+		githubRunners: fenced(store.githubRunners, byAccount, false, false),
+		githubRunnerJobs: fenced(store.githubRunnerJobs, byAccount, true),
+		githubRunnerMachines: fenced(store.githubRunnerMachines, byAccount, false, false),
+		stickyDisks: fenced(store.stickyDisks, byAccount),
+		stickyDiskVersions: fenced(store.stickyDiskVersions, byAccount),
+		stickyDiskNames: fenced(store.stickyDiskNames, byAccount),
+		// A new disk only. Tombstones aren't fenced: an account's teardown writes them after it has closed, and they
+		// outlive it, so hosts that were away still have the disk's versions deleted (`STICKY_TOMBSTONE_MS`). A commit
+		// needs a live disk, and the teardown tombstones every disk before it reads their versions.
+		stickyDiskWrites: {
+			...store.stickyDiskWrites,
+			async create(disk) {
+				const created = await store.stickyDiskWrites.create(disk);
+				if (created && !(await open(disk.accountId))) {
+					await store.stickyDiskNames
+						.deleteIf(stickyDiskNameId(disk.accountId, disk.name), (claim) => claim.diskId === disk.id)
+						.catch(() => false);
+					await store.stickyDisks.delete(disk.id).catch(() => false);
+					throw new KantelError("conflict", ACCOUNT_CLOSED_MESSAGE);
+				}
+				return created;
+			},
+		},
 	};
 }

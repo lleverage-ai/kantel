@@ -102,25 +102,6 @@
 	}
 }
 
-/* SideScroll's cut-off edges: a shadow cast inward from an edge with more past it, on the scroller's own box, so it
-   stays at the edge as the content scrolls and paints under the text rather than washing it out. Both edges at once is
-   a list of two shadows, which one utility can't say, so CSS on its data-edges. */
-.kt-side-scroll {
-	transition: box-shadow var(--kt-duration-fast) var(--kt-ease);
-}
-
-.kt-side-scroll[data-edges="start"] {
-	box-shadow: var(--kt-shadow-edge-start);
-}
-
-.kt-side-scroll[data-edges="end"] {
-	box-shadow: var(--kt-shadow-edge-end);
-}
-
-.kt-side-scroll[data-edges="both"] {
-	box-shadow: var(--kt-shadow-edge-start), var(--kt-shadow-edge-end);
-}
-
 /* Scrollbars in the theme: thin, a rounded thumb in the border's grey on a clear track, no arrow buttons, so a scrolling
    panel doesn't get the platform's grey slab. Pseudo-elements, which utilities can't reach, so CSS. Chromium and
    Safari draw ::-webkit-scrollbar, Firefox the standard properties: Chromium ignores ::-webkit-scrollbar on an element

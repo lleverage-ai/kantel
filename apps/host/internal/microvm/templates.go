@@ -19,7 +19,8 @@ import (
 
 // A template (the control plane's, packages/compute/src/templates.ts) is an image sandboxes are made from. A build
 // (template.build) takes the image's root filesystem (rootfs.go: the host's own image, or a base pulled by digest and
-// made into one), boots it once with the vCPUs and memory asked, runs the template's setup as root, and snapshots it
+// made into one; a pulled base's or a custom image's fetched from a host in the pool that holds it first, rootfssync.go),
+// boots it once with the vCPUs and memory asked, runs the template's setup as root, and snapshots it
 // as template-snapshots/<id>: state, mem, disk.ext4, rootfs (a link to the root filesystem: with versioned host images,
 // the version of the host's image its build booted, which a prune keeps and a restore links, base.go) and meta.json. A
 // sandbox
@@ -77,7 +78,12 @@ func (m *Manager) templateRootfs(ctx context.Context, img templateImage) (string
 	if img.BaseDigest == "" {
 		return m.cfg.Rootfs, "", nil
 	}
-	return m.tpl.rootfs.rootfs(ctx, img)
+	path, digest, err := m.tpl.rootfs.rootfs(ctx, img)
+	if err == nil {
+		// For peers to fetch it (rootfssync.go): made in the background unless it has one.
+		m.mapRootfsLater(img.key())
+	}
+	return path, digest, err
 }
 
 // templateImageKind is what a template snapshot's builtFrom.image says it was made of: a Kantel base. A custom image's
@@ -112,14 +118,18 @@ type templateSnapshotMeta struct {
 	Base string `json:"base,omitempty"`
 	// Runtime is the Firecracker and kernel it was made with, and the host's image when Rootfs is Config.Rootfs itself
 	// (runtimeFingerprint): it restores only onto those.
-	Runtime   string            `json:"runtime"`
-	BuiltFrom templateBuiltFrom `json:"builtFrom"`
-	VCPUs     int               `json:"vcpus"`
-	MemoryMiB int               `json:"memoryMiB"`
-	DiskGiB   int               `json:"diskGiB"`
-	SizeBytes int64             `json:"sizeBytes"`
-	CreatedAt int64             `json:"createdAt"`
-	Timings   timings           `json:"timings,omitempty"`
+	Runtime string `json:"runtime"`
+	// CPU and PortableRuntime are what it was made on as other hosts can compare it (fingerprint.go): its host's CPU
+	// and its runtime (portableRuntime). Absent from one made before they were kept.
+	CPU             *proto.CPUFingerprint `json:"cpu,omitempty"`
+	PortableRuntime string                `json:"portableRuntime,omitempty"`
+	BuiltFrom       templateBuiltFrom     `json:"builtFrom"`
+	VCPUs           int                   `json:"vcpus"`
+	MemoryMiB       int                   `json:"memoryMiB"`
+	DiskGiB         int                   `json:"diskGiB"`
+	SizeBytes       int64                 `json:"sizeBytes"`
+	CreatedAt       int64                 `json:"createdAt"`
+	Timings         timings               `json:"timings,omitempty"`
 	// Guest is what the template's image has, as its agent reported it at the build, before the setup ran (nil: an
 	// agent too old to say). Not the host's shared report (Manager.guest): that is the default image's. A restore of
 	// the snapshot reports this, as a fresh boot of the template reports what its own agent says at the same point.
@@ -127,7 +137,10 @@ type templateSnapshotMeta struct {
 }
 
 func (k templateSnapshotMeta) result() proto.TemplateBuildResult {
-	res := proto.TemplateBuildResult{Ref: k.SnapshotID, ImageDigest: k.BuiltFrom.ImageDigest, SizeBytes: k.SizeBytes, Timings: k.Timings}
+	res := proto.TemplateBuildResult{
+		Ref: k.SnapshotID, ImageDigest: k.BuiltFrom.ImageDigest, SizeBytes: k.SizeBytes, Timings: k.Timings,
+		CPU: k.CPU, Runtime: k.PortableRuntime,
+	}
 	if k.BuiltFrom.custom() {
 		res.RootfsKey, res.Source = k.BuiltFrom.RootfsKey, k.BuiltFrom.Image
 		res.DockerfileDigest, res.ImageRef = k.BuiltFrom.DockerfileDigest, k.BuiltFrom.ImageRef
@@ -154,7 +167,7 @@ func linkTemplateRootfs(dir, rootfs string) error {
 // own kernel for its file), with the host's image when rootfs is Config.Rootfs itself: an update replaces that in
 // place, whereas a host image version's file, like a pulled base's root filesystem under its key, never changes.
 // With free page reporting on, it says so too: the balloon is a device the snapshot keeps, so one made without
-// reporting is booted afresh instead (and one made with it isn't restored once it is off).
+// reporting is booted afresh instead (and one made with it isn't restored once it is off). So do the sticky drives.
 func (m *Manager) runtimeFingerprint(rootfs string) string {
 	var fp string
 	if rootfs == m.cfg.Rootfs {
@@ -162,6 +175,8 @@ func (m *Manager) runtimeFingerprint(rootfs string) string {
 	} else {
 		fp = fc.Fingerprint(m.cfg.Firecracker, m.kernelFor(rootfs))
 	}
+	// A snapshot restores the drives it was made with: one from before the sticky drives is booted afresh instead.
+	fp += fmt.Sprintf("+sticky=%d", StickyDrives)
 	if m.cfg.FreePageReporting {
 		fp += "+free-page-reporting"
 	}
@@ -237,8 +252,11 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		if err := validateTemplateImage(p.Image); err != nil {
 			return proto.TemplateBuildResult{}, err
 		}
+	} else if p.Copy != nil {
+		return proto.TemplateBuildResult{}, &proto.Error{Code: proto.ErrInvalid, Message: "only a custom image's build is a copy of its image"}
 	}
 	defer m.tpl.snapshots.lock(p.SnapshotID)()
+	m.buildingTemplate(p.SnapshotID)
 	dir := m.templateSnapshotDir(p.SnapshotID)
 	if kept, err := m.readTemplateSnapshot(p.SnapshotID); err == nil && kept.KeyHash == p.KeyHash {
 		return kept.result(), nil
@@ -261,12 +279,33 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	builtFrom := templateBuiltFrom{Image: templateImageKind, BaseImage: p.BaseImage, BaseDigest: p.BaseDigest}
 	var rootfs, imageDigest string
 	if p.Image != nil {
-		// Built or pulled in a build microVM, under the template's egress with the operator's registries: never on the
-		// host's Docker.
 		var key string
-		rootfs, imageDigest, key, err = m.customRootfs(ctx, p.SnapshotID, p.Owner, p.Image, img, size, p.Egress, p.Env)
-		if err != nil {
-			return proto.TemplateBuildResult{}, err
+		if p.Copy != nil {
+			// A copy of an entry another host built: only that entry's image, here or fetched from a peer, never built.
+			var fetched bool
+			rootfs, fetched, err = m.copiedRootfs(ctx, p.Owner, p.Image, img, *p.Copy)
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
+			if fetched {
+				t.step("fetch", &start)
+			}
+			imageDigest, key = p.Copy.ImageDigest, p.Copy.RootfsKey
+		} else {
+			// Fetched from a host in the pool that holds it (its record with it, which names its digest), else built or
+			// pulled in a build microVM, under the template's egress with the operator's registries: never on the host's
+			// Docker.
+			fetched, err := m.fetchRootfsFirst(ctx, customImageKey(p.Owner, p.Image, img), buildingHere)
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
+			if fetched {
+				t.step("fetch", &start)
+			}
+			rootfs, imageDigest, key, err = m.customRootfs(ctx, p.SnapshotID, p.Owner, p.Image, img, size, p.Egress, p.Env)
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
 		}
 		builtFrom.Image, builtFrom.RootfsKey = p.Image.Kind, key
 		if p.Image.Kind == proto.TemplateImageDockerfile {
@@ -276,6 +315,16 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		}
 		t.step("image", &start)
 	} else {
+		// A pulled base's, fetched from a host in the pool that holds it, else pulled and made here.
+		if img.BaseDigest != "" {
+			fetched, err := m.fetchRootfsFirst(ctx, img.key(), buildingHere)
+			if err != nil {
+				return proto.TemplateBuildResult{}, err
+			}
+			if fetched {
+				t.step("fetch", &start)
+			}
+		}
 		rootfs, imageDigest, err = m.templateRootfs(ctx, img)
 		if err != nil {
 			return proto.TemplateBuildResult{}, err
@@ -286,14 +335,27 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 		t.step("rootfs", &start)
 	}
 	builtFrom.ImageDigest = imageDigest
+	// Its root filesystem is here now: a peer's copy of the snapshot that restores here is fetched rather than booted.
+	if fetched, err := m.fetchTemplateFirst(ctx, p, size); err != nil {
+		return proto.TemplateBuildResult{}, err
+	} else if fetched != nil {
+		return fetched.result(), nil
+	}
+	// The pool it is built in, as it began: a copy of it is offered only there.
+	pool := m.tpl.rootfs.currentPool()
 	// The build is a sandbox to the egress proxy while its setup runs, named after the snapshot, with the template's
 	// grants; it has no network once the setup is done.
 	build := &sandbox{meta: meta{ID: p.SnapshotID, Env: p.Env, Egress: p.Egress, Owner: p.Owner}}
 	// The host's image boots as the version it resolves to now, which the snapshot keeps (its rootfs link, from the
 	// build's directory on) and a restore links: a prune keeps that version while the snapshot is there.
+	// Its runtime as it boots, before the setup runs (which may take many minutes, while the host's files change).
+	var madeOn string
 	booted, caps, booting, err := m.bootSnapshot(ctx, snapshotBoot{
 		dir: dir, name: p.SnapshotID, rootfs: rootfs, size: size, egress: egressMode(p.Egress),
-		record: linkTemplateRootfs,
+		record: func(building, rootfs, runtime string) error {
+			madeOn = runtime
+			return linkTemplateRootfs(building, rootfs)
+		},
 		prepare: func(ctx context.Context, client *guest.Client, link network.Link) error {
 			build.link = &link
 			m.attach(build, link.Slot)
@@ -312,19 +374,23 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	}
 	kept := templateSnapshotMeta{
 		SnapshotID: p.SnapshotID, KeyHash: p.KeyHash, Rootfs: booting, Runtime: m.runtimeFingerprint(booting),
+		CPU: m.CPU(), PortableRuntime: madeOn,
 		BuiltFrom: builtFrom,
 		VCPUs:     size.VCPUs, MemoryMiB: size.MemoryMiB, DiskGiB: size.DiskGiB, CreatedAt: time.Now().UnixMilli(), Timings: t,
 		Guest: caps,
 	}
+	stampTemplatePool(dir, pool)
 	if err := keepTemplateSnapshot(dir, &kept); err != nil {
 		_ = os.RemoveAll(dir)
 		return proto.TemplateBuildResult{}, err
 	}
 	m.log.Info("template snapshot ready", "snapshot", p.SnapshotID, "timings", t)
+	// For peers to fetch it (templatesync.go): made in the background once the build has let its lock go.
+	m.mapTemplateLater(p.SnapshotID)
 	return kept.result(), nil
 }
 
-// DeleteTemplate is template.delete: the template snapshot's directory goes, and nothing else (not its root
+// DeleteTemplate is template.delete: the template snapshot's directory goes, with any fetch of it, and nothing else (not its root
 // filesystem, which sandboxes made from it read). One that isn't there is gone already. It waits for the creates
 // restoring the snapshot to have loaded it; creates that come meanwhile boot the template fresh.
 func (m *Manager) DeleteTemplate(id string) error {
@@ -332,7 +398,8 @@ func (m *Manager) DeleteTemplate(id string) error {
 		return badTemplateSnapshot()
 	}
 	defer m.tpl.snapshots.lock(id)()
-	return os.RemoveAll(m.templateSnapshotDir(id))
+	// A fetch of it under way publishes nothing from now on.
+	return m.forgetTemplate(id)
 }
 
 // templateOrigin is where a sandbox made from a template starts as a machine of size: its template snapshot when t
@@ -432,7 +499,7 @@ func (m *Manager) restorableTemplateSnapshot(id string, size proto.Size) (sandbo
 		return sandboxOrigin{}, fmt.Errorf("built with a %d GiB disk, more than %d", kept.DiskGiB, size.DiskGiB)
 	}
 	dir := m.templateSnapshotDir(id)
-	origin := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: id, templateDiskGiB: kept.DiskGiB, guest: kept.Guest}
+	origin := sandboxOrigin{rootfs: kept.Rootfs, state: filepath.Join(dir, "state"), mem: filepath.Join(dir, "mem"), disk: filepath.Join(dir, fc.DiskFile), source: "snapshot", templateSnapshot: id, templateDiskGiB: kept.DiskGiB, guest: kept.Guest, runtime: kept.PortableRuntime}
 	for _, file := range []string{origin.rootfs, origin.state, origin.mem, origin.disk} {
 		if !fileExists(file) {
 			return sandboxOrigin{}, fmt.Errorf("%s is missing", file)

@@ -23,6 +23,11 @@ export const HOST_CLOSE_REVOKED = 4003;
 export const HOST_CLOSE_REPLACED = 4008;
 /** The host spoke out of turn, or a version Kantel doesn't speak. */
 export const HOST_CLOSE_PROTOCOL = 4002;
+/**
+ * Nothing came from the host for longer than the heartbeat deadline (`HostHubOptions.heartbeatDeadlineMs`): the link is
+ * taken as lost. The host reconnects, as after any close but a revocation.
+ */
+export const HOST_CLOSE_SILENT = 4009;
 
 export const HOST_MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
 
@@ -34,7 +39,14 @@ export type HostErrorCode =
 	| "unavailable"
 	| "internal"
 	| "unsupported"
-	| "timeout";
+	| "timeout"
+	/**
+	 * A command with an ID whose call broke as its sandbox was stopped keeping its memory (a pause, or a move to another
+	 * host that keeps it): the command carries on in that memory, and is followed by its ID (`sandbox.exec.get`)
+	 * wherever the sandbox runs next. A host from before answers such a call with the error its guest connection broke
+	 * with.
+	 */
+	| "suspended";
 
 export interface HostError {
 	readonly code: HostErrorCode | string;
@@ -45,6 +57,12 @@ export interface HostError {
 	 * answered, or the call never left.
 	 */
 	readonly unanswered?: boolean;
+	/**
+	 * A `sandbox.start` that failed after its host let go of the memory the sandbox was stopped with
+	 * (`HOST_FEATURES.startMemoryDropped`): a rebase clears it before it relinks the root filesystem and boots. Absent,
+	 * the memory is where it was.
+	 */
+	readonly memoryDropped?: boolean;
 }
 
 export type SandboxTier = "microvm" | "isolate";
@@ -101,6 +119,94 @@ export interface HostFacts {
 	readonly guestKernel?: string;
 	/** What the host boots new sandboxes on, and its image settings; present with `image-patching`. */
 	readonly images?: HostImages;
+	/**
+	 * What its isolate runtime (kantel-isolate) says it can do, as the host last read it. Absent on a host without the
+	 * isolate tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
+	 */
+	readonly isolate?: HostIsolateRuntime;
+	/**
+	 * Its CPU as a microVM sees it: a snapshot's memory restores only onto a host whose CPU fingerprint is the same
+	 * (`sameCpu`), since Kantel sets no Firecracker CPU template. Absent on a host without the microVM tier, or from before
+	 * it said.
+	 */
+	readonly cpu?: HostCpuFingerprint;
+	/**
+	 * The microVM runtime fingerprints it restores snapshots with, one for each host image it has: a snapshot's memory
+	 * restores only onto a host with its `runtime` among them and the same CPU. Absent on a host without the microVM
+	 * tier, or from before it said.
+	 */
+	readonly runtimes?: readonly HostRuntime[];
+	/** Its side of its pool's WireGuard mesh (`HOST_FEATURES.mesh`). Absent from a host without the feature. */
+	readonly mesh?: HostMeshFacts;
+}
+
+/**
+ * A host's WireGuard key and where its mesh peers can reach it (`MeshFacts` in proto.go): `publicKey` is its Curve25519
+ * public key, base64 as WireGuard writes keys (the private key never leaves the host), `listenPort` the UDP port it
+ * listens on, and `endpoints` the addresses peers try, `ip:port` (IPv6 in brackets) or `name:port`, passed to its peers
+ * as it sent them.
+ */
+export interface HostMeshFacts {
+	readonly publicKey: string;
+	readonly listenPort: number;
+	readonly endpoints: readonly string[];
+}
+
+/**
+ * Another host of the pool as a mesh peer (`MeshPeer` in proto.go): its WireGuard public key, its mesh address and the
+ * endpoints it reported.
+ */
+export interface HostMeshPeer {
+	readonly hostId: string;
+	readonly publicKey: string;
+	readonly address: string;
+	readonly endpoints: readonly string[];
+}
+
+/**
+ * A host's place in its pool's mesh (`WelcomeMesh` in proto.go): its own mesh address (an IPv6 ULA, one /128 per host,
+ * stable across reconnects), the pool's prefix (its /48) and the pool's other hosts.
+ */
+export interface HostWelcomeMesh {
+	readonly address: string;
+	readonly prefix: string;
+	readonly peers: readonly HostMeshPeer[];
+}
+
+/**
+ * What a CPU is to a guest (`CPUFingerprint` in proto.go): its vendor (`AuthenticAMD`), family and model as
+ * /proc/cpuinfo has them, and `featuresHash`, a hash of the CPUID feature bits KVM offers a guest (`sha256:` and 16 hex
+ * digits). Two match when all four are equal.
+ */
+export interface HostCpuFingerprint {
+	readonly vendor: string;
+	readonly family: number;
+	readonly model: number;
+	readonly featuresHash: string;
+}
+
+/**
+ * The runtime fingerprint of a microVM booted on one host image (`HostRuntime` in proto.go): its Firecracker, guest
+ * kernel, image, sticky drives and balloon, such as
+ * `firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. `image` is the host image
+ * version, `sha256:…` for a host image that isn't versioned, or empty for templates' own root filesystems.
+ */
+export interface HostRuntime {
+	readonly image: string;
+	readonly runtime: string;
+}
+
+/**
+ * The isolate runtime's report of itself (`IsolateRuntime` in proto.go): whether its shell runs `node` and `python`, and
+ * whether an isolate's `memoryMiB` is a hard limit rather than recorded only.
+ */
+export interface HostIsolateRuntime {
+	/** Such as `deno_core`. */
+	readonly runtime?: string;
+	readonly version?: string;
+	readonly javascript: boolean;
+	readonly python: boolean;
+	readonly memoryEnforced: boolean;
 }
 
 /** A host's images: the version new sandboxes start on, and how it takes new ones. */
@@ -147,10 +253,20 @@ export const HOST_FEATURES = {
 	 */
 	mountsBundle: "mounts-bundle",
 	/**
+	 * Sticky disks (docs/design/disk-store.md, phase 1): a create's `stickyDisks` are cloned into the microVM's writable
+	 * drive slots and mounted; `sticky.commit` and `sticky.delete`; the host's versions in `HostCapacity.stickyDisks`.
+	 */
+	stickyDisks: "sticky-disks",
+	/**
 	 * Bucket mounts (`HostMount` of kind `bucket`): the host fetches the bucket source with `bucket.fetch`, mounts the
 	 * prefix read-only, and answers its status as for bundles.
 	 */
 	mountsBucket: "mounts-bucket",
+	/**
+	 * `sandbox.mounts.refresh` takes `sync` (`HostMountsRefresh`): it answers once the sandbox shows a listing that began
+	 * after the call, or fails saying why. A host without it can't promise that, so a refresh isn't asked of it.
+	 */
+	mountsSync: "mounts-sync",
 	/** `sandbox.files.open`: a file's bytes streamed both ways on a port stream (signed file URLs, archives). */
 	fileStreams: "file-streams",
 	/**
@@ -160,7 +276,7 @@ export const HOST_FEATURES = {
 	filesExtract: "files-extract",
 	/**
 	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
-	 * scratch), and an isolate's `memoryMiB` (recorded, not enforced).
+	 * scratch), and an isolate's `memoryMiB` (enforced where the host's runtime says `memoryEnforced`).
 	 */
 	customShapes: "custom-shapes",
 	/**
@@ -195,7 +311,9 @@ export const HOST_FEATURES = {
 	 * with no limit but its own `timeoutMs`, its result kept for `sandbox.exec.get`. A later kantel-host also keeps a
 	 * foreground one running when its connection goes, to its own limit, with its result for `sandbox.exec.get` (an
 	 * earlier one ends it with the connection, and then doesn't know it), and answers a running one's get with its output
-	 * so far where its sandbox keeps it (`HostExecStatus.stdout`). Without it Kantel can't stop a
+	 * so far where its sandbox keeps it (`HostExecStatus.stdout`). A later one still keeps a foreground one past a stop
+	 * that keeps its sandbox's memory (a pause, or a move), in that memory, and answers its call `suspended` (the
+	 * sandbox's guest keeps it by its ID, for the host it runs on next). Without it Kantel can't stop a
 	 * host's command, and a detached one runs as a foreground one, to the guest's default limit (120 s; an isolate's
 	 * 30 s).
 	 */
@@ -237,7 +355,282 @@ export const HOST_FEATURES = {
 	 * only for the run whose machine ended (`ComputeService.reportExit`). Without it a boot names no machine.
 	 */
 	exitStamps: "exit-stamps",
+	/**
+	 * `sandbox.env` (`HostEnvParams`): a sandbox's whole env replaced where the host keeps it (what its later starts,
+	 * resumes and forks there boot with), and a running microVM's env file (`/etc/kantel/env`, which its shells and
+	 * commands read) rewritten at once. Without it Kantel doesn't send it, and the sandbox has the new env from its next
+	 * boot.
+	 */
+	sandboxEnv: "sandbox-env",
+	/**
+	 * `sandbox.upgrade` (`HostMethods.upgrade`): a microVM made from one of the host's isolates, with its sandbox ID, as
+	 * `sandbox.create` would make it, the isolate's `/workspace` files put in it at `/home/user/workspace` from the host's
+	 * own blob store (with `/workspace` a link to them), and the isolate let go only once the microVM runs with them;
+	 * a failure leaves the isolate as it was. Reported by a host that runs both tiers. Without it, an upgrade makes the
+	 * microVM on another host and Kantel moves the files.
+	 */
+	isolateUpgrade: "isolate-upgrade",
+	/**
+	 * `sandbox.upgrade` takes a create's `from` (one of the host's microVM snapshots) or `template` too: the microVM
+	 * starts from it as `sandbox.create` would make it, the snapshot's memory restored, and the isolate's files are laid
+	 * over what it has at `/home/user/workspace`, only by a guest agent that reports `GUEST_FEATURES.extractRealTarget`.
+	 * Without it, an upgrade from a snapshot on the isolate's own host is refused.
+	 */
+	isolateUpgradeFrom: "isolate-upgrade-from",
+	/**
+	 * `sandbox.create` takes `guestFeatures`, refusing (`not_supported`, the microVM deleted) one whose guest agent
+	 * doesn't report each before anything is written into it. Reported by a host with the microVM tier; an upgrade from
+	 * a snapshot on another host moves its files only to a host that says it.
+	 */
+	guestFeatures: "guest-features",
+	/**
+	 * `sandbox.upgrade.freeze` and `sandbox.upgrade.thaw` (`{ sandboxId, operationId, waitMs? }`): one of the host's
+	 * isolates held still (what was under way ended, every later command and file write refused) while Kantel copies its
+	 * files to a microVM on another host, and let go if that upgrade rolls back.
+	 */
+	isolateFreeze: "isolate-freeze",
+	/**
+	 * The pool's WireGuard mesh (docs/design/disk-store.md, "2a. The mesh"): the host reports its public key, listen port
+	 * and endpoints in `HostFacts.mesh`, brings its mesh device up with the address `HostWelcome.mesh` gives it (and down
+	 * on a welcome without one), and makes its peers match each `mesh.peers`. Kantel sends neither to a host without it,
+	 * nor to a host whose pool has sync off. While its mesh is up, the host also serves the disk versions it holds to its
+	 * peers, on TCP 7480 at its mesh address, to a peer with a grant `HostWelcome.grantKey` signed.
+	 */
+	mesh: "mesh",
+	/**
+	 * Peer sync (docs/design/disk-store.md, "2c. Peer sync"): the host fetches disk versions from its mesh peers. It takes
+	 * `disk.fetch` (`HostDiskFetchParams`) for sticky disks, and a create attaching a sticky disk version it doesn't hold
+	 * starts on its newest and fetches that one in the background. Reported with `mesh` and `stickyDisks`.
+	 */
+	diskSync: "disk-sync",
+	/**
+	 * Templates' root filesystems are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"): kind
+	 * `rootfs`, each its key (`images/templates/<key>.ext4`, `HostTemplateBuildResult.rootfsKey`) in one version, `1`.
+	 * The host makes each one's block map, lists those with a map in `HostCapacity.holdings.rootfs`, serves them to its
+	 * mesh peers with their records, and takes `disk.fetch` for them. Reported with `diskSync`.
+	 */
+	rootfsSync: "rootfs-sync",
+	/**
+	 * Template snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"), kind
+	 * `template`, each its snapshot ID in one version, `1`: its disk and memory are its parts (each block-mapped, its
+	 * manifest the version's map) and its state, meta and drive counts go whole. The host lists those with maps in
+	 * `HostCapacity.holdings` with what each was made on (`HostObjectVersionHolding.cpu` and `runtime`), serves them to
+	 * its mesh peers, and a `template.build` first fetches the snapshot from a peer whose copy restores on its CPU and
+	 * runtime (`disk.locate` answers only those), booting it only when none has one. Reported with `rootfsSync`.
+	 */
+	templateSync: "template-sync",
+	/**
+	 * A `template.build` of a custom image with `copy` (`HostTemplateBuild.copy`) is a copy of an entry another host
+	 * built: its root filesystem is only the one `copy` names, with the digest `copy` names, held on the host or fetched
+	 * from a peer, never built or pulled again (which might make another image under the same key), so whatever snapshot
+	 * the build fetches or boots is over the entry's image. A host without it would ignore `copy`. Reported with
+	 * `templateSync`.
+	 */
+	templateImageCopies: "template-image-copies",
+	/**
+	 * Saved snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3 notes"): kind `snapshot`,
+	 * each its snapshot ID (a ref's), in two versions, one for each block-mapped file: `disk` (`disk.ext4`, with its
+	 * record) and `memory` (`mem`, with the machine's state). The host maps each saved snapshot's files, lists those with
+	 * maps in `HostCapacity.holdings.snapshot`, serves them to its mesh peers, and takes `disk.fetch` for a snapshot's
+	 * `disk`: it makes sure it has the root image the disk is over first, and fetches the memory too only when its CPU and
+	 * runtime fingerprints match the snapshot's (else its copy boots on its disk). The files on its machine's drives are
+	 * versions too (`sticky<k>`, its sticky disks' clones; `bundle<i>`, the bundle images on its drives when its memory
+	 * was taken), which a host with this feature serves when it has them and fetches for its copies, the memory only after
+	 * them. Reported with `diskSync`.
+	 */
+	snapshotSync: "snapshot-sync",
+	/**
+	 * A stopped microVM sandbox moves to another host in its pool (docs/design/disk-store.md, "Moving a sandbox to another
+	 * host"). Its disk and sticky drives are a disk store object, kind `sandbox`, its ID the sandbox's, one version for
+	 * each export (the move's operation ID), whose parts are `SANDBOX_PARTS` and whose record goes whole:
+	 * `sandbox.export` (`HostSandboxExportParams`) on its host makes that version, clones of its files and their maps,
+	 * which the host then serves to its mesh peers; `sandbox.import` (`HostSandboxImportParams`) on the target fetches it,
+	 * its root image first, and makes the sandbox there, stopped, with the same ID; `sandbox.export.delete` drops a
+	 * version; `sandbox.import.cancel` ends a version's import on the target for good. A delete of the sandbox drops its
+	 * exports too, and on the target an import under way. Reported with `snapshotSync`.
+	 */
+	sandboxMove: "sandbox-move",
+	/**
+	 * A running microVM sandbox moves too, with a restart (docs/design/disk-store.md, "Moving a sandbox to another host",
+	 * with a restart). Its host exports it while it runs (`HostSandboxExportParams.live`: its files cloned at once, a
+	 * crash-consistent copy) as a version of its own, which the target fetches and keeps staged
+	 * (`HostSandboxImportParams.stage`); the sandbox is then stopped without its memory and exported again over that first
+	 * version (`base`: its maps made from the first's, `FIEMAP` telling the blocks written since), and the target fetches
+	 * the second version over its staged first (`base`), only the blocks that differ, and makes the sandbox from it. The
+	 * move's `sandbox.stop` names the first copy (`{ sandboxId, memory: false, export }`): it is done only while that
+	 * export is on the host (`conflict` once a rollback has deleted it), and done already when the sandbox is stopped.
+	 * Reported with `sandboxMove`.
+	 */
+	sandboxMoveRunning: "sandbox-move-running",
+	/**
+	 * A microVM sandbox moves with its memory, between hosts whose CPU and runtime fingerprints match
+	 * (docs/design/disk-store.md, "Moving a sandbox to another host", keeping memory). `sandbox.memory`
+	 * (`HostSandboxMemoryParams`) says what a move of it would carry (`HostSandboxMemory`). A running sandbox's move stops
+	 * it keeping its memory (`{ sandboxId, memory: true, export }`); then `sandbox.export` with `memory` also makes the
+	 * same version of the object `sandbox-memory`/`sandboxId`, whose parts are `SANDBOX_MEMORY_PARTS` (its memory file and
+	 * its bundle drives' files, which its guest has mounted) and whose small file is the machine's state; and
+	 * `sandbox.import` with `memory` fetches that version first and makes the sandbox stopped with its memory, so its
+	 * start restores it. Each host reports the rate its last fetch from each peer ran at
+	 * (`HostMeshPeerHealth.fetchBytesPerSecond`). Reported with `sandboxMoveRunning`.
+	 */
+	sandboxMoveMemory: "sandbox-move-memory",
+	/**
+	 * Each fetch the host reports (`HostCapacity.fetches`) has the bytes it has read so far (`HostFetchProgress.bytes`),
+	 * which move on as a block's bytes arrive, before it is whole. A move's `sandbox.import` on such a host waits while
+	 * its fetch moves, and is given up only once it stalls (`MOVE_COPY_STALL_MS`), within `MOVE_COPY_CEILING_MS`; on a
+	 * host without it, after `DISK_COPY_TIMEOUT_MS`. Reported with `sandboxMove`.
+	 */
+	fetchBytes: "fetch-bytes",
+	/**
+	 * A `sandbox.start` that fails after its host let go of the memory the sandbox was stopped with (a rebase clears it
+	 * before it relinks the root filesystem and boots) says so in its error (`HostError.memoryDropped`), so Kantel ends
+	 * the commands that ran in that memory; one that fails without it kept the memory. A host from before says neither,
+	 * and its failed start is taken to have kept it. The microVM tier.
+	 */
+	startMemoryDropped: "start-memory-dropped",
 } as const;
+
+/** A moved sandbox's parts (`HOST_FEATURES.sandboxMove`), in its manifest's order: its disk and its two sticky drives. */
+export const SANDBOX_PARTS = ["disk", "sticky0", "sticky1"] as const;
+
+/**
+ * A moved sandbox's memory's parts (`HOST_FEATURES.sandboxMoveMemory`), in its manifest's order: its memory file, then
+ * its eight bundle drives' files (an empty file for a drive with nothing on it).
+ */
+export const SANDBOX_MEMORY_PARTS = ["mem", ...Array.from({ length: 8 }, (_, i) => `bundle${i}`)] as const;
+
+/** The disk store object kind of a moved sandbox's memory (`HOST_FEATURES.sandboxMoveMemory`). */
+export const SANDBOX_MEMORY_KIND = "sandbox-memory";
+
+/** Kantel to host, `sandbox.memory` (`HOST_FEATURES.sandboxMoveMemory`): answered with `HostSandboxMemory`. */
+export interface HostSandboxMemoryParams {
+	readonly sandboxId: string;
+}
+
+/**
+ * What a move of a sandbox with its memory would carry (`sandbox.memory`): whether it has memory to move (it runs, or
+ * was stopped keeping it); the portable runtime that memory is of (only a host with that runtime among its own and the
+ * same CPU restores it; absent when it can't be told); the bytes a move would copy (a running machine's resident
+ * memory, else its memory file's allocated bytes; zero blocks cost nothing to fetch); and why its memory can't move even
+ * so (`refused`, absent when it can).
+ */
+export interface HostSandboxMemory {
+	readonly memory: boolean;
+	readonly runtime?: string;
+	readonly bytes: number;
+	readonly refused?: string;
+}
+/**
+ * Kantel to host, `sandbox.export` (`HOST_FEATURES.sandboxMove`): the stopped sandbox's disk and sticky drives cloned as
+ * `version` (a valid ID, Kantel's for the move) of the object `sandbox`/`sandboxId`, and mapped. Sent again, it answers
+ * the version it made; `conflict` unless the sandbox is stopped, or with `live` running or stopped.
+ */
+export interface HostSandboxExportParams {
+	readonly sandboxId: string;
+	readonly version: string;
+	/**
+	 * A running sandbox exported too (`HOST_FEATURES.sandboxMoveRunning`): its files cloned at once as it runs, a
+	 * crash-consistent copy.
+	 */
+	readonly live?: boolean;
+	/**
+	 * An earlier version of the sandbox's exports on the host (`HOST_FEATURES.sandboxMoveRunning`): each part's map is
+	 * made from that version's, so only the blocks written since it are read.
+	 */
+	readonly base?: string;
+	/**
+	 * A sandbox stopped with its memory exported with it (`HOST_FEATURES.sandboxMoveMemory`): the same version of the
+	 * object `sandbox-memory`/`sandboxId`. `conflict` for one stopped without memory.
+	 */
+	readonly memory?: boolean;
+}
+
+/**
+ * What `sandbox.export` made: the version's map digest (its manifest's) and the bytes its files take on the host; with
+ * `memory`, its memory's map digest and the bytes those files take.
+ */
+export interface HostSandboxExportResult {
+	readonly mapDigest: string;
+	readonly allocatedBytes: number;
+	readonly memoryMapDigest?: string;
+	readonly memoryAllocatedBytes?: number;
+}
+
+/** `sandbox.export.delete`: that version of the sandbox's exports, or every one without `version`, deleted. `{}`. */
+export interface HostSandboxExportDeleteParams {
+	readonly sandboxId: string;
+	readonly version?: string;
+}
+
+/**
+ * Kantel to host, `sandbox.import` (`HOST_FEATURES.sandboxMove`): version `version` of the object `sandbox`/`sandboxId`
+ * fetched from the hosts that hold it (what `disk.locate` would answer the host), its root image put in place first,
+ * and made a stopped sandbox there with the same ID. Answered with its `HostSandbox` once it is there; a call that ends
+ * first leaves the fetch going on, and the same call again waits for it. `conflict` when a sandbox of that ID is there,
+ * but the one this version made; a `sandbox.delete` of the ID ends it.
+ */
+export interface HostSandboxImportParams {
+	readonly sandboxId: string;
+	readonly version: string;
+	readonly mapDigest: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant: string;
+	/**
+	 * Fetched and kept staged rather than made the sandbox (`HOST_FEATURES.sandboxMoveRunning`): a running sandbox's
+	 * first copy, for a later version to start from (`base`). Answered `{}` once it is there.
+	 */
+	readonly stage?: boolean;
+	/**
+	 * A version of the sandbox staged on the host (`stage`) that each part's fetch starts from
+	 * (`HOST_FEATURES.sandboxMoveRunning`): only the blocks that differ are fetched. It goes once this version is made
+	 * the sandbox.
+	 */
+	readonly base?: string;
+	/**
+	 * Where the same version of the object `sandbox-memory`/`sandboxId` is (`HOST_FEATURES.sandboxMoveMemory`: what
+	 * `disk.locate` would answer the host for it): fetched first, the sandbox is made stopped with its memory, and its
+	 * start restores it.
+	 */
+	readonly memory?: {
+		readonly mapDigest: string;
+		readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+		readonly grant: string;
+	};
+}
+
+/**
+ * What a microVM's guest agent can report it does (its health's `features`), for a create's `guestFeatures` to
+ * require: an agent from before one reports none.
+ */
+export const GUEST_FEATURES = {
+	/** It extracts with `realTarget` into a real directory only, refusing a link at the target or above it. */
+	extractRealTarget: "extract-real-target",
+} as const;
+
+/**
+ * The kinds of disk store object hosts report in `HostCapacity.holdings`: templates' root filesystems, template
+ * snapshots, and saved snapshots.
+ */
+export const HOST_OBJECT_KINDS = ["rootfs", "template", "snapshot"] as const;
+export type HostObjectKind = (typeof HOST_OBJECT_KINDS)[number];
+
+/**
+ * A saved snapshot's versions as a disk store object (`HOST_FEATURES.snapshotSync`): its disk, and its memory. The files
+ * on its machine's drives are versions too, `sticky<k>` and `bundle<i>` (the host's `SnapshotStickyVersion` and
+ * `SnapshotBundleVersion`), which hosts fetch from each other by themselves.
+ */
+export const SNAPSHOT_VERSIONS = { disk: "disk", memory: "memory" } as const;
+
+/** `env.fetch`'s answer: a sandbox's whole env, as Kantel has it now. */
+export interface HostEnvAnswer {
+	readonly env: { readonly [name: string]: string };
+}
+
+/** `sandbox.env`'s params (`HOST_FEATURES.sandboxEnv`): the sandbox's whole env from now (an empty one is none). */
+export interface HostEnvParams {
+	readonly sandboxId: string;
+	readonly env: { readonly [name: string]: string };
+}
 
 /**
  * `snapshot.keep`'s params (`HOST_FEATURES.snapshotKeep`): `snapshotId` made a saved snapshot of what `from` holds, which
@@ -292,6 +685,11 @@ export interface HostExecParams {
 	 * limit but `timeoutMs` (an isolate's has its default), and its result is `sandbox.exec.get`'s once it ends.
 	 */
 	readonly detached?: boolean;
+	/**
+	 * The guest account it runs as (the Go side's `ExecParams.User`, which every host has passed to the guest agent since
+	 * the first): absent, the sandbox's default user, `user` where its image has one, else root.
+	 */
+	readonly user?: string;
 }
 
 /** What a command ended with: `sandbox.exec`'s answer, and an ended `HostExecStatus`'s `result`. */
@@ -302,6 +700,13 @@ export interface HostExecResult {
 	readonly truncated?: boolean;
 	readonly timedOut?: boolean;
 	readonly durationMs?: number;
+	/**
+	 * From an isolate: it failed because it ran something an isolate doesn't have. `inferred`: the host read it from the
+	 * shell's answer (exit 127 and its message), the runtime didn't say it; a hint only, never acted on (`autoUpgrade`).
+	 */
+	readonly needsMicrovm?: { readonly command: string; readonly reason: string; readonly inferred?: boolean };
+	/** From an isolate: its runtime stopped it, for `cpu`, `memory` or `wall` time. */
+	readonly terminated?: string;
 }
 
 /** `sandbox.exec.get`'s and `sandbox.exec.kill`'s params: a command by Kantel's ID. */
@@ -379,6 +784,22 @@ export interface HostMountStatus {
 	readonly path: string;
 	readonly status: "pending" | "ready" | "failed";
 	readonly error?: string;
+	/** A bucket mount's: how many objects its listing holds. */
+	readonly objects?: number;
+	/** A bucket mount's: when the listing it shows began (ms). It has every object the bucket held then. */
+	readonly listedAt?: number;
+}
+
+/**
+ * `sandbox.mounts.refresh`'s params with `sync` (`HOST_FEATURES.mountsSync`): the host answers, with the sandbox's
+ * `HostMountStatus`es, only once each bucket mount `path` names (every one without it) shows the sandbox a listing that
+ * began after the call arrived; a listing that fails, or a guest that doesn't take it, is `unavailable`. A bundle at
+ * `path` is `invalid`, a path with no mount `not_found`, and a sandbox that isn't running `conflict`.
+ */
+export interface HostMountsRefresh {
+	readonly sandboxId: string;
+	readonly path?: string;
+	readonly sync: true;
 }
 
 /** The answer to a host's `bucket.fetch` `{ sandboxId, bucketSourceId }`: what reads the bucket, in host memory only. */
@@ -439,6 +860,200 @@ export interface HostCapacity {
 	readonly disk?: HostDiskUsage;
 	/** Its memory: what sandboxes were given, use and may soon use, and what the machine has left. Absent from an older host. */
 	readonly memory?: HostMemoryReport;
+	/**
+	 * The sticky disk versions it holds (`HOST_FEATURES.stickyDisks`), [] for none. Absent from a host without them, and
+	 * from a report whose inventory the host couldn't read in full: no evidence, so nothing is forgotten on it.
+	 */
+	readonly stickyDisks?: readonly HostStickyHolding[];
+	/**
+	 * The disk store objects of other kinds it holds (`HOST_FEATURES.rootfsSync`, `templateSync`, `snapshotSync`), by
+	 * kind: a kind's list is every object of that kind it holds, [] for none. A kind left out says nothing of it (a host
+	 * without it, or one whose inventory couldn't be read in full), so nothing of that kind is forgotten on it.
+	 */
+	readonly holdings?: { readonly [kind in HostObjectKind]?: readonly HostObjectHolding[] };
+	/**
+	 * The disk store versions it is fetching from its peers (`HOST_FEATURES.diskSync`), of any kind: those under way or
+	 * waiting their turn, and those that failed and are left to go on. [] for none. Absent from a host that doesn't fetch,
+	 * and from one from before it said: nothing is let go on it. A version is listed here or as held, never both.
+	 */
+	readonly fetches?: readonly HostFetchProgress[];
+	/**
+	 * How it reaches its mesh peers (`HOST_FEATURES.mesh`), while its mesh device is up: the host's page shows it
+	 * (`Host.mesh`). Absent from a host without the feature, or whose mesh is down (its pool's sync off).
+	 */
+	readonly mesh?: HostMeshHealth;
+}
+
+/** How a host reaches its mesh peers (`MeshHealth` in proto.go): its own mesh address, and each peer. */
+export interface HostMeshHealth {
+	readonly address: string;
+	readonly peers: readonly HostMeshPeerHealth[];
+}
+
+/**
+ * One mesh peer as a host reaches it (`MeshPeerHealth` in proto.go): the path (`direct`, or `none` with no handshake in
+ * the last 3 minutes), the endpoint it uses now, its last handshake (Unix ms, absent before the first) and the round
+ * trip of the host's last probe of its mesh address (absent when that got no answer).
+ */
+export interface HostMeshPeerHealth {
+	readonly hostId: string;
+	readonly path: "direct" | "none" | string;
+	readonly endpoint?: string;
+	readonly lastHandshake?: number;
+	readonly rttMs?: number;
+	/**
+	 * The rate the host's last fetch from this peer ran at (`HOST_FEATURES.sandboxMoveMemory`), in bytes a second: its
+	 * blocks' bytes over the time spent fetching them, on a fetch of at least 16 MiB from that peer alone, at
+	 * `fetchRateAt` (Unix ms). Absent before the host has made one since it started.
+	 */
+	readonly fetchBytesPerSecond?: number;
+	readonly fetchRateAt?: number;
+}
+
+/** A sticky disk to attach at a create: a copy of `version`, else of the host's newest, else a new disk of `sizeGiB`. */
+export interface HostStickyDisk {
+	readonly diskId: string;
+	readonly path: string;
+	readonly sizeGiB: number;
+	readonly version?: string;
+}
+
+/** A sandbox's sticky disk, as its host answers it. */
+export interface HostStickyDiskStatus {
+	readonly diskId: string;
+	readonly path: string;
+	/** The version its copy came from; absent for a new disk. */
+	readonly version?: string;
+	readonly state: "mounted" | "failed";
+	readonly reason?: string;
+}
+
+/** `sticky.commit`: makes the sandbox's copy of the disk `version`, on its host. */
+export interface HostStickyCommitParams {
+	readonly sandboxId: string;
+	readonly diskId: string;
+	readonly version: string;
+}
+
+export interface HostStickyCommitResult {
+	readonly version: string;
+	readonly sizeBytes: number;
+	readonly allocatedBytes: number;
+	/**
+	 * The digest (`sha256:` and hex) of the version's block map (docs/design/disk-store.md, 2b): absent from a host from
+	 * before maps, or when the map took too long to wait for (a capacity report gives it later).
+	 */
+	readonly mapDigest?: string;
+}
+
+/** The versions of one sticky disk a host holds. */
+export interface HostStickyHolding {
+	readonly diskId: string;
+	readonly versions: readonly HostStickyVersionHolding[];
+}
+
+/** The versions of one disk store object a host holds (`HostCapacity.holdings`). */
+export interface HostObjectHolding {
+	readonly objectId: string;
+	readonly versions: readonly HostObjectVersionHolding[];
+}
+
+/**
+ * One version a host holds: its block map's digest (it is listed only once it has one), the bytes it takes, and the pool
+ * the host made it in (built it, or began fetching it), as `HostWelcome.poolId` said then: a copy made in one pool is
+ * offered only there, wherever its host moves. `pool` is absent from a copy made before the host kept it, or while no
+ * welcome had named a pool.
+ */
+export interface HostObjectVersionHolding {
+	readonly version: string;
+	readonly mapDigest: string;
+	readonly allocatedBytes: number;
+	readonly pool?: string;
+	/**
+	 * What a template snapshot's memory was made on (`HOST_FEATURES.templateSync`), as `HostTemplateBuildResult` says it:
+	 * its CPU and its portable runtime. Only a host with the same CPU and that runtime among its own restores it.
+	 */
+	readonly cpu?: HostCpuFingerprint;
+	readonly runtime?: string;
+	/**
+	 * A saved snapshot's version (`HOST_FEATURES.snapshotSync`) the host fetched from a peer, not one it saved: Kantel has
+	 * it deleted at once when it knows no such snapshot, where a host's own waits out a save that may be under way.
+	 */
+	readonly copy?: boolean;
+}
+
+/**
+ * One version a host is fetching (`HostCapacity.fetches`, `FetchProgress` in proto.go): waiting its turn behind the
+ * host's other fetches, or being prepared for (a saved snapshot's disk, while its record is read and its root image got)
+ * (`queued`), under way (`running`), or stopped by an error with its partial left to go on when it is asked for again
+ * (`failed`); its blocks (every part's, for a kind with parts), 0 until its map has been read; how many of them are in
+ * place; the bytes of blocks it has read from its holders (`HOST_FEATURES.fetchBytes`); and the last error it met, while
+ * it is tried again or has failed.
+ */
+export interface HostFetchProgress {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly state: "queued" | "running" | "failed";
+	readonly blocks: number;
+	readonly inPlace: number;
+	/**
+	 * The bytes of blocks it has read from its holders (`HOST_FEATURES.fetchBytes`), counted as they arrive, before their
+	 * block is whole, and carried on by a fetch that goes on from a failed one. Absent from a host without the feature,
+	 * and while it has read none.
+	 */
+	readonly bytes?: number;
+	readonly error?: string;
+}
+
+/** Host to Kantel, `disk.locate`: a version of a disk store object the host wants (docs/design/disk-store.md, 2c). */
+export interface HostDiskLocateParams {
+	/**
+	 * `sticky`, `rootfs` (`HOST_FEATURES.rootfsSync`), `template` (`HOST_FEATURES.templateSync`), for which only holders
+	 * whose copy restores on the asking host's CPU and runtime are answered, `snapshot` (`HOST_FEATURES.snapshotSync`),
+	 * or `sandbox` (`HOST_FEATURES.sandboxMove`), a move's export, for the move's target alone.
+	 */
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+}
+
+/**
+ * The answer to `disk.locate`: the version's block map digest, once Kantel has it; the online hosts in the asker's pool
+ * that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them.
+ *
+ * The grant is `<payload>.<signature>`: the payload is the JSON of `{ kind, objectId, version, accountId, from, to, exp, kid }`
+ * (`from` the holders' host IDs, `to` the asker's, `exp` milliseconds since the epoch, 15 minutes on, `kid` the ID of
+ * the key that signed it, one of `HostWelcome.grantKeys`) in base64url, and the signature Ed25519 over the payload's
+ * ASCII text by that key (`HostWelcome.grantKey`, the one that signs now), in base64url.
+ */
+export interface HostDiskLocateResult {
+	readonly mapDigest?: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
+}
+
+/**
+ * Kantel to host, `disk.fetch` (`HOST_FEATURES.diskSync`): fetch a version from the hosts holding it, with what
+ * `disk.locate` would answer the host (its grant naming the host as `to`). Answered `{}` once the fetch has started or
+ * is queued; the host holds the version once a capacity report lists it. A fetch whose grant expires, or whose holders
+ * refuse it, asks `disk.locate` again.
+ */
+export interface HostDiskFetchParams {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly mapDigest?: string;
+	readonly holders?: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
+}
+
+/** A version a host holds: the bytes it takes, when it was made there, and its block map's digest once it has one. */
+export interface HostStickyVersionHolding {
+	readonly version: string;
+	readonly allocatedBytes: number;
+	readonly at: number;
+	readonly mapDigest?: string;
 }
 
 /**
@@ -578,6 +1193,8 @@ export interface HostSandbox {
 	readonly baseAt?: number;
 	/** Its mounts' statuses, from a host with a mounts feature. */
 	readonly mounts?: readonly HostMountStatus[];
+	/** Its sticky disks (`HOST_FEATURES.stickyDisks`): each with the version its copy came from, and its state. */
+	readonly stickyDisks?: readonly HostStickyDiskStatus[];
 	/**
 	 * With `mounts`: when the host last set them (unix milliseconds, the host's clock, later each time). Reports of a
 	 * sandbox's mounts (a call's answer, a `sandbox.mounts` event, the replay after a reconnect) are ordered by it.
@@ -585,6 +1202,8 @@ export interface HostSandbox {
 	readonly mountsAt?: number;
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
+	/** For an isolate, what its runtime can do (`HostFacts.isolate`); absent from a host too old to say. */
+	readonly isolate?: HostIsolateRuntime;
 	/**
 	 * `unresponsive` while a running microVM's guest agent doesn't answer (`HOST_FEATURES.guestHealth`), with
 	 * `healthReason` saying why in words; absent while it answers, and from a host without the feature.
@@ -593,6 +1212,8 @@ export interface HostSandbox {
 	readonly healthReason?: string;
 	/** When its `health` last changed (the host's clock, ms), which orders reports of it; absent: it never has. */
 	readonly healthAt?: number;
+	/** In `sandbox.upgrade`'s answer: what of the isolate went into the microVM, its entries and its files' bytes. */
+	readonly moved?: { readonly files: number; readonly bytes: number };
 }
 
 /** One thing a microVM's image has or lacks. */
@@ -633,6 +1254,13 @@ export interface HostSnapshot {
 	readonly uniqueBytes?: number;
 	/** On `snapshot.keep`'s answer: the groups of files it shares with other snapshots (`HostSharedBytes`). */
 	readonly shared?: readonly HostSharedBytes[] | null;
+	/**
+	 * A microVM snapshot's host's CPU and its runtime fingerprint (`HostRuntime.runtime`; empty when it couldn't be told)
+	 * when it was made: its memory restores only onto a host with both. Absent from an isolate's, or from a host from
+	 * before they were kept.
+	 */
+	readonly cpu?: HostCpuFingerprint;
+	readonly runtime?: string;
 }
 
 /**
@@ -827,6 +1455,11 @@ export interface HostHello {
 export interface HostWelcome {
 	readonly hostId: string;
 	readonly heartbeatSeconds: number;
+	/**
+	 * The pool the host is in (`HostRecord.poolId`): it stamps the templates' root filesystems it makes or fetches with it
+	 * (`HostObjectVersionHolding.pool`). Absent for a host in no pool yet.
+	 */
+	readonly poolId?: string;
 	readonly desiredVersion?: string;
 	/** With `{version}`, `{os}` and `{arch}` for the host to fill in. */
 	readonly updateUrl?: string;
@@ -848,6 +1481,40 @@ export interface HostWelcome {
 	 * earlier one. A connection's first welcome decides it for the connection.
 	 */
 	readonly usageAcks?: boolean;
+	/**
+	 * The host's place in its pool's mesh (`HOST_FEATURES.mesh`), sent only to a host with the feature in a pool with sync
+	 * on, in every welcome: a welcome without it takes the host's mesh device down.
+	 */
+	readonly mesh?: HostWelcomeMesh;
+	/**
+	 * The control plane's Ed25519 public key for fetch grants (docs/design/disk-store.md, 2c), its 32 raw bytes in
+	 * base64url: a host serves a peer's fetch only with a grant this key signed (`HostDiskLocateResult.grant`). Absent
+	 * while the control plane has no grant key (sticky disks off, or no secrets key to keep one). The key that signs now,
+	 * the first of `grantKeys`, for hosts from before rotation.
+	 */
+	readonly grantKey?: string;
+	/**
+	 * Every grant key a host accepts grants from now: the one that signs first, then one a rotation published (signing
+	 * from its `from`), then those rotated out, each until its `until`. A host that reads it serves a grant signed by any
+	 * of them (by the key its `kid` names) and keeps the list until a welcome brings another; one from before rotation
+	 * reads only `grantKey`. Absent with `grantKey`.
+	 */
+	readonly grantKeys?: readonly HostGrantKey[];
+}
+
+/** A grant key a host accepts fetch grants from (`HostWelcome.grantKeys`). */
+export interface HostGrantKey {
+	/** Its ID, which a grant names as its `kid`. */
+	readonly id: string;
+	/** Its 32 raw bytes, in base64url. */
+	readonly publicKey: string;
+	/** For a key rotated out, when it stops being accepted, in milliseconds since the epoch. */
+	readonly until?: number;
+	/**
+	 * For a key a rotation published, when it begins signing, in milliseconds since the epoch: a host accepts it already,
+	 * and is sent its welcome again then, with it first.
+	 */
+	readonly from?: number;
 }
 
 /**
@@ -890,6 +1557,7 @@ export interface HostMessage {
 		| "event"
 		| "stream.close"
 		| "stream.ack"
+		| "mesh.peers"
 		| string;
 	readonly hello?: HostHello;
 	readonly welcome?: HostWelcome;
@@ -912,6 +1580,12 @@ export interface HostMessage {
 	 * usage tick taken, which covers every earlier one of the run.
 	 */
 	readonly acked?: number;
+	/**
+	 * For `mesh.peers` (Kantel to host, `HOST_FEATURES.mesh`): the whole list of the host's mesh peers, sent whenever a
+	 * member of its pool joins, leaves, is revoked or reports a new key or endpoints. The host makes its peers match it;
+	 * an empty list is no peers.
+	 */
+	readonly peers?: readonly HostMeshPeer[];
 }
 
 export const HostMethods = {
@@ -922,6 +1596,13 @@ export const HostMethods = {
 	fork: "sandbox.fork",
 	/** Replaces a sandbox's egress: `{ sandboxId, egress }` (null for the host's default). */
 	egress: "sandbox.egress",
+	/**
+	 * `{ sandboxId, keepSnapshots?, exported?, tier? }`: the sandbox and its automatic snapshots go; with `tier`, only a
+	 * sandbox of that tier (`not_found` otherwise, a host from before `sandboxMove` ignoring it). With `keepSnapshots` (the
+	 * isolate an upgrade left once its microVM runs on another host, or a microVM moved to another host,
+	 * `HOST_FEATURES.sandboxMove`) its snapshots stay, the sandbox's still. With `exported` (a move's operation ID) only
+	 * the copy that move exported goes: `not_found` for one another move made since.
+	 */
 	delete: "sandbox.delete",
 	get: "sandbox.get",
 	list: "sandbox.list",
@@ -958,15 +1639,44 @@ export const HostMethods = {
 	 * keep (none). A current host has no such method.
 	 */
 	legacyPools: "host.pools",
+	/** `HostStickyCommitParams` (`HOST_FEATURES.stickyDisks`), answered `HostStickyCommitResult`. */
+	stickyCommit: "sticky.commit",
+	/** `{ diskId, version? }`: deletes that version of a sticky disk from the host, or all of them. Result `{}`. */
+	stickyDelete: "sticky.delete",
 	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
 	secrets: "sandbox.secrets",
+	/** Kantel to host (`HOST_FEATURES.sandboxEnv`): a sandbox's env replaced, `HostEnvParams`. Result `{ ok: true }`. */
+	env: "sandbox.env",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
 	secretsFetch: "secrets.fetch",
+	/**
+	 * Host to Kantel: `{ sandboxId }`, answered with `HostEnvAnswer` (the sandbox's env as Kantel has it now), or
+	 * `not_found` for a sandbox not on that host. A host applies `sandbox.env` from it, so a late notification can't put
+	 * an older env back.
+	 */
+	envFetch: "env.fetch",
 	/** A file's bytes on a port stream, `HostFileOpen`; answered `{ size? }` once it is open. */
 	fileOpen: "sandbox.files.open",
 	/**
-	 * `{ sandboxId, archive, target }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into the directory
-	 * `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted. Answered `{}`.
+	 * `HOST_FEATURES.isolateUpgrade`: a create's params (`tier` `microvm`) for one of the host's isolates, which becomes
+	 * that microVM with its files; with `HOST_FEATURES.isolateUpgradeFrom` its `from` too, one of the host's microVM
+	 * snapshots. Answered with the microVM's `HostSandbox` and its `moved`.
+	 */
+	upgrade: "sandbox.upgrade",
+	/** `HOST_FEATURES.isolateFreeze`: `{ sandboxId, operationId, waitMs? }`, answered `{ ok }`. */
+	upgradeFreeze: "sandbox.upgrade.freeze",
+	upgradeThaw: "sandbox.upgrade.thaw",
+	/**
+	 * `HOST_FEATURES.isolateUpgrade`: `{ sandboxId, operationId }`, answered `{ state: "done", sandbox }` or
+	 * `{ state: "failed", error }` once any upgrade of it under way has ended; one never finished is rolled back.
+	 */
+	upgradeSettle: "sandbox.upgrade.settle",
+	/**
+	 * `{ sandboxId, archive, target, realTarget? }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into
+	 * the directory `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted.
+	 * Answered `{}`. With `realTarget`, a link at `target` or above it is refused rather than followed, by guest agents
+	 * that report `GUEST_FEATURES.extractRealTarget`: an older one, or an older host, ignores it, so whoever needs it
+	 * requires that feature first (a create's `guestFeatures`, on a host with `HOST_FEATURES.guestFeatures`).
 	 */
 	fileExtract: "sandbox.files.extract",
 	/**
@@ -974,10 +1684,33 @@ export const HostMethods = {
 	 * sandbox is on that host and mounts that bucket source.
 	 */
 	bucketFetch: "bucket.fetch",
+	/**
+	 * Host to Kantel: `HostDiskLocateParams`, answered with `HostDiskLocateResult`; `not_found` for a version Kantel
+	 * doesn't have or the host may not have, `not_supported` when Kantel can't sign grants.
+	 */
+	diskLocate: "disk.locate",
+	/** Kantel to host (`HOST_FEATURES.diskSync`): `HostDiskFetchParams`, answered `{}` once the fetch has started. */
+	diskFetch: "disk.fetch",
+	/** Kantel to host: `HostMountsRefresh`, answered with the sandbox's `HostMountStatus[]`. */
+	mountsRefresh: "sandbox.mounts.refresh",
 	/** Builds a template snapshot: `HostTemplateBuild`, answered with `HostTemplateBuilt`. */
 	templateBuild: "template.build",
 	/** Deletes a template snapshot's directory, `{ snapshotId }`, and nothing else. Result `{ ok: true }`. */
 	templateDelete: "template.delete",
+	/** `HostSandboxExportParams` (`HOST_FEATURES.sandboxMove`), answered `HostSandboxExportResult`. */
+	sandboxExport: "sandbox.export",
+	/** `HostSandboxExportDeleteParams` (`HOST_FEATURES.sandboxMove`), answered `{}`. */
+	sandboxExportDelete: "sandbox.export.delete",
+	/** `HostSandboxImportParams` (`HOST_FEATURES.sandboxMove`), answered with the sandbox's `HostSandbox`. */
+	sandboxImport: "sandbox.import",
+	/**
+	 * `HostSandboxExportParams` (`HOST_FEATURES.sandboxMove`), a move rolled back: that version's import of the sandbox
+	 * ends on the target for good, a sandbox it made there is deleted, and no `sandbox.import` of it still under way makes
+	 * it after. Answered `{}`.
+	 */
+	sandboxImportCancel: "sandbox.import.cancel",
+	/** `HostSandboxMemoryParams` (`HOST_FEATURES.sandboxMoveMemory`), answered `HostSandboxMemory`. */
+	sandboxMemory: "sandbox.memory",
 } as const;
 
 /** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */
@@ -1043,6 +1776,18 @@ export interface HostTemplateBuild extends HostTemplateBase {
 	readonly egress?: HostEgress;
 	/** The account the template is of. */
 	readonly owner?: string;
+	/**
+	 * Makes a custom image's build a copy of an entry built on another host (`HOST_FEATURES.templateImageCopies`), over
+	 * only that entry's image: the root filesystem its build made (`HostTemplateBuilt.rootfsKey`) and the digest it named.
+	 * Absent: a root filesystem no peer holds is built or pulled on the host.
+	 */
+	readonly copy?: HostTemplateCopy;
+}
+
+/** The image a copy of a custom image's template snapshot is over (`HostTemplateBuild.copy`). */
+export interface HostTemplateCopy {
+	readonly rootfsKey: string;
+	readonly imageDigest: string;
 }
 
 /** `template.build`'s answer: `ref` names the snapshot on its host. */
@@ -1058,6 +1803,9 @@ export interface HostTemplateBuilt {
 	readonly imageRef?: string;
 	readonly sizeBytes: number;
 	readonly timings?: { readonly [step: string]: number };
+	/** What it was made on, as a snapshot's are (`HostSnapshot.cpu`, `runtime`); absent from a host from before. */
+	readonly cpu?: HostCpuFingerprint;
+	readonly runtime?: string;
 }
 
 /** A binary frame: the stream ID, then the payload. */

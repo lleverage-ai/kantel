@@ -85,9 +85,10 @@ centred on their text within 1px, and a story for every required state; `--only`
 | `TextField` | A labelled single-line input | |
 | `TextAreaField` | A labelled multi-line input, such as a webhook's description | |
 | `PageTabs` | A page's own views, each a link with its address (Egress's Log, Rules, Settings) | The app's pages (use `Sidebar` or `TabBar`); filters with no address (use `SegmentedControl`) |
-| `SideScroll` | Content wider than its column that scrolls sideways, such as a table with more columns than fit: its cut-off edges are shaded and its scrollbar stays at the bottom of the window; with `fill`, a list page's table that scrolls down under its header, with its header row stuck | A compute page's table (use `TableFrame`, which has one); tabs (`PageTabs` scrolls its own row) |
+| `SideScroll` | Content wider than its column that scrolls sideways, such as a table with more columns than fit: its cut-off edges fade and its scrollbar is inside its frame, pinned to the window's bottom while that is out of view; with `fill`, a list page's table that scrolls down under its header, with its header row stuck and its own scrollbars inside its frame | A compute page's table (use `TableFrame`, which has one); tabs (`PageTabs` scrolls its own row) |
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu); a page's views with their own address (use `PageTabs`) |
 | `CheckboxField` | One on/off choice that takes effect with its form or decision | A setting that applies at once (use `Switch`) |
+| `OrderedSelectField` | Several from a list, in the order picked: a new sandbox's environments, the later winning | One choice (use `SelectField`); a set whose order doesn't matter (use `CheckboxField`s) |
 | `Switch` | An on/off setting that applies the moment it changes | A choice that waits for a form's Save (use `CheckboxField`) |
 | `SliderField` | A number chosen along a range, with its value beside the label: a sandbox's vCPUs or memory | A few named choices (use `SegmentedControl` or `SelectField`); an exact figure to type (use `TextField`) |
 | `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a host's join token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Kantel can show again (use `Code` or `FieldList`) |
@@ -100,10 +101,13 @@ centred on their text within 1px, and a story for every required state; `--only`
 | Icons | 16px line icons in currentColor | Decoration |
 
 The compute console (`ComputeConsole` and its pages: sandboxes, snapshots, keys, the egress proxy, webhooks,
-OpenTelemetry, the organisation, billing, hosts, base images and the device page) is in `src/compute/`. A sandbox or
+OpenTelemetry, the organisation, billing, hosts, sticky disks, base images and the device page) is in `src/compute/`. A sandbox or
 saved snapshot on an outdated base image shows `BaseOutdatedBadge` (`src/compute/base-outdated.tsx`) wherever it's
-listed. An opened host shows its memory with `HostMemoryUsage` (`src/compute/host-memory.tsx`) and what takes its disk with
-`HostDiskUsage` (`src/compute/host-disk.tsx`). It calls a `ComputeSource`
+listed. An opened host shows its memory with `HostMemoryUsage` (`src/compute/host-memory.tsx`), what takes its disk with
+`HostDiskUsage` (`src/compute/host-disk.tsx`), its mesh peers with `HostPeers` (`src/compute/host-peers.tsx`), and its
+sandboxes moving off it with `HostEvacuationPanel` (`src/compute/host-evacuation.tsx`). The
+Hosts page groups hosts by pool and manages pools with `src/compute/host-pools.tsx`, whose `PoolPicker` New sandbox uses
+too. It calls a `ComputeSource`
 the host binds; `@kantel/ui/compute/fixtures` serves stories and the console's recorded mode.
 `SignInScreen` and `SignedInAs` are in `src/identity/`; they take the identity client's calls.
 The two themes (the colour tokens, the dark and light palettes, the switch, and how to change a palette) are in

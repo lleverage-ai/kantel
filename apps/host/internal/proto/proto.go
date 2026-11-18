@@ -9,7 +9,10 @@
 // the payload; an empty payload closes that direction.
 package proto
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ProtocolVersion is bumped on any incompatible change; Kantel refuses a host whose version it doesn't speak.
 const ProtocolVersion = 1
@@ -50,6 +53,11 @@ type Message struct {
 	// welcome had UsageAcks, is a usage.ack (Kantel → host) whose Acked is the Seq of the newest tick Kantel has taken,
 	// covering every earlier one (FeatureUsageAcks).
 	Usage *UsageSample `json:"usage,omitempty"`
+
+	// mesh.peers (Kantel → host, FeatureMesh): the whole list of the host's mesh peers, sent whenever a member of its
+	// pool joins, leaves, is revoked or reports new endpoints. The host makes its WireGuard peers match it; an empty
+	// list is no peers.
+	Peers []MeshPeer `json:"peers,omitempty"`
 }
 
 // FileStreamAckBytes is about how often a host sends a file write stream's stream.ack.
@@ -73,14 +81,29 @@ const (
 	ErrInternal    = "internal"
 	ErrUnsupported = "unsupported"
 	ErrTimeout     = "timeout"
+	// ErrSuspended answers a command with an ID whose call broke as its sandbox was stopped keeping its memory (a
+	// pause, or a move to another host that keeps it): the command carries on in that memory, and is followed by its ID
+	// (sandbox.exec.get) wherever the sandbox runs next.
+	ErrSuspended = "suspended"
 )
 
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// MemoryDropped says a sandbox.start failed after the host had let go of the memory the sandbox was stopped with
+	// (FeatureStartMemoryDropped): a rebase clears it before it relinks the root filesystem and boots. Absent, the
+	// memory is where it was, and a later resume restores it.
+	MemoryDropped bool `json:"memoryDropped,omitempty"`
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
+
+// MemoryDroppedError is a failed start's error once the host has let go of the sandbox's memory: sent as an Error with
+// MemoryDropped.
+type MemoryDroppedError struct{ Err error }
+
+func (e *MemoryDroppedError) Error() string { return e.Err.Error() }
+func (e *MemoryDroppedError) Unwrap() error { return e.Err }
 
 // Facts are what a host is: they change only with its hardware or software.
 type Facts struct {
@@ -117,7 +140,339 @@ type Facts struct {
 	// the same two, so they are part of its cache key. Empty on a host without the microVM tier.
 	Firecracker string `json:"firecracker,omitempty"`
 	GuestKernel string `json:"guestKernel,omitempty"`
+	// Isolate is what the isolate tier's runtime says it can do, as the host last read it from the runtime; absent on
+	// a host without the tier, one that hasn't started its runtime yet, or one from before kantel-isolate.
+	Isolate *IsolateRuntime `json:"isolate,omitempty"`
+	// CPU is the host's CPU as a microVM sees it: a snapshot's memory restores only onto a host whose CPU fingerprint is
+	// the same, since Kantel sets no Firecracker CPU template. Absent on a host without the microVM tier, or from before
+	// it said.
+	CPU *CPUFingerprint `json:"cpu,omitempty"`
+	// Runtimes are the microVM runtime fingerprints the host restores snapshots with, one for each host image version
+	// it has (one for its image, without versioned images): a snapshot's memory restores only onto a host with its
+	// Runtime among them and the same CPU. Absent on a host without the microVM tier, or from before it said.
+	Runtimes []HostRuntime `json:"runtimes,omitempty"`
+	// Mesh is the host's WireGuard side of its pool's mesh (FeatureMesh): absent from a host without the feature.
+	Mesh *MeshFacts `json:"mesh,omitempty"`
 }
+
+// CPUFingerprint is what a CPU is to a guest: its vendor (`AuthenticAMD`), family and model as /proc/cpuinfo has them,
+// and FeaturesHash, a hash of the CPUID feature bits KVM offers a guest (`sha256:` and 16 hex digits; on a CPU without
+// CPUID, of the kernel's feature flags). Two fingerprints match when all four are equal (Same).
+type CPUFingerprint struct {
+	Vendor       string `json:"vendor"`
+	Family       int    `json:"family"`
+	Model        int    `json:"model"`
+	FeaturesHash string `json:"featuresHash"`
+}
+
+// Same says two CPUs restore each other's snapshots: both known, and every field equal.
+func (c *CPUFingerprint) Same(o *CPUFingerprint) bool {
+	return c != nil && o != nil && c.FeaturesHash != "" && *c == *o
+}
+
+// HostRuntime is the runtime fingerprint (SnapshotInfo.Runtime) of a sandbox booted on one host image: Image is its
+// version, `sha256:` and a digest prefix for a host image that isn't versioned, or empty for templates' own root
+// filesystems (images/templates), which aren't host images.
+type HostRuntime struct {
+	Image   string `json:"image"`
+	Runtime string `json:"runtime"`
+}
+
+// IsolateRuntime is what the isolate tier's runtime (kantel-isolate) says it is in its /healthz: which runtime and
+// version, whether its shell has `node` (JavaScript) and `python` (Pyodide), and whether an isolate's memoryMiB is a
+// hard limit (its heap, ArrayBuffers and wasm memory together) rather than recorded only.
+type IsolateRuntime struct {
+	Runtime        string `json:"runtime,omitempty"`
+	Version        string `json:"version,omitempty"`
+	JavaScript     bool   `json:"javascript"`
+	Python         bool   `json:"python"`
+	MemoryEnforced bool   `json:"memoryEnforced"`
+}
+
+// FeatureMesh: the host runs its pool's WireGuard mesh (docs/design/disk-store.md, "2a. The mesh"): it reports its
+// public key, listen port and endpoints in Facts.Mesh, brings up the device kmesh0 with the address Welcome.Mesh gives it
+// (taking it down again on a welcome without one), makes its peers match each mesh.peers, and reports each peer's
+// health in Capacity.Mesh. While the device is up it serves the disk versions it holds to its peers on TCP 7480 at its
+// mesh address (internal/disksync), to a peer with a grant Welcome.GrantKey signed.
+const FeatureMesh = "mesh"
+
+// MeshFacts are a host's WireGuard key and where peers can reach it: PublicKey is its Curve25519 public key (base64,
+// as WireGuard writes keys; the private key never leaves the host), ListenPort the UDP port it listens on, and
+// Endpoints the addresses peers try, "ip:port" (IPv6 in brackets) or "name:port": the operator's own (--mesh-endpoint)
+// first, then the host's interface addresses with ListenPort.
+type MeshFacts struct {
+	PublicKey  string   `json:"publicKey"`
+	ListenPort int      `json:"listenPort"`
+	Endpoints  []string `json:"endpoints"`
+}
+
+// WelcomeMesh is a host's place in its pool's mesh: its own mesh address (an IPv6 ULA, one /128 per host, stable
+// across reconnects), the pool's prefix (its /48) and the pool's other hosts.
+type WelcomeMesh struct {
+	Address string     `json:"address"`
+	Prefix  string     `json:"prefix"`
+	Peers   []MeshPeer `json:"peers"`
+}
+
+// MeshPeer is another host in the pool: its WireGuard public key, its mesh address, and the endpoints it reported.
+type MeshPeer struct {
+	HostID    string   `json:"hostId"`
+	PublicKey string   `json:"publicKey"`
+	Address   string   `json:"address"`
+	Endpoints []string `json:"endpoints"`
+}
+
+// Mesh peer paths (MeshPeerHealth.Path): reached over one of its endpoints, or not reached (no handshake in the last
+// 3 minutes, after which WireGuard drops its session keys). NAT traversal and the relay, later, add "punched" and "relayed".
+const (
+	MeshPathDirect = "direct"
+	MeshPathNone   = "none"
+)
+
+// MeshHealth is how a host reaches its mesh peers, in each capacity report while its device is up (FeatureMesh).
+type MeshHealth struct {
+	Address string           `json:"address"`
+	Peers   []MeshPeerHealth `json:"peers"`
+}
+
+// MeshPeerHealth is one peer as the host reaches it: the path, the endpoint it uses now, its last handshake (Unix ms,
+// absent before the first) and the round-trip time of the host's last probe of its mesh address (absent when that
+// probe got no answer).
+type MeshPeerHealth struct {
+	HostID        string  `json:"hostId"`
+	Path          string  `json:"path"`
+	Endpoint      string  `json:"endpoint,omitempty"`
+	LastHandshake int64   `json:"lastHandshake,omitempty"`
+	RTTMs         float64 `json:"rttMs,omitempty"`
+	// FetchBytesPerSecond is the rate the host's last fetch from this peer ran at (FeatureSandboxMoveMemory): the bytes
+	// its blocks took over the time spent fetching them, measured on a fetch of at least 16 MiB from that peer alone,
+	// at FetchRateAt (Unix ms). Absent before the host has made one since it started.
+	FetchBytesPerSecond int64 `json:"fetchBytesPerSecond,omitempty"`
+	FetchRateAt         int64 `json:"fetchRateAt,omitempty"`
+}
+
+// FeatureDiskSync: the host fetches disk versions from its mesh peers (docs/design/disk-store.md, "2c. Peer sync"):
+// it takes disk.fetch (DiskFetchParams) for sticky disks, and a create attaching a sticky disk version it doesn't hold
+// starts on its newest and fetches that one in the background. It needs FeatureMesh and FeatureStickyDisks.
+const FeatureDiskSync = "disk-sync"
+
+// FeatureRootfsSync: templates' root filesystems are disk store objects on the host (docs/design/disk-store.md, "Phase
+// 3 notes"), kind DiskKindRootfs, each its key (TemplateBoot.RootfsKey) in one version, "1": the host makes each one's
+// block map, lists those with a map in Capacity.Holdings, serves them to its mesh peers with their records, and takes
+// disk.fetch for them. It comes with FeatureDiskSync, on the microVM tier.
+const FeatureRootfsSync = "rootfs-sync"
+
+// FeatureTemplateSync: template snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3
+// notes"), kind DiskKindTemplate, each its snapshot ID (TemplateBuildParams.SnapshotID) in one version, "1", whose
+// disk and memory are its parts (each block-mapped, its manifest the version's map) and whose state, meta and drive
+// counts go whole: the host maps each one's parts, lists those with maps in Capacity.Holdings with what each was made
+// on (ObjectVersionHolding.CPU and Runtime), serves them to its mesh peers, and a template.build first fetches the
+// snapshot from a peer whose copy restores on this host's CPU and runtime (disk.locate answers only those), booting it
+// only when none has one. It comes with FeatureRootfsSync, on the microVM tier.
+const FeatureTemplateSync = "template-sync"
+
+// FeatureTemplateImageCopies: a template.build of a custom image with Copy (TemplateBuildParams.Copy) is a copy of an
+// entry another host built: its root filesystem is only the one Copy names, with the digest Copy names, held here or
+// fetched from a peer, never built or pulled again (which might make another image under the same key), so whatever
+// snapshot the build fetches or boots is over the entry's image. It comes with FeatureTemplateSync.
+const FeatureTemplateImageCopies = "template-image-copies"
+
+// FeatureSnapshotSync: saved snapshots are disk store objects on the host (docs/design/disk-store.md, "Phase 3
+// notes"), kind DiskKindSnapshot, each its snapshot ID (a ref's), in two versions, one for each of its block-mapped
+// files: SnapshotDiskVersion (disk.ext4, with its record beside it) and SnapshotMemoryVersion (mem, with the machine's
+// state). The host maps each saved snapshot's files, lists those with maps in Capacity.Holdings, serves them to its
+// mesh peers, and takes disk.fetch for a snapshot's disk version: it makes sure it has the root image the disk is a
+// layer over first, and fetches the memory too only when its CPU and runtime fingerprints match the snapshot's (else
+// its copy boots on its disk). The files on its machine's drives are versions too (SnapshotBundleVersion,
+// SnapshotStickyVersion), which a host with this feature serves when it has them and fetches for its copies, its
+// memory only after them. It comes with FeatureDiskSync, on the microVM tier.
+const FeatureSnapshotSync = "snapshot-sync"
+
+// FeatureSandboxMove: a stopped microVM sandbox moves to another host in its pool (docs/design/disk-store.md, "Moving
+// a sandbox to another host"). Its disk and sticky drives are a disk store object, kind DiskKindSandbox, its ID the
+// sandbox's, one version for each export (the move's operation ID): sandbox.export (SandboxExportParams) on its host
+// makes that version, clones of its files under sandbox-exports/<id>/<version>/ and their maps, which the host then
+// serves to its mesh peers; sandbox.import (SandboxImportParams) on the target fetches it and makes the sandbox there,
+// stopped, with the same ID, to start as any other; sandbox.export.delete drops a version; sandbox.import.cancel
+// (SandboxExportParams, a move rolled back) ends a version's import on the target for good, deleting a sandbox it made
+// there, and no sandbox.import of that version still under way makes it after. A delete of the sandbox drops its
+// exports too, and on the target an import under way. It comes with FeatureSnapshotSync, on the microVM tier.
+const FeatureSandboxMove = "sandbox-move"
+
+// FeatureSandboxMoveRunning: a running microVM sandbox moves too, with a restart (docs/design/disk-store.md, "Moving a
+// sandbox to another host", with a restart). Its host exports it while it runs (SandboxExportParams.Live: its files
+// cloned at once, a crash-consistent copy) as a version of its own, which the target fetches and keeps staged
+// (SandboxImportParams.Stage); the sandbox is then stopped without its memory and exported again over that first version
+// (SandboxExportParams.Base: its maps made from the first's, FIEMAP telling the blocks written since), and the target
+// fetches the second version over its staged first (SandboxImportParams.Base), only the blocks that differ, and makes
+// the sandbox from it. It comes with FeatureSandboxMove.
+const FeatureSandboxMoveRunning = "sandbox-move-running"
+
+// FeatureSandboxMoveMemory: a microVM sandbox moves with its memory, between hosts whose CPU and runtime fingerprints
+// match (docs/design/disk-store.md, "Moving a sandbox to another host", keeping memory). sandbox.memory
+// (SandboxMemoryParams) says what a move of it would carry: the portable runtime its memory is of and its size. A
+// running sandbox's move stops it keeping its memory (StopParams.Memory with Export); then sandbox.export with Memory
+// also makes the same version of the object DiskKindSandboxMemory/SandboxID, whose parts are SandboxMemoryParts (its
+// memory file, and the files on its bundle drives, which its guest has mounted) and whose small file is the machine's
+// state (SandboxStateFile). sandbox.import with Memory fetches that version before the disk's, and makes the sandbox
+// stopped with its memory, so its start restores it. It comes with FeatureSandboxMoveRunning.
+const FeatureSandboxMoveMemory = "sandbox-move-memory"
+
+// FeatureFetchBytes: each fetch the host reports (Capacity.Fetches) has the bytes it has read so far (FetchProgress.Bytes),
+// which move on as a block's bytes arrive, before it is whole. A move's sandbox.import waits while its target's fetch
+// moves, and is given up only once it stalls, where without it the import is given up after a fixed time. It comes
+// with FeatureSandboxMove.
+const FeatureFetchBytes = "fetch-bytes"
+
+// FeatureStartMemoryDropped: a sandbox.start that fails after the host let go of the memory the sandbox was stopped
+// with (a rebase clears it before it relinks the root filesystem and boots) says so in its error (Error.MemoryDropped),
+// so Kantel ends the commands that ran in that memory. One that fails without it kept the memory. A host from before
+// says neither: Kantel takes its failed start to have kept it. The microVM tier.
+const FeatureStartMemoryDropped = "start-memory-dropped"
+
+// Kinds of disk store object (DiskLocateParams.Kind, Capacity.Holdings): a sticky disk's versions, a template's root
+// filesystem, a template snapshot, a saved snapshot, and a sandbox being moved (FeatureSandboxMove).
+const (
+	DiskKindSticky   = "sticky"
+	DiskKindRootfs   = "rootfs"
+	DiskKindTemplate = "template"
+	DiskKindSnapshot = "snapshot"
+	DiskKindSandbox  = "sandbox"
+	// DiskKindSandboxMemory is a moved sandbox's memory (FeatureSandboxMoveMemory), a version for each export that
+	// keeps it, the same as its disk's.
+	DiskKindSandboxMemory = "sandbox-memory"
+)
+
+// A moved sandbox's parts (DiskKindSandbox): its disk, and its sticky drives' files, each block-mapped, in this order
+// in its manifest. A drive with no disk on it is an empty file.
+const (
+	SandboxPartDisk    = "disk"
+	SandboxPartSticky0 = "sticky0"
+	SandboxPartSticky1 = "sticky1"
+)
+
+// SandboxPartMemory is a moved sandbox's memory file among its memory's parts (DiskKindSandboxMemory).
+const SandboxPartMemory = "mem"
+
+// SandboxMemoryBundles is how many bundle drives a sandbox moved with its memory may have: its memory's parts are
+// its memory file and one for each (SandboxMemoryParts), an empty file for a drive with nothing on it.
+const SandboxMemoryBundles = 8
+
+// SandboxMemoryParts are a moved sandbox's memory's parts (DiskKindSandboxMemory), in its manifest's order: its
+// memory file, then the files on its bundle drives, bundle0 to bundle7.
+var SandboxMemoryParts = func() []string {
+	out := []string{SandboxPartMemory}
+	for i := range SandboxMemoryBundles {
+		out = append(out, fmt.Sprintf("bundle%d", i))
+	}
+	return out
+}()
+
+// SandboxStateFile names the machine's state (Firecracker's) among a moved sandbox's memory's small files.
+const SandboxStateFile = "state"
+
+// SandboxRecordFile names a moved sandbox's record among its small files: its host's record of it (its size, env,
+// egress, mounts, sticky disks and root image), which the target makes its own.
+const SandboxRecordFile = "record"
+
+// SandboxExportParams is sandbox.export (FeatureSandboxMove): the stopped sandbox's disk and sticky drives cloned as
+// version Version (a valid ID, Kantel's for the move) of the object DiskKindSandbox/SandboxID, and mapped. Sent again,
+// it answers the version it made. ErrConflict unless the sandbox is stopped, or with Live running or stopped.
+type SandboxExportParams struct {
+	SandboxID string `json:"sandboxId"`
+	Version   string `json:"version"`
+	// Live (FeatureSandboxMoveRunning) exports a running sandbox too: its files cloned at once while it runs, a
+	// crash-consistent copy (where the file system has no reflinks, a copy the next version's maps put right).
+	Live bool `json:"live,omitempty"`
+	// Base (FeatureSandboxMoveRunning) is an earlier version of the sandbox's exports here: each part's map is made from
+	// that version's, so only the blocks written since it are read (FIEMAP).
+	Base string `json:"base,omitempty"`
+	// Memory (FeatureSandboxMoveMemory) exports a sandbox stopped with its memory with that memory too: the same
+	// version of DiskKindSandboxMemory/SandboxID. ErrConflict for a sandbox stopped without memory.
+	Memory bool `json:"memory,omitempty"`
+}
+
+// SandboxExportResult is what sandbox.export made: the version's map digest (its manifest's) and the bytes its files
+// take on the host's disk; with Memory, its memory's map digest and the bytes those files take, beside.
+type SandboxExportResult struct {
+	MapDigest            string `json:"mapDigest"`
+	AllocatedBytes       int64  `json:"allocatedBytes"`
+	MemoryMapDigest      string `json:"memoryMapDigest,omitempty"`
+	MemoryAllocatedBytes int64  `json:"memoryAllocatedBytes,omitempty"`
+}
+
+// SandboxMemoryParams is sandbox.memory (FeatureSandboxMoveMemory): what a move of the sandbox with its memory would
+// carry, answered with a SandboxMemoryInfo.
+type SandboxMemoryParams struct {
+	SandboxID string `json:"sandboxId"`
+}
+
+// SandboxMemoryInfo is sandbox.memory's answer. Memory says whether the sandbox has memory to move: it runs, or it
+// was stopped keeping it. Runtime is the portable runtime its memory is of (HostRuntime.Runtime: only a host with
+// that runtime among its own and the same CPU restores it), empty when that can't be told. Bytes is the memory a move
+// would copy: a running machine's resident memory (the guest memory it has touched; the rest is zero, and a fetch
+// skips zero blocks), else its memory file's allocated bytes. Refused says why its memory can't move even so (more
+// bundle drives than SandboxMemoryBundles), empty when it can.
+type SandboxMemoryInfo struct {
+	Memory  bool   `json:"memory"`
+	Runtime string `json:"runtime,omitempty"`
+	Bytes   int64  `json:"bytes"`
+	Refused string `json:"refused,omitempty"`
+}
+
+// SandboxExportDeleteParams is sandbox.export.delete (FeatureSandboxMove): that version of the sandbox's exports, or
+// with no Version every one, deleted; the sandbox stays. Answered {}.
+type SandboxExportDeleteParams struct {
+	SandboxID string `json:"sandboxId"`
+	Version   string `json:"version,omitempty"`
+}
+
+// SandboxImportParams is sandbox.import (FeatureSandboxMove): version Version of DiskKindSandbox/SandboxID fetched
+// from the hosts that hold it (what disk.locate would answer this host: MapDigest, Holders, Grant), its root image put
+// in place first (a host image version from its release, a template's root filesystem from a peer), and made a
+// stopped sandbox here with the same ID. Answered with its SandboxInfo once it is here: a call that ends first leaves
+// the fetch going on, and the same call again waits for it. ErrConflict when a sandbox of that ID is here already, but
+// one this version made; a delete of the ID ends it.
+type SandboxImportParams struct {
+	SandboxID string       `json:"sandboxId"`
+	Version   string       `json:"version"`
+	MapDigest string       `json:"mapDigest"`
+	Holders   []DiskHolder `json:"holders"`
+	Grant     string       `json:"grant"`
+	// Stage (FeatureSandboxMoveRunning) fetches the version and keeps it staged rather than making the sandbox: a running
+	// sandbox's first copy, for a later version to start from (Base). Answered {} once it is here.
+	Stage bool `json:"stage,omitempty"`
+	// Base (FeatureSandboxMoveRunning) is a version of the sandbox staged here (Stage) that each part's fetch starts
+	// from: only the blocks that differ are fetched. It goes once this version is made the sandbox.
+	Base string `json:"base,omitempty"`
+	// Memory (FeatureSandboxMoveMemory) is where the same version of DiskKindSandboxMemory/SandboxID is (what
+	// disk.locate would answer this host for it): fetched first, the sandbox is made stopped with its memory, and its
+	// start restores it.
+	Memory *SandboxImportMemory `json:"memory,omitempty"`
+}
+
+// SandboxImportMemory is where a moved sandbox's memory is, for its import (SandboxImportParams.Memory).
+type SandboxImportMemory struct {
+	MapDigest string       `json:"mapDigest"`
+	Holders   []DiskHolder `json:"holders"`
+	Grant     string       `json:"grant"`
+}
+
+// A saved snapshot's versions as a disk store object (DiskKindSnapshot): its disk, and its memory.
+const (
+	SnapshotDiskVersion   = "disk"
+	SnapshotMemoryVersion = "memory"
+)
+
+// A saved snapshot's drives are versions of it too, one for each file on a drive of its machine: SnapshotBundleVersion(i)
+// is the bundle image on bundle drive i (bundle0, bundle1, ...), as its machine had it when its memory was taken;
+// SnapshotStickyVersion(k) is its clone of the sticky disk on sticky drive k (sticky0, sticky1). A host fetches a
+// copy's sticky clones so a sandbox made from it has its sticky disks, and its bundle images when it restores its
+// memory, which it fetches only once every drive is here: the guest has those files mounted.
+func SnapshotBundleVersion(i int) string { return fmt.Sprintf("bundle%d", i) }
+
+// SnapshotStickyVersion is a saved snapshot's clone of the sticky disk on sticky drive k (SnapshotBundleVersion).
+func SnapshotStickyVersion(k int) string { return fmt.Sprintf("sticky%d", k) }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
@@ -192,6 +547,11 @@ const FeatureTemplateBuild = "template-build"
 // answers sandbox.mounts.refresh. Experimental: the control plane sends mounts only behind its switch.
 const FeatureBucketMounts = "mounts-bucket"
 
+// FeatureMountsSync (HOST_FEATURES.mountsSync): sandbox.mounts.refresh takes Sync, and then answers only once each
+// mount it names shows a listing that began after the call arrived (MountStatus.ListedAt), or fails saying which
+// couldn't: a listing error, or a guest that didn't take the new listing.
+const FeatureMountsSync = "mounts-sync"
+
 // FeatureTemplateImageBuild: the host builds templates' custom images (a Dockerfile, or an image reference) in a build
 // microVM whose only network is the sandbox egress proxy, and boots them through Kantel's initramfs (the injected
 // guest agent). Reported only when its settings switch the builder on (templateBuilder) and it injects the agent. A
@@ -253,6 +613,76 @@ const FeatureGuestHealth = "guest-health"
 // an exit to the run whose machine ended. Such exits are sent again once a connection can carry events.
 const FeatureExitStamps = "exit-stamps"
 
+// FeatureSandboxEnv (HOST_FEATURES.sandboxEnv): the host takes sandbox.env (EnvParams), a sandbox's whole env replaced
+// where the host keeps it (what a later start, resume or fork on it boots with), and a running microVM's env file
+// (/etc/kantel/env, which its shells and commands read) rewritten at once. Without it a sandbox gets a new env only
+// with its next boot.
+const FeatureSandboxEnv = "sandbox-env"
+
+// FeatureStickyDisks (HOST_FEATURES.stickyDisks): sticky disks on one host (docs/design/disk-store.md, "Phase 1: the
+// host protocol"). Every microVM has StickyDrives writable drives after its bundle drives; sandbox.create takes
+// StickyDisks, each a copy-on-write clone of one of the host's versions of the disk (or a new empty ext4) mounted
+// read-write at its path; SandboxInfo.StickyDisks says how each went; sticky.commit makes a sandbox's copy the disk's
+// next version and sticky.delete deletes versions; Capacity.StickyDisks lists the versions the host holds in every
+// report. Kantel sends sticky disks only to a host that reports it.
+const FeatureStickyDisks = "sticky-disks"
+
+// FeatureIsolateUpgrade (HOST_FEATURES.isolateUpgrade): the host takes sandbox.upgrade (CreateParams, Tier "microvm"):
+// it makes a microVM with an isolate's sandbox ID, as sandbox.create would make it, puts the isolate's /workspace files
+// in it at UpgradeWorkspace (from its own blob store, never through Kantel) with /workspace a link to them, and lets the
+// isolate go only once the microVM runs with them. A failure leaves the isolate as it was. Answered with the microVM's
+// SandboxInfo and Moved. Reported by a host that runs both tiers.
+const FeatureIsolateUpgrade = "isolate-upgrade"
+
+// FeatureIsolateUpgradeFrom (HOST_FEATURES.isolateUpgradeFrom): sandbox.upgrade also takes From, one of the host's
+// microVM snapshots, or Template, and starts the microVM from it as sandbox.create would (a snapshot's memory
+// restored), the isolate's files laid over what it has at UpgradeWorkspace, only by a guest agent that reports
+// GuestFeatureRealTarget. Reported with FeatureIsolateUpgrade.
+const FeatureIsolateUpgradeFrom = "isolate-upgrade-from"
+
+// FeatureGuestFeatures (HOST_FEATURES.guestFeatures): sandbox.create takes CreateParams.GuestFeatures, refusing
+// (ErrUnsupported, the sandbox deleted) one whose guest agent doesn't report each before anything is written into it,
+// so another host's upgrade can ask of the microVM it makes here what this host's own upgrade asks. Reported by a host
+// with the microVM tier.
+const FeatureGuestFeatures = "guest-features"
+
+// GuestFeatureRealTarget, in a guest agent's health (guest.Health.Features), says it extracts an archive with
+// FileExtractParams.RealTarget into a real directory only, refusing a link at the target or above it. An agent from
+// before it reports no features, and ignores RealTarget.
+const GuestFeatureRealTarget = "extract-real-target"
+
+// FeatureIsolateFreeze (HOST_FEATURES.isolateFreeze): the host takes sandbox.upgrade.freeze and sandbox.upgrade.thaw
+// (UpgradeRef) for its isolates, so Kantel can copy one version of an isolate's files to a microVM on another host
+// while nothing writes to them. Reported by a host with the isolate tier.
+const FeatureIsolateFreeze = "isolate-freeze"
+
+// UpgradeParams is sandbox.upgrade's: the microVM's create params (Tier "microvm"), and Kantel's ID for the upgrade.
+// The host does one upgrade per OperationID: sent again (an answer lost), it answers the first's outcome.
+type UpgradeParams struct {
+	CreateParams
+	OperationID string `json:"operationId"`
+}
+
+// UpgradeRef is sandbox.upgrade.freeze's, .thaw's and .settle's params: an upgrade of a sandbox by its operation ID.
+// WaitMs, for a freeze, is how long it waits for a command or write under way to end (default 2 minutes).
+type UpgradeRef struct {
+	SandboxID   string `json:"sandboxId"`
+	OperationID string `json:"operationId"`
+	WaitMs      int64  `json:"waitMs,omitempty"`
+}
+
+// UpgradeOutcome is sandbox.upgrade.settle's answer: "done" with the microVM, or "failed" (rolled back: the isolate
+// as it was, any microVM made for it deleted), with why. Settling waits for the upgrade if it is under way, and an
+// upgrade the host never saw is settled failed, so it can't start after.
+type UpgradeOutcome struct {
+	State   string       `json:"state"`
+	Sandbox *SandboxInfo `json:"sandbox,omitempty"`
+	Error   string       `json:"error,omitempty"`
+}
+
+// UpgradeWorkspace is where an upgraded isolate's /workspace files are in its microVM.
+const UpgradeWorkspace = "/home/user/workspace"
+
 // DiskLimits are the disk a host gives a microVM off its named sizes (a custom shape): at least MinGiB, at most
 // MaxGiB, whatever its vCPUs and memory. Whether it has that much free now is admission's to say.
 type DiskLimits struct {
@@ -279,6 +709,10 @@ type Hello struct {
 type Welcome struct {
 	HostID           string `json:"hostId"`
 	HeartbeatSeconds int    `json:"heartbeatSeconds"`
+	// PoolID is the pool the host is in, as the control plane has it: the host stamps the templates' root filesystems it
+	// makes or fetches with it (ObjectVersionHolding.Pool). Absent from a control plane from before it said, or for a
+	// host in no pool yet.
+	PoolID string `json:"poolId,omitempty"`
 	// DesiredVersion, when set and different from the host's, is the version Kantel wants it on; a host with
 	// automatic updates on fetches it from UpdateURL (with {version}, {os} and {arch} filled in).
 	DesiredVersion string `json:"desiredVersion,omitempty"`
@@ -292,6 +726,31 @@ type Welcome struct {
 	// UsageAcks says Kantel acknowledges usage ticks on this connection (usage.ack, FeatureUsageAcks). The connection's
 	// first welcome decides it; a later one doesn't change it.
 	UsageAcks bool `json:"usageAcks,omitempty"`
+	// GrantKey is the control plane's Ed25519 public key for fetch grants, its 32 raw bytes in base64url: a host serves
+	// a peer's fetch only with a grant it signed (DiskLocateResult.Grant). Empty while the control plane has none. It is
+	// the first of GrantKeys, for hosts from before rotation.
+	GrantKey string `json:"grantKey,omitempty"`
+	// GrantKeys are every grant key a host accepts grants from now: the one that signs first, then one a rotation
+	// published (signing from its From), then those rotated out, each until its Until. A host serves a grant any of them
+	// signed (by the key its kid names) and keeps the list until a welcome brings another. Empty from a control plane
+	// from before rotation, which sends GrantKey alone.
+	GrantKeys []GrantKey `json:"grantKeys,omitempty"`
+	// Mesh is the host's place in its pool's mesh (FeatureMesh), sent only to a host in a pool with sync on. A welcome
+	// without it takes the host's mesh device down.
+	Mesh *WelcomeMesh `json:"mesh,omitempty"`
+}
+
+// GrantKey is a grant key a host accepts fetch grants from (Welcome.GrantKeys).
+type GrantKey struct {
+	// ID is the key's ID, which a grant names as its kid.
+	ID string `json:"id"`
+	// PublicKey is its 32 raw bytes, in base64url.
+	PublicKey string `json:"publicKey"`
+	// Until is when a key rotated out stops being accepted, in milliseconds since the epoch; 0 for the others.
+	Until int64 `json:"until,omitempty"`
+	// From is when a key a rotation published begins signing, in milliseconds since the epoch; 0 for the others. A host
+	// accepts it already.
+	From int64 `json:"from,omitempty"`
 }
 
 // Capacity is what is free now.
@@ -311,9 +770,27 @@ type Capacity struct {
 	// Disk is what takes the space on the host's disk, measured every few minutes; absent until it first is, and from a
 	// host from before it said.
 	Disk *DiskUsage `json:"disk,omitempty"`
+	// StickyDisks are the sticky disk versions the host holds (FeatureStickyDisks): [] when it holds none, absent
+	// (nil, which omitzero leaves out, unlike an empty slice) from a host without the feature and from a report whose
+	// inventory couldn't be read in full. The control plane forgets versions missing from a report, never on an absent
+	// one, so the two must stay distinct.
+	StickyDisks []StickyDiskHolding `json:"stickyDisks,omitzero"`
+	// Holdings are the disk store objects of other kinds the host holds, by kind (DiskKindRootfs, FeatureRootfsSync;
+	// DiskKindTemplate, FeatureTemplateSync; DiskKindSnapshot, FeatureSnapshotSync): a kind's list is every object of
+	// that kind it holds, [] for none; a kind left out says nothing of it (a host without it, or an inventory that
+	// couldn't be read in full), so the control plane forgets nothing of that kind.
+	Holdings map[string][]ObjectHolding `json:"holdings,omitempty"`
+	// Fetches are the disk store versions the host is fetching from its peers (FeatureDiskSync), of any kind: those
+	// under way or waiting their turn, and those that failed and are left to go on. [] when there are none; absent (nil,
+	// which omitzero leaves out) from a host that doesn't fetch, and from one from before it said. A version is listed
+	// here or as held, never both. The control plane records each as a copy being fetched, and lets one go that a report
+	// no longer lists, never on an absent one.
+	Fetches []FetchProgress `json:"fetches,omitzero"`
 	// Memory is the host's memory: what its sandboxes were given, what they use and may soon use, and what the machine
 	// has left. Absent from a host from before it said.
 	Memory *MemoryReport `json:"memory,omitempty"`
+	// Mesh is how the host reaches its mesh peers (FeatureMesh), while its mesh device is up.
+	Mesh *MeshHealth `json:"mesh,omitempty"`
 }
 
 // MemoryModeReserved and MemoryModeUsed are MemoryReport.Mode: the host admits sandboxes by the memory they were
@@ -428,6 +905,8 @@ type SandboxInfo struct {
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner).
 	Owner string `json:"owner,omitempty"`
+	// Moved, in sandbox.upgrade's answer: what of the isolate went into the microVM.
+	Moved *Moved `json:"moved,omitempty"`
 	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
 	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
 	Base string `json:"base,omitempty"`
@@ -437,6 +916,9 @@ type SandboxInfo struct {
 	BaseAt int64 `json:"baseAt,omitempty"`
 	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
 	Guest *GuestCapabilities `json:"guest,omitempty"`
+	// Isolate is, for an isolate, what its runtime can do (Facts.Isolate, from the runtime that runs it): absent from a
+	// host from before kantel-isolate, or before it has read its runtime.
+	Isolate *IsolateRuntime `json:"isolate,omitempty"`
 	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts, FeatureBundleMounts).
 	Mounts []MountStatus `json:"mounts,omitempty"`
 	// MountsAt, with Mounts, is when the host last set them (unix milliseconds, the host's clock, and always later
@@ -452,6 +934,8 @@ type SandboxInfo struct {
 	Health       string `json:"health,omitempty"`
 	HealthReason string `json:"healthReason,omitempty"`
 	HealthAt     int64  `json:"healthAt,omitempty"`
+	// StickyDisks are the sandbox's sticky disks and how each is doing (FeatureStickyDisks).
+	StickyDisks []StickyDiskStatus `json:"stickyDisks,omitempty"`
 }
 
 // StartPhases is how long a microVM's start took on its host, in milliseconds, by phase: its disk made, its machine
@@ -571,19 +1055,28 @@ type MountStatus struct {
 	State string `json:"status"`
 	// Error says why a failed mount failed (never a credential).
 	Error string `json:"error,omitempty"`
-	// Objects and Bytes are what the manifest holds; RefreshedAt (ms) is when the prefix was last listed.
+	// Objects and Bytes are what the manifest holds; RefreshedAt (ms) is when the prefix was last listed, and ListedAt
+	// (ms) when the listing the mount shows began: it has every object the bucket held then.
 	Objects     int   `json:"objects,omitempty"`
 	Bytes       int64 `json:"bytes,omitempty"`
 	RefreshedAt int64 `json:"refreshedAt,omitempty"`
+	ListedAt    int64 `json:"listedAt,omitempty"`
 	// ListCalls is how many list requests (pages) the host has made for this mount since it was mounted.
 	ListCalls int64 `json:"listCalls,omitempty"`
 }
 
 // MountsRefreshParams is sandbox.mounts.refresh: list the sandbox's bucket mounts again now (Path empty: all of
 // them), and retry a failed one. The result is the sandbox's []MountStatus.
+//
+// With Sync (FeatureMountsSync) it answers only once each mount Path names (all its bucket mounts when empty) shows
+// the sandbox a listing that began after the call arrived, with no MinTTL holding it off, so whatever was in the
+// bucket before the call is there for the next open in the sandbox. A listing that fails, or a guest that doesn't
+// take it, fails the call (ErrUnavailable) rather than leaving an older listing looking current; a bundle mount at
+// Path is ErrInvalid, since it never changes.
 type MountsRefreshParams struct {
 	SandboxID string `json:"sandboxId"`
 	Path      string `json:"path,omitempty"`
+	Sync      bool   `json:"sync,omitempty"`
 }
 
 // BucketResolveParams is bucket.fetch (host → Kantel): a bucket source a sandbox on this host mounts.
@@ -641,6 +1134,12 @@ type SnapshotInfo struct {
 	UniqueBytes int64 `json:"uniqueBytes,omitempty"`
 	// Shared, on snapshot.keep's answer only: the groups of files the new snapshot shares with others.
 	Shared []SharedBytes `json:"shared,omitempty"`
+	// CPU and Runtime are what a microVM snapshot was made on: its host's CPU (Facts.CPU) and the runtime fingerprint
+	// of the machine it was taken of, as that booted or was restored (HostRuntime.Runtime; empty when it can't be told,
+	// such as a machine started before it was kept, which matches nothing). Its memory restores only onto a host with
+	// both. Absent from an isolate's, and from a host from before they were kept.
+	CPU     *CPUFingerprint `json:"cpu,omitempty"`
+	Runtime string          `json:"runtime,omitempty"`
 }
 
 // TakenAtOrCreated is when the state a snapshot holds was taken: TakenAt, or CreatedAt where it has none.
@@ -735,6 +1234,18 @@ type SecretsTable struct {
 	Entries []SecretEntry `json:"entries"`
 }
 
+// EnvParams is sandbox.env (Kantel → host, FeatureSandboxEnv): Env is the sandbox's whole environment from now, as an
+// identity's Env is (an empty one is none). The result is {"ok": true}.
+type EnvParams struct {
+	SandboxID string            `json:"sandboxId"`
+	Env       map[string]string `json:"env"`
+}
+
+// EnvAnswer is env.fetch's answer: a sandbox's whole env.
+type EnvAnswer struct {
+	Env map[string]string `json:"env"`
+}
+
 // SecretsParams is sandbox.secrets (Kantel → host): the sandbox's table changed, so the host drops its copy.
 type SecretsParams struct {
 	SandboxID string `json:"sandboxId"`
@@ -782,8 +1293,8 @@ type CreateParams struct {
 	// VCPUs, MemoryMiB and DiskGiB are, for a microVM, a shape off the host's named sizes (all three set, Size
 	// empty), which cold-boots: no size template is kept for it (one made from a Template restores that template's
 	// snapshot when it was built as this shape). For an isolate, MemoryMiB is the memory asked
-	// for, recorded and passed to the runtime but not enforced per isolate (workerd has no per-isolate memory limit;
-	// the account VM's memory is the bound).
+	// for, passed to the runtime, which enforces it per isolate where its IsolateRuntime says MemoryEnforced (the
+	// account VM's memory, shared by its isolates, is the bound besides).
 	VCPUs     int `json:"vcpus,omitempty"`
 	MemoryMiB int `json:"memoryMiB,omitempty"`
 	DiskGiB   int `json:"diskGiB,omitempty"`
@@ -793,6 +1304,177 @@ type CreateParams struct {
 	// Mounts are read-only mounts (FeatureBucketMounts, FeatureBundleMounts), kept for as long as the sandbox exists:
 	// its starts, resumes and forks mount them again. A tier that has none refuses them as unsupported.
 	Mounts []Mount `json:"mounts,omitempty"`
+	// StickyDisks are the sticky disks attached to the sandbox (FeatureStickyDisks, microVMs only), at most
+	// StickyDisksMax. The sandbox keeps them for its life: its stops, starts, resumes and recoveries keep them, a fork
+	// gets clones of them, and its delete removes them.
+	StickyDisks []StickyDisk `json:"stickyDisks,omitempty"`
+	// GuestFeatures are what the new microVM's guest agent must report it can do (guest.Health.Features), asked once it
+	// runs and before anything is written into it: one that doesn't report each, as an agent too old to say any, has the
+	// create undone and refused as unsupported. An upgrade into a snapshot asks GuestFeatureRealTarget.
+	GuestFeatures []string `json:"guestFeatures,omitempty"`
+}
+
+// StickyDisksMax is the most sticky disks a sandbox may have: the sticky drives every microVM has.
+const StickyDisksMax = 2
+
+// StickyDisk is one sticky disk a create attaches (FeatureStickyDisks): a copy-on-write clone of Version, or with no
+// Version of the host's newest version of the disk, or with none of a new empty ext4 of SizeGiB, mounted read-write
+// at Path (made if missing).
+type StickyDisk struct {
+	DiskID  string `json:"diskId"`
+	Path    string `json:"path"`
+	SizeGiB int    `json:"sizeGiB"`
+	Version string `json:"version,omitempty"`
+}
+
+// StickyDiskStatus states.
+const (
+	StickyMounted = "mounted"
+	StickyFailed  = "failed"
+)
+
+// StickyDiskStatus is how one of a sandbox's sticky disks is doing: Version is the version it was cloned from (absent
+// for a new disk), State StickyMounted or StickyFailed, with Reason saying why it failed.
+type StickyDiskStatus struct {
+	DiskID  string `json:"diskId"`
+	Path    string `json:"path"`
+	Version string `json:"version,omitempty"`
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// StickyCommitParams is sticky.commit's (Kantel → host, FeatureStickyDisks): the sandbox's copy of the disk becomes
+// the disk's version Version on the host. ErrConflict unless the sandbox is running; ErrNotFound when it has no such
+// disk.
+type StickyCommitParams struct {
+	SandboxID string `json:"sandboxId"`
+	DiskID    string `json:"diskId"`
+	Version   string `json:"version"`
+}
+
+// StickyCommitResult is sticky.commit's answer: the version's file's size, and the bytes it takes on the disk.
+type StickyCommitResult struct {
+	Version        string `json:"version"`
+	SizeBytes      int64  `json:"sizeBytes"`
+	AllocatedBytes int64  `json:"allocatedBytes"`
+	// MapDigest is the digest ("sha256:" and hex) of the version's block map (docs/design/disk-store.md, 2b): absent
+	// from a host from before maps, or when the map took too long to wait for (a capacity report gives it later).
+	MapDigest string `json:"mapDigest,omitempty"`
+	// ThawError, when set, is why the guest couldn't be told to thaw the disk after its copy was made (while frozen,
+	// so the version is whole): the guest thaws it by itself once its freeze's lease lapses.
+	ThawError string `json:"thawError,omitempty"`
+}
+
+// StickyDeleteParams is sticky.delete's (Kantel → host, FeatureStickyDisks): it deletes Version of the disk, or with
+// none every version of it. The answer is {}.
+type StickyDeleteParams struct {
+	DiskID  string `json:"diskId"`
+	Version string `json:"version,omitempty"`
+}
+
+// StickyDiskHolding is the versions of one sticky disk a host holds (Capacity.StickyDisks), newest first.
+type StickyDiskHolding struct {
+	DiskID   string                 `json:"diskId"`
+	Versions []StickyVersionHolding `json:"versions"`
+}
+
+// StickyVersionHolding is one version a host holds: the bytes it takes on the host's disk, when it was made there
+// (Unix milliseconds), and its block map's digest (absent while it has none, or from a host from before maps).
+type StickyVersionHolding struct {
+	Version        string `json:"version"`
+	AllocatedBytes int64  `json:"allocatedBytes"`
+	At             int64  `json:"at"`
+	MapDigest      string `json:"mapDigest,omitempty"`
+}
+
+// ObjectHolding is the versions of one disk store object a host holds (Capacity.Holdings).
+type ObjectHolding struct {
+	ObjectID string                 `json:"objectId"`
+	Versions []ObjectVersionHolding `json:"versions"`
+}
+
+// ObjectVersionHolding is one version a host holds, with its block map's digest (a version is listed only once it has
+// one), the bytes it takes on the host's disk, and the pool the host made it in (built it, or began fetching it), as
+// Welcome.PoolID said then: a copy made in one pool is offered only there, wherever its host moves. Absent from a copy
+// made before the host kept it, or while no welcome had named a pool.
+//
+// A template snapshot's (DiskKindTemplate) also says what its memory was made on, as TemplateBuildResult does: its CPU
+// and its portable runtime. Only a host with the same CPU and that runtime among its own restores it.
+type ObjectVersionHolding struct {
+	Version        string          `json:"version"`
+	MapDigest      string          `json:"mapDigest"`
+	AllocatedBytes int64           `json:"allocatedBytes"`
+	Pool           string          `json:"pool,omitempty"`
+	CPU            *CPUFingerprint `json:"cpu,omitempty"`
+	Runtime        string          `json:"runtime,omitempty"`
+	// Copy marks a saved snapshot's version (DiskKindSnapshot) the host fetched from a peer, not one it saved: Kantel
+	// has it deleted at once when it knows no such snapshot, where a host's own waits out a save that may be under way.
+	Copy bool `json:"copy,omitempty"`
+}
+
+// Fetch states (FetchProgress.State): waiting its turn behind the host's other fetches, or being prepared for (a saved
+// snapshot's disk, while its record is read and its root image got); under way; or stopped by an error, its partial
+// left to go on when it is asked for again.
+const (
+	FetchQueued  = "queued"
+	FetchRunning = "running"
+	FetchFailed  = "failed"
+)
+
+// FetchProgress is one version a host is fetching (Capacity.Fetches): its state; its blocks (every part's, for a kind
+// with parts), 0 until its map has been read; how many of them are in place; the bytes of blocks it has read from its
+// holders (FeatureFetchBytes), counted as they arrive, before their block is whole, and carried on by a fetch that
+// goes on from a failed one; and the last error it met, while it is tried again or has failed.
+type FetchProgress struct {
+	Kind     string `json:"kind"`
+	ObjectID string `json:"objectId"`
+	Version  string `json:"version"`
+	State    string `json:"state"`
+	Blocks   int64  `json:"blocks"`
+	InPlace  int64  `json:"inPlace"`
+	Bytes    int64  `json:"bytes,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// DiskLocateParams (host → Kantel, MethodDiskLocate) names a version of a disk store object the host wants: Kind is
+// DiskKindSticky, DiskKindRootfs (FeatureRootfsSync), DiskKindTemplate (FeatureTemplateSync), for which Kantel
+// answers only holders whose copy restores on the asking host's CPU and runtime, or DiskKindSnapshot
+// (FeatureSnapshotSync).
+type DiskLocateParams struct {
+	Kind     string `json:"kind"`
+	ObjectID string `json:"objectId"`
+	Version  string `json:"version"`
+}
+
+// DiskLocateResult is where the version is: its block map digest, once Kantel has it; the online hosts in the asker's
+// pool that hold it, at their mesh addresses (none, possibly); and, with any, a grant to fetch it from them. The grant
+// is "<payload>.<signature>": the payload is the base64url JSON of {kind, objectId, version, accountId, from, to, exp,
+// kid} (from the holders' host IDs, to the asker's, exp milliseconds since the epoch, kid the ID of the key that signed
+// it, one of Welcome.GrantKeys), and the signature Ed25519 over the payload's ASCII text by that key (Welcome.GrantKey,
+// the one that signs now), in base64url.
+type DiskLocateResult struct {
+	MapDigest string       `json:"mapDigest,omitempty"`
+	Holders   []DiskHolder `json:"holders"`
+	Grant     string       `json:"grant,omitempty"`
+}
+
+// DiskFetchParams (Kantel → host, MethodDiskFetch; FeatureDiskSync) asks the host to fetch a version from the hosts
+// that hold it: what disk.locate would answer the host (MapDigest, Holders and Grant, naming the host as to). It is
+// answered {} once the fetch has started, or is queued behind others; the host holds the version once a capacity report
+// lists it. A fetch whose grant expires, or whose holders refuse it, asks disk.locate again.
+type DiskFetchParams struct {
+	Kind      string       `json:"kind"`
+	ObjectID  string       `json:"objectId"`
+	Version   string       `json:"version"`
+	MapDigest string       `json:"mapDigest,omitempty"`
+	Holders   []DiskHolder `json:"holders,omitempty"`
+	Grant     string       `json:"grant,omitempty"`
+}
+
+// DiskHolder is a host holding a version, and its mesh address.
+type DiskHolder struct {
+	HostID  string `json:"hostId"`
+	Address string `json:"address"`
 }
 
 // TemplateBoot is how a sandbox made from a template boots.
@@ -843,6 +1525,16 @@ type TemplateBuildParams struct {
 	Egress *Egress `json:"egress,omitempty"`
 	// Owner is the account the template is of, which the egress proxy names the build's requests after.
 	Owner string `json:"owner,omitempty"`
+	// Copy makes a custom image's build a copy of an entry built on another host (FeatureTemplateImageCopies), over
+	// only that entry's image. Nil: a root filesystem no peer holds is built or pulled here.
+	Copy *TemplateCopy `json:"copy,omitempty"`
+}
+
+// TemplateCopy is the image a copy of a custom image's template snapshot is over: the root filesystem the entry's
+// build made (its TemplateBuildResult.RootfsKey) and the image digest that build named (ImageDigest).
+type TemplateCopy struct {
+	RootfsKey   string `json:"rootfsKey"`
+	ImageDigest string `json:"imageDigest"`
 }
 
 // TemplateBuildResult is template.build's answer. Ref names the snapshot on this host (its ID).
@@ -861,6 +1553,10 @@ type TemplateBuildResult struct {
 	ImageRef         string             `json:"imageRef,omitempty"`
 	SizeBytes        int64              `json:"sizeBytes"`
 	Timings          map[string]float64 `json:"timings,omitempty"`
+	// CPU and Runtime are what the template snapshot was made on, as SnapshotInfo's are; absent from a host from before
+	// they were kept.
+	CPU     *CPUFingerprint `json:"cpu,omitempty"`
+	Runtime string          `json:"runtime,omitempty"`
 }
 
 // TemplateDeleteParams is template.delete: the template snapshot's directory goes; nothing else does.
@@ -872,6 +1568,22 @@ type SandboxRef struct {
 	SandboxID string `json:"sandboxId"`
 }
 
+// DeleteParams is sandbox.delete. KeepSnapshots is for the isolate an upgrade left once its microVM runs on another
+// host: it goes as on the upgrade's own host (isolate.Manager.Dispose), its automatic snapshots kept, since the sandbox
+// lives on and Kantel keeps them as its. A host from before it deletes them as a delete does. It is also for a
+// microVM moved to another host (FeatureSandboxMove): its automatic snapshots stay here, as its history.
+type DeleteParams struct {
+	SandboxID     string `json:"sandboxId"`
+	KeepSnapshots bool   `json:"keepSnapshots,omitempty"`
+	// Exported, a move's operation ID (FeatureSandboxMove), deletes the sandbox only while it is the copy that move
+	// exported (ErrNotFound otherwise): a late delete of a moved sandbox's source never removes a later move's copy of it
+	// back on this host.
+	Exported string `json:"exported,omitempty"`
+	// Tier, when set, deletes the sandbox only while it is of that tier (ErrNotFound otherwise): an upgrade's late cleanup
+	// of its isolate never removes a microVM of the same ID moved back to this host since.
+	Tier string `json:"tier,omitempty"`
+}
+
 // StopParams is sandbox.stop.
 type StopParams struct {
 	SandboxID string `json:"sandboxId"`
@@ -879,6 +1591,10 @@ type StopParams struct {
 	SnapshotID string `json:"snapshotId"`
 	// Memory keeps the memory too, so a resume continues running processes (default true).
 	Memory *bool `json:"memory,omitempty"`
+	// Export (FeatureSandboxMoveRunning) is a running sandbox's move's first copy here (SandboxExportParams.Live): the
+	// stop is that move's, done only while the export is whole (ErrConflict once its rollback has deleted it, so a late
+	// stop never stops the sandbox it started again), and done already when the sandbox is stopped.
+	Export string `json:"export,omitempty"`
 }
 
 // HostImagesParams is host.images's: with SandboxID, the answer's Version is where a rebase of that sandbox lands.
@@ -991,6 +1707,27 @@ type ExecResult struct {
 	TimedOut   bool   `json:"timedOut,omitempty"`
 	DurationMs int64  `json:"durationMs"`
 	Pid        int    `json:"pid,omitempty"`
+	// NeedsMicrovm, from an isolate: the command failed because it ran something an isolate doesn't have (its runtime's
+	// say, or the host's reading of the shell's answer for a runtime that doesn't say).
+	NeedsMicrovm *NeedsMicrovm `json:"needsMicrovm,omitempty"`
+	// Terminated, from an isolate: its runtime stopped the command, for "cpu", "memory" or "wall" time.
+	Terminated string `json:"terminated,omitempty"`
+}
+
+// NeedsMicrovm is what an isolate's command needed a microVM for: the program, and why in one sentence.
+type NeedsMicrovm struct {
+	Command string `json:"command"`
+	Reason  string `json:"reason"`
+	// Inferred: the host read it from the shell's answer (exit 127 and its message), the runtime didn't say it. A hint
+	// only: Kantel's autoUpgrade acts on what a runtime says, never on text a command could print.
+	Inferred bool `json:"inferred,omitempty"`
+}
+
+// Moved is what an upgrade (sandbox.upgrade) moved into the microVM: its entries (files, links and directories) and
+// its files' bytes.
+type Moved struct {
+	Files int   `json:"files"`
+	Bytes int64 `json:"bytes"`
 }
 
 // FileParams is sandbox.files.read/write/delete/list. Data is base64. A read with a Length reads at most that many
@@ -1003,6 +1740,10 @@ type FileParams struct {
 	Recursive bool   `json:"recursive,omitempty"`
 	Offset    int64  `json:"offset,omitempty"`
 	Length    int64  `json:"length,omitempty"`
+	// Fence orders a write (sandbox.files.write) among those Kantel's environment set-ups make: one with a fence below
+	// the highest the host has taken for the sandbox is from an older set-up, delivered late, and is dropped (answered
+	// {ok, fenced}), so it never lands over a newer one. 0 is unfenced.
+	Fence int64 `json:"fence,omitempty"`
 }
 
 // ProcessesParams is sandbox.processes' (FeatureProcesses): a running sandbox's busiest processes, at most Limit
@@ -1038,11 +1779,14 @@ type ProcessList struct {
 }
 
 // FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
-// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted.
+// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted. With
+// RealTarget, a link at Target or above it is refused rather than followed (an upgrade's), by guest agents that report
+// GuestFeatureRealTarget: an older one ignores it, so whoever needs it requires that feature first (GuestFeatures).
 type FileExtractParams struct {
-	SandboxID string `json:"sandboxId"`
-	Archive   string `json:"archive"`
-	Target    string `json:"target"`
+	SandboxID  string `json:"sandboxId"`
+	Archive    string `json:"archive"`
+	Target     string `json:"target"`
+	RealTarget bool   `json:"realTarget,omitempty"`
 }
 
 type FileEntry struct {
@@ -1163,8 +1907,8 @@ type SandboxUsage struct {
 	// memory. A VM without the balloon's statistics (one restored from a snapshot made before them, or a kernel
 	// without the driver) gets its Firecracker process's resident memory instead (MemSource "rss"): the guest memory the
 	// VM has touched, page cache included, which never falls, and the VMM's own. MemLimitBytes is its size's memory. An
-	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; workerd says nothing of
-	// an isolate's own).
+	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; the runtime reports no
+	// isolate's own).
 	MemUsedBytes  int64 `json:"memUsedBytes"`
 	MemLimitBytes int64 `json:"memLimitBytes"`
 	// MemSource is where MemUsedBytes came from, MemSourceGuest or MemSourceRSS. A host that predates it sends none
@@ -1200,14 +1944,21 @@ const (
 // Methods.
 const (
 	MethodCreate = "sandbox.create"
-	MethodStop   = "sandbox.stop"
-	MethodResume = "sandbox.resume"
-	MethodStart  = "sandbox.start"
-	MethodFork   = "sandbox.fork"
-	MethodDelete = "sandbox.delete"
-	MethodGet    = "sandbox.get"
-	MethodList   = "sandbox.list"
-	MethodExec   = "sandbox.exec"
+	// MethodUpgrade makes an isolate a microVM with the same ID (FeatureIsolateUpgrade).
+	MethodUpgrade = "sandbox.upgrade"
+	// MethodUpgradeFreeze, MethodUpgradeThaw (FeatureIsolateFreeze) and MethodUpgradeSettle (FeatureIsolateUpgrade):
+	// UpgradeRef.
+	MethodUpgradeFreeze = "sandbox.upgrade.freeze"
+	MethodUpgradeThaw   = "sandbox.upgrade.thaw"
+	MethodUpgradeSettle = "sandbox.upgrade.settle"
+	MethodStop          = "sandbox.stop"
+	MethodResume        = "sandbox.resume"
+	MethodStart         = "sandbox.start"
+	MethodFork          = "sandbox.fork"
+	MethodDelete        = "sandbox.delete"
+	MethodGet           = "sandbox.get"
+	MethodList          = "sandbox.list"
+	MethodExec          = "sandbox.exec"
 	// MethodExecGet (Kantel → host, ExecRef; FeatureExecControl) answers a command's ExecStatus by its CommandID.
 	MethodExecGet = "sandbox.exec.get"
 	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its
@@ -1236,8 +1987,14 @@ const (
 	MethodEgress = "sandbox.egress"
 	// MethodSecrets (Kantel → host, SecretsParams) says a sandbox's protected variables changed; the result is {}.
 	MethodSecrets = "sandbox.secrets"
+	// MethodEnv (Kantel → host, EnvParams; FeatureSandboxEnv) replaces a sandbox's env, and a running microVM's env file.
+	MethodEnv = "sandbox.env"
 	// MethodSecretsFetch (host → Kantel, SandboxRef) answers a SecretsTable.
 	MethodSecretsFetch = "secrets.fetch"
+	// MethodEnvFetch (host → Kantel, SandboxRef) answers an EnvAnswer: the sandbox's env as Kantel has it now. A
+	// sandbox.env is applied from it, not from its own params, so however late a notification lands, the env applied
+	// is the newest. A Kantel from before answers ErrUnsupported, and the params' env is applied.
+	MethodEnvFetch = "env.fetch"
 	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).
 	MethodFileOpen = "sandbox.files.open"
 	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
@@ -1251,4 +2008,22 @@ const (
 	MethodMountsRefresh = "sandbox.mounts.refresh"
 	// MethodBucketResolve (host → Kantel, BucketResolveParams) answers a BucketSource (HostMethods.bucketFetch).
 	MethodBucketResolve = "bucket.fetch"
+	// MethodDiskLocate (host → Kantel, DiskLocateParams) answers a DiskLocateResult.
+	MethodDiskLocate = "disk.locate"
+	// MethodDiskFetch (Kantel → host, DiskFetchParams; FeatureDiskSync) answers {} once the fetch has started.
+	MethodDiskFetch = "disk.fetch"
+	// MethodStickyCommit (Kantel → host, StickyCommitParams; FeatureStickyDisks) answers a StickyCommitResult.
+	MethodStickyCommit = "sticky.commit"
+	// MethodStickyDelete (Kantel → host, StickyDeleteParams; FeatureStickyDisks) answers {}.
+	MethodStickyDelete = "sticky.delete"
+	// MethodSandboxExport (Kantel → host, SandboxExportParams; FeatureSandboxMove) answers a SandboxExportResult.
+	MethodSandboxExport = "sandbox.export"
+	// MethodSandboxExportDelete (Kantel → host, SandboxExportDeleteParams; FeatureSandboxMove) answers {}.
+	MethodSandboxExportDelete = "sandbox.export.delete"
+	// MethodSandboxImport (Kantel → host, SandboxImportParams; FeatureSandboxMove) answers the sandbox's SandboxInfo.
+	MethodSandboxImport = "sandbox.import"
+	// MethodSandboxImportCancel (Kantel → host, SandboxExportParams; FeatureSandboxMove) answers {}.
+	MethodSandboxImportCancel = "sandbox.import.cancel"
+	// MethodSandboxMemory (Kantel → host, SandboxMemoryParams; FeatureSandboxMoveMemory) answers a SandboxMemoryInfo.
+	MethodSandboxMemory = "sandbox.memory"
 )

@@ -1,0 +1,17 @@
+{
+	"name": "@kantel/isolate-runtime",
+	"private": true,
+	"type": "module",
+	"description": "kantel-isolate's guests (the shell, node and python runtimes) and its integration tests. The runtime itself is the Rust crate here; see README.md.",
+	"scripts": {
+		"build:guests": "bun run guest/build.ts",
+		"test": "bun test --timeout 120000 test/"
+	},
+	"dependencies": {
+		"just-bash": "3.6.0",
+		"whatwg-url": "14.2.0"
+	},
+	"overrides": {
+		"undici": "7.30.1"
+	}
+}

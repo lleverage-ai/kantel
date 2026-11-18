@@ -1,14 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { HOST_FEATURES, type HostFacts } from "../src/protocol.ts";
 import {
+	bootsFreshInstead,
 	buildFitsOn,
 	type Candidate,
 	customSizeName,
 	diskFor,
 	freeMemoryOn,
+	holdsHeads,
 	isRefusal,
+	nearEmptiest,
+	type Placement,
 	place,
+	SPREAD_FULLNESS,
+	SPREAD_MARGIN,
 	shapeOn,
+	vcpusFit,
 } from "../src/scheduler.ts";
 import type { HostRecord } from "../src/store.ts";
 
@@ -77,6 +84,108 @@ describe("place", () => {
 		const idle = candidate("idle", capacity(30_000, 0.1));
 		const busy = place({ tier: "microvm", size: "default" }, [roomy, idle]);
 		expect(isRefusal(busy) ? busy.reason : busy.host.id).toBe("idle");
+	});
+
+	it("spreads by how full each host would be, its booked vCPUs as well as its memory", () => {
+		// A host twice the size with a little more memory free, but fuller for its size, loses to the smaller, emptier one.
+		const big = candidate("big", { facts: { ...facts, memoryMiB: 65_536, cpus: 32 }, ...capacity(22_000) });
+		const small = candidate("small", capacity(20_000));
+		const bySize = place({ tier: "microvm", size: "large" }, [big, small]);
+		expect(isRefusal(bySize) ? bySize.reason : bySize.host.id).toBe("small");
+		// Memory to spare but its CPUs booked: the other host, though it has less memory free.
+		const booked = candidate("booked", capacity(24_000), { bookedVcpus: 14 });
+		const idle = candidate("idle", capacity(16_000), { bookedVcpus: 0 });
+		const byCpu = place({ tier: "microvm", size: "large" }, [booked, idle]);
+		expect(isRefusal(byCpu) ? byCpu.reason : byCpu.host.id).toBe("idle");
+		// Without a pool cap, vCPUs rank but never refuse: a host booked past its CPUs still takes a sandbox that fits its memory.
+		const only = place({ tier: "microvm", size: "large" }, [candidate("only", capacity(16_000), { bookedVcpus: 40 })]);
+		expect(isRefusal(only) ? only.reason : only.host.id).toBe("only");
+	});
+
+	it("turns a host away as full past its pool's vCPU cap, and places on another or refuses for want of room", () => {
+		// 16 CPUs capped at 1 vCPU each: 12 booked takes a 4-vCPU microVM, 14 booked doesn't.
+		const full = candidate("full", capacity(30_000), { bookedVcpus: 14, vcpusPerCpu: 1 });
+		const room = candidate("room", capacity(10_000), { bookedVcpus: 12, vcpusPerCpu: 1 });
+		const chosen = place({ tier: "microvm", size: "large" }, [full, room]);
+		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("room");
+		const refused = place({ tier: "microvm", size: "large" }, [full]);
+		expect(isRefusal(refused) && refused.code).toBe("insufficient_capacity");
+		expect(isRefusal(refused) && refused.reason).toContain("its vCPUs booked");
+		// Without a cap the same host takes it, as before.
+		const uncapped = place({ tier: "microvm", size: "large" }, [{ ...full, vcpusPerCpu: undefined }]);
+		expect(isRefusal(uncapped) ? uncapped.reason : uncapped.host.id).toBe("full");
+		// Isolates book no vCPUs, so a capped host still takes them.
+		const isolate = place({ tier: "isolate" }, [full]);
+		expect(isRefusal(isolate) ? isolate.reason : isolate.host.id).toBe("full");
+	});
+
+	it("caps vCPUs exactly at the cap times a host's CPUs, and lets an empty host take one larger than the cap", () => {
+		const on = (bookedVcpus: number, vcpusPerCpu: number) =>
+			candidate("h", {}, { bookedVcpus, ...(vcpusPerCpu > 0 ? { vcpusPerCpu } : {}) });
+		// 16 CPUs at 1.5: 24 vCPUs.
+		expect(vcpusFit(on(16, 1.5), 8)).toBe(true);
+		expect(vcpusFit(on(17, 1.5), 8)).toBe(false);
+		// 0.7 of 10 CPUs is 7, though 0.7 * 10 is 7.000000000000001 in floats.
+		expect(vcpusFit({ ...on(5, 0.7), host: { ...on(5, 0.7).host, facts: { ...facts, cpus: 10 } } }, 2)).toBe(true);
+		// Nothing booked: a 32-vCPU microVM on a 16-CPU host capped at 1 still runs, alone.
+		expect(vcpusFit(on(0, 1), 32)).toBe(true);
+		expect(vcpusFit(on(1, 1), 32)).toBe(false);
+		// No cap, or no count of what is booked: it fits.
+		expect(vcpusFit(on(100, 0), 8)).toBe(true);
+		expect(vcpusFit(candidate("h", {}, { vcpusPerCpu: 1 }), 64)).toBe(true);
+	});
+
+	it("measures memory as reserved over capacity, not as the free memory over-commit admits", () => {
+		// Cerbie's case: a 16 GiB host with 14 GiB reserved and a 32 GiB host with 16 GiB reserved, each reporting what it
+		// would still admit at 1.5 times its capacity.
+		const report = (capacityMiB: number, reservedMiB: number) => ({
+			mode: "reserved" as const,
+			totalMiB: capacityMiB,
+			reserveMiB: 0,
+			capacityMiB,
+			reservedMiB,
+			committedMiB: reservedMiB,
+			guestUsedMiB: 0,
+			residentMiB: 0,
+			availableMiB: capacityMiB - reservedMiB,
+			swapUsedMiB: 0,
+			pressureSome: 0,
+			pressureFull: 0,
+			maxRatio: 1.5,
+			state: "ok" as const,
+		});
+		const small = candidate(
+			"small",
+			{
+				facts: { ...facts, memoryMiB: 16_384, cpus: 16 },
+				capacity: {
+					freeMemoryMiB: 16_384 * 1.5 - 14_336,
+					freeDiskGiB: 400,
+					running: 0,
+					stopped: 0,
+					load1: 0,
+					memory: report(16_384, 14_336),
+				},
+			},
+			{ bookedVcpus: 2 },
+		);
+		const big = candidate(
+			"big",
+			{
+				facts: { ...facts, memoryMiB: 32_768, cpus: 32 },
+				capacity: {
+					freeMemoryMiB: 32_768 * 1.5 - 16_384,
+					freeDiskGiB: 400,
+					running: 0,
+					stopped: 0,
+					load1: 0,
+					memory: report(32_768, 16_384),
+				},
+			},
+			{ bookedVcpus: 16 },
+		);
+		const chosen = place({ tier: "microvm", shape: { vcpus: 1, memoryMiB: 1_024 } }, [small, big].map(custom));
+		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("big");
 	});
 
 	it("counts what was placed since a host's last report", () => {
@@ -171,6 +280,200 @@ describe("place", () => {
 		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("theirs");
 		const other = place({ tier: "isolate", size: "isolate", owner: "acct_2" }, [roomy, theirs]);
 		expect(isRefusal(other) ? other.reason : other.host.id).toBe("roomy");
+	});
+
+	it("prefers a host holding the head of every sticky disk, and between equals the least full", () => {
+		/** A host with `free` MiB free that last reported holding these versions of sticky disks. */
+		const holding = (id: string, free: number, held: { readonly [diskId: string]: readonly string[] }) =>
+			candidate(id, {
+				capacity: {
+					...capacity(free).capacity,
+					stickyDisks: Object.entries(held).map(([diskId, versions]) => ({
+						diskId,
+						versions: versions.map((version) => ({ version, allocatedBytes: 1, at: 1 })),
+					})),
+				},
+			});
+		const stickyDisks = [
+			{ diskId: "sdk_cache", path: "/cache", sizeGiB: 10, version: "sdv_2" },
+			{ diskId: "sdk_docker", path: "/docker", sizeGiB: 10, version: "sdv_9" },
+		];
+		const request = { tier: "microvm", size: "default", stickyDisks } as const;
+		const pick = (...candidates: Candidate[]) => {
+			const chosen = place(request, candidates);
+			return isRefusal(chosen) ? chosen.reason : chosen.host.id;
+		};
+		// 0.45 full with it placed: under half, so the heads win over emptier hosts.
+		const warm = holding("warm", 20_000, { sdk_cache: ["sdv_1", "sdv_2"], sdk_docker: ["sdv_9"] });
+		// Emptier, but holding an older version of one disk, or one head of two, or nothing it says.
+		const older = holding("older", 30_000, { sdk_cache: ["sdv_1"], sdk_docker: ["sdv_9"] });
+		const half = holding("half", 30_000, { sdk_cache: ["sdv_2"] });
+		const silent = candidate("silent", capacity(30_000));
+		expect(pick(older, half, silent, warm)).toBe("warm");
+		// Between hosts that both hold the heads, or that both don't, projected fullness still decides.
+		const roomier = holding("roomier", 24_000, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_8", "sdv_9"] });
+		expect(pick(warm, roomier, older)).toBe("roomier");
+		expect(pick(holding("fuller", 8_000, {}), older)).toBe("older");
+		// It is a preference only: a host without the heads takes it when the one with them is full.
+		expect(pick(holding("full", 1_000, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_9"] }), older)).toBe("older");
+		// Or would be at least half full and a quarter fuller than it (`muchFuller`): 0.56 against 0.15.
+		const busy = holding("busy", 16_384, { sdk_cache: ["sdv_2"], sdk_docker: ["sdv_9"] });
+		expect(pick(busy, older)).toBe("older");
+		// Within a quarter, the heads still win: 0.56 against 0.38.
+		expect(pick(busy, holding("middling", 22_400, {}))).toBe("busy");
+		// Without sticky disks, or with ones that have no head yet, nothing is preferred for them.
+		const plain = place({ tier: "microvm", size: "default" }, [warm, older]);
+		expect(isRefusal(plain) ? plain.reason : plain.host.id).toBe("older");
+		const fresh = place({ ...request, stickyDisks: [{ diskId: "sdk_new" }] }, [warm, older]);
+		expect(isRefusal(fresh) ? fresh.reason : fresh.host.id).toBe("older");
+	});
+
+	it("spreads CI runners evenly over a balanced pool's 4 hosts, whichever hold the heads or the template's snapshot", () => {
+		// Lleverage's pool on 17 Nov: four hosts of 32 CPUs and 128 GiB, runners attaching one sticky disk. ci-5 holds its
+		// head; ci-1 and ci-6 hold the runner template's snapshot, which the others boot fresh without.
+		const stickyDisks = [{ diskId: "sdk_ci", version: "sdv_head" }];
+		const run = (balanced: boolean, vcpus: number, creates: number) => {
+			const runner = { vcpus, memoryMiB: vcpus * 2048 };
+			const big = { ...facts, cpus: 32, memoryMiB: 131_072, sizes: [{ name: "runner", ...runner, diskGiB: 100 }] };
+			const request = { tier: "microvm", size: "runner", stickyDisks } as const;
+			const booked = new Map<string, number>(["ci-1", "ci-4", "ci-5", "ci-6"].map((id) => [id, 0]));
+			const host = (id: string): Candidate =>
+				candidate(
+					id,
+					{
+						facts: big,
+						capacity: {
+							...capacity(131_072 - (booked.get(id) ?? 0) * runner.memoryMiB).capacity,
+							stickyDisks:
+								id === "ci-5"
+									? [{ diskId: "sdk_ci", versions: [{ version: "sdv_head", allocatedBytes: 1, at: 1 }] }]
+									: [],
+						},
+					},
+					{ bookedVcpus: (booked.get(id) ?? 0) * runner.vcpus, ...(balanced ? { balanced: true } : {}) },
+				);
+			let widest = 0;
+			for (let n = 0; n < creates; n++) {
+				// As the hosts service places a create from a template snapshot: a restore on a host with it, unless an
+				// emptier host without it should boot it fresh instead (`bootsFreshInstead`).
+				let chosen = place(request, [host("ci-1"), host("ci-6")]);
+				const instead = place(request, [host("ci-4"), host("ci-5")]);
+				if (isRefusal(chosen) || (!isRefusal(instead) && bootsFreshInstead(chosen, instead))) chosen = instead;
+				if (isRefusal(chosen)) throw new Error(chosen.reason);
+				booked.set(chosen.host.id, (booked.get(chosen.host.id) ?? 0) + 1);
+				widest = Math.max(widest, Math.max(...booked.values()) - Math.min(...booked.values()));
+			}
+			return { counts: Object.fromEntries(booked), widest };
+		};
+		// Balanced, 8-vCPU runners: never more than one apart, and four on each after sixteen.
+		expect(run(true, 8, 16)).toEqual({ counts: { "ci-1": 4, "ci-4": 4, "ci-5": 4, "ci-6": 4 }, widest: 1 });
+		// 4-vCPU runners, an eighth of a host each: preferring warm hosts (the default) lets the snapshot's and the head's
+		// hosts run two or more ahead; balanced keeps them within one, eight on each after thirty-two.
+		expect(run(false, 4, 32).widest).toBeGreaterThanOrEqual(2);
+		expect(run(true, 4, 32)).toEqual({ counts: { "ci-1": 8, "ci-4": 8, "ci-5": 8, "ci-6": 8 }, widest: 1 });
+	});
+
+	it("holds a balanced pool's restore to the emptiest of every host, not to the fresh boot's host the heads chose", () => {
+		// Cerbie's case: a 1-vCPU create on three 32-CPU hosts with memory to spare. The snapshot's holder has 2 vCPUs
+		// booked (0.09 with it placed), a host without it holding the sticky head 1 (0.06), and another nothing (0.03).
+		const big = {
+			...facts,
+			cpus: 32,
+			memoryMiB: 131_072,
+			sizes: [{ name: "one", vcpus: 1, memoryMiB: 512, diskGiB: 10 }],
+		};
+		const request = { tier: "microvm", size: "one", stickyDisks: [{ diskId: "sdk_ci", version: "sdv_2" }] } as const;
+		const host = (id: string, booked: number, heads: boolean) =>
+			candidate(
+				id,
+				{
+					facts: big,
+					capacity: {
+						...capacity(131_000).capacity,
+						stickyDisks: heads
+							? [{ diskId: "sdk_ci", versions: [{ version: "sdv_2", allocatedBytes: 1, at: 1 }] }]
+							: [],
+					},
+				},
+				{ bookedVcpus: booked, balanced: true },
+			);
+		const restore = place(request, [host("holder", 2, false)]);
+		const fresh = place(request, [host("heads", 1, true), host("empty", 0, false)]);
+		if (isRefusal(restore) || isRefusal(fresh)) throw new Error("refused");
+		// Within its own group the heads win (0.06 against 0.03, inside a twentieth)...
+		expect([fresh.host.id, fresh.fullness, fresh.emptiest]).toEqual(["heads", 0.06, 0.03]);
+		// ...but the restore at 0.09 is more than a twentieth over the emptiest of all (0.03), so it boots fresh.
+		expect(restore.fullness).toBe(0.09);
+		expect(bootsFreshInstead(restore, fresh)).toBe(true);
+		// Never onto a fresh host as full as the restore's or fuller, whatever the emptiest: one the owner's isolates
+		// drew the fresh group's choice to (0.90, its emptiest 0.10) leaves the 0.20 restore where it is.
+		const at = (fullness: number, emptiest: number) =>
+			({ ...restore, fullness, emptiest, balanced: true }) as Placement;
+		expect(bootsFreshInstead(at(0.2, 0.2), at(0.9, 0.1))).toBe(false);
+		expect(bootsFreshInstead(at(0.2, 0.2), at(0.2, 0.1))).toBe(false);
+		// A holder within a twentieth of that emptiest still restores.
+		const near = place(request, [host("holder", 1, false)]);
+		if (isRefusal(near)) throw new Error("refused");
+		expect(bootsFreshInstead(near, fresh)).toBe(false);
+	});
+
+	it("lets a balanced pool's heads win only between hosts within a twentieth of the emptiest", () => {
+		const holding = (id: string, free: number, balanced: boolean) =>
+			candidate(
+				id,
+				{
+					capacity: {
+						...capacity(free).capacity,
+						stickyDisks: [{ diskId: "sdk_ci", versions: [{ version: "sdv_2", allocatedBytes: 1, at: 1 }] }],
+					},
+				},
+				balanced ? { balanced: true } : {},
+			);
+		const plain = (id: string, free: number, balanced: boolean) =>
+			candidate(id, capacity(free), balanced ? { balanced: true } : {});
+		const request = {
+			tier: "microvm",
+			size: "default",
+			stickyDisks: [{ diskId: "sdk_ci", version: "sdv_2" }],
+		} as const;
+		const pick = (...candidates: Candidate[]) => {
+			const chosen = place(request, candidates);
+			return isRefusal(chosen) ? chosen.reason : chosen.host.id;
+		};
+		// 0.45 against 0.15 full: the heads win by default (under half full), not when the pool is balanced.
+		expect(pick(holding("warm", 20_000, false), plain("empty", 30_000, false))).toBe("warm");
+		expect(pick(holding("warm", 20_000, true), plain("empty", 30_000, true))).toBe("empty");
+		// As full as the emptiest, within a twentieth: the heads still decide.
+		expect(pick(holding("warm", 29_000, true), plain("empty", 30_000, true))).toBe("warm");
+		expect(nearEmptiest(0.3, 0.25)).toBe(true);
+		expect(nearEmptiest(0.31, 0.25)).toBe(false);
+		// A template's restore likewise wins over an emptier fresh boot only within a twentieth.
+		const at = (fullness: number, balanced: boolean) =>
+			({
+				host: plain("h", 1, balanced).host,
+				size: facts.sizes[0],
+				custom: false,
+				fullness,
+				...(balanced ? { balanced } : {}),
+			}) as Placement;
+		expect(bootsFreshInstead(at(0.45, true), at(0.15, true))).toBe(true);
+		expect(bootsFreshInstead(at(0.45, false), at(0.15, false))).toBe(false);
+		expect(bootsFreshInstead(at(0.2, true), at(0.15, true))).toBe(false);
+	});
+
+	it("says a host holds the heads only of what it reports, every disk with a head", () => {
+		const host = candidate("h", {
+			capacity: {
+				...capacity(4_000).capacity,
+				stickyDisks: [{ diskId: "sdk_a", versions: [{ version: "sdv_1", allocatedBytes: 1, at: 1 }] }],
+			},
+		}).host;
+		expect(holdsHeads(host, undefined)).toBe(true);
+		expect(holdsHeads(host, [{ diskId: "sdk_a", version: "sdv_1" }, { diskId: "sdk_b" }])).toBe(true);
+		expect(holdsHeads(host, [{ diskId: "sdk_a", version: "sdv_2" }])).toBe(false);
+		expect(holdsHeads(host, [{ diskId: "sdk_b", version: "sdv_1" }])).toBe(false);
+		// A host that doesn't say what it holds (one without sticky disks, or a report it couldn't read in full).
+		expect(holdsHeads(candidate("quiet").host, [{ diskId: "sdk_a", version: "sdv_1" }])).toBe(false);
 	});
 
 	it("places a named size and a shape alike: the most free memory wins", () => {
@@ -319,5 +622,60 @@ describe("place", () => {
 			codeOf(microvm, [isolatesOnly, candidate("gone", {}, { connected: false }), candidate("full", capacity(1_000))]),
 		).toBe("insufficient_capacity");
 		expect(codeOf(microvm, [isolatesOnly, candidate("drained", { draining: true })])).toBe("no_host_for_type");
+	});
+});
+
+describe("bootsFreshInstead", () => {
+	/** Where `place` puts a 4 vCPU, 8 GiB machine among `candidates` alone. */
+	const placed = (...candidates: Candidate[]): Placement => {
+		const chosen = place({ tier: "microvm", size: "large" }, candidates);
+		if (isRefusal(chosen)) throw new Error(chosen.reason);
+		return chosen;
+	};
+
+	it("counts each host's fullness with the create placed", () => {
+		// 16 of 32 GiB used, and 8 more: 0.75. Empty: a quarter.
+		expect(placed(candidate("holder", capacity(16_384))).fullness).toBe(0.75);
+		expect(placed(candidate("empty", capacity(32_768))).fullness).toBe(0.25);
+		// Its CPUs booked count too: 12 of 16 vCPUs with this one.
+		expect(placed(candidate("booked", capacity(32_768), { bookedVcpus: 8 })).fullness).toBe(0.75);
+	});
+
+	it("boots fresh on a much emptier host once the one with the snapshot would be at least half full", () => {
+		const empty = placed(candidate("empty", capacity(32_768)));
+		expect(bootsFreshInstead(placed(candidate("holder", capacity(16_384))), empty)).toBe(true);
+		// At the threshold exactly, and a quarter apart exactly.
+		const half = placed(candidate("half", capacity(24_576)));
+		expect(half.fullness).toBe(SPREAD_FULLNESS);
+		expect(half.fullness - empty.fullness).toBe(SPREAD_MARGIN);
+		expect(bootsFreshInstead(half, empty)).toBe(true);
+		// Its CPUs booked, though it has memory: a fresh boot elsewhere too.
+		expect(bootsFreshInstead(placed(candidate("booked", capacity(32_768), { bookedVcpus: 8 })), empty)).toBe(true);
+	});
+
+	it("restores on the host with the snapshot while it has plenty of room, however empty the others", () => {
+		// 0.47 full with it placed: under half, so the restore wins over an empty host.
+		const roomy = placed(candidate("roomy", capacity(25_600)));
+		expect(roomy.fullness).toBeLessThan(SPREAD_FULLNESS);
+		expect(bootsFreshInstead(roomy, placed(candidate("empty", capacity(32_768))))).toBe(false);
+		// Nor for a far bigger, emptier host.
+		const big = candidate("big", { facts: { ...facts, memoryMiB: 131_072, cpus: 64 }, ...capacity(131_072) });
+		expect(placed(big).fullness).toBe(0.06);
+		expect(bootsFreshInstead(roomy, placed(big))).toBe(false);
+	});
+
+	it("restores when the other host is nearly as full", () => {
+		const holder = placed(candidate("holder", capacity(16_384)));
+		// 0.75 against 0.53: within a quarter.
+		const other = placed(candidate("other", capacity(23_552)));
+		expect(other.fullness).toBe(0.53);
+		expect(bootsFreshInstead(holder, other)).toBe(false);
+		// Both over-booked, within a quarter of each other: the restore.
+		expect(
+			bootsFreshInstead(
+				placed(candidate("over", capacity(16_384), { bookedVcpus: 20 })),
+				placed(candidate("overToo", capacity(16_384), { bookedVcpus: 18 })),
+			),
+		).toBe(false);
 	});
 });

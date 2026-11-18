@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,79 @@ func TestGuestScriptsParse(t *testing.T) {
 		if out, err := exec.Command(sh, "-n", s).CombinedOutput(); err != nil {
 			t.Errorf("%s doesn't parse: %v\n%s", s, err, out)
 		}
+	}
+}
+
+// A sandbox image built with KANTEL_BROWSER=cft bundles Google Chrome for Testing, which may not be redistributed
+// (LLE-18651), so it is never published: release.sh --publish refuses it before building anything, and no workflow
+// sets KANTEL_BROWSER, so the daily build (sandbox-image.yml's host-images job) only ever makes Debian's Chromium.
+func TestChromeForTestingIsNeverPublished(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	release := "../../guest/release.sh"
+	// Read here so go test's cache sees the file.
+	if _, err := os.ReadFile(release); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		browser, publish, want string
+		code                   int
+	}{
+		{"cft", "--publish", "Chrome for Testing may not be redistributed", 1},
+		{"chrome", "", "KANTEL_BROWSER is debian or cft", 2},
+	} {
+		out := t.TempDir()
+		args := []string{release, out, "host-images-20261117"}
+		if tc.publish != "" {
+			args = append(args, tc.publish)
+		}
+		cmd := exec.Command(sh, args...)
+		// No Docker, Go or gh on PATH: had it gone on to build or publish, it would fail some other way.
+		cmd.Env = []string{"PATH=/nonexistent", "KANTEL_BROWSER=" + tc.browser}
+		got, err := cmd.CombinedOutput()
+		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != tc.code || !strings.Contains(string(got), tc.want) {
+			t.Errorf("KANTEL_BROWSER=%s release.sh %s: %v\n%s", tc.browser, tc.publish, err, got)
+		}
+		if entries, _ := os.ReadDir(out); len(entries) != 0 {
+			t.Errorf("KANTEL_BROWSER=%s release.sh %s wrote %d files to its out dir", tc.browser, tc.publish, len(entries))
+		}
+	}
+
+	// KANTEL_BROWSER itself, not the KANTEL_BROWSER_* settings of Kantel's own browsers.
+	setsBrowser := regexp.MustCompile(`\bKANTEL_BROWSER\b`)
+	workflows, _ := filepath.Glob("../../../../.github/workflows/*.yml")
+	if len(workflows) == 0 {
+		t.Fatal("no workflows under ../../../../.github/workflows")
+	}
+	for _, w := range workflows {
+		data, err := os.ReadFile(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if setsBrowser.Match(data) {
+			t.Errorf("%s sets KANTEL_BROWSER: Kantel's own builds publish Debian's Chromium only", w)
+		}
+	}
+}
+
+// rootfs.sh turns away a browser it doesn't know before it builds anything.
+func TestRootfsChecksBrowser(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	// Read here so go test's cache sees the file.
+	if _, err := os.ReadFile("../../guest/rootfs.sh"); err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	cmd := exec.Command(sh, "../../guest/rootfs.sh", out, "sandbox", "amd64")
+	cmd.Env = []string{"PATH=/nonexistent", "KANTEL_BROWSER=chrome"}
+	got, err := cmd.CombinedOutput()
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 2 || !strings.Contains(string(got), "KANTEL_BROWSER is debian or cft") {
+		t.Errorf("KANTEL_BROWSER=chrome rootfs.sh: %v\n%s", err, got)
 	}
 }
 

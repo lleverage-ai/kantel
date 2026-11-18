@@ -236,6 +236,58 @@ test("an organisation key creates a project with POST /v1/projects", async () =>
 	await components.identity.revokeApiKey(inOrganisation, issued.key.id);
 });
 
+describe("readiness", () => {
+	const gatewayWith = (ready: () => Promise<void>) =>
+		createGateway({ components: { ...components, ready }, readyTimeoutMs: 50 });
+	const readyz = (gateway: ReturnType<typeof createGateway>) => gateway.fetch(new Request("http://gateway/readyz"));
+
+	test("/readyz is 503 when the database refuses or doesn't answer in time, and /healthz stays 200", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const refused = gatewayWith(() => Promise.reject(new Error("connect ECONNREFUSED 10.0.0.5:5432")));
+			const answer = await readyz(refused);
+			expect(answer.status).toBe(503);
+			// Without credentials: which part failed, not the error, which the log has.
+			expect(await answer.json()).toEqual({
+				ok: false,
+				error: { code: "unavailable", message: "The database refused the check" },
+			});
+			expect(logged).toHaveBeenCalledWith("[gateway] not ready: connect ECONNREFUSED 10.0.0.5:5432");
+			expect((await refused.fetch(new Request("http://gateway/healthz"))).status).toBe(200);
+
+			const hung = gatewayWith(() => new Promise<void>(() => undefined));
+			const started = Date.now();
+			const slow = await readyz(hung);
+			expect(Date.now() - started).toBeLessThan(1000);
+			expect(slow.status).toBe(503);
+			expect(await slow.json()).toMatchObject({ error: { message: "The database didn't answer within 50 ms" } });
+		} finally {
+			logged.mockRestore();
+		}
+	});
+
+	test("/readyz is 200 once the database answers again, and says so in the log once", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			let up = false;
+			const gateway = gatewayWith(() => (up ? Promise.resolve() : Promise.reject(new Error("down"))));
+			expect((await readyz(gateway)).status).toBe(503);
+			expect((await readyz(gateway)).status).toBe(503);
+			up = true;
+			const answer = await readyz(gateway);
+			expect(answer.status).toBe(200);
+			expect(await answer.json()).toEqual({ ok: true });
+			expect((await readyz(gateway)).status).toBe(200);
+			expect(logged.mock.calls.map((call) => call[0])).toEqual([
+				"[gateway] not ready: down",
+				"[gateway] ready again: the database answers",
+			]);
+		} finally {
+			logged.mockRestore();
+		}
+	});
+});
+
 test("HEAD answers with headers and no body", async () => {
 	const response = await fetch(`${server.url}/`, { method: "HEAD" });
 	expect(response.status).toBe(200);

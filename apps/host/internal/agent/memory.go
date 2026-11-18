@@ -7,9 +7,11 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/memplan"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -151,7 +153,7 @@ func (h *Host) admitMemory(vm memplan.VM, held []memplan.VM) error {
 
 // oomExit is what a microVM's exit is reported with when the kernel's out-of-memory killer ended it at the memory
 // limit over-commit gives kantel-host's group (confineMemory): the guard didn't free memory fast enough.
-const oomExit = "the host ran out of memory, and the kernel stopped this sandbox's VM to free it"
+const oomExit = microvm.OOMExit
 
 // oomKills tells the VMs the kernel ended at the host's memory limit (microvm.Config.ExitCause): each kill the group
 // counted since explains one exit the host didn't cause.
@@ -236,7 +238,7 @@ var (
 	outOfMemoryAtLimitEvery = time.Second
 	outOfMemorySettle       = 10 * time.Second
 	outOfMemoryRepeat       = time.Minute
-	vmOOMScoreAdj           = 500
+	vmOOMScoreAdj           = fc.OOMScoreAdj
 )
 
 // memoryGuard acts when the host is short of memory (memplan.Level), over-commit on: reclaim page cache from VMs
@@ -310,7 +312,7 @@ func (g *memoryGuard) run(h *Host, plan *memplan.Plan, act guardActions, now tim
 	// limit, at once and every pass: the kernel ends a whole VM next.
 	atLimit := plan.AtLimit()
 	if level == memplan.LevelCritical && (critical >= 2 || atLimit) && settings.OutOfMemoryKills() {
-		g.outOfMemory(h, act, g.fresh(readings), atLimit, now)
+		g.outOfMemory(h, act, g.fresh(readings), atLimit, shortageArgs(plan.Shortage()), now)
 	}
 	if level >= memplan.LevelTight && settings.Reclaims() {
 		g.reclaim(h, act, readings, now)
@@ -380,8 +382,6 @@ func (g *memoryGuard) reclaim(h *Host, act guardActions, readings []memplan.Read
 	}
 }
 
-// outOfMemory is the last step: the guest of the VM holding the most memory is asked to kill its largest process; a
-// VM asked twice in outOfMemoryRepeat, or whose guest doesn't answer, is stopped instead.
 // fresh is readings with each VM's resident memory read again now, the most resident first: in a spike, the last
 // sample's is seconds old.
 func (g *memoryGuard) fresh(readings []memplan.Reading) []memplan.Reading {
@@ -402,7 +402,18 @@ func (g *memoryGuard) fresh(readings []memplan.Reading) []memplan.Reading {
 	return out
 }
 
-func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.Reading, atLimit bool, now time.Time) {
+// shortageArgs are the log's key and value pairs for why the host is critical, so each of the guard's warnings says
+// which reading made it so: why names them (available, pressureFull, atLimit, groupHeadroom), and the figures follow.
+func shortageArgs(s memplan.Shortage) []any {
+	return []any{"why", strings.Join(s.Why, ","), "availableMiB", s.AvailableMiB, "reserveMiB", s.ReserveMiB,
+		"pressureFull", s.PressureFull, "groupMaxMiB", s.GroupMaxMiB, "groupHeadroomMiB", s.GroupHeadroomMiB,
+		"groupCacheMiB", s.GroupCacheMiB, "groupLimitHits", s.GroupLimitHits}
+}
+
+// outOfMemory is the last step: the guest of the VM holding the most memory is asked to kill its largest process; a
+// VM asked twice in outOfMemoryRepeat, or whose guest doesn't answer, is stopped instead. Its warnings say why the
+// host is critical (why, shortageArgs).
+func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.Reading, atLimit bool, why []any, now time.Time) {
 	if len(readings) == 0 {
 		return
 	}
@@ -469,7 +480,7 @@ func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.
 	g.working.Add(1)
 	if len(recent) >= 2 {
 		h.log.Warn("memory guard: the host is still critically short of memory; stopping the sandbox holding the most",
-			"sandbox", offender.ID, "residentMiB", offender.RSSMiB)
+			append([]any{"sandbox", offender.ID, "residentMiB", offender.RSSMiB}, why...)...)
 		// Off the pass, as the guest's request is: a sandbox a stop or snapshot holds would hold the guard up.
 		go func() {
 			defer g.working.Done()
@@ -478,7 +489,7 @@ func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.
 		return
 	}
 	h.log.Warn("memory guard: the host is critically short of memory; the sandbox holding the most is killing its largest process",
-		"sandbox", offender.ID, "residentMiB", offender.RSSMiB, "guestUsedMiB", offender.UsedMiB)
+		append([]any{"sandbox", offender.ID, "residentMiB", offender.RSSMiB, "guestUsedMiB", offender.UsedMiB}, why...)...)
 	go func() {
 		defer g.working.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), reclaimTimeout)
@@ -491,7 +502,8 @@ func (g *memoryGuard) outOfMemory(h *Host, act guardActions, readings []memplan.
 		case errors.Is(err, microvm.ErrMachineChanged):
 			h.log.Info("memory guard: the sandbox's VM was replaced meanwhile; leaving it", "sandbox", offender.ID)
 		default:
-			h.log.Warn("memory guard: the sandbox's guest didn't answer; stopping it", "sandbox", offender.ID, "err", err)
+			h.log.Warn("memory guard: the sandbox's guest didn't answer; stopping it",
+				append([]any{"sandbox", offender.ID, "err", err}, why...)...)
 			kill()
 		}
 	}()

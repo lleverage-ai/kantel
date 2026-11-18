@@ -129,7 +129,7 @@ One directory of the snapshot's disk, for a file browser. A key needs `snapshots
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | string | no | A directory; default the user's home. |
+| `path` | string | no | A directory; default a microVM's `/home/user` or an isolate's `/workspace`. |
 | `limit` | integer | no | At most this many; default 50. (minimum 1, maximum 500) |
 | `cursor` | string | no | A previous page's `nextCursor`. |
 

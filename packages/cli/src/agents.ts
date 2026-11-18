@@ -96,8 +96,15 @@ export function mcpServersJson(url: string, launch: McpLaunch = MCP_ON_PATH): st
 }
 
 /** The commands an agent needs, for the AGENTS.md block and the skill alike. */
-const CHEAT_SHEET = `- Create one: \`id=$(kantel new --type microvm --json | jq -r .id)\`. Without \`--type microvm\` it is an
-  isolate: it starts in milliseconds but runs JavaScript only; a microVM is a full Linux with root and Docker.
+const CHEAT_SHEET = `- Create one: \`id=$(kantel new --type microvm --json | jq -r .id)\`. A microVM is a full Linux with root and
+  Docker: use one for anything touching code (clone, install, build, test, run), any runtime, a server or a long job.
+- \`--type isolate\` (the default without \`--type\`) starts in milliseconds and costs almost nothing: a shell over
+  files in /workspace (curl, jq, grep, rg, sed, awk, sort, diff, gzip), plus \`node\` (JavaScript or TypeScript, no npm
+  packages) and \`python\` (the standard library and numpy, no pip install). It has no git, package manager, Docker or
+  SSH. Use one for HTTP calls, text, JSON or CSV work and short scripts, such as reading issues or logs with a token.
+  If it says a command needs a microVM (\`command not found\`, \`not available in an isolate\`), \`kantel upgrade "$id"\`
+  makes it one with the same ID and files (in /home/user/workspace, /workspace linked) and you run it again; \`kantel
+  new --auto-upgrade\` does that by itself. If unsure, use a microVM.
 - Run a command: \`kantel exec "$id" -- npm test\`. Its output and exit code are the command's (30 s limit;
   \`--timeout 0\` = no limit, following its output).
 - A job you don't wait for: \`kantel exec "$id" --detach -- npm run build\` prints the command's ID; then
@@ -126,7 +133,7 @@ ${AGENTS_END}`;
 /** The skill Claude Code (`.claude/skills`), Codex and pi (`.agents/skills`) load when a task needs a sandbox. */
 export const SKILL_MD = `---
 name: kantel
-description: Run code in a Kantel sandbox (an isolate, or a microVM with root, Docker, SSH, a desktop and Chromium) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation and long jobs.
+description: Run code in a Kantel sandbox (a microVM with root, Docker, SSH, a desktop and Chromium, or an isolate, a quick shell with node and python for HTTP calls, data work and short scripts) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation, long jobs, and API calls with a token kept out of reach.
 ---
 
 # Kantel sandboxes

@@ -288,6 +288,40 @@ func BasesUnder(root string) (map[string]bool, error) {
 	for _, snap := range snaps {
 		add(snap.Rootfs)
 	}
+	// A snapshot being fetched from a peer is over the image its staged record names (snapshotsync.go).
+	fetches, err := entriesOf(filepath.Join(root, snapshotFetchesDir))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, dir := range fetches {
+		raw, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+		if gone(err) {
+			continue
+		}
+		var staged snapshotMeta
+		if err == nil {
+			err = json.Unmarshal(raw, &staged)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			continue
+		}
+		add(staged.Rootfs)
+	}
+	// A sandbox being moved here from another host links its image from its import's VM directory (sandboxmove.go).
+	imports, err := entriesOf(filepath.Join(root, sandboxImportsDir))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, sandboxDir := range imports {
+		versions, err := entriesOf(sandboxDir)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, dir := range versions {
+			addVM(filepath.Join(dir, "vm"))
+		}
+	}
 	templates, err := entriesOf(filepath.Join(root, "templates"))
 	if err != nil {
 		errs = append(errs, err)
@@ -438,9 +472,13 @@ func (m *Manager) rebase(s *sandbox, to string) error {
 		return nil
 	}
 	// A template's report was of the image it was built on: on the new one, its version's is the sandbox's (guestOf).
+	// Its memory goes too, as it can't run on another root filesystem: kept, as it was, if that can't be written, so a
+	// rebase that fails here leaves it to resume.
 	if s.meta.Memory || s.meta.Guest != nil {
+		memory, guest := s.meta.Memory, s.meta.Guest
 		s.meta.Memory, s.meta.Guest = false, nil
 		if err := m.writeMeta(s); err != nil {
+			s.meta.Memory, s.meta.Guest = memory, guest
 			return err
 		}
 	}

@@ -4,10 +4,23 @@
  * after its `whsec_`). The dispatcher queues a delivery per subscribed webhook for each event, sends it with a 10 s
  * timeout, and retries a failure after 5 s, 30 s, 2 min, 10 min, 1 h, 6 h and 12 h (8 attempts), then marks it failed.
  * A webhook whose deliveries fail every attempt `DISABLE_AFTER_FAILURES` times in a row is disabled.
+ *
+ * Every stored event is delivered, even when the gateway that stored it dies before queueing its deliveries: an event is
+ * written with its outbox record (`EventWrites.put`), which `enqueue` deletes only once the deliveries are queued, and
+ * `drain()` queues the deliveries of any record still there `OUTBOX_GRACE_MS` after its event, on whichever gateway gets
+ * there first. A delivery's ID comes from its event's and its webhook's (`deliveryId`) and is inserted only when absent,
+ * so queueing an event again (that, a retry or an event stored again under its ID) adds no delivery. Receivers drop
+ * duplicates by `webhook-id`, the event's ID, the same on every attempt and every redelivery.
  */
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
-import type { ComputeStore, StoredDelivery, StoredWebhook } from "./store.ts";
+import {
+	type ComputeStore,
+	type StoredDelivery,
+	type StoredEventOutbox,
+	type StoredWebhook,
+	webhookWants,
+} from "./store.ts";
 import { base64ToBytes, bytesToBase64, randomId } from "./util.ts";
 
 export const WEBHOOK_SECRET_PREFIX = "whsec_";
@@ -18,6 +31,19 @@ export const DELIVERY_TIMEOUT_MS = 10_000;
 export const DISABLE_AFTER_FAILURES = 5;
 /** The default tolerance `verifyWebhook` allows between the timestamp and now. */
 export const DEFAULT_TOLERANCE_SECONDS = 300;
+/**
+ * How long an event's outbox record is left to the gateway that stored it before `drain()` queues its deliveries, and
+ * how long a dispatcher that does holds it. Queueing normally takes milliseconds; a slower one queued twice adds nothing.
+ */
+export const OUTBOX_GRACE_MS = 30_000;
+
+/** The ID of `eventId`'s delivery to `webhookId`: the same every time, so an event is queued to a webhook once. */
+export async function deliveryId(eventId: string, webhookId: string): Promise<string> {
+	const digest = new Uint8Array(
+		await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${eventId}\n${webhookId}`)),
+	);
+	return `dlv_${[...digest.subarray(0, 12)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
 
 /** A new signing secret: `whsec_` and 24 random bytes in base64. */
 export const newWebhookSecret = (): string =>
@@ -118,16 +144,20 @@ export interface WebhookDispatcherOptions {
 }
 
 export interface WebhookDispatcher {
-	/** Queues a delivery of the event to each enabled webhook of its account subscribed to its type. */
 	/**
-	 * Queues a delivery of `event` to each of its account's webhooks that wants it. With `written` (the event's own
+	 * Queues a delivery of `event` to each of its account's enabled webhooks that wants it, unless one is queued already,
+	 * then deletes the event's outbox record, and answers the deliveries it queued. With `written` (the event's own
 	 * write), it looks the webhooks up meanwhile but queues nothing until that write has resolved, and nothing if it
-	 * fails: a delivery never outlives an event that wasn't stored.
+	 * fails: a delivery never outlives an event that wasn't stored. Should it fail after the write, the outbox record
+	 * stays, and `drain()` queues them.
 	 */
 	enqueue(event: computeSchema.Event, written?: Promise<unknown>): Promise<StoredDelivery[]>;
 	/** Sends a signed `sandbox.created` event for a made-up sandbox to the webhook now, and answers the delivery. */
 	test(webhookId: string): Promise<StoredDelivery>;
-	/** Attempts every delivery that is due by `now()`. */
+	/**
+	 * Queues the deliveries of every event whose outbox record is `OUTBOX_GRACE_MS` old (its gateway never did), then
+	 * attempts every delivery that is due by `now()`.
+	 */
 	drain(): Promise<void>;
 	/** Drains every `intervalMs` (default 1000) until `stop`. */
 	start(intervalMs?: number): void;
@@ -143,8 +173,8 @@ export function createWebhookDispatcher(options: WebhookDispatcherOptions): Webh
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let queue: Promise<void> = Promise.resolve();
 
-	const newDelivery = (webhook: StoredWebhook, event: computeSchema.Event): StoredDelivery => ({
-		id: randomId("dlv"),
+	const newDelivery = async (webhook: StoredWebhook, event: computeSchema.Event): Promise<StoredDelivery> => ({
+		id: await deliveryId(event.id, webhook.id),
 		webhookId: webhook.id,
 		accountId: webhook.accountId,
 		eventId: event.id,
@@ -229,8 +259,33 @@ export function createWebhookDispatcher(options: WebhookDispatcherOptions): Webh
 		return updated;
 	}
 
+	/** When an outbox record is due to have its deliveries queued here: past its grace period, or its claim. */
+	const outboxDue = (record: StoredEventOutbox) => record.claimedUntil ?? record.createdAt + OUTBOX_GRACE_MS;
+
+	/** Queues the deliveries of events whose gateway didn't (it died, or failed to), each claimed first. */
+	async function queueStranded(at: number): Promise<void> {
+		const stranded = (await store.eventOutbox.list()).filter((record) => outboxDue(record) <= at);
+		for (const record of stranded) {
+			try {
+				// Claimed as deliveries are: another dispatcher then leaves it, and one that dies holding it lets it fall due again.
+				const claimed = await store.eventOutbox.update(record.id, (current) =>
+					outboxDue(current) <= at ? { ...current, claimedUntil: at + OUTBOX_GRACE_MS } : undefined,
+				);
+				if (claimed === undefined) continue;
+				const event = await store.events.get(record.id);
+				if (event !== undefined) await queueDeliveries(event, undefined);
+				// Cleared even when nothing was queued (no webhook wants it now, or its event has gone with its account), but only
+				// as this claim left it: one stored again since is its own gateway's to clear.
+				await store.eventOutbox.deleteIf(record.id, (current) => current.claimedUntil === claimed.claimedUntil);
+			} catch {
+				// Left for a later drain, once its claim has lapsed.
+			}
+		}
+	}
+
 	async function runDue(): Promise<void> {
 		const at = now();
+		await queueStranded(at);
 		const due = (await store.deliveries.list({ state: "pending" })).filter(
 			(delivery) => (delivery.nextAttemptAt ?? 0) <= at,
 		);
@@ -247,19 +302,24 @@ export function createWebhookDispatcher(options: WebhookDispatcherOptions): Webh
 		}
 	}
 
+	/** Queues `event`'s deliveries, each unless it is queued already, and answers those it queued. */
+	async function queueDeliveries(event: computeSchema.Event, written: Promise<unknown> | undefined) {
+		const [webhooks] = await Promise.all([store.webhooks.list({ accountId: event.accountId, enabled: true }), written]);
+		const deliveries = await Promise.all(
+			webhooks.filter((webhook) => webhookWants(webhook, event)).map((webhook) => newDelivery(webhook, event)),
+		);
+		// Inserted, not put: a delivery queued before (this event queued again) is left as it is.
+		const inserted = await Promise.all(deliveries.map((delivery) => store.deliveries.insert(delivery)));
+		return { deliveries, made: deliveries.filter((_, index) => inserted[index]) };
+	}
+
 	const dispatcher: WebhookDispatcher = {
 		async enqueue(event, written) {
-			const [webhooks] = await Promise.all([
-				store.webhooks.list({ accountId: event.accountId, enabled: true }),
-				written,
-			]);
-			const made: StoredDelivery[] = [];
-			for (const webhook of webhooks) {
-				if (!webhook.events.includes(event.type)) continue;
-				const delivery = newDelivery(webhook, event);
-				await store.deliveries.put(delivery);
-				made.push(delivery);
-			}
+			const { deliveries, made } = await queueDeliveries(event, written);
+			// Only once every delivery is queued, so a gateway that dies before this leaves the record for `drain()`; and only
+			// when a webhook wants the event, as only then was one written. One written for a webhook that changed meanwhile
+			// is cleared by `drain()`.
+			if (deliveries.length > 0) await store.eventOutbox.delete(event.id);
 			return made;
 		},
 
@@ -274,7 +334,7 @@ export function createWebhookDispatcher(options: WebhookDispatcherOptions): Webh
 				sandboxId: randomId("sbx_test", 6),
 				data: { name: "test-sandbox", state: "starting" },
 			};
-			const delivery = newDelivery(webhook, event);
+			const delivery = await newDelivery(webhook, event);
 			await store.deliveries.put(delivery);
 			return attempt(delivery, true);
 		},

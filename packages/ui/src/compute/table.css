@@ -31,16 +31,16 @@
 	}
 
 	/* The table keeps its white card, as every list does at every width; nothing scrolls sideways. */
-	.kt-table-cards > .kt-compute-table {
+	.kt-table-cards .kt-compute-table {
 		overflow: visible;
 	}
 
-	.kt-table-cards > .kt-compute-table > table {
+	.kt-table-cards .kt-compute-table > table {
 		display: block;
 	}
 
 	/* The header is read, not shown: each row says what its values are where that isn't plain. */
-	.kt-table-cards > .kt-compute-table > table > thead {
+	.kt-table-cards .kt-compute-table > table > thead {
 		position: absolute;
 		width: var(--kt-hairline);
 		height: var(--kt-hairline);
@@ -50,11 +50,11 @@
 	}
 
 	/* Its controls aren't reached either: the rows have their own (Select all is in the bar over them). */
-	.kt-table-cards > .kt-compute-table > table > thead :is(input, button, a, select) {
+	.kt-table-cards .kt-compute-table > table > thead :is(input, button, a, select) {
 		visibility: hidden;
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody {
+	.kt-table-cards .kt-compute-table > table > tbody {
 		display: flex;
 		flex-direction: column;
 	}
@@ -63,7 +63,7 @@
 	   type badge) and the menu on the first line; the rest under them as one or two quiet lines of plain values, a
 	   heading before a value only where the value needs one. A hairline between rows inside the card. The empty
 	   ::after, flex-basis 100% and ordered between the two, is what breaks the line. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr {
+	.kt-table-cards .kt-compute-table > table > tbody > tr {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -73,13 +73,13 @@
 		border-bottom: var(--kt-hairline) solid var(--kt-border);
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr:last-child {
+	.kt-table-cards .kt-compute-table > table > tbody > tr:last-child {
 		border-bottom: 0;
 	}
 
 	/* Its own line of no height, so it takes back one of the two row gaps around it: the name sits as close to the
 	   lines under it as they sit to each other. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr::after {
+	.kt-table-cards .kt-compute-table > table > tbody > tr::after {
 		content: "";
 		order: 3;
 		flex-basis: 100%;
@@ -87,16 +87,16 @@
 	}
 
 	/* A row picked out in the table (the file being previewed, an open webhook) stays picked out. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr[data-row="selected"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr[data-row="selected"] {
 		background: var(--kt-selected);
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr[data-row="open"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr[data-row="open"] {
 		background: var(--kt-hover);
 	}
 
 	/* A value under the name: inline, in the secondary size, the values a step apart. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td {
 		order: 4;
 		display: block;
 		flex: none;
@@ -117,7 +117,7 @@
 	/* Its heading before it ("Saved from browser-agent"), unless the value says itself (`data-phone="bare"`, "5.1 GB")
 	   or sits on the title line. */
 	.kt-table-cards
-		> .kt-compute-table
+		.kt-compute-table
 		> table
 		> tbody
 		> tr
@@ -130,7 +130,7 @@
 
 	/* A labelled value a weight heavier than its label, as a key card's facts are, so pairs don't run together. */
 	.kt-table-cards
-		> .kt-compute-table
+		.kt-compute-table
 		> table
 		> tbody
 		> tr
@@ -139,43 +139,43 @@
 	}
 
 	/* A value with a second line (a date and who made it, a source and that it's gone) runs on as one phrase. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td > :is(.flex-col, .block) {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td > :is(.flex-col, .block) {
 		display: inline;
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td > * + * {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td > * + * {
 		margin-left: var(--kt-step-1);
 		color: var(--kt-text-faint);
 	}
 
 	/* In a value on a line of its own, its second line ("Since deleted") is a quiet line under it, not run on. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="line"]:not([data-phone~="last"]) > * + * {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-phone~="line"]:not([data-phone~="last"]) > * + * {
 		display: block;
 		margin-left: 0;
 		font-size: var(--kt-text-xs);
 	}
 
 	/* Facts that share a line in equal columns (`data-phone="pair"`), so each sits in the same place on every card. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="pair"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-phone~="pair"] {
 		flex: 1 1 0%;
 	}
 
 	/* A value for the card's last line (`data-phone="last"`), after the cells that follow it in the table. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="last"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-phone~="last"] {
 		order: 5;
 	}
 
 	/* A value that starts a line of its own (`data-phone="line"`), so the meta lines break where they mean to. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="line"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-phone~="line"] {
 		flex-basis: 100%;
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="select"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-cell="select"] {
 		order: 0;
 		flex: none;
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="primary"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-cell="primary"] {
 		order: 1;
 		flex: 1 1 0%;
 		color: var(--kt-text);
@@ -184,25 +184,25 @@
 	}
 
 	/* Something that belongs beside the name (`data-phone="title"`): a type badge. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="title"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-phone~="title"] {
 		order: 1;
 		flex: none;
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="actions"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-cell="actions"] {
 		order: 2;
 		flex: none;
 	}
 
 	/* A row that is one cell across the table (a note, an expanded detail) reads as text across the row. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="whole"] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-cell="whole"] {
 		order: 1;
 		flex: 1 1 100%;
 		color: var(--kt-text);
 	}
 
 	/* Nothing to show: left out, not a lone dash. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-empty] {
+	.kt-table-cards .kt-compute-table > table > tbody > tr > td[data-empty] {
 		display: none;
 	}
 }

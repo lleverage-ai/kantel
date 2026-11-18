@@ -98,12 +98,28 @@ at the release tag. It carries its own Python environment; each package's licenc
 
 - Debian 13 (`debian:trixie-slim`) packages from Debian `main`, with each one's licence in
   `/usr/share/doc/<package>/copyright` and its source at https://snapshot.debian.org/ by version;
-- workerd, Cloudflare's runtime (`/usr/local/bin/workerd`, from npm's `@cloudflare/workerd-linux-*`): Apache-2.0,
-  source at https://github.com/cloudflare/workerd at the matching release;
-- Kantel's isolate worker (`/opt/kantel-isolate`, Apache-2.0), a bundle that includes just-bash (Apache-2.0) and its
-  dependencies, all under permissive licences (MIT, ISC, BSD-2/3-Clause, Apache-2.0), as `apps/host/isolate/bun.lock`
-  lists them;
+- kantel-isolate, Kantel's isolate runtime (`/usr/local/bin/kantel-isolate`, Apache-2.0, built from
+  `apps/host/isolate-runtime`), which statically links:
+  - V8 (BSD-3-Clause, https://github.com/v8/v8), through rusty_v8 (`v8` crate, MIT,
+    https://github.com/denoland/rusty_v8), with the libraries V8 bundles under their own permissive licences: ICU
+    and its data (Unicode-3.0, https://github.com/unicode-org/icu), zlib (Zlib), fast_float (Apache-2.0, MIT or
+    BSL-1.0), highway (Apache-2.0 or BSD-3-Clause), simdutf (Apache-2.0 or MIT), abseil (Apache-2.0), libc++ and
+    libc++abi (Apache-2.0 WITH LLVM-exception);
+  - deno_core (MIT, https://github.com/denoland/deno_core) and the other Rust crates `apps/host/isolate-runtime`'s
+    `Cargo.lock` lists (tokio, hyper, axum, serde and the rest), all under MIT, Apache-2.0, BSD-2/3-Clause, ISC,
+    Unicode-3.0 or Zlib, as each crate's licence says;
+- kantel-isolate's assets (`/opt/kantel-isolate`, from `apps/host/isolate-runtime/build-assets.sh`):
+  - the isolates' shell, just-bash (Apache-2.0, https://github.com/vercel-labs/just-bash), bundled with its
+    dependencies, all under permissive licences (MIT, ISC, BSD-2/3-Clause, Apache-2.0), as the runtime's lockfile
+    lists them;
+  - Pyodide (MPL-2.0, https://github.com/pyodide/pyodide, at the version `build-assets.sh` pins), unmodified, with
+    the CPython it is built from (PSF-2.0) and the packages it ships (numpy BSD-3-Clause, and the others under the
+    licences each package's metadata in the distribution states); the MPL-2.0 source is Pyodide's release at that
+    version;
 - this file, at `/usr/share/kantel/THIRD-PARTY-NOTICES.md`.
+
+`kantel-isolate-<arch>` and `isolate-assets-<arch>.tar.gz`, published beside the images for hosts that run isolates
+natively (without KVM), are the same binary and assets, under the same licences.
 
 ## Codecs and patents
 

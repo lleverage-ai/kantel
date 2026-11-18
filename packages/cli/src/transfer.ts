@@ -693,7 +693,11 @@ async function archiveFits(client: KantelClient, sandboxId: string, target: stri
 	}
 }
 
-/** Copies `files` into `target` as the sandbox takes it best: one tar into a microVM, file by file into an isolate. */
+/**
+ * Copies `files` into `target` as the sandbox takes it best: one tar into a microVM, file by file into an isolate.
+ * Answers where they went as well: `to` is `target` made absolute from the sandbox's home (a microVM's
+ * /home/user, an isolate's /workspace), or `target` as it is when the key may not read the sandbox to tell.
+ */
 export async function uploadTreeTo(
 	client: KantelClient,
 	sandboxId: string,
@@ -702,18 +706,19 @@ export async function uploadTreeTo(
 	target: string,
 	onFile?: (path: string) => void,
 	note?: (line: string) => void,
-): Promise<Copied> {
-	let microvm: boolean;
+): Promise<Copied & { readonly to: string }> {
+	let type: "isolate" | "microvm" | undefined;
 	try {
-		microvm = (await client.getSandbox(sandboxId)).type === "microvm";
+		type = (await client.getSandbox(sandboxId)).type;
 	} catch (error) {
 		// A key that may write files but not read the sandbox (no sandboxes:read) still pushes, one file at a time.
 		if (!(error instanceof KantelApiError) || error.code !== "forbidden") throw error;
-		microvm = false;
 	}
-	if (microvm && (await archiveFits(client, sandboxId, target))) {
+	const home = type === undefined ? undefined : type === "isolate" ? "/workspace" : "/home/user";
+	const to = target.startsWith("/") || home === undefined ? target : remoteJoin(home, target);
+	if (type === "microvm" && (await archiveFits(client, sandboxId, target))) {
 		try {
-			return await uploadTreeArchive(client, sandboxId, root, files, target, onFile);
+			return { ...(await uploadTreeArchive(client, sandboxId, root, files, target, onFile)), to };
 		} catch (error) {
 			// Extracting failed in the sandbox (a directory in the tree only root may write, say): the files API, as
 			// root, still can. Anything else, such as the sandbox stopping, fails as it is.
@@ -721,7 +726,7 @@ export async function uploadTreeTo(
 			note?.(`kantel: the archive couldn't be extracted (${error.message}); sending file by file`);
 		}
 	}
-	return uploadTree(client, sandboxId, root, files, target, onFile);
+	return { ...(await uploadTree(client, sandboxId, root, files, target, onFile)), to };
 }
 
 /** The files under `path` in the sandbox, relative to it. */

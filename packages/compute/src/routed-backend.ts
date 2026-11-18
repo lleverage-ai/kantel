@@ -11,13 +11,27 @@
  * existing disks are. For those calls the service passes every qualifying host the account may use (online, the
  * type, the labels), and the backend that answers gets the ones among them that are its own. A sandbox neither holds
  * (its create failed, say) isn't sent to `fallback` to be answered as if it were there: it is refused (`NOT_HELD`), and
- * the service makes it again with `create`, which places it as any new sandbox.
+ * the service makes it again with `create`, which places it as any new sandbox. Its destroy goes to `primary`, which
+ * settles it by the host its record names (`DestroyOptions.hostId`): its host may have deleted it and forgotten its
+ * placement before the delete's answer was lost, and `fallback` (a stub) can't speak for an account's host.
  *
  * Templates are each backend's own too: their runtimes are both backends' hosts', a build goes to the backend whose host
  * it names, and a template snapshot is answered by the backend its reference is of (`holdsSnapshot`).
  */
 import { KantelError, placementError } from "@kantel/contracts";
-import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
+import type {
+	BackendCapabilities,
+	BackendSize,
+	CreateOutcome,
+	DestroyOptions,
+	MovePlanSpec,
+	MoveSpec,
+	Placement,
+	SandboxBackend,
+	SandboxSpec,
+	StartOutcome,
+	UpgradeSpec,
+} from "./backend.ts";
 
 export interface RoutedBackendOptions {
 	readonly primary: SandboxBackend;
@@ -206,10 +220,80 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			const backend = await on(id);
 			return backend.recover(id, await affine(backend, boot));
 		},
-		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.
-		async destroy(id) {
-			madeOnFallback.delete(id);
-			return ((await options.holds(id)) ? primary : fallback).destroy(id);
+		// An upgrade stays on the backend that holds the isolate, among its own hosts: its files are there.
+		...(primary.upgrade === undefined && fallback.upgrade === undefined
+			? {}
+			: {
+					async upgrade(id: string, spec: UpgradeSpec, operationId: string) {
+						const backend = await on(id);
+						if (backend.upgrade === undefined) {
+							throw new KantelError("not_supported", "This sandbox's hosts don't upgrade isolates to microVMs");
+						}
+						// A snapshot on the other backend's hosts is out of its reach: no host the sandbox may use holds it.
+						if (spec.intoSnapshot !== undefined && forRef(spec.intoSnapshot) !== backend) {
+							throw placementError(
+								"unavailable",
+								"host_unavailable",
+								"The snapshot is on hosts this sandbox's upgrade can't use: an isolate upgrades into a snapshot on its own hosts",
+							);
+						}
+						return backend.upgrade(id, await affine(backend, spec), operationId);
+					},
+					async settleUpgrade(id: string, operationId: string) {
+						const backend = await on(id);
+						if (backend.settleUpgrade === undefined) return { state: "failed" as const };
+						return backend.settleUpgrade(id, operationId);
+					},
+				}),
+		// A create is settled by the backend that placed it; one neither holds isn't placed, so there's nothing to say yet.
+		...(primary.settleCreate === undefined && fallback.settleCreate === undefined
+			? {}
+			: {
+					async settleCreate(id: string, attempt: number): Promise<CreateOutcome> {
+						const backend = (await options.holds(id)) ? primary : fallback;
+						return (await backend.settleCreate?.(id, attempt)) ?? { state: "pending" };
+					},
+				}),
+		// A start is settled by the backend that holds the sandbox; one that can't say leaves it as it is.
+		...(primary.settleStart === undefined && fallback.settleStart === undefined
+			? {}
+			: {
+					async settleStart(id: string): Promise<StartOutcome> {
+						const backend = await on(id);
+						return (await backend.settleStart?.(id)) ?? { state: "pending" };
+					},
+				}),
+		// A move stays on the backend that holds the sandbox, among its own hosts: its disk is there.
+		...(primary.move === undefined && fallback.move === undefined
+			? {}
+			: {
+					async move(id: string, spec: MoveSpec, operationId: string) {
+						const backend = await on(id);
+						if (backend.move === undefined) {
+							throw new KantelError("not_supported", "This sandbox's hosts don't move sandboxes between them");
+						}
+						return backend.move(id, await affine(backend, spec), operationId);
+					},
+					async settleMove(id: string, operationId: string) {
+						const backend = await on(id);
+						if (backend.settleMove === undefined) return { state: "failed" as const };
+						return backend.settleMove(id, operationId);
+					},
+					async planMove(id: string, spec: MovePlanSpec) {
+						const backend = await on(id);
+						if (backend.planMove === undefined) return undefined;
+						return backend.planMove(id, await affine(backend, spec));
+					},
+				}),
+		// One `primary` holds is its to destroy, as is one neither holds: `primary` settles that by the host its record names
+		// (written off, deleted there, or refused while that host can't be reached), which `fallback`, a stub, can't speak
+		// for. Without `fallbackHolds`, `fallback` holds everything `primary` doesn't, and answers it.
+		async destroy(id, destroyOptions?: DestroyOptions) {
+			const made = madeOnFallback.delete(id);
+			if (await options.holds(id)) return primary.destroy(id, destroyOptions);
+			if (fallbackHolds !== undefined && !made && !(await fallbackHolds(id)))
+				return primary.destroy(id, destroyOptions);
+			return fallback.destroy(id, destroyOptions);
 		},
 		exec: async (id, request) => (await on(id)).exec(id, request),
 		async killCommand(id, commandId) {
@@ -227,7 +311,7 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return backend.commandResult(id, commandId);
 		},
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
-		writeFile: async (id, path, content, mode) => (await on(id)).writeFile(id, path, content, mode),
+		writeFile: async (id, path, content, mode, options) => (await on(id)).writeFile(id, path, content, mode, options),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),
 		listFiles: async (id, path) => (await on(id)).listFiles(id, path),
 		async processes(id, limit) {
@@ -273,15 +357,75 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		async updateEgress(id, egress, revision) {
 			await (await on(id)).updateEgress?.(id, egress, revision);
 		},
+		// On the backend holding it; one without it gives the sandbox its new env at its next boot.
+		...(primary.updateEnv === undefined && fallback.updateEnv === undefined
+			? {}
+			: {
+					async updateEnv(id: string, env: { readonly [name: string]: string }) {
+						await (await on(id)).updateEnv?.(id, env);
+					},
+				}),
+		// On the backend holding it, which drops what it holds of its protected values; one without it holds none.
+		...(primary.updateSecrets === undefined && fallback.updateSecrets === undefined
+			? {}
+			: {
+					async updateSecrets(id: string, version: number) {
+						await (await on(id)).updateSecrets?.(id, version);
+					},
+				}),
 		async revokeHost(hostId) {
 			await primary.revokeHost?.(hostId);
 		},
+		// On the backend holding the sandbox; a disk's versions may be on either backend's hosts.
+		...(primary.commitStickyDisk === undefined && fallback.commitStickyDisk === undefined
+			? {}
+			: {
+					async commitStickyDisk(id: string, diskId: string, version: string) {
+						const backend = await on(id);
+						if (backend.commitStickyDisk === undefined) {
+							throw new KantelError("not_supported", "This sandbox's host has no sticky disks");
+						}
+						return backend.commitStickyDisk(id, diskId, version);
+					},
+				}),
+		...(primary.deleteStickyDisk === undefined && fallback.deleteStickyDisk === undefined
+			? {}
+			: {
+					async deleteStickyDisk(diskId: string) {
+						await Promise.all([primary.deleteStickyDisk?.(diskId), fallback.deleteStickyDisk?.(diskId)]);
+					},
+				}),
+		...(primary.stickyHoldings === undefined && fallback.stickyHoldings === undefined
+			? {}
+			: {
+					async stickyHoldings() {
+						const [first, second] = await Promise.all([primary.stickyHoldings?.(), fallback.stickyHoldings?.()]);
+						return [...(first ?? []), ...(second ?? [])];
+					},
+				}),
 		async updateHost(hostId, change) {
 			await primary.updateHost?.(hostId, change);
 		},
+		// Pools' hosts are the primary's, as hosts are.
+		async updatePool(poolId, change) {
+			await primary.updatePool?.(poolId, change);
+		},
+		// The grant keys are for the primary's hosts, which sync with each other.
+		async grantKeysChanged() {
+			await primary.grantKeysChanged?.();
+		},
+		...(primary.hostHolds === undefined && fallback.hostHolds === undefined
+			? {}
+			: {
+					async hostHolds(hostId: string) {
+						const [first, second] = await Promise.all([primary.hostHolds?.(hostId), fallback.hostHolds?.(hostId)]);
+						return first === true || second === true;
+					},
+				}),
 		// Hosts are the primary's (as for a revoke): the routed backend updates them only where the primary does.
 		...(primary.updateHostAgent === undefined ? {} : { updateHostAgent: primary.updateHostAgent.bind(primary) }),
 		...(primary.checkHostUpdates === undefined ? {} : { checkHostUpdates: primary.checkHostUpdates.bind(primary) }),
+		...(primary.fetchDisk === undefined ? {} : { fetchDisk: primary.fetchDisk.bind(primary) }),
 		// On the backend whose host it is; one without it can't say (`undefined`), as a host that doesn't measure.
 		...(primary.snapshotSizes === undefined && fallback.snapshotSizes === undefined
 			? {}

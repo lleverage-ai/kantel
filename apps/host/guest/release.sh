@@ -5,10 +5,12 @@
 #   apps/host/guest/release.sh <out-dir> <tag> [--publish]
 #
 # <tag> is host-images-<yyyymmdd>[.<n>]. Writes to <out-dir>: vmlinux-<arch> and its .config, sandbox-<arch>.ext4.gz,
-# isolate-<arch>.ext4.gz, manifest.json (kantel-host manifest: each file's SHA-256, which install checks as it
-# downloads), THIRD-PARTY-NOTICES.md, the exact source of the GPL and LGPL libraries the sandbox image bundles
-# outside a distro package (Selkies' libx264, x265 and libde265: gpl-sources.sh, read off each built sandbox image),
-# as source-*.tar.gz with SOURCES.md and SOURCES.sha256, and SHA256SUMS over every asset (sha256sum -c format).
+# isolate-<arch>.ext4.gz, kantel-isolate-<arch> and isolate-assets-<arch>.tar.gz (the isolate runtime and its assets
+# as the isolate image has them, for hosts that run isolates natively), manifest.json (kantel-host manifest: each
+# file's SHA-256, which install checks as it downloads), THIRD-PARTY-NOTICES.md, the exact source of the GPL and LGPL
+# libraries the sandbox image bundles outside a distro package (Selkies' libx264, x265 and libde265: gpl-sources.sh,
+# read off each built sandbox image), as source-*.tar.gz with SOURCES.md and SOURCES.sha256, and SHA256SUMS over every
+# asset (sha256sum -c format).
 #
 # ARCHES (default "amd64 arm64") picks the architectures. arm64 is cross-built on an x86_64 machine: its kernel with
 # a cross compiler, its images under QEMU user emulation, which Docker needs registered first
@@ -21,8 +23,13 @@
 # (its BUILD file says so), --publish publishes that build instead of building again: build, check (boot-check-arm64.sh
 # too), merge, publish.
 #
-# Needs Docker, Go, bun, gzip, git, curl, jq and debugfs (e2fsprogs). About 15 minutes for amd64 on 48 cores from
-# cold; each architecture's images are about 1 GB gzipped. Each asset has to stay under GitHub's 2 GiB limit per
+# KANTEL_BROWSER=cft builds the sandbox image with Google Chrome for Testing in place of Debian's Chromium
+# (guest/Dockerfile, README.md "Chrome for Testing"), for Lleverage's own hosts. Chrome for Testing may not be
+# redistributed, so such a build is never published: BUILD records the browser, and --publish refuses anything but
+# debian, the default.
+#
+# Needs Docker, Go, bun, gzip, git, curl, jq and debugfs (e2fsprogs), and what guest/isolate-runtime.sh needs. About
+# 15 minutes for amd64 on 48 cores from cold; each architecture's images are about 1 GB gzipped. Each asset has to stay under GitHub's 2 GiB limit per
 # release asset; the script checks.
 set -eu
 
@@ -30,7 +37,13 @@ OUT=${1:?usage: release.sh <out-dir> <tag> [--publish]}
 TAG=${2:?usage: release.sh <out-dir> <tag> [--publish]}
 PUBLISH=${3:-}
 ARCHES=${ARCHES:-amd64 arm64}
+BROWSER=${KANTEL_BROWSER:-debian}
 case "$TAG" in host-images-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;; *) echo "tag: host-images-<yyyymmdd>[.<n>]" >&2; exit 2 ;; esac
+case "$BROWSER" in debian | cft) ;; *) echo "KANTEL_BROWSER is debian or cft, not $BROWSER" >&2; exit 2 ;; esac
+if [ "$PUBLISH" = --publish ] && [ "$BROWSER" != debian ]; then
+	echo "KANTEL_BROWSER=$BROWSER: only Debian's Chromium is published; Chrome for Testing may not be redistributed" >&2
+	exit 1
+fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 MODULE=$(cd "$HERE/.." && pwd)
 mkdir -p "$OUT"
@@ -42,7 +55,8 @@ tree=$(git -C "$MODULE" rev-parse HEAD:apps/host)
 [ -z "$(git -C "$MODULE" status --porcelain -- .)" ] || tree=dirty
 build="tag=$TAG
 arches=$ARCHES
-tree=$tree"
+tree=$tree
+browser=$BROWSER"
 
 if [ "$PUBLISH" = --publish ] && [ "$tree" != dirty ] && [ -f "$OUT/BUILD" ] && [ "$(cat "$OUT/BUILD")" = "$build" ]; then
 	echo "publishing the build already in $OUT (apps/host tree $tree)"
@@ -52,10 +66,25 @@ else
 		case "$arch" in amd64) karch=x86_64 ;; arm64) karch=aarch64 ;; *) echo "unknown arch $arch" >&2; exit 2 ;; esac
 		"$HERE/kernel/build.sh" "$OUT" "$karch"
 		for kind in sandbox isolate; do
-			KANTEL_HOST_VERSION=$TAG "$HERE/rootfs.sh" "$OUT" "$kind" "$arch"
+			KANTEL_HOST_VERSION=$TAG KANTEL_BROWSER=$BROWSER "$HERE/rootfs.sh" "$OUT" "$kind" "$arch"
 		done
 		# The static agent rootfs.sh built, on its own too: a host with injectGuestAgent boots any image with it.
 		cp "$MODULE/dist/kantel-guest-$arch" "$OUT/kantel-guest-$arch"
+		# The isolate runtime the isolate image was built with (guest/isolate-runtime.sh), on its own too: a host
+		# without KVM runs it natively (isolateRuntime "native").
+		cp "$MODULE/dist/kantel-isolate-$arch" "$OUT/kantel-isolate-$arch"
+		tar -C "$MODULE/dist/isolate-assets-$arch" --owner=0 --group=0 --numeric-owner -cf - . | gzip -n -6 >"$OUT/isolate-assets-$arch.tar.gz"
+	done
+	# Each sandbox image holds the browser asked for, read from the image itself: Chrome for Testing is in
+	# /opt/chrome-for-testing, and only a cft build may have it.
+	for arch in $ARCHES; do
+		cft=no
+		debugfs -R 'ls /opt' "$OUT/sandbox-$arch.ext4" 2>/dev/null | tr -s ' ' '\n' | grep -qx chrome-for-testing && cft=yes
+		case "$BROWSER/$cft" in debian/no | cft/yes) ;; *)
+			echo "$OUT/sandbox-$arch.ext4 isn't a $BROWSER build (Chrome for Testing in it: $cft)" >&2
+			exit 1
+			;;
+		esac
 	done
 	# The GPL sources come from the images as built, so they're read before the images are gzipped.
 	set --
@@ -75,7 +104,8 @@ fi
 set -- manifest.json THIRD-PARTY-NOTICES.md SOURCES.md SOURCES.sha256
 for arch in $ARCHES; do
 	case "$arch" in amd64) karch=x86_64 ;; arm64) karch=aarch64 ;; esac
-	set -- "$@" "vmlinux-$karch" "vmlinux-$karch.config" "sandbox-$arch.ext4.gz" "isolate-$arch.ext4.gz" "kantel-guest-$arch"
+	set -- "$@" "vmlinux-$karch" "vmlinux-$karch.config" "sandbox-$arch.ext4.gz" "isolate-$arch.ext4.gz" "kantel-guest-$arch" \
+		"kantel-isolate-$arch" "isolate-assets-$arch.tar.gz"
 done
 for f in "$OUT"/source-*.tar.gz; do set -- "$@" "$(basename "$f")"; done
 limit=$((2 * 1024 * 1024 * 1024))
@@ -88,6 +118,8 @@ done
 set -- "$@" SHA256SUMS
 
 [ "$PUBLISH" = --publish ] || { echo "built in $OUT; publish with: $0 $OUT $TAG --publish"; exit 0; }
+# Never a build of another browser, whatever made it (the check above stops one being made here).
+grep -qx "browser=debian" "$OUT/BUILD" || { echo "$OUT/BUILD isn't a build of Debian's Chromium; it can't be published" >&2; exit 1; }
 commit=$(git -C "$MODULE" rev-parse HEAD)
 git -C "$MODULE" branch -r --contains "$commit" | grep -q . || { echo "commit $commit isn't on origin" >&2; exit 1; }
 # arm64 is published only once boot-check-arm64.sh has passed on this very build (a new build removes its log).

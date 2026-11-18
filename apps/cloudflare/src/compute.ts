@@ -95,6 +95,7 @@ import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@k
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import { createHostReleases, createSqlHostReleasesStore } from "@kantel/hosts/releases";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
+import { isSavedSnapshotRef } from "@kantel/hosts/snapshot-refs";
 import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
 import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
@@ -397,6 +398,10 @@ export interface StackComputeOptions {
 	};
 	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
 	readonly templates?: boolean;
+	/** GitHub Actions runners (KANTEL_GITHUB_RUNNERS=experimental). Default off. */
+	readonly githubRunners?: boolean;
+	/** Sticky disks (KANTEL_STICKY_DISKS=experimental). Default off. */
+	readonly stickyDisks?: boolean;
 	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
 	readonly snapshotExpiry?: boolean;
 	/**
@@ -560,7 +565,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						fallback: stub,
 						holds: async (sandboxId) => (await own.service.sandboxes.placement(sandboxId)) !== undefined,
 						// The stub's are those it placed. One no host holds and the stub never placed (its create on an account's
-						// host failed) isn't revived on the stub: it is made again where its create would put it.
+						// host failed) isn't revived on the stub: it is made again where its create would put it, and its delete
+						// goes to the account's hosts, which settle it by the host its record names.
 						fallbackHolds: async (sandboxId) => (await store.sandboxes.get(sandboxId))?.hostId === STUB_HOST_ID,
 						holdsSnapshot: isHostSnapshotRef,
 					}),
@@ -586,6 +592,11 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
 		...(options.templates === true ? { templates: true } : {}),
+		// The broker's passes run on the stack object's alarm (`tickGithubRunners`), and in each request's sweep.
+		...(options.githubRunners === true
+			? { githubRunners: { log: (message: string) => console.log(`kantel: ${message}`) } }
+			: {}),
+		...(options.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
@@ -600,6 +611,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	// value, so a host asking is answered that there are none.
 	own?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
+		env: (hostId, sandboxId) => api.service.sandboxEnv(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
 		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
 		activity: (sandboxId) => api.service.noteActivity(sandboxId),
@@ -609,6 +621,15 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		// A microVM its host ended (its memory guard, an OOM kill, a crash) is in error, not left running.
 		reportExit: (...report) => api.service.reportExit(...report),
 		hostConnection: (...report) => api.service.reportHostConnection(...report),
+		// Which pools' hosts peer in their pool's mesh.
+		poolSync: (poolId) => api.service.poolSync(poolId),
+		poolPlacement: (poolId) => api.service.poolPlacement(poolId),
+		// Which hosts hold which disk versions, from their reports, and where a host fetches one from, with a grant.
+		recordHoldings: (hostId, at, holdings) => api.service.recordHoldings(hostId, at, holdings),
+		locateDisk: (hostId, params) => api.service.locateDisk(hostId, params),
+		// A move's export, whose holder the registry knows: a grant for its target.
+		grantFetch: (grant) => api.service.grantFetch(grant),
+		grantKeys: () => api.service.grantKeys(),
 		recordUsage: (hostId, usage) => {
 			timers.touchUsage();
 			return api.service.recordUsage(hostId, usage);
@@ -1175,8 +1196,12 @@ export function whileBusy(
 	};
 }
 
-/** An account's host's snapshot reference is `{hostId}/{snapshotId}`; the stub's are `ref_…`. */
-export const isHostSnapshotRef = (ref: string): boolean => ref.startsWith("host_") && ref.includes("/");
+/**
+ * An account's host's snapshot reference is `{hostId}/{snapshotId}`, or a saved snapshot's ID alone
+ * (`isSavedSnapshotRef`); the stub's are `ref_…`.
+ */
+export const isHostSnapshotRef = (ref: string): boolean =>
+	(ref.startsWith("host_") && ref.includes("/")) || isSavedSnapshotRef(ref);
 
 const lost = (error: unknown, prefix: string): error is KantelError =>
 	isKantelError(error) && error.code === "not_found" && error.message.startsWith(prefix);
@@ -1285,7 +1310,8 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 				: stub.fork(source, targets);
 		},
 		async destroy(id) {
-			// The stub would answer that it has nothing to delete, and the host's machine would be left running.
+			// The stub would answer that it has nothing to delete, and the host's machine would be left running. With account
+			// hosts on, the routed backend sends a host's sandbox's destroy to the hosts, placed or not; this is with them off.
 			if (await hostBacked(id)) throw onHost();
 			return stub.destroy(id);
 		},

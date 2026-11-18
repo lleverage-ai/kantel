@@ -41,6 +41,8 @@ name: Cloudflare deploy
 #            KANTEL_PUBLIC_URL may go without KANTEL_SIGN_IN_FROM, leaving email sign-in off
 #   optional var KANTEL_TEMPLATES: `experimental` turns templates on (microVM profiles built once and restored from a
 #            snapshot); unset or `off`, every template route answers not_supported
+#   optional var KANTEL_GITHUB_RUNNERS: `experimental` turns GitHub Actions runners on (GitHub Apps whose workflow_job
+#            webhooks get an ephemeral microVM runner each); unset or `off`, every runner route answers not_supported
 #   optional var KANTEL_HOST_RELEASES: with account hosts, where the latest kantel-host release is read to flag hosts
 #            that are behind it: an https URL answering {"tag_name"} or {"version"}, or `off`; unset, Kantel's latest
 #            GitHub Release
@@ -128,6 +130,10 @@ jobs:
       KANTEL_ACCOUNT_HOSTS: ${{ vars.KANTEL_ACCOUNT_HOSTS }}
       # Optional, experimental: templates.
       KANTEL_TEMPLATES: ${{ vars.KANTEL_TEMPLATES }}
+      # Optional, experimental: GitHub Actions runners.
+      KANTEL_GITHUB_RUNNERS: ${{ vars.KANTEL_GITHUB_RUNNERS }}
+      # Optional, experimental: sticky disks.
+      KANTEL_STICKY_DISKS: ${{ vars.KANTEL_STICKY_DISKS }}
       # Optional: where account hosts' latest kantel-host release is read (a URL, or off); unset, GitHub's latest.
       KANTEL_HOST_RELEASES: ${{ vars.KANTEL_HOST_RELEASES }}
     steps:
@@ -265,6 +271,11 @@ jobs:
         run: pnpm exec wrangler deploy --config wrangler.console.deploy.json
 
       # Only when its fingerprint changed: a new version resets every Durable Object and the connections they hold.
+      # Wrangler uploads the Worker before it pushes the container images, and applies the container apps and routes
+      # after. If registry.cloudflare.com times out on a push, the Worker is already up with this fingerprint, so a re-run
+      # of the job would find nothing to deploy and leave the containers behind. The deploy runs again here instead, up
+      # to 3 attempts, 20s then 40s apart (scripts/retry-registry.ts); the registry keeps the layers it already has. Any
+      # other failure fails at once.
       - name: wrangler deploy harbour
         if: steps.mode.outputs.mode == 'deploy' && steps.harbour.outputs.deploy == 'true'
         working-directory: apps/cloudflare
@@ -275,9 +286,11 @@ jobs:
         run: |
           message="fingerprint $FINGERPRINT"
           if [ -n "$SECRETS_FILE" ]; then
-            pnpm exec wrangler deploy --config wrangler.deploy.json --message "$message" --secrets-file "$SECRETS_FILE"
+            node scripts/retry-registry.ts --attempts 3 --delay 20 -- \
+              pnpm exec wrangler deploy --config wrangler.deploy.json --message "$message" --secrets-file "$SECRETS_FILE"
           else
-            pnpm exec wrangler deploy --config wrangler.deploy.json --message "$message"
+            node scripts/retry-registry.ts --attempts 3 --delay 20 -- \
+              pnpm exec wrangler deploy --config wrangler.deploy.json --message "$message"
           fi
           echo "**harbour:** new version, fingerprint $FINGERPRINT; its Durable Objects reset" >> "$GITHUB_STEP_SUMMARY"
 

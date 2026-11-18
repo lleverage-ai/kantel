@@ -1,0 +1,918 @@
+package kantel
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/lleverage-ai/kantel/apps/cli/internal/api"
+	"github.com/lleverage-ai/kantel/apps/cli/internal/cli"
+)
+
+// IDArg is a command's one argument, a sandbox's ID.
+var IDArg = []cli.Arg{{Name: "id"}}
+
+// Sizes are the API's size names, which the hosts may offer fewer of (kantel sizes).
+var Sizes = []string{"small", "default", "large", "xlarge"}
+
+var (
+	sizeFlag = cli.Flag{Name: "size", Type: cli.String, Value: "<size>", Choices: Sizes,
+		Description: "A microVM's named size, such as small, default or large (kantel sizes lists the hosts')"}
+	noWaitFlag = cli.Flag{Name: "no-wait", Type: cli.Bool, Description: "Answer at once rather than once it runs"}
+	cursorFlag = cli.Flag{Name: "cursor", Type: cli.String, Value: "<cursor>", Description: "The next page, from a list's More"}
+	idleStop   = cli.Flag{Name: "idle-stop", Type: cli.String, Value: "<minutes|never>",
+		Description: "Also stop once it goes this long unused: no command, SSH, desktop, browser or port traffic"}
+)
+
+// sizeOf is --size: one of the API's size names.
+func sizeOf(c *cli.Context) (*api.SandboxSizeName, error) {
+	value, ok := c.Str("size")
+	if !ok {
+		return nil, nil
+	}
+	for _, s := range Sizes {
+		if s == value {
+			name := api.SandboxSizeName(value)
+			return &name, nil
+		}
+	}
+	return nil, cli.Usage(`--size takes a named size, such as small, default or large, not "` + value +
+		`": kantel sizes lists the hosts' sizes, and --vcpus with --memory makes another shape`)
+}
+
+var memoryGB = regexp.MustCompile(`^\d+(\.\d+)?$`)
+
+// hostedPort is --host's port[:public].
+func hostedPort(value string) (api.ExposePortBody, error) {
+	port, public, _ := strings.Cut(value, ":")
+	n, err := strconv.ParseInt(port, 10, 64)
+	if err != nil || n < 1 || n > 65535 || (public != "" && public != "public") {
+		return api.ExposePortBody{}, cli.Usage(`--host takes a port, or port:public, not "` + value + `"`)
+	}
+	body := api.ExposePortBody{Port: n}
+	if public == "public" {
+		body.Public = api.Ptr(true)
+	}
+	return body, nil
+}
+
+var lifecycleDoing = map[string]string{"start": "Starting", "stop": "Stopping", "resume": "Resuming", "recover": "Recovering", "upgrade": "Upgrading"}
+
+// lifecycle is the start, stop, resume and recover commands, alike but for the call.
+func lifecycle(verb, summary string, flags []cli.Flag, examples []cli.Example,
+	call func(c *cli.Context, client *api.Client, id string, raw *json.RawMessage) (*api.Sandbox, error)) *cli.Command {
+	return &cli.Command{
+		Name: verb, Summary: summary, Args: IDArg, Flags: flags, Examples: examples,
+		Run: func(c *cli.Context) error {
+			client, err := Client(c)
+			if err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			var sandbox *api.Sandbox
+			err = c.Spin(lifecycleDoing[verb]+" "+c.Arg(0)+"…", func() error {
+				sandbox, err = call(c, client, c.Arg(0), &raw)
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			c.Emit(raw, sandbox, func() string { return sandbox.ID + " " + c.Style.State(StateOf(*sandbox)) })
+			if sandbox.State == api.SandboxStateError {
+				return cli.ExitCode(cli.ExitFailed)
+			}
+			return nil
+		},
+	}
+}
+
+func resumeBody(c *cli.Context) (api.ResumeSandboxBody, error) {
+	size, err := sizeOf(c)
+	return api.ResumeSandboxBody{Wait: api.Ptr(!c.Bool("no-wait")), Size: size}, err
+}
+
+func sandboxes() cli.Section {
+	return cli.Section{Title: "Sandboxes", Commands: []*cli.Command{
+		newCommand(),
+		{
+			Name:    "sizes",
+			Summary: "The sizes and shapes a new microVM may be, from the hosts it may use",
+			Flags:   []cli.Flag{{Name: "on", Type: cli.String, Value: "<host>", Description: "Only what this host offers, its name or ID"}},
+			Details: "Each deployment's hosts decide which named sizes there are and what each holds, and may offer fewer than\n" +
+				"small, default, large and xlarge. kantel new --size takes one of these; --vcpus and --memory any other\n" +
+				"shape in the ranges shown.",
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				account, err := AccountPtr(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				shapes, err := client.GetSandboxShapes(c.Ctx, &api.GetSandboxShapesQuery{Account: account, Host: StrPtr(c, "on")}, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, shapes, func() string { return describeShapes(c, *shapes) })
+				return nil
+			},
+		},
+		listCommand(),
+		{
+			Name: "info", Summary: "Show a sandbox", Args: IDArg,
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				sandbox, err := client.GetSandbox(c.Ctx, c.Arg(0), api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, sandbox, func() string { return DescribeSandbox(c, *sandbox, sandboxEnvironmentNames(c, client, *sandbox)) })
+				return nil
+			},
+		},
+		lifecycle("start", "Boot a stopped sandbox fresh from its newest snapshot", []cli.Flag{noWaitFlag, sizeFlag}, nil,
+			func(c *cli.Context, client *api.Client, id string, raw *json.RawMessage) (*api.Sandbox, error) {
+				body, err := resumeBody(c)
+				if err != nil {
+					return nil, err
+				}
+				return client.StartSandbox(c.Ctx, id, body, api.Raw(raw))
+			}),
+		lifecycle("stop", "Stop a sandbox, keeping its disk; it then costs nothing to run",
+			[]cli.Flag{
+				{Name: "pause", Type: cli.Bool, Description: "Pause instead, keeping its memory too (microVMs only)"},
+				{Name: "wait", Type: cli.Bool, Description: "Answer once it has stopped"},
+			},
+			[]cli.Example{
+				{What: "Stop it, keeping its disk", Line: "kantel stop sbx_4kq9x2mt"},
+				{What: "Pause a microVM, keeping its memory too", Line: "kantel stop sbx_4kq9x2mt --pause"},
+			},
+			func(c *cli.Context, client *api.Client, id string, raw *json.RawMessage) (*api.Sandbox, error) {
+				return client.StopSandbox(c.Ctx, id, api.StopSandboxBody{KeepMemory: TruePtr(c, "pause"), Wait: TruePtr(c, "wait")}, api.Raw(raw))
+			}),
+		lifecycle("resume", "Carry on a paused or stopped sandbox, with the same ID", []cli.Flag{noWaitFlag, sizeFlag}, nil,
+			func(c *cli.Context, client *api.Client, id string, raw *json.RawMessage) (*api.Sandbox, error) {
+				body, err := resumeBody(c)
+				if err != nil {
+					return nil, err
+				}
+				return client.ResumeSandbox(c.Ctx, id, body, api.Raw(raw))
+			}),
+		lifecycle("recover", "Restart the machine of a sandbox that is stuck or in error", nil, nil,
+			func(c *cli.Context, client *api.Client, id string, raw *json.RawMessage) (*api.Sandbox, error) {
+				return client.RecoverSandbox(c.Ctx, id, api.Raw(raw))
+			}),
+		upgradeCommand(),
+		moveCommand(),
+		{
+			Name: "fork", Summary: "Copy a sandbox into new ones", Args: IDArg,
+			Flags: []cli.Flag{
+				{Name: "count", Type: cli.String, Value: "<n>", Description: "How many copies (default 1)"},
+				{Name: "name", Type: cli.String, Value: "<name>", Description: "The copies' name"},
+				{Name: "snapshot", Type: cli.String, Value: "<id>", Description: "Copy this snapshot of it; default its newest"},
+				noWaitFlag,
+			},
+			Examples: []cli.Example{{What: "Three copies of a sandbox as it is now", Line: "kantel fork sbx_4kq9x2mt --count 3"}},
+			Run: func(c *cli.Context) error {
+				count, err := Whole(c, "count", 1)
+				if err != nil {
+					return err
+				}
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				var forked *api.ForkedSandboxes
+				err = c.Spin("Forking "+c.Arg(0)+"…", func() error {
+					forked, err = client.ForkSandbox(c.Ctx, c.Arg(0), api.ForkSandboxBody{
+						Count: count, Name: StrPtr(c, "name"), SnapshotID: StrPtr(c, "snapshot"), Wait: api.Ptr(!c.Bool("no-wait")),
+					}, api.Raw(&raw))
+					return err
+				})
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, forked, func() string { return SandboxTable(c, forked.Items) })
+				return nil
+			},
+		},
+		{
+			Name: "delete", Summary: "Delete a sandbox for good (needs --yes)", Args: IDArg,
+			Flags:    []cli.Flag{{Name: "yes", Type: cli.Bool, Short: "y", Description: "Yes, delete it: this can't be undone"}},
+			Details:  "It erases the sandbox and its automatic snapshots; saved snapshots of it stay.",
+			Examples: []cli.Example{{What: "Delete a sandbox for good", Line: "kantel delete sbx_4kq9x2mt --yes"}},
+			Run: func(c *cli.Context) error {
+				id := c.Arg(0)
+				if !c.Bool("yes") {
+					return cli.Usage(fmt.Sprintf("deleting a sandbox is permanent: it erases %s and its automatic snapshots. "+
+						"To delete it, run: kantel delete %s --yes (or kantel stop %s keeps it)", id, id, id))
+				}
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				sandbox, err := client.DeleteSandbox(c.Ctx, id, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, sandbox, func() string { return sandbox.ID + " " + c.Style.State(string(sandbox.State)) })
+				return nil
+			},
+		},
+		{
+			Name:    "extend",
+			Summary: "Move a sandbox's auto-stop to this many minutes from now, or change its idle stop",
+			Args:    []cli.Arg{{Name: "id"}, {Name: "minutes", Optional: true}},
+			Flags:   []cli.Flag{idleStop},
+			Details: "kantel extend <id> 120 moves its stop to two hours from now. kantel extend <id> --idle-stop 30 stops it\n" +
+				"once it goes 30 minutes unused, counting from now; --idle-stop never turns that off. Both may be given.",
+			Run: func(c *cli.Context) error {
+				body := api.UpdateSandboxBody{}
+				if m, ok := c.Optional(1); ok {
+					n, err := WholeOf(m, "minutes", 1)
+					if err != nil {
+						return err
+					}
+					body.ExtendMinutes = n
+				}
+				idle, err := MinutesOrNever(c, "idle-stop")
+				if err != nil {
+					return err
+				}
+				body.IdleStopMinutes = idle
+				if body.ExtendMinutes == nil && !idle.Set {
+					return cli.Usage("give the minutes to extend it by, or --idle-stop <minutes|never>")
+				}
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				sandbox, err := client.UpdateSandbox(c.Ctx, c.Arg(0), body, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, sandbox, func() string {
+					line := sandbox.ID + " " + string(sandbox.State)
+					if sandbox.StopsAt != nil {
+						line = sandbox.ID + " stops " + cli.Until(*sandbox.StopsAt, now(c))
+					}
+					if idle.Set {
+						text := idleStopText(c, *sandbox)
+						if text == "" {
+							text = "never"
+						}
+						line += "\nidle stop: " + text
+					}
+					return line
+				})
+				return nil
+			},
+		},
+		{
+			Name:    "usage",
+			Summary: "A sandbox's running time, CPU and cost over the last day, and its peak memory and CPU",
+			Args:    IDArg,
+			Details: "The peaks are its highest single readings since it was made, kept after the readings themselves are gone and\n" +
+				"after it is deleted: size a sandbox from them, as a mean can be half its peak or less.",
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				usage, err := client.GetSandboxUsage(c.Ctx, c.Arg(0), nil, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, usage, func() string {
+					t := usage.Totals
+					peakMemory := ""
+					if usage.PeakMemoryBytes != nil {
+						peakMemory = cli.Bytes(float64(*usage.PeakMemoryBytes))
+						if usage.MemLimitBytes != nil {
+							peakMemory += " of " + cli.Bytes(float64(*usage.MemLimitBytes))
+						}
+						if usage.PeakMemoryAt != nil {
+							peakMemory += ", " + cli.Ago(*usage.PeakMemoryAt, now(c))
+						}
+					}
+					peakCPU := ""
+					if usage.PeakCPU != nil {
+						peakCPU = percent(*usage.PeakCPU)
+					}
+					return cli.Fields(c.Style, []cli.Field{
+						{"running", cli.Duration(t.RunningSeconds)},
+						{"cpu", fmt.Sprintf("%.1f s", t.CPUSeconds)},
+						{"memory", GuestMemoryText(usage.Memory)},
+						{"cost", cli.Money(t.Cost.Total, t.Cost.Currency)},
+						{"peak memory", peakMemory},
+						{"peak cpu", peakCPU},
+					})
+				})
+				return nil
+			},
+		},
+	}}
+}
+
+func newCommand() *cli.Command {
+	return &cli.Command{
+		Name:    "new",
+		Summary: "Create a sandbox and wait until it runs",
+		Flags: []cli.Flag{
+			{Name: "type", Type: cli.String, Value: "<isolate|microvm>", Choices: []string{"isolate", "microvm"},
+				Description: "isolate (default): starts in milliseconds; microvm: a full Linux with Docker and SSH"},
+			sizeFlag,
+			{Name: "disk", Type: cli.String, Value: "<GB>", Description: "A microVM's disk in GB, whatever its size (default: its size's); within the hosts' limits"},
+			{Name: "vcpus", Type: cli.String, Value: "<n>", Description: "A microVM's vCPUs, in place of --size; with --memory"},
+			{Name: "memory", Type: cli.String, Value: "<GB>", Description: "A microVM's memory in GB, in place of --size; with --vcpus"},
+			{Name: "name", Type: cli.String, Value: "<name>", Description: "Default: a generated name"},
+			{Name: "from", Type: cli.String, Value: "<snapshot>", Description: "Start from a snapshot's ID or a saved one's name"},
+			{Name: "image", Type: cli.String, Value: "<image>", Description: "A microVM's base image"},
+			{Name: "auto-stop", Type: cli.String, Value: "<minutes|never>", Description: "Stop by itself this long after it starts (default 60)"},
+			{Name: "idle-stop", Type: cli.String, Value: idleStop.Value, Description: idleStop.Description + " (default never)"},
+			{Name: "label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "A label; repeat for more"},
+			{Name: "env", Type: cli.String, Short: "e", Multiple: true, Value: "<K=V|env>",
+				Description: "K=V: a variable every command sees (not a secret); or an environment to start from. Repeat it for more"},
+			{Name: "host", Type: cli.String, Multiple: true, Value: "<port[:public]>", Description: "Give this port an HTTPS URL once it runs; repeat it"},
+			{Name: "on", Type: cli.String, Value: "<host>", Description: "Run it on this host, its name or ID (kantel hosts list shows them)"},
+			{Name: "pool", Type: cli.String, Value: "<pool>", Description: "Run it in this pool, its name or ID (kantel pools list shows them); default the account's default pool"},
+			{Name: "host-label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "Run it only on a host with this label; repeat for more"},
+			{Name: "auto-upgrade", Type: cli.Bool, Description: "An isolate that becomes a microVM by itself when a command needs one, and runs it again"},
+			{Name: "auto-upgrade-from", Type: cli.String, Value: "<snapshot>", Description: "With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name"},
+			noWaitFlag,
+		},
+		Details: "--auto-upgrade makes an isolate upgrade itself to a microVM (as kantel upgrade does) when a command\n" +
+			"needs something an isolate doesn't have (a program such as tar, a package manager, Docker), and run that\n" +
+			"command again there, once. Without it the command says it needs a microVM, and the isolate stays one.\n" +
+			"--auto-upgrade-from names a microVM's snapshot to upgrade into (kantel upgrade --from does the same by\n" +
+			"hand), such as one with a project cloned and installed: a saved name is read again at the upgrade, so\n" +
+			"saving the snapshot again under it gives the newest.\n\n" +
+			"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
+			"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
+			"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.\n\n" +
+			"Give --env <env> more than once for several environments, in order (up to 10): where two set the same\n" +
+			"variable, secret file or repo path, the later one wins, and the K=V variables win over them all. Their\n" +
+			"grants add up. kantel env attach and kantel env detach change a sandbox's environments later.\n\n" +
+			"--disk sizes a microVM's disk apart from its vCPUs and memory (kantel new --type microvm --size large\n" +
+			"--disk 60). A sandbox made from a snapshot keeps the snapshot's disk.\n\n" +
+			"--size takes one of the named sizes the hosts offer; kantel sizes lists them, and the most --vcpus and\n" +
+			"--memory may ask for. --vcpus and --memory size a microVM beyond the named sizes (kantel new --type\n" +
+			"microvm --vcpus 8 --memory 16), within what a host offers. A large monorepo's type-check needs about\n" +
+			"16 GB, and its tests about 32.\n\n" +
+			"--from with --size, or --vcpus and --memory, starts a snapshot of the disk alone (the default for\n" +
+			"kantel snapshot save) on that machine: kantel new --from monorepo-ci --vcpus 8 --memory 16. A\n" +
+			"snapshot that holds its sandbox's memory (saved with --memory) has that sandbox's machine, and Kantel\n" +
+			"refuses another. Without them, a sandbox from a snapshot is the machine the snapshot was taken of.\n\n" +
+			"--idle-stop stops it once nobody has used it for that long, beside --auto-stop's lifetime: with\n" +
+			"--auto-stop never --idle-stop 30 it runs while people use it, and stops 30 minutes after they stop.\n" +
+			"Its disk is kept; kantel resume starts it again. A request to a hosted port of a stopped sandbox gets a\n" +
+			"page saying it is stopped and why: it doesn't wake it.\n\n" +
+			"--on puts it on one host: one of the account's own hosts, or for a super-admin any host. It stays there,\n" +
+			"as every sandbox stays on the host it was placed on. Without it, Kantel picks the host.",
+		Examples: []cli.Example{
+			{What: "A microVM: a full Linux with root, Docker and SSH", Line: "kantel new --type microvm"},
+			{What: "A bigger one, with a name, that stops after 30 minutes unused", Line: "kantel new --type microvm --vcpus 8 --memory 16 --name ci --idle-stop 30"},
+			{What: "One from a saved snapshot, keeping only its ID for a script", Line: "id=$(kantel new --from monorepo-ci --json | jq -r .id)"},
+			{What: "One with two environments, where npm wins over backend", Line: "kantel new --env backend --env npm"},
+		},
+		Run: runNew,
+	}
+}
+
+func runNew(c *cli.Context) error {
+	var hosts []api.ExposePortBody
+	for _, h := range c.List("host") {
+		body, err := hostedPort(h)
+		if err != nil {
+			return err
+		}
+		hosts = append(hosts, body)
+	}
+	body := api.CreateSandboxBody{Name: StrPtr(c, "name"), Image: StrPtr(c, "image"), From: StrPtr(c, "from"), Host: StrPtr(c, "on"),
+		Pool: StrPtr(c, "pool")}
+	typ, hasType := c.Str("type")
+	if hasType {
+		if _, err := Choice(typ, "--type", "isolate", "microvm"); err != nil {
+			return err
+		}
+		t := api.SandboxType(typ)
+		body.Type = &t
+	}
+	_, from := c.Str("from")
+	disk, err := Whole(c, "disk", 1)
+	if err != nil {
+		return err
+	}
+	if disk != nil && typ != "microvm" {
+		return cli.Usage("--disk is a microVM's: add --type microvm (an isolate has no disk of its own)")
+	}
+	if disk != nil && from {
+		return cli.Usage("a sandbox made from a snapshot keeps the snapshot's disk: leave out --disk")
+	}
+	vcpus, err := Whole(c, "vcpus", 1)
+	if err != nil {
+		return err
+	}
+	var memoryMb *int64
+	if memory, ok := c.Str("memory"); ok {
+		gb, err := strconv.ParseFloat(memory, 64)
+		if !memoryGB.MatchString(memory) || err != nil || gb <= 0 {
+			return cli.Usage(`--memory is in GB, such as 16 or 0.5, not "` + memory + `"`)
+		}
+		mb := int64(gb*1024 + 0.5)
+		memoryMb = &mb
+	}
+	if (vcpus == nil) != (memoryMb == nil) {
+		return cli.Usage("give --vcpus and --memory together")
+	}
+	if vcpus != nil {
+		// From a snapshot, its type is the snapshot's: a microVM's, or Kantel refuses an isolate's shape.
+		if typ != "microvm" && (hasType || !from) {
+			return cli.Usage("--vcpus and --memory are a microVM's: add --type microvm")
+		}
+		if _, ok := c.Str("size"); ok {
+			return cli.Usage("give --size or --vcpus and --memory, not both")
+		}
+	}
+	if body.Size, err = sizeOf(c); err != nil {
+		return err
+	}
+	if disk != nil || vcpus != nil {
+		body.Resources = &api.SandboxShapeInput{VCPUs: vcpus, MemoryMb: memoryMb, DiskGb: disk}
+	}
+	if len(hosts) > 0 && c.Bool("no-wait") {
+		return cli.Usage("--host needs the sandbox running")
+	}
+	into := StrPtr(c, "auto-upgrade-from")
+	if c.Bool("auto-upgrade") || into != nil {
+		if typ == "microvm" {
+			return cli.Usage("--auto-upgrade is an isolate's: a microVM is one already")
+		}
+		body.AutoUpgrade = api.Ptr(true)
+		body.AutoUpgradeFrom = into
+	}
+	// A variable has an =; an environment's name or ID never does.
+	var vars, environments []string
+	for _, e := range c.List("env") {
+		if strings.Contains(e, "=") {
+			vars = append(vars, e)
+		} else {
+			environments = append(environments, e)
+		}
+	}
+	// One goes as environment, which every Kantel takes; several as environments, in order.
+	switch {
+	case len(environments) == 1:
+		body.Environment = &environments[0]
+	case len(environments) > 1:
+		body.Environments = environments
+	}
+	if body.AutoStopMinutes, err = MinutesOrNever(c, "auto-stop"); err != nil {
+		return err
+	}
+	if body.IdleStopMinutes, err = MinutesOrNever(c, "idle-stop"); err != nil {
+		return err
+	}
+	if body.Labels, err = Pairs(c.List("label"), "--label"); err != nil {
+		return err
+	}
+	if body.Env, err = Pairs(vars, "--env"); err != nil {
+		return err
+	}
+	if body.HostLabels, err = Pairs(c.List("host-label"), "--host-label"); err != nil {
+		return err
+	}
+	body.Wait = api.Ptr(!c.Bool("no-wait"))
+	if body.Account, err = AccountPtr(c); err != nil {
+		return err
+	}
+	client, err := Client(c)
+	if err != nil {
+		return err
+	}
+	what := "a sandbox"
+	switch typ {
+	case "microvm":
+		what = "a microVM"
+	case "isolate":
+		what = "an isolate"
+	}
+	doing := "Creating " + what + "…"
+	if *body.Wait {
+		doing = "Starting " + what
+		if from {
+			doing += " from " + *body.From
+		}
+		doing += "…"
+	}
+	var raw json.RawMessage
+	var sandbox *api.Sandbox
+	if err := c.Spin(doing, func() error {
+		sandbox, err = client.CreateSandbox(c.Ctx, body, api.Raw(&raw))
+		return err
+	}); err != nil {
+		return err
+	}
+	var ports []api.ExposedPort
+	if sandbox.State == api.SandboxStateRunning {
+		for _, h := range hosts {
+			port, err := client.ExposePort(c.Ctx, sandbox.ID, h)
+			if err != nil {
+				return err
+			}
+			ports = append(ports, *port)
+		}
+	}
+	var value any = sandbox
+	if len(ports) > 0 {
+		// The sandbox with its ports' URLs beside it.
+		var merged map[string]any
+		_ = json.Unmarshal(raw, &merged)
+		merged["hostedPorts"] = ports
+		value, raw = merged, nil
+	}
+	s := c.Style
+	c.Emit(raw, value, func() string {
+		tick := ""
+		if s.On {
+			tick = s.Paint(cli.Green, "✓") + " "
+		}
+		lines := []string{fmt.Sprintf("%sCreated %s (%s): %s%s, %s.", tick, s.Paint(cli.Bold, sandbox.ID), sandbox.Name,
+			KindOf(*sandbox), diskOf(*sandbox), s.State(StateOf(*sandbox)))}
+		if text := startupText(*sandbox); text != "" {
+			lines = append(lines, "  "+s.Paint(cli.Dim, "Started in:")+"     "+text)
+		}
+		for _, p := range ports {
+			label := fmt.Sprintf("Port %d:", p.Port)
+			lines = append(lines, "  "+s.Paint(cli.Dim, label)+strings.Repeat(" ", max(1, 16-len(label)))+p.URL)
+		}
+		lines = append(lines,
+			"  "+s.Paint(cli.Dim, "Run a command:")+"  kantel exec "+sandbox.ID+" -- echo hello",
+			"  "+s.Paint(cli.Dim, "Stop it:")+"        kantel stop "+sandbox.ID)
+		return strings.Join(lines, "\n")
+	})
+	if sandbox.State == api.SandboxStateError {
+		return cli.ExitCode(cli.ExitFailed)
+	}
+	return nil
+}
+
+func listCommand() *cli.Command {
+	return &cli.Command{
+		Name:    "list",
+		Summary: "List running sandboxes, or all of them",
+		Flags: []cli.Flag{
+			{Name: "all", Type: cli.Bool, Description: "Include stopped, paused and errored ones"},
+			{Name: "label", Type: cli.String, Multiple: true, Value: "<k=v>", Description: "Only those with this label"},
+			{Name: "on", Type: cli.String, Value: "<host>", Description: "Only those on this host, its name or ID"},
+			{Name: "mine", Type: cli.Bool, Description: "Only your own, not the ones others share in an organisation"},
+			{Name: "every-account", Type: cli.Bool, Description: "In each of your accounts, with an ACCOUNT column (a personal token's)"},
+			cursorFlag,
+		},
+		Examples: []cli.Example{
+			{What: "The running ones", Line: "kantel list"},
+			{What: "Every one of yours, stopped ones too, in all your accounts", Line: "kantel list --all --mine --every-account"},
+			{What: "Those with a label, as JSON", Line: "kantel list --label team=web --json"},
+		},
+		Run: func(c *cli.Context) error {
+			all, mine := c.Bool("all"), c.Bool("mine")
+			labels, err := Pairs(c.List("label"), "--label")
+			if err != nil {
+				return err
+			}
+			client, err := Client(c)
+			if err != nil {
+				return err
+			}
+			query := &api.ListSandboxesQuery{Label: labels, Host: StrPtr(c, "on"), Cursor: StrPtr(c, "cursor")}
+			if all {
+				query.All = api.Ptr(true)
+			}
+			if mine {
+				query.Mine = api.Ptr(true)
+			}
+			if c.Bool("every-account") {
+				return listEveryAccount(c, client, query)
+			}
+			if query.Account, err = AccountPtr(c); err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			page, err := client.ListSandboxes(c.Ctx, query, api.Raw(&raw))
+			if err != nil {
+				return err
+			}
+			c.Emit(raw, page, func() string {
+				if len(page.Items) == 0 {
+					if all {
+						return "No sandboxes."
+					}
+					return "No running sandboxes; --all shows stopped ones."
+				}
+				// The next page's command keeps this one's filters: the cursor is an offset into the same filtered list.
+				command := []string{"kantel list"}
+				if all {
+					command = append(command, "--all")
+				}
+				if mine {
+					command = append(command, "--mine")
+				}
+				for _, l := range c.List("label") {
+					command = append(command, "--label", ShellQuote(l))
+				}
+				if on, ok := c.Str("on"); ok {
+					command = append(command, "--on", ShellQuote(on))
+				}
+				return SandboxTable(c, page.Items) + More(page.NextCursor, strings.Join(command, " "))
+			})
+			return nil
+		},
+	}
+}
+
+// listEveryAccount lists the sandboxes in each account the caller may act in, every page of each. An account it
+// can't list in is named on stderr and left out, and the exit code is 1.
+func listEveryAccount(c *cli.Context, client *api.Client, query *api.ListSandboxesQuery) error {
+	if query.Cursor != nil {
+		return cli.Usage("--every-account lists every page: leave out --cursor")
+	}
+	accounts, err := client.ListAccounts(c.Ctx)
+	if err != nil {
+		return err
+	}
+	found := []api.Sandbox{}
+	failed := false
+	names := map[string]string{}
+	for _, a := range accounts.Items {
+		names[a.ID] = a.Name
+		if a.Kind == api.AccountKindPersonal {
+			names[a.ID] = "personal"
+		}
+		q := *query
+		q.Account = &a.ID
+		for {
+			page, err := client.ListSandboxes(c.Ctx, &q)
+			if err != nil {
+				failed = true
+				c.Note(fmt.Sprintf("kantel: couldn't list %s: %v", accountLabel(a), err))
+				break
+			}
+			found = append(found, page.Items...)
+			if page.NextCursor == nil {
+				break
+			}
+			q.Cursor = page.NextCursor
+		}
+	}
+	c.Emit(nil, map[string]any{"items": found}, func() string {
+		if len(found) == 0 {
+			if query.All != nil {
+				return "No sandboxes."
+			}
+			return "No running sandboxes; --all shows stopped ones."
+		}
+		var rows [][]string
+		for _, s := range found {
+			name := names[s.AccountID]
+			if name == "" {
+				name = s.AccountID
+			}
+			by := s.CreatedBy.ID
+			if s.CreatedBy.Name != nil {
+				by = *s.CreatedBy.Name
+			}
+			rows = append(rows, []string{name, s.ID, s.Name, KindOf(s), c.Style.State(StateOf(s)), by})
+		}
+		return cli.Table(c.Style, []string{"ACCOUNT", "ID", "NAME", "TYPE", "STATE", "BY"}, rows)
+	})
+	if failed {
+		return cli.ExitCode(cli.ExitFailed)
+	}
+	return nil
+}
+
+// accountLabel is an account as a person reads it: `Acme (acc_7f3k2m9q)`, or `your personal account (…)`.
+func accountLabel(a api.Account) string {
+	if a.Kind == api.AccountKindPersonal {
+		return "your personal account (" + a.ID + ")"
+	}
+	return a.Name + " (" + a.ID + ")"
+}
+
+// moveCommand is kantel move: a microVM moved to another host in its pool, and started there.
+func moveCommand() *cli.Command {
+	return &cli.Command{
+		Name: "move", Summary: "Move a sandbox to another host in its pool, and start it there", Args: IDArg,
+		Flags: []cli.Flag{
+			{Name: "to", Type: cli.String, Value: "<host>", Description: "The host to move it to, by ID (default: the scheduler's pick)"},
+			{Name: "drop-memory", Type: cli.Bool, Description: "Restart a running or paused sandbox on the new host, booting it on its disk (its memory is lost)"},
+			{Name: "dry-run", Type: cli.Bool, Description: "Move nothing: list the hosts it may move to, whether each keeps its memory, and the pause expected"},
+			{Name: "wait", Type: cli.Bool, Description: "Answer once it runs on the new host (the default)"},
+			noWaitFlag,
+		},
+		Details: "Its disk and its sticky disks' copies (their uncommitted writes too) are copied to the new host, it starts\n" +
+			"there, and only then is it placed there and its copy on the old host deleted. It keeps its ID, name,\n" +
+			"settings and URLs, and never leaves its pool. If it can't be moved, it is left where it was.\n\n" +
+			"A running or paused one keeps its memory where both hosts' CPU and runtime match, and a host where it\n" +
+			"can is picked first: a running one is copied as it runs, stopped keeping its memory, and what it wrote\n" +
+			"since and its memory are copied and restored there, its programs carrying on after a pause of about its\n" +
+			"memory's copy. Elsewhere, or with --drop-memory, it restarts: copied as it runs, stopped (its processes\n" +
+			"end), what it wrote since copied, and booted on the new host, unavailable for seconds. --dry-run says\n" +
+			"which each host does before you move it. If a move fails after the stop, it starts again where it was.\n" +
+			"Its automatic snapshots from before stay on the old host.",
+		Examples: []cli.Example{
+			{What: "Move a sandbox to whichever host the scheduler picks, with its memory where it can", Line: "kantel move sbx_4kq9x2mt"},
+			{What: "See where it may go, and whether each keeps its memory", Line: "kantel move sbx_4kq9x2mt --dry-run"},
+			{What: "To a host of your choosing", Line: "kantel move sbx_4kq9x2mt --to hst_7c2m9q4k"},
+			{What: "Move a running sandbox, restarting it on the new host", Line: "kantel move sbx_4kq9x2mt --drop-memory"},
+		},
+		Run: func(c *cli.Context) error {
+			if c.Bool("wait") && c.Bool("no-wait") {
+				return cli.Usage("give --wait or --no-wait, not both")
+			}
+			body := api.MoveSandboxBody{HostID: StrPtr(c, "to"), Wait: api.Ptr(!c.Bool("no-wait"))}
+			if c.Bool("drop-memory") {
+				body.KeepMemory = api.Ptr(false)
+			}
+			client, err := Client(c)
+			if err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			if c.Bool("dry-run") {
+				var plan *api.SandboxMovePlan
+				err = c.Spin("Asking where "+c.Arg(0)+" may move…", func() error {
+					plan, err = client.PlanSandboxMove(c.Ctx, c.Arg(0), api.Raw(&raw))
+					return err
+				})
+				if err != nil {
+					return err
+				}
+				c.Emit(raw, plan, func() string { return moveTargetsText(c, c.Arg(0), *plan) })
+				return nil
+			}
+			var sandbox *api.Sandbox
+			err = c.Spin("Moving "+c.Arg(0)+" to another host…", func() error {
+				sandbox, err = client.MoveSandbox(c.Ctx, c.Arg(0), body, api.Raw(&raw))
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			c.Emit(raw, sandbox, func() string {
+				if sandbox.State != api.SandboxStateRunning {
+					out := sandbox.ID + " " + c.Style.State(StateOf(*sandbox))
+					if m := sandbox.Move; m != nil && m.RestartReason != nil {
+						out += "\n  It restarts there: " + *m.RestartReason + "."
+					}
+					return out
+				}
+				out := "Moved " + sandbox.ID + " (" + sandbox.Name + ") to " + hostOf(*sandbox) + ", " + c.Style.State(StateOf(*sandbox)) + ".\n"
+				if m := sandbox.Moved; m != nil && m.KeptMemory {
+					return out + "  Its memory moved with it: what ran before carries on."
+				}
+				out += "  It booted on its disk there: what ran before it stopped isn't running."
+				if m := sandbox.Moved; m != nil && m.RestartReason != nil {
+					out += "\n  Its memory couldn't move: " + *m.RestartReason + "."
+				}
+				return out
+			})
+			if sandbox.State == api.SandboxStateError {
+				return cli.ExitCode(cli.ExitFailed)
+			}
+			return nil
+		},
+	}
+}
+
+// moveTargetsText is a move's dry run as a table: each host it may move to, whether its memory goes too (and why
+// not), and the pause expected where it does.
+func moveTargetsText(c *cli.Context, id string, plan api.SandboxMovePlan) string {
+	if len(plan.Targets) == 0 {
+		return "No other host in its pool can take " + id + " now, as far as Kantel can say."
+	}
+	var rows [][]string
+	for _, t := range plan.Targets {
+		memory, pause := "restarts", ""
+		if t.KeepsMemory {
+			memory = "keeps memory"
+			if t.PauseMs != nil {
+				pause = "about " + cli.Duration(float64(*t.PauseMs)/1000)
+				if t.RateMeasured == nil || !*t.RateMeasured {
+					pause += " (rate assumed)"
+				}
+			}
+		} else if t.RestartReason != nil {
+			memory += ": " + *t.RestartReason
+		}
+		rows = append(rows, []string{t.HostID, memory, pause})
+	}
+	return cli.Table(c.Style, []string{"HOST", "MEMORY", "PAUSE"}, rows)
+}
+
+// upgradeCommand is kantel upgrade: an isolate made a microVM with the same ID, files and settings.
+func upgradeCommand() *cli.Command {
+	return &cli.Command{
+		Name: "upgrade", Summary: "Turn an isolate into a microVM, with the same ID, files and settings", Args: IDArg,
+		Flags: []cli.Flag{
+			sizeFlag,
+			{Name: "vcpus", Type: cli.String, Value: "<n>", Description: "The microVM's vCPUs, in place of --size; with --memory"},
+			{Name: "memory", Type: cli.String, Value: "<GB>", Description: "The microVM's memory in GB, in place of --size; with --vcpus"},
+			{Name: "disk", Type: cli.String, Value: "<GB>", Description: "The microVM's disk in GB (default: its size's)"},
+			{Name: "image", Type: cli.String, Value: "<image>", Description: "The microVM's base image"},
+			{Name: "from", Type: cli.String, Value: "<snapshot>", Description: "Start the microVM from a microVM's snapshot, its ID or a saved one's name"},
+			{Name: "wait", Type: cli.Bool, Description: "Answer once the microVM runs (the default)"},
+			noWaitFlag,
+		},
+		Details: "Upgrade when a command says it needs a microVM, or before work an isolate can't do: git, npm or pip\n" +
+			"packages, a build, a server, Docker. The sandbox keeps its ID, name, labels, env, environments, grants and protected\n" +
+			"variables. Its /workspace files are in the microVM at /home/user/workspace, and /workspace links there, so\n" +
+			"its paths still work. A stopped isolate comes back as a running microVM. If the microVM can't be made, the\n" +
+			"isolate is left as it was. Commands sent meanwhile wait for it.\n\n" +
+			"--from starts the microVM from a snapshot of a microVM, as kantel new --from does, such as one with a\n" +
+			"repository cloned and its dependencies installed. The isolate's files are laid over what the snapshot has\n" +
+			"in /home/user/workspace: where both have a file the isolate's wins, and nothing of the snapshot's is\n" +
+			"deleted. It keeps the snapshot's disk, so not with --disk. A snapshot saved with an older guest agent is\n" +
+			"refused: save it again from a sandbox started afresh on a current host, and upgrade into that.",
+		Examples: []cli.Example{
+			{What: "Make an isolate a microVM of the default size", Line: "kantel upgrade sbx_4kq9x2mt"},
+			{What: "A bigger one", Line: "kantel upgrade sbx_4kq9x2mt --vcpus 8 --memory 16"},
+			{What: "One from a saved snapshot with the project in it", Line: "kantel upgrade sbx_4kq9x2mt --from monorepo-ci"},
+		},
+		Run: func(c *cli.Context) error {
+			vcpus, err := Whole(c, "vcpus", 1)
+			if err != nil {
+				return err
+			}
+			var memoryMb *int64
+			if memory, ok := c.Str("memory"); ok {
+				gb, err := strconv.ParseFloat(memory, 64)
+				if !memoryGB.MatchString(memory) || err != nil || gb <= 0 {
+					return cli.Usage(`--memory is in GB, such as 16 or 0.5, not "` + memory + `"`)
+				}
+				mb := int64(gb*1024 + 0.5)
+				memoryMb = &mb
+			}
+			if (vcpus == nil) != (memoryMb == nil) {
+				return cli.Usage("give --vcpus and --memory together")
+			}
+			if _, ok := c.Str("size"); ok && vcpus != nil {
+				return cli.Usage("give --size or --vcpus and --memory, not both")
+			}
+			if c.Bool("wait") && c.Bool("no-wait") {
+				return cli.Usage("give --wait or --no-wait, not both")
+			}
+			disk, err := Whole(c, "disk", 1)
+			if err != nil {
+				return err
+			}
+			body := api.UpgradeSandboxBody{Image: StrPtr(c, "image"), From: StrPtr(c, "from"), Wait: api.Ptr(!c.Bool("no-wait"))}
+			if disk != nil && body.From != nil {
+				return cli.Usage("a microVM made from a snapshot keeps the snapshot's disk: leave out --disk")
+			}
+			if body.Size, err = sizeOf(c); err != nil {
+				return err
+			}
+			if disk != nil || vcpus != nil {
+				body.Resources = &api.SandboxShapeInput{VCPUs: vcpus, MemoryMb: memoryMb, DiskGb: disk}
+			}
+			client, err := Client(c)
+			if err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			var sandbox *api.Sandbox
+			err = c.Spin("Upgrading "+c.Arg(0)+" to a microVM…", func() error {
+				sandbox, err = client.UpgradeSandbox(c.Ctx, c.Arg(0), body, api.Raw(&raw))
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			c.Emit(raw, sandbox, func() string {
+				if sandbox.State != api.SandboxStateRunning {
+					return sandbox.ID + " " + c.Style.State(StateOf(*sandbox))
+				}
+				return "Upgraded " + sandbox.ID + " (" + sandbox.Name + ") to a microVM, " + c.Style.State(StateOf(*sandbox)) + ".\n" +
+					"  Its files:      /home/user/workspace (/workspace links there)\n" +
+					"  Run a command:  kantel exec " + sandbox.ID + " -- ls /workspace"
+			})
+			if sandbox.State == api.SandboxStateError {
+				return cli.ExitCode(cli.ExitFailed)
+			}
+			return nil
+		},
+	}
+}

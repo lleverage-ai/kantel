@@ -53,6 +53,12 @@ type ExecRequest struct {
 	// POST /exec/start needs one, and keeps its result for GET /exec/{id} once it ends. A guest from before IDs
 	// ignores it.
 	ID string `json:"id,omitempty"`
+	// Keep, for a foreground command with an ID that isn't streamed, runs it on when its request's connection goes
+	// (the sandbox paused or moved keeping its memory resets the host's connections to the guest): only its own limit
+	// or a kill ends it. Its result is kept once it ends, whether or not its answer went (the newest maxKeptCommands of
+	// them), for GET /exec/{id}, as a detached command's is. Without it, the connection going ends the command. A guest
+	// from before it ignores it.
+	Keep bool `json:"keep,omitempty"`
 	// ProxyUser, when set, replaces the user name in the proxy URLs of this command's environment, so the egress
 	// proxy can tell this command's requests from the rest of the sandbox's (advisory; see the proxy notes).
 	ProxyUser string `json:"proxyUser,omitempty"`
@@ -101,6 +107,9 @@ type Health struct {
 	// Expect lists the services the image says it runs (ReadyFile), which a template waits for before its
 	// snapshot; empty when the image doesn't say.
 	Expect []string `json:"expect,omitempty"`
+	// Features are what this agent can do that one before it couldn't (Features, such as proto.GuestFeatureRealTarget),
+	// for the host to require before it relies on one: an older agent reports none.
+	Features []string `json:"features,omitempty"`
 }
 
 // ReadyFile, in an image, lists the services (one per line, from Ready's names) its template waits for before the
@@ -156,6 +165,10 @@ type MountResult struct {
 	Error string `json:"error,omitempty"`
 	// Version is the manifest version the guest now shows.
 	Version int64 `json:"version,omitempty"`
+	// Current says the kernel already forgot the names that changed with Version, so the next lookup in the sandbox
+	// sees it rather than one cached for up to the mount's entry timeout. An older guest agent never says, and a host
+	// that needs that waits the timeout out instead (CacheTimeout).
+	Current bool `json:"current,omitempty"`
 }
 
 // Manifest is a bucket mount's whole tree: every directory and object under the prefix, by path relative to it.
@@ -219,3 +232,24 @@ type BundlesAnswer struct {
 
 // BundleDevice is the guest's device for bundle drive i.
 func BundleDevice(i int) string { return "/dev/vd" + string(rune('c'+i)) }
+
+// StickyLabel is the ext4 label of every sticky disk the host makes: the guest mounts a sticky drive only when the file
+// system on it has it, so a drive that isn't the disk it was told of is never mounted read-write.
+const StickyLabel = "kantel-sticky"
+
+// StickyMount is one sticky disk the host has the guest mount read-write (POST /sticky). The host has already pointed
+// the drive at the sandbox's clone of the disk. A mount already at Path from the same drive is kept, so the host sends
+// the sandbox's sticky disks again after every start and resume.
+type StickyMount struct {
+	Path string `json:"path"`
+	// Drive is the drive's index as BundleDevice counts it: the sticky drives come after the bundle drives.
+	Drive int `json:"drive"`
+	// Bytes is the disk's size: the guest waits for the device to be that size before it mounts.
+	Bytes int64 `json:"bytes"`
+}
+
+// StickyResult is how mounting one StickyMount went: an empty Error is mounted.
+type StickyResult struct {
+	Path  string `json:"path"`
+	Error string `json:"error,omitempty"`
+}

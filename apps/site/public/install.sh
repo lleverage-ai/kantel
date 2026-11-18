@@ -18,7 +18,8 @@
 #      sandboxes run on the hosts you add from the console. With --upgrade, the new source replaces the old, keeping
 #      deploy/compose/.env (your settings), and the stack is rebuilt and restarted with it; its data stays. Services
 #      the new version no longer has (an older version's agent plane: session hosts, browsers, MinIO, the vault
-#      proxy) are stopped and removed, but not their volumes.
+#      proxy) are stopped and removed, but not their volumes. With --database-url (or KANTEL_DATABASE_URL in
+#      deploy/compose/.env), the stack uses that Postgres, such as a managed one, instead of starting its own.
 #
 # The whole script is read before anything runs (see `main` at the end), so a download cut short does nothing.
 # Nothing is interactive and no credentials are asked for.
@@ -54,6 +55,10 @@ Options (each also reads an environment variable, for `| env NAME=value sh`):
   --upgrade          download the source again even when it's already there, and rebuild the stack with it
                      (deploy/compose/.env, where your settings go, is kept)
   --email ADDRESS    the first admin, who signs in (KANTEL_ADMIN_EMAIL)
+  --database-url URL a Postgres of your own, such as a managed one, instead of the bundled one
+                     (KANTEL_DATABASE_URL; saved in deploy/compose/.env, so upgrades keep it)
+  --database-ca FILE the CA certificate (PEM) that Postgres's TLS certificate is checked with, for a URL with
+                     sslrootcert=/etc/kantel/database-ca.pem (KANTEL_DATABASE_CA_FILE; saved in .env too)
   --no-open          don't open the console in a browser (KANTEL_NO_OPEN=1)
   -h, --help         this help
 
@@ -153,6 +158,67 @@ keep_source() {
 	ok "unpacked into $SRC"
 }
 
+# The value of setting $1 in deploy/compose/.env (its last line, quotes taken off), or nothing.
+env_setting() {
+	[ -f "$SRC/deploy/compose/.env" ] || return 0
+	sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=[[:space:]]*//p" "$SRC/deploy/compose/.env" |
+		tail -n 1 | sed "s/[[:space:]]*\$//; s/^'\(.*\)'\$/\1/; s/^\"\(.*\)\"\$/\1/"
+}
+
+# Sets $1 to $2 in deploy/compose/.env, in place of any line it had, and keeps the file to its owner: it holds secrets.
+# Both it and the copy it's rewritten through are owner-only from the moment they're made (umask 077, in a subshell),
+# and a copy an interrupted run left behind is removed first, as writing to it would keep its mode. Each step needs the
+# one before it (set -e doesn't hold in a subshell left of ||): .env is replaced only by a copy written in full.
+save_setting() {
+	env_file="$SRC/deploy/compose/.env"
+	case "$2" in
+	*"'"* | *"
+"*) die "$1 can't contain a single quote or a line break" "Percent-encode them in a URL: ' is %27." ;;
+	esac
+	rm -f "$env_file.new"
+	(
+		umask 077
+		touch "$env_file" &&
+			chmod 600 "$env_file" &&
+			{
+				# grep exits 1 when it keeps no lines (the setting was the only one), 2 when it fails.
+				grep -v "^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=" "$env_file" >"$env_file.new"
+				[ $? -le 1 ]
+			} &&
+			printf "%s='%s'\n" "$1" "$2" >>"$env_file.new" &&
+			mv "$env_file.new" "$env_file"
+	) || {
+		rm -f "$env_file.new"
+		die "couldn't save $1 in $env_file" "It's as it was."
+	}
+}
+
+# A Postgres of your own (--database-url, --database-ca): saved in deploy/compose/.env, so later upgrades keep using it.
+save_database_settings() {
+	if [ -n "$opt_database_ca" ]; then
+		case "$opt_database_ca" in
+		/*) ;;
+		*) opt_database_ca="$(pwd)/$opt_database_ca" ;;
+		esac
+		[ -r "$opt_database_ca" ] || die "can't read the database's CA certificate at $opt_database_ca"
+		save_setting KANTEL_DATABASE_CA_FILE "$opt_database_ca"
+		# Compose reads the environment before .env: the value just saved, not an older one there.
+		KANTEL_DATABASE_CA_FILE="$opt_database_ca"
+		export KANTEL_DATABASE_CA_FILE
+		ok "saved KANTEL_DATABASE_CA_FILE in deploy/compose/.env"
+	fi
+	if [ -n "$opt_database_url" ]; then
+		case "$opt_database_url" in
+		postgres://* | postgresql://*) ;;
+		*) die "--database-url must be a postgres:// URL" ;;
+		esac
+		save_setting KANTEL_DATABASE_URL "$opt_database_url"
+		KANTEL_DATABASE_URL="$opt_database_url"
+		export KANTEL_DATABASE_URL
+		ok "saved KANTEL_DATABASE_URL in deploy/compose/.env"
+	fi
+}
+
 open_url() {
 	[ -z "$opt_no_open" ] || return 0
 	if [ "$(uname -s)" = Darwin ] && have open; then
@@ -162,9 +228,33 @@ open_url() {
 	fi
 }
 
+# docker compose on the stack's files: compose.yaml, and external-postgres.yaml with a Postgres of your own.
+stack() {
+	if [ -n "$external_file" ]; then
+		docker compose -f "$compose_file" -f "$external_file" "$@"
+	else
+		docker compose -f "$compose_file" "$@"
+	fi
+}
+
 # The self-hosted Compose stack, as the install docs run it, for a source that has no installer of its own.
 run_compose() {
 	compose_file="$SRC/deploy/compose/compose.yaml"
+	external_file=""
+	# A Postgres of your own, in .env (or the environment, which Compose reads first): the stack doesn't start its own.
+	database_url="${KANTEL_DATABASE_URL:-$(env_setting KANTEL_DATABASE_URL)}"
+	if [ -n "$database_url" ]; then
+		external_file="$SRC/deploy/compose/external-postgres.yaml"
+		[ -f "$external_file" ] ||
+			die "KANTEL_DATABASE_URL is set, but this version of Kantel can't use a Postgres of its own" \
+				"Install a newer one, or remove KANTEL_DATABASE_URL from $SRC/deploy/compose/.env."
+		database_ca="${KANTEL_DATABASE_CA_FILE:-$(env_setting KANTEL_DATABASE_CA_FILE)}"
+		[ -z "$database_ca" ] || [ -r "$database_ca" ] ||
+			die "can't read the database's CA certificate at $database_ca (KANTEL_DATABASE_CA_FILE)"
+		ok "using your Postgres (KANTEL_DATABASE_URL), not the bundled one"
+	fi
+	# The same, as a command to show.
+	compose="docker compose -f $compose_file${external_file:+ -f $external_file}"
 	port="${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}"
 	mail_port="${KANTEL_MAILPIT_PORT:-${HARBOUR_MAILPIT_PORT:-58025}}"
 	if [ -n "$opt_email" ]; then
@@ -179,19 +269,19 @@ run_compose() {
 	fi
 	# --remove-orphans: an upgrade from a version with more services (the agent plane's session hosts, browsers,
 	# MinIO and vault proxy) stops and removes their containers. Named volumes, and so the data, stay.
-	(cd "$SRC" && docker compose -f "$compose_file" up -d --build --wait --remove-orphans) ||
-		die "the stack didn't start" "See what went wrong with: docker compose -f $compose_file logs"
+	(cd "$SRC" && stack up -d --build --wait --remove-orphans) ||
+		die "the stack didn't start" "See what went wrong with: $compose logs"
 
 	console="http://127.0.0.1:$port/"
 	tries=0
 	until curl -fsS "${console}healthz" >/dev/null 2>&1; do
 		tries=$((tries + 1))
-		[ "$tries" -lt 60 ] || die "the console didn't answer on $console" "See: docker compose -f $compose_file logs gateway"
+		[ "$tries" -lt 60 ] || die "the console didn't answer on $console" "See: $compose logs gateway"
 		sleep 2
 	done
 	ok "the console answers on $console"
 
-	admin="$(cd "$SRC" && docker compose -f "$compose_file" exec -T gateway printenv KANTEL_ADMIN_EMAIL 2>/dev/null || true)"
+	admin="$(cd "$SRC" && stack exec -T gateway printenv KANTEL_ADMIN_EMAIL 2>/dev/null || true)"
 	[ -n "$admin" ] || admin="${KANTEL_ADMIN_EMAIL:-the admin address}"
 
 	cat <<EOF
@@ -205,7 +295,7 @@ Sign in as $admin: enter the address, select "Email me a code", and copy the cod
 On another machine over SSH, forward the ports first: ssh -L $port:127.0.0.1:$port -L $mail_port:127.0.0.1:$mail_port <host>
 
 Your API key and project are in the gateway's bootstrap file:
-  docker compose -f $compose_file exec -T gateway sh -c 'cat /var/lib/*/bootstrap.json'
+  $compose exec -T gateway sh -c 'cat /var/lib/*/bootstrap.json'
 
 Sandboxes run on hosts: Linux machines running the Kantel host agent. Once you're signed in, select
 "Add a host" in the console and run the command it shows on the machine. A host on this machine joins at
@@ -213,9 +303,14 @@ $console; for hosts elsewhere, set KANTEL_PUBLIC_URL in deploy/compose/.env to t
 (or run kantel-admin compute enable --public-url <url> --apply). See https://kantel.dev/docs/self-hosting/install/
 
 Upgrade it:         curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
-Stop it:            docker compose -f $compose_file down
-Stop and delete it: docker compose -f $compose_file down -v
+Stop it:            $compose down
+Stop and delete it: $compose down -v
 EOF
+	if [ -n "$database_url" ]; then
+		say ""
+		say "Kantel's data is in your Postgres (KANTEL_DATABASE_URL): its backups are yours to keep, and down -v doesn't"
+		say "touch it. See https://kantel.dev/docs/self-hosting/database/"
+	fi
 	open_url "$console"
 }
 
@@ -225,6 +320,8 @@ main() {
 	opt_ref="${KANTEL_REF:-$DEFAULT_REF}"
 	opt_tarball="${KANTEL_TARBALL:-}"
 	opt_email=""
+	opt_database_url="${KANTEL_DATABASE_URL:-}"
+	opt_database_ca="${KANTEL_DATABASE_CA_FILE:-}"
 	opt_upgrade=""
 	opt_no_open="${KANTEL_NO_OPEN:-}"
 	wants_help=""
@@ -236,7 +333,7 @@ main() {
 		shift
 		n=$((n - 1))
 		case "$arg" in
-		--repo | --ref | --tarball | --home | --email)
+		--repo | --ref | --tarball | --home | --email | --database-url | --database-ca)
 			[ "$n" -gt 0 ] && [ -n "$1" ] || die "$arg needs a value" "Run with --help for the options."
 			case "$arg" in
 			--repo) opt_repo="$1" ;;
@@ -244,6 +341,8 @@ main() {
 			--tarball) opt_tarball="$1" ;;
 			--home) KANTEL_HOME="$1" ;;
 			--email) opt_email="$1" ;;
+			--database-url) opt_database_url="$1" ;;
+			--database-ca) opt_database_ca="$1" ;;
 			esac
 			set -- "$@" "$arg" "$1"
 			shift
@@ -292,10 +391,11 @@ main() {
 
 	for arg in "$@"; do
 		case "$arg" in
-		--repo | --ref | --tarball | --home | --email | --upgrade | --no-open) ;;
+		--repo | --ref | --tarball | --home | --email | --database-url | --database-ca | --upgrade | --no-open) ;;
 		-*) die "unknown option: $arg" "Run with --help for the options." ;;
 		esac
 	done
+	save_database_settings
 	run_compose
 }
 

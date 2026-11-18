@@ -1,5 +1,6 @@
 #!/bin/sh
-# The sandbox's browser: Chromium (Debian's build) with its DevTools port (CDP) on loopback port 9222 for
+# The sandbox's browser: Chromium (Debian's build, or Chrome for Testing as `chromium` in a KANTEL_BROWSER=cft build)
+# with its DevTools port (CDP) on loopback port 9222 for
 # connectOverCDP through the host. On a host that boots the guest with kantel.browser=surface it runs on its own
 # display (:2, kantel-browser-display), whose stream (kantel-browser-stream) shows the browser alone, apart from the
 # desktop. Otherwise, on a host from before it (which drops the guest agent's report of that surface, so the browser

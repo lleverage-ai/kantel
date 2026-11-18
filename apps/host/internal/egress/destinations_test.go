@@ -178,3 +178,27 @@ func TestPublicOnlyRulesIgnoreTheOperatorsPrivateRanges(t *testing.T) {
 		}
 	}
 }
+
+// The pool mesh's prefix is refused while the host is in one, even when an operator allows every ULA (or all IPv6),
+// and PublicOnly keeps refusing it.
+func TestDestinationsRefuseTheMesh(t *testing.T) {
+	mesh := []netip.Prefix{}
+	d := Destinations{
+		Allow:  []netip.Prefix{netip.MustParsePrefix("fc00::/7")},
+		Denied: func() []netip.Prefix { return mesh },
+		Local:  func() []netip.Prefix { return nil },
+	}
+	peer := netip.MustParseAddr("fd4b:616e:7465::b")
+	if err := d.Check(peer); err != nil {
+		t.Fatalf("no mesh yet: %v", err)
+	}
+	mesh = []netip.Prefix{netip.MustParsePrefix("fd4b:616e:7465::/48")}
+	for _, c := range []Destinations{d, d.PublicOnly()} {
+		if err := c.Check(peer); !errors.Is(err, ErrDestination) {
+			t.Fatalf("a mesh address: %v, want refused", err)
+		}
+	}
+	if err := d.Check(netip.MustParseAddr("fd00::1")); err != nil {
+		t.Fatalf("an allowed ULA outside the mesh: %v", err)
+	}
+}

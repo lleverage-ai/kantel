@@ -252,6 +252,10 @@ type fakeS3 struct {
 	ignoreRange bool
 	// refuseList answers listings 503 (a store outage, or a prefix grown past the limit).
 	refuseList atomic.Bool
+	// denyList answers listings 403, as a store does once the credentials are revoked.
+	denyList atomic.Bool
+	// beforeList, when set, runs before a listing is answered, without the store's lock (so a test can hold one).
+	beforeList func()
 }
 
 func (s *fakeS3) put(k, v string) {
@@ -263,12 +267,19 @@ func (s *fakeS3) put(k, v string) {
 func etag(v string) string { return strconv.Itoa(len(v)) + "-" + strconv.Itoa(int(v[0])) }
 
 func (s *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if f := s.beforeList; f != nil && r.URL.Query().Get("list-type") == "2" {
+		f()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r.URL.Query().Get("list-type") == "2" {
 		s.lists.Add(1)
 		if s.refuseList.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if s.denyList.Load() {
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		fmt.Fprint(w, "<ListBucketResult><IsTruncated>false</IsTruncated>")
@@ -826,5 +837,150 @@ func TestOpenChunksAreBounded(t *testing.T) {
 	}
 	if len(s.slots) > 0 || len(m.slots) > 0 {
 		t.Errorf("a stalled read still holds %d chunks (host %d)", len(s.slots), len(m.slots))
+	}
+}
+
+// A sync lists again within MinTTL of the last listing, which a refresh doesn't, and then has what was put; a second
+// sync from the same moment has nothing to list.
+func TestSyncListsWithinMinTTL(t *testing.T) {
+	b := newReview3(t, map[string]string{"p/a.txt": "hello"})
+	s := b.manager(nil).Sandbox("sbx", []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p"}})
+	ctx := context.Background()
+	s.Load(ctx)
+	s.Applied([]guest.MountResult{{Path: "/mnt/p"}}, nil)
+	b.store.put("p/new.txt", "new")
+	if err := s.Refresh(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manifestOf(t, s.handler())["new.txt"]; ok {
+		t.Fatal("a refresh within MinTTL listed again")
+	}
+	since := time.Now()
+	if err := s.Sync(ctx, "", since); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manifestOf(t, s.handler())["new.txt"]; !ok {
+		t.Error("new.txt isn't there after a sync")
+	}
+	st := s.Status()[0]
+	if st.ListedAt < since.UnixMilli() || st.State != proto.MountReady {
+		t.Errorf("after the sync: %+v (since %d)", st, since.UnixMilli())
+	}
+	lists := b.store.lists.Load()
+	if err := s.Sync(ctx, "", since); err != nil {
+		t.Fatal(err)
+	}
+	if b.store.lists.Load() != lists {
+		t.Error("a second sync from the same moment listed again")
+	}
+	if err := s.Sync(ctx, "/mnt/other", since); err == nil {
+		t.Error("a sync of a path with no mount")
+	}
+}
+
+// A sync whose listing fails is an error, though the mount carries on with the manifest it has (and says ready).
+func TestSyncFailsWhenTheListingFails(t *testing.T) {
+	b := newReview3(t, map[string]string{"p/a.txt": "hello"})
+	s := b.manager(nil).Sandbox("sbx", []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p"}})
+	ctx := context.Background()
+	s.Load(ctx)
+	s.Applied([]guest.MountResult{{Path: "/mnt/p"}}, nil)
+	b.store.refuseList.Store(true)
+	err := s.Sync(ctx, "", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "/mnt/p") {
+		t.Fatalf("a failed listing: %v", err)
+	}
+	if st := s.Status()[0]; st.State != proto.MountReady || st.Objects != 1 {
+		t.Errorf("the mount after a failed sync: %+v", st)
+	}
+	b.store.refuseList.Store(false)
+	if err := s.Sync(ctx, "", time.Now()); err != nil {
+		t.Errorf("the sync after the store came back: %v", err)
+	}
+	// Credentials revoked, and a source Kantel won't give again: a mount that couldn't be listed, not a path with no
+	// mount. The error names the mount and isn't itself a proto.Error, which only Sync's own refusal is (so the tier
+	// answers it unavailable, whatever proto.Error a listing's error holds).
+	delete(b.creds, "bks_1")
+	b.store.denyList.Store(true)
+	err = s.Sync(ctx, "", time.Now())
+	if _, direct := err.(*proto.Error); direct || err == nil || !strings.Contains(err.Error(), "/mnt/p") {
+		t.Errorf("revoked credentials: %T %v", err, err)
+	}
+	if _, direct := s.Sync(ctx, "/mnt/none", time.Now()).(*proto.Error); !direct {
+		t.Error("a path with no mount isn't Sync's own proto.Error")
+	}
+}
+
+// A sync that finds a listing under way that began before it waits for it, then lists again: that listing may have
+// read the bucket before the change the caller is waiting for.
+func TestSyncListsAgainAfterAnOlderListing(t *testing.T) {
+	b := newReview3(t, map[string]string{"p/a.txt": "hello"})
+	m := b.manager(nil)
+	var skew atomic.Int64
+	m.now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	s := m.Sandbox("sbx", []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p"}})
+	ctx := context.Background()
+	s.Load(ctx)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	b.store.beforeList = func() {
+		if held.CompareAndSwap(false, true) {
+			close(entered)
+			<-release
+		}
+	}
+	lists := b.store.lists.Load()
+	skew.Add(int64(MinTTL))
+	older := make(chan error, 1)
+	go func() { older <- s.Refresh(ctx, "") }()
+	<-entered
+	skew.Add(int64(time.Millisecond))
+	synced := make(chan error, 1)
+	go func() { synced <- s.Sync(ctx, "", m.now()) }()
+	select {
+	case err := <-synced:
+		t.Fatalf("the sync answered before the older listing ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-older; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-synced; err != nil {
+		t.Fatal(err)
+	}
+	if n := b.store.lists.Load() - lists; n != 2 {
+		t.Errorf("%d listings (want the older one and the sync's own)", n)
+	}
+}
+
+// Shown takes the guest's answer after a sync: the synced version, or the host's newer one, with no error.
+func TestShownChecksTheGuestsVersion(t *testing.T) {
+	b := newReview3(t, map[string]string{"p/a.txt": "hello"})
+	s := b.manager(nil).Sandbox("sbx", []proto.Mount{{Path: "/mnt/p", Kind: "bucket", BucketSourceID: "bks_1", Prefix: "p"}})
+	ctx := context.Background()
+	s.Load(ctx)
+	if err := s.Sync(ctx, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	synced := s.Versions("")
+	v := synced["/mnt/p"]
+	if v == 0 {
+		t.Fatalf("versions %v", synced)
+	}
+	if err := s.Shown(synced, []guest.MountResult{{Path: "/mnt/p", Version: v}}, nil); err != nil {
+		t.Errorf("the synced version: %v", err)
+	}
+	for name, results := range map[string][]guest.MountResult{
+		"an older version": {{Path: "/mnt/p", Version: v + 2}},
+		"an error":         {{Path: "/mnt/p", Version: v, Error: "busy"}},
+		"no answer":        nil,
+	} {
+		if err := s.Shown(synced, results, nil); err == nil {
+			t.Errorf("%s was taken as current", name)
+		}
+	}
+	if err := s.Shown(synced, nil, errors.New("the guest went away")); err == nil {
+		t.Error("a guest that didn't answer was taken as current")
 	}
 }

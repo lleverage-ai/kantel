@@ -1,0 +1,309 @@
+package disksync
+
+// The peer server: plain HTTP/2 (WireGuard encrypts it) on the host's mesh address only, on port 7480, which the
+// firewall opens to the pool's prefix alone.
+//
+//	GET /v1/objects/{kind}/{id}/{version}/map            the version's block map
+//	GET /v1/objects/{kind}/{id}/{version}/data           the version's bytes, a run of blocks with Range
+//	GET /v1/objects/{kind}/{id}/{version}/files/{name}   one of the version's small files, whole
+//
+// A version is one block-mapped file (map and data), and, for some kinds, small files beside it that go whole (a
+// template's root filesystem has its record, which names the image it was made from). A kind whose versions have
+// several block-mapped files fetched together (a template snapshot's disk and memory) names them its parts (parts.go):
+// its map is then its manifest, and each part has its own map and data under parts/{part}. A saved snapshot instead
+// has a version for each of its files, "disk" and "memory", each with its own map, holders and grants, as its memory
+// goes only to the hosts that restore it.
+//
+// Each request carries a grant (Authorization: Bearer <grant>) the control plane signed, naming this host in from and
+// the asking peer as to. Which peer asks is the request's source address: WireGuard takes a packet from a peer only
+// from that peer's one mesh address, so the address proves the peer.
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
+)
+
+// Port is the server's TCP port on the mesh address (mesh.SyncPort).
+const Port = 7480
+
+// Source is the versions the host holds.
+type Source interface {
+	// Open opens a version: its file, and with withMap its block map's file. fs.ErrNotExist when the host doesn't hold
+	// it, or has no map of it yet. The file stays readable while open, whatever is deleted meanwhile.
+	Open(kind, objectID, version string, withMap bool) (*os.File, []byte, error)
+	// ReadFile reads one of a held version's small files (Store.Files names them): fs.ErrNotExist when the host doesn't
+	// hold the version, or it has no such file.
+	ReadFile(kind, objectID, version, name string) ([]byte, error)
+}
+
+// Server serves the versions the host holds to its mesh peers.
+type Server struct {
+	Source Source
+	// Self is this host's ID, which a grant must name in from.
+	Self func() string
+	// Keys are the control plane's grant keys (Welcome.GrantKeys); none while it has none, when nothing is served.
+	Keys func() []proto.GrantKey
+	// PeerAt is the pool host at a mesh address, the host the peer reports: false for none.
+	PeerAt func(addr netip.Addr) (hostID string, ok bool)
+	Log    *slog.Logger
+	// Now is the clock grants are checked against (default time.Now).
+	Now func() time.Time
+	// Port is the TCP port it listens on (default Port).
+	Port int
+	// Limit holds what it serves to the host's --sync-rate (nil: no limit).
+	Limit *Limiter
+
+	mu   sync.Mutex
+	addr netip.Addr
+	srv  *http.Server
+	// ln is the server's listener, and done closes once its Serve has returned.
+	ln   net.Listener
+	done chan struct{}
+}
+
+// Serve makes the server listen on addr's Port, or with no addr stop: it is called whenever the mesh comes up, goes
+// down or changes address. Listening on the address it listens on already does nothing.
+func (s *Server) Serve(addr netip.Addr) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.srv != nil && s.addr == addr {
+		return nil
+	}
+	s.stopLocked()
+	if !addr.IsValid() {
+		return nil
+	}
+	port := s.Port
+	if port == 0 {
+		port = Port
+	}
+	ln, err := net.Listen("tcp", netip.AddrPortFrom(addr, uint16(port)).String())
+	if err != nil {
+		return fmt.Errorf("peer sync server: %w", err)
+	}
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv := &http.Server{
+		Handler:           s.Handler(),
+		Protocols:         &protocols,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		ErrorLog:          slog.NewLogLogger(s.Log.Handler(), slog.LevelDebug),
+	}
+	done := make(chan struct{})
+	s.srv, s.addr, s.ln, s.done = srv, addr, ln, done
+	go func() {
+		defer close(done)
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.Log.Warn("the peer sync server stopped", "error", err)
+		}
+	}()
+	s.Log.Info("peer sync server listening", "address", ln.Addr().String())
+	return nil
+}
+
+// Close stops the server.
+func (s *Server) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLocked()
+}
+
+func (s *Server) stopLocked() {
+	if s.srv == nil {
+		return
+	}
+	// Transfers under way end now: the mesh is gone, or moved.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.srv.Shutdown(ctx); err != nil {
+		_ = s.srv.Close()
+	}
+	// Closed here too: a Serve not yet under way when the server shut down hasn't registered it, and would keep the
+	// address bound until it ran.
+	_ = s.ln.Close()
+	<-s.done
+	s.srv, s.addr, s.ln, s.done = nil, netip.Addr{}, nil, nil
+}
+
+// Handler is the server's routes.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/map", func(w http.ResponseWriter, r *http.Request) {
+		if parted, names := partsOf(s.Source, r.PathValue("kind")); len(names) > 0 {
+			s.serveManifest(w, r, parted)
+			return
+		}
+		f, raw, ok := s.open(w, r, true)
+		if !ok {
+			return
+		}
+		f.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
+	})
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/data", func(w http.ResponseWriter, r *http.Request) {
+		// The map isn't read for a range of the data: only whether there is one.
+		f, _, ok := s.open(w, r, false)
+		if !ok {
+			return
+		}
+		defer f.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		// A version's file never changes once it is published: no validators, so a Range is always served.
+		http.ServeContent(limitedWriter{ResponseWriter: w, ctx: r.Context(), l: s.Limit}, r, "", time.Time{}, f)
+	})
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/parts/{part}/map", func(w http.ResponseWriter, r *http.Request) {
+		f, raw, ok := s.openPart(w, r, true)
+		if !ok {
+			return
+		}
+		f.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
+	})
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/parts/{part}/data", func(w http.ResponseWriter, r *http.Request) {
+		f, _, ok := s.openPart(w, r, false)
+		if !ok {
+			return
+		}
+		defer f.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(limitedWriter{ResponseWriter: w, ctx: r.Context(), l: s.Limit}, r, "", time.Time{}, f)
+	})
+	mux.HandleFunc("GET /v1/objects/{kind}/{id}/{version}/files/{name}", func(w http.ResponseWriter, r *http.Request) {
+		kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
+		if !s.granted(w, r) {
+			return
+		}
+		raw, err := s.Source.ReadFile(kind, id, version, r.PathValue("name"))
+		if errors.Is(err, fs.ErrNotExist) {
+			http.Error(w, "this host doesn't hold that version, or it has no such file", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.Log.Warn("a version's file couldn't be read for a peer", "kind", kind, "object", id, "version", version, "file", r.PathValue("name"), "error", err)
+			http.Error(w, "the file couldn't be read", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
+	})
+	return mux
+}
+
+// open checks the request's grant and opens the version it names, or answers why not: 401 without a valid grant, 403
+// with one that isn't for this version, this host or the asking peer, 404 for a version the host doesn't hold.
+func (s *Server) open(w http.ResponseWriter, r *http.Request, withMap bool) (*os.File, []byte, bool) {
+	kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
+	if !s.granted(w, r) {
+		return nil, nil, false
+	}
+	f, raw, err := s.Source.Open(kind, id, version, withMap)
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "this host doesn't hold that version", http.StatusNotFound)
+		return nil, nil, false
+	}
+	if err != nil {
+		s.Log.Warn("a version couldn't be opened for a peer", "kind", kind, "object", id, "version", version, "error", err)
+		http.Error(w, "the version couldn't be read", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return f, raw, true
+}
+
+// serveManifest answers a version with parts' map: its manifest, made from its parts' maps.
+func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, parted Parted) {
+	if !s.granted(w, r) {
+		return
+	}
+	ref := Ref{Kind: r.PathValue("kind"), ObjectID: r.PathValue("id"), Version: r.PathValue("version")}
+	raw, err := ManifestOf(parted, ref)
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "this host doesn't hold that version", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.Log.Warn("a version's manifest couldn't be made for a peer", "version", ref.String(), "error", err)
+		http.Error(w, "the version couldn't be read", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(raw))
+}
+
+// openPart is open for one part of a version with parts: 404 too for a part its kind hasn't.
+func (s *Server) openPart(w http.ResponseWriter, r *http.Request, withMap bool) (*os.File, []byte, bool) {
+	if !s.granted(w, r) {
+		return nil, nil, false
+	}
+	ref := Ref{Kind: r.PathValue("kind"), ObjectID: r.PathValue("id"), Version: r.PathValue("version")}
+	part := r.PathValue("part")
+	parted, ok := validPart(s.Source, ref.Kind, part)
+	if !ok {
+		http.Error(w, "that kind's versions have no such part", http.StatusNotFound)
+		return nil, nil, false
+	}
+	f, raw, err := parted.OpenPart(ref, part, withMap)
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "this host doesn't hold that version", http.StatusNotFound)
+		return nil, nil, false
+	}
+	if err != nil {
+		s.Log.Warn("a version's part couldn't be opened for a peer", "version", ref.String(), "part", part, "error", err)
+		http.Error(w, "the version couldn't be read", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return f, raw, true
+}
+
+// granted checks the request's grant against the version it names, or answers why not: 503 while the host has no
+// grant key, 401 without a valid grant, 403 with one that isn't for this version, this host or the asking peer.
+func (s *Server) granted(w http.ResponseWriter, r *http.Request) bool {
+	kind, id, version := r.PathValue("kind"), r.PathValue("id"), r.PathValue("version")
+	keys := s.Keys()
+	if len(keys) == 0 {
+		http.Error(w, "this host has no grant key from the control plane yet", http.StatusServiceUnavailable)
+		return false
+	}
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		http.Error(w, "a fetch needs a grant", http.StatusUnauthorized)
+		return false
+	}
+	now := time.Now
+	if s.Now != nil {
+		now = s.Now
+	}
+	g, err := VerifyGrant(keys, strings.TrimSpace(token), now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return false
+	}
+	asker := ""
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		if id, ok := s.PeerAt(ap.Addr().Unmap()); ok {
+			asker = id
+		}
+	}
+	if err := g.Allows(kind, id, version, s.Self(), asker); err != nil {
+		s.Log.Warn("a peer's fetch refused", "peer", r.RemoteAddr, "host", asker, "kind", kind, "object", id, "version", version, "error", err)
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return false
+	}
+	return true
+}

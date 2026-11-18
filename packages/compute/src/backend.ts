@@ -31,6 +31,210 @@ export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
  * no two of its snapshot records ever share a ref.
  */
 export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
+/**
+ * A host that takes a sandbox's new env while it runs (`updateEnv`, `HOST_FEATURES.sandboxEnv`): it keeps it for the
+ * sandbox's later boots and forks, and a running microVM's guest rewrites its env file. Without it the sandbox gets the
+ * new env when it next boots.
+ */
+export const SANDBOX_ENV_FEATURE = "sandbox-env";
+/**
+ * A host that makes a microVM from one of its isolates itself (`HOST_FEATURES.isolateUpgrade`, `sandbox.upgrade`): the
+ * isolate's files go from its blob store into the new microVM on the host, never through Kantel.
+ */
+export const ISOLATE_UPGRADE_FEATURE = "isolate-upgrade";
+/**
+ * A host that holds one of its isolates still for an upgrade (`HOST_FEATURES.isolateFreeze`), so Kantel can copy one
+ * version of its files to a microVM on another host while nothing writes to them.
+ */
+export const ISOLATE_FREEZE_FEATURE = "isolate-freeze";
+
+/** What a backend's upgrade whose outcome isn't known was refused with (`upgradeOutcomeUnknown`). */
+const unknownUpgrades = new WeakSet<KantelError>();
+
+/**
+ * An upgrade whose outcome isn't known: its host was sent it and didn't answer, and couldn't be asked since. Neither
+ * done nor failed: the caller keeps the sandbox as it is (starting) until `settleUpgrade` says which.
+ */
+export function upgradeOutcomeUnknown(message: string): KantelError {
+	const error = new KantelError("unavailable", message);
+	unknownUpgrades.add(error);
+	return error;
+}
+
+/** Whether `error` is `upgradeOutcomeUnknown`'s. */
+export function isUpgradeOutcomeUnknown(error: unknown): boolean {
+	return error instanceof KantelError && unknownUpgrades.has(error);
+}
+
+/** An upgrade's outcome as `settleUpgrade` answers it: done, with the microVM, or failed and rolled back. */
+export type UpgradeOutcome =
+	| { readonly state: "done"; readonly placement: UpgradedPlacement }
+	| { readonly state: "failed"; readonly reason?: string };
+
+/**
+ * A move's outcome as `settleMove` answers it: done, the sandbox running on its new host, or failed and rolled back
+ * (where it was: stopped, once a running sandbox's move has stopped it).
+ */
+export type MoveOutcome =
+	| { readonly state: "done"; readonly placement: Placement }
+	| { readonly state: "failed"; readonly reason?: string };
+
+/** What a backend's create whose outcome isn't known was refused with (`createOutcomeUnknown`). */
+const unknownCreates = new WeakSet<KantelError>();
+
+/**
+ * A create whose outcome isn't known: its host was sent it and never answered (its connection dropped, or the call
+ * timed out), so it may have made the machine. Marks `error` and answers it. Neither made nor failed: the caller keeps
+ * the sandbox `starting` until `settleCreate` says which, from what the host reports.
+ */
+export function createOutcomeUnknown(error: KantelError): KantelError {
+	unknownCreates.add(error);
+	return error;
+}
+
+/** Whether `error` is `createOutcomeUnknown`'s. */
+export function isCreateOutcomeUnknown(error: unknown): boolean {
+	return error instanceof KantelError && unknownCreates.has(error);
+}
+
+/** What a backend's boot that failed after letting go of the sandbox's memory was refused with (`bootDroppedMemory`). */
+const memoryDroppedBoots = new WeakSet<KantelError>();
+
+/**
+ * A start (`SandboxBackend.start`) that failed after its backend let go of the memory the sandbox was paused with (a
+ * host's rebase clears it before it relinks the root filesystem and boots). Marks `error` and answers it. Its commands,
+ * which ran in that memory, end with it, as after a boot that published.
+ */
+export function bootDroppedMemory(error: KantelError): KantelError {
+	memoryDroppedBoots.add(error);
+	return error;
+}
+
+/** Whether `error` is `bootDroppedMemory`'s. */
+export function isBootDroppedMemory(error: unknown): boolean {
+	return error instanceof KantelError && memoryDroppedBoots.has(error);
+}
+
+/**
+ * A create's outcome as `settleCreate` answers it, from what its host reported since its answer was lost: made and
+ * running (its placement); made and ended since (its placement, and the host's word on why); not made (`lost`, why);
+ * `pending` while the host hasn't said, or the create isn't placed. `reportedAt` is when its host's report was taken.
+ */
+export type CreateOutcome =
+	| { readonly state: "running"; readonly placement: Placement; readonly reportedAt: number }
+	| { readonly state: "ended"; readonly placement: Placement; readonly reason: string; readonly reportedAt: number }
+	| { readonly state: "lost"; readonly reason: string; readonly reportedAt: number }
+	| { readonly state: "pending" };
+
+/** What a backend's start, resume or recovery whose outcome isn't known was refused with (`startOutcomeUnknown`). */
+const unknownStarts = new WeakSet<KantelError>();
+
+/**
+ * A start, resume or recovery whose outcome isn't known: its host was sent it and never answered (its connection
+ * dropped, or the call timed out), so it may have booted the machine, and may have let go of the memory it was paused
+ * with. Marks `error` and answers it. Neither booted nor failed: the caller keeps the sandbox `starting` until
+ * `settleStart` says which, from what the host has.
+ */
+export function startOutcomeUnknown(error: KantelError): KantelError {
+	unknownStarts.add(error);
+	return error;
+}
+
+/** Whether `error` is `startOutcomeUnknown`'s. */
+export function isStartOutcomeUnknown(error: unknown): boolean {
+	return error instanceof KantelError && unknownStarts.has(error);
+}
+
+/**
+ * What became of a start, resume or recovery whose gateway went quiet (its publish failed, its answer was lost, or the
+ * gateway itself went), as `settleStart` answers it from what its host has now: its machine running (its placement);
+ * not running (`stopped`, or `error` there), with whether the host still holds the memory it was paused with (`memory`:
+ * `held` where the host has checked its memory image is there to resume, so a stopped one is paused there still;
+ * `gone` where it has none; `unknown` where the host can't say, so neither is assumed) and the host's word on why;
+ * `pending` while the host is still at it (starting or stopping it).
+ */
+export type StartOutcome =
+	| { readonly state: "running"; readonly placement: Placement }
+	| {
+			readonly state: "ended";
+			readonly hostState: "stopped" | "error";
+			readonly memory: "held" | "gone" | "unknown";
+			readonly reason: string;
+	  }
+	| { readonly state: "pending" };
+
+/**
+ * A move of a microVM to another host (`SandboxBackend.move`): a boot's options on its new host (its egress, revision,
+ * mounts, the hosts it may go to), its account, the host asked for, and whether it runs.
+ */
+export interface MoveSpec extends Omit<BootOptions, "fromSnapshot" | "rebase" | "rebaseTo" | "size" | "shape"> {
+	readonly accountId: string;
+	/** The one host asked for (`POST /sandboxes/{id}/move`'s `hostId`), among `eligibleHosts`. */
+	readonly to?: string;
+	/** The pool it is kept to, as a create's: the new host must be in it. */
+	readonly poolId?: string;
+	/** Told, with its new host, once its files are there and it starts there. */
+	readonly onStarting?: (hostId: string) => void;
+	/**
+	 * It runs: copied as it runs, then stopped without its memory (its processes end), copied again (only what it wrote
+	 * since), and started on its new host.
+	 */
+	readonly running?: boolean;
+	/**
+	 * Awaited, with its new host, before a running sandbox is stopped: rejects when it may not be (it changed
+	 * meanwhile), and the move is rolled back, the sandbox left running where it was.
+	 */
+	readonly onStopping?: (hostId: string) => Promise<void>;
+	/** Told, with its new host, once a running sandbox is stopped and its final copy is being made. */
+	readonly onFinalCopy?: (hostId: string) => void;
+	/**
+	 * Keep its memory where its new host's CPU and runtime match its own: a running sandbox is stopped keeping it, and
+	 * it carries on there. A host where it can be kept is chosen first; elsewhere it restarts.
+	 */
+	readonly keepMemory?: boolean;
+	/**
+	 * Awaited once its new host is chosen, before anything is copied: that host, and whether its memory goes too (and
+	 * why not, where it might have; the reason names no host). A rejection gives the move up before anything is sent,
+	 * its intent cleared, or, where that can't be done, leaves it to be settled (`settleMove`).
+	 */
+	readonly onPlanned?: (hostId: string, memory: MoveMemory) => Promise<void>;
+}
+
+/** What a move does with a sandbox's memory: keeps it, or restarts it, and why (where it might have been kept). */
+export interface MoveMemory {
+	readonly kept: boolean;
+	readonly reason?: string;
+}
+
+/** A move's dry run (`planMove`): the sandbox's account, the hosts it may go to, its pool, and whether it runs. */
+export interface MovePlanSpec {
+	readonly accountId: string;
+	readonly eligibleHosts: readonly string[];
+	readonly poolId?: string;
+	readonly running?: boolean;
+}
+
+/**
+ * One host a move may take a sandbox to now: what a move there that asks to keep its memory does with it, and where it
+ * keeps it, the pause it takes (its memory's bytes over the link's rate, measured by the hosts or assumed).
+ */
+export interface MoveOption {
+	readonly hostId: string;
+	readonly memory: MoveMemory;
+	readonly pauseMs?: number;
+	readonly memoryBytes?: number;
+	readonly bytesPerSecond?: number;
+	readonly rateMeasured?: boolean;
+}
+
+/** Where an upgraded isolate's `/workspace` files are in its microVM; `/workspace` there is a link to it. */
+export const UPGRADE_WORKSPACE = "/home/user/workspace";
+
+/**
+ * How much an upgrade moves between two hosts (`upgrade` when the isolate's own host can't make the microVM): at most
+ * this many files and bytes, as the control plane carries them. Its own host moves any amount.
+ */
+export const UPGRADE_MOVE_LIMITS = { files: 20_000, bytes: 256 * 1024 * 1024 } as const;
 
 /**
  * What takes the space on a host's disk as the host measures it: `Host.diskUsage` with its snapshots in one
@@ -75,6 +279,16 @@ export interface BackendHost {
 	 * sandboxes get is enforced however they run (the stub).
 	 */
 	readonly features?: readonly string[];
+	/**
+	 * What its isolate runtime can do: whether its isolates' shells run `node` and `python`, and whether an isolate's
+	 * memory is a hard limit. Absent: it hasn't said (a host without the isolate tier, or from before its runtime said),
+	 * so neither, and not enforced.
+	 */
+	readonly isolate?: BackendIsolateRuntime;
+	/** Its CPU fingerprint as text (`Host.cpuFingerprint`); absent: it hasn't said (an older host, the stub). */
+	readonly cpuFingerprint?: string;
+	/** Its microVM runtime fingerprints (`Host.runtimeFingerprints`); absent: it hasn't said. */
+	readonly runtimeFingerprints?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/**
 	 * The disk it had free when it last reported, which placement admits a create against (`capacity.diskGb` is what it
@@ -85,6 +299,8 @@ export interface BackendHost {
 	readonly diskUsage?: BackendDiskUsage;
 	/** Its memory, as it last reported it. Absent: it hasn't said (an older host, the stub). */
 	readonly memory?: computeSchema.HostMemory;
+	/** How it reaches its mesh peers, as it last reported it, while connected. Absent: it has no mesh (or the stub). */
+	readonly mesh?: computeSchema.HostMesh;
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
 	/**
@@ -97,7 +313,22 @@ export interface BackendHost {
 	readonly connected?: boolean;
 	/** The account it was added to as one of its own hosts, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
+	/** The pool it is in, as its registry has it (from its join token, or a move); absent where it keeps none. */
+	readonly poolId?: string;
+	/**
+	 * Its address on its pool's mesh (docs/design/disk-store.md, 2a), where its peers fetch disk versions from it: the
+	 * registry's, for a host that runs the mesh, given in `poolId`. Absent until it has one, and taken only while the pool
+	 * has sync on: a host without one there isn't offered to others as a holder (`disk.locate`).
+	 */
+	readonly meshAddress?: string;
 	readonly lastSeenAt?: number;
+}
+
+/** A host's isolate runtime, as `BackendHost.isolate` says it. */
+export interface BackendIsolateRuntime {
+	readonly javascript: boolean;
+	readonly python: boolean;
+	readonly memoryEnforced: boolean;
 }
 
 /** What the deployment can run now. */
@@ -111,6 +342,11 @@ export interface BackendCapabilities {
 /** A machine to make. */
 export interface SandboxSpec {
 	readonly sandboxId: string;
+	/**
+	 * Which attempt at making it this is (its record's `lifecycle` as the create was sent): kept with its placement, so
+	 * that `settleCreate` takes word on this attempt only. Absent: none (a fork), which is never settled that way.
+	 */
+	readonly attempt?: number;
 	readonly accountId: string;
 	readonly type: computeSchema.SandboxType;
 	/** Its name under the sandbox domain, which its port URLs start with. */
@@ -126,8 +362,19 @@ export interface SandboxSpec {
 	readonly env: { readonly [name: string]: string };
 	/** The hosts it may be placed on: online, not draining, with the asked-for labels and type. */
 	readonly eligibleHosts: readonly string[];
+	/**
+	 * The pool the sandbox is kept to: the one `eligibleHosts` were chosen in, or a snapshot's or a fork's source's. A
+	 * host in another pool by the time it is placed there refuses it (as its spec's `fork`, on its source's host).
+	 * Absent: no pool is kept to (one from before pools).
+	 */
+	readonly poolId?: string;
 	/** Start from this snapshot's disk (a `ref` the backend answered); absent, from an empty disk. */
 	readonly fromSnapshot?: string;
+	/**
+	 * With `fromSnapshot`: the hosts holding it, and whether another host may fetch it first. Absent: only the host its
+	 * ref names, where it names one.
+	 */
+	readonly snapshotCopies?: SnapshotCopies;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
 	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
@@ -138,6 +385,96 @@ export interface SandboxSpec {
 	 * never leaves one looking mounted.
 	 */
 	readonly mounts?: readonly BackendMount[];
+	/** Sticky disks to attach (`stickyDisks`): it goes only where the backend can attach them. */
+	readonly stickyDisks?: readonly BackendStickyDisk[];
+}
+
+/**
+ * Where a create from a snapshot can start (`SandboxSpec.snapshotCopies`, docs/design/disk-store.md, "Phase 3 notes"):
+ * the hosts holding it, the one it was taken on first, then those with a copy (the catalogue's `snapshot` holders),
+ * each one of the spec's eligible hosts. A backend places it on a holder with room, those whose copy restores its
+ * memory there first; with none, and `fetch`, on another eligible host with room, which fetches it first.
+ */
+export interface SnapshotCopies {
+	/** Each host holding it, and whether its copy there restores the snapshot's memory (its own, or a copy's memory). */
+	readonly holders: readonly { readonly hostId: string; readonly memory: boolean }[];
+	/** Whether the snapshot holds memory: a create elsewhere, or on a holder without it, boots on its disk. */
+	readonly memory: boolean;
+	/** Whether a host may fetch it from a holder first: snapshots are synced here, and a holder has reported it. */
+	readonly fetch: boolean;
+	/**
+	 * With `fetch`: the architectures of the holders that serve it, of which a host fetching it must be one (a holder
+	 * serves only hosts of its own). Absent: none said, any.
+	 */
+	readonly architectures?: readonly ("x86_64" | "aarch64")[];
+}
+
+/** What an upgrade makes (`SandboxBackend.upgrade`): a microVM create's spec, and what it starts from. */
+export interface UpgradeSpec extends SandboxSpec {
+	/**
+	 * Start the microVM from this snapshot (a `ref` the backend answered, of a microVM), as a create from it would, its
+	 * memory restored where it holds it, and lay the isolate's files over what it has at `UPGRADE_WORKSPACE`. Absent:
+	 * its image. Not `fromSnapshot`, which is where a stopped isolate's own files are.
+	 */
+	readonly intoSnapshot?: string;
+}
+
+/** A sticky disk to attach at a create: a copy of the newest version its host holds, or a new disk of `sizeGiB`. */
+export interface BackendStickyDisk {
+	readonly diskId: string;
+	readonly path: string;
+	readonly sizeGiB: number;
+	/**
+	 * The disk's head, where it has one: a host holding it is preferred, and attaches it; another attaches its newest
+	 * version (or a new disk) and, where it syncs, fetches the head in the background for the next sandbox.
+	 */
+	readonly version?: string;
+}
+
+/** A sandbox's sticky disk, as the backend answers it. */
+export interface BackendStickyDiskStatus {
+	readonly diskId: string;
+	readonly path: string;
+	/** The version its copy came from; absent for a new disk. */
+	readonly version?: string;
+	readonly state: "mounted" | "failed";
+	readonly reason?: string;
+}
+
+/** A fetch of a disk store object's version (`fetchDisk`): what `disk.locate` would answer the host. */
+export interface BackendDiskFetch {
+	readonly kind: string;
+	readonly objectId: string;
+	readonly version: string;
+	readonly mapDigest?: string;
+	readonly holders: readonly { readonly hostId: string; readonly address: string }[];
+	readonly grant?: string;
+}
+
+/** A committed sticky disk version, where it is. */
+export interface CommittedStickyDisk {
+	readonly hostId: string;
+	readonly sizeBytes: number;
+	readonly allocatedBytes: number;
+	/** Its block map's digest, when its host made the map in time (a later holdings report may give it). */
+	readonly mapDigest?: string;
+}
+
+/** What a connected host last reported holding of sticky disks (`SandboxBackend.stickyHoldings`). */
+export interface BackendStickyHoldings {
+	readonly hostId: string;
+	/** When the report arrived: the host measured it a moment before, so a version committed since may be missing. */
+	readonly reportedAt: number;
+	/**
+	 * The versions it holds of each disk; a disk it holds none of isn't listed. Absent: it doesn't say (a host without
+	 * sticky disks, or from before them), which isn't holding none.
+	 */
+	readonly disks?: readonly {
+		readonly diskId: string;
+		readonly versions: readonly string[];
+		/** The block map digests of the versions it has made maps of, by version. */
+		readonly mapDigests?: Readonly<Record<string, string>>;
+	}[];
 }
 
 /**
@@ -149,6 +486,17 @@ export interface SandboxSpec {
 export interface BackendMount {
 	readonly path: string;
 	readonly source: computeSchema.MountSource;
+}
+
+/** A mount's status after `refreshMounts`, by path. */
+export interface BackendMountRefresh {
+	readonly path: string;
+	readonly status: computeSchema.MountStatus;
+	readonly error?: string;
+	/** A bucket mount's: how many objects the listing it shows holds. */
+	readonly objects?: number;
+	/** A bucket mount's: when the listing it shows began (ms since the epoch). */
+	readonly listedAt?: number;
 }
 
 /** A mount's status as the backend reports it, by path. */
@@ -200,6 +548,13 @@ export interface SandboxTemplateBoot {
 	 * speeds a create up.
 	 */
 	readonly snapshot?: string;
+	/**
+	 * Every host that holds a copy of `snapshot` that restores there (its own build's, or one fetched from a peer: the
+	 * catalogue's `template` holders), each one of the spec's eligible hosts; the host in `snapshot`'s ref among them
+	 * when it is one. A backend starts the sandbox from the snapshot on whichever of them it places it on. Absent: only
+	 * `snapshot`'s host. Never kept for a retry (`StoredSandbox.templateBoot`), which boots fresh.
+	 */
+	readonly snapshotHosts?: readonly string[];
 }
 
 /** A machine's vCPUs, memory and disk, as its host gave them. */
@@ -246,6 +601,12 @@ export interface TemplateBuildSpec {
 	readonly keyHash: string;
 	/** The host to build on: the one whose runtime the key names. */
 	readonly hostId: string;
+	/**
+	 * A custom image's build that is a copy of an entry built on another host: over only that entry's image, its root
+	 * filesystem (`rootfsKey`, fetched from a host that holds it) and the digest its build named, never built or pulled
+	 * again. Only a host that keeps a copy to it (`template-image-copies`) is given one.
+	 */
+	readonly copy?: { readonly rootfsKey: string; readonly imageDigest: string };
 }
 
 /**
@@ -258,8 +619,46 @@ export interface TemplateSnapshotBytes {
 	readonly ref?: string;
 }
 
-/** A template snapshot built: its opaque reference, the host holding it, and its size. */
-export interface BuiltTemplate {
+/** What a CPU is to a guest: its vendor, family, model and a hash of its CPUID features (`HostCpuFingerprint`). */
+export interface CpuFingerprint {
+	readonly vendor: string;
+	readonly family: number;
+	readonly model: number;
+	readonly featuresHash: string;
+}
+
+/**
+ * What a microVM snapshot was made on, as its host said: its host's CPU and its runtime fingerprint (one of a host's
+ * `runtimeFingerprints`). Its memory restores only onto a host with the same CPU and its runtime among the host's.
+ * Absent from a backend or host that doesn't say.
+ */
+export interface SnapshotMadeOn {
+	readonly cpu?: CpuFingerprint;
+	readonly runtime?: string;
+}
+
+/** A CPU fingerprint as a host's details show it (`Host.cpuFingerprint`): `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. */
+export const cpuFingerprintText = (cpu: CpuFingerprint): string =>
+	`${cpu.vendor} family ${cpu.family} model ${cpu.model}, features ${cpu.featuresHash}`;
+
+/**
+ * Whether a snapshot's memory, made on `made`, restores on a host as its details say it is (`Host.cpuFingerprint` and
+ * `runtimeFingerprints`): the same CPU, its features known, and the snapshot's runtime among the host's. A snapshot or
+ * host that doesn't say either matches nothing.
+ */
+export function memoryRestoresOn(
+	host: { readonly cpuFingerprint?: string; readonly runtimeFingerprints?: readonly string[] } | undefined,
+	made: SnapshotMadeOn,
+): boolean {
+	if (host?.cpuFingerprint === undefined || made.cpu === undefined || made.cpu.featuresHash === "") return false;
+	if (made.runtime === undefined || made.runtime === "") return false;
+	return (
+		cpuFingerprintText(made.cpu) === host.cpuFingerprint && (host.runtimeFingerprints ?? []).includes(made.runtime)
+	);
+}
+
+/** A template snapshot built: its opaque reference, the host holding it, its size, and what it was made on. */
+export interface BuiltTemplate extends SnapshotMadeOn {
 	readonly ref: string;
 	readonly hostId: string;
 	/** The image booted: a pulled base's ID, or a custom image's digest (a reference's resolved one, a build's image ID). */
@@ -309,6 +708,12 @@ export interface BackendEgressGrant {
 /** Where a machine was placed, and what it can do. */
 export interface Placement {
 	readonly hostId: string;
+	/**
+	 * The pool its host was in as the backend admitted it there: the one its spec kept it to (`SandboxSpec.poolId`), or
+	 * for a spec that kept it to none, the one it landed in. The sandbox is recorded in it. Absent where the backend
+	 * doesn't say (the stub, a host whose pool the registry doesn't know yet).
+	 */
+	readonly poolId?: string;
 	readonly resources?: MachineResources;
 	readonly capabilities: computeSchema.SandboxCapabilities;
 	/**
@@ -328,6 +733,8 @@ export interface Placement {
 	 * `ComputeService.reportMounts`.
 	 */
 	readonly mounts?: readonly BackendMountStatus[];
+	/** Its sticky disks' statuses, from a create that named some. */
+	readonly stickyDisks?: readonly BackendStickyDiskStatus[];
 	/**
 	 * A create from a template snapshot that booted the template fresh instead, running its setup: its host no longer
 	 * held the snapshot (or couldn't restore it), or had no room and another host booted it.
@@ -344,6 +751,16 @@ export interface Placement {
 	 * (`ComputeService.reportExit`). Absent where the backend doesn't say.
 	 */
 	readonly machineAt?: number;
+	/**
+	 * Its guest agent's health as its host reported it, for a machine that ran before this answer (a create settled from
+	 * its host's report, `settleCreate`): `unresponsive` with why, and its stamp (`healthAt`), which orders later reports.
+	 * Absent: a fresh boot's, which answers.
+	 */
+	readonly reportedHealth?: {
+		readonly unresponsive: boolean;
+		readonly reason?: string;
+		readonly healthAt?: number;
+	};
 	/**
 	 * How its machine's start took its time on its host, by phase, without `totalMs` (the service measures that around
 	 * the call). Absent where the backend doesn't say (the stub, an older host, an isolate).
@@ -390,8 +807,13 @@ export interface TakeSnapshotOptions {
 	readonly memory?: boolean;
 }
 
-export interface TakenSnapshot {
+export interface TakenSnapshot extends SnapshotMadeOn {
 	readonly ref: string;
+	/**
+	 * The host it was taken on, which holds it first: where `ref` names no host (a saved snapshot's ID alone), the
+	 * compute plane names that host's copy by it. Absent where the backend has no hosts (the stub).
+	 */
+	readonly hostId?: string;
 	readonly sizeBytes: number;
 	/** The base image version its root file system is, as `Placement.base`; absent where the backend doesn't know. */
 	readonly base?: string;
@@ -432,6 +854,12 @@ export interface ExecRequest {
 	 * `timeoutMs`, and `commandResult` can fetch its result later, from any gateway, where the backend keeps it.
 	 */
 	readonly detached?: boolean;
+	/**
+	 * Run as root, not the sandbox's default user (`user` where its image has one): only Kantel's own commands, such as a
+	 * GitHub runner pool's `beforeCommit`, never a caller's. A backend whose sandboxes run commands as root already
+	 * may ignore it.
+	 */
+	readonly asRoot?: boolean;
 }
 
 /**
@@ -455,6 +883,29 @@ export interface ExecResult {
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly timedOut: boolean;
+	/** In an isolate: it failed because it ran something an isolate doesn't have (`Command.needsMicrovm`). */
+	readonly needsMicrovm?: {
+		readonly command: string;
+		readonly reason: string;
+		/** Read from the shell's answer, not said by the isolate's runtime: a hint, never acted on (`autoUpgrade`). */
+		readonly inferred?: true;
+	};
+	/** In an isolate: its runtime stopped it for using too much CPU time, memory or wall time. */
+	readonly terminated?: "cpu" | "memory" | "wall";
+	/**
+	 * Made up by the backend, not where the command ran: its sandbox's host no longer knows it (it, or the sandbox,
+	 * restarted), so its result is lost, as `stderr` says.
+	 */
+	readonly unknown?: true;
+}
+
+/** What `upgrade` answers: the microVM's placement, and how its files got there. */
+export interface UpgradedPlacement extends Placement {
+	/** `host`: the isolate's own host made the microVM and moved the files itself; `control-plane`: Kantel moved them. */
+	readonly path: "host" | "control-plane";
+	/** The files, links and directories moved, and the files' bytes. */
+	readonly files: number;
+	readonly bytes: number;
 }
 
 /**
@@ -502,6 +953,11 @@ export interface BackendFileEntry {
 	readonly kind: "file" | "directory" | "symlink";
 	readonly size: number;
 	readonly modifiedAt?: number;
+	/**
+	 * A fenced write (an environment set-up's) the host dropped, because a newer set-up's write of the same path had
+	 * landed: nothing was written, and the path holds the newer content.
+	 */
+	readonly fenced?: boolean;
 }
 
 /** One of a running sandbox's processes, as its machine measured it over a short sample. */
@@ -571,6 +1027,16 @@ export function refusedBeforeTheMachine(error: unknown): boolean {
 	return error instanceof KantelError && refusedBeforeMachine.has(error);
 }
 
+/** What a destroy is told of the sandbox besides its ID. */
+export interface DestroyOptions {
+	/**
+	 * The host its record says it is on. A backend with no placement for it (one its host deleted and forgot, whose
+	 * delete's answer was lost) settles it by that host: written off when the host is revoked or gone, deleted there when
+	 * the host answers, and refused while the host can't be reached, so a disk that may still be there isn't forgotten.
+	 */
+	readonly hostId?: string;
+}
+
 export interface SandboxBackend {
 	/** The types, sizes and hosts available now. */
 	capabilities(): Promise<BackendCapabilities>;
@@ -580,10 +1046,31 @@ export interface SandboxBackend {
 	 * is (the stub).
 	 */
 	hostConnected?(hostId: string): Promise<boolean | undefined>;
-	/** Places and boots a new machine. */
+	/**
+	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
+	 * (`settleCreate` says what came of it).
+	 */
 	create(spec: SandboxSpec): Promise<Placement>;
-	/** Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. */
+	/**
+	 * The outcome of create attempt `attempt` (`SandboxSpec.attempt`) whose answer, or whose gateway, was lost, from what
+	 * its host has reported since about that attempt (its hello's sandboxes once it reconnects, or an event): never
+	 * guessed, and never from word on another attempt (`pending`). Rejects while the host it is on can't be asked.
+	 * Absent: a backend whose creates are always answered (the stub).
+	 */
+	settleCreate?(sandboxId: string, attempt: number): Promise<CreateOutcome>;
+	/**
+	 * Boots a stopped, paused or errored sandbox fresh from a disk snapshot; a paused one's memory is let go. One that
+	 * fails after letting go of it rejects with `bootDroppedMemory`'s error; any other failure kept it. One its host was
+	 * sent and never answered rejects with `startOutcomeUnknown`'s (as do `resume` and `recover`): `settleStart` says what
+	 * came of it.
+	 */
 	start(sandboxId: string, options: BootOptions): Promise<Placement>;
+	/**
+	 * What became of a start, resume or recovery of a placed sandbox whose gateway went quiet, from what its host says of
+	 * the machine now (`sandbox.get`): never guessed. Rejects while its host can't be asked (away, or not answering).
+	 * Absent: a backend that can't say (the stub), whose stuck starts are left as they are.
+	 */
+	settleStart?(sandboxId: string): Promise<StartOutcome>;
 	/**
 	 * Image patching: whether a `start` with `rebase` (and `rebaseTo`) can land now, checked before a running sandbox is
 	 * stopped for it. Rejects when it can't: the machine its disk is on isn't among `eligibleHosts`, doesn't patch
@@ -617,8 +1104,51 @@ export interface SandboxBackend {
 	): Promise<Placement[]>;
 	/** Restarts a sandbox's machine on its disk as it is (or on `fromSnapshot` when the disk is gone); memory is lost. */
 	recover(sandboxId: string, options: BootOptions): Promise<Placement>;
-	/** Lets the machine go for good; its snapshots are deleted separately. */
-	destroy(sandboxId: string): Promise<void>;
+	/**
+	 * Lets the machine go for good; its snapshots are deleted separately. `options.hostId` is the host its record says
+	 * it is on: a backend that no longer has it placed there settles it by that host (`DestroyOptions`).
+	 */
+	destroy(sandboxId: string, options?: DestroyOptions): Promise<void>;
+	/**
+	 * Makes an isolate a microVM with the same ID (`POST /sandboxes/{id}/upgrade`): a machine made as a create of `spec`
+	 * (type `microvm`) would make it, running, with the isolate's `/workspace` in `UPGRADE_WORKSPACE` and `/workspace` a
+	 * link to it; the isolate is let go only once the microVM runs with them. A stopped isolate's files are what it
+	 * stopped with (`spec.fromSnapshot`, its stop's snapshot, where the backend keeps them there). Its own host does it
+	 * where it can (`ISOLATE_UPGRADE_FEATURE`, in `spec.eligibleHosts`, with room); else the microVM goes on another host
+	 * and the files are moved to it, up to `UPGRADE_MOVE_LIMITS`, the isolate held still meanwhile
+	 * (`ISOLATE_FREEZE_FEATURE`). Rejects, with the isolate as it was, when the microVM can't be made or the files can't
+	 * be moved; `upgradeOutcomeUnknown` when that isn't known (`settleUpgrade` says). Sent again with the same
+	 * `operationId`, it answers the first's outcome. Absent: isolates aren't upgraded here (`not_supported`). From a
+	 * snapshot (`spec.intoSnapshot`) the microVM goes on the snapshot's host, as a create from it does: its own host
+	 * when that holds it, else that host with the files moved there.
+	 */
+	upgrade?(sandboxId: string, spec: UpgradeSpec, operationId: string): Promise<UpgradedPlacement>;
+	/**
+	 * The outcome of upgrade `operationId` (`upgrade`'s third argument), for one whose answer was lost: once one under
+	 * way has ended, done with its microVM, or failed, rolled back (any microVM made for it deleted, the isolate as it
+	 * was) so that it can't land later. Each upgrade is done at most once by its ID. Rejects `unavailable` while it can't
+	 * be told (the host away). Absent with `upgrade` absent.
+	 */
+	settleUpgrade?(sandboxId: string, operationId: string): Promise<UpgradeOutcome>;
+	/**
+	 * Moves a microVM to another host in its pool (`POST /sandboxes/{id}/move`), with its ID, disk and sticky disks'
+	 * copies, and starts it there as `spec` boots it, cold, on its disk: answers its placement there, running. A running
+	 * one (`spec.running`) is copied as it runs, then stopped and copied again. The sandbox is on its old host until it
+	 * runs on its new one; a failure before then leaves it where it was (stopped, once it was stopped for the move).
+	 * `upgradeOutcomeUnknown` when that isn't known (`settleMove` says). Sent again with the same `operationId`, it goes
+	 * on with the first. Absent: sandboxes don't move here (`not_supported`).
+	 */
+	move?(sandboxId: string, spec: MoveSpec, operationId: string): Promise<Placement>;
+	/**
+	 * The outcome of move `operationId`, for one whose answer was lost: done once it switched, else rolled back so that
+	 * it can't land later. Rejects `unavailable` while it can't be told. Absent with `move` absent.
+	 */
+	settleMove?(sandboxId: string, operationId: string): Promise<MoveOutcome>;
+	/**
+	 * A move's dry run: each host a move of the sandbox may take it to now, with what it does with its memory and the
+	 * pause it takes. Absent with `move` absent; absent, or answering undefined, from a backend that can't say.
+	 */
+	planMove?(sandboxId: string, spec: MovePlanSpec): Promise<readonly MoveOption[] | undefined>;
 	/**
 	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
 	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.
@@ -648,6 +1178,11 @@ export interface SandboxBackend {
 	 * sources go to no host until it is placed.
 	 */
 	placedOn?(sandboxId: string): Promise<string | undefined>;
+	/**
+	 * Whether the backend's scheduler has a sandbox placed on the host, one being made there included: what a host's move
+	 * to another pool waits for. Absent, the compute plane's own records alone say.
+	 */
+	hostHolds?(hostId: string): Promise<boolean>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
 	/**
@@ -664,7 +1199,14 @@ export interface SandboxBackend {
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
 	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */
-	writeFile(sandboxId: string, path: string, content: Uint8Array, mode?: number): Promise<BackendFileEntry>;
+	writeFile(
+		sandboxId: string,
+		path: string,
+		content: Uint8Array,
+		mode?: number,
+		/** `fence`: an environment set-up's (`StoredSandbox.provisionFence`); a host drops a write below one it has taken. */
+		options?: { readonly fence?: number },
+	): Promise<BackendFileEntry>;
 	/** Deletes a file, or a directory and everything in it. */
 	deleteFile(sandboxId: string, path: string): Promise<void>;
 	listFiles(sandboxId: string, path: string): Promise<BackendFileEntry[]>;
@@ -673,6 +1215,14 @@ export interface SandboxBackend {
 	 * isolate, a host or guest agent too old). Absent: no sandbox of the backend's lists them.
 	 */
 	processes?(sandboxId: string, limit: number): Promise<BackendProcessList>;
+	/**
+	 * Brings a running sandbox's bucket mounts up to date with their buckets: it resolves only once each one at `path`
+	 * (every bucket mount without it) shows the sandbox a listing that began after the call, with each mount's status
+	 * then. A listing that fails, or a sandbox that doesn't take it, throws `unavailable` naming the mount; a bundle at
+	 * `path` is `invalid`, and a host that can't promise any of that `not_supported`. Absent: no sandbox of the
+	 * backend's can.
+	 */
+	refreshMounts?(sandboxId: string, path?: string): Promise<BackendMountRefresh[]>;
 	/**
 	 * Takes a snapshot of a running sandbox's disk without stopping it, and its memory too with `memory` where the
 	 * backend can keep it (`TakenSnapshot.memory` says whether it did).
@@ -755,6 +1305,11 @@ export interface SandboxBackend {
 	 */
 	updateSecrets?(sandboxId: string, version: number): Promise<void>;
 	/**
+	 * The sandbox's env changed (an environment attached or detached): the host keeps the new one, and a running
+	 * microVM's guest rewrites its env file so new shells see it. Absent, the sandbox gets it when it next boots.
+	 */
+	updateEnv?(sandboxId: string, env: { readonly [name: string]: string }): Promise<void>;
+	/**
 	 * The runtime of each host that can build and boot template snapshots, one entry a host. Absent (with `buildTemplate`
 	 * and `deleteTemplateSnapshot`), the backend has no templates, and their routes answer `not_supported`.
 	 */
@@ -772,6 +1327,24 @@ export interface SandboxBackend {
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
 	/**
+	 * Makes a running sandbox's copy of a sticky disk the disk's `version`, on its host (`sticky.commit`). Absent: the
+	 * backend has no sticky disks.
+	 */
+	commitStickyDisk?(sandboxId: string, diskId: string, version: string): Promise<CommittedStickyDisk>;
+	/** Deletes a sticky disk's versions from every host that runs sticky disks and is online now; idempotent. */
+	deleteStickyDisk?(diskId: string): Promise<void>;
+	/**
+	 * Has a host fetch a version of a disk store object from the hosts that hold it (`disk.fetch`), with where it is and a
+	 * grant naming the host; resolves once the fetch has started. `not_supported` for a host that doesn't fetch from its
+	 * peers. Absent: the backend's hosts don't sync.
+	 */
+	fetchDisk?(hostId: string, fetch: BackendDiskFetch): Promise<void>;
+	/**
+	 * What each connected host last reported holding of sticky disks. Absent: the backend doesn't say, and the catalogue
+	 * keeps every version.
+	 */
+	stickyHoldings?(): Promise<readonly BackendStickyHoldings[]>;
+	/**
 	 * Asks a connected host to update its host agent to `latestVersion`, answering once it has the new one in place,
 	 * with the version it's moving to. Absent: hosts aren't updated from the control plane (the stub).
 	 */
@@ -781,13 +1354,27 @@ export interface SandboxBackend {
 	 * once every 30 seconds (`checked` false within it). Absent: no release is read here (the stub).
 	 */
 	checkHostUpdates?(): Promise<{ readonly checked: boolean; readonly latestVersion?: string }>;
-	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */
+	/**
+	 * A pool's sync was set, on or off (changed, or set again by a call that retries one whose telling failed). The
+	 * backend's hosts in it that run the pool's mesh are brought into it or taken out (`ComputeService.poolSync` says
+	 * which pools have sync on). Absent, nothing to do.
+	 */
+	updatePool?(poolId: string, change: { readonly sync: boolean }): Promise<void>;
+	/**
+	 * The control plane's grant keys changed (`ComputeService.grantKeys`): a rotation, or a key that couldn't be opened
+	 * replaced. The backend's connected hosts are sent them. Absent, nothing to do.
+	 */
+	grantKeysChanged?(): Promise<void>;
+	/** The super-admin renamed, relabelled, drained or moved a host to another pool. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,
 		change: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** The drain's or undrain's place in order (`StoredHost.drainEpoch`): an older one than the registry's is passed over. */
+			readonly drainEpoch?: number;
+			readonly poolId?: string;
 		},
 	): Promise<void>;
 }

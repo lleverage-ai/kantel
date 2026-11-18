@@ -1,6 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { createComputeFixtures } from "./fixtures.ts";
+import type { Host, Pool } from "./compute-model.ts";
+import { createComputeFixtures, HOSTS } from "./fixtures.ts";
 import { looksLikeOrigin } from "./host-join.tsx";
+import { MoveHostDialog, oneAtATime, poolGroups, poolNameError, poolSummaryText } from "./host-pools.tsx";
 import { limitBytes, limitText, parseLabels } from "./hosts-page.tsx";
 
 describe("the public URL field", () => {
@@ -65,5 +69,150 @@ describe("the sample hosts' public URL", () => {
 		expect((await hosts?.join({}))?.command).toContain("--url https://kantel.example.com ");
 		const cleared = await hosts?.publicUrl?.set(null);
 		expect(cleared).toMatchObject({ publicUrl: "http://127.0.0.1:58090", setHere: false });
+	});
+});
+
+describe("hosts by pool", () => {
+	const pool = (id: string, name: string, isDefault = false): Pool => ({
+		id,
+		name,
+		default: isDefault,
+		hosts: 0,
+		createdAt: 0,
+	});
+	const host = (id: string, poolId?: string): Host => {
+		const { poolId: _, ...sample } = HOSTS[0] as Host;
+		return { ...sample, id, ...(poolId === undefined ? {} : { poolId }) };
+	};
+
+	it("lists the default first, then the rest by name, an empty pool too", () => {
+		const groups = poolGroups(
+			[host("a", "pool_ci"), host("b", "pool_default")],
+			[pool("pool_workflows", "workflows"), pool("pool_ci", "ci"), pool("pool_default", "default", true)],
+		);
+		expect(groups.map((group) => [group.pool.name, group.hosts.map((each) => each.id)])).toEqual([
+			["default", ["b"]],
+			["ci", ["a"]],
+			["workflows", []],
+		]);
+	});
+
+	it("puts a host in no known pool in the default, as Kantel does", () => {
+		const groups = poolGroups(
+			[host("a"), host("b", "pool_gone")],
+			[pool("pool_ci", "ci"), pool("pool_default", "default", true)],
+		);
+		expect(groups[0]?.hosts.map((each) => each.id)).toEqual(["a", "b"]);
+		expect(groups[1]?.hosts).toEqual([]);
+	});
+
+	it("says what a pool's hosts hold, or that it has none", () => {
+		expect(poolSummaryText([])).toBe("No hosts");
+		expect(poolSummaryText(HOSTS.slice(0, 2))).toBe("2 hosts, 1 online, 50 of 128 vCPU in use, 133 sandboxes");
+	});
+
+	it("takes a pool's name only as the API does", () => {
+		expect(poolNameError("ci-runners")).toBeUndefined();
+		expect(poolNameError("")).toBeUndefined();
+		for (const name of ["CI", "-ci", "ci-", "ci runners", "ci_runners"]) expect(poolNameError(name)).toBeDefined();
+	});
+});
+
+describe("the sample hosts' pools", () => {
+	it("move only a drained host with no sandboxes, with the API's reasons", async () => {
+		const { hosts } = createComputeFixtures({ hostOverrides: { hst_mac: { state: "draining" } } });
+		if (hosts?.move === undefined || hosts.pools === undefined) throw new Error("No pools in the sample");
+		await expect(hosts.move("hst_hetzner_1", "pool_workflows")).rejects.toThrow("Drain the host");
+		await expect(hosts.move("hst_hetzner_2", "pool_workflows")).rejects.toThrow("still has sandboxes");
+		expect((await hosts.move("hst_mac", "pool_workflows")).poolId).toBe("pool_workflows");
+		expect((await hosts.pools.list()).find((each) => each.id === "pool_workflows")?.hosts).toBe(1);
+	});
+
+	it("delete only an empty pool that isn't the default", async () => {
+		const { hosts } = createComputeFixtures();
+		const pools = hosts?.pools;
+		if (pools === undefined) throw new Error("No pools in the sample");
+		await expect(pools.remove("pool_default")).rejects.toThrow("default pool");
+		await expect(pools.remove("pool_ci")).rejects.toThrow("2 hosts");
+		await pools.remove("pool_workflows");
+		expect((await pools.list()).map((each) => each.name)).toEqual(["default", "ci"]);
+	});
+});
+
+describe("Move to pool", () => {
+	const pools: Pool[] = [
+		{ id: "pool_default", name: "default", default: true, hosts: 2, createdAt: 0 },
+		{ id: "pool_ci", name: "ci", default: false, hosts: 2, createdAt: 0 },
+	];
+	const render = (host: Host) =>
+		renderToStaticMarkup(
+			createElement(MoveHostDialog, {
+				host,
+				pools,
+				onClose: () => {},
+				onDrain: async () => {},
+				onMove: async () => {},
+			}),
+		);
+	const sample = (id: string): Host => HOSTS.find((each) => each.id === id) as Host;
+
+	it("says the rule, and that an online host isn't drained, with Drain", () => {
+		const html = render(sample("hst_hetzner_1"));
+		expect(html).toContain("Only a drained host with no sandboxes moves.");
+		expect(html).toContain("not drained.");
+		expect(html).toContain(">Drain<");
+		// Only the pools it isn't in.
+		expect(html).toContain('value="pool_default"');
+		expect(html).not.toContain('value="pool_ci"');
+	});
+
+	it("says a drained host still has sandboxes", () => {
+		expect(render(sample("hst_hetzner_2"))).toContain("still has 7 sandboxes");
+	});
+
+	it("has nothing in the way for a drained host with none", () => {
+		const html = render({ ...sample("hst_mac"), state: "draining" });
+		expect(html).not.toContain("not drained");
+		expect(html).not.toContain("still has");
+	});
+});
+
+describe("one change of default at a time", () => {
+	/** A task that waits until it's told to settle. */
+	const deferred = () => {
+		let settle: (fail: boolean) => void = () => {};
+		const task = () =>
+			new Promise<void>((resolve, reject) => {
+				settle = (fail) => (fail ? reject(new Error("refused")) : resolve());
+			});
+		return { task, settle: (fail = false) => settle(fail) };
+	};
+
+	it("doesn't start another while one is under way, and takes the next once it succeeds", async () => {
+		const gate = oneAtATime();
+		const first = deferred();
+		const running = gate.run(first.task);
+		expect(gate.busy()).toBe(true);
+		let ran = false;
+		expect(
+			await gate.run(async () => {
+				ran = true;
+			}),
+		).toBe(false);
+		expect(ran).toBe(false);
+		first.settle();
+		expect(await running).toBe(true);
+		expect(gate.busy()).toBe(false);
+		expect(await gate.run(async () => {})).toBe(true);
+	});
+
+	it("takes the next once one fails", async () => {
+		const gate = oneAtATime();
+		const first = deferred();
+		const running = gate.run(first.task);
+		first.settle(true);
+		await expect(running).rejects.toThrow("refused");
+		expect(gate.busy()).toBe(false);
+		expect(await gate.run(async () => {})).toBe(true);
 	});
 });

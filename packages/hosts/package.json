@@ -22,6 +22,7 @@
 		"./protocol": "./src/protocol.ts",
 		"./scheduler": "./src/scheduler.ts",
 		"./service": "./src/service.ts",
+		"./snapshot-refs": "./src/snapshot-refs.ts",
 		"./store": "./src/store.ts"
 	},
 	"dependencies": {

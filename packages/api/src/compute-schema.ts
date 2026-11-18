@@ -100,6 +100,13 @@ export const Account = Type.Object(
 		role: MemberRole,
 		defaultVisibility: SandboxVisibility,
 		personalTokens: Type.Optional(PersonalTokenPolicy),
+		snapshotCopies: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether Kantel keeps each saved snapshot on two hosts of its pool, where the pool has two or more that can hold " +
+					"it, so losing one host loses none of the account's saved snapshots. Default true. Absent from a gateway before it.",
+			}),
+		),
 		createdAt: Timestamp,
 	},
 	{
@@ -188,6 +195,13 @@ export const UpdateAccountBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		defaultVisibility: Type.Optional(SandboxVisibility),
 		personalTokens: Type.Optional(PersonalTokenPolicy),
+		snapshotCopies: Type.Optional(
+			Type.Boolean({
+				description:
+					"Keep each saved snapshot on two hosts of its pool (`Account.snapshotCopies`). Off, no new copies are made; " +
+					"those there are stay until their snapshots are deleted.",
+			}),
+		),
 	},
 	{ title: "UpdateAccountBody" },
 );
@@ -260,9 +274,13 @@ export const JoinOrganisationBody = Type.Object(
 export const SandboxType = Type.Union([Type.Literal("isolate"), Type.Literal("microvm")], {
 	title: "SandboxType",
 	description:
-		"`isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs " +
-		"almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with " +
-		"a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.",
+		"`isolate`: a V8 isolate running just-bash, a bash written in TypeScript, over files kept in `/workspace`. " +
+		"Starts in milliseconds and costs almost nothing. It has curl, jq, grep, rg, sed, awk and the usual text tools, " +
+		"and `node` (JavaScript and TypeScript, no npm packages) and `python` (Pyodide: the standard library and numpy, " +
+		"no pip install) where its `capabilities` say so (`javascript`, `python`), but no git, package manager or other " +
+		"program of its own, no Docker, desktop, ports or SSH. It can be upgraded to a microVM in place. " +
+		"`microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser " +
+		"and SSH.",
 });
 
 export const SandboxState = Type.Union(
@@ -272,6 +290,7 @@ export const SandboxState = Type.Union(
 		Type.Literal("stopping"),
 		Type.Literal("stopped"),
 		Type.Literal("paused"),
+		Type.Literal("moving"),
 		Type.Literal("error"),
 		Type.Literal("deleting"),
 		Type.Literal("deleted"),
@@ -280,6 +299,9 @@ export const SandboxState = Type.Union(
 		title: "SandboxState",
 		description:
 			"`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. " +
+			"`moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then " +
+			"started there; commands and file calls wait for it as they do for a start, except while a running sandbox's " +
+			"first copy is made (`copying`), when it still runs them. " +
 			"`stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like " +
 			"`stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the " +
 			"last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for " +
@@ -421,8 +443,9 @@ export const SandboxShapes = Type.Object(
 				memoryMb: ShapeRange,
 				enforced: Type.Boolean({
 					description:
-						"Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's " +
-						"memory, shared by its isolates, is the limit.",
+						"Whether an isolate's memory is a hard limit (its heap, ArrayBuffers and WebAssembly memory together): true " +
+						"when every host the account's isolates may run on says its isolate runtime enforces it. Otherwise the " +
+						"runtime records it, and the account VM's memory, shared by its isolates, is the limit.",
 				}),
 			},
 			{ title: "IsolateShapes" },
@@ -572,6 +595,16 @@ export const SandboxCapabilities = Type.Object(
 	{
 		exec: Type.Boolean(),
 		files: Type.Boolean(),
+		javascript: Type.Boolean({
+			description:
+				"Whether its commands can run JavaScript with `node`: always in a microVM; in an isolate, where its host's isolate " +
+				"runtime has it (each run a fresh V8 isolate, with no npm packages).",
+		}),
+		python: Type.Boolean({
+			description:
+				"Whether its commands can run Python with `python` (`python3`): always in a microVM; in an isolate, where its " +
+				"host's isolate runtime has it (Pyodide, with the packages it ships, none installed from the internet).",
+		}),
 		ssh: Type.Boolean(),
 		desktop: Type.Boolean(),
 		browser: Type.Boolean(),
@@ -841,8 +874,10 @@ export const BucketMountSource = Type.Object(
 				minimum: 0,
 				maximum: 86400,
 				description:
-					"How long the host trusts its listing of the prefix before it looks again, so objects added later appear. " +
-					"0: never look again. Default: the host's.",
+					"How long the host trusts its listing of the prefix before it looks again, so objects added later appear: " +
+					"it looks when the sandbox next uses the mount after that, and that use still sees the old listing. 0: never " +
+					"look again. Default: the host's (60). To have the sandbox see a change before it next uses the mount, call " +
+					"`refreshSandboxMounts`.",
 			}),
 		),
 	},
@@ -890,6 +925,42 @@ export const SandboxMount = Type.Object(
 	{ title: "SandboxMount", description: "A mount of a sandbox's, and whether its files are in place." },
 );
 
+export const RefreshMountsBody = Type.Object(
+	{
+		path: Type.Optional(
+			Type.String({
+				minLength: 2,
+				maxLength: 1024,
+				description: "Just the bucket mount at this path. Default: every bucket mount of the sandbox's.",
+			}),
+		),
+	},
+	{ title: "RefreshMountsBody" },
+);
+
+export const RefreshedMount = Type.Object(
+	{
+		path: Type.String(),
+		source: MountSource,
+		status: MountStatus,
+		error: Type.Optional(Type.String({ description: "Why it is `failed`, in words." })),
+		objects: Type.Optional(Type.Integer({ minimum: 0, description: "How many objects the listing it shows holds." })),
+		listedAt: Type.Optional(
+			Type.Integer({
+				description:
+					"When the listing it shows began (ms since the epoch), after the call arrived: it has every object the " +
+					"bucket held then.",
+			}),
+		),
+	},
+	{ title: "RefreshedMount", description: "A bucket mount as the sandbox shows it after a refresh." },
+);
+
+export const RefreshedMountList = Type.Object(
+	{ items: Type.Array(RefreshedMount, { description: "Each bucket mount refreshed, in the sandbox's order." }) },
+	{ title: "RefreshedMountList" },
+);
+
 export const SandboxTemplate = Type.Object(
 	{
 		id: Type.String({ description: "The template's ID, `tpl_…`." }),
@@ -919,6 +990,22 @@ export const SandboxStartup = Type.Object(
 			}),
 		),
 		diskMs: Type.Number({ description: "Making its disk, in milliseconds." }),
+		fetchMs: Type.Optional(
+			Type.Number({
+				description:
+					"For a sandbox made from a saved snapshot on a host that didn't hold it: its host fetching the snapshot's " +
+					"disk from another host in its pool first, in milliseconds, until the host reported it (each 15 seconds or " +
+					"so). Not in `hostMs`.",
+			}),
+		),
+		restoredMemory: Type.Optional(
+			Type.Boolean({
+				description:
+					"For a sandbox made from a snapshot that holds memory: whether its memory was restored, its processes " +
+					"carrying on (`true`), or it booted on the snapshot's disk alone (`false`), on a host whose copy of the " +
+					"snapshot has no memory it can restore (another CPU or runtime, or its memory not fetched yet).",
+			}),
+		),
 		snapshotMs: Type.Optional(
 			Type.Number({
 				description: "For a fork of a running sandbox: the live snapshot of its source it was made from.",
@@ -937,8 +1024,8 @@ export const SandboxStartup = Type.Object(
 		}),
 		totalMs: Type.Number({
 			description:
-				"From Kantel's call to its host until the host answered, in milliseconds. Well over `hostMs` is time on the " +
-				"way to and from the host, not on it.",
+				"From Kantel's call to its host until the host answered, in milliseconds, its fetch (`fetchMs`) included. " +
+				"Well over `hostMs` and `fetchMs` is time on the way to and from the host, not on it.",
 		}),
 	},
 	{
@@ -948,6 +1035,35 @@ export const SandboxStartup = Type.Object(
 			"measured it: a slow disk phase is a full copy of its disk, a slow boot or agent phase a busy host. microVMs " +
 			"only, and only from a host that reports it.",
 	},
+);
+
+// A sandbox's sticky disks (the disks themselves are further down).
+
+export const SandboxStickyDiskInput = Type.Object(
+	{
+		disk: Type.String({ minLength: 1, description: "The sticky disk, by ID or name." }),
+		path: Type.String({
+			pattern: "^/[^\\0]*$",
+			maxLength: 255,
+			description:
+				"Where it is mounted in the sandbox, such as `/var/lib/ci`: absolute, not `/` or a system directory.",
+		}),
+	},
+	{ title: "SandboxStickyDiskInput" },
+);
+
+export const SandboxStickyDisk = Type.Object(
+	{
+		diskId: Type.String(),
+		name: Type.String(),
+		path: Type.String(),
+		version: Type.Optional(
+			Type.String({ description: "The version its copy was cloned from; absent for an empty disk." }),
+		),
+		state: Type.Union([Type.Literal("pending"), Type.Literal("mounted"), Type.Literal("failed")]),
+		reason: Type.Optional(Type.String()),
+	},
+	{ title: "SandboxStickyDisk" },
 );
 
 export const Sandbox = Type.Object(
@@ -1006,6 +1122,96 @@ export const Sandbox = Type.Object(
 					"plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in.",
 			}),
 		),
+		autoUpgrade: Type.Optional(
+			Type.Boolean({
+				description:
+					"An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel " +
+					"upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false.",
+			}),
+		),
+		autoUpgradeFrom: Type.Optional(
+			Type.String({
+				description:
+					"The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved " +
+					"snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. " +
+					"Absent: the deployment's default microVM.",
+			}),
+		),
+		upgradedFrom: Type.Optional(
+			Type.Object(
+				{
+					type: SandboxType,
+					at: Timestamp,
+					snapshotId: Type.Optional(
+						Type.String({ description: "The snapshot its microVM was started from (`upgradeSandbox`'s `from`)." }),
+					),
+				},
+				{
+					title: "SandboxUpgrade",
+					description:
+						"A microVM that was an isolate until `at`, when it was upgraded with its ID, files and settings.",
+				},
+			),
+		),
+		move: Type.Optional(
+			Type.Object(
+				{
+					phase: Type.Union(
+						[Type.Literal("copying"), Type.Literal("stopping"), Type.Literal("final-copy"), Type.Literal("starting")],
+						{
+							description:
+								"`copying`: its disk and sticky disks are being copied to the new host (a running sandbox's as it " +
+								"runs, so it still runs commands). `stopping`: a running sandbox is being stopped, its processes " +
+								"ending. `final-copy`: what it wrote since its first copy is being copied. `starting`: they are " +
+								"there, and it is starting on it.",
+						},
+					),
+					hostId: Type.Optional(
+						Type.String({ description: "The host it is moving to, where the caller may know it, once chosen." }),
+					),
+					keepMemory: Type.Boolean({
+						description:
+							"Whether its memory moves too, so it carries on where it left off on the new host: asked for (the " +
+							"default), and the hosts' CPU and runtime match. `false`: it boots on its disk there, its running " +
+							"programs ending (`restartReason` says why, where it had memory that might have moved). Said once its " +
+							"new host is chosen, before anything is copied.",
+					}),
+					restartReason: Type.Optional(
+						Type.String({
+							description:
+								"Why its memory doesn't move with it although it was asked to: the new host's CPU or runtime differs from " +
+								"its host's, or a host can't move memory yet.",
+						}),
+					),
+					startedAt: Timestamp,
+				},
+				{
+					title: "SandboxMove",
+					description: "A move to another host under way (its `state` is `moving`).",
+				},
+			),
+		),
+		moved: Type.Optional(
+			Type.Object(
+				{
+					at: Timestamp,
+					keptMemory: Type.Boolean({
+						description: "Its memory moved with it, so its programs carried on; `false`, it booted on its disk there.",
+					}),
+					restartReason: Type.Optional(
+						Type.String({
+							description: "Why its memory didn't move with it although that was asked for, as its `move` said.",
+						}),
+					),
+				},
+				{
+					title: "SandboxMoved",
+					description:
+						"Its last move to another host: when it ran there (`at`), and whether its memory went with it. Absent from a " +
+						"sandbox never moved, and from one moved before Kantel kept it.",
+				},
+			),
+		),
 		latestSnapshotId: Type.Optional(Type.String({ description: "The snapshot a resume or fork would use." })),
 		latestSnapshotAt: Type.Optional(
 			Type.Integer({
@@ -1022,12 +1228,26 @@ export const Sandbox = Type.Object(
 				{ title: "SandboxSource", description: "What it was made from." },
 			),
 		),
-		environmentId: Type.Optional(Type.String({ description: "The environment it was made from." })),
+		environmentId: Type.Optional(
+			Type.String({ description: "Its first environment (`environmentIds[0]`). Deprecated: read `environmentIds`." }),
+		),
+		environmentIds: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"Its environments, in order: where two set the same variable, file or repository path, the later one wins. " +
+					"Absent: none.",
+			}),
+		),
 		template: Type.Optional(SandboxTemplate),
-		grants: Type.Array(EgressGrant, { description: "Its own egress grants, on top of its environment's." }),
+		grants: Type.Array(EgressGrant, { description: "Its own egress grants, on top of its environments'." }),
 		mounts: Type.Optional(
 			Type.Array(SandboxMount, {
 				description: `Its read-only mounts, as its create named them, each with its status. Absent: none. ${MOUNTS_EXPERIMENTAL}`,
+			}),
+		),
+		stickyDisks: Type.Optional(
+			Type.Array(SandboxStickyDisk, {
+				description: "Its sticky disks, each with the version its copy came from and its state. Absent: none.",
 			}),
 		),
 		createdBy: CreatedBy,
@@ -1044,6 +1264,12 @@ export const Sandbox = Type.Object(
 			}),
 		),
 		hostName: Type.Optional(Type.String({ description: "That host's name, with `hostId`." })),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it was placed in (`Pool`): its hosts are that pool's. Absent for a sandbox made before pools.",
+			}),
+		),
 		hostReachable: Type.Optional(
 			Type.Boolean({
 				description:
@@ -1123,7 +1349,7 @@ export const CreateSandboxBody = Type.Object(
 		env: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description:
-					"Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who " +
+					"Environment variables every command sees, after its environments'. Not secrets: they are shown to anyone who " +
 					"may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.",
 			}),
 		),
@@ -1132,7 +1358,16 @@ export const CreateSandboxBody = Type.Object(
 				description:
 					"Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder " +
 					"for each protected one, its secret files and repositories, and its grants. `env` may not name one of its " +
-					"protected variables.",
+					"protected variables. Give `environments` for more than one.",
+			}),
+		),
+		environments: Type.Optional(
+			Type.Array(Type.String(), {
+				minItems: 1,
+				maxItems: 10,
+				description:
+					"Start with these environments, each an ID or name in the account, in order: as `environment` gives one, and " +
+					"where two set the same variable, file or repository path, the later one wins. Not with `environment`.",
 			}),
 		),
 		template: Type.Optional(
@@ -1147,9 +1382,27 @@ export const CreateSandboxBody = Type.Object(
 					"fresh whatever its snapshot, running the setup with the sandbox's variables.",
 			}),
 		),
+		stickyDisks: Type.Optional(
+			Type.Array(SandboxStickyDiskInput, {
+				maxItems: 2,
+				description:
+					"Sticky disks to attach (experimental, a microVM's): each a copy of the newest version its host has, mounted " +
+					"at its path. Needs a host that runs them.",
+			}),
+		),
 		hostLabels: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description: 'Place it only on a host with each label, such as `{ site: "home" }`.',
+			}),
+		),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"Place it in this pool, an ID or name: one of the account's pools, else (where the caller may use shared " +
+					"hosts) one of the deployment's. Its host is that pool's, and `hostLabels` choose among the pool's hosts. " +
+					"`unavailable` saying which pool when none of its hosts can take it now. Default: the account's default " +
+					"pool when the account has hosts of its own, else the deployment's default pool, as before pools.",
 			}),
 		),
 		host: Type.Optional(
@@ -1171,6 +1424,27 @@ export const CreateSandboxBody = Type.Object(
 					"A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused " +
 					"(`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs " +
 					`without it. A fork keeps its source's mounts. ${MOUNTS_EXPERIMENTAL}`,
+			}),
+		),
+		autoUpgrade: Type.Optional(
+			Type.Boolean({
+				description:
+					"For an isolate: when its runtime says a command needs something an isolate lacks (a program such as " +
+					"`tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default " +
+					"size) and run the whole command again there, once: what it did before the step that failed is done " +
+					"again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the " +
+					"sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read " +
+					"from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the " +
+					"isolate stays as it is.",
+			}),
+		),
+		autoUpgradeFrom: Type.Optional(
+			Type.String({
+				description:
+					"What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's " +
+					"name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so " +
+					"a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the " +
+					"command's answer stands. Default: the deployment's default microVM. An isolate's only.",
 			}),
 		),
 		wait: Type.Optional(
@@ -1197,8 +1471,154 @@ export const UpdateSandboxBody = Type.Object(
 		),
 		visibility: Type.Optional(SandboxVisibility),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Replaces its labels." })),
+		autoUpgrade: Type.Optional(
+			Type.Boolean({
+				description:
+					"Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a " +
+					"command needs one, and runs the whole command again there. Once on, any caller that may run commands " +
+					"in it may cause the upgrade.",
+			}),
+		),
+		autoUpgradeFrom: Type.Optional(
+			Type.Union([Type.String(), Type.Null()], {
+				description:
+					"Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes " +
+					"back to the deployment's default microVM.",
+			}),
+		),
 	},
 	{ title: "UpdateSandboxBody" },
+);
+
+export const UpgradeSandboxBody = Type.Object(
+	{
+		size: Type.Optional(SandboxSizeName),
+		resources: Type.Optional(SandboxShapeInput),
+		image: Type.Optional(Type.String({ description: "The microVM's base image. Default: the deployment's." })),
+		from: Type.Optional(
+			Type.String({
+				description:
+					"Start the microVM from this snapshot of a microVM, a snapshot's ID or a saved snapshot's name in the " +
+					"account, as a create from it does: its disk, its memory where it holds it (and then its machine), on the " +
+					"host that holds it. The isolate's `/workspace` files are laid over what it has in `/home/user/workspace`: " +
+					"where both have a file the isolate's wins, and nothing of the snapshot's is deleted. It keeps the snapshot's " +
+					"disk, so not with `resources.diskGb`. Only a snapshot whose guest agent lays files into a real directory " +
+					"alone (saved from a sandbox on a current host) can be upgraded into; one older is refused, `not_supported`. " +
+					"Default: a new microVM of `image`.",
+			}),
+		),
+		wait: Type.Optional(
+			Type.Boolean({
+				description:
+					"Answer once the microVM runs with the isolate's files (the default), or `false` as soon as the upgrade has " +
+					"begun (`starting`). Either way a failed upgrade leaves the isolate as it was.",
+			}),
+		),
+	},
+	{
+		title: "UpgradeSandboxBody",
+		description:
+			"The microVM to make: `size` or `resources`, and `image` or `from`, as a create takes them. Every field is " +
+			"optional: `{}` makes the deployment's default microVM.",
+	},
+);
+
+export const SandboxMoveTarget = Type.Object(
+	{
+		hostId: Type.String({ description: "A host it may move to now." }),
+		keepsMemory: Type.Boolean({
+			description:
+				"A move there keeps its memory (the hosts' CPU and runtime match), so it carries on there; `false`, it " +
+				"restarts there, booting on its disk.",
+		}),
+		restartReason: Type.Optional(
+			Type.String({
+				description: "Why a move there restarts it, where it has memory that might have moved.",
+			}),
+		),
+		pauseMs: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it keeps its memory, about how long it is paused for it: its memory's size (`memoryBytes`) over " +
+					"the link's rate (`bytesPerSecond`), in milliseconds. A restart's pause is only its stop, the blocks it " +
+					"wrote since its first copy and its boot.",
+			}),
+		),
+		memoryBytes: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it keeps its memory, the memory a move copies: a running sandbox's resident memory (what its " +
+					"guest has touched; the rest is zero, and costs nothing), a paused one's memory file.",
+			}),
+		),
+		bytesPerSecond: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description:
+					"The rate `pauseMs` is estimated at: the rate the new host's last fetch from its host ran at (or the " +
+					"other way), as the hosts measure it, else 1 Gbit/s (`rateMeasured` false).",
+			}),
+		),
+		rateMeasured: Type.Optional(
+			Type.Boolean({ description: "`bytesPerSecond` was measured by the hosts, rather than assumed." }),
+		),
+	},
+	{ title: "SandboxMoveTarget" },
+);
+
+export const SandboxMovePlan = Type.Object(
+	{
+		targets: Type.Optional(
+			Type.Array(SandboxMoveTarget, {
+				description:
+					"Each host it may move to now, as the scheduler would place it (room and all), with what a move there does " +
+					"with its memory and the pause it takes. Absent where its hosts can't say, or the caller may not know its host.",
+			}),
+		),
+	},
+	{
+		title: "SandboxMovePlan",
+		description:
+			"A move's dry run (`GET /sandboxes/{sandboxId}/move`): where a move may take it, and what each way does with its memory.",
+	},
+);
+
+export const MoveSandboxBody = Type.Object(
+	{
+		hostId: Type.Optional(
+			Type.String({
+				description:
+					"The host to move it to: another host in its pool that it may use. Default: the one the scheduler picks, as for " +
+					"a create, among the pool's hosts that can take a moved sandbox.",
+			}),
+		),
+		keepMemory: Type.Optional(
+			Type.Boolean({
+				description:
+					"Keep its memory, so a running or paused sandbox carries on where it left off (default true). Its memory " +
+					"moves where both hosts' CPU and runtime fingerprints match: a running one is copied as it runs, then " +
+					"stopped keeping its memory, and what it wrote since and its memory are copied and restored there, so it is " +
+					"paused for about its memory's copy. Kantel picks a host where it can be kept first; on one where it can't " +
+					"(`hostId` names one, or there is no other), it restarts there instead, and its `move` says why " +
+					"(`restartReason`) before anything is copied; `GET /sandboxes/{sandboxId}/move` says which beforehand. `false` restarts it: it boots on its disk on the new host, a " +
+					"running one copied as it runs, stopped, copied again (only what it wrote since) and started, unavailable " +
+					"only for that stop, the last copy and its boot. A stopped sandbox has no memory.",
+			}),
+		),
+		wait: Type.Optional(
+			Type.Boolean({
+				description:
+					"Answer once it runs on the new host (the default), or `false` as soon as the move has begun (`moving`). " +
+					"Either way a failed move leaves it where and as it was.",
+			}),
+		),
+	},
+	{
+		title: "MoveSandboxBody",
+		description: "Where to move it, and whether its memory goes with it. Every field is optional.",
+	},
 );
 
 export const StopSandboxBody = Type.Object(
@@ -1486,7 +1906,11 @@ export const RunCommandBody = Type.Object(
 			minLength: 1,
 			description: "A shell command line, run with `bash -lc` (or the isolate's shell).",
 		}),
-		cwd: Type.Optional(Type.String({ description: "Default: the sandbox user's home." })),
+		cwd: Type.Optional(
+			Type.String({
+				description: "Default: a microVM's `/home/user` or an isolate's `/workspace`. A relative path starts there.",
+			}),
+		),
 		env: Type.Optional(Type.Record(Type.String(), Type.String())),
 		stdin: Type.Optional(Type.String()),
 		timeoutMs: Type.Optional(
@@ -1529,6 +1953,49 @@ export const Command = Type.Object(
 		startedAt: Timestamp,
 		endedAt: Type.Optional(Timestamp),
 		durationMs: Type.Optional(Type.Integer()),
+		needsMicrovm: Type.Optional(
+			Type.Object(
+				{
+					command: Type.String({ description: "What it ran that an isolate doesn't have, such as `tar`." }),
+					reason: Type.String({ description: "Why, in one sentence." }),
+					inferred: Type.Optional(
+						Type.Boolean({
+							description:
+								"Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's " +
+								"runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it.",
+						}),
+					),
+				},
+				{
+					title: "CommandNeedsMicrovm",
+					description:
+						"In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox " +
+						"(`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`.",
+				},
+			),
+		),
+		terminated: Type.Optional(
+			Type.Union([Type.Literal("cpu"), Type.Literal("memory"), Type.Literal("wall")], {
+				title: "CommandTermination",
+				description:
+					"In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or " +
+					"wall time (`wall`).",
+			}),
+		),
+		rerunAs: Type.Optional(
+			Type.String({
+				description:
+					"It answered `needsMicrovm` and its sandbox upgraded itself (`autoUpgrade`): the ID of the command run " +
+					"again in the microVM.",
+			}),
+		),
+		rerunOf: Type.Optional(
+			Type.String({
+				description:
+					"It is a command run again in the microVM its sandbox was just upgraded to (`autoUpgrade`): the ID of the " +
+					"command that answered `needsMicrovm` in the isolate.",
+			}),
+		),
 	},
 	{ title: "Command" },
 );
@@ -1545,7 +2012,12 @@ export const CommandPath = Type.Object(
 export const FileEncoding = Type.Union([Type.Literal("utf8"), Type.Literal("base64")], { title: "FileEncoding" });
 
 export const FilePathQuery = Type.Object(
-	{ path: Type.String({ minLength: 1, description: "An absolute path, or one relative to the user's home." }) },
+	{
+		path: Type.String({
+			minLength: 1,
+			description: "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.",
+		}),
+	},
 	{ title: "FilePathQuery" },
 );
 
@@ -1623,7 +2095,13 @@ export const FileList = Type.Object(
 );
 
 export const ListFilesQuery = Type.Object(
-	{ path: Type.Optional(Type.String({ description: "Default: the user's home." })), limit, cursor },
+	{
+		path: Type.Optional(
+			Type.String({ description: "Default: a microVM's `/home/user` or an isolate's `/workspace`." }),
+		),
+		limit,
+		cursor,
+	},
 	{ title: "ListFilesQuery" },
 );
 
@@ -1632,7 +2110,7 @@ export const FileUrlBody = Type.Object(
 		path: Type.String({
 			minLength: 1,
 			maxLength: 4096,
-			description: "An absolute path, or one relative to the user's home.",
+			description: "An absolute path, or one relative to a microVM's `/home/user` or an isolate's `/workspace`.",
 		}),
 		ttlSeconds: Type.Optional(
 			Type.Integer({
@@ -1672,7 +2150,8 @@ export const ExtractArchiveQuery = Type.Object(
 			minLength: 1,
 			maxLength: 4096,
 			description:
-				"The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.",
+				"The directory to extract into, made if missing: absolute, or relative to a microVM's `/home/user`. Not in " +
+				"or over a mount.",
 		}),
 	},
 	{ title: "ExtractArchiveQuery" },
@@ -1835,6 +2314,24 @@ const snapshotLabels = Type.Record(Type.String(), Type.String({ maxLength: 500 }
 		"Your own key-value pairs (at most 20, values up to 500 characters), such as `git.base` for the commit a checkout in it is at. Kantel keeps them as given.",
 });
 
+export const SnapshotHost = Type.Object(
+	{
+		hostId: Type.Optional(
+			Type.String({ description: "The host; absent where the caller may not be told it (a shared host)." }),
+		),
+		hostName: Type.Optional(Type.String({ description: "Its name, where `hostId` is given." })),
+		state: Type.Union([Type.Literal("held"), Type.Literal("fetching")], {
+			description: "`held`: the host has the snapshot's disk. `fetching`: it is copying it from another host.",
+		}),
+		memory: Type.Boolean({
+			description:
+				"Whether a sandbox made from it there restores its memory: on the host it was taken on, or a copy whose " +
+				"memory came too, which a host fetches only where it restores. Always false for a snapshot without memory.",
+		}),
+	},
+	{ title: "SnapshotHost", description: "A host a saved snapshot is on (`Snapshot.hosts`)." },
+);
+
 export const Snapshot = Type.Object(
 	{
 		id: id("The snapshot's ID, such as `snap_2h8d6f`."),
@@ -1873,7 +2370,7 @@ export const Snapshot = Type.Object(
 			Type.Integer({
 				minimum: 0,
 				description:
-					"How many sandboxes were made or forked from it, deleted ones included. Absent from a gateway before it.",
+					"How many sandboxes were made or forked from it, or upgraded into it, deleted ones included. Absent from a gateway before it.",
 			}),
 		),
 		createdAt: Timestamp,
@@ -1887,6 +2384,21 @@ export const Snapshot = Type.Object(
 		createdBy: Type.Optional(CreatedBy),
 		expiresAt: Type.Optional(Timestamp),
 		base: Type.Optional(SandboxBase),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it belongs to (`Pool`): its host's when it was taken. A sandbox made or forked from it goes only in " +
+					"that pool. Absent for one taken before pools, which is in the pool of the host holding it.",
+			}),
+		),
+		hosts: Type.Optional(
+			Type.Array(SnapshotHost, {
+				description:
+					"Only in a saved snapshot's details (`getSnapshot`): the hosts it is on, the one it was taken on first, then " +
+					"each with a copy, or fetching one, as they last reported: none until its host has reported it, usually within a minute of the save. An isolate's is listed on the host it was taken on. Kantel keeps a saved snapshot on two hosts of " +
+					"its pool where the account's `snapshotCopies` is on and the pool has two or more that can hold it.",
+			}),
+		),
 	},
 	{ title: "Snapshot" },
 );
@@ -1957,7 +2469,13 @@ export const SaveSnapshotBody = Type.Object(
 );
 
 export const SnapshotFilesQuery = Type.Object(
-	{ path: Type.Optional(Type.String({ description: "A directory; default the user's home." })), limit, cursor },
+	{
+		path: Type.Optional(
+			Type.String({ description: "A directory; default a microVM's `/home/user` or an isolate's `/workspace`." }),
+		),
+		limit,
+		cursor,
+	},
 	{ title: "SnapshotFilesQuery" },
 );
 
@@ -2302,6 +2820,13 @@ export const SandboxShapesQuery = Type.Object(
 					"alone. Default: from every host the account's sandboxes may use.",
 			}),
 		),
+		pool: Type.Optional(
+			Type.String({
+				description:
+					"The shapes a sandbox in this pool (`CreateSandboxBody.pool`, its ID or name) may be, from its hosts. " +
+					"Default: from the hosts a create naming no pool may use, in the default pools.",
+			}),
+		),
 	},
 	{ title: "SandboxShapesQuery" },
 );
@@ -2521,6 +3046,7 @@ export const SandboxProtectedVariable = Type.Object(
 		name: Type.String(),
 		placeholderPrefix: Type.String({ description: "The first 8 characters of its placeholder, such as `kph_7Qx2`." }),
 		bindings: Type.Array(DestinationBinding),
+		environmentId: Type.Optional(Type.String({ description: "The environment whose value it takes." })),
 	},
 	{ title: "SandboxProtectedVariable", description: "A protected variable as one sandbox has it: never its value." },
 );
@@ -2531,11 +3057,18 @@ export const SandboxEgress = Type.Object(
 		sandboxName: Type.String(),
 		accountId: Type.String(),
 		environment: Type.Optional(
-			Type.Object({ id: Type.String(), name: Type.String() }, { title: "SandboxEgressEnvironment" }),
+			Type.Object(
+				{ id: Type.String(), name: Type.String() },
+				{ title: "SandboxEgressEnvironment", description: "Its first environment. Deprecated: read `environments`." },
+			),
+		),
+		environments: Type.Array(
+			Type.Object({ id: Type.String(), name: Type.String() }, { title: "SandboxEgressEnvironmentRef" }),
+			{ description: "Its environments, in order." },
 		),
 		protectedVariables: Type.Array(SandboxProtectedVariable),
-		environmentGrants: Type.Array(EgressGrant, { description: "Its environment's grants, which it has too." }),
-		grants: Type.Array(EgressGrant, { description: "Its own grants, on top of its environment's." }),
+		environmentGrants: Type.Array(EgressGrant, { description: "Its environments' grants, which it has too." }),
+		grants: Type.Array(EgressGrant, { description: "Its own grants, on top of its environments'." }),
 		entries: Type.Array(EgressEntry, { description: "Newest first; Kantel keeps the newest 1000." }),
 	},
 	{ title: "SandboxEgress", description: "A sandbox's egress: what it was made with, its own grants and its log." },
@@ -2548,6 +3081,61 @@ export const SandboxEgressQuery = Type.Object(
 		),
 	},
 	{ title: "SandboxEgressQuery" },
+);
+
+export const SandboxEnvironmentPath = Type.Object(
+	{ sandboxId: id("The sandbox's ID."), environmentId: id("The environment's ID.") },
+	{ title: "SandboxEnvironmentPath" },
+);
+
+export const AttachSandboxEnvironmentBody = Type.Object(
+	{
+		environment: Type.String({ description: "The environment, its ID or name in the sandbox's account." }),
+		position: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Where it goes in the sandbox's environments, from 0 (first, so every other one wins over it). Absent: last, " +
+					"so it wins over the others.",
+			}),
+		),
+	},
+	{ title: "AttachSandboxEnvironmentBody" },
+);
+
+export const SandboxEnvironmentShadowed = Type.Object(
+	{
+		variables: Type.Array(Type.String(), {
+			description: "Its variables a later environment, or the sandbox's own env, sets instead.",
+		}),
+		files: Type.Array(Type.String(), { description: "Its secret files' paths a later environment writes instead." }),
+		repos: Type.Array(Type.String(), {
+			description: "Its repositories' paths a later environment clones into instead.",
+		}),
+	},
+	{ title: "SandboxEnvironmentShadowed", description: "What of an environment a sandbox doesn't take from it." },
+);
+
+export const SandboxEnvironment = Type.Object(
+	{
+		id: Type.String(),
+		name: Type.String(),
+		shadowed: SandboxEnvironmentShadowed,
+		pending: Type.Boolean({
+			description: "Its secret files and repositories are set up when the sandbox next runs.",
+		}),
+	},
+	{ title: "SandboxEnvironment", description: "One of a sandbox's environments." },
+);
+
+export const SandboxEnvironments = Type.Object(
+	{
+		sandboxId: Type.String(),
+		environments: Type.Array(SandboxEnvironment, {
+			description: "In order: where two set the same variable, file or repository path, the later one wins.",
+		}),
+	},
+	{ title: "SandboxEnvironments", description: "A sandbox's environments, and what each gives it." },
 );
 
 // Templates (experimental): how a platform defines a microVM, versioned, and the snapshots built from each version.
@@ -2754,6 +3342,13 @@ export const TemplateCacheKey = Type.Object(
 			description:
 				"With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too.",
 		}),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it was built in (`Pool`), whose hosts share it: a template is built once in each pool it is used " +
+					"in. Absent for one built before pools.",
+			}),
+		),
 	},
 	{
 		title: "TemplateCacheKey",
@@ -2945,7 +3540,9 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.error"),
 		Type.Literal("sandbox.degraded"),
 		Type.Literal("sandbox.recovered"),
+		Type.Literal("sandbox.environments_changed"),
 		Type.Literal("sandbox.oom_kill"),
+		Type.Literal("sandbox.upgraded"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
 		Type.Literal("snapshot.deleted"),
@@ -2959,8 +3556,14 @@ export const EventType = Type.Union(
 			"`sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason " +
 			"says which), which leaves it running, and when its guest agent stops answering (its `health` " +
 			"`unresponsive`), with `sandbox.recovered` once it answers again. " +
+			"`sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or " +
+			"`data.detached`, and `data.environmentIds`, in order). " +
 			"`sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since " +
 			"its last reading); it keeps running. " +
+			"`sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): " +
+			"`data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the " +
+			"microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and " +
+			"`data.durationMs`. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -2989,6 +3592,33 @@ export const Event = Type.Object(
 				),
 				// On `sandbox.running`, where its host said: the sandbox's `startup`.
 				startup: Type.Optional(SandboxStartup),
+				attached: Type.Optional(
+					Type.String({ description: "`sandbox.environments_changed`: the environment attached." }),
+				),
+				detached: Type.Optional(
+					Type.String({ description: "`sandbox.environments_changed`: the environment detached." }),
+				),
+				environmentIds: Type.Optional(
+					Type.Array(Type.String(), {
+						description: "`sandbox.environments_changed`: the sandbox's environments now, in order.",
+					}),
+				),
+				from: Type.Optional(SandboxType),
+				to: Type.Optional(SandboxType),
+				path: Type.Optional(
+					Type.Union([Type.Literal("host"), Type.Literal("control-plane")], {
+						description:
+							"`sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, " +
+							"`control-plane` when the microVM went on another host and Kantel moved them.",
+					}),
+				),
+				files: Type.Optional(
+					Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: the files, links and directories moved." }),
+				),
+				bytes: Type.Optional(Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: the files' bytes." })),
+				durationMs: Type.Optional(
+					Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: how long the upgrade took." }),
+				),
 			},
 			{ title: "EventData" },
 		),
@@ -3256,6 +3886,136 @@ export const HostMemory = Type.Object(
 	},
 );
 
+export const HostMeshPeer = Type.Object(
+	{
+		hostId: id("The peer's host ID: another host of the same pool."),
+		path: Type.String({
+			description:
+				"How the host reaches it. `direct`: straight to one of its endpoints, with a handshake in the last 3 minutes. " +
+				"`none`: no handshake in the last 3 minutes, so it can't reach it now. A newer host may say another.",
+		}),
+		endpoint: Type.Optional(
+			Type.String({ description: "The address and UDP port it reaches the peer on now, such as `203.0.113.7:51820`." }),
+		),
+		lastHandshake: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"When it last completed a handshake with the peer, epoch milliseconds, UTC. Absent before the first.",
+			}),
+		),
+		rttMs: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				description:
+					"The round trip of its last probe of the peer's mesh address, in milliseconds. Absent when that got no answer.",
+			}),
+		),
+	},
+	{ title: "HostMeshPeer", description: "One mesh peer as a host reaches it, as the host last reported it." },
+);
+
+export const HostMesh = Type.Object(
+	{
+		address: Type.String({ description: "The host's own address on its pool's mesh, an IPv6 address." }),
+		peers: Type.Array(HostMeshPeer, { description: "The other hosts of its pool, each as it reaches it." }),
+	},
+	{
+		title: "HostMesh",
+		description:
+			"How a host reaches the other hosts of its pool over the pool's WireGuard mesh, as it last reported it (every " +
+			"heartbeat). Absent from a host without a mesh (its pool's sync is off, or its host agent is older) and from one " +
+			"that isn't connected.",
+	},
+);
+
+export const HostEvacuationState = Type.Union(
+	[Type.Literal("running"), Type.Literal("done"), Type.Literal("failed"), Type.Literal("stopped")],
+	{
+		title: "HostEvacuationState",
+		description:
+			"`running`: its sandboxes are being moved off, at most two at a time. `done`: each has moved, or was skipped " +
+			"with its reason. `failed`: it ended with a move that failed, or it couldn't carry on (`reason`). `stopped`: the " +
+			"host was undrained, which ends it; a move under way then finishes.",
+	},
+);
+
+/** What a host's evacuation and its summary on the host both have. */
+const evacuationProgress = {
+	state: HostEvacuationState,
+	reason: Type.Optional(
+		Type.String({ description: "Why it failed or stopped, where that wasn't a sandbox's move (each says its own)." }),
+	),
+	startedAt: Timestamp,
+	endedAt: Type.Optional(Timestamp),
+	moved: Type.Integer({ minimum: 0, description: "The sandboxes moved to another host." }),
+	remaining: Type.Integer({ minimum: 0, description: "Those still to move, or moving now." }),
+	skipped: Type.Integer({ minimum: 0, description: "Those that can't move, each with its reason." }),
+	failed: Type.Integer({ minimum: 0, description: "Those whose move failed: each is where it was, as it was." }),
+};
+
+export const HostEvacuationProgress = Type.Object(evacuationProgress, {
+	title: "HostEvacuationProgress",
+	description: "How far the host's last evacuation (`POST /hosts/{hostId}/evacuation`) has got.",
+});
+
+export const HostEvacuationSandbox = Type.Object(
+	{
+		sandboxId: id("The sandbox's ID."),
+		name: Type.Optional(Type.String({ description: "Its name, where the caller may see the sandbox." })),
+		type: SandboxType,
+		state: Type.Union(
+			[
+				Type.Literal("waiting"),
+				Type.Literal("moving"),
+				Type.Literal("moved"),
+				Type.Literal("skipped"),
+				Type.Literal("failed"),
+			],
+			{
+				description:
+					"`waiting`: its turn hasn't come (or it is starting or stopping, and is taken once it has). `moving`: its " +
+					"move is under way (`phase`). `moved`: it is on `hostId` now. `skipped`: it can't move (`reason`): an " +
+					"isolate, kept to its host by its create, in error, or no other host in its pool can take it. `failed`: its " +
+					"move failed (`reason`), and it is where it was.",
+			},
+		),
+		phase: Type.Optional(
+			Type.Union(
+				[Type.Literal("copying"), Type.Literal("stopping"), Type.Literal("final-copy"), Type.Literal("starting")],
+				{ description: "Where its move has got, while it moves: as its own `move.phase`." },
+			),
+		),
+		hostId: Type.Optional(Type.String({ description: "The host it moved to." })),
+		keptMemory: Type.Optional(
+			Type.Boolean({
+				description: "Moved, whether its memory went with it, so its programs carried on; `false`, it restarted there.",
+			}),
+		),
+		reason: Type.Optional(
+			Type.String({ description: "Why it was skipped, why its move failed, or why it restarted where it moved." }),
+		),
+	},
+	{ title: "HostEvacuationSandbox", description: "One sandbox of a host's evacuation." },
+);
+
+export const HostEvacuation = Type.Object(
+	{
+		hostId: id("The host's ID."),
+		...evacuationProgress,
+		sandboxes: Type.Array(HostEvacuationSandbox, {
+			description: "Each sandbox that was on the host when it began, or came onto it since, in the order taken.",
+		}),
+	},
+	{
+		title: "HostEvacuation",
+		description:
+			"Moving every sandbox off a draining host, each to another host in its pool, so it can be updated, resized or " +
+			"retired: two at a time, each as a move does by default (keeping its memory where the hosts match, restarting " +
+			"it otherwise). It carries on across a control plane restart.",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -3295,6 +4055,24 @@ export const Host = Type.Object(
 		tiers: Type.Array(SandboxType, { description: "The sandbox types it runs." }),
 		kvm: Type.Boolean(),
 		nestedVirtualisation: Type.Boolean(),
+		cpuFingerprint: Type.Optional(
+			Type.String({
+				description:
+					"Its CPU as a microVM sees it: vendor, family, model and a hash of the CPUID features it offers a guest, " +
+					"such as `AuthenticAMD family 25 model 97, features sha256:0123456789abcdef`. A snapshot's memory restores " +
+					"only onto a host with the same. Absent for a host without microVMs, or one from before it said.",
+			}),
+		),
+		runtimeFingerprints: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"The microVM runtimes it restores snapshots with, one for each host image it has: Firecracker, guest " +
+					"kernel, image, sticky drives and balloon, such as " +
+					"`firecracker=v1.17.0;kernel=6.1.102+0123456789ab;image=host-images-20261103;sticky=4`. A snapshot's " +
+					"memory restores only onto a host with its runtime among these and the same CPU. Absent for a host " +
+					"without microVMs, or one from before it said.",
+			}),
+		),
 		capacity: Type.Object(
 			{
 				vcpus: Type.Integer(),
@@ -3320,11 +4098,19 @@ export const Host = Type.Object(
 					"may use.",
 			),
 		),
+		poolId: Type.Optional(
+			id(
+				"The pool it is in (`Pool`): one of its account's pools, or of the deployment's for a shared host. Absent " +
+					"only from a host this control plane hasn't seen since pools came in.",
+			),
+		),
 		joinedAt: Timestamp,
 		lastSeenAt: Type.Optional(Timestamp),
 		usage: Type.Optional(UsageSparklines),
 		diskUsage: Type.Optional(HostDiskUsage),
 		memory: Type.Optional(HostMemory),
+		mesh: Type.Optional(HostMesh),
+		evacuation: Type.Optional(HostEvacuationProgress),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Integer({
 				minimum: 0,
@@ -3391,6 +4177,15 @@ export const UpdateHostBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		draining: Type.Optional(Type.Boolean({ description: "Stop placing new sandboxes on it." })),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"Moves it to this pool, an ID or name among its owner's pools (its account's, or the deployment's for a " +
+					"shared host), on its own with no other change. Only a draining host with no sandboxes moves (`conflict` " +
+					"otherwise): drain it, let its sandboxes go, move it, then undrain it.",
+			}),
+		),
 		savedSnapshotBytesLimit: Type.Optional(
 			Type.Union([Type.Integer({ minimum: 0 }), Type.Null()], {
 				description:
@@ -3402,10 +4197,31 @@ export const UpdateHostBody = Type.Object(
 	{ title: "UpdateHostBody" },
 );
 
+export const FetchHostStickyDiskBody = Type.Object(
+	{
+		stickyDiskId: id("The sticky disk's ID."),
+		version: id("The version to fetch: one a host in the same pool holds."),
+	},
+	{ title: "FetchHostStickyDiskBody" },
+);
+
+export const FetchHostSnapshotBody = Type.Object(
+	{
+		snapshotId: id("The saved snapshot's ID."),
+	},
+	{ title: "FetchHostSnapshotBody" },
+);
+
 export const CreateHostJoinTokenBody = Type.Object(
 	{
 		name: Type.Optional(Type.String({ maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "The pool the host joins, an ID or name among the deployment's pools. Default: its default pool.",
+			}),
+		),
 		expiresInMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 10080, description: "Default 60." })),
 	},
 	{ title: "CreateHostJoinTokenBody" },
@@ -3419,6 +4235,275 @@ export const HostJoinToken = Type.Object(
 		expiresAt: Timestamp,
 	},
 	{ title: "HostJoinToken" },
+);
+
+/** A pool's name: lower-case letters, digits and dashes, as an environment's. */
+export const POOL_NAME_PATTERN = ENVIRONMENT_NAME_PATTERN;
+
+// GitHub Actions runners: a GitHub App's `workflow_job` webhooks make an ephemeral microVM per job on the account's hosts.
+
+const RunnerLabel = Type.String({
+	pattern: "^[a-z0-9][a-z0-9._-]{0,62}$",
+	description: "The `runs-on` label that picks this pool, such as `kantel-8vcpu`. Lower case.",
+});
+
+/** What a runner kind is, and the runner pool it was called before kinds lived in pools: `GithubRunnerPool`'s fields. */
+const runnerKindFields = {
+	label: RunnerLabel,
+	template: Type.String({
+		minLength: 1,
+		description:
+			"The template each runner's microVM is made from, an ID or name in the account. Its image must have the GitHub " +
+			"Actions runner at `runnerCommand`'s path.",
+	}),
+	resources: Type.Object(
+		{
+			vcpus: Type.Integer({ minimum: 1, maximum: 32 }),
+			memoryMb: Type.Integer({ minimum: 512 }),
+			diskGb: Type.Optional(Type.Integer({ minimum: 1, maximum: 4096 })),
+		},
+		{
+			title: "GithubRunnerResources",
+			description:
+				"A microVM's shape, held to what a create takes (`SandboxShapeInput`): memory in its steps and per-vCPU range.",
+		},
+	),
+	hostLabels: Type.Optional(
+		Type.Record(Type.String(), Type.String(), {
+			description:
+				"Run only on hosts with each of these labels, among the hosts of the pool the kind is in. A new kind goes in " +
+				"the pool whose hosts they select.",
+		}),
+	),
+	environments: Type.Optional(
+		Type.Array(Type.String(), {
+			maxItems: 10,
+			description:
+				"Environments each runner starts with, IDs or names in the account, such as one holding a cache token.",
+		}),
+	),
+	maxRunners: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			maximum: 500,
+			description: "The most runners the pool has at once, starting or running. Default 20.",
+		}),
+	),
+	timeoutMinutes: Type.Optional(
+		Type.Integer({
+			minimum: 5,
+			maximum: 4320,
+			description:
+				"How long a runner may live, start to finish, before it is deleted whatever it is doing. Default 360.",
+		}),
+	),
+	stickyDisks: Type.Optional(
+		Type.Array(
+			Type.Object(
+				{
+					disk: Type.String({ minLength: 1, description: "A sticky disk of the account, by ID or name." }),
+					path: Type.String({ pattern: "^/[^\\0]*$", maxLength: 255, description: "Where each runner mounts it." }),
+					commit: Type.Optional(
+						Type.Object(
+							{
+								branches: Type.Array(Type.String({ minLength: 1, maxLength: 255 }), {
+									minItems: 1,
+									maxItems: 20,
+									description:
+										"Branches whose successful scheduled jobs commit the runner's copy: the repository's default branch, such as `main`.",
+								}),
+								beforeCommit: Type.Optional(
+									Type.String({
+										maxLength: 4096,
+										description:
+											"A shell command run as root in the runner before its copy is committed, such as one that prunes the cache " +
+											"and stops Docker. A commit is skipped when it fails.",
+									}),
+								),
+							},
+							{
+								title: "GithubRunnerStickyCommit",
+								description:
+									"When a runner's copy becomes the disk's next version: after a job that succeeded on that runner, on a run " +
+									"GitHub says is a scheduled run of one of `branches` in the job's own repository. Push and manual runs don't " +
+									"commit for now: GitHub gives a tag's run the tag's name as its branch, and says nothing that tells them apart. " +
+									"Pull requests never commit.",
+							},
+						),
+					),
+				},
+				{ title: "GithubRunnerStickyDisk" },
+			),
+			{ maxItems: 2, description: "Sticky disks each runner gets a copy of (`KANTEL_STICKY_DISKS`)." },
+		),
+	),
+	runnerCommand: Type.Optional(
+		Type.String({
+			minLength: 1,
+			maxLength: 4096,
+			description:
+				"The shell command that starts the runner, run as the sandbox's default user (`user`, not root) with the " +
+				"just-in-time configuration in `KANTEL_RUNNER_JITCONFIG` and the egress proxy's variables. Default `sudo -n " +
+				"--preserve-env=HTTP_PROXY,HTTPS_PROXY,NO_PROXY,http_proxy,https_proxy,no_proxy,NODE_USE_ENV_PROXY " +
+				"runuser -u runner -- " +
+				'/home/runner/actions-runner/run.sh --jitconfig "$KANTEL_RUNNER_JITCONFIG"`.',
+		}),
+	),
+	repositories: Type.Optional(
+		Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), {
+			maxItems: 500,
+			description:
+				"Only jobs of these repositories (`owner/name`) get this pool's runners; a job of any other that asks for its " +
+				"label is `ignored`. Absent: any the integration serves. It keeps one repository's jobs off another's runners " +
+				"only with `scope: repository`: a runner registered on the organization may take any job with its labels.",
+		}),
+	),
+};
+
+export const GithubRunnerPool = Type.Object(runnerKindFields, {
+	title: "GithubRunnerPool",
+	description:
+		"Runners of one shape, picked by a `runs-on` label: a runner kind, as the integration's `pools` read and write it " +
+		"until callers move to the pools' `runners`. A kind written here stays in the pool it is in; a new one goes in the " +
+		"pool its sticky disks are in, else the one pool whose hosts `hostLabels` select, else the account's default pool.",
+});
+
+export const GithubRunnerKind = Type.Object(
+	{
+		integration: id("The GitHub runner integration whose App registers its runners, such as `ghr_3m4n5b`."),
+		...runnerKindFields,
+		hostLabels: Type.Optional(
+			Type.Record(Type.String(), Type.String(), {
+				description: "Of the pool's hosts, run only on those with each of these labels.",
+			}),
+		),
+	},
+	{
+		title: "GithubRunnerKind",
+		description:
+			"Runners of one shape in a pool, picked by a `runs-on` label: made only on the pool's hosts, with sticky disks of " +
+			"the pool. An integration's labels are unique across its pools.",
+	},
+);
+
+export const Pool = Type.Object(
+	{
+		id: id("The pool's ID, such as `pool_6t5r4e`."),
+		name: Type.String({ pattern: POOL_NAME_PATTERN, description: "Its name, unique among its owner's pools." }),
+		accountId: Type.Optional(
+			id("The account whose pool it is. Absent for one of the deployment's pools, which hold its shared hosts."),
+		),
+		default: Type.Boolean({
+			description: "Whether it is its owner's default pool: where a host joins, and a sandbox goes, naming no pool.",
+		}),
+		hosts: Type.Integer({ minimum: 0, description: "How many hosts are in it, revoked ones not counted." }),
+		sync: Type.Boolean({
+			description:
+				"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
+				"pool's hosts alone. Off by default.",
+		}),
+		vcpusPerCpu: Type.Optional(
+			Type.Number({
+				description:
+					"The most vCPUs each of its hosts may book for each of its CPUs (threads), such as `1` for no more vCPUs " +
+					"than threads: a microVM that would take a host past it goes on another, or waits for room, as one that " +
+					"doesn't fit its memory does. A host with no microVM booked always takes one. Absent: no cap, and vCPUs " +
+					"only decide which host is emptiest.",
+			}),
+		),
+		placement: Type.Union([Type.Literal("warm"), Type.Literal("balanced")], {
+			description:
+				"How placement chooses among its hosts. `warm` (the default): a host that already holds what a create needs " +
+				"(the newest version of each sticky disk it attaches, its template's snapshot) is preferred until it would be " +
+				"half full and a quarter fuller than the emptiest. `balanced`: such a host wins only over hosts as full as it, " +
+				"so sandboxes spread evenly over the pool's hosts whatever each holds.",
+		}),
+		runners: Type.Optional(
+			Type.Array(GithubRunnerKind, {
+				description:
+					"Its GitHub runner kinds, one for each `runs-on` label of an integration: an account's pool, where the " +
+					"deployment runs GitHub runners.",
+			}),
+		),
+		createdAt: Timestamp,
+	},
+	{
+		title: "Pool",
+		description:
+			"A set of an account's hosts (or of the deployment's shared hosts), each host in exactly one. Every account and the " +
+			"deployment start with a pool named `default`, which their hosts are in until moved.",
+	},
+);
+
+export const PoolList = Type.Object({ items: Type.Array(Pool) }, { title: "PoolList" });
+
+export const PoolPath = Type.Object({ poolId: id("The pool's ID or name.") }, { title: "PoolPath" });
+
+const poolVcpusPerCpu = Type.Union([Type.Number({ minimum: 0.25, maximum: 16 }), Type.Null()], {
+	description:
+		"The most vCPUs each of its hosts may book for each of its CPUs (threads), from 0.25 to 16: " +
+		"`1` books no more vCPUs than a host has threads. A microVM that would take a host past it goes on another, or " +
+		"waits for room. `null` removes the cap.",
+});
+
+const poolPlacementMode = Type.Union([Type.Literal("warm"), Type.Literal("balanced")], {
+	description:
+		"How placement chooses among its hosts: `warm` (the default) prefers a host that already holds what a create " +
+		"needs, its sticky disks' newest versions or its template's snapshot, until it is half full and a quarter fuller " +
+		"than the emptiest; `balanced` spreads sandboxes evenly, such a host winning only over hosts as full as it (within " +
+		"a twentieth of a host). For work whose time is set by the CPUs it shares more than by a warm cache.",
+});
+
+const poolSync = Type.Boolean({
+	description:
+		"Whether its hosts sync with each other: each that can joins the pool's mesh, a WireGuard network between the " +
+		"pool's hosts alone. Turned off, they leave it.",
+});
+
+export const CreatePoolBody = Type.Object(
+	{
+		name: Type.String({ pattern: POOL_NAME_PATTERN }),
+		sync: Type.Optional(poolSync),
+		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+		placement: Type.Optional(poolPlacementMode),
+	},
+	{ title: "CreatePoolBody" },
+);
+
+export const CreateAccountPoolBody = Type.Object(
+	{
+		account: accountQuery,
+		name: Type.String({ pattern: POOL_NAME_PATTERN }),
+		sync: Type.Optional(poolSync),
+		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+		placement: Type.Optional(poolPlacementMode),
+	},
+	{ title: "CreateAccountPoolBody" },
+);
+
+export const UpdatePoolBody = Type.Object(
+	{
+		name: Type.Optional(Type.String({ pattern: POOL_NAME_PATTERN })),
+		default: Type.Optional(
+			Type.Literal(true, {
+				description:
+					"Makes it its owner's default pool, in place of the one that was. Another pool is made the default to " +
+					"change it again.",
+			}),
+		),
+		sync: Type.Optional(poolSync),
+		vcpusPerCpu: Type.Optional(poolVcpusPerCpu),
+		placement: Type.Optional(poolPlacementMode),
+		runners: Type.Optional(
+			Type.Array(GithubRunnerKind, {
+				maxItems: 100,
+				description:
+					"Its GitHub runner kinds, in place of those it has: an account's pool only. A kind whose integration has its " +
+					"label in another pool moves here; runners already made finish where they are.",
+			}),
+		),
+	},
+	{ title: "UpdatePoolBody" },
 );
 
 // Bundles and bucket sources: what mounts are made from (experimental, behind the deployment's KANTEL_MOUNTS switch).
@@ -3559,6 +4644,53 @@ export const PublicUrl = Type.Object(
 		}),
 	},
 	{ title: "PublicUrl" },
+);
+
+// The control plane's grant keys: what it signs hosts' fetch grants with, for host-to-host sync.
+
+const GrantKeyId = Type.String({ description: "The key's ID, which each grant it signs names as `kid`." });
+const GrantPublicKey = Type.String({ description: "The Ed25519 public key, its 32 raw bytes in base64url." });
+
+export const GrantKeys = Type.Object(
+	{
+		current: Type.Object(
+			{
+				id: GrantKeyId,
+				publicKey: GrantPublicKey,
+				since: Type.Integer({
+					description: "When it was made, on first use or by a rotation: epoch milliseconds, UTC.",
+				}),
+			},
+			{ description: "The key that signs grants now." },
+		),
+		next: Type.Optional(
+			Type.Object(
+				{
+					id: GrantKeyId,
+					publicKey: GrantPublicKey,
+					from: Type.Integer({ description: "When it begins signing: epoch milliseconds, UTC." }),
+				},
+				{
+					description:
+						"The key a rotation made, which hosts already accept and which signs from `from`, 3 minutes after the " +
+						"rotation, once every connected host has it. Absent between rotations.",
+				},
+			),
+		),
+		retired: Type.Array(
+			Type.Object({
+				id: GrantKeyId,
+				publicKey: GrantPublicKey,
+				until: Type.Integer({
+					description:
+						"When hosts stop accepting grants it signed, a grant's lifetime and a minute after the next key began " +
+						"signing: epoch milliseconds, UTC.",
+				}),
+			}),
+			{ description: "Keys rotated out that hosts still accept, oldest first." },
+		),
+	},
+	{ title: "GrantKeys" },
 );
 
 export const HostReleaseCheck = Type.Object(
@@ -3723,6 +4855,12 @@ export const CreateAccountJoinTokenBody = Type.Object(
 			Type.String({ maxLength: 100, description: "The host's name. Default: the machine's hostname." }),
 		),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description: "The pool the host joins, an ID or name. Default: the account's default pool.",
+			}),
+		),
 		expiresInMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 10080, description: "Default 60." })),
 	},
 	{ title: "CreateAccountJoinTokenBody" },
@@ -3763,6 +4901,10 @@ export type GuestCapabilities = Static<typeof GuestCapabilities>;
 export type GuestFeature = Static<typeof GuestFeature>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
+export type UpgradeSandboxBody = Static<typeof UpgradeSandboxBody>;
+export type MoveSandboxBody = Static<typeof MoveSandboxBody>;
+export type SandboxMovePlan = Static<typeof SandboxMovePlan>;
+export type SandboxMoveTarget = Static<typeof SandboxMoveTarget>;
 export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;
@@ -3770,6 +4912,9 @@ export type MountSource = Static<typeof MountSource>;
 export type Mount = Static<typeof Mount>;
 export type MountStatus = Static<typeof MountStatus>;
 export type SandboxMount = Static<typeof SandboxMount>;
+export type RefreshMountsBody = Static<typeof RefreshMountsBody>;
+export type RefreshedMount = Static<typeof RefreshedMount>;
+export type RefreshedMountList = Static<typeof RefreshedMountList>;
 export type Bundle = Static<typeof Bundle>;
 export type BucketProvider = Static<typeof BucketProvider>;
 export type BucketCredentials = Static<typeof BucketCredentials>;
@@ -3778,9 +4923,11 @@ export type CreateBucketSourceBody = Static<typeof CreateBucketSourceBody>;
 export type FileUrl = Static<typeof FileUrl>;
 export type ExtractedArchive = Static<typeof ExtractedArchive>;
 export type Command = Static<typeof Command>;
+export type RunCommandBody = Static<typeof RunCommandBody>;
 export type FileEntry = Static<typeof FileEntry>;
 export type ExposedPort = Static<typeof ExposedPort>;
 export type Snapshot = Static<typeof Snapshot>;
+export type SnapshotHost = Static<typeof SnapshotHost>;
 export type SnapshotKind = Static<typeof SnapshotKind>;
 export type ApiKeyScope = Static<typeof ApiKeyScope>;
 export type ApiKeyPreset = Static<typeof ApiKeyPreset>;
@@ -3800,6 +4947,9 @@ export type Environment = Static<typeof Environment>;
 export type EgressEntry = Static<typeof EgressEntry>;
 export type SandboxProtectedVariable = Static<typeof SandboxProtectedVariable>;
 export type SandboxEgress = Static<typeof SandboxEgress>;
+export type AttachSandboxEnvironmentBody = Static<typeof AttachSandboxEnvironmentBody>;
+export type SandboxEnvironment = Static<typeof SandboxEnvironment>;
+export type SandboxEnvironments = Static<typeof SandboxEnvironments>;
 export type SandboxTemplate = Static<typeof SandboxTemplate>;
 export type TemplateImage = Static<typeof TemplateImage>;
 export type TemplateBase = Static<typeof TemplateBase>;
@@ -3826,6 +4976,12 @@ export type Webhook = Static<typeof Webhook>;
 export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
+export type HostMesh = Static<typeof HostMesh>;
+export type HostEvacuation = Static<typeof HostEvacuation>;
+export type HostEvacuationProgress = Static<typeof HostEvacuationProgress>;
+export type HostEvacuationSandbox = Static<typeof HostEvacuationSandbox>;
+export type HostEvacuationState = Static<typeof HostEvacuationState>;
+export type HostMeshPeer = Static<typeof HostMeshPeer>;
 export type HostDiskUsage = Static<typeof HostDiskUsage>;
 export type HostMemory = Static<typeof HostMemory>;
 export type HostUsage = Static<typeof HostUsage>;
@@ -3840,7 +4996,13 @@ export type GuestMemory = Static<typeof GuestMemory>;
 export type UsageSparklines = Static<typeof UsageSparklines>;
 export type HostState = Static<typeof HostState>;
 export type HostJoinToken = Static<typeof HostJoinToken>;
+export type Pool = Static<typeof Pool>;
+export type PoolList = Static<typeof PoolList>;
+export type CreatePoolBody = Static<typeof CreatePoolBody>;
+export type CreateAccountPoolBody = Static<typeof CreateAccountPoolBody>;
+export type UpdatePoolBody = Static<typeof UpdatePoolBody>;
 export type PublicUrl = Static<typeof PublicUrl>;
+export type GrantKeys = Static<typeof GrantKeys>;
 export type AccountJoinToken = Static<typeof AccountJoinToken>;
 export type DeviceLogin = Static<typeof DeviceLogin>;
 export type DeviceLoginState = Static<typeof DeviceLoginState>;
@@ -3904,8 +5066,267 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.error",
 	"sandbox.degraded",
 	"sandbox.recovered",
+	"sandbox.environments_changed",
 	"sandbox.oom_kill",
+	"sandbox.upgraded",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
 ];
+
+export const GithubRunnersScope = Type.Union([Type.Literal("organization"), Type.Literal("repository")], {
+	description:
+		"Where runners are registered: on the GitHub organization (in `runnerGroupId`'s group), or on each job's repository.",
+});
+
+export const GithubRunners = Type.Object(
+	{
+		id: id("The runner integration's ID, such as `ghr_3m4n5b`."),
+		accountId: Type.String(),
+		name: Type.String(),
+		appId: Type.Integer({ description: "The GitHub App's ID." }),
+		owner: Type.String({
+			description: "The GitHub organization (or user) the App is installed on, such as `octo-org`.",
+		}),
+		scope: GithubRunnersScope,
+		runnerGroupId: Type.Optional(Type.Integer({ description: "The organization's runner group the runners join." })),
+		repositories: Type.Optional(
+			Type.Array(Type.String(), {
+				description: "Only jobs of these repositories (`owner/name`) get runners. Absent: any the App is installed on.",
+			}),
+		),
+		pools: Type.Array(GithubRunnerPool),
+		enabled: Type.Boolean(),
+		webhookUrl: Type.String({
+			description:
+				"Where the GitHub App sends its webhooks: subscribe it to `workflow_job`, with the webhook secret this answered.",
+		}),
+		installationId: Type.Optional(
+			Type.Integer({ description: "The App's installation, as the first webhook from it named it." }),
+		),
+		lastWebhookAt: Type.Optional(Timestamp),
+		lastError: Type.Optional(
+			Type.Object(
+				{ at: Timestamp, message: Type.String() },
+				{ title: "GithubRunnersError", description: "The last failure talking to GitHub or making a runner." },
+			),
+		),
+		status: Type.Optional(
+			Type.Array(
+				Type.Object(
+					{
+						label: Type.String(),
+						queued: Type.Integer({ description: "Jobs waiting for a runner." }),
+						starting: Type.Integer({ description: "Runners being made or booting." }),
+						idle: Type.Integer({ description: "Runners up and waiting for GitHub to give them a job." }),
+						busy: Type.Integer({ description: "Runners running a job." }),
+						waitingSince: Type.Optional(Timestamp),
+						waitingFor: Type.Optional(
+							Type.String({ description: "Why the oldest queued job has no runner yet, when it has waited." }),
+						),
+					},
+					{ title: "GithubRunnerPoolStatus" },
+				),
+				{ description: "Each pool's queue and runners, on a get." },
+			),
+		),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{
+		title: "GithubRunners",
+		description:
+			"A GitHub App whose `workflow_job` webhooks Kantel answers with ephemeral runners: one microVM per job, made from " +
+			"a pool's template on the account's hosts, given a just-in-time runner configuration, and deleted once the job " +
+			"ends. Jobs that find no room wait in a queue until there is.",
+	},
+);
+
+export const GithubRunnersList = Type.Object({ items: Type.Array(GithubRunners) }, { title: "GithubRunnersList" });
+
+export const GithubRunnersPath = Type.Object(
+	{ githubRunnersId: id("The runner integration's ID.") },
+	{ title: "GithubRunnersPath" },
+);
+
+export const CreateGithubRunnersBody = Type.Object(
+	{
+		account: accountQuery,
+		name: Type.String({ minLength: 1, maxLength: 100 }),
+		appId: Type.Integer({ minimum: 1 }),
+		privateKey: Type.String({
+			minLength: 64,
+			maxLength: 16_384,
+			description: "The GitHub App's private key, as GitHub gives it (PEM). Kept sealed; never answered.",
+		}),
+		owner: Type.String({ minLength: 1, maxLength: 100 }),
+		scope: Type.Optional(GithubRunnersScope),
+		runnerGroupId: Type.Optional(Type.Integer({ minimum: 1 })),
+		repositories: Type.Optional(Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), { maxItems: 500 })),
+		pools: Type.Optional(
+			Type.Array(GithubRunnerPool, {
+				minItems: 1,
+				maxItems: 20,
+				description: "Its runner kinds, as runner pools. Absent: none yet, for a pool's `runners` to name it.",
+			}),
+		),
+	},
+	{ title: "CreateGithubRunnersBody" },
+);
+
+export const UpdateGithubRunnersBody = Type.Object(
+	{
+		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+		appId: Type.Optional(Type.Integer({ minimum: 1 })),
+		privateKey: Type.Optional(Type.String({ minLength: 64, maxLength: 16_384 })),
+		owner: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+		scope: Type.Optional(GithubRunnersScope),
+		runnerGroupId: Type.Optional(Type.Union([Type.Integer({ minimum: 1 }), Type.Null()])),
+		repositories: Type.Optional(
+			Type.Union([Type.Array(Type.String({ pattern: "^[^/\\s]+/[^/\\s]+$" }), { maxItems: 500 }), Type.Null()]),
+		),
+		pools: Type.Optional(
+			Type.Array(GithubRunnerPool, {
+				maxItems: 20,
+				description:
+					"Its runner kinds, as runner pools, in place of those it has, in whichever pools they are. Empty: none.",
+			}),
+		),
+		enabled: Type.Optional(Type.Boolean()),
+	},
+	{ title: "UpdateGithubRunnersBody" },
+);
+
+export const GithubRunnersWithSecret = Type.Object(
+	{
+		githubRunners: GithubRunners,
+		webhookSecret: Type.String({ description: "The secret to give the GitHub App's webhook. Shown once." }),
+	},
+	{ title: "GithubRunnersWithSecret" },
+);
+
+export const GithubRunnerJobState = Type.Union(
+	[Type.Literal("queued"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("ignored")],
+	{
+		description:
+			"`queued` until a runner takes it, `in_progress` while one runs it, then `completed`. `ignored`: no pool's label " +
+			"matches it, or its repository isn't one the integration, or the pool its label picks, runs jobs for.",
+	},
+);
+
+export const GithubRunnerJob = Type.Object(
+	{
+		id: id("GitHub's ID for the job."),
+		runId: Type.Integer(),
+		repository: Type.String(),
+		name: Type.String(),
+		labels: Type.Array(Type.String()),
+		pool: Type.Optional(Type.String({ description: "The pool whose label it matched." })),
+		state: GithubRunnerJobState,
+		conclusion: Type.Optional(Type.String()),
+		sandboxId: Type.Optional(Type.String({ description: "The runner's sandbox that took it." })),
+		queuedAt: Timestamp,
+		startedAt: Type.Optional(Timestamp),
+		completedAt: Type.Optional(Timestamp),
+		reason: Type.Optional(Type.String({ description: "Why it is ignored, or why it still waits." })),
+	},
+	{ title: "GithubRunnerJob" },
+);
+
+export const GithubRunnerJobList = Type.Object(
+	{ items: Type.Array(GithubRunnerJob, { description: "The newest 200, newest first." }) },
+	{ title: "GithubRunnerJobList" },
+);
+
+export type GithubRunnerPool = Static<typeof GithubRunnerPool>;
+export type GithubRunnerKind = Static<typeof GithubRunnerKind>;
+export type GithubRunners = Static<typeof GithubRunners>;
+export type GithubRunnersScope = Static<typeof GithubRunnersScope>;
+export type CreateGithubRunnersBody = Static<typeof CreateGithubRunnersBody>;
+export type UpdateGithubRunnersBody = Static<typeof UpdateGithubRunnersBody>;
+export type GithubRunnerJob = Static<typeof GithubRunnerJob>;
+export type GithubRunnerJobState = Static<typeof GithubRunnerJobState>;
+
+// Sticky disks: an account's named, versioned disks, cloned into microVMs and kept warm between them.
+
+const StickyDiskName = Type.String({
+	pattern: "^[a-z0-9][a-z0-9-]{0,62}$",
+	description: "Lower-case letters, digits and hyphens, unique in the account.",
+});
+
+export const StickyDiskVersion = Type.Object(
+	{
+		id: id("The version's ID, such as `sdv_3m4n5b`."),
+		parent: Type.Optional(Type.String({ description: "The version it was cloned from; absent for one made empty." })),
+		hostId: Type.String({ description: "The host it was committed on." }),
+		sandboxId: Type.String({ description: "The sandbox it was committed from." }),
+		sizeBytes: Type.Integer(),
+		allocatedBytes: Type.Integer({ description: "What it takes on its host's disk, blocks it shares included." }),
+		createdAt: Timestamp,
+	},
+	{ title: "StickyDiskVersion" },
+);
+
+export const StickyDisk = Type.Object(
+	{
+		id: id("The sticky disk's ID, such as `sdk_3m4n5b`."),
+		accountId: Type.String(),
+		name: StickyDiskName,
+		description: Type.Optional(Type.String()),
+		sizeGb: Type.Integer({ description: "Each copy's size: what a sandbox can fill." }),
+		head: Type.Optional(Type.String({ description: "The newest committed version; absent until one is." })),
+		versions: Type.Optional(Type.Array(StickyDiskVersion, { description: "The newest 20, newest first, on a get." })),
+		poolId: Type.Optional(
+			Type.String({
+				description:
+					"The pool it belongs to (`Pool`): the one its create named, else the pool of the first sandbox it was " +
+					"attached to. It is attached only to sandboxes in that pool. Absent until then.",
+			}),
+		),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{
+		title: "StickyDisk",
+		description:
+			"A named, versioned disk, attached to microVMs at a path. Each sandbox gets its own copy-on-write copy of the " +
+			"newest version its host has (an empty disk at first), writes what it likes, and its writes go when it does " +
+			"unless it is committed: a commit makes that sandbox's copy the disk's next version. For caches that jobs warm " +
+			"and reuse, such as a pnpm store, Docker's images or a git mirror. Experimental.",
+	},
+);
+
+export const StickyDiskList = Type.Object({ items: Type.Array(StickyDisk) }, { title: "StickyDiskList" });
+
+export const StickyDiskPath = Type.Object(
+	{ stickyDiskId: id("The sticky disk's ID or name.") },
+	{ title: "StickyDiskPath" },
+);
+
+export const CreateStickyDiskBody = Type.Object(
+	{
+		account: accountQuery,
+		name: StickyDiskName,
+		description: Type.Optional(Type.String({ maxLength: 500 })),
+		sizeGb: Type.Integer({ minimum: 1, maximum: 2048 }),
+		pool: Type.Optional(
+			Type.String({
+				minLength: 1,
+				description:
+					"The pool it belongs to, an ID or name, as a sandbox's create names one: it is attached only to sandboxes in " +
+					"that pool. Default: the pool of the first sandbox it is attached to.",
+			}),
+		),
+	},
+	{ title: "CreateStickyDiskBody" },
+);
+
+export const CommitStickyDiskPath = Type.Object(
+	{ sandboxId: id("The sandbox's ID."), stickyDiskId: id("The sticky disk's ID or name.") },
+	{ title: "CommitStickyDiskPath" },
+);
+
+export type StickyDisk = Static<typeof StickyDisk>;
+export type StickyDiskVersion = Static<typeof StickyDiskVersion>;
+export type SandboxStickyDisk = Static<typeof SandboxStickyDisk>;
+export type SandboxStickyDiskInput = Static<typeof SandboxStickyDiskInput>;

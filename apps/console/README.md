@@ -17,7 +17,8 @@ self-hosted install, the gateway serves the console itself.
 ## Routes
 
 The console's pages are the compute console's (`@kantel/ui`'s `computePath`): `/` is Sandboxes, then `/snapshots`,
-`/keys`, `/proxy`, `/webhooks`, `/telemetry`, `/organisation`, `/billing` and, for a super-admin, `/hosts`. `/device` is where
+`/keys`, `/proxy`, `/webhooks`, `/telemetry`, `/organisation`, `/billing`, `/disks` where the deployment has sticky
+disks on, and, for a super-admin, `/hosts`. `/device` is where
 `kantel login` sends a person to approve a device. The paths under `/compute/...` that earlier consoles used go to the
 same page here, so old bookmarks and an older CLI's device link still work.
 

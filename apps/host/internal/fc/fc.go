@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -54,6 +55,16 @@ func apiClient(dir string) *http.Client {
 	}}
 }
 
+// OOMScoreAdj is every VM's Firecracker's oom_score_adj: the kernel's out-of-memory killer ends a VM (the largest)
+// before kantel-host or the host's own services, which keep 0. Without it a VM's Firecracker inherits kantel-host's.
+const OOMScoreAdj = 500
+
+// ScoreForOOM sets Firecracker process pid's oom_score_adj to OOMScoreAdj, best effort: a host that refuses it (no
+// /proc, no permission) leaves the kernel's own choice.
+func ScoreForOOM(pid int) {
+	_ = os.WriteFile(filepath.Join("/proc", strconv.Itoa(pid), "oom_score_adj"), []byte(strconv.Itoa(OOMScoreAdj)), 0o644)
+}
+
 // Attach takes over a Firecracker process a previous run of the host started (it is no longer our child, so its
 // exit is noticed by polling).
 func Attach(dir string, pid int) (*Machine, error) {
@@ -64,6 +75,7 @@ func Attach(dir string, pid int) (*Machine, error) {
 		return nil, err
 	}
 	m := &Machine{Dir: dir, pid: pid, http: apiClient(dir), done: make(chan struct{})}
+	ScoreForOOM(pid)
 	go func() {
 		for syscall.Kill(pid, 0) == nil {
 			time.Sleep(time.Second)
@@ -105,6 +117,7 @@ func Launch(ctx context.Context, binary, dir string) (*Machine, error) {
 		return nil, err
 	}
 	m := &Machine{Dir: dir, pid: cmd.Process.Pid, http: apiClient(dir), done: make(chan struct{})}
+	ScoreForOOM(cmd.Process.Pid)
 	_ = os.WriteFile(filepath.Join(dir, PidFile), []byte(fmt.Sprint(cmd.Process.Pid)), 0o600)
 	go func() {
 		m.err = cmd.Wait()
@@ -241,6 +254,21 @@ type Drive struct {
 	ID       string
 	Path     string
 	ReadOnly bool
+	// Discard, on a writable drive, lets the guest discard (trim) its blocks, as BootConfig.Discard does for the disk:
+	// Firecracker punches holes in the drive's file for them. Off on a read-only drive whatever it says (Firecracker
+	// takes discard only on a writable one). A snapshot keeps the device as it was booted, and so does a PATCH of its
+	// file.
+	Discard bool
+}
+
+// body is the drive's PUT /drives body: with discard (and the Sync engine it needs, said outright) when asked on a
+// writable drive.
+func (d Drive) body() map[string]any {
+	drive := map[string]any{"drive_id": d.ID, "path_on_host": d.Path, "is_root_device": false, "is_read_only": d.ReadOnly}
+	if d.Discard && !d.ReadOnly {
+		drive["io_engine"], drive["discard"] = DiskEngine, true
+	}
+	return drive
 }
 
 // balloon is the balloon BootConfig.BalloonStatsSeconds asks for: a target of 0, so it only reports, and with free page
@@ -288,7 +316,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 	}
 	// Block devices are attached in the order they're configured, so these are vdc, vdd, ... after vda and vdb.
 	for _, d := range cfg.Drives {
-		steps = append(steps, step{"/drives/" + d.ID, map[string]any{"drive_id": d.ID, "path_on_host": d.Path, "is_root_device": false, "is_read_only": d.ReadOnly}})
+		steps = append(steps, step{"/drives/" + d.ID, d.body()})
 	}
 	steps = append(steps,
 		step{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},

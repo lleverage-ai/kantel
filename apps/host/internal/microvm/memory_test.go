@@ -75,7 +75,7 @@ func TestAdmitMemoryByUse(t *testing.T) {
 // without it (whose snapshot's balloon never reports) is made again.
 func TestFreePageReportingBootAndFingerprint(t *testing.T) {
 	off, on := &Manager{}, &Manager{cfg: Config{FreePageReporting: true}}
-	if off.bootConfig(shape{}, "vmlinux", "", "", 3, 0).FreePageReporting || !on.bootConfig(shape{}, "vmlinux", "", "", 3, 0).FreePageReporting {
+	if off.bootConfig(shape{}, "vmlinux", "", "", 3, 0, 0).FreePageReporting || !on.bootConfig(shape{}, "vmlinux", "", "", 3, 0, 0).FreePageReporting {
 		t.Fatal("boot config")
 	}
 	if strings.Contains(off.templateFingerprint(shape{}), "free-page-reporting") || !strings.Contains(on.templateFingerprint(shape{}), ",free-page-reporting") {

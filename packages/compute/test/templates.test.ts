@@ -11,6 +11,7 @@ import { nodeSqliteDatabase, pgliteDatabase, type TestDatabaseKind } from "@kant
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import {
+	type BackendHost,
 	type BackendSize,
 	type BuiltTemplate,
 	CUSTOM_SHAPES_FEATURE,
@@ -24,13 +25,21 @@ import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts"
 import {
 	type ComputeStore,
 	createMemoryStore,
+	OPERATOR_POOLS,
 	type StoredTemplate,
 	type StoredTemplateVersion,
 	type TemplateChange,
 	UniqueViolation,
 } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
-import { TEMPLATE_BUILD_LEASE_MS, TEMPLATE_BUILD_RETRY_MS, templateCacheKey } from "../src/templates.ts";
+import {
+	TEMPLATE_BUILD_LEASE_MS,
+	TEMPLATE_BUILD_RETRY_MS,
+	TEMPLATE_COPY_RETRY_MS,
+	TEMPLATE_IMAGE_COPIES_FEATURE,
+	TEMPLATE_SYNC_FEATURE,
+	templateCacheKey,
+} from "../src/templates.ts";
 import { INDEX } from "./base-index-fixture.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -93,6 +102,8 @@ function controllableBackend(
 		readonly sizes?: readonly BackendSize[];
 		readonly moreHosts?: readonly string[];
 		readonly bytesOnHosts?: BytesOnHosts;
+		/** Each host as the backend says it is, changed (its pool, mesh address, features and fingerprints). */
+		readonly hostAs?: (host: BackendHost) => BackendHost;
 	} = {},
 ) {
 	const stub = createStubBackend();
@@ -128,7 +139,8 @@ function controllableBackend(
 				if (only !== undefined) {
 					return { ...each, sizes: only, features: each.features?.filter((name) => name !== CUSTOM_SHAPES_FEATURE) };
 				}
-				return sizes === undefined ? each : { ...each, sizes };
+				const sized = sizes === undefined ? each : { ...each, sizes };
+				return options.hostAs === undefined ? sized : options.hostAs(sized);
 			}),
 		};
 	};
@@ -250,9 +262,11 @@ function setup(
 		readonly bytesOnHosts?: BytesOnHosts;
 		/** Image patching on, with this index. */
 		readonly baseImages?: BaseImages;
+		readonly hostAs?: (host: BackendHost) => BackendHost;
 	} = {},
 ) {
 	const fake = controllableBackend({
+		...(options.hostAs === undefined ? {} : { hostAs: options.hostAs }),
 		...(options.backendTemplates === false ? { templates: false } : {}),
 		...(options.sizes === undefined ? {} : { sizes: options.sizes }),
 		...(options.moreHosts === undefined ? {} : { moreHosts: options.moreHosts }),
@@ -339,7 +353,7 @@ describe("templateCacheKey", () => {
 		]);
 	});
 
-	it("changes with each of its six parts", async () => {
+	it("changes with each of its six parts, and its pool", async () => {
 		const { keyHash } = await templateCacheKey(parts);
 		const changed: computeSchema.TemplateCacheKey[] = [
 			{ ...parts, templateVersion: "tpl_one@2" },
@@ -348,6 +362,7 @@ describe("templateCacheKey", () => {
 			{ ...parts, firecracker: "1.11.0" },
 			{ ...parts, vcpus: 4 },
 			{ ...parts, memoryMb: 8192 },
+			{ ...parts, poolId: "pool_ci" },
 		];
 		const hashes = await Promise.all(changed.map(async (each) => (await templateCacheKey(each)).keyHash));
 		for (const hash of hashes) expect(hash).not.toBe(keyHash);
@@ -534,6 +549,21 @@ describe("rebuilding", () => {
 });
 
 describe("creating from a template", () => {
+	it("keeps what a template snapshot was made on where its host says, and never answers it", async () => {
+		const { api, tom, root, build } = setup();
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		const template = await tom.createTemplate({ name: "web", spec: SPEC });
+		const cpu = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+		const runtime = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=4";
+		(await build(0)).releaseWith((built) => ({ ...built, cpu, runtime }));
+		await api.service.idle();
+		const ready = (await tom.getTemplate(template.id)).build.ready;
+		expect(await api.store.templateSnapshots.get(ready?.id ?? "")).toMatchObject({ state: "ready", cpu, runtime });
+		const listed = (await tom.listTemplateSnapshots(template.id)).items[0];
+		expect(listed).not.toHaveProperty("cpu");
+		expect(listed).not.toHaveProperty("runtime");
+	});
+
 	it("starts from the newest ready snapshot, on its host", async () => {
 		const { api, tom, root, build, created } = setup();
 		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
@@ -654,6 +684,237 @@ describe("a template's setup", () => {
 		await api.service.idle();
 		expect((await writer.createSandbox({ template: "bare", wait: true })).state).toBe("running");
 		expect((await writer.createSandbox({ template: "bare", size: "large", wait: true })).state).toBe("running");
+	});
+});
+
+describe("a template snapshot's copies", () => {
+	const CPU = { vendor: "AuthenticAMD", family: 25, model: 97, featuresHash: "sha256:0123456789abcdef" };
+	const CPU_TEXT = "AuthenticAMD family 25 model 97, features sha256:0123456789abcdef";
+	const OTHER_CPU = { ...CPU, model: 68 };
+	const RUNTIME = "firecracker=v1.17.0;kernel=6.1.102+0123456789ab;sticky=2";
+	const MAP = digest("a");
+	/**
+	 * A pool (pool_a, sync on) of the stub's host and b, c, d and e: b like the stub, c on another CPU, d without
+	 * template-sync, e without a mesh address (not in the pool's mesh). Those in `copiesImages` keep a custom image's
+	 * copy to its entry's image (`template-image-copies`).
+	 */
+	async function pooled(copiesImages: readonly string[] = []) {
+		const differs: { [hostId: string]: Partial<BackendHost> } = {
+			host_c: { cpuFingerprint: "AuthenticAMD family 25 model 68, features sha256:0123456789abcdef" },
+			host_d: { features: [] },
+			host_e: { meshAddress: undefined },
+		};
+		const t = setup({
+			moreHosts: ["host_b", "host_c", "host_d", "host_e"],
+			hostAs: (host) => ({
+				...host,
+				poolId: "pool_a",
+				meshAddress: `fd00:a::${host.id.slice(-1)}`,
+				features: [
+					...(host.features ?? []),
+					TEMPLATE_SYNC_FEATURE,
+					...(copiesImages.includes(host.id) ? [TEMPLATE_IMAGE_COPIES_FEATURE] : []),
+				],
+				cpuFingerprint: CPU_TEXT,
+				runtimeFingerprints: [RUNTIME],
+				...differs[host.id],
+			}),
+		});
+		await t.api.store.pools.put({ id: "pool_a", owner: OPERATOR_POOLS, name: "a", createdAt: Date.now(), sync: true });
+		await t.root.listHosts();
+		for (const host of await t.api.store.hosts.list()) {
+			await t.api.store.hosts.update(host.id, (current) => ({ ...current, poolId: "pool_a" }));
+		}
+		await t.root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		return t;
+	}
+	/** A host reporting the template snapshots it holds, each made on `cpu`. */
+	const holds = (
+		t: Awaited<ReturnType<typeof pooled>>,
+		hostId: string,
+		ids: readonly string[],
+		cpu: typeof CPU = CPU,
+	) =>
+		t.api.service.recordHoldings(hostId, Date.now() + t.clock.skip, {
+			objects: {
+				template: ids.map((objectId) => ({
+					objectId,
+					versions: [{ version: "1", mapDigest: MAP, allocatedBytes: 1, pool: "pool_a", cpu, runtime: RUNTIME }],
+				})),
+			},
+		});
+
+	it("are asked of the pool's other hosts on its runtime once a host holds it, under its ID and the hash it was built under", async () => {
+		const t = await pooled();
+		const template = await t.tom.createTemplate({ name: "web", spec: SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const ready = (await t.tom.getTemplate(template.id)).build.ready;
+		const entry = await t.api.store.templateSnapshots.get(ready?.id ?? "");
+		expect(entry?.hostId).toBe(STUB_HOST_ID);
+		// Not until a host holds it, mapped: none could fetch it.
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(1);
+
+		await holds(t, STUB_HOST_ID, [entry?.id ?? ""]);
+		await t.api.service.sweep();
+		const asked = [await t.build(1), await t.build(2)];
+		expect(asked.map((held) => held.spec.hostId).sort()).toEqual(["host_b", "host_c"]);
+		for (const held of asked) {
+			expect(held.spec).toMatchObject({
+				snapshotId: entry?.id,
+				keyHash: entry?.keyHash,
+				templateId: template.id,
+				baseImage: "kantel/sandbox",
+				baseDigest: D1,
+			});
+			held.release();
+		}
+		await t.api.service.idle();
+		// Asked once: not again while their reports bring their copies, nor after.
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(3);
+		t.clock.skip += TEMPLATE_COPY_RETRY_MS + 1;
+		await holds(t, "host_b", [entry?.id ?? ""]);
+		await holds(t, "host_c", [entry?.id ?? ""], OTHER_CPU);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(3);
+	});
+
+	it("are where a create starts from the snapshot, on any host whose copy restores there, and go with it", async () => {
+		const t = await pooled();
+		const template = await t.tom.createTemplate({ name: "web", spec: SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		const entry = await t.api.store.templateSnapshots.get(id);
+		await holds(t, STUB_HOST_ID, [id]);
+		await holds(t, "host_b", [id]);
+		// c built its own on its CPU, which restores there; e's copy was made on another CPU than its own.
+		await holds(t, "host_c", [id], OTHER_CPU);
+		await holds(t, "host_e", [id], OTHER_CPU);
+		const sandbox = await t.tom.createSandbox({ template: template.id, wait: true });
+		expect(sandbox.template).toMatchObject({ snapshotId: id, start: "snapshot" });
+		const spec = specOf(t.created, sandbox.id);
+		expect(spec.template?.snapshot).toBe(entry?.ref);
+		expect(spec.template?.snapshotHosts).toEqual([STUB_HOST_ID, "host_b", "host_c"]);
+		expect(spec.eligibleHosts.slice(0, 3)).toEqual([STUB_HOST_ID, "host_b", "host_c"]);
+		// A retry of the create, kept on the record, boots fresh: no snapshot, nor its hosts.
+		const record = await t.api.store.sandboxes.get(sandbox.id);
+		expect(record?.templateBoot).not.toHaveProperty("snapshotHosts");
+
+		// Rebuilt: the new entry replaces it, which goes with its copies' bytes and holders.
+		await t.tom.rebuildTemplate(template.id);
+		(await t.build(t.builds.length - 1)).release();
+		await t.api.service.idle();
+		expect((await t.api.store.templateSnapshots.get(id))?.state).toBe("discarded");
+		expect(t.deletedTemplateSnapshots).toEqual(expect.arrayContaining([entry?.ref, id]));
+		for (const hostId of ["host_b", "host_c", "host_e"]) expect(t.bytesOnHosts.has(`${hostId} ${id}`)).toBe(false);
+		expect((await t.api.store.diskHolders.list()).filter((holder) => holder.objectId === id)).toEqual([]);
+	});
+
+	const DOCKERFILE_SPEC: computeSchema.TemplateSpec = {
+		...SPEC,
+		image: { kind: "dockerfile", dockerfile: "ARG KANTEL_BASE\nFROM $KANTEL_BASE\n" },
+	};
+
+	it("of a custom image's are over only its entry's image, and asked only of hosts that keep a copy to it", async () => {
+		// b and c keep a copy to the entry's image; the stub's host doesn't, nor d (no template-sync), nor e (no mesh).
+		const t = await pooled(["host_b", "host_c"]);
+		t.customImageHosts.delete("host_c");
+		const template = await t.tom.createTemplate({ name: "rg", spec: DOCKERFILE_SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		const entry = await t.api.store.templateSnapshots.get(id);
+		expect(entry?.rootfsKey).toMatch(/^[0-9a-f]{64}$/);
+		expect(entry?.key.imageDigest).toMatch(/^sha256:/);
+		await holds(t, STUB_HOST_ID, [id]);
+		await t.api.service.sweep();
+		// Only b: c doesn't build custom images, and the others don't keep a copy to its image.
+		const asked = await t.build(1);
+		expect(asked.spec).toMatchObject({
+			hostId: "host_b",
+			snapshotId: id,
+			// The hash it was claimed and built under, before its build named its digest.
+			keyHash: entry?.claimHash,
+			image: { kind: "dockerfile", scope: `${template.id}@1#0` },
+			copy: { rootfsKey: entry?.rootfsKey, imageDigest: entry?.key.imageDigest },
+		});
+		asked.release();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(2);
+		expect(t.bytesOnHosts.has(`host_b ${id}`)).toBe(true);
+		// The builder's own build was never a copy.
+		expect(t.builds[0]?.spec.copy).toBeUndefined();
+	});
+
+	it("of a custom image's are deleted when their host says they are over another image", async () => {
+		const t = await pooled(["host_b"]);
+		const template = await t.tom.createTemplate({ name: "rg", spec: DOCKERFILE_SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		await holds(t, STUB_HOST_ID, [id]);
+		await t.api.service.sweep();
+		(await t.build(1)).releaseWith((built) => ({ ...built, imageDigest: D3 }));
+		await t.api.service.idle();
+		expect(t.bytesOnHosts.has(`host_b ${id}`)).toBe(false);
+		expect(t.bytesOnHosts.has(`${STUB_HOST_ID} ${id}`)).toBe(true);
+	});
+
+	it("of a custom image's serve its creates while its builder can't, and it isn't built again", async () => {
+		const t = await pooled(["host_b"]);
+		const template = await t.tom.createTemplate({ name: "rg", spec: DOCKERFILE_SPEC });
+		(await t.build(0)).release();
+		await t.api.service.idle();
+		const id = (await t.tom.getTemplate(template.id)).build.ready?.id ?? "";
+		const entry = await t.api.store.templateSnapshots.get(id);
+		await holds(t, STUB_HOST_ID, [id]);
+		await t.api.service.sweep();
+		(await t.build(1)).release();
+		await t.api.service.idle();
+		await holds(t, "host_b", [id]);
+
+		// Both hold it: a create restores it on either, and boots it fresh only on one of them.
+		const both = await t.tom.createSandbox({ template: template.id, wait: true });
+		expect(both.template).toMatchObject({ snapshotId: id, start: "snapshot" });
+		expect(specOf(t.created, both.id).template?.snapshotHosts).toEqual([STUB_HOST_ID, "host_b"]);
+		expect(specOf(t.created, both.id).eligibleHosts).toEqual([STUB_HOST_ID, "host_b"]);
+		const fresh = await t.tom.createSandbox({ template: template.id, size: "large", wait: true });
+		expect(fresh.template).toMatchObject({ start: "boot" });
+		expect(specOf(t.created, fresh.id).eligibleHosts).toEqual([STUB_HOST_ID, "host_b"]);
+		expect(specOf(t.created, fresh.id).template).toMatchObject({
+			rootfsKey: entry?.rootfsKey,
+			imageDigest: entry?.key.imageDigest,
+		});
+
+		// Its builder stops building custom images: the copy on b serves the template, and the image isn't built again.
+		t.customImageHosts.delete(STUB_HOST_ID);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.builds).toHaveLength(2);
+		expect((await t.api.store.templateSnapshots.get(id))?.state).toBe("ready");
+		const onCopy = await t.tom.createSandbox({ template: template.id, wait: true });
+		expect(onCopy.template).toMatchObject({ snapshotId: id, start: "snapshot" });
+		expect(specOf(t.created, onCopy.id).template?.snapshotHosts).toEqual(["host_b"]);
+		expect(specOf(t.created, onCopy.id).eligibleHosts).toEqual(["host_b"]);
+		expect(onCopy.image).toBe(`dockerfile@${entry?.key.imageDigest}`);
+	});
+
+	it("are deleted by the sweep when their entry is gone or thrown away", async () => {
+		const t = await pooled();
+		t.bytesOnHosts.add("host_b tsn_000000000000000000000000_9");
+		await holds(t, "host_b", ["tsn_000000000000000000000000_9"]);
+		expect(await t.api.store.diskHolders.list()).toHaveLength(1);
+		await t.api.service.sweep();
+		await t.api.service.idle();
+		expect(t.deletedTemplateSnapshots).toContain("tsn_000000000000000000000000_9");
+		expect(t.bytesOnHosts.size).toBe(0);
+		expect(await t.api.store.diskHolders.list()).toEqual([]);
 	});
 });
 
@@ -1603,6 +1864,70 @@ describe("a template snapshot's host with no room", () => {
 });
 
 describe("a template's build host", () => {
+	it("is built once in each pool it is used in, on hosts of one runtime, and each pool's sandboxes start from its own", async () => {
+		const { api, tom, root, build, builds, releaseAll, created } = setup({ moreHosts: ["host_ci", "host_ci_2"] });
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		for (const hostId of ["host_ci", "host_ci_2"]) {
+			await root.updateHost(hostId, { draining: true });
+			await root.updateHost(hostId, { pool: ci.id });
+			await root.updateHost(hostId, { draining: false });
+		}
+		const web = await tom.createTemplate({ name: "web", spec: SPEC });
+		await Promise.all([build(0), build(1)]);
+		await releaseAll(() => api.service.idle());
+		// One build in each pool, the default's on the stub's host and ci's on one of its two: never one for both, nor
+		// one for each host.
+		expect(builds).toHaveLength(2);
+		const hosts = builds.map((held) => held.spec.hostId);
+		expect(hosts).toContain(STUB_HOST_ID);
+		expect(hosts.filter((hostId) => hostId !== STUB_HOST_ID)).toHaveLength(1);
+		const entries = await api.store.templateSnapshots.list({ templateId: web.id });
+		expect(entries.map((entry) => entry.state)).toEqual(["ready", "ready"]);
+		expect(new Set(entries.map((entry) => entry.key.poolId))).toEqual(new Set(["pool_operator", ci.id]));
+		// Reconciled again on the sweep: nothing more is wanted.
+		await api.service.sweep();
+		await releaseAll(() => api.service.idle());
+		expect(builds).toHaveLength(2);
+		// A sandbox in ci starts from ci's build, on its host.
+		const inCi = entries.find((entry) => entry.key.poolId === ci.id);
+		const sandbox = await tom.createSandbox({ template: web.id, pool: "ci", wait: true });
+		expect(sandbox.template).toMatchObject({ snapshotId: inCi?.id, start: "snapshot" });
+		expect(specOf(created, sandbox.id).template?.snapshot).toBe(inCi?.ref);
+	});
+
+	it("isn't served by a host moved to another pool since it was built there, its new pool's build not ready yet", async () => {
+		const { api, tom, root, build, releaseAll } = setup();
+		const web = await tom.createTemplate({ name: "web", spec: SPEC });
+		await tom.createTemplate({
+			name: "rg",
+			spec: { ...SPEC, image: { kind: "dockerfile", dockerfile: "ARG KANTEL_BASE\nFROM $KANTEL_BASE\n" } },
+		});
+		await Promise.all([build(0), build(1)]);
+		await releaseAll(() => api.service.idle());
+		expect((await tom.getTemplate(web.id)).build.state).toBe("ready");
+		// The stub's host, which holds both builds, is moved (drained, empty) to ci.
+		const ci = await root.createPool({ name: "ci" });
+		await root.listHosts();
+		await root.updateHost(STUB_HOST_ID, { draining: true });
+		await root.updateHost(STUB_HOST_ID, { pool: ci.id });
+		await root.updateHost(STUB_HOST_ID, { draining: false });
+		// ci's own builds are asked for, and held.
+		await api.service.sweep();
+		await Promise.all([build(2), build(3)]);
+		// Meanwhile the default pool's builds serve nothing in ci: a Kantel base boots fresh, a custom image waits.
+		const fresh = await tom.createSandbox({ template: "web", pool: "ci", wait: true });
+		expect(fresh.template).toMatchObject({ start: "boot" });
+		expect(fresh.template?.snapshotId).toBeUndefined();
+		const waiting = await failure(tom.createSandbox({ template: "rg", pool: "ci" }));
+		expect(waiting.code).toBe("unavailable");
+		await releaseAll(() => api.service.idle());
+		const built = await tom.createSandbox({ template: "web", pool: "ci", wait: true });
+		expect(built.template).toMatchObject({ start: "snapshot" });
+		const ready = await api.store.templateSnapshots.get(built.template?.snapshotId ?? "");
+		expect(ready?.key.poolId).toBe(ci.id);
+	});
+
 	it("is one that can make its shape, of each runtime, not merely the first host with that runtime", async () => {
 		const { api, tom, build, hostSizes, runtimeHosts } = setup({ sizes: HOST_SIZES, moreHosts: ["host_small"] });
 		// The small host comes first, and makes only `small`, not the template's 2 vCPUs and 4096 MB.
