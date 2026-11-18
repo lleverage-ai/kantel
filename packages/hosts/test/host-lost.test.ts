@@ -220,6 +220,137 @@ describe("what a loss covers", () => {
 		expect((await root.getSandbox(made.id)).state).toBe("lost");
 	});
 
+	it("keeps the loss owed until every command is ended, retrying one that failed part-way", async () => {
+		const { api, hostId, host, sandbox, pass, service } = await setup();
+		const command = (id: string, state: "running" | "finished") => ({
+			id,
+			sandboxId: sandbox.id,
+			accountId: sandbox.accountId,
+			command: "sleep 1000",
+			cwd: "/root",
+			state,
+			stdout: "",
+			stderr: "",
+			truncated: false,
+			startedAt: Date.now(),
+			detached: true,
+			...(state === "finished" ? { exitCode: 0, endedAt: Date.now(), durationMs: 1 } : {}),
+		});
+		for (const id of ["cmd_a", "cmd_b", "cmd_c"]) await api.store.commands.put(command(id, "running") as never);
+		await api.store.commands.put(command("cmd_done", "finished") as never);
+		// The commands store fails once, on the second command ended.
+		const update = api.store.commands.update.bind(api.store.commands);
+		let calls = 0;
+		const spy = vi.spyOn(api.store.commands, "update").mockImplementation(async (...args) => {
+			calls += 1;
+			if (calls === 2) throw new Error("store unavailable");
+			return update(...args);
+		});
+		host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("lost");
+		expect((await api.store.sandboxes.get(sandbox.id))?.lostEvent).toBeDefined();
+		await pass(LOST_AFTER_MS + 1_000);
+		spy.mockRestore();
+		const states = async () =>
+			Object.fromEntries(
+				(await api.store.commands.list({ sandboxId: sandbox.id })).map((each) => [each.id, each.state]),
+			);
+		expect(await states()).toEqual({ cmd_a: "killed", cmd_b: "killed", cmd_c: "killed", cmd_done: "finished" });
+		expect((await api.store.sandboxes.get(sandbox.id))?.lostEvent).toBeUndefined();
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toHaveLength(1);
+		expect(service.hub.connected(hostId)).toBe(false);
+	});
+
+	it("forgets the automatic snapshots its host deletes with it, and keeps the rest", async () => {
+		const { api, hostId, host, sandbox, pass } = await setup();
+		const snapshot = (id: string, kind: "automatic" | "saved", ref: string) => ({
+			id,
+			accountId: sandbox.accountId,
+			kind,
+			sandboxId: sandbox.id,
+			sandboxType: "microvm",
+			state: "ready",
+			trigger: "stop",
+			memory: false,
+			sizeBytes: 1,
+			createdAt: Date.now(),
+			ref,
+		});
+		await api.store.snapshots.put(snapshot("snap_here", "automatic", `${hostId}/snap_here`) as never);
+		await api.store.snapshots.put(snapshot("snap_elsewhere", "automatic", "hst_other/snap_elsewhere") as never);
+		await api.store.snapshots.put(snapshot("snap_saved", "saved", `${hostId}/snap_saved`) as never);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			latestSnapshotId: "snap_here",
+			latestSnapshotAt: Date.now(),
+		}));
+		host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		const lost = await api.store.sandboxes.get(sandbox.id);
+		expect(lost).toMatchObject({ state: "lost" });
+		expect(lost?.latestSnapshotId).toBeUndefined();
+		expect(lost?.lostEvent).toBeUndefined();
+		expect(await api.store.snapshots.get("snap_here")).toBeUndefined();
+		expect(await api.store.snapshots.get("snap_elsewhere")).toMatchObject({ state: "ready" });
+		expect(await api.store.snapshots.get("snap_saved")).toMatchObject({ state: "ready" });
+	});
+
+	it("leaves a sandbox upgrading on a lost host to its upgrade's settling, then loses it", async () => {
+		const { api, service, hostStore, hostId, host, sandbox, pass } = await setup();
+		const upgrading = {
+			operationId: "op_upgrade",
+			at: Date.now(),
+			heartbeatAt: Date.now() + 3_600_000,
+			from: "running" as const,
+			before: { runs: [] },
+		};
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, upgrading }));
+		await hostStore.updatePlacement(sandbox.id, (latest) => ({
+			...latest,
+			upgrade: { operationId: "op_upgrade", target: "hst_target", phase: "host" as const },
+		}));
+		host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).not.toBe("lost");
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
+		// Fencing the host directly leaves the upgrade's placement too.
+		expect(await service.sandboxes.fence(hostId, [sandbox.id])).toEqual([]);
+		// Once settled, the next pass loses it.
+		await api.store.sandboxes.update(sandbox.id, (current) => {
+			const { upgrading: _, ...rest } = current;
+			return rest;
+		});
+		await hostStore.updatePlacement(sandbox.id, (latest) => {
+			const { upgrade: _, ...rest } = latest;
+			return rest;
+		});
+		await pass(LOST_AFTER_MS + 1_000);
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("lost");
+	});
+
+	it("finishes an interrupted loss before a delete, so the delete never drops its event", async () => {
+		const { api, root, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "lost",
+			reason: HOST_LOST_REASON,
+			lostEvent: { eventId: "evt_interrupted", previousState: "running" },
+		}));
+		await root.deleteSandbox(sandbox.id);
+		const types = (await api.store.events.list({ accountId: sandbox.accountId }))
+			.filter((event) => event.sandboxId === sandbox.id)
+			.map((event) => event.type);
+		expect(types.filter((type) => type === "sandbox.lost")).toHaveLength(1);
+		expect(types).toContain("sandbox.deleted");
+		expect((await root.getSandbox(sandbox.id)).state).toBe("deleted");
+	});
+
 	it("keeps a fenced create out of the create's own settling: only the loss settles it", async () => {
 		const { root, service, hostId, host, pass } = await setup({ lostAfterMs: 3_600_000 });
 		host.hold = (method) => (method === "sandbox.create" ? new Promise<void>(() => undefined) : undefined);

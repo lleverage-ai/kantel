@@ -4689,7 +4689,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const fenced: { readonly sandboxId: string; readonly attempt?: number }[] = [];
 				for (const sandboxId of sandboxIds) {
 					await store.updatePlacement(sandboxId, (latest) =>
-						latest.hostId !== hostId || latest.fenced !== undefined || isLeftover(latest) || latest.move !== undefined
+						latest.hostId !== hostId ||
+						latest.fenced !== undefined ||
+						isLeftover(latest) ||
+						// A move or an upgrade under way owes another host's copy its settling first: never fenced over it.
+						latest.move !== undefined ||
+						latest.upgrade !== undefined
 							? undefined
 							: { ...latest, state: "lost", fenced: at, updatedAt: at },
 					);
@@ -4711,6 +4716,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							placement.hostId === hostId &&
 							!isLeftover(placement) &&
 							placement.move === undefined &&
+							placement.upgrade === undefined &&
 							// One its host said it no longer had is nothing there to lose: an earlier attempt's, say.
 							(placement.state !== "lost" || placement.fenced !== undefined),
 					)
