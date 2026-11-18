@@ -166,18 +166,23 @@ env_setting() {
 }
 
 # Sets $1 to $2 in deploy/compose/.env, in place of any line it had, and keeps the file to its owner: it holds secrets.
+# Both it and the copy it's rewritten through are owner-only from the moment they're made (umask 077, in a subshell),
+# and a copy an interrupted run left behind is removed first, as writing to it would keep its mode.
 save_setting() {
 	env_file="$SRC/deploy/compose/.env"
 	case "$2" in
 	*"'"* | *"
 "*) die "$1 can't contain a single quote or a line break" "Percent-encode them in a URL: ' is %27." ;;
 	esac
-	touch "$env_file"
-	chmod 600 "$env_file"
-	grep -v "^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=" "$env_file" >"$env_file.new" || true
-	printf "%s='%s'\n" "$1" "$2" >>"$env_file.new"
-	chmod 600 "$env_file.new"
-	mv "$env_file.new" "$env_file"
+	rm -f "$env_file.new"
+	(
+		umask 077
+		touch "$env_file"
+		chmod 600 "$env_file"
+		grep -v "^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$1[[:space:]]*=" "$env_file" >"$env_file.new" || true
+		printf "%s='%s'\n" "$1" "$2" >>"$env_file.new"
+		mv "$env_file.new" "$env_file"
+	) || die "couldn't save $1 in $env_file"
 }
 
 # A Postgres of your own (--database-url, --database-ca): saved in deploy/compose/.env, so later upgrades keep using it.
