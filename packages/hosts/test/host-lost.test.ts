@@ -299,6 +299,44 @@ describe("what a loss covers", () => {
 		expect(await api.store.snapshots.get("snap_saved")).toMatchObject({ state: "ready" });
 	});
 
+	it("never leaves a pointer to a forgotten snapshot when forgetting it is interrupted", async () => {
+		const { api, hostId, host, sandbox, pass } = await setup();
+		await api.store.snapshots.put({
+			id: "snap_here",
+			accountId: sandbox.accountId,
+			kind: "automatic",
+			sandboxId: sandbox.id,
+			sandboxType: "microvm",
+			state: "ready",
+			trigger: "pause",
+			memory: true,
+			sizeBytes: 1,
+			createdAt: Date.now(),
+			ref: `${hostId}/snap_here`,
+		} as never);
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			latestSnapshotId: "snap_here",
+			latestSnapshotAt: Date.now(),
+			pausedSnapshotId: "snap_here",
+		}));
+		// The snapshots store fails once, as the record is deleted.
+		const spy = vi.spyOn(api.store.snapshots, "delete").mockRejectedValueOnce(new Error("store unavailable"));
+		host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		const interrupted = await api.store.sandboxes.get(sandbox.id);
+		expect(interrupted).toMatchObject({ state: "lost" });
+		expect(interrupted?.lostEvent).toBeDefined();
+		expect(interrupted?.latestSnapshotId).toBeUndefined();
+		expect(interrupted?.pausedSnapshotId).toBeUndefined();
+		await pass(LOST_AFTER_MS + 1_000);
+		spy.mockRestore();
+		expect(await api.store.snapshots.get("snap_here")).toBeUndefined();
+		const finished = await api.store.sandboxes.get(sandbox.id);
+		expect(finished?.lostEvent).toBeUndefined();
+		expect(finished?.latestSnapshotId).toBeUndefined();
+	});
+
 	it("leaves a sandbox upgrading on a lost host to its upgrade's settling, then loses it", async () => {
 		const { api, service, hostStore, hostId, host, sandbox, pass } = await setup();
 		const upgrading = {

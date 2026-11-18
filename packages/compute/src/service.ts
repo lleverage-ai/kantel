@@ -7420,23 +7420,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			reconcile: false,
 		});
 		// Only those on the lost host: one a move left on another keeps its record and its bytes; saved ones stay.
-		const forgotten = new Set<string>();
-		for (const snapshot of await store.snapshots.list({ sandboxId: sandbox.id })) {
-			if (snapshot.kind !== "automatic" || sandbox.hostId === undefined) continue;
-			if (refHost(hostRef(snapshot) ?? "") !== sandbox.hostId) continue;
+		const doomed = (await store.snapshots.list({ sandboxId: sandbox.id })).filter(
+			(snapshot) =>
+				snapshot.kind === "automatic" &&
+				sandbox.hostId !== undefined &&
+				refHost(hostRef(snapshot) ?? "") === sandbox.hostId,
+		);
+		// The record's pointers to them go first, the records after: a retry after either finds what is left to do.
+		const ids = new Set(doomed.map((snapshot) => snapshot.id));
+		const pointsAtDoomed = (current: StoredSandbox) =>
+			(current.latestSnapshotId !== undefined && ids.has(current.latestSnapshotId)) ||
+			(current.pausedSnapshotId !== undefined && ids.has(current.pausedSnapshotId));
+		if (pointsAtDoomed(sandbox)) {
+			await store.sandboxes.update(sandbox.id, (current) => {
+				if (current.lostEvent?.eventId !== due.eventId || !pointsAtDoomed(current)) return undefined;
+				const latestGone = current.latestSnapshotId !== undefined && ids.has(current.latestSnapshotId);
+				const pausedGone = current.pausedSnapshotId !== undefined && ids.has(current.pausedSnapshotId);
+				return {
+					...current,
+					...(latestGone ? { latestSnapshotId: undefined, latestSnapshotAt: undefined } : {}),
+					...(pausedGone ? { pausedSnapshotId: undefined } : {}),
+				};
+			});
+		}
+		for (const snapshot of doomed) {
 			await forgetSnapshot(snapshot);
 			await releaseRef(snapshot);
-			forgotten.add(snapshot.id);
 		}
 		await store.sandboxes.update(sandbox.id, (current) => {
 			if (current.lostEvent?.eventId !== due.eventId) return undefined;
 			const { lostEvent: _, ...rest } = current;
-			const gone = (id: string | undefined) => id !== undefined && forgotten.has(id);
-			return {
-				...rest,
-				...(gone(current.latestSnapshotId) ? { latestSnapshotId: undefined, latestSnapshotAt: undefined } : {}),
-				...(gone(current.pausedSnapshotId) ? { pausedSnapshotId: undefined } : {}),
-			};
+			return rest;
 		});
 	}
 
