@@ -213,6 +213,8 @@ export interface HostStore {
 	 */
 	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
+	/** Puts a placement only while its sandbox has none, judged in the same write: whether it did. */
+	insertPlacement(placement: PlacementRecord): Promise<boolean>;
 	/**
 	 * Puts a new sandbox's placement only while its host admits it (`admits`: neither draining nor revoked, and in
 	 * `poolId` where that is given and the host's pool is known), as one write. A create that read its host before a
@@ -350,6 +352,11 @@ export function createMemoryHostStore(): HostStore {
 		},
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
+		},
+		async insertPlacement(placement) {
+			if (placements.has(placement.sandboxId)) return false;
+			placements.set(placement.sandboxId, copy(placement));
+			return true;
 		},
 		async occupying(hostId) {
 			return [...placements.values()].filter((placement) => occupies(placement, hostId)).map(copy);
@@ -618,6 +625,13 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				["sandbox_id", "host_id", "created_at", "data"],
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
 			);
+		},
+		async insertPlacement(placement) {
+			const rows = await driver.query(
+				"INSERT INTO compute_placements (sandbox_id, host_id, created_at, data) VALUES (?, ?, ?, ?) ON CONFLICT (sandbox_id) DO NOTHING RETURNING sandbox_id",
+				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
+			);
+			return rows.length > 0;
 		},
 		async placeOnTakingHost(placement, poolId, maxVcpus) {
 			if (maxVcpus !== undefined && placement.tier === "microvm") return placeWithinVcpus(placement, poolId, maxVcpus);

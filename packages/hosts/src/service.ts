@@ -2414,21 +2414,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * Records the copy a replacement create made on `host` after its sandbox was deleted (its admission taken by the
 	 * delete) as fenced there, as a lost host's is: its fence deletes it (`runFences`), now if the host is connected, else
 	 * when it is back. Only while the sandbox has no placement left, or only another host's copy to remove (`isLeftover`,
-	 * kept as what is owed, `cleanup`): never over a live placement, a move, or a copy owed this host. Whether it did.
+	 * kept as what is owed, `cleanup`), judged in the write: never over a live placement, a move, a new admission, or a
+	 * copy owed this host. Its own `createdAt` (now), so a delete that read the admission before never takes it for that
+	 * (`delete`'s removal is of the placement it read). Whether it did.
 	 */
 	const fenceOrphan = async (admitted: PlacementRecord, host: HostRecord): Promise<boolean> => {
 		const at = clock.now();
 		const { cleanup: _owed, fenced: _fenced, move: _move, upgrade: _upgrade, ...copy } = admitted;
-		const orphan: PlacementRecord = { ...copy, hostId: host.id, state: "lost", fenced: at, updatedAt: at };
+		const orphan: PlacementRecord = {
+			...copy,
+			hostId: host.id,
+			state: "lost",
+			fenced: at,
+			createdAt: at,
+			updatedAt: at,
+		};
 		const over = await store.updatePlacement(admitted.sandboxId, (latest) =>
 			isLeftover(latest) && latest.hostId !== host.id ? { ...orphan, cleanup: latest.cleanup } : undefined,
 		);
-		let fenced = over !== undefined;
-		if (!fenced && (await store.getPlacement(admitted.sandboxId)) === undefined) {
-			await store.putPlacement(orphan);
-			fenced = true;
-		}
-		if (!fenced) return false;
+		if (over === undefined && !(await store.insertPlacement(orphan))) return false;
 		log(`[hosts] sandbox ${admitted.sandboxId} was deleted as host ${host.id} made it: its copy there is fenced`);
 		report(fenceConnected(host.id));
 		return true;
@@ -4857,8 +4861,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						throw error;
 					}
 				}
-				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays.
-				await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
+				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays, and so does a
+				// placement made on that host since (a late replacement's copy, fenced there, `fenceOrphan`).
+				await forgetPlacement(
+					sandboxId,
+					(latest) => latest.hostId === placement.hostId && latest.createdAt === placement.createdAt,
+				);
 			},
 			async fence(hostId, sandboxIds, seenAt) {
 				const at = clock.now();

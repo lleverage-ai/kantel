@@ -107,6 +107,16 @@ function behaves(open: () => Promise<HostStore>) {
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
 	});
 
+	it("inserts a placement only while its sandbox has none", async () => {
+		const store = await open();
+		expect(await store.insertPlacement(placement("s1", "host_a", 1))).toBe(true);
+		expect(await store.insertPlacement({ ...placement("s1", "host_b", 2), state: "lost" })).toBe(false);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1 });
+		await store.removePlacement("s1");
+		expect(await store.insertPlacement(placement("s1", "host_b", 3))).toBe(true);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_b", createdAt: 3 });
+	});
+
 	it("places a new sandbox only on a host that is neither draining nor revoked, in one write", async () => {
 		const store = await open();
 		await store.insertHost({ ...host("host_a", 1), labels: { note: '"draining":true' } });

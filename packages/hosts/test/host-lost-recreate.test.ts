@@ -842,50 +842,115 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		},
 	);
 
-	it("deletes the copy its new host makes after a delete took its admission there, with nothing else owed", async () => {
-		const { api, b, sandbox, save, a, advance, hostStore, reconnect, secondGateway } = await setup({
-			onHostLost: "recreate",
-		});
-		await save("kept");
-		if (b === undefined) throw new Error("no host b");
-		let answer: () => void = () => undefined;
-		let admitted: () => void = () => undefined;
-		const atCreate = new Promise<void>((resolve) => {
-			admitted = resolve;
-		});
-		b.host.hold = (method) => {
-			if (method !== "sandbox.create") return undefined;
-			admitted();
-			return new Promise<void>((resolve) => {
-				answer = resolve;
+	it.each([
+		["", false],
+		[", and an earlier delete's removal lands after its new host has gone", true],
+	])(
+		"deletes the copy its new host makes after a delete took its admission there, with nothing else owed%s",
+		async (_, twice) => {
+			const { api, b, sandbox, save, a, advance, hostStore, reconnect, secondGateway, service } = await setup({
+				onHostLost: "recreate",
 			});
-		};
-		a.host.connection.closed(1006, "gone");
-		advance(LOST_AFTER_MS + 1_000);
-		await api.service.sweep();
-		await atCreate;
-		// Host a back first: its fenced copy deleted, nothing owed it.
-		const backA = await reconnect(a);
-		await vi.waitFor(() => expect(backA.sandboxes.has(sandbox.id)).toBe(false));
-		await vi.waitFor(async () => expect((await hostStore.getPlacement(sandbox.id))?.cleanup).toBeUndefined());
-		// Deleted through another gateway before b has made it: no placement is left.
-		const other = secondGateway();
-		const client = createKantelClient({
-			baseUrl: "https://kantel.test/v1",
-			token: "root",
-			fetch: (input, init) =>
-				other.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
-		});
-		await client.deleteSandbox(sandbox.id);
-		await other.service.idle();
-		await vi.waitFor(async () => expect(await hostStore.getPlacement(sandbox.id)).toBeUndefined());
-		// b answers: the copy it made is fenced there and deleted, and no placement is left.
-		answer();
-		await api.service.idle();
-		await vi.waitFor(() => expect(b.host.sandboxes.has(sandbox.id)).toBe(false));
-		await vi.waitFor(async () => expect(await hostStore.getPlacement(sandbox.id)).toBeUndefined());
-		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("deleted");
-	});
+			await save("kept");
+			if (b === undefined) throw new Error("no host b");
+			let answer: () => void = () => undefined;
+			let admitted: () => void = () => undefined;
+			const atCreate = new Promise<void>((resolve) => {
+				admitted = resolve;
+			});
+			b.host.hold = (method) => {
+				if (method !== "sandbox.create") return undefined;
+				admitted();
+				return new Promise<void>((resolve) => {
+					answer = resolve;
+				});
+			};
+			a.host.connection.closed(1006, "gone");
+			advance(LOST_AFTER_MS + 1_000);
+			await api.service.sweep();
+			await atCreate;
+			// Host a back first: its fenced copy deleted, nothing owed it.
+			const backA = await reconnect(a);
+			await vi.waitFor(() => expect(backA.sandboxes.has(sandbox.id)).toBe(false));
+			await vi.waitFor(async () => expect((await hostStore.getPlacement(sandbox.id))?.cleanup).toBeUndefined());
+			// `twice`: a delete on the hosts service first, which b answers (it has nothing yet) and whose removal of the
+			// placement it read is held.
+			const removeIf = hostStore.removePlacementIf.bind(hostStore);
+			let releaseRemoval: () => void = () => undefined;
+			const removal = new Promise<void>((resolve) => {
+				releaseRemoval = resolve;
+			});
+			let removing: () => void = () => undefined;
+			const atRemoval = new Promise<void>((resolve) => {
+				removing = resolve;
+			});
+			let holdsRemoval = twice;
+			const removals = vi.spyOn(hostStore, "removePlacementIf").mockImplementation(async (sandboxId, should) => {
+				if (holdsRemoval && sandboxId === sandbox.id) {
+					holdsRemoval = false;
+					removing();
+					await removal;
+				}
+				return removeIf(sandboxId, should);
+			});
+			const earlier = twice ? service.sandboxes.delete(sandbox.id) : Promise.resolve();
+			if (twice) await atRemoval;
+			// Deleted through another gateway before b has made it: no placement is left.
+			const other = secondGateway();
+			const client = createKantelClient({
+				baseUrl: "https://kantel.test/v1",
+				token: "root",
+				fetch: (input, init) =>
+					other.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+			await client.deleteSandbox(sandbox.id);
+			await other.service.idle();
+			await vi.waitFor(async () => expect(await hostStore.getPlacement(sandbox.id)).toBeUndefined());
+			// b answers: the copy it made is fenced there and deleted, and no placement is left. `twice`: b goes as it
+			// answers, and the earlier delete's removal lands after: the fence stays, and b deletes its copy once back.
+			let copy = b.host;
+			if (twice) {
+				const update = hostStore.updatePlacement.bind(hostStore);
+				let releaseWrite: () => void = () => undefined;
+				const write = new Promise<void>((resolve) => {
+					releaseWrite = resolve;
+				});
+				let writing: () => void = () => undefined;
+				const atWrite = new Promise<void>((resolve) => {
+					writing = resolve;
+				});
+				let armed = true;
+				const updates = vi.spyOn(hostStore, "updatePlacement").mockImplementation(async (sandboxId, change) => {
+					if (armed && sandboxId === sandbox.id) {
+						armed = false;
+						writing();
+						await write;
+					}
+					return update(sandboxId, change);
+				});
+				answer();
+				await atWrite;
+				b.host.connection.closed(1006, "gone");
+				await vi.waitFor(() => expect(service.hub.connected(b.hostId)).toBe(false));
+				releaseWrite();
+				await api.service.idle();
+				updates.mockRestore();
+				expect(await hostStore.getPlacement(sandbox.id)).toMatchObject({ hostId: b.hostId, state: "lost" });
+				releaseRemoval();
+				await earlier;
+				expect(await hostStore.getPlacement(sandbox.id)).toMatchObject({ hostId: b.hostId, state: "lost" });
+				expect((await hostStore.getPlacement(sandbox.id))?.fenced).toBeTypeOf("number");
+				copy = await reconnect(b);
+			} else {
+				answer();
+			}
+			await api.service.idle();
+			removals.mockRestore();
+			await vi.waitFor(() => expect(copy.sandboxes.has(sandbox.id)).toBe(false));
+			await vi.waitFor(async () => expect(await hostStore.getPlacement(sandbox.id)).toBeUndefined());
+			expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("deleted");
+		},
+	);
 
 	it("never ends a command its replacement runs from a loss pass that read the lost record late", async () => {
 		const { api, root, a, sandbox, save, secondGateway, advance } = await setup({ onHostLost: "recreate" });
