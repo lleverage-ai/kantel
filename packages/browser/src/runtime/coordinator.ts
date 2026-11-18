@@ -429,8 +429,9 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			}
 			// The headless shell (Chrome for Testing, pinned in images/browser/Dockerfile), not the agent's default Debian
 			// chromium: Debian has no chromium 157 yet, and 156 misses the fix for CVE-2026-125350, exploited in the wild
-			// (LLE-17270). Easier to fingerprint and no extensions, which Kantel loads none of. Drop `engine` to go back to
-			// Debian's chromium once bookworm-security has 157.0.8103.50 or later.
+			// (LLE-17270), and Chrome 157's and 158's critical fixes. Easier to fingerprint and no extensions, which Kantel
+			// loads none of. Drop `engine` to go back to Debian's chromium once bookworm-security has HEADLESS_SHELL_VERSION
+			// (158.0.8127.36) or later.
 			await agentJson(
 				"/start",
 				{ method: "POST", body: JSON.stringify({ viewport, engine: BROWSER_ENGINE }) },
