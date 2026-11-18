@@ -296,6 +296,20 @@ export type StoredSandbox = Omit<
 	 */
 	readonly lostEvent?: { readonly eventId: string; readonly previousState: computeSchema.SandboxState };
 	/**
+	 * A loss begun and not yet settled (`ComputeServiceOptions.hostLostAfterMs`): the lost host, the create attempt placed
+	 * there (for one whose record names no host yet), the `sandbox.lost` event's ID and the state it was lost from, and
+	 * when. Written before its placement is fenced, from a state it may be lost from, and only where no other intent is,
+	 * so every fence has one: it is settled (moved to `lost` under it, or dropped where nothing fenced it) by whatever
+	 * finds it first, a loss pass, its host's return or its delete, and a delete never goes `deleting` over one.
+	 */
+	readonly losing?: {
+		readonly hostId: string;
+		readonly attempt?: number;
+		readonly eventId: string;
+		readonly previousState: computeSchema.SandboxState;
+		readonly at: number;
+	};
+	/**
 	 * When its host started the machine this run booted (the host's clock, ms: its first health stamp, `Placement.machineAt`):
 	 * a host's report of an exit stamped earlier is an earlier machine's, and is dropped (`ComputeService.reportExit`).
 	 * Absent from a backend that doesn't say. Set by every boot.

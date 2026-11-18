@@ -4,6 +4,7 @@
 // that has only just started loses nothing however long a host was away before it.
 import { createKantelClient } from "@kantel/api/sdk";
 import { createComputeApi, HOST_LOST_REASON, hostLostAfterSetting, joinTokenSpender } from "@kantel/compute";
+import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { HOST_FEATURES } from "../src/protocol.ts";
@@ -76,8 +77,16 @@ async function setup(options: { readonly lostAfterMs?: number } = {}) {
 		await api.service.sweep();
 		await api.service.idle();
 	};
-	return { api, root, service, hostStore, hostId, host, sandbox, pass };
+	return { api, backend, root, service, hostStore, hostId, host, sandbox, pass };
 }
+
+/** A loss pass's intent on a sandbox's record, as one that stopped after writing it left it (`StoredSandbox.losing`). */
+const intent = (hostId: string, eventId = "evt_intended") => ({
+	hostId,
+	eventId,
+	previousState: "running" as const,
+	at: Date.now(),
+});
 
 /** The host connecting again, as kantel-host does after a disconnect: with what it still has. */
 async function reconnect(service: ReturnType<typeof createHostsService>, hostId: string, was: FakeHost) {
@@ -436,13 +445,18 @@ describe("what a loss covers", () => {
 		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("lost");
 	});
 
-	it("records the loss a fence stands for when the sandbox is deleted before any pass recorded it", async () => {
+	it("settles a loss a pass began before a delete: lost, with its event, then deleted", async () => {
 		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");
-		// A pass fenced it, and stopped before its move to lost; the sandbox is then deleted while the host is away.
-		await service.sandboxes.fence(hostId, [sandbox.id]);
-		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("running");
+		// A pass wrote its intent and stopped (or is still going) before fencing; the sandbox is deleted meanwhile.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId) }));
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
 		await root.deleteSandbox(sandbox.id);
+		// The delete settled it as the pass would have: fenced, then lost under the pass's intent.
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeTypeOf("number");
+		expect(
+			(await api.store.events.list({ accountId: sandbox.accountId })).find((event) => event.type === "sandbox.lost"),
+		).toMatchObject({ id: "evt_intended" });
 		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
 			(event) => event.sandboxId === sandbox.id,
 		);
@@ -457,6 +471,105 @@ describe("what a loss covers", () => {
 			(event) => event.sandboxId === sandbox.id && event.type === "sandbox.lost",
 		);
 		expect(after).toHaveLength(1);
+	});
+
+	it("never goes deleting over a loss a pass began after the delete read the sandbox", async () => {
+		const { api, root, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		// As the delete writes `deleting`, another gateway's pass has just written its intent.
+		const update = api.store.sandboxes.update.bind(api.store.sandboxes);
+		let raced = false;
+		const spy = vi.spyOn(api.store.sandboxes, "update").mockImplementation(async (id, change, expected) => {
+			const current = id === sandbox.id && !raced ? await api.store.sandboxes.get(id) : undefined;
+			if (current !== undefined && change(current)?.state === "deleting") {
+				raced = true;
+				await update(id, (latest) => ({ ...latest, losing: intent(hostId) }));
+			}
+			return update(id, change, expected);
+		});
+		await root.deleteSandbox(sandbox.id);
+		spy.mockRestore();
+		expect(raced).toBe(true);
+		const types = (await api.store.events.list({ accountId: sandbox.accountId }))
+			.filter((event) => event.sandboxId === sandbox.id)
+			.map((event) => event.type);
+		expect(types.filter((type) => type === "sandbox.lost")).toHaveLength(1);
+		expect(types.indexOf("sandbox.lost")).toBeLessThan(types.indexOf("sandbox.deleted"));
+		expect((await root.getSandbox(sandbox.id)).state).toBe("deleted");
+	});
+
+	it("never loses a sandbox a delete took first: a pass begins no loss of one being deleted", async () => {
+		const { api, backend, service, host, sandbox, pass } = await setup();
+		host.connection.closed(1006, "gone");
+		// A delete (on another gateway) goes `deleting` after the pass read the sandbox, before it writes its intent.
+		const placed = backend.hostSandboxes?.bind(backend);
+		const spy = vi.spyOn(backend, "hostSandboxes").mockImplementation(async (hostId) => {
+			await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, state: "deleting" }));
+			return (await placed?.(hostId)) ?? [];
+		});
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(spy).toHaveBeenCalled();
+		spy.mockRestore();
+		const after = await api.store.sandboxes.get(sandbox.id);
+		expect(after?.state).toBe("deleting");
+		expect(after?.losing).toBeUndefined();
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toHaveLength(0);
+	});
+
+	it("drops its intent and loses nothing when the fence is refused, its host back", async () => {
+		const { api, backend, root, service, host, sandbox, pass } = await setup();
+		host.connection.closed(1006, "gone");
+		const spy = vi.spyOn(backend, "fenceHost").mockRejectedValue(new KantelError("conflict", "The host is connected"));
+		await pass(LOST_AFTER_MS + 1_000);
+		spy.mockRestore();
+		const after = await api.store.sandboxes.get(sandbox.id);
+		expect(after?.state).toBe("running");
+		expect(after?.losing).toBeUndefined();
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
+		expect((await root.listEvents({ sandboxId: sandbox.id })).items.map((event) => event.type)).not.toContain(
+			"sandbox.lost",
+		);
+	});
+
+	it("keeps its intent through a fence that fails, and a later pass loses it under that intent", async () => {
+		const { api, backend, service, host, sandbox, pass } = await setup();
+		host.connection.closed(1006, "gone");
+		const spy = vi.spyOn(backend, "fenceHost").mockRejectedValue(new Error("store unavailable"));
+		await pass(LOST_AFTER_MS + 1_000);
+		spy.mockRestore();
+		const intended = await api.store.sandboxes.get(sandbox.id);
+		expect(intended?.state).toBe("running");
+		const eventId = intended?.losing?.eventId;
+		expect(eventId).toBeTypeOf("string");
+		expect((await service.sandboxes.placement(sandbox.id))?.fenced).toBeUndefined();
+		await pass(LOST_AFTER_MS + 1_000);
+		const lost = await api.store.sandboxes.get(sandbox.id);
+		expect(lost).toMatchObject({ state: "lost" });
+		expect(lost?.losing).toBeUndefined();
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toMatchObject([{ id: eventId }]);
+	});
+
+	it("settles an intent a stopped pass left, though its host was revoked meanwhile", async () => {
+		const { api, service, hostId, host, sandbox, pass } = await setup();
+		host.connection.closed(1006, "gone");
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, losing: intent(hostId) }));
+		await service.revoke(hostId);
+		await pass(LOST_AFTER_MS + 1_000);
+		const lost = await api.store.sandboxes.get(sandbox.id);
+		expect(lost).toMatchObject({ state: "lost" });
+		expect(lost?.losing).toBeUndefined();
+		expect(lost?.lostEvent).toBeUndefined();
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.type === "sandbox.lost",
+		);
+		expect(events).toMatchObject([{ id: "evt_intended" }]);
 	});
 
 	it("finishes an interrupted loss before a delete, so the delete never drops its event", async () => {
