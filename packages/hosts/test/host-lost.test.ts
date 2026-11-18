@@ -436,6 +436,29 @@ describe("what a loss covers", () => {
 		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("lost");
 	});
 
+	it("records the loss a fence stands for when the sandbox is deleted before any pass recorded it", async () => {
+		const { api, root, service, hostId, host, sandbox } = await setup();
+		host.connection.closed(1006, "gone");
+		// A pass fenced it, and stopped before its move to lost; the sandbox is then deleted while the host is away.
+		await service.sandboxes.fence(hostId, [sandbox.id]);
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("running");
+		await root.deleteSandbox(sandbox.id);
+		const events = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.sandboxId === sandbox.id,
+		);
+		const types = events.map((event) => event.type);
+		expect(types.filter((type) => type === "sandbox.lost")).toHaveLength(1);
+		expect(types.indexOf("sandbox.lost")).toBeLessThan(types.indexOf("sandbox.deleted"));
+		expect((await root.getSandbox(sandbox.id)).state).toBe("deleted");
+		// Its host's return consumes the fence, deleting it there, and adds nothing.
+		const back = await reconnect(service, hostId, host);
+		await vi.waitFor(() => expect(back.sandboxes.has(sandbox.id)).toBe(false));
+		const after = (await api.store.events.list({ accountId: sandbox.accountId })).filter(
+			(event) => event.sandboxId === sandbox.id && event.type === "sandbox.lost",
+		);
+		expect(after).toHaveLength(1);
+	});
+
 	it("finishes an interrupted loss before a delete, so the delete never drops its event", async () => {
 		const { api, root, service, hostId, host, sandbox } = await setup();
 		host.connection.closed(1006, "gone");

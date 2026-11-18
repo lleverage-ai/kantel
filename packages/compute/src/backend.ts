@@ -1069,6 +1069,11 @@ export interface SandboxBackend {
 	 */
 	hostSandboxes?(hostId: string): Promise<readonly HostSandboxRef[]>;
 	/**
+	 * Where a lost host's fence (`fenceHost`) holds a sandbox's placement: that host and the attempt it was admitted for.
+	 * Undefined when none does. Absent: none ever does (the stub).
+	 */
+	fencedOn?(sandboxId: string): Promise<(HostSandboxRef & { readonly hostId: string }) | undefined>;
+	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).
 	 */

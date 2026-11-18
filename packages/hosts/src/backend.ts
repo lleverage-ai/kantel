@@ -1309,6 +1309,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		hostSandboxes(hostId) {
 			return hosts.sandboxes.placedOnHost(hostId);
 		},
+		async fencedOn(sandboxId) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			if (placement?.fenced === undefined) return undefined;
+			return {
+				sandboxId,
+				hostId: placement.hostId,
+				...(placement.attempt === undefined ? {} : { attempt: placement.attempt }),
+			};
+		},
 		async hostConnected(hostId) {
 			if (hosts.hub.connected(hostId)) return true;
 			// Not connected, or not one of these hosts at all (a routed backend's other side): only a host there is to read

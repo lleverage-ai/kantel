@@ -10927,6 +10927,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Never over a move begun since the read above (on another gateway): that is refused as one seen would be.
 				// What it was as it went `deleting`, which may have changed since the read above.
 				let was = current.state;
+				// A lost host's fence on it whose loss a pass never recorded (it stopped between the two) is recorded first: every
+				// way a fence is consumed, its host's return or this delete, records the loss it stands for.
+				if (LOSABLE.includes(current.state) && backend.fencedOn !== undefined) {
+					const fence = await backend.fencedOn(current.id);
+					if (fence !== undefined) {
+						const attempt = current.hostId === undefined ? attemptOf(current, fence.attempt) : undefined;
+						if (current.hostId === fence.hostId || attempt !== undefined) {
+							await loseSandbox(fence.hostId, current.id, attempt);
+							current = await mustGetSandbox(current.id);
+						}
+					}
+				}
 				// A loss not yet finished (its event, commands and snapshots) is finished first, so a delete never drops it:
 				// never `deleting` over one, and one written since the read above (another gateway's pass) is finished too.
 				let began: Awaited<ReturnType<typeof transition>> | undefined;
