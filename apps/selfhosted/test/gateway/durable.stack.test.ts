@@ -14,10 +14,19 @@ import pg from "pg";
 import { afterAll, describe, expect, test } from "vitest";
 import { type Bootstrap, bootstrap, type GatewayComponents } from "../../src/gateway/components.ts";
 import { gatewayCompute, gatewayRelay } from "../../src/gateway/compute.ts";
-import { createDurableGatewayComponents, type DurableConfig, withSearchPath } from "../../src/gateway/durable.ts";
+import {
+	connectionSettings,
+	createDurableGatewayComponents,
+	DATABASE_TIMEOUTS,
+	type DurableConfig,
+	withSearchPath,
+} from "../../src/gateway/durable.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { listen } from "../../src/gateway/node-http.ts";
 import { runGatewayE2e } from "./e2e.ts";
+import { tcpProxy } from "./tcp-proxy.ts";
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const databaseUrl = process.env.KANTEL_TEST_POSTGRES_URL ?? "";
 const run = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
@@ -289,6 +298,217 @@ describe.skipIf(databaseUrl === "")("the gateway on Postgres", () => {
 		});
 		const required = new pg.Client(withSearchPath("postgres://u:p@db.example/kantel?sslmode=require", "harbour_m1"));
 		expect((required as unknown as { connectionParameters: { ssl: unknown } }).connectionParameters.ssl).toBeTruthy();
+	});
+
+	test("bounds every wait on Postgres, and the URL's own options still win", async () => {
+		const settings = connectionSettings(databaseUrl, config.schema, { ...DATABASE_TIMEOUTS, statementMs: 2_000 });
+		expect(settings).toMatchObject({
+			connectionTimeoutMillis: 5_000,
+			keepAlive: true,
+			keepAliveInitialDelayMillis: 10_000,
+			query_timeout: 7_000,
+		});
+		const pool = new pg.Pool({ ...settings, max: 1 });
+		try {
+			const shown = await pool.query(
+				"SELECT current_setting('statement_timeout') AS statement, current_setting('idle_in_transaction_session_timeout') AS idle",
+			);
+			expect(shown.rows[0]).toEqual({ statement: "2s", idle: "30s" });
+		} finally {
+			await pool.end();
+		}
+		const url = new URL(databaseUrl);
+		url.searchParams.append("options", "-c statement_timeout=60000");
+		const own = new pg.Pool({ ...connectionSettings(url.toString(), config.schema, DATABASE_TIMEOUTS), max: 1 });
+		try {
+			const shown = await own.query("SELECT current_setting('statement_timeout') AS statement");
+			expect(shown.rows[0]).toEqual({ statement: "1min" });
+		} finally {
+			await own.end();
+		}
+	});
+
+	test("a gateway that starts while Postgres is down waits for it, and starts once it's back", {
+		timeout: 60_000,
+	}, async () => {
+		const proxy = await tcpProxy(databaseUrl);
+		const logs: string[] = [];
+		try {
+			await proxy.restart();
+			const schema = `${config.schema}_late`;
+			schemas.push(schema);
+			let settled = false;
+			const starting = createDurableGatewayComponents({
+				...config,
+				databaseUrl: proxy.url,
+				schema,
+				log: (message) => logs.push(message),
+				startRetryMs: [100, 200],
+			});
+			starting.then(
+				() => (settled = true),
+				() => (settled = true),
+			);
+			await pause(2_000);
+			expect(settled).toBe(false);
+			expect(logs.filter((line) => line.includes("Postgres can't be reached")).length).toBeGreaterThan(3);
+			await proxy.up();
+			const components = await starting;
+			try {
+				expect(logs).toContain("[gateway] Postgres is reachable again; starting");
+				await components.computeStore?.users.put({ id: "usr_late" } as never);
+				expect(await components.computeStore?.users.get("usr_late")).toEqual({ id: "usr_late" });
+			} finally {
+				await components.close();
+			}
+		} finally {
+			await proxy.close();
+		}
+	});
+
+	test("a gateway under load fails calls fast while Postgres restarts or vanishes, and serves again after", {
+		timeout: 120_000,
+	}, async () => {
+		const proxy = await tcpProxy(databaseUrl);
+		const logs: string[] = [];
+		const schema = `${config.schema}_restart`;
+		schemas.push(schema);
+		const components = await createDurableGatewayComponents({
+			...config,
+			databaseUrl: proxy.url,
+			schema,
+			log: (message) => logs.push(message),
+			timeouts: { connectMs: 1_000, statementMs: 1_000 },
+		});
+		const store = components.computeStore;
+		if (store === undefined) throw new Error("no compute store");
+		interface Call {
+			readonly at: number;
+			readonly ms: number;
+			readonly error?: string;
+		}
+		const calls: Call[] = [];
+		let running = true;
+		// Eight callers, each writing a record and reading it back, over and over.
+		const caller = async (n: number) => {
+			for (let i = 0; running; i++) {
+				const at = Date.now();
+				try {
+					const id = `usr_load_${n}_${i}`;
+					await store.users.put({ id } as never);
+					if ((await store.users.get(id)) === undefined) throw new Error(`${id} not read back`);
+					calls.push({ at, ms: Date.now() - at });
+				} catch (error) {
+					calls.push({ at, ms: Date.now() - at, error: (error as Error).message });
+					await pause(50);
+				}
+			}
+		};
+		const callers = Array.from({ length: 8 }, (_, n) => caller(n));
+		const during = (from: number, to: number) => calls.filter((call) => call.at >= from && call.at < to);
+		try {
+			await pause(1_000);
+			// A restart: every connection drops, and none is accepted for 3 s.
+			const restartAt = Date.now();
+			await proxy.restart();
+			await pause(3_000);
+			await proxy.up();
+			const backAt = Date.now();
+			await pause(3_000);
+			// The server vanishes: connections stay open, and nothing comes back on them, for 8 s.
+			const vanishAt = Date.now();
+			proxy.blackhole();
+			await pause(8_000);
+			await proxy.restart();
+			await proxy.up();
+			const returnAt = Date.now();
+			await pause(3_000);
+			running = false;
+			await Promise.all(callers);
+			const endAt = Date.now();
+
+			// Calls in flight when the connections drop may fail; every one that finished before then succeeded.
+			const before = calls.filter((call) => call.at + call.ms < restartAt);
+			expect(before.length).toBeGreaterThan(8);
+			expect(before.filter((call) => call.error !== undefined)).toEqual([]);
+			// Refused connections fail a call within its two retries (100 ms and 1 s) and the connect timeout.
+			const outage = during(restartAt, backAt);
+			expect(outage.filter((call) => call.error !== undefined).length).toBeGreaterThan(0);
+			expect(Math.max(...outage.map((call) => call.ms))).toBeLessThan(5_000);
+			// A second after it's back, every call succeeds, on the same components: no restart.
+			const recovered = during(backAt + 1_000, vanishAt).filter((call) => call.at + call.ms < vanishAt);
+			expect(recovered.length).toBeGreaterThan(8);
+			expect(recovered.filter((call) => call.error !== undefined)).toEqual([]);
+			// Unanswered statements are given up 5 s after the statement timeout, and unanswered connects after 1 s each.
+			const vanished = calls.filter((call) => call.at < returnAt && call.at + call.ms > vanishAt);
+			expect(vanished.filter((call) => call.error !== undefined).length).toBeGreaterThan(0);
+			expect(Math.max(...vanished.map((call) => call.ms))).toBeLessThan(12_000);
+			const again = during(returnAt + 1_000, endAt);
+			expect(again.length).toBeGreaterThan(8);
+			expect(again.filter((call) => call.error !== undefined)).toEqual([]);
+			expect(logs.some((line) => line.includes("opening new ones"))).toBe(true);
+		} finally {
+			running = false;
+			await Promise.all(callers);
+			await components.close();
+			await proxy.close();
+		}
+	});
+
+	test("after a failover leaves its connections read-only, a gateway drops them and writes again without a restart", {
+		timeout: 60_000,
+	}, async () => {
+		// A role of its own, so its sessions can be made read-only, as an old primary's are once it is a standby, without
+		// touching anyone else's.
+		const role = `kantel_failover_${run}`;
+		const database = String((await sql("SELECT current_database() AS name")).rows[0]?.name);
+		await sql(`CREATE ROLE ${role} LOGIN PASSWORD '${run}'`);
+		await sql(`GRANT CREATE ON DATABASE ${database} TO ${role}`);
+		const url = new URL(databaseUrl);
+		url.username = role;
+		url.password = run;
+		const schema = `${config.schema}_failover`;
+		schemas.push(schema);
+		const logs: string[] = [];
+		try {
+			const components = await createDurableGatewayComponents({
+				...config,
+				databaseUrl: url.toString(),
+				schema,
+				log: (message) => logs.push(message),
+			});
+			const store = components.computeStore;
+			if (store === undefined) throw new Error("no compute store");
+			try {
+				await store.users.put({ id: "usr_before" } as never);
+				// The old primary comes back as a standby, and the gateway reconnects to it: its sessions are read-only.
+				await sql(`ALTER ROLE ${role} SET default_transaction_read_only = on`);
+				await sql(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '${role}'`);
+				await pause(200);
+				await expect(store.users.put({ id: "usr_during" } as never)).rejects.toMatchObject({ code: "25006" });
+				// The endpoint moves to the new primary: new sessions can write, but the gateway's open ones still can't.
+				await sql(`ALTER ROLE ${role} RESET default_transaction_read_only`);
+				const movedAt = Date.now();
+				let written = false;
+				while (!written && Date.now() - movedAt < 10_000) {
+					written = await store.users.put({ id: "usr_after" } as never).then(
+						() => true,
+						() => false,
+					);
+				}
+				expect(written).toBe(true);
+				expect(Date.now() - movedAt).toBeLessThan(5_000);
+				for (let i = 0; i < 20; i++) await store.users.put({ id: `usr_after_${i}` } as never);
+				expect(await store.users.get("usr_after")).toEqual({ id: "usr_after" });
+				expect(logs.some((line) => line.includes("read-only transaction"))).toBe(true);
+			} finally {
+				await components.close();
+			}
+		} finally {
+			await sql(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+			await sql(`REVOKE CREATE ON DATABASE ${database} FROM ${role}`);
+			await sql(`DROP ROLE ${role}`);
+		}
 	});
 
 	test("keeps its schema when the database URL brings options of its own", async () => {

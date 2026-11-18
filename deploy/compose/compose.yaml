@@ -76,6 +76,15 @@ services:
       # Identity, sign-in, audit and the registry of hosts, in this schema.
       KANTEL_DATABASE_URL: postgres://harbour:harbour@postgres:5432/harbour
       KANTEL_GATEWAY_SCHEMA: harbour_m1
+      # How long the gateway waits on Postgres, in milliseconds (0 for no
+      # limit): to connect, for a statement, in an idle transaction, and the
+      # idle time before TCP keepalive. Empty keeps the defaults (5000, 30000,
+      # 30000 and 10000), so a call fails fast while Postgres restarts or
+      # fails over, and the gateway serves again once it's back.
+      KANTEL_DATABASE_CONNECT_TIMEOUT_MS: ${KANTEL_DATABASE_CONNECT_TIMEOUT_MS:-}
+      KANTEL_DATABASE_STATEMENT_TIMEOUT_MS: ${KANTEL_DATABASE_STATEMENT_TIMEOUT_MS:-}
+      KANTEL_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: ${KANTEL_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS:-}
+      KANTEL_DATABASE_KEEPALIVE_MS: ${KANTEL_DATABASE_KEEPALIVE_MS:-}
       # More projects beside the first, by name (comma-separated), all on
       # the bootstrap's operator key.
       KANTEL_PROJECTS: ${KANTEL_PROJECTS:-${HARBOUR_PROJECTS:-}}
