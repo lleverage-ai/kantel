@@ -2387,7 +2387,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * Records what a host said of a create that made a lost host's sandbox again (`replacesLost`), as `settle` does, but
 	 * only on its own admission as it is now (its host, when it was written, unfenced), so what changed meanwhile is kept:
 	 * the lost host's copy removed (`cleanup`), or this host lost in turn and its copy fenced (LLE-19676). `conflict` where
-	 * the admission is no longer its own: the answer is too late, and the loss settles the sandbox.
+	 * the admission is no longer its own: the answer is too late. Fenced, its host's loss settles the sandbox, and its fence
+	 * deletes the copy. Gone (a delete took its placement before its host made it), or taken by another host's with nothing
+	 * owed here, the copy it made is untracked, so it is deleted on its host now; a newer admission on this host, or a copy
+	 * whose removal is owed here (`cleanup`), is left to that.
 	 */
 	const settleReplacement = async (
 		admitted: PlacementRecord,
@@ -2400,6 +2403,25 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				: undefined,
 		);
 		if (written === undefined) {
+			const latest = await store.getPlacement(admitted.sandboxId);
+			if (latest === undefined || (latest.hostId !== host.id && latest.cleanup?.hostId !== host.id)) {
+				try {
+					await onHost(host.id, HostMethods.delete, { sandboxId: admitted.sandboxId }, undefined, host);
+					log(
+						`[hosts] sandbox ${admitted.sandboxId}'s late copy deleted on host ${host.id}: its admission there had gone`,
+					);
+				} catch (error) {
+					if (!(error instanceof KantelError && error.code === "not_found")) {
+						log(
+							`[hosts] sandbox ${admitted.sandboxId}'s late copy on host ${host.id} couldn't be deleted: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
+				throw new KantelError(
+					"conflict",
+					`The sandbox's placement on host ${host.name} went while it was being made there`,
+				);
+			}
 			throw new KantelError("conflict", `The sandbox's host ${host.name} was lost while it was being made there`);
 		}
 		return written;

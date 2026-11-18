@@ -7777,6 +7777,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			).catch(() => undefined);
 		const heartbeat = setInterval(() => void beat(), UPGRADE_HEARTBEAT_MS);
 		(heartbeat as { unref?: () => void }).unref?.();
+		// Its create's answer is published only while no loss of its new host has begun (`losing`): that loss settles it.
+		const unlost = (current: StoredSandbox) => still(current) && current.losing === undefined;
 		try {
 			await track([starting.id], async () => {
 				let placement: Placement;
@@ -7814,7 +7816,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					undefined,
 					{ egressRevision: starting.egressRevision },
 					undefined,
-					still,
+					unlost,
 				);
 				// Its environments' files now it runs, as a settled create's are; their repositories wait for a start by someone
 				// who may clone them.
@@ -14075,7 +14077,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const read = await store.sandboxes.get(sandboxId);
 			if (read === undefined || !unsettledCreate(read)) return;
 			const lifecycle = read.lifecycle ?? 0;
-			const attempt = (current: StoredSandbox) => unsettledCreate(current) && (current.lifecycle ?? 0) === lifecycle;
+			// Never while a loss of its host has begun (`losing`), which settles it; one whose fence didn't land drops it.
+			const attempt = (current: StoredSandbox) =>
+				unsettledCreate(current) && (current.lifecycle ?? 0) === lifecycle && current.losing === undefined;
 			const outcome = await settleCreate.call(backend, sandboxId, lifecycle);
 			if (outcome.state === "pending" || outcome.reportedAt + CREATE_SETTLE_GRACE_MS > now()) return;
 			if (outcome.state === "running") {
