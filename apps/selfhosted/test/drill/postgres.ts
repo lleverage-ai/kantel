@@ -31,6 +31,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { Settle } from "./settle.ts";
 
 const { values } = parseArgs({
 	options: {
@@ -130,7 +131,11 @@ function docker(args: readonly string[], input?: Buffer): Ran {
 }
 
 /** A command in the background, its output passed through; resolves with its exit status. */
-function background(command: string, args: readonly string[], stdout: number | "inherit" = "inherit"): Promise<number> {
+function background(
+	command: string,
+	args: readonly string[],
+	stdout: number | "inherit" | "ignore" = "inherit",
+): Promise<number> {
 	return new Promise((resolve) => {
 		const child = spawn(command, args, { stdio: ["ignore", stdout, "inherit"] });
 		child.on("exit", (code) => resolve(code ?? 1));
@@ -217,13 +222,21 @@ async function createGateway(name: string, url: string): Promise<Gateway> {
 	return { name, baseUrl: "" };
 }
 
-function startGateway(gateway: Gateway): Ran {
-	const started = docker(["start", gateway.name]);
-	if (started.status !== 0) return started;
+/** Starts the gateways' containers at once (each `docker start` its own process), then reads their ports. */
+async function startGateways(gateways: readonly Gateway[]): Promise<void> {
+	const statuses = await Promise.all(
+		gateways.map((gateway) => background("docker", ["start", gateway.name], "ignore")),
+	);
+	const failed = gateways.filter((_, n) => statuses[n] !== 0).map((gateway) => gateway.name);
+	if (failed.length > 0) throw new Error(`docker start failed for ${failed.join(", ")}`);
+	for (const gateway of gateways) described(gateway);
+}
+
+/** A started gateway's address on the host, and when it started. */
+function described(gateway: Gateway) {
 	const port = docker(["port", gateway.name, "8080/tcp"]).stdout.trim().split("\n")[0] ?? "";
 	gateway.baseUrl = `http://${port.replace(/^0\.0\.0\.0/, "127.0.0.1")}`;
 	gateway.startedAt = inspect(gateway.name).StartedAt;
-	return started;
 }
 
 interface ContainerState {
@@ -274,7 +287,7 @@ interface Write {
 	readonly error?: string;
 }
 
-function load(gateways: readonly Gateway[], key: string) {
+function load(gateways: readonly Gateway[], key: string, settle: Settle) {
 	const writes: Write[] = [];
 	let running = true;
 	let sequence = 0;
@@ -283,6 +296,7 @@ function load(gateways: readonly Gateway[], key: string) {
 		while (running) {
 			const name = `drill-${(sequence++).toString(36)}`;
 			const at = Date.now();
+			settle.started(gateway, n, at);
 			try {
 				const answer = await fetch(`${gateways[gateway]?.baseUrl}/v1/environments`, {
 					method: "POST",
@@ -303,7 +317,9 @@ function load(gateways: readonly Gateway[], key: string) {
 			} catch (error) {
 				writes.push({ gateway, name, at, ms: Date.now() - at, ok: false, error: (error as Error).name });
 			}
-			if (writes.at(-1)?.ok !== true) await pause(100);
+			const last = writes.at(-1);
+			if (last !== undefined) settle.finished(gateway, n, last.at, last.at + last.ms, last.ok);
+			if (last?.ok !== true) await pause(100);
 		}
 	};
 	const writers = Array.from({ length: writerCount }, (_, n) => writer(n));
@@ -368,7 +384,7 @@ async function concurrentStart(): Promise<Gateway[]> {
 	);
 	say(`starting ${gateways.length} gateways at once on an empty schema ${schema}`);
 	const from = Date.now();
-	await Promise.all(gateways.map((gateway) => Promise.resolve().then(() => startGateway(gateway))));
+	await startGateways(gateways);
 	const times = await Promise.all(gateways.map((gateway) => ready(gateway.baseUrl, from, 120_000)));
 	results.concurrentStart = { readyMs: times };
 	check(
@@ -428,7 +444,8 @@ interface GatewayRecovery {
 async function outage(gateways: Gateway[], key: string) {
 	const drill = "outage under load";
 	const loadFrom = Date.now();
-	const writes = load(gateways, key);
+	const settle = new Settle(gateways.length, loadFrom, settleMs);
+	const writes = load(gateways, key, settle);
 	const watched = [...gateways.map((gateway) => gateway.baseUrl), ...values.watch];
 	const probes = readiness(watched);
 	await pause(warmupMs);
@@ -449,27 +466,21 @@ async function outage(gateways: Gateway[], key: string) {
 		if (check(drill, "the failover was seen: a write failed", failed().length > 0)) {
 			t0 = Math.min(...failed().map((write) => write.at));
 		}
+		settle.outageFrom(t0);
 	} else {
+		settle.outageFrom(t0);
 		say(`running the outage command: ${command}`);
 		const status = await background("sh", ["-c", command]);
 		commandMs = Date.now() - t0;
 		check(drill, "the outage command succeeded", status === 0, { status });
 		say(`the outage command finished after ${commandMs} ms`);
 	}
-	// Recovered: every gateway has written for `settle` seconds with no failure since.
-	const lastFailure = (n: number) =>
-		Math.max(
-			t0,
-			...writes.writes.filter((write) => write.gateway === n && !write.ok).map((write) => write.at + write.ms),
-		);
-	const recovered = () =>
-		gateways.every((_, n) => {
-			const after = writes.writes.filter((write) => write.gateway === n && write.at > lastFailure(n));
-			return after.length > 0 && Date.now() - lastFailure(n) >= settleMs;
-		});
-	while (!recovered() && Date.now() - t0 < timeoutMs) await pause(250);
+	// Recovered: every gateway writing again, after `settle` seconds with no write failed or stuck (see settle.ts).
+	while (!settle.all(Date.now()) && Date.now() - t0 < timeoutMs) await pause(250);
 	const recoveredAt = Date.now();
-	check(drill, `every gateway writes again, ${settleMs / 1000} s with no failure`, recovered(), {
+	const recovered = settle.all(recoveredAt);
+	const failuresAtRecovery = gateways.map((_, n) => settle.lastFailure(n));
+	check(drill, `every gateway writes again, ${settleMs / 1000} s with no failure`, recovered, {
 		afterMs: recoveredAt - t0,
 	});
 	// The backup, under the same load, for the restore drill.
@@ -482,6 +493,16 @@ async function outage(gateways: Gateway[], key: string) {
 	await writes.stop();
 	await probes.stop();
 	const endedAt = Date.now();
+	// The writes still in flight at recovery have finished now: none may have failed since.
+	if (recovered) {
+		const later = writes.writes.filter(
+			(write) => !write.ok && write.at + write.ms > (failuresAtRecovery[write.gateway] ?? Number.POSITIVE_INFINITY),
+		);
+		check(drill, "no write failed after the gateways recovered", later.length === 0, {
+			failed: later.length,
+			errors: tally(later.map((write) => write.error ?? "")),
+		});
+	}
 
 	const recovery: GatewayRecovery[] = gateways.map((gateway, n) => {
 		const mine = writes.writes.filter((write) => write.gateway === n && write.at + write.ms >= t0);
@@ -661,7 +682,7 @@ async function restore(
 	const copy = docker(["cp", `${copied}/.`, `${gateway.name}:${bootstrapFile.replace(/\/[^/]+$/, "")}`]);
 	if (copy.status !== 0) throw new Error(`copying the bootstrap file: ${copy.stderr.trim()}`);
 	const startAt = Date.now();
-	startGateway(gateway);
+	await startGateways([gateway]);
 	const readyMs = await ready(gateway.baseUrl, startAt, 120_000);
 	check(drill, "a gateway starts on the restored database", readyMs !== undefined, { readyMs });
 	if (readyMs === undefined) return;
@@ -708,7 +729,7 @@ async function restore(
 /** Removes the drill's containers, and its schema from each database it made it in, unless --keep. */
 function cleanUp() {
 	if (values.keep) return;
-	if (containers.length > 0) docker(["rm", "-f", ...containers.splice(0)]);
+	if (containers.length > 0) docker(["rm", "-fv", ...containers.splice(0)]);
 	for (const url of madeIn.splice(0)) psql(url, `DROP SCHEMA IF EXISTS ${schema} CASCADE`);
 }
 

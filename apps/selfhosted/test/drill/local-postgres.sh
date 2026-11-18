@@ -89,7 +89,7 @@ failover | partition)
 	docker network connect --alias "$name-db" "$net" "$name-b"
 	;;
 down)
-	docker rm -f "$name-a" "$name-b" "$name-restore" >/dev/null 2>&1 || true
+	docker rm -fv "$name-a" "$name-b" "$name-restore" >/dev/null 2>&1 || true
 	docker network rm "$net" >/dev/null 2>&1 || true
 	;;
 *)

@@ -62,22 +62,22 @@ Run `bun apps/selfhosted/test/drill/postgres.ts --help` for the other settings: 
 
 ## Results on a local install
 
-On 18 November 2026, on Kantel's main branch (with [the migration lock and failover recovery](/self-hosting/install/#when-the-database-restarts)), Postgres 17.11 in Docker 29 on a 48-core Linux machine shared with other work, 3 gateways and 6 writers unless it says otherwise. Each line is three runs. Every check passed in all ten.
+On 18 November 2026, on Kantel's main branch (with [the migration lock and failover recovery](/self-hosting/install/#when-the-database-restarts)), Postgres 17.11 in Docker 29 on a 48-core Linux machine shared with other work, 3 gateways and 6 writers unless it says otherwise. Every check passed in all fourteen runs.
 
-**Concurrent start.** 3 gateways at once on an empty database were all ready in 1.4 to 3.8 seconds; 8 at once in 3.6 to 4.1 seconds. No error in any log, and every one of the 29 tables there.
+**Concurrent start.** 3 gateways at once on an empty database were all ready in 1.3 to 3.8 seconds; 8 at once in 2.3 to 4.1 seconds. No error in any log, and every one of the 29 tables there.
 
 **Outage under load.** No acknowledged write was lost in any run, and no gateway was restarted.
 
-| What happened to Postgres | Writes failed | Writes back after Postgres was | Slowest call | Gateways not ready |
-| --- | --- | --- | --- | --- |
-| Stopped, and started again 10 s later (the bundled one) | 33 to 34 of 10,800 to 22,000 | back: 0.2 to 1.6 s | 2.5 s | 11 to 14 s |
-| The same, 8 gateways and 16 writers (one run) | 78 of 37,000 | back: 0.4 to 0.5 s | 7.4 s | 11.6 s |
-| Killed, standby promoted, endpoint moved | 8 to 12 of 14,500 to 57,700 | moved: 0.06 to 1.0 s | 3.1 s | 1.1 to 4.4 s |
-| Cut off the network, standby promoted, endpoint moved | 3 to 5 of 15,000 to 21,000 | moved: 0.25 to 0.7 s | 2.6 s | 0.3 to 0.5 s |
+| What happened to Postgres | Runs | Writes failed | Writes back after Postgres was | Slowest call | Gateways not ready |
+| --- | --- | --- | --- | --- | --- |
+| Stopped, and started again 10 s later (the bundled one) | 4 | 30 to 34 of 10,800 to 23,600 | back: 0.2 to 1.6 s | 2.5 s | 10.8 to 14 s |
+| The same, 8 gateways and 16 writers | 2 | 78 to 79 of 37,000 to 43,000 | back: 0.4 to 0.7 s | 7.4 s | 11.0 to 11.6 s |
+| Killed, standby promoted, endpoint moved | 4 | 6 to 12 of 14,500 to 57,700 | moved: 0.06 to 1.0 s | 3.1 s | 1.0 to 4.4 s |
+| Cut off the network, standby promoted, endpoint moved | 4 | 3 to 5 of 8,900 to 21,000 | moved: 0.25 to 0.7 s | 2.6 s | 0.25 to 0.5 s |
 
 The install's own gateway, followed with `--watch` through the stop and start, was ready again each time.
 
-**Restore.** A `pg_dump` under load took 2 to 11 seconds (once 110 seconds, while the machine was busy), restoring it into a fresh database 1.5 to 13 seconds, and the gateway on it was ready 0.9 to 2.1 seconds after it started. It found its deployment, the bootstrap's key answered, every write acknowledged before the backup began was there (6,100 to 25,700 of them), and none begun after it ended.
+**Restore.** A `pg_dump` under load took 1.2 to 11 seconds (once 110 seconds, while the machine was busy), restoring it into a fresh database 1.4 to 13 seconds, and the gateway on it was ready 0.9 to 2.1 seconds after it started. It found its deployment, the bootstrap's key answered, every write acknowledged before the backup began was there (6,100 to 35,700 of them), and none begun after it ended.
 
 ## What the results mean
 
