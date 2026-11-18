@@ -7364,8 +7364,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// A move or an upgrade under way is settled first (each knows of a copy on another host): a later pass takes it.
 		sandbox.moving === undefined &&
 		sandbox.upgrading === undefined &&
-		// Being made again after an earlier loss (`recreating`): never lost to the host it left, whose copy is fenced.
-		sandbox.recreating === undefined &&
+		// Being made again after an earlier loss (`recreating`): never lost to the host it left, whose copy is fenced. Its
+		// create admitted on another host that is lost too is lost to that one, as any create is (LLE-19676).
+		sandbox.recreating?.hostId !== hostId &&
 		(sandbox.hostId === hostId ||
 			(sandbox.hostId === undefined && attempt !== undefined && (sandbox.lifecycle ?? 0) === attempt));
 
@@ -7442,7 +7443,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					hostId,
 					...(attempt === undefined ? {} : { attempt }),
 					eventId: randomId("evt"),
-					previousState: current.state,
+					// One being made again is lost in the state its first loss found it in, so a further making again comes
+					// back as that would have.
+					previousState: current.recreating?.previousState ?? current.state,
 					at: now(),
 					...(seenAt === undefined ? {} : { seenAt }),
 				},
@@ -7486,7 +7489,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			sandbox.id,
 			LOSABLE,
 			(current) => {
-				const { losing: _, ...rest } = current;
+				// One being made again (`recreating`) whose new host is lost too: that making again is over with it.
+				const { losing: _, recreating: _recreating, ...rest } = current;
 				return withState(rest, "lost", {
 					reason: HOST_LOST_REASON,
 					ports: [],

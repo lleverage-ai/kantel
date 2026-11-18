@@ -2,7 +2,8 @@
 // under its ID, on another connected host in its pool, from its newest saved snapshot, with a `sandbox.recreated`
 // event; the lost host's copy stays fenced, and is deleted when that host connects again, before it is used. One that
 // can't be made again (no saved snapshot, no host to take it) is lost as before, its reason saying why; one that
-// never asked (`lost`, the default) is lost whatever hosts there are. apps/host/test/host-lost.sh kills a real host
+// never asked (`lost`, the default) is lost whatever hosts there are. One whose new host is lost too before it runs
+// is lost with that host (LLE-19676), and made again or lost as before. apps/host/test/host-lost.sh kills a real host
 // to show it.
 import { createKantelClient } from "@kantel/api/sdk";
 import {
@@ -48,8 +49,11 @@ async function setup(
 		readonly secondFreeMemoryMiB?: number;
 		/** The compute plane's backend as it sees it: the hosts backend, wrapped. */
 		readonly wrap?: (backend: SandboxBackend) => SandboxBackend;
+		/** The deadline; default `LOST_AFTER_MS`. */
+		readonly lostAfterMs?: number;
 	} = {},
 ) {
+	const lostAfterMs = options.lostAfterMs ?? LOST_AFTER_MS;
 	let offset = 0;
 	const clock = () => Date.now() + offset;
 	const hostStore = createMemoryHostStore();
@@ -74,7 +78,7 @@ async function setup(
 			fetch: async () => new Response(null, { status: 204 }),
 			publicUrl: "https://kantel.test",
 			now: clock,
-			hostLostAfterMs: LOST_AFTER_MS,
+			hostLostAfterMs: lostAfterMs,
 		});
 	const api = gateway();
 	service.useJoinTokens(joinTokenSpender(api.store));
@@ -137,13 +141,15 @@ async function setup(
 		}
 		return snapshot;
 	};
-	/** Host `a` connecting again, as kantel-host does after a disconnect: with what it still has. */
-	const reconnectA = async () => {
-		const back = new FakeHost(service, a.hostId, FEATURES);
-		back.connect([...a.host.sandboxes.values()]);
-		await vi.waitFor(() => expect(service.hub.connected(a.hostId)).toBe(true));
+	/** A host connecting again, as kantel-host does after a disconnect: with what it still has. */
+	const reconnect = async (gone: { readonly hostId: string; readonly host: FakeHost }) => {
+		const back = new FakeHost(service, gone.hostId, FEATURES);
+		back.connect([...gone.host.sandboxes.values()]);
+		await vi.waitFor(() => expect(service.hub.connected(gone.hostId)).toBe(true));
 		return back;
 	};
+	/** Host `a` connecting again. */
+	const reconnectA = () => reconnect(a);
 	const events = async (type: string) =>
 		(await api.store.events.list({ accountId: sandbox.accountId })).filter((event) => event.type === type);
 	/** Another gateway over the same store and hosts, as a second replica is. */
@@ -155,7 +161,48 @@ async function setup(
 	const advance = (ms: number) => {
 		offset += ms;
 	};
-	return { api, root, service, a, b, sandbox, pass, save, reconnectA, events, secondGateway, advance, clock };
+	return {
+		api,
+		root,
+		service,
+		a,
+		b,
+		sandbox,
+		pass,
+		save,
+		reconnect,
+		reconnectA,
+		events,
+		secondGateway,
+		advance,
+		clock,
+		join,
+		lostAfterMs,
+	};
+}
+
+/**
+ * Host `b` takes the create that makes the sandbox again, and its connection drops before it answers, as `lose` (host
+ * a's loss pass) runs.
+ */
+async function admittedThenAway(b: { readonly host: FakeHost }, lose: () => Promise<void>): Promise<void> {
+	let answer: () => void = () => undefined;
+	let admitted: () => void = () => undefined;
+	const atCreate = new Promise<void>((resolve) => {
+		admitted = resolve;
+	});
+	b.host.hold = (method) => {
+		if (method !== "sandbox.create") return undefined;
+		admitted();
+		return new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+	};
+	const loss = lose();
+	await atCreate;
+	b.host.connection.closed(1006, "gone");
+	answer();
+	await loss;
 }
 
 describe("a lost host's sandbox set to be made again (onHostLost recreate)", () => {
@@ -345,28 +392,15 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 	});
 
 	it("keeps a create admitted on the other host, its answer lost, for that host's word, across its reconnection", async () => {
-		const { api, root, service, b, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
+		// A deadline long enough for host b to be back within it.
+		const lostAfterMs = 10 * UPGRADE_STALE_MS;
+		const { api, root, service, b, sandbox, pass, save, a } = await setup({ onHostLost: "recreate", lostAfterMs });
 		await save("kept");
 		if (b === undefined) throw new Error("no host b");
-		// Host b takes the create, and its connection drops before it answers.
-		let answer: () => void = () => undefined;
-		let admitted: () => void = () => undefined;
-		const atCreate = new Promise<void>((resolve) => {
-			admitted = resolve;
+		await admittedThenAway(b, () => {
+			a.host.connection.closed(1006, "gone");
+			return pass(lostAfterMs + 1_000);
 		});
-		b.host.hold = (method) => {
-			if (method !== "sandbox.create") return undefined;
-			admitted();
-			return new Promise<void>((resolve) => {
-				answer = resolve;
-			});
-		};
-		a.host.connection.closed(1006, "gone");
-		const loss = pass(LOST_AFTER_MS + 1_000);
-		await atCreate;
-		b.host.connection.closed(1006, "gone");
-		answer();
-		await loss;
 		await vi.waitFor(() => expect(service.hub.connected(b.hostId)).toBe(false));
 		expect(b.host.sandboxes.has(sandbox.id)).toBe(true);
 		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "starting" });
@@ -384,8 +418,123 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		await pass(CREATE_SETTLE_GRACE_MS + 1_000);
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
 		expect((await service.sandboxes.placement(sandbox.id))?.hostId).toBe(b.hostId);
-		await pass(LOST_AFTER_MS + 1_000);
+		// The loss pass that finishes it, a minute on.
+		await pass(60_000);
 		expect((await api.store.sandboxes.get(sandbox.id))?.recreating).toBeUndefined();
+	});
+
+	it("is lost, saying why, when the host its create was admitted on is lost too, and that host's copy is fenced", async () => {
+		const { api, root, service, b, sandbox, pass, save, a, reconnect, events } = await setup({
+			onHostLost: "recreate",
+		});
+		await save("kept");
+		if (b === undefined) throw new Error("no host b");
+		await admittedThenAway(b, () => {
+			a.host.connection.closed(1006, "gone");
+			return pass(LOST_AFTER_MS + 1_000);
+		});
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ state: "starting" });
+		// Host b stays away past the deadline too, with host a still away: no host is left to make it on.
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("lost"));
+		const reason = notRecreated(NOT_RECREATED.host);
+		expect(await root.getSandbox(sandbox.id)).toMatchObject({ state: "lost", reason });
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored?.recreating).toBeUndefined();
+		expect(stored?.losing).toBeUndefined();
+		expect(stored?.lostEvent).toBeUndefined();
+		// Said once, in the state its first loss found it in.
+		await pass(LOST_AFTER_MS + 1_000);
+		await pass(UPGRADE_STALE_MS + 1_000);
+		expect(await events("sandbox.lost")).toMatchObject([{ data: { previousState: "running", reason } }]);
+		expect(await events("sandbox.recreated")).toHaveLength(0);
+		expect(b.host.calls.filter((call) => call.method === "sandbox.create")).toHaveLength(1);
+		// Host b's copy is fenced, and host a is still owed its copy's removal.
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: b.hostId, cleanup: { hostId: a.hostId, fenced: true } });
+		expect(placement?.fenced).toBeTypeOf("number");
+
+		// Each host deletes its copy when it is back, before it is used.
+		const backB = await reconnect(b);
+		await vi.waitFor(() => expect(backB.sandboxes.has(sandbox.id)).toBe(false));
+		expect(backB.calls[0]).toMatchObject({ method: "sandbox.delete", params: { sandboxId: sandbox.id } });
+		const backA = await reconnect(a);
+		await vi.waitFor(() => expect(backA.sandboxes.has(sandbox.id)).toBe(false));
+		expect(backA.calls[0]).toMatchObject({ method: "sandbox.delete", params: { sandboxId: sandbox.id } });
+		await api.service.idle();
+		expect(await service.sandboxes.placement(sandbox.id)).toBeUndefined();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("lost");
+	});
+
+	it("is lost, saying why, when the host its create was admitted on is lost too and its first host's copy is still owed", async () => {
+		const { api, root, service, b, sandbox, pass, save, a, join, events, clock } = await setup({
+			onHostLost: "recreate",
+		});
+		const kept = await save("kept");
+		if (b === undefined) throw new Error("no host b");
+		await admittedThenAway(b, () => {
+			a.host.connection.closed(1006, "gone");
+			return pass(LOST_AFTER_MS + 1_000);
+		});
+		// Another host joins the pool, holding the snapshot, with host a still away and owed its copy's removal.
+		const c = await join("c");
+		const ref = (await api.store.snapshots.get(kept.id))?.ref ?? "";
+		const objectId = ref.slice(ref.indexOf("/") + 1);
+		await api.store.diskHolders.put({
+			id: `snapshot:${objectId}:disk:${c.hostId}`,
+			kind: "snapshot",
+			objectId,
+			version: "disk",
+			hostId: c.hostId,
+			state: "held",
+			since: clock(),
+			ref,
+		});
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("lost"));
+		const lost = await root.getSandbox(sandbox.id);
+		expect(lost.reason).toContain(NOT_RECREATED.failed);
+		expect(await events("sandbox.lost")).toMatchObject([{ data: { previousState: "running", reason: lost.reason } }]);
+		expect(c.host.sandboxes.has(sandbox.id)).toBe(false);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: b.hostId, cleanup: { hostId: a.hostId, fenced: true } });
+		expect(placement?.fenced).toBeTypeOf("number");
+		expect((await api.store.sandboxes.get(sandbox.id))?.recreating).toBeUndefined();
+	});
+
+	it("is made again on its first host where that is back when the host its create was admitted on is lost", async () => {
+		const { api, root, service, b, sandbox, pass, save, a, reconnect, events } = await setup({
+			onHostLost: "recreate",
+		});
+		await save("kept");
+		if (b === undefined) throw new Error("no host b");
+		await admittedThenAway(b, () => {
+			a.host.connection.closed(1006, "gone");
+			return pass(LOST_AFTER_MS + 1_000);
+		});
+		// Host a is back meanwhile, and deletes its fenced copy.
+		const backA = await reconnect(a);
+		await vi.waitFor(() => expect(backA.sandboxes.has(sandbox.id)).toBe(false));
+		await api.service.idle();
+		expect((await service.sandboxes.placement(sandbox.id))?.cleanup).toBeUndefined();
+		// Host b stays away past the deadline: it is made again on host a, over host b's fence.
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("running"));
+		expect(backA.calls.some((call) => call.method === "sandbox.create")).toBe(true);
+		const placement = await service.sandboxes.placement(sandbox.id);
+		expect(placement).toMatchObject({ hostId: a.hostId, cleanup: { hostId: b.hostId, fenced: true } });
+		expect(placement?.fenced).toBeUndefined();
+		await pass(LOST_AFTER_MS + 1_000);
+		expect(await events("sandbox.recreated")).toMatchObject([{ data: { previousState: "running" } }]);
+		expect(await events("sandbox.lost")).toHaveLength(0);
+		expect((await api.store.sandboxes.get(sandbox.id))?.recreating).toBeUndefined();
+		// Host b back: its copy is deleted, and the sandbox stays on host a.
+		const backB = await reconnect(b);
+		await vi.waitFor(() => expect(backB.sandboxes.has(sandbox.id)).toBe(false));
+		await api.service.idle();
+		expect(await service.sandboxes.placement(sandbox.id)).toMatchObject({ hostId: a.hostId });
+		expect((await service.sandboxes.placement(sandbox.id))?.cleanup).toBeUndefined();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
 	});
 
 	it("never ends a command its replacement runs from a loss pass that read the lost record late", async () => {

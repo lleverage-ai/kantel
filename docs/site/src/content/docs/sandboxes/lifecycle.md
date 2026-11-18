@@ -166,6 +166,8 @@ A microVM can ask to be made again instead, with `onHostLost: "recreate"` on its
 
 It is lost as usual, its `reason` saying why, when it can't be made again: it has no saved snapshot, no other host in its pool can take it or holds the snapshot (or can fetch it), or it is an isolate or was made on a named host (`host`). The default, `onHostLost: "lost"`, always leaves it lost.
 
+If the host it is being made again on is lost too before it runs, it is lost with that host, and made again on another host the same way, or lost with one `sandbox.lost` event saying why (`data.previousState` is the state its first loss found it in). It is also lost, rather than made again, while the first lost host is still away and owed the removal of its copy. Each host deletes its copy when it connects again.
+
 ```bash
 curl -X PATCH "$KANTEL_URL/v1/sandboxes/$SANDBOX_ID" \
   -H "Authorization: Bearer $KANTEL_API_KEY" \

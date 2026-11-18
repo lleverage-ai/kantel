@@ -308,7 +308,9 @@ export type StoredSandbox = Omit<
 	 * was lost in, the saved snapshot it is made from, and when the gateway at it last said so (`heartbeatAt`). Written
 	 * with its move from `lost` to `starting`, never placed; a sweep settles one whose gateway went quiet
 	 * (`settleLostCreate`). Once it runs (or its new machine ended), its event is stored, it is stopped again where it was
-	 * lost stopped, and the marker cleared; where it can't be made, it goes back to `lost`, saying why.
+	 * lost stopped, and the marker cleared; where it can't be made, it goes back to `lost`, saying why. Where the host its
+	 * create was admitted on is lost too before it runs, it is lost to that host, as any create is, the marker going with
+	 * it, and made again from there or lost, as its `onHostLost` says.
 	 */
 	readonly recreating?: {
 		readonly hostId: string;
