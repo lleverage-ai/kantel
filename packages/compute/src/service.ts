@@ -430,6 +430,13 @@ export interface ComputeServiceOptions {
 	readonly snapshotExpiry?: boolean;
 	/** How long after it starts a process first expires snapshots. Default `SNAPSHOT_EXPIRY_START_DELAY_MS`, 15 minutes. */
 	readonly snapshotExpiryDelayMs?: number;
+	/**
+	 * How long a host may stay disconnected before it counts as lost (`markLostHosts`): its sandboxes move to `lost`, with
+	 * a `sandbox.lost` event each, and its placements are fenced, so the host deletes them when it connects again. Counted
+	 * from when it was last seen, and never from before this process started, so a gateway's restart alone loses nothing.
+	 * Default `HOST_LOST_AFTER_MS`, 5 minutes; the gateways set it with `KANTEL_HOST_LOST_AFTER_MINUTES`.
+	 */
+	readonly hostLostAfterMs?: number;
 	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
 	readonly startPollMs?: number;
 	/**
@@ -968,6 +975,27 @@ export const SNAPSHOT_COPIES_EVERY_MS = 5 * 60_000;
  * version's process, replaced by this one, could still have had in flight.
  */
 export const SNAPSHOT_EXPIRY_START_DELAY_MS = 15 * 60_000;
+/** How long a host may stay disconnected before it counts as lost, by default (`hostLostAfterMs`). */
+export const HOST_LOST_AFTER_MS = 5 * 60_000;
+/** How often a gateway's sweep looks for hosts past that deadline, at most. */
+const HOST_LOST_CHECK_MS = 5_000;
+/** The deployment setting for `hostLostAfterMs`, in minutes. */
+export const HOST_LOST_AFTER_SETTING = "KANTEL_HOST_LOST_AFTER_MINUTES";
+
+/**
+ * KANTEL_HOST_LOST_AFTER_MINUTES: how long a host may stay disconnected before it counts as lost (`hostLostAfterMs`),
+ * in minutes, at least 1 (fractions allowed); unset or empty, 5. Answers milliseconds. Anything else is refused, so a
+ * typo stops the gateway rather than losing hosts early or never.
+ */
+export function hostLostAfterSetting(raw: string | undefined): number {
+	const value = raw?.trim() ?? "";
+	if (value === "") return HOST_LOST_AFTER_MS;
+	const minutes = Number(value);
+	if (!/^\d+(\.\d+)?$/.test(value) || !Number.isFinite(minutes) || minutes < 1) {
+		throw new KantelError("invalid", `${HOST_LOST_AFTER_SETTING} is a number of minutes, at least 1`);
+	}
+	return Math.round(minutes * 60_000);
+}
 /** How long a process holds an expiry's mark (`markExpiring`) before another may take it over. */
 export const RETIRE_LEASE_MS = 10 * 60_000;
 /**
@@ -1586,6 +1614,7 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
 	"stopped",
 	"paused",
 	"error",
+	"lost",
 	"deleting",
 ];
 /**
@@ -1600,10 +1629,35 @@ const LISTED_STATES = Object.keys({
 	paused: true,
 	moving: true,
 	error: true,
+	lost: true,
 	deleting: true,
 } satisfies Record<Exclude<computeSchema.SandboxState, "deleted">, true>) as readonly computeSchema.SandboxState[];
-/** The states a host's sandbox is in while it still counts as the host's (`sandboxRecordsOn`): every one but deleting. */
-const PLACED_STATES = LISTED_STATES.filter((state) => state !== "deleting");
+/**
+ * The states a host's sandbox is in while it still counts as the host's (`sandboxRecordsOn`): every one but deleting,
+ * and lost (its host was lost, and its placement fenced: `markLostHosts`).
+ */
+const PLACED_STATES = LISTED_STATES.filter((state) => state !== "deleting" && state !== "lost");
+/**
+ * The states a lost host's sandbox is moved to `lost` from (`markLostHosts`): a delete under way is left to it, and one
+ * already lost stays as it is.
+ */
+const LOSABLE: readonly computeSchema.SandboxState[] = [
+	"starting",
+	"running",
+	"stopping",
+	"stopped",
+	"paused",
+	"moving",
+	"error",
+];
+/** The scopes of the only calls a lost sandbox takes: reads of it, and its delete. Any other is refused (`sandboxLost`). */
+const LOST_SCOPES: ReadonlySet<computeSchema.ApiKeyScope> = new Set([
+	"sandboxes:read",
+	"sandboxes:delete",
+	"account:read",
+]);
+/** What a lost sandbox's `reason` says. */
+export const HOST_LOST_REASON = "its host stayed disconnected past the deadline, and was counted as lost";
 /** The states a sandbox counts against an account's concurrent sandboxes in (`requireCapacity`). */
 const ACTIVE_STATES: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping"];
 /** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
@@ -2234,6 +2288,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	let copiesKeptAt = Number.NEGATIVE_INFINITY;
 	/** When this process may first expire snapshots (`snapshotExpiryDelayMs` after it started). */
 	const expiryStartsAt = now() + (options.snapshotExpiryDelayMs ?? SNAPSHOT_EXPIRY_START_DELAY_MS);
+	/** How long a host may be away before it is lost (`markLostHosts`). */
+	const hostLostAfter = options.hostLostAfterMs ?? HOST_LOST_AFTER_MS;
+	if (!Number.isFinite(hostLostAfter) || hostLostAfter <= 0) throw new Error("hostLostAfterMs is a positive duration");
+	/**
+	 * When this process started, as far as losing hosts goes: a host's time away counts from here at the earliest, so one
+	 * that was away only while the control plane was down (a restart, an upgrade) has the whole deadline to come back.
+	 */
+	const lossCountsFrom = now();
+	/** When `markLostHosts` last began a pass. */
+	let lostCheckedAt = Number.NEGATIVE_INFINITY;
+	/** Whether a `markLostHosts` pass is under way here: one at a time. */
+	let markingLost = false;
 	/** This process, as the owner of the expiry marks it makes (`markExpiring`). */
 	const retireOwner = crypto.randomUUID();
 	/** Set by `close`: a claim sweep under way stops. */
@@ -5662,6 +5728,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (role === undefined || !(await canSee(principal, sandbox, role))) throw notFound("sandbox");
 		requireScope(principal, scope, role);
 		await refuseShared(principal, sandbox);
+		// A lost sandbox (`markLostHosts`) takes reads and its delete alone: anything else is a conflict saying so.
+		if (sandbox.state === "lost" && !LOST_SCOPES.has(scope)) throw sandboxNotRunning(sandbox, apiBasePath);
 		return { sandbox, role };
 	}
 
@@ -7205,6 +7273,78 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				previousState: sandbox.state,
 				at: now(),
 			});
+		}
+	}
+
+	/**
+	 * Counts each host away past the deadline (`hostLostAfterMs`) as lost: its sandboxes are fenced on it, so it deletes
+	 * them when it connects again, before it is used (`SandboxBackend.fenceHost`), and then move to `lost`, with a
+	 * `sandbox.lost` event each. A host's time away counts from when it was last seen, and never from before this process
+	 * started, so a host away only while the control plane was down isn't lost unless it stays away the whole deadline
+	 * after. Every gateway sweeps: `transition` moves each sandbox once, so one event is stored for each. At most every
+	 * `HOST_LOST_CHECK_MS`, one pass at a time.
+	 */
+	async function markLostHosts(at: number): Promise<void> {
+		if (backend.fenceHost === undefined || markingLost) return;
+		if (at - lossCountsFrom < hostLostAfter) return;
+		if (at - lostCheckedAt < Math.min(HOST_LOST_CHECK_MS, hostLostAfter)) return;
+		lostCheckedAt = at;
+		markingLost = true;
+		try {
+			const { hosts } = await backend.capabilities();
+			for (const host of hosts) {
+				if (host.connected !== false) continue;
+				const since = Math.max(host.lastSeenAt ?? lossCountsFrom, lossCountsFrom);
+				if (at - since < hostLostAfter) continue;
+				await loseHost(host.id).catch(() => undefined);
+			}
+		} finally {
+			markingLost = false;
+		}
+	}
+
+	/**
+	 * A lost host's sandboxes, fenced and then moved to `lost` (`markLostHosts`). Not one that is being deleted, moved, or
+	 * worked on by this gateway (each settles first, and a later pass takes it). The fence comes first: should it fail,
+	 * nothing is lost, and a later pass tries again.
+	 */
+	async function loseHost(hostId: string): Promise<void> {
+		const losable = (sandbox: StoredSandbox) =>
+			sandbox.hostId === hostId && LOSABLE.includes(sandbox.state) && sandbox.moving === undefined;
+		const sandboxes = (await store.sandboxes.list({ hostId }, { state: LOSABLE })).filter(
+			(sandbox) => losable(sandbox) && !pending.has(sandbox.id),
+		);
+		if (sandboxes.length === 0) return;
+		await backend.fenceHost?.(
+			hostId,
+			sandboxes.map((sandbox) => sandbox.id),
+		);
+		for (const sandbox of sandboxes) {
+			let was: SandboxState = sandbox.state;
+			const result = await transition(
+				sandbox.id,
+				LOSABLE,
+				(current) => {
+					was = current.state;
+					return withState(current, "lost", { reason: HOST_LOST_REASON, ports: [] });
+				},
+				losable,
+			).catch(() => undefined);
+			if (result === undefined || !("moved" in result)) continue;
+			const lost = result.moved;
+			await emit("sandbox.lost", lost.accountId, {
+				sandbox: lost,
+				data: { previousState: was, reason: HOST_LOST_REASON },
+			});
+			// Its commands went with its machine; its host can't be asked.
+			keepGoing(
+				track([sandbox.id], () =>
+					killCommandsOf(sandbox.id, {
+						note: `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`,
+						reconcile: false,
+					}),
+				),
+			);
 		}
 	}
 
@@ -10666,11 +10806,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						// A paused one's commands, kept in its memory, go with it, as its guest can't be asked.
 						await killCommandsOf(
 							current.id,
-							was === "paused" ? { note: pausedMemoryGone("deleted"), reconcile: false } : {},
+							was === "paused"
+								? { note: pausedMemoryGone("deleted"), reconcile: false }
+								: // A lost one's host can't be asked.
+									was === "lost"
+									? { reconcile: false }
+									: {},
 						);
 						// With the host its record names: a backend whose placement of it went (its host deleted it, and the answer was
 						// lost) settles it by that host, rather than leave it in error with nothing to delete.
-						await backend.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId });
+						// A lost one is deleted on its host by its fence when the host is back (`markLostHosts`): one that host can't
+						// be asked about now is deleted all the same.
+						await backend
+							.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId })
+							.catch((error: unknown) => {
+								if (was !== "lost") throw error;
+							});
 						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
 							if (snapshot.kind === "automatic") {
 								await forgetSnapshot(snapshot);
@@ -14790,6 +14941,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async sweep() {
 			const at = now();
 			keepGoing(sweepStickyDisks().catch(() => undefined));
+			// Hosts away past the deadline: their sandboxes fenced and lost, in the background (one pass at a time).
+			keepGoing(markLostHosts(at));
 			if (at - copiesKeptAt >= SNAPSHOT_COPIES_EVERY_MS) {
 				copiesKeptAt = at;
 				keepGoing(keepEverySnapshotsCopies());

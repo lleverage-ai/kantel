@@ -108,6 +108,9 @@
 		// Expiry of automatic snapshots past their expiresAt (packages/compute, expireSnapshots). The deployment runs one
 		// stack object, whose first pass waits 15 minutes after it starts, past a deploy's overlap with the one it replaces.
 		"KANTEL_SNAPSHOT_EXPIRY": "on",
+		// How long a host may stay disconnected before it counts as lost, in minutes (packages/compute, markLostHosts):
+		// its sandboxes move to `lost`, and it deletes them when it connects again. Empty: 5.
+		"KANTEL_HOST_LOST_AFTER_MINUTES": "",
 		// With account hosts: where the latest kantel-host release is read, hourly, to flag hosts that are behind it
 		// (src/config.ts). Empty: Kantel's latest GitHub Release; `off` reads none; or a mirror's URL. The deploy sets it
 		// from the repository variable of the same name.

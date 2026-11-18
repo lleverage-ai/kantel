@@ -1047,6 +1047,12 @@ export interface SandboxBackend {
 	 */
 	hostConnected?(hostId: string): Promise<boolean | undefined>;
 	/**
+	 * Fences a lost host's sandboxes (`ComputeServiceOptions.hostLostAfterMs`): each of `sandboxIds` it has placed on
+	 * `hostId` is kept there as lost, and the host deletes it when it connects again, before it is used. Resolves once that
+	 * is recorded; refused while the host is connected. Absent: its hosts are never lost (the stub).
+	 */
+	fenceHost?(hostId: string, sandboxIds: readonly string[]): Promise<void>;
+	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).
 	 */

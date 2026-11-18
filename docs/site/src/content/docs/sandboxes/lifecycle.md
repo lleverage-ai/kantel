@@ -147,11 +147,18 @@ The same goes for a start, resume or fork, and for a create from a snapshot. The
 | `paused` | Like `stopped`, but its memory is kept too (microVMs only) |
 | `moving` | Being moved to another host, then started there; its `move` says how far (`copying`, `stopping`, `final-copy`, `starting`) |
 | `error` | The last operation failed or its machine was lost |
+| `lost` | Its host stayed disconnected past the deadline, so Kantel no longer counts on its machine or disk. It can only be deleted |
 | `deleting`, `deleted` | Erased for good |
 
 A running sandbox can also report `health: "degraded"` when its host can't fully reach it. It keeps running, and `reason` says why.
 
 A microVM whose host ends it without being asked goes from `running` to `error`, with a `sandbox.error` event. That happens when the host runs short of memory and stops it, when the kernel kills it at the host's memory limit, when it crashes, or when the host restarts. Its `reason` gives the host's words, such as `Out of memory: …`. Its disk is kept on its host, so a start or a recovery boots it from there. Anything that was in memory is lost.
+
+### When its host is lost
+
+While a sandbox's host is disconnected, the sandbox keeps its last state, with `hostReachable: false`. If the host connects again within 5 minutes, nothing changes. If it stays away longer, the host counts as lost: each sandbox on it moves to `lost`, with a `sandbox.lost` event (`data.previousState` says what it was), and its running commands are ended. A self-hosted install sets the deadline with `KANTEL_HOST_LOST_AFTER_MINUTES` ([Install](/self-hosting/install/)). The time counts from when the host was last seen, and never from before the control plane started, so restarting the control plane doesn't lose anything.
+
+A lost sandbox can only be deleted. Any other call answers `409` `conflict`, with `details.code` `sandbox_lost`. If the lost host connects again, it deletes those sandboxes before Kantel uses it for anything else, so none of them comes back running.
 
 ## List and find sandboxes
 

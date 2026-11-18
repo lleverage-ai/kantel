@@ -1303,6 +1303,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
+		async fenceHost(hostId, sandboxIds) {
+			await hosts.sandboxes.fence(hostId, sandboxIds);
+		},
 		async hostConnected(hostId) {
 			if (hosts.hub.connected(hostId)) return true;
 			// Not connected, or not one of these hosts at all (a routed backend's other side): only a host there is to read

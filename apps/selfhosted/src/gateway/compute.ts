@@ -75,6 +75,11 @@
  *                                Default off: their routes answer 501 not_supported
  *   KANTEL_SNAPSHOT_EXPIRY       `on` deletes automatic snapshots past their expiry, on hosts that keep their own copies
  *                                (off by default; a replicated install turns it on once every gateway runs this version)
+ *   KANTEL_HOST_LOST_AFTER_MINUTES
+ *                                how long a host may stay disconnected before it counts as lost (default 5, at least 1):
+ *                                its sandboxes move to `lost`, with a `sandbox.lost` event each, and it deletes them when
+ *                                it connects again, before it is used. Counted from when the gateway started at the
+ *                                earliest, so a restart alone loses nothing
  *   KANTEL_TEMPLATES             `experimental` turns on templates: versioned microVM profiles whose snapshots are built
  *                                in the background (`/v1/templates`, `/v1/template-bases`), on the stub or on hosts
  *                                that build them. Default off: those routes answer 501 not_supported
@@ -108,6 +113,8 @@ import {
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
+	HOST_LOST_AFTER_SETTING,
+	hostLostAfterSetting,
 	hostSnapshotLinks,
 	type InviteMailing,
 	imagePatchingSwitch,
@@ -214,6 +221,11 @@ export interface ComputeConfig {
 	 * once every gateway runs a version that has it.
 	 */
 	readonly snapshotExpiry?: boolean;
+	/**
+	 * How long a host may stay disconnected before it counts as lost, from KANTEL_HOST_LOST_AFTER_MINUTES. Absent, the
+	 * default, 5 minutes.
+	 */
+	readonly hostLostAfterMs?: number;
 }
 
 /**
@@ -234,7 +246,10 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 		...(experimentalSwitch(env.KANTEL_GITHUB_RUNNERS, "KANTEL_GITHUB_RUNNERS") ? { githubRunners: true } : {}),
 		...(experimentalSwitch(env.KANTEL_STICKY_DISKS, "KANTEL_STICKY_DISKS") ? { stickyDisks: true } : {}),
 	};
-	const expiry = snapshotExpirySwitch(env.KANTEL_SNAPSHOT_EXPIRY) ? { snapshotExpiry: true } : {};
+	const expiry = {
+		...(snapshotExpirySwitch(env.KANTEL_SNAPSHOT_EXPIRY) ? { snapshotExpiry: true } : {}),
+		...hostLostAfter(env[HOST_LOST_AFTER_SETTING]),
+	};
 	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...templates, ...runners, ...patching, ...expiry };
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
@@ -329,6 +344,19 @@ export function experimentalSwitch(raw: string | undefined, name: string): boole
 	if (value === "" || value === "off") return false;
 	if (value === "experimental") return true;
 	throw new Error(`${name} is \`experimental\` or \`off\``);
+}
+
+/**
+ * KANTEL_HOST_LOST_AFTER_MINUTES (`hostLostAfterSetting`): left out when unset, so a config without it is as it was.
+ * Anything but a number of minutes, at least 1, stops the gateway.
+ */
+export function hostLostAfter(raw: string | undefined): { readonly hostLostAfterMs?: number } {
+	if ((raw?.trim() ?? "") === "") return {};
+	try {
+		return { hostLostAfterMs: hostLostAfterSetting(raw) };
+	} catch (error) {
+		throw new Error(error instanceof Error ? error.message : `${HOST_LOST_AFTER_SETTING} isn't valid`);
+	}
 }
 
 /**
@@ -617,6 +645,8 @@ export async function gatewayCompute(options: {
 	readonly stickyDisks?: boolean;
 	/** Expiry of automatic snapshots (KANTEL_SNAPSHOT_EXPIRY=on). Default off. */
 	readonly snapshotExpiry?: boolean;
+	/** How long a host may stay disconnected before it is lost (KANTEL_HOST_LOST_AFTER_MINUTES). Default 5 minutes. */
+	readonly hostLostAfterMs?: number;
 	/** Sandboxes' live changes from the other replicas over the database (live-relay.ts); absent, this gateway's only. */
 	readonly liveRelay?: LiveRelay;
 }): Promise<GatewayCompute> {
@@ -669,6 +699,7 @@ export async function gatewayCompute(options: {
 		...(options.githubRunners === true ? { githubRunners: { log: (message: string) => console.log(message) } } : {}),
 		...(options.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(options.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
+		...(options.hostLostAfterMs === undefined ? {} : { hostLostAfterMs: options.hostLostAfterMs }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(baseImages === undefined ? {} : { baseImages }),

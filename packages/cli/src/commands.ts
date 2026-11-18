@@ -323,6 +323,7 @@ const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.recovered",
 	"sandbox.oom_kill",
 	"sandbox.upgraded",
+	"sandbox.lost",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",

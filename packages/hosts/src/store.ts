@@ -178,6 +178,12 @@ export interface PlacementRecord {
 	 * isolate, or a moved microVM's source copy (`tier` `microvm`; absent, an isolate).
 	 */
 	readonly cleanup?: { readonly hostId: string; readonly operationId: string; readonly tier?: SandboxTier };
+	/**
+	 * When its host was counted as lost with it there (`HostsService.sandboxes.fence`): its state is `lost`, nothing its
+	 * host reports changes it, and the host deletes it when it connects again, before it is used (`onFence`); then the
+	 * placement goes. Absent: not fenced.
+	 */
+	readonly fenced?: number;
 }
 
 export interface HostStore {

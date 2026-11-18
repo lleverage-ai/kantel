@@ -117,6 +117,8 @@ export interface ComputeApiOptions {
 	readonly snapshotExpiry?: boolean;
 	/** How long after it starts the service first expires snapshots (`ComputeServiceOptions.snapshotExpiryDelayMs`). */
 	readonly snapshotExpiryDelayMs?: number;
+	/** How long a host may stay disconnected before it is lost (`ComputeServiceOptions.hostLostAfterMs`). Default 5 minutes. */
+	readonly hostLostAfterMs?: number;
 }
 
 export interface ComputeApi {
@@ -206,6 +208,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.startPollMs === undefined ? {} : { startPollMs: options.startPollMs }),
 		...(options.snapshotExpiry === undefined ? {} : { snapshotExpiry: options.snapshotExpiry }),
 		...(options.snapshotExpiryDelayMs === undefined ? {} : { snapshotExpiryDelayMs: options.snapshotExpiryDelayMs }),
+		...(options.hostLostAfterMs === undefined ? {} : { hostLostAfterMs: options.hostLostAfterMs }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

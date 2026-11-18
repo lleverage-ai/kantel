@@ -423,6 +423,8 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	paused: "paused",
 	moving: "moving",
 	error: "error",
+	// The UI has no lost state yet: one lost with its host shows as failed, with its reason, and can be deleted.
+	lost: "error",
 	// The UI has no deleting or deleted: one being erased is on its way out, and a deleted one is gone.
 	deleting: "stopping",
 	deleted: "stopped",
