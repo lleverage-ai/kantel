@@ -117,6 +117,18 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_b", createdAt: 3 });
 	});
 
+	it("replaces a placement only over its own: the same host, written at the same time", async () => {
+		const store = await open();
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 1), state: "running" })).toBe(false);
+		expect(await store.getPlacement("s1")).toBeUndefined();
+		await store.putPlacement({ ...placement("s1", "host_a", 1), state: "starting" });
+		expect(await store.replacePlacement({ ...placement("s1", "host_b", 1), state: "running" })).toBe(false);
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 2), state: "running" })).toBe(false);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1, state: "starting" });
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 1), state: "running" })).toBe(true);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1, state: "running" });
+	});
+
 	it("places a new sandbox only on a host that is neither draining nor revoked, in one write", async () => {
 		const store = await open();
 		await store.insertHost({ ...host("host_a", 1), labels: { note: '"draining":true' } });

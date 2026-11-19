@@ -952,6 +952,91 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		},
 	);
 
+	it.each([
+		["with its first host's copy still owed its removal", true],
+		["with nothing else owed", false],
+	])(
+		"deletes the copy its new host makes after a delete asked it first, its answer recorded before the delete's removal, %s",
+		async (_, owed) => {
+			const { api, b, sandbox, save, a, advance, hostStore, reconnect, service } = await setup({
+				onHostLost: "recreate",
+			});
+			await save("kept");
+			if (b === undefined) throw new Error("no host b");
+			let answer: () => void = () => undefined;
+			let admitted: () => void = () => undefined;
+			const atCreate = new Promise<void>((resolve) => {
+				admitted = resolve;
+			});
+			b.host.hold = (method) => {
+				if (method !== "sandbox.create") return undefined;
+				admitted();
+				return new Promise<void>((resolve) => {
+					answer = resolve;
+				});
+			};
+			a.host.connection.closed(1006, "gone");
+			advance(LOST_AFTER_MS + 1_000);
+			await api.service.sweep();
+			await atCreate;
+			let firstHost = a.host;
+			if (!owed) {
+				// Host a back first: its fenced copy deleted, nothing owed it.
+				firstHost = await reconnect(a);
+				await vi.waitFor(() => expect(firstHost.sandboxes.has(sandbox.id)).toBe(false));
+				await vi.waitFor(async () => expect((await hostStore.getPlacement(sandbox.id))?.cleanup).toBeUndefined());
+			}
+			// A delete on the hosts service (a gateway's whose create, on another, goes on): it asks host b first, which has
+			// nothing yet; its removal of the placement is held.
+			const asked = () =>
+				b.host.calls.some((call) => call.method === "sandbox.delete" && call.params.sandboxId === sandbox.id);
+			let release: () => void = () => undefined;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let reached: () => void = () => undefined;
+			const atRemoval = new Promise<void>((resolve) => {
+				reached = resolve;
+			});
+			const update = hostStore.updatePlacement.bind(hostStore);
+			let armed = true;
+			const updates = vi.spyOn(hostStore, "updatePlacement").mockImplementation(async (sandboxId, change) => {
+				if (armed && sandboxId === sandbox.id && asked()) {
+					armed = false;
+					reached();
+					await gate;
+				}
+				return update(sandboxId, change);
+			});
+			const deleting = service.sandboxes.delete(sandbox.id);
+			await atRemoval;
+			expect(b.host.sandboxes.has(sandbox.id)).toBe(false);
+			// Host b makes it, and its answer is recorded on the placement the delete read.
+			answer();
+			await vi.waitFor(() => expect(b.host.sandboxes.has(sandbox.id)).toBe(true));
+			await vi.waitFor(async () =>
+				expect(await hostStore.getPlacement(sandbox.id)).toMatchObject({ hostId: b.hostId, state: "running" }),
+			);
+			// The delete's removal goes on: refused, the placement no longer as it read it, it asks host b again.
+			release();
+			await deleting;
+			updates.mockRestore();
+			expect(b.host.sandboxes.has(sandbox.id)).toBe(false);
+			expect(b.host.calls.filter((call) => call.method === "sandbox.delete")).toHaveLength(2);
+			if (owed) {
+				// What is left is host a's copy, still owed its removal there: deleted once it is back.
+				expect(await hostStore.getPlacement(sandbox.id)).toMatchObject({
+					hostId: a.hostId,
+					state: "deleting",
+					cleanup: { hostId: a.hostId },
+				});
+				firstHost = await reconnect(a);
+				await vi.waitFor(() => expect(firstHost.sandboxes.has(sandbox.id)).toBe(false));
+			}
+			await vi.waitFor(async () => expect(await hostStore.getPlacement(sandbox.id)).toBeUndefined());
+		},
+	);
+
 	it("never ends a command its replacement runs from a loss pass that read the lost record late", async () => {
 		const { api, root, a, sandbox, save, secondGateway, advance } = await setup({ onHostLost: "recreate" });
 		await save("kept");

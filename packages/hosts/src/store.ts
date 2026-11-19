@@ -216,6 +216,11 @@ export interface HostStore {
 	/** Puts a placement only while its sandbox has none, judged in the same write: whether it did. */
 	insertPlacement(placement: PlacementRecord): Promise<boolean>;
 	/**
+	 * Puts a placement only over its own, judged in the same write: its sandbox's placement on the same host, written at
+	 * the same `createdAt`. Whether it did.
+	 */
+	replacePlacement(placement: PlacementRecord): Promise<boolean>;
+	/**
 	 * Puts a new sandbox's placement only while its host admits it (`admits`: neither draining nor revoked, and in
 	 * `poolId` where that is given and the host's pool is known), as one write. A create that read its host before a
 	 * drain is refused here, so a host drained, found empty and moved to another pool never takes one after (the compute
@@ -355,6 +360,12 @@ export function createMemoryHostStore(): HostStore {
 		},
 		async insertPlacement(placement) {
 			if (placements.has(placement.sandboxId)) return false;
+			placements.set(placement.sandboxId, copy(placement));
+			return true;
+		},
+		async replacePlacement(placement) {
+			const current = placements.get(placement.sandboxId);
+			if (current?.hostId !== placement.hostId || current.createdAt !== placement.createdAt) return false;
 			placements.set(placement.sandboxId, copy(placement));
 			return true;
 		},
@@ -630,6 +641,13 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			const rows = await driver.query(
 				"INSERT INTO compute_placements (sandbox_id, host_id, created_at, data) VALUES (?, ?, ?, ?) ON CONFLICT (sandbox_id) DO NOTHING RETURNING sandbox_id",
 				[placement.sandboxId, placement.hostId, placement.createdAt, JSON.stringify(placement)],
+			);
+			return rows.length > 0;
+		},
+		async replacePlacement(placement) {
+			const rows = await driver.query(
+				"UPDATE compute_placements SET data = ? WHERE sandbox_id = ? AND host_id = ? AND created_at = ? RETURNING sandbox_id",
+				[JSON.stringify(placement), placement.sandboxId, placement.hostId, placement.createdAt],
 			);
 			return rows.length > 0;
 		},

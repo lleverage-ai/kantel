@@ -1222,6 +1222,12 @@ function shapeIn(shape: Shape, tier: SandboxTier): Shape {
 const unansweredErrors = new WeakSet<object>();
 
 /**
+ * Refusals of a create's or fork's answer that came after its admission was taken (`settleAdmitted`): what it made is
+ * dealt with there, and the placement as it is now (another's) is never removed for it (`unplace`).
+ */
+const lateErrors = new WeakSet<object>();
+
+/**
  * Whether `error` is a host call that was sent and never answered: its link dropped, it timed out or was aborted, or the
  * replica holding the host lost it. The host may have carried it out, so nothing it would have changed is undone.
  */
@@ -2384,57 +2390,73 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * Records what a host said of a create that made a lost host's sandbox again (`replacesLost`), as `settle` does, but
-	 * only on its own admission as it is now (its host, when it was written, unfenced), so what changed meanwhile is kept:
-	 * the lost host's copy removed (`cleanup`), or this host lost in turn and its copy fenced (LLE-19676). `conflict` where
-	 * the admission is no longer its own: the answer is too late, and nothing is deleted by its ID here. Fenced, its
-	 * host's loss settles the sandbox and its fence deletes the copy; a newer admission, a move, or a removal owed this
-	 * host (`cleanup`) is left to that. Deleted meanwhile (a delete took its placement before its host made it, leaving
-	 * none, or only another host's copy to remove, `isLeftover`), the copy it made is recorded fenced on its host
-	 * (`fenceOrphan`), so its fence deletes it, now or when the host is back, on any gateway.
+	 * Records what a host said of a create or fork it made, as `settle` does, but only on its own admission as it is now
+	 * (its host, and when it was written), so a delete that took the placement meanwhile isn't undone. A create that made
+	 * a lost host's sandbox again (`replacing`, `replacesLost`) is recorded on the admission as it is, and only while it
+	 * is unfenced, so what changed meanwhile is kept: the lost host's copy removed (`cleanup`), or this host lost in turn
+	 * and its copy fenced (LLE-19676). `conflict` where the admission is no longer its own: the answer is too late, and
+	 * nothing is deleted by its ID here. Fenced, its host's loss settles the sandbox and its fence deletes the copy; a
+	 * newer admission, a move, or a removal owed this host (`cleanup`) is left to that. Deleted meanwhile (a delete took
+	 * its placement before its host made it, leaving none, or only another host's copy to remove, `isLeftover`), the
+	 * copy it made is recorded fenced on its host (`fenceOrphan`), so its fence deletes it, now or when the host is back,
+	 * on any gateway (LLE-19700).
 	 */
-	const settleReplacement = async (
+	const settleAdmitted = async (
 		admitted: PlacementRecord,
 		sandbox: HostSandbox,
-		host: HostRecord,
+		host: HostRecord | undefined,
+		replacing: boolean,
 	): Promise<PlacementRecord> => {
-		const written = await store.updatePlacement(admitted.sandboxId, (latest) =>
-			latest.hostId === admitted.hostId && latest.createdAt === admitted.createdAt && latest.fenced === undefined
-				? { ...asReported(latest, sandbox, host, clock.now()), updatedAt: clock.now() }
-				: undefined,
-		);
-		if (written !== undefined) return written;
-		if (await fenceOrphan(admitted, host)) {
-			throw new KantelError("conflict", `The sandbox was deleted while it was being made on host ${host.name}`);
+		const name = host?.name ?? admitted.hostId;
+		if (!replacing) {
+			// As `settle` writes it, over its own admission only, in one statement.
+			const settled = { ...asReported(admitted, sandbox, host, clock.now()), updatedAt: clock.now() };
+			if (await store.replacePlacement(settled)) return settled;
+		} else {
+			const written = await store.updatePlacement(admitted.sandboxId, (latest) =>
+				latest.hostId === admitted.hostId && latest.createdAt === admitted.createdAt && latest.fenced === undefined
+					? { ...asReported(latest, sandbox, host, clock.now()), updatedAt: clock.now() }
+					: undefined,
+			);
+			if (written !== undefined) return written;
 		}
-		throw new KantelError("conflict", `The sandbox's host ${host.name} was lost while it was being made there`);
+		const late = (await fenceOrphan(admitted))
+			? new KantelError("conflict", `The sandbox was deleted while it was being made on host ${name}`)
+			: new KantelError(
+					"conflict",
+					replacing
+						? `The sandbox's host ${name} was lost while it was being made there`
+						: `The sandbox was replaced while it was being made on host ${name}`,
+				);
+		lateErrors.add(late);
+		throw late;
 	};
 
 	/**
-	 * Records the copy a replacement create made on `host` after its sandbox was deleted (its admission taken by the
+	 * Records the copy a create or fork made on `host` after its sandbox was deleted (its admission taken by the
 	 * delete) as fenced there, as a lost host's is: its fence deletes it (`runFences`), now if the host is connected, else
 	 * when it is back. Only while the sandbox has no placement left, or only another host's copy to remove (`isLeftover`,
 	 * kept as what is owed, `cleanup`), judged in the write: never over a live placement, a move, a new admission, or a
 	 * copy owed this host. Its own `createdAt` (now), so a delete that read the admission before never takes it for that
 	 * (`delete`'s removal is of the placement it read). Whether it did.
 	 */
-	const fenceOrphan = async (admitted: PlacementRecord, host: HostRecord): Promise<boolean> => {
+	const fenceOrphan = async (admitted: PlacementRecord): Promise<boolean> => {
+		const hostId = admitted.hostId;
 		const at = clock.now();
 		const { cleanup: _owed, fenced: _fenced, move: _move, upgrade: _upgrade, ...copy } = admitted;
 		const orphan: PlacementRecord = {
 			...copy,
-			hostId: host.id,
 			state: "lost",
 			fenced: at,
 			createdAt: at,
 			updatedAt: at,
 		};
 		const over = await store.updatePlacement(admitted.sandboxId, (latest) =>
-			isLeftover(latest) && latest.hostId !== host.id ? { ...orphan, cleanup: latest.cleanup } : undefined,
+			isLeftover(latest) && latest.hostId !== hostId ? { ...orphan, cleanup: latest.cleanup } : undefined,
 		);
 		if (over === undefined && !(await store.insertPlacement(orphan))) return false;
-		log(`[hosts] sandbox ${admitted.sandboxId} was deleted as host ${host.id} made it: its copy there is fenced`);
-		report(fenceConnected(host.id));
+		log(`[hosts] sandbox ${admitted.sandboxId} was deleted as host ${hostId} made it: its copy there is fenced`);
+		report(fenceConnected(hostId));
 		return true;
 	};
 
@@ -3911,10 +3933,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 								: undefined,
 						chosen.host,
 					);
-					const settled =
-						replacing === undefined
-							? await settle(placement, sandbox, chosen.host)
-							: await settleReplacement(placement, sandbox, chosen.host);
+					const settled = await settleAdmitted(placement, sandbox, chosen.host, replacing !== undefined);
 					const statuses = mounts.status(sandbox);
 					return {
 						sandbox,
@@ -3925,6 +3944,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						...admitted,
 					};
 				} catch (error) {
+					if (lateErrors.has(error as object)) throw error;
 					// What a lost host's fence held is put back: its copy's removal is still owed.
 					if (replacing !== undefined && !unanswered(error)) {
 						await putBackLost(placement, existing);
@@ -3974,11 +3994,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					return {
 						sandbox,
 						hostId: source.hostId,
-						placement: await settle(placement, sandbox),
+						placement: await settleAdmitted(placement, sandbox, undefined, false),
 						...(statuses === undefined ? {} : { mounts: statuses }),
 						...admitted,
 					};
 				} catch (error) {
+					if (lateErrors.has(error as object)) throw error;
 					throw await unplace(placement, await store.getHost(source.hostId), error);
 				}
 			},
@@ -4842,31 +4863,49 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					await forgetPlacement(sandboxId, (latest) => latest.hostId === placement.hostId);
 					return;
 				}
-				try {
-					await onHost(placement.hostId, HostMethods.delete, { sandboxId });
-				} catch (error) {
-					// Gone on the host already is gone.
-					if (!(error instanceof KantelError && error.code === "not_found")) {
-						// Its host said it deleted it (its `deleted` event, which a host sends before its answer, forgot the
-						// placement), and then its link dropped before the answer: done, not failed. Failing it would leave the
-						// sandbox in error with no placement, which only its host's word can settle.
-						// A `deleted` event that arrived before the link dropped is applied first: its placement's removal may still be
-						// on its way to the store. (One a host sent to another gateway replica isn't seen here: the delete fails, and
-						// deleting it again settles it by its host, `deleteOptions.hostId`.)
+				// Asked of its host. Whether its host said it deleted it (its `deleted` event, which a host sends before its
+				// answer, forgot the placement), and then its link dropped before the answer: done, not failed. Failing it would
+				// leave the sandbox in error with no placement, which only its host's word can settle. A `deleted` event that
+				// arrived before the link dropped is applied first: its placement's removal may still be on its way to the store.
+				// (One a host sent to another gateway replica isn't seen here: the delete fails, and deleting it again settles it
+				// by its host, `deleteOptions.hostId`.)
+				const forgottenThere = async (hostId: string): Promise<boolean> => {
+					try {
+						await onHost(hostId, HostMethods.delete, { sandboxId });
+						return false;
+					} catch (error) {
+						// Gone on the host already is gone.
+						if (error instanceof KantelError && error.code === "not_found") return false;
 						if (unanswered(error)) await deletionsApplying.get(sandboxId);
 						if (unanswered(error) && (await store.getPlacement(sandboxId)) === undefined) {
 							log(`[hosts] sandbox ${sandboxId} deleted: its host said so before its answer was lost`);
-							return;
+							return true;
 						}
 						throw error;
 					}
+				};
+				// A create (or fork) not answered yet when the placement was read (`starting`) may make it on its host after the
+				// host's answer here (it had none yet): its answer, recorded meanwhile on this placement (`settleAdmitted`), means
+				// it is there now, so it is asked for again; one that comes after the placement went is fenced there
+				// (`fenceOrphan`), so its fence deletes it (LLE-19700). Only as placed where it was deleted: what a deleted event
+				// left of it elsewhere meanwhile stays, and so does a placement made on that host since (a late copy, fenced
+				// there). Asked again, the placement is as settled, so it is removed as any is: twice at most.
+				for (;;) {
+					if (await forgottenThere(placement.hostId)) return;
+					const read = placement;
+					const unsettled = read.state === "starting";
+					const ours = (latest: PlacementRecord) =>
+						latest.hostId === read.hostId && latest.createdAt === read.createdAt;
+					if (
+						await forgetPlacement(sandboxId, (latest) => ours(latest) && (!unsettled || latest.state === "starting"))
+					) {
+						return;
+					}
+					const latest = await store.getPlacement(sandboxId);
+					if (!unsettled || latest === undefined || isLeftover(latest) || !ours(latest)) return;
+					log(`[hosts] sandbox ${sandboxId} was made on host ${read.hostId} as it was deleted: deleted there again`);
+					placement = latest;
 				}
-				// Only as placed where it was deleted: what a deleted event left of it elsewhere meanwhile stays, and so does a
-				// placement made on that host since (a late replacement's copy, fenced there, `fenceOrphan`).
-				await forgetPlacement(
-					sandboxId,
-					(latest) => latest.hostId === placement.hostId && latest.createdAt === placement.createdAt,
-				);
 			},
 			async fence(hostId, sandboxIds, seenAt) {
 				const at = clock.now();
