@@ -58,11 +58,10 @@ func (h *Host) runtimes() []proto.HostRuntime {
 }
 
 // sandboxImages are the microVMs' root filesystems of the host image versions installed now (microvm.Config.HostImages,
-// and what Runtimes reports a runtime for): none without image patching, which keeps no versions.
+// and what Runtimes reports a runtime for), with image patching on or off: turning it off stops downloads and prunes,
+// never the versions already installed, which a snapshot over one of them is still over. A host that never had it on
+// has none.
 func (h *Host) sandboxImages() []string {
-	if !h.cfg.ImagePatching {
-		return nil
-	}
 	return imageStore(h.cfg).SandboxImages()
 }
 

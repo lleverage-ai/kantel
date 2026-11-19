@@ -3142,7 +3142,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * snapshot the catalogue no longer has gets it deleted (`DiskHolders.recordHoldings`), and the host asks before it
 	 * publishes one. `conflict` when no other host there holds it.
 	 */
-	async function sendSnapshotFetch(hostId: string, ref: string): Promise<void> {
+	async function sendSnapshotFetch(hostId: string, ref: string, admit?: () => Promise<void>): Promise<void> {
 		if (backend.fetchDisk === undefined) {
 			throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
 		}
@@ -3152,6 +3152,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (location.holders.length === 0) {
 			throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 		}
+		// The caller's own check (`admit`), once the catalogue has said the host may hold it at all (its pool and account).
+		await admit?.();
 		await diskHolders.recordSnapshotFetch(objectId, "disk", hostId, ref);
 		await backend.fetchDisk(hostId, { ...request, ...location });
 	}
@@ -13284,15 +13286,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!held.some((holder) => holder.ref === ref && holder.state === "held" && holder.hostId !== host.id)) {
 				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 			}
-			// Nor where the host would refuse it every time, as automatic copies never ask it (`copyTarget`).
-			const target = (await copyHosts()).get(host.id);
-			if (target !== undefined && !rootImageOn(target, snapshot)) {
-				throw new KantelError(
-					"conflict",
-					"The host can't have the root image the snapshot's disk is over: it has no host image with its digest, and can't download it",
-				);
-			}
-			await sendSnapshotFetch(host.id, ref);
+			// Nor where the host would refuse it every time, as automatic copies never ask it (`copyTarget`): checked once
+			// the host may hold it, so a host of another pool or account is told that instead.
+			await sendSnapshotFetch(host.id, ref, async () => {
+				const target = (await copyHosts()).get(host.id);
+				if (target !== undefined && !rootImageOn(target, snapshot)) {
+					throw new KantelError(
+						"conflict",
+						"The host can't have the root image the snapshot's disk is over: it has no host image with its digest, and can't download it",
+					);
+				}
+			});
 			return undefined;
 		},
 

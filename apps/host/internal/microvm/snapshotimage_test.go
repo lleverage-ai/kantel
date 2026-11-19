@@ -373,3 +373,59 @@ func TestImageDigestAndVersion(t *testing.T) {
 		}
 	}
 }
+
+// A sandbox moved with its memory is linked over a file whose runtime is its memory's: a file here with its image's
+// bytes under another version (another kernel) is enough for its disk alone, never for its memory, for which its own
+// version is downloaded, or the import refused before it is staged.
+func TestAMemoryImportNeedsItsOwnRuntime(t *testing.T) {
+	ctx := context.Background()
+	a := moveHost(t)
+	stoppedTestSandbox(t, a, "sb1", "old")
+	if _, err := a.ExportSandbox(ctx, proto.SandboxExportParams{SandboxID: "sb1", Version: "mov_1", Memory: true}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := a.ReadSandboxFile("sb1", "mov_1", proto.SandboxRecordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A target whose old is another image, and whose new has old's bytes.
+	target := func() (*Manager, *[]string) {
+		b := moveHost(t)
+		asked := &[]string{}
+		inner := b.cfg.HostImage
+		b.cfg.HostImage = func(ctx context.Context, version string) (string, error) {
+			*asked = append(*asked, version)
+			return inner(ctx, version)
+		}
+		b.cfg.HostImages = func() []string { return []string{versionFile(b, "new")} }
+		setDigest(t, versionFile(b, "old"), strings.Repeat("cd", 32))
+		setDigest(t, versionFile(b, "new"), strings.Repeat("0a", 32))
+		return b, asked
+	}
+	staged := func(b *Manager) string { return vmRootfs(filepath.Join(b.sandboxImportDir("sb1", "mov_1"), "vm")) }
+
+	diskOnly, _ := target()
+	if err := diskOnly.PrepareSandboxImport(ctx, "sb1", "mov_1", 0, record, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := staged(diskOnly); got != versionFile(diskOnly, "new") {
+		t.Fatalf("its disk alone staged over %s, want the alias", got)
+	}
+
+	refused, asked := target()
+	if err := refused.PrepareSandboxImport(ctx, "sb1", "mov_1", 0, record, ImportOptions{Memory: true}); !errors.Is(err, ErrNoSnapshotImage) {
+		t.Fatalf("with its memory over an alias: %v", err)
+	}
+	if !slices.Equal(*asked, []string{"old"}) || fileExists(refused.sandboxImportDir("sb1", "mov_1")) {
+		t.Fatalf("asked %v, or staged though refused", *asked)
+	}
+
+	downloaded, asked := target()
+	setDigest(t, versionFile(downloaded, "old"), strings.Repeat("0a", 32))
+	if err := downloaded.PrepareSandboxImport(ctx, "sb1", "mov_1", 0, record, ImportOptions{Memory: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := staged(downloaded); got != versionFile(downloaded, "old") || !slices.Equal(*asked, []string{"old"}) {
+		t.Fatalf("with its memory staged over %s, asked %v; want its own version, downloaded", got, *asked)
+	}
+}

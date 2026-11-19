@@ -996,6 +996,7 @@ describe("disk holders", () => {
 			},
 			facts: {
 				host_b: { features: syncing, runtimeFingerprints: as("host-images-20261114@sha256:f13fd019fde6d11a") },
+				host_c: { features: syncing, runtimeFingerprints: as("host-images-20261114@sha256:f13fd019fde6d11a") },
 				host_g: { features: syncing, runtimeFingerprints: as("host-images-20261114@sha256:78ca3a4ec2d4301c") },
 			},
 		});
@@ -1010,6 +1011,8 @@ describe("disk holders", () => {
 			message: expect.stringContaining("root image"),
 		});
 		expect(await tom.api.store.diskHolders.get("snapshot:hs1:disk:host_b")).toBeUndefined();
+		// A host of another pool may not hold it at all, whatever its images: it is told that, not to fix its image.
+		await expect(tom.fetchHostSnapshot("host_c", { snapshotId: snap.id })).rejects.toMatchObject({ code: "not_found" });
 		// One with those bytes as a version, which it finds by their digest, is asked.
 		await tom.fetchHostSnapshot("host_g", { snapshotId: snap.id });
 		expect(fetches).toEqual(["host_g"]);
