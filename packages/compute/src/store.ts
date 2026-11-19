@@ -318,6 +318,8 @@ export type StoredSandbox = Omit<
 		readonly previousState: computeSchema.SandboxState;
 		readonly snapshotId: string;
 		readonly heartbeatAt: number;
+		/** The stop it owed (`stopFor`) as it was lost, owed again once its replacement runs. */
+		readonly stopFor?: string;
 	};
 	/**
 	 * A loss begun and not yet settled (`ComputeServiceOptions.hostLostAfterMs`): the lost host, the create attempt placed

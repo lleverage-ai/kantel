@@ -1,7 +1,8 @@
 // A stop that lands while its sandbox's host is away (#737) waits for the host to connect again and is sent then, rather
-// than leaving the sandbox in error; a host that isn't back in time fails it as before.
+// than leaving the sandbox in error. One whose host isn't back in time fails, and the sandbox is running again with the
+// stop owed, since its machine may still be running there (LLE-19732): in `error` it held its host's memory unseen.
 import { createKantelClient } from "@kantel/api/sdk";
-import { createComputeApi, joinTokenSpender } from "@kantel/compute";
+import { createComputeApi, HOST_AWAY_STOP_REASON, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend, STOP_RECONNECT_WAIT_MS } from "../src/backend.ts";
 import { HOST_FEATURES } from "../src/protocol.ts";
@@ -110,15 +111,57 @@ describe("a stop while its host is away", () => {
 		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
 	});
 
-	it("fails as before when the host isn't back in time", async () => {
-		const { api, root, host, sandbox, skip } = await setup();
+	it("hands the sandbox back running, the stop owed, when the host isn't back in time, and stops it once it is", async () => {
+		const { api, root, service, hostId, host, sandbox, skip } = await setup();
 		host.connection.closed(1006, "gone");
 		await root.stopSandbox(sandbox.id);
 		skip(STOP_RECONNECT_WAIT_MS + 1);
 		await api.service.idle();
+		// Its machine may still be running on the host, so it is counted there as running, not `error`.
+		expect(await stateOf(root, sandbox.id)).toBe("running");
+		expect(await api.store.sandboxes.get(sandbox.id)).toMatchObject({ stopFor: HOST_AWAY_STOP_REASON });
+		// The sweep leaves it while its host is away, and stops it once the host is back.
+		await api.service.sweep();
+		expect(await stateOf(root, sandbox.id)).toBe("running");
+		const back = await reconnect(service, hostId, host);
+		await api.service.sweep();
+		await api.service.idle();
 		const stopped = await root.getSandbox(sandbox.id);
-		expect(stopped.state).toBe("error");
-		expect(stopped.reason).toMatch(/not connected/);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe(HOST_AWAY_STOP_REASON);
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+	});
+
+	it("hands a pause back running with no stop owed when the host isn't back in time", async () => {
+		const { api, root, service, hostId, host, sandbox, skip } = await setup();
+		host.connection.closed(1006, "gone");
+		await root.stopSandbox(sandbox.id, { keepMemory: true });
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		expect(await stateOf(root, sandbox.id)).toBe("running");
+		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
+		// The sweep's stop would drop the memory the pause meant to keep: it is left for the caller to pause again.
+		const back = await reconnect(service, hostId, host);
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await stateOf(root, sandbox.id)).toBe("running");
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(0);
+	});
+
+	it("is in error as before when a send may have reached the host and it isn't back in time", async () => {
+		const { api, root, host, sandbox, skip } = await setup();
+		host.hold = (method) => (method === "sandbox.stop" ? never() : undefined);
+		await root.stopSandbox(sandbox.id);
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true));
+		// kantel-host carries a stop on past its connection, so the machine may have stopped: it isn't handed back.
+		host.connection.closed(1006, "gone");
+		// Once the stop has begun its wait for the host, from the failed send.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		const failed = await root.getSandbox(sandbox.id);
+		expect(failed.state).toBe("error");
+		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
 	});
 
 	it("doesn't send again what the host itself refused", async () => {

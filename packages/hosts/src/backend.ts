@@ -47,6 +47,7 @@ import {
 	type SnapshotMadeOn,
 	type StartOutcome,
 	startOutcomeUnknown,
+	stopNotSent,
 	type TakenSnapshot,
 	type TemplateRuntime,
 	type UpgradedPlacement,
@@ -1473,6 +1474,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// stop, say) rather than that nothing is there; nothing reaches a stopped machine. They end when it boots again.
 			// As long as a disk copy: a stop's automatic snapshot copies the whole disk. Given up on at 120 s, the stop
 			// failed here while the host went on and stopped it.
+			// Whether any send may have reached the host (`unanswered`): kantel-host carries a stop on past its connection.
+			let sent = false;
 			const send = () =>
 				call<HostSnapshot>(
 					sandboxId,
@@ -1480,8 +1483,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					{ snapshotId: snapshotId(), memory: keepMemory },
 					undefined,
 					DISK_COPY_TIMEOUT_MS,
-				);
-			const snap = await (waitForHost === true ? whileHostAway(hostId, send) : send());
+				).catch((error: unknown) => {
+					if (!isKantelError(error) || unanswered(error)) sent = true;
+					throw error;
+				});
+			// One that never reached the host, which wasn't there for any send, left its machine as it was (`stopNotSent`).
+			// One the host may have taken, or refused itself (mapped to `unavailable` too, from its `internal`), may not have.
+			const snap = await (waitForHost === true ? whileHostAway(hostId, send) : send()).catch((error: unknown) => {
+				throw !sent && isKantelError(error) && error.code === "unavailable" && hostWasAway(error)
+					? stopNotSent(error)
+					: error;
+			});
 			// Whether it kept the memory, said either way: a host that couldn't pause the machine stopped it cold.
 			return { ...takenOn(hostId, snap), memory: snap.memory === true };
 		},

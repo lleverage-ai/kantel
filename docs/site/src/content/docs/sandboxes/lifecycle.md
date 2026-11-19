@@ -210,6 +210,8 @@ await kantel.stopSandbox("sbx_4kq9x2mt", { keepMemory: true, wait: true }); // p
 
 Without `wait`, a stop answers at once with the sandbox in `stopping`. A stop is safe to retry without a key: once the first has finished, stopping a stopped sandbox (or pausing a paused one) answers it as it is.
 
+If the sandbox's host isn't connected, a stop waits up to two minutes for it to come back. If it isn't back by then, the stop fails `unavailable` and the sandbox is `running` again, since its machine may still be running there. A stop stays owed: Kantel stops the sandbox once its host is back, with `reason` saying so, and calls that need it running answer `409` until then. A pause isn't owed, so pause it again once its host is back.
+
 ## Resume or start
 
 A resume brings a sandbox back with the same ID on a new machine. A paused sandbox carries on from its memory. A stopped one boots from its newest snapshot.

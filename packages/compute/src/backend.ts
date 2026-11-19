@@ -145,6 +145,24 @@ export function isStartOutcomeUnknown(error: unknown): boolean {
 	return error instanceof KantelError && unknownStarts.has(error);
 }
 
+/** What a backend's stop or pause that never reached its host was refused with (`stopNotSent`). */
+const unsentStops = new WeakSet<KantelError>();
+
+/**
+ * A stop or pause that never reached its host: the host wasn't there for any send (not connected, or gone before the
+ * call left). Unlike one the host may have taken, or refused itself, it left the machine exactly as it was, so a running
+ * one is running still and holding its host's memory. Marks `error` and answers it.
+ */
+export function stopNotSent(error: KantelError): KantelError {
+	unsentStops.add(error);
+	return error;
+}
+
+/** Whether `error` is `stopNotSent`'s. */
+export function isStopNotSent(error: unknown): boolean {
+	return error instanceof KantelError && unsentStops.has(error);
+}
+
 /**
  * What became of a start, resume or recovery whose gateway went quiet (its publish failed, its answer was lost, or the
  * gateway itself went), as `settleStart` answers it from what its host has now: its machine running (its placement);
@@ -1134,7 +1152,8 @@ export interface SandboxBackend {
 	 * Saves the disk as a snapshot and lets the machine go, or with `keepMemory` pauses it, keeping its memory too
 	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken. With `waitForHost`, a stop whose
 	 * machine's host is away (not connected, or gone while it waited) waits a while for it to be back and is sent again,
-	 * rather than failing `unavailable` at once.
+	 * rather than failing `unavailable` at once. One that never reached its host, which was away for every send,
+	 * rejects with `stopNotSent`'s error.
 	 */
 	stop(
 		sandboxId: string,

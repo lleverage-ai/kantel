@@ -10,6 +10,7 @@ import {
 	CREATE_SETTLE_GRACE_MS,
 	createComputeApi,
 	createOutcomeUnknown,
+	HOST_AWAY_STOP_REASON,
 	HOST_LOST_REASON,
 	joinTokenSpender,
 	NOT_RECREATED,
@@ -273,6 +274,21 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		await pass(LOST_AFTER_MS + 1_000);
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
 		expect(b?.host.calls.some((call) => call.method === "sandbox.create")).toBe(true);
+	});
+
+	it("is stopped where it was lost running but owing a stop (one asked for while its host was away)", async () => {
+		const { api, root, b, sandbox, pass, save, a, events } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		// As an asked stop leaves it whose host was away past its wait (LLE-19732): running, the stop owed.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, stopFor: HOST_AWAY_STOP_REASON }));
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
+		expect((await root.getSandbox(sandbox.id)).reason).toBe(HOST_AWAY_STOP_REASON);
+		expect(b?.host.calls.some((call) => call.method === "sandbox.create")).toBe(true);
+		expect(b?.host.sandboxes.get(sandbox.id)?.state).not.toBe("running");
+		// Lost running, as it was.
+		expect((await events("sandbox.recreated"))[0]).toMatchObject({ data: { previousState: "running" } });
 	});
 
 	it("is stopped again by the sweep where its gateway went before its stop was carried out", async () => {

@@ -80,6 +80,7 @@ import {
 	isCreateOutcomeUnknown,
 	isDetachedWaitEnded,
 	isStartOutcomeUnknown,
+	isStopNotSent,
 	isUpgradeOutcomeUnknown,
 	type MoveOutcome,
 	type Placement,
@@ -1689,6 +1690,12 @@ export const notRecreated = (why: string): string =>
 /** Why a sandbox made again on another host was stopped again (`stopFor`): it was lost stopped, paused or in error. */
 export const RECREATED_STOP_REASON =
 	"It was made again on another host after its host was lost, and stopped again as it was before";
+/**
+ * Why a sandbox is owed a stop (`stopFor`) that was asked for while its host was away and never reached it
+ * (`beginStop`): the sweep stops it with this reason once its host is back.
+ */
+export const HOST_AWAY_STOP_REASON =
+	"Its stop was asked for while its host was away; it is stopped once its host is back";
 /** The states a sandbox made again on another host is left running in; from any other, it is stopped again. */
 const RECREATED_RUNNING: readonly computeSchema.SandboxState[] = ["starting", "running", "moving"];
 /** The states a sandbox counts against an account's concurrent sandboxes in (`requireCapacity`). */
@@ -7494,8 +7501,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			LOSABLE,
 			(current) => {
 				// One being made again (`recreating`) whose new host is lost too: that making again is over with it.
-				const { losing: _, recreating: _recreating, ...rest } = current;
+				// A stop its first loss found it owing stays owed (`recreating.stopFor`), for a further making again.
+				const { losing: _, recreating, ...rest } = current;
 				return withState(rest, "lost", {
+					...(rest.stopFor === undefined && recreating?.stopFor !== undefined ? { stopFor: recreating.stopFor } : {}),
 					reason: HOST_LOST_REASON,
 					ports: [],
 					hostId: intent.hostId,
@@ -7740,6 +7749,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						previousState: due.previousState,
 						snapshotId: plan.snapshot.id,
 						heartbeatAt: now(),
+						// A stop it owed as it was lost (one asked for while its host was away, say), which the boot's `starting`
+						// clears: owed again once it runs (`finishRecreate`).
+						...(rest.stopFor === undefined ? {} : { stopFor: rest.stopFor }),
 					},
 				});
 			},
@@ -7926,18 +7938,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			{ sandbox, snapshotId: marker.snapshotId, data: { previousState: marker.previousState } },
 			marker.eventId,
 		);
-		const stopAgain = !RECREATED_RUNNING.includes(marker.previousState);
+		// The stop it owed as it was lost, else one for having been lost stopped, paused or in error.
+		const stopFor =
+			marker.stopFor ?? (RECREATED_RUNNING.includes(marker.previousState) ? undefined : RECREATED_STOP_REASON);
 		const finished = await store.sandboxes.update(sandbox.id, (current) => {
 			if (current.recreating?.eventId !== marker.eventId || current.state === "starting") return undefined;
 			const { recreating: _, ...rest } = current;
-			return stopAgain && rest.state === "running" && rest.stopFor === undefined
-				? { ...rest, stopFor: RECREATED_STOP_REASON }
+			return stopFor !== undefined && rest.state === "running" && rest.stopFor === undefined
+				? { ...rest, stopFor }
 				: rest;
 		});
-		if (finished?.state !== "running" || finished.stopFor !== RECREATED_STOP_REASON) return;
+		if (stopFor === undefined || finished?.state !== "running" || finished.stopFor !== stopFor) return;
 		// Queued behind whatever is at it now (`track`, never awaited here, so a caller inside one doesn't wait on itself).
-		const owed = (current: StoredSandbox) => current.stopFor === RECREATED_STOP_REASON;
-		const began = await beginStop(finished, false, RECREATED_STOP_REASON, undefined, owed, true).catch(() => undefined);
+		const owed = (current: StoredSandbox) => current.stopFor === stopFor;
+		const began = await beginStop(finished, false, stopFor, undefined, owed, true).catch(() => undefined);
 		if (began !== undefined) keepGoing(began.work);
 	}
 
@@ -8054,7 +8068,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Puts a running (or paused) sandbox in `stopping` and stops or pauses it in the background; answers once it is
 	 * `stopping`, with the work (wrapped, so awaiting the answer doesn't await the work). The move is conditional on the
 	 * state `sandbox` was read in: when another call (on any gateway) moved it first, it is `conflict` and nothing is
-	 * stopped.
+	 * stopped. `oweStop` says whether an asked stop its host was away for stays owed once handed back (`stopFor`): not a
+	 * restart's, whose caller asked for a boot rather than a stopped sandbox.
 	 */
 	async function beginStop(
 		sandbox: StoredSandbox,
@@ -8063,6 +8078,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		actor: Principal | undefined,
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
+		oweStop = true,
 	): Promise<{ readonly work: Promise<void>; readonly stopping: StoredSandbox }> {
 		// The record as the move to stopping found it: what is stopped (its type and machine, for its snapshot) and what a
 		// handed-back stop puts back, never the caller's earlier read, which an upgrade may have changed since.
@@ -8148,6 +8164,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				});
 			} catch (error) {
+				// A stop someone asked for, of a running machine, that never reached its host, which was away past the wait
+				// above (`isStopNotSent`): its machine is running there still, holding its memory and vCPUs. In `error` it
+				// held them out of sight: the compute plane counts an `error` sandbox as using nothing on its host, nothing
+				// settles one whose machine runs on, and the host, which counts every machine it runs, went on refusing
+				// creates until the sandbox was stopped or deleted by hand. So it is handed back running, as the sweep's is
+				// below, and the caller is still told the stop failed. A stop stays owed (`stopFor`), so the sweep stops it
+				// once its host is back and calls that need it running are refused meanwhile. A pause doesn't, as the sweep's
+				// stop would let go of the memory the pause was asked to keep, and nor does a restart's stop (`oweStop`). One
+				// its host may have taken, or refused, is an `error` as before: the machine may have stopped. Its stop time is
+				// the one it had, unless its auto-stop was changed while it was stopping (`updateSandbox` keeps the time of a
+				// sandbox that isn't running): then it counts from now, as that change would have on a running one.
+				if (isStopNotSent(error) && !handBack && was.state === "running") {
+					await transition(sandbox.id, "stopping", (current) => ({
+						...current,
+						state: "running",
+						runs: was.runs,
+						stopsAt:
+							current.autoStopMinutes === was.autoStopMinutes
+								? was.stopsAt
+								: current.autoStopMinutes === null || current.autoStopMinutes === undefined
+									? undefined
+									: now() + current.autoStopMinutes * 60_000,
+						...(keepMemory || !oweStop ? {} : { stopFor: current.stopFor ?? reason ?? HOST_AWAY_STOP_REASON }),
+						reason: current.health === "unresponsive" ? current.reason : undefined,
+					})).catch(() => undefined);
+					throw error;
+				}
 				if (handBack && error instanceof KantelError && error.code === "unavailable") {
 					// The stop wasn't carried out (its host away, its connection lost or replaced on the way, a replica's view of
 					// it stale, no answer in time), so the machine may still be running there: it is running again as it was
@@ -11309,7 +11352,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (current.state === "running" || (current.state === "error" && prepared?.running === true)) {
 					// Its disk is saved first, as a stop saves it (without its memory, which a new base can't take): the boot below
 					// starts from that snapshot. Waited for, as the boot needs it.
-					const { work, stopping } = await beginStop(current, false, undefined, principal, unmoved(current));
+					const { work, stopping } = await beginStop(
+						current,
+						false,
+						undefined,
+						principal,
+						unmoved(current),
+						false,
+						false,
+					);
 					// Its stop has begun (its commands are ended): from here any failure is `aborted`, which keeps the key.
 					stoppedIt = true;
 					try {
