@@ -58,7 +58,7 @@ import {
 	type SavedSnapshot,
 	type SaveSnapshotOptions,
 	sandboxActions,
-	sandboxesPollMs,
+	sandboxesListPollMs,
 	sandboxMachineText,
 	sandboxMoving,
 	sandboxScreen,
@@ -245,8 +245,8 @@ export function SandboxesPage({
 	ownHostHref,
 	firstRun,
 }: SandboxesPageProps) {
-	// What the page reads by itself, of the list or of a few sandboxes by ID, it reads through `sandboxReads`: at most
-	// one read at a time and one every `READ_GAP_MS`, none while the tab is hidden, whoever asks (the live feed, the
+	// What the page reads by itself, of the list or of one sandbox by ID, it reads through `sandboxReads`: at most one
+	// read at a time and one every `READ_GAP_MS`, none while the tab is hidden, whoever asks (the live feed, the
 	// polls below, this page's own changes). With about 70 sandboxes a read of the list takes the control plane over a
 	// second, and it answers every account's requests from one place, so two tabs reading every 2 seconds were enough to
 	// overload it (LLE-19729). A source without the live feed (the sample data) has only its polls to go by, so they
@@ -259,6 +259,8 @@ export function SandboxesPage({
 	const listSeq = useRef(0);
 	const [listed, setListed] = useState<ListRead<Sandbox>>();
 	const [listError, setListError] = useState<unknown>();
+	// How many reads of the list have answered, either way: the list backstop below counts from the last of them.
+	const [listReads, setListReads] = useState(0);
 	// Sandboxes made, changed or read alone here, ahead of the next read of the list: a new one shows the moment New
 	// is pressed.
 	const [local, setLocal] = useState<ReadonlyMap<string, LocalChange<Sandbox>>>(new Map());
@@ -285,20 +287,17 @@ export function SandboxesPage({
 					} catch (error) {
 						if (live) setListError(error);
 						throw error;
+					} finally {
+						if (live) setListReads((count) => count + 1);
 					}
 				},
-				ids: async (ids) => {
-					const results = await Promise.allSettled(
-						ids.map(async (id) => {
-							seq.current += 1;
-							const at = seq.current;
-							const box = await source.get(id);
-							// A read of one the API keeps a while after its deletion says so: that's no row, as in the list.
-							if (live)
-								setLocal((current) => withRead(current, id, box.deleted === true ? null : box, at, listSeq.current));
-						}),
-					);
-					if (results.some((result) => result.status === "rejected")) throw new Error("A sandbox couldn't be read.");
+				get: async (id) => {
+					seq.current += 1;
+					const at = seq.current;
+					const box = await source.get(id);
+					// A read of one the API keeps a while after its deletion says so: that's no row, as in the list.
+					if (live)
+						setLocal((current) => withRead(current, id, box.deleted === true ? null : box, at, listSeq.current));
 				},
 			},
 			{ gapMs },
@@ -336,11 +335,14 @@ export function SandboxesPage({
 	);
 
 	// Read again while anything is between states, then forget what this page changed: the list has it now. And, less
-	// often, while any runs or has its host away: the backstop to the live feed's word of a host (`sandboxesPollMs`).
-	// With the live feed, those between states are read alone, by ID: a move's progress is no change of state, so the
-	// feed doesn't say it, but the rest of the list has nothing new to read. Every read goes through `reads`, so however
+	// often, while any runs or has its host away: the backstop to the live feed's word of a host (`sandboxesListPollMs`).
+	// With the live feed, those between states are read alone, by ID, every `pollMs`: a move's progress is no change of
+	// state, so the feed doesn't say it, but the rest of the list has nothing new to read. The list's backstop keeps its
+	// own time, from the last read of the list, so no read by ID puts it off. Every read goes through `reads`, so however
 	// short `pollMs` is, it's one every `READ_GAP_MS` at most.
-	const wait = sandboxes === undefined ? undefined : sandboxesPollMs(sandboxes, pollMs, fixedNow !== undefined);
+	const frozen = fixedNow !== undefined;
+	const followsLive = source.watch !== undefined;
+	const wait = sandboxes === undefined ? undefined : sandboxesListPollMs(sandboxes, pollMs, frozen, followsLive);
 	const movingIds = useMemo(
 		() =>
 			(sandboxes ?? [])
@@ -349,16 +351,18 @@ export function SandboxesPage({
 				.join(" "),
 		[sandboxes],
 	);
-	const followsLive = source.watch !== undefined;
-	// biome-ignore lint/correctness/useExhaustiveDependencies: each read (or failed read) schedules the next.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: each read of the list, answered or failed, schedules the next.
 	useEffect(() => {
 		if (wait === undefined) return;
-		const timer = setTimeout(() => {
-			if (followsLive && movingIds !== "") reads.current?.changed(movingIds.split(" "));
-			else reads.current?.all();
-		}, wait);
+		const timer = setTimeout(() => reads.current?.all(), wait);
 		return () => clearTimeout(timer);
-	}, [wait, movingIds, followsLive, listed, local, listError]);
+	}, [wait, listReads]);
+	useEffect(() => {
+		if (!followsLive || movingIds === "") return;
+		const ids = movingIds.split(" ");
+		const timer = setInterval(() => reads.current?.changed(ids), pollMs);
+		return () => clearInterval(timer);
+	}, [followsLive, movingIds, pollMs]);
 	const changes = useRef(new ChangeCounter()).current;
 	// And soon when one changes elsewhere: the CLI, the API, an auto-stop, its host going or coming back. A deletion
 	// drops its row there and then (and outranks a slow answer of this page's own, as a delete here does); the others

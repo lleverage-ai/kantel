@@ -11,6 +11,7 @@ import {
 	type Sandbox,
 	type SandboxState,
 	sandboxActions,
+	sandboxesListPollMs,
 	sandboxesPollMs,
 	sandboxMachineText,
 	stoppedByText,
@@ -210,6 +211,18 @@ describe("a sandbox whose host isn't connected", () => {
 		// A story's page, frozen at one time, isn't read again for its host.
 		expect(sandboxesPollMs([{ state: "running", hostUnreachable: true }], 1_000, true)).toBeUndefined();
 		expect(HOST_CHECK_POLL_MS).toBe(15_000);
+	});
+
+	it("keeps the list's backstop with the live feed while some are between states, which are read by ID instead", () => {
+		const moving = [{ state: "running" as const }, { state: "starting" as const }];
+		expect(sandboxesListPollMs(moving, 1_000, false, true)).toBe(HOST_CHECK_POLL_MS);
+		expect(sandboxesListPollMs([{ state: "starting" }], 1_000, false, true)).toBeUndefined();
+		expect(sandboxesListPollMs([{ state: "stopped", hostUnreachable: true }], 1_000, false, true)).toBe(
+			HOST_CHECK_POLL_MS,
+		);
+		// Without the live feed the list is all there is to read, at the pace of the quickest.
+		expect(sandboxesListPollMs(moving, 1_000, false, false)).toBe(1_000);
+		expect(sandboxesListPollMs([{ state: "running" }], 1_000, true, true)).toBeUndefined();
 	});
 });
 

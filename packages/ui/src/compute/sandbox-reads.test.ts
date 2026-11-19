@@ -20,23 +20,43 @@ function tab(startHidden = false) {
 	return { visibility, hide: () => set(true), show: () => set(false), listeners };
 }
 
-/** Calls the test answers by hand, recording each read as `list` or the IDs it asked for. */
+/** Calls the test answers by hand, recording each read as `list` or the ID it asked for, and when it started. */
 function calls() {
-	const made: (string | readonly string[])[] = [];
+	const made: string[] = [];
+	const at: number[] = [];
+	let running = 0;
+	let mostRunning = 0;
+	const started = (read: string) => {
+		made.push(read);
+		at.push(Date.now());
+		running += 1;
+		mostRunning = Math.max(mostRunning, running);
+	};
 	const pending: { resolve: () => void; reject: (error: Error) => void }[] = [];
 	const answer = () =>
 		new Promise<void>((resolve, reject) => {
-			pending.push({ resolve, reject });
+			pending.push({
+				resolve: () => {
+					running -= 1;
+					resolve();
+				},
+				reject: (error) => {
+					running -= 1;
+					reject(error);
+				},
+			});
 		});
 	return {
 		made,
+		at,
+		mostRunning: () => mostRunning,
 		calls: {
 			list: () => {
-				made.push("list");
+				started("list");
 				return answer();
 			},
-			ids: (ids: readonly string[]) => {
-				made.push(ids);
+			get: (id: string) => {
+				started(id);
 				return answer();
 			},
 		},
@@ -59,7 +79,7 @@ afterEach(() => {
 });
 
 describe("sandboxReads", () => {
-	it("reads the whole list at once on opening, then gathers what is asked during a gap into one read", async () => {
+	it("reads the whole list at once on opening, then each sandbox asked for in its own turn, once however often asked", async () => {
 		const { made, calls: read, settle } = calls();
 		const reads = sandboxReads(read);
 		expect(made).toEqual(["list"]);
@@ -69,7 +89,48 @@ describe("sandboxReads", () => {
 		reads.changed(["sbx_2", "sbx_1"]);
 		expect(made).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
-		expect(made).toEqual(["list", ["sbx_1", "sbx_2"]]);
+		expect(made).toEqual(["list", "sbx_1"]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+		expect(made).toEqual(["list", "sbx_1", "sbx_2"]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS * 4);
+		expect(made).toHaveLength(3);
+		reads.stop();
+	});
+
+	it("starts every read of one sandbox a gap after the last read, one at a time", async () => {
+		const { made, at, mostRunning, calls: read, settle } = calls();
+		const reads = sandboxReads(read);
+		await settle();
+		const ids = Array.from({ length: READ_MAX_IDS }, (_, index) => `sbx_${index}`);
+		reads.changed(ids);
+		for (let turn = 0; turn < READ_MAX_IDS * 2; turn += 1) {
+			await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+			await settle();
+		}
+		expect(made).toEqual(["list", ...ids]);
+		for (let index = 1; index < at.length; index += 1) {
+			expect((at[index] ?? 0) - (at[index - 1] ?? 0)).toBeGreaterThanOrEqual(READ_GAP_MS);
+		}
+		expect(mostRunning()).toBe(1);
+		reads.stop();
+	});
+
+	it("drops the sandboxes still waiting their turns when the whole list is read", async () => {
+		const { made, calls: read, settle } = calls();
+		const reads = sandboxReads(read);
+		await settle();
+		reads.changed(["sbx_1", "sbx_2", "sbx_3"]);
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+		expect(made).toEqual(["list", "sbx_1"]);
+		reads.all();
+		await settle();
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+		expect(made).toEqual(["list", "sbx_1", "list"]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS * 4);
+		expect(made).toHaveLength(3);
 		reads.stop();
 	});
 
@@ -95,7 +156,7 @@ describe("sandboxReads", () => {
 		await vi.advanceTimersByTimeAsync(READ_GAP_MS * 3);
 		expect(made).toEqual(["list"]);
 		await settle();
-		expect(made).toEqual(["list", ["sbx_1"]]);
+		expect(made).toEqual(["list", "sbx_1"]);
 		reads.stop();
 	});
 
@@ -132,7 +193,7 @@ describe("sandboxReads", () => {
 		await vi.advanceTimersByTimeAsync(READ_GAP_MS * 4);
 		expect(made).toEqual(["list"]);
 		show();
-		expect(made).toEqual(["list", ["sbx_2"]]);
+		expect(made).toEqual(["list", "sbx_2"]);
 		await settle();
 
 		// Hidden and shown with nothing asked: no read.
@@ -153,7 +214,7 @@ describe("sandboxReads", () => {
 		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
 		await settle(false);
 		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
-		expect(made).toEqual(["list", ["sbx_1"], "list"]);
+		expect(made).toEqual(["list", "sbx_1", "list"]);
 		reads.stop();
 	});
 
@@ -170,7 +231,31 @@ describe("sandboxReads", () => {
 
 		reads.changed(["sbx_2"]);
 		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
-		expect(made).toEqual(["list", "list", ["sbx_2"]]);
+		expect(made).toEqual(["list", "list", "sbx_2"]);
+		reads.stop();
+	});
+
+	it("reads the whole list next after a failed read of it, whether its IDs were asked before or after it failed", async () => {
+		const { made, calls: read, settle } = calls();
+		const reads = sandboxReads(read);
+		// Asked while the list is under way.
+		reads.changed(["sbx_1"]);
+		await settle(false);
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+		expect(made).toEqual(["list", "list"]);
+		await settle(false);
+
+		// Asked after it failed.
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS * 4);
+		expect(made).toEqual(["list", "list"]);
+		reads.changed(["sbx_2"]);
+		expect(made).toEqual(["list", "list", "list"]);
+		await settle();
+
+		// Read again, the list goes back to reading by ID.
+		reads.changed(["sbx_3"]);
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+		expect(made).toEqual(["list", "list", "list", "sbx_3"]);
 		reads.stop();
 	});
 

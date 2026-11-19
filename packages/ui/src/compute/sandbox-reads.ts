@@ -9,26 +9,28 @@
 //
 // - At most one read at a time, and at most one every `READ_GAP_MS`: the first ask after a quiet gap reads at once, and
 //   everything asked during a gap is gathered into one read at its end.
-// - A read is of the few sandboxes asked for, by ID, while there are at most `READ_MAX_IDS` of them; more, or a
-//   (re)connection of the live feed, reads the whole list, which covers the IDs too.
+// - A read is of one sandbox, by ID, while at most `READ_MAX_IDS` are waiting to be read: each is its own request, so
+//   each takes its own turn, oldest asked first. More waiting, or a (re)connection of the live feed, reads the whole
+//   list, which covers them all.
 // - Nothing is read while the tab is hidden; what was asked meanwhile is read once when it's shown again. The page's
 //   first read waits for the tab too, so a page opened in the background reads nothing until it's looked at.
-// - Once a read of the whole list has failed, the next ask of any kind reads the whole list again, so the page
-//   recovers on the next change rather than only on the next poll. A failed read of IDs reads the whole list next.
+// - Once a read of the whole list has failed, the next read of any kind is of the whole list, whenever what it reads
+//   was asked, so the page recovers on the next change rather than only on the next poll; a failure with nothing
+//   asked reads nothing more. A failed read of one sandbox reads the whole list next.
 
 import { documentVisibility, type Visibility } from "./live-sandboxes.ts";
 
 /** The shortest time between two reads the page makes by itself, in one tab. */
 export const READ_GAP_MS = 5_000;
 
-/** The most sandboxes a read asks for one by one; more is one read of the whole list rather than many. */
+/** The most sandboxes waiting to be read one by one; more is one read of the whole list rather than many. */
 export const READ_MAX_IDS = 5;
 
 export interface SandboxReadCalls {
 	/** Reads the whole list. Rejects when it couldn't. */
 	list(): Promise<void>;
-	/** Reads these sandboxes, by ID. Rejects when any couldn't. */
-	ids(ids: readonly string[]): Promise<void>;
+	/** Reads one sandbox, by ID. Rejects when it couldn't. */
+	get(id: string): Promise<void>;
 }
 
 export interface SandboxReads {
@@ -68,14 +70,18 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 	const fire = () => {
 		timer = undefined;
 		if (stopped || busy || !owed() || visibility.hidden()) return;
-		const whole = all || ids.size > maxIds;
-		const asked = [...ids];
-		all = false;
-		ids.clear();
+		// The oldest asked, unless the whole list is to be read; the rest wait their own turns.
+		const [oldest] = ids;
+		const id = all || listFailed || ids.size > maxIds ? undefined : oldest;
+		const whole = id === undefined;
+		if (whole) {
+			all = false;
+			ids.clear();
+		} else ids.delete(id);
 		urgent = false;
 		busy = true;
 		last = now();
-		const read = whole ? calls.list() : calls.ids(asked);
+		const read = whole ? calls.list() : calls.get(id);
 		read
 			.then(
 				() => {
@@ -119,7 +125,6 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 			pump();
 		},
 		changed(changed) {
-			if (listFailed) all = true;
 			for (const id of changed) ids.add(id);
 			pump();
 		},

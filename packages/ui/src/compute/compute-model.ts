@@ -2448,6 +2448,24 @@ export function sandboxesPollMs(
 		: undefined;
 }
 
+/**
+ * How long a page showing `sandboxes` waits before it reads the whole list again, counted from its last read of the
+ * list. As `sandboxesPollMs`, except that with the live feed (`followsLive`) a sandbox between states doesn't count: the
+ * page reads those alone, by ID, on their own timer, and the list keeps its backstop for the rest.
+ */
+export function sandboxesListPollMs(
+	sandboxes: readonly Pick<Sandbox, "state" | "hostUnreachable">[],
+	movingMs: number,
+	frozen: boolean,
+	followsLive: boolean,
+): number | undefined {
+	return sandboxesPollMs(
+		followsLive ? sandboxes.filter((box) => !sandboxMoving(box.state)) : sandboxes,
+		movingMs,
+		frozen,
+	);
+}
+
 /** What the sandbox's page says of a sandbox whose host isn't connected. */
 export const HOST_UNREACHABLE_NOTICE =
 	"Its host isn't connected to Kantel, so the sandbox can't be reached and its real state can't be confirmed. " +
