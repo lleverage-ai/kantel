@@ -1018,6 +1018,11 @@ export interface SandboxProcess {
  */
 export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
 
+/** How a source's read may be called off: its requests abort with `signal`. */
+export interface ReadOptions {
+	readonly signal?: AbortSignal;
+}
+
 export interface SandboxesSource {
 	/**
 	 * What New sandbox's sliders may choose, from the hosts the account may use (with `hostId` that one host, with
@@ -1034,7 +1039,8 @@ export interface SandboxesSource {
 	 * shared ones. Absent, or none: no picker, and Kantel picks.
 	 */
 	hosts?(accountId: string): Promise<readonly HostChoice[]>;
-	list(accountId: string): Promise<readonly Sandbox[]>;
+	/** The account's sandboxes; `read.signal` calls the read off. */
+	list(accountId: string, read?: ReadOptions): Promise<readonly Sandbox[]>;
 	/**
 	 * Follows the account's sandboxes live: `changed` with a sandbox's ID each time one changes state, whoever changed it
 	 * (the CLI, the API, an auto-stop), and `deleted` when it was deleted; with none each time the feed connects or
@@ -1079,8 +1085,8 @@ export interface SandboxesSource {
 	 */
 	sshKey?(id: string, publicKey?: string): Promise<SandboxSshKey>;
 	history(id: string): Promise<readonly SandboxCommand[]>;
-	/** One sandbox, for its page. */
-	get(id: string): Promise<Sandbox>;
+	/** One sandbox, for its page; `read.signal` calls the read off. */
+	get(id: string, read?: ReadOptions): Promise<Sandbox>;
 	/** Its environments, with what each loses to a later one, and attaching and detaching them. Absent: none offered. */
 	readonly environments?: SandboxEnvironmentsSource;
 	/** Minutes until auto-stop stops it, from now; undefined keeps it always on. */
@@ -2446,6 +2452,31 @@ export function sandboxesPollMs(
 	return sandboxes.some((box) => box.state === "running" || box.hostUnreachable === true)
 		? HOST_CHECK_POLL_MS
 		: undefined;
+}
+
+/**
+ * How often an organisation's Sandboxes page reads its whole list when nothing else would: a sandbox shared or made
+ * private changes which ones a member sees, and the live feed says nothing of that.
+ */
+export const SHARED_CHECK_POLL_MS = 60_000;
+
+/**
+ * How long a page showing `sandboxes` waits before it reads the whole list again, counted from its last read of the
+ * list. As `sandboxesPollMs`, except that with the live feed (`followsLive`) being between states doesn't count: the
+ * page polls those alone, by ID, and the list keeps its backstop for any that runs or has its host away, and for an
+ * organisation's list (`shared`) every `SHARED_CHECK_POLL_MS` anyway.
+ */
+export function sandboxesListPollMs(
+	sandboxes: readonly Pick<Sandbox, "state" | "hostUnreachable">[],
+	movingMs: number,
+	frozen: boolean,
+	followsLive: boolean,
+	shared = false,
+): number | undefined {
+	if (!followsLive) return sandboxesPollMs(sandboxes, movingMs, frozen);
+	if (frozen) return undefined;
+	if (sandboxes.some((box) => box.state === "running" || box.hostUnreachable === true)) return HOST_CHECK_POLL_MS;
+	return shared ? SHARED_CHECK_POLL_MS : undefined;
 }
 
 /** What the sandbox's page says of a sandbox whose host isn't connected. */

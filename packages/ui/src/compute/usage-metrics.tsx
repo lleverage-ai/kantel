@@ -147,6 +147,21 @@ function detailOf(key: MetricKey, point: UsagePoint, series: UsageSeries): strin
 /** How much a row's chart draws: the last 10 minutes. */
 export const ROW_USAGE_SPAN_MS = 10 * MINUTE;
 
+/**
+ * How often a row's chart reads again: every 15 seconds, not the 5 a sandbox's own page reads at. The list has a chart
+ * per running sandbox and each is its own request, all answered by the one place the hosted control plane answers
+ * from, so 30 running sandboxes at 5 seconds were 6 reads a second from one open tab (LLE-19729). Each read asks for
+ * what's newer than the newest point, so the line misses nothing; it moves three times a minute rather than twelve.
+ */
+export const ROW_USAGE_POLL_MS = 15_000;
+
+/**
+ * How widely the rows' first reads are spread, on opening the page and on showing its tab again: each waits a random
+ * time up to this, so 30 running rows send about 6 reads a second for 5 seconds rather than 30 in one moment, and their
+ * polls stay spread after.
+ */
+export const ROW_USAGE_SPREAD_MS = 5_000;
+
 const ROW_WIDTH = 96;
 const ROW_HEIGHT = 24;
 

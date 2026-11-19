@@ -58,8 +58,9 @@ import {
 	type SavedSnapshot,
 	type SaveSnapshotOptions,
 	sandboxActions,
-	sandboxesPollMs,
+	sandboxesListPollMs,
 	sandboxMachineText,
+	sandboxMoving,
 	sandboxScreen,
 	sandboxSpec,
 	shapeCentsPerHour,
@@ -70,7 +71,7 @@ import {
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { PoolPicker } from "./host-pools.tsx";
-import { useFollowSandboxes } from "./live-sandboxes.ts";
+import { type SandboxBurst, useFollowSandboxes } from "./live-sandboxes.ts";
 import { seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, SandboxStateLabel, tableFrame, td, th } from "./parts.tsx";
 import {
@@ -97,10 +98,28 @@ import {
 	sandboxesShown,
 	TYPE_FILTERS,
 } from "./sandbox-filters.ts";
-import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
+import { READ_GAP_MS, type SandboxReads, sandboxReads } from "./sandbox-reads.ts";
+import {
+	forgetRead,
+	isPlaceholder,
+	isRefusal,
+	keepShown,
+	type ListRead,
+	type LocalChange,
+	retryTargets,
+	withLocal,
+	withMade,
+	withRead,
+} from "./sandbox-selection.ts";
 import { buildPollMs, TEMPLATE_POLL_MS } from "./template-view.ts";
 import { resourcesText, templatePickHint } from "./templates-page.tsx";
-import { ROW_USAGE_SPAN_MS, SandboxMetricsDialog, UsageSparkline } from "./usage-metrics.tsx";
+import {
+	ROW_USAGE_POLL_MS,
+	ROW_USAGE_SPAN_MS,
+	ROW_USAGE_SPREAD_MS,
+	SandboxMetricsDialog,
+	UsageSparkline,
+} from "./usage-metrics.tsx";
 
 export { sandboxesShown } from "./sandbox-filters.ts";
 
@@ -226,7 +245,92 @@ export function SandboxesPage({
 	ownHostHref,
 	firstRun,
 }: SandboxesPageProps) {
-	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
+	// What the page reads by itself, of the list or of one sandbox by ID, it reads through `sandboxReads`: at most one
+	// read at a time and one every `READ_GAP_MS`, none while the tab is hidden, whoever asks (the live feed, the
+	// polls below, this page's own changes). With about 70 sandboxes a read of the list takes the control plane over a
+	// second, and it answers every account's requests from one place, so two tabs reading every 2 seconds were enough to
+	// overload it (LLE-19729). A source without the live feed (the sample data) has only its polls to go by, so they
+	// keep their `pollMs`.
+	//
+	// Every read and every change this page makes takes the next number as it starts (`seq`), so whichever started
+	// last wins whatever order the answers come in; `listSeq` is the number of the list shown. A change's call takes its
+	// number before it's sent (`asked`), so its answer can't undo what a read that started after it found. A read of the
+	// list that fails keeps the last one on screen, saying it may be out of date, unless Kantel refused it outright; the
+	// next change of any sandbox reads the whole list again.
+	const seq = useRef(0);
+	const nextSeq = useCallback(() => {
+		seq.current += 1;
+		return seq.current;
+	}, []);
+	const listSeq = useRef(0);
+	const [listed, setListed] = useState<ListRead<Sandbox>>();
+	const [listError, setListError] = useState<unknown>();
+	// How many reads of the list have answered, either way, and when the last did: the list backstop counts from it.
+	const [listReads, setListReads] = useState(0);
+	const listReadAt = useRef<number | undefined>(undefined);
+	// Sandboxes made, changed or read alone here, ahead of the next read of the list: a new one shows the moment New
+	// is pressed.
+	const [local, setLocal] = useState<ReadonlyMap<string, LocalChange<Sandbox>>>(new Map());
+	const reads = useRef<SandboxReads | undefined>(undefined);
+	const gapMs = source.watch === undefined ? Math.min(pollMs, READ_GAP_MS) : READ_GAP_MS;
+	useEffect(() => {
+		let live = true;
+		// Another account (or source) starts again from its skeleton, with nothing of the last one's.
+		listSeq.current = 0;
+		setListed(undefined);
+		setListError(undefined);
+		setLocal(new Map());
+		const made = sandboxReads(
+			{
+				list: async (signal) => {
+					const at = nextSeq();
+					try {
+						const sandboxes = await source.list(account.id, { signal });
+						if (!live || at <= listSeq.current) return;
+						listSeq.current = at;
+						setListed({ sandboxes, seq: at });
+						setListError(undefined);
+					} catch (error) {
+						if (live) {
+							setListError(error);
+							// Refused, the account's sandboxes aren't the person's to see any more: none stays on screen.
+							if (isRefusal(error)) {
+								listSeq.current = Math.max(listSeq.current, at);
+								setListed(undefined);
+								setLocal(new Map());
+							}
+						}
+						throw error;
+					} finally {
+						if (live) {
+							listReadAt.current = Date.now();
+							setListReads((count) => count + 1);
+						}
+					}
+				},
+				get: async (id, signal) => {
+					const at = nextSeq();
+					const box = await source.get(id, { signal });
+					// A read of one the API keeps a while after its deletion says so: that's no row, as in the list.
+					if (live)
+						setLocal((current) => withRead(current, id, box.deleted === true ? null : box, at, listSeq.current));
+				},
+			},
+			{ gapMs },
+		);
+		reads.current = made;
+		return () => {
+			live = false;
+			made.stop();
+		};
+	}, [source, account.id, gapMs, nextSeq]);
+	const keep = useCallback(
+		(id: string, box: Sandbox | null) => {
+			const at = nextSeq();
+			setLocal((current) => new Map(current).set(id, { box, seq: at }));
+		},
+		[nextSeq],
+	);
 	// The account's pools, only to name them in the Pool filter: without them it goes by ID.
 	const poolsRead = useLoad(() => source.pools?.(account.id) ?? Promise.resolve([]), [source, account.id]);
 	// Every host name the list has said, so a chosen host keeps its name once no sandbox is on it.
@@ -235,8 +339,6 @@ export function SandboxesPage({
 		() => new Map(poolsRead.state.status === "ready" ? poolsRead.state.value.map((each) => [each.id, each.name]) : []),
 		[poolsRead.state],
 	);
-	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New is pressed.
-	const [local, setLocal] = useState<ReadonlyMap<string, Sandbox | null>>(new Map());
 	const [filters, setFilters] = useState<SandboxFilters>(initialFilters ?? NO_FILTERS);
 	const [newOpen, setNewOpen] = useState(creating);
 	// The sandbox whose metrics are open, by ID, so the dialog follows it as the list is read again.
@@ -245,54 +347,77 @@ export function SandboxesPage({
 	useTick(fixedNow === undefined, 30_000);
 	const now = fixedNow ?? Date.now();
 
-	const listed = state.status === "ready" ? state.value : undefined;
-	const sandboxes = useMemo(() => {
-		if (listed === undefined) return undefined;
-		const byId = new Map(listed.map((box) => [box.id, box]));
-		for (const [id, box] of local) {
-			if (box === null) byId.delete(id);
-			else byId.set(id, box);
-		}
-		return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
-	}, [listed, local]);
+	const sandboxes = useMemo(
+		() => (listed === undefined ? undefined : withLocal(listed.sandboxes, local)),
+		[listed, local],
+	);
 
 	// Read again while anything is between states, then forget what this page changed: the list has it now. And, less
-	// often, while any runs or has its host away: the backstop to the live feed's word of a host (`sandboxesPollMs`).
-	const wait = sandboxes === undefined ? undefined : sandboxesPollMs(sandboxes, pollMs, fixedNow !== undefined);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: each read schedules the next while something moves.
+	// often, while any runs or has its host away: the backstop to the live feed's word of a host (`sandboxesListPollMs`).
+	// With the live feed, those between states are polled alone, by ID, in turn: a move's progress is no change of
+	// state, so the feed doesn't say it, but the rest of the list has nothing new to read. The list's backstop keeps its
+	// own time, from the last read of the list, so no read by ID puts it off; an organisation's list keeps a slower one
+	// while nothing runs, as sharing a sandbox or making it private changes what a member sees and no event says so. Every read goes through `reads`, so however
+	// short `pollMs` is, it's one every `READ_GAP_MS` at most.
+	const frozen = fixedNow !== undefined;
+	const followsLive = source.watch !== undefined;
+	const shared = account.kind === "organisation";
+	const wait =
+		sandboxes === undefined ? undefined : sandboxesListPollMs(sandboxes, pollMs, frozen, followsLive, shared);
+	const movingIds = useMemo(
+		() =>
+			(sandboxes ?? [])
+				.filter((box) => sandboxMoving(box.state) && !isPlaceholder(box.id))
+				.map((box) => box.id)
+				.join(" "),
+		[sandboxes],
+	);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: each read of the list, answered or failed, schedules the next.
 	useEffect(() => {
 		if (wait === undefined) return;
-		const timer = setTimeout(reload, wait);
+		const due = listReadAt.current === undefined ? wait : listReadAt.current + wait - Date.now();
+		const timer = setTimeout(() => reads.current?.all(), Math.max(0, due));
 		return () => clearTimeout(timer);
-	}, [wait, reload, listed]);
-	// And at once when one changes elsewhere: the CLI, the API, an auto-stop, its host going or coming back.
-	useFollowSandboxes(source, account.id, reload);
+	}, [wait, listReads]);
+	useEffect(() => {
+		reads.current?.poll(followsLive && movingIds !== "" ? movingIds.split(" ") : []);
+	}, [followsLive, movingIds]);
+	// And soon when one changes elsewhere: the CLI, the API, an auto-stop, its host going or coming back. A deletion
+	// drops its row there and then (and outranks a slow answer of this page's own, as a delete here does); the others
+	// are read by ID, or the whole list on a reconnection, through `reads`.
+	const followed = useCallback(
+		(burst: SandboxBurst) => {
+			for (const id of burst.deleted) keep(id, null);
+			if (burst.all) reads.current?.all();
+			else reads.current?.changed(burst.changed);
+		},
+		[keep],
+	);
+	useFollowSandboxes(source, account.id, followed);
 	useEffect(() => {
 		if (listed === undefined) return;
-		setLocal((current) => {
-			if (current.size === 0) return current;
-			const next = new Map(current);
-			for (const [id, box] of current) {
-				const read = listed.some((entry) => entry.id === id);
-				// A change is forgotten once a read has the sandbox (or, for a delete, no longer has it); a new one's
-				// placeholder stays until its create answers.
-				if (box === null ? !read : read) next.delete(id);
-			}
-			return next.size === current.size ? current : next;
-		});
+		setLocal((current) => forgetRead(current, listed));
 	}, [listed]);
 
-	// What this page changed shows at once, and the list is read again behind it. A bulk stop's answer passes what it
-	// asked, so it doesn't undo a change (a delete) that came after it.
-	const changes = useRef(new ChangeCounter()).current;
+	// What this page changed shows at once, and the sandbox is read again behind it. An answer that passes the number
+	// its call took as it was sent (`asked`) shows only if nothing that started after it (a read, a delete) is known of
+	// the sandbox; one without shows as of its answer. Either way the sandbox is read again, so it catches up.
 	const change = useCallback(
 		(box: Sandbox | null, id: string, asked?: number) => {
-			// An answer overtaken by a later change isn't shown, but the list is still read again, so it catches up.
-			const taken = changeTaken(changes, id, asked);
-			if (taken.show) setLocal((current) => new Map(current).set(id, box));
-			if (taken.reload) reload();
+			const at = asked ?? nextSeq();
+			setLocal((current) => withRead(current, id, box, at, listSeq.current));
+			if (!isPlaceholder(id)) reads.current?.changed([id]);
 		},
-		[reload, changes],
+		[nextSeq],
+	);
+	// A sandbox a create or a fork made shows as of its answer, unless something newer is known of it, and is read again.
+	const made = useCallback(
+		(box: Sandbox) => {
+			const at = nextSeq();
+			setLocal((current) => withMade(current, box.id, box, at));
+			reads.current?.changed([box.id]);
+		},
+		[nextSeq],
 	);
 
 	const create = async (input: CreateSandboxInput) => {
@@ -325,13 +450,14 @@ export function SandboxesPage({
 		};
 		change(placeholder, pendingId);
 		try {
-			const made = await source.create(input);
+			const box = await source.create(input);
+			// The placeholder goes whatever happens.
 			setLocal((current) => {
 				const next = new Map(current);
 				next.delete(pendingId);
-				return next.set(made.id, made);
+				return next;
 			});
-			reload();
+			made(box);
 		} catch (caught) {
 			change(null, pendingId);
 			setNotice({ level: "error", text: messageOf(caught, "Kantel couldn't create the sandbox. Try again.") });
@@ -379,16 +505,28 @@ export function SandboxesPage({
 					{notice.text}
 				</Notice>
 			)}
-			{state.status === "error" && sandboxes === undefined ? (
+			{listError !== undefined && sandboxes !== undefined && (
 				<Notice
-					level="error"
+					level="warning"
 					action={
-						<Button size="sm" onClick={reload}>
+						<Button size="sm" onClick={() => reads.current?.all(true)}>
 							Try again
 						</Button>
 					}
 				>
-					{messageOf(state.error, "Kantel couldn't read the sandboxes.")}
+					Kantel couldn't refresh the sandboxes, so the list may be out of date.
+				</Notice>
+			)}
+			{listError !== undefined && sandboxes === undefined ? (
+				<Notice
+					level="error"
+					action={
+						<Button size="sm" onClick={() => reads.current?.all(true)}>
+							Try again
+						</Button>
+					}
+				>
+					{messageOf(listError, "Kantel couldn't read the sandboxes.")}
 				</Notice>
 			) : sandboxes === undefined ? (
 				<SandboxesSkeleton />
@@ -448,7 +586,8 @@ export function SandboxesPage({
 					{...(sandboxHref === undefined ? {} : { sandboxHref })}
 					{...(navigate === undefined ? {} : { navigate })}
 					onChange={change}
-					asked={(id) => changes.ask(id)}
+					asked={nextSeq}
+					onMade={made}
 					onNotice={setNotice}
 				/>
 			)}
@@ -658,8 +797,10 @@ type RowCalls = {
 	sandboxHref?: (sandboxId: string, view?: SandboxRowView) => string;
 	navigate?: (path: string) => void;
 	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
-	/** What to pass `onChange` with a call's answer, read as the call is made, so a later change to it wins. */
+	/** What to pass `onChange` with a call's answer, taken as the call is made, so a later change or read of it wins. */
 	asked?: (id: string) => number;
+	/** A sandbox a call made (a fork), new to the list. */
+	onMade?: (box: Sandbox) => void;
 	onNotice: (notice: SandboxNotice | undefined) => void;
 	/** Opens a sandbox's metrics dialog. */
 	onMetrics?: (id: string) => void;
@@ -686,6 +827,7 @@ function SandboxList({
 	navigate,
 	onChange,
 	asked,
+	onMade,
 	onNotice,
 }: {
 	/** The search and filters, which the selection's actions share a row with. */
@@ -701,7 +843,7 @@ function SandboxList({
 	onClearFilters: () => void;
 	/** Who made a sandbox, as its row says it under when; without it rows don't say. */
 	creatorOf?: (box: Sandbox) => string;
-	/** Where a sandbox's changes have got to, for `onChange` from an answer that may be overtaken. */
+	/** The page's mark as a call is made, for `onChange` from an answer that may be overtaken. */
 	asked: (id: string) => number;
 } & RowCalls) {
 	const [deleting, setDeleting] = useState<readonly Sandbox[]>();
@@ -797,6 +939,7 @@ function SandboxList({
 		...(navigate === undefined ? {} : { navigate }),
 		onChange,
 		asked,
+		...(onMade === undefined ? {} : { onMade }),
 		onNotice,
 	};
 	const list = narrow ? (
@@ -1147,7 +1290,7 @@ type LinkClick = Pick<
 
 /** What a row can do: its buttons, and ⋯ with Stop and the sandbox menu's four. */
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
-	const { source, save, onChange, asked, onNotice } = calls;
+	const { source, save, onChange, asked, onMade, onNotice } = calls;
 	const pending = sandbox.id.startsWith("pending_");
 	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined, sandbox.hostUnreachable === true);
 	const windows = can.connect && sandbox.kind === "microvm";
@@ -1158,6 +1301,7 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 		...(save === undefined ? {} : { save }),
 		onChange,
 		...(asked === undefined ? {} : { asked }),
+		...(onMade === undefined ? {} : { onMade }),
 		onNotice,
 	});
 
@@ -1208,6 +1352,8 @@ function Usage({ sandbox, calls }: { sandbox: Sandbox; calls: RowCalls }) {
 	const running = showsCpu(sandbox) && sandbox.state !== "error";
 	const live = useLiveUsage(running ? calls.source.usageSeries : undefined, sandbox.id, {
 		keepMs: ROW_USAGE_SPAN_MS,
+		pollMs: ROW_USAGE_POLL_MS,
+		spreadMs: ROW_USAGE_SPREAD_MS,
 	});
 	if (sandbox.id.startsWith("pending_")) return null;
 	const { onMetrics } = calls;

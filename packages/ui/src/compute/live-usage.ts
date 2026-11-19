@@ -88,12 +88,18 @@ const hidden = (): boolean => typeof document !== "undefined" && document.visibi
 /**
  * `id`'s usage, read through `read` now and then every `pollMs` while the page is visible: the first read asks for the
  * last `keepMs`, each one after for what's newer than the newest point. A hidden tab reads nothing; it reads at once
- * when it's shown again. `read` undefined (no live source, or nothing running) is `off`.
+ * when it's shown again, or, with `spreadMs`, after a random wait up to that (as it does on opening), so a page with a
+ * graph per row doesn't send every row's read in the same moment. `read` undefined (no live source, or nothing running)
+ * is `off`.
  */
 export function useLiveUsage(
 	read: UsageRead | undefined,
 	id: string,
-	{ pollMs = USAGE_POLL_MS, keepMs = USAGE_KEEP_MS }: { pollMs?: number; keepMs?: number } = {},
+	{
+		pollMs = USAGE_POLL_MS,
+		keepMs = USAGE_KEEP_MS,
+		spreadMs = 0,
+	}: { pollMs?: number; keepMs?: number; spreadMs?: number } = {},
 ): LiveUsage {
 	const [state, setState] = useState<LiveUsage>(read === undefined ? { status: "off" } : { status: "loading" });
 	// The latest `read`, so a source rebuilt on every render doesn't start the loop again.
@@ -131,24 +137,33 @@ export function useLiveUsage(
 			}
 			if (!stopped && !hidden()) timer = setTimeout(() => void tick(), pollMs);
 		};
+		const start = () => {
+			const wait = spreadWait(spreadMs);
+			if (wait === 0) void tick();
+			else timer = setTimeout(() => void tick(), wait);
+		};
 		const onVisibility = () => {
 			if (hidden()) {
 				if (timer !== undefined) clearTimeout(timer);
 				timer = undefined;
-			} else if (timer === undefined) void tick();
+			} else if (timer === undefined) start();
 		};
 
-		void tick();
+		start();
 		if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
 		return () => {
 			stopped = true;
 			if (timer !== undefined) clearTimeout(timer);
 			if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
 		};
-	}, [on, id, pollMs, keepMs]);
+	}, [on, id, pollMs, keepMs, spreadMs]);
 
 	return state;
 }
+
+/** A random wait up to `spreadMs`, whole milliseconds; 0 for none. */
+export const spreadWait = (spreadMs: number, random: () => number = Math.random): number =>
+	spreadMs > 0 ? Math.floor(random() * spreadMs) : 0;
 
 const GB = 1024 ** 3;
 
