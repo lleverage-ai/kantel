@@ -51,11 +51,12 @@ export interface SandboxMenuCalls {
 	/** Saves a sandbox's latest snapshot under a name; without it there's no Save snapshot. */
 	readonly save?: (sandboxId: string, name: string, options?: SaveSnapshotOptions) => Promise<SavedSnapshot>;
 	/**
-	 * A sandbox changed or was made (a fork); `null` when it was deleted. `asked`, where given, is what `asked` read as the
-	 * call was made: the answer is dropped if the sandbox changed since (a Stop or a Delete that answered first).
+	 * A sandbox changed or was made (a fork); `null` when it was deleted. `asked`, where given, is what `asked` answered as
+	 * the call was made: the answer is dropped if something that started since is known of the sandbox (a Stop, a Delete
+	 * or a read).
 	 */
 	readonly onChange: (box: Sandbox | null, id: string, asked?: number) => void;
-	/** Where a sandbox's changes have got to, as the list counts them; without it every answer applies. */
+	/** The list's mark for when a call is made, the later the greater; without it every answer applies. */
 	readonly asked?: (id: string) => number;
 	readonly onNotice: (notice: SandboxNotice | undefined) => void;
 }
@@ -139,9 +140,10 @@ export function useSandboxMenu(
 						icon: <ForkIcon size="sm" />,
 						disabled: !can.fork || sandbox.snapshot === undefined,
 						onSelect: () => {
+							const since = asked?.(sandbox.id);
 							source.fork(sandbox.id).then(
 								(fork) => {
-									onChange(fork, fork.id);
+									onChange(fork, fork.id, since);
 									onNotice({ level: "info", text: `Forked ${sandbox.name} as ${fork.name}.` });
 								},
 								(caught: unknown) =>

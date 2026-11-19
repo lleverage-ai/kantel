@@ -1,40 +1,7 @@
 /* The rules the Sandboxes page's selection and bulk actions keep, apart from React so they can be tested alone. */
 
-/**
- * Each sandbox's changes made on the page, counted. An answer that took a while (one of a bulk stop) applies only if
- * nothing changed its sandbox after it was asked: a later stop, resume or delete wins, and a deleted one stays deleted.
- */
-export class ChangeCounter {
-	readonly #counts = new Map<string, number>();
-
-	/** What to hand back to `take` when the answer comes. */
-	ask(id: string): number {
-		return this.#counts.get(id) ?? 0;
-	}
-
-	/** Whether a change applies, counting it if so: always for one with no `asked`, else only if nothing came after. */
-	take(id: string, asked?: number): boolean {
-		const count = this.#counts.get(id) ?? 0;
-		if (asked !== undefined && asked !== count) return false;
-		this.#counts.set(id, count + 1);
-		return true;
-	}
-}
-
 /** A sandbox whose create hasn't answered yet, shown under a temporary ID that no read will ever have. */
 export const isPlaceholder = (id: string): boolean => id.startsWith("pending_");
-
-/**
- * What the list does with a change's answer: shows it unless a later change came first, and reads the list again
- * either way (a new sandbox's placeholder apart), so an answer overtaken by another still ends with what's there now.
- */
-export function changeTaken(
-	changes: ChangeCounter,
-	id: string,
-	asked?: number,
-): { readonly show: boolean; readonly reload: boolean } {
-	return { show: changes.take(id, asked), reload: !isPlaceholder(id) };
-}
 
 /** The ticked IDs still shown: one a search, a filter or a delete hides is dropped, not kept for when it's back. */
 export function keepShown(ticked: ReadonlySet<string>, shown: Iterable<string>): ReadonlySet<string> {
@@ -98,9 +65,9 @@ export function forgetRead<T>(
 }
 
 /**
- * `local` with what a read of one sandbox that started at `seq` found: `box`, or `null` when it was deleted. Unless
- * something newer is known of it already: a change or a read that started later, or a read of the whole list that did
- * (`listSeq`). Answers `local` itself when the read is too old to matter.
+ * `local` with what a read of one sandbox, or a change's answer, that started at `seq` found: `box`, or `null` when it
+ * was deleted. Unless something newer is known of it already: a change or a read that started later, or a read of the
+ * whole list that did (`listSeq`). Answers `local` itself when the answer is too old to matter.
  */
 export function withRead<T>(
 	local: ReadonlyMap<string, LocalChange<T>>,

@@ -100,8 +100,6 @@ import {
 } from "./sandbox-filters.ts";
 import { READ_GAP_MS, type SandboxReads, sandboxReads } from "./sandbox-reads.ts";
 import {
-	ChangeCounter,
-	changeTaken,
 	forgetRead,
 	isPlaceholder,
 	keepShown,
@@ -253,9 +251,14 @@ export function SandboxesPage({
 	// keep their `pollMs`.
 	//
 	// Every read and every change this page makes takes the next number as it starts (`seq`), so whichever started
-	// last wins whatever order the answers come in; `listSeq` is the number of the list shown. A read of the list that
-	// fails keeps the last one on screen, and the next change of any sandbox reads the whole list again.
+	// last wins whatever order the answers come in; `listSeq` is the number of the list shown. A change's call takes its
+	// number before it's sent (`asked`), so its answer can't undo what a read that started after it found. A read of the
+	// list that fails keeps the last one on screen, and the next change of any sandbox reads the whole list again.
 	const seq = useRef(0);
+	const nextSeq = useCallback(() => {
+		seq.current += 1;
+		return seq.current;
+	}, []);
 	const listSeq = useRef(0);
 	const [listed, setListed] = useState<ListRead<Sandbox>>();
 	const [listError, setListError] = useState<unknown>();
@@ -276,11 +279,10 @@ export function SandboxesPage({
 		setLocal(new Map());
 		const made = sandboxReads(
 			{
-				list: async () => {
-					seq.current += 1;
-					const at = seq.current;
+				list: async (signal) => {
+					const at = nextSeq();
 					try {
-						const sandboxes = await source.list(account.id);
+						const sandboxes = await source.list(account.id, { signal });
 						if (!live || at <= listSeq.current) return;
 						listSeq.current = at;
 						setListed({ sandboxes, seq: at });
@@ -295,10 +297,9 @@ export function SandboxesPage({
 						}
 					}
 				},
-				get: async (id) => {
-					seq.current += 1;
-					const at = seq.current;
-					const box = await source.get(id);
+				get: async (id, signal) => {
+					const at = nextSeq();
+					const box = await source.get(id, { signal });
 					// A read of one the API keeps a while after its deletion says so: that's no row, as in the list.
 					if (live)
 						setLocal((current) => withRead(current, id, box.deleted === true ? null : box, at, listSeq.current));
@@ -311,12 +312,14 @@ export function SandboxesPage({
 			live = false;
 			made.stop();
 		};
-	}, [source, account.id, gapMs]);
-	const keep = useCallback((id: string, box: Sandbox | null) => {
-		seq.current += 1;
-		const at = seq.current;
-		setLocal((current) => new Map(current).set(id, { box, seq: at }));
-	}, []);
+	}, [source, account.id, gapMs, nextSeq]);
+	const keep = useCallback(
+		(id: string, box: Sandbox | null) => {
+			const at = nextSeq();
+			setLocal((current) => new Map(current).set(id, { box, seq: at }));
+		},
+		[nextSeq],
+	);
 	// The account's pools, only to name them in the Pool filter: without them it goes by ID.
 	const poolsRead = useLoad(() => source.pools?.(account.id) ?? Promise.resolve([]), [source, account.id]);
 	// Every host name the list has said, so a chosen host keeps its name once no sandbox is on it.
@@ -365,20 +368,16 @@ export function SandboxesPage({
 	useEffect(() => {
 		reads.current?.poll(followsLive && movingIds !== "" ? movingIds.split(" ") : []);
 	}, [followsLive, movingIds]);
-	const changes = useRef(new ChangeCounter()).current;
 	// And soon when one changes elsewhere: the CLI, the API, an auto-stop, its host going or coming back. A deletion
 	// drops its row there and then (and outranks a slow answer of this page's own, as a delete here does); the others
 	// are read by ID, or the whole list on a reconnection, through `reads`.
 	const followed = useCallback(
 		(burst: SandboxBurst) => {
-			for (const id of burst.deleted) {
-				changes.take(id);
-				keep(id, null);
-			}
+			for (const id of burst.deleted) keep(id, null);
 			if (burst.all) reads.current?.all();
 			else reads.current?.changed(burst.changed);
 		},
-		[changes, keep],
+		[keep],
 	);
 	useFollowSandboxes(source, account.id, followed);
 	useEffect(() => {
@@ -386,16 +385,16 @@ export function SandboxesPage({
 		setLocal((current) => forgetRead(current, listed));
 	}, [listed]);
 
-	// What this page changed shows at once, and the sandbox is read again behind it. A bulk stop's answer passes what it
-	// asked, so it doesn't undo a change (a delete) that came after it.
+	// What this page changed shows at once, and the sandbox is read again behind it. An answer that passes the number
+	// its call took as it was sent (`asked`) shows only if nothing that started after it (a read, a delete) is known of
+	// the sandbox; one without shows as of its answer. Either way the sandbox is read again, so it catches up.
 	const change = useCallback(
 		(box: Sandbox | null, id: string, asked?: number) => {
-			// An answer overtaken by a later change isn't shown, but the sandbox is still read again, so it catches up.
-			const taken = changeTaken(changes, id, asked);
-			if (taken.show) keep(id, box);
-			if (taken.reload) reads.current?.changed([id]);
+			const at = asked ?? nextSeq();
+			setLocal((current) => withRead(current, id, box, at, listSeq.current));
+			if (!isPlaceholder(id)) reads.current?.changed([id]);
 		},
-		[changes, keep],
+		[nextSeq],
 	);
 
 	const create = async (input: CreateSandboxInput) => {
@@ -427,14 +426,14 @@ export function SandboxesPage({
 			usage: [],
 		};
 		change(placeholder, pendingId);
+		const asked = nextSeq();
 		try {
 			const made = await source.create(input);
-			seq.current += 1;
-			const at = seq.current;
+			// The placeholder goes whatever happens; the new row shows unless something newer is known of it.
 			setLocal((current) => {
 				const next = new Map(current);
 				next.delete(pendingId);
-				return next.set(made.id, { box: made, seq: at });
+				return withRead(next, made.id, made, asked, listSeq.current);
 			});
 			reads.current?.changed([made.id]);
 		} catch (caught) {
@@ -553,7 +552,7 @@ export function SandboxesPage({
 					{...(sandboxHref === undefined ? {} : { sandboxHref })}
 					{...(navigate === undefined ? {} : { navigate })}
 					onChange={change}
-					asked={(id) => changes.ask(id)}
+					asked={nextSeq}
 					onNotice={setNotice}
 				/>
 			)}
@@ -763,7 +762,7 @@ type RowCalls = {
 	sandboxHref?: (sandboxId: string, view?: SandboxRowView) => string;
 	navigate?: (path: string) => void;
 	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
-	/** What to pass `onChange` with a call's answer, read as the call is made, so a later change to it wins. */
+	/** What to pass `onChange` with a call's answer, taken as the call is made, so a later change or read of it wins. */
 	asked?: (id: string) => number;
 	onNotice: (notice: SandboxNotice | undefined) => void;
 	/** Opens a sandbox's metrics dialog. */
@@ -806,7 +805,7 @@ function SandboxList({
 	onClearFilters: () => void;
 	/** Who made a sandbox, as its row says it under when; without it rows don't say. */
 	creatorOf?: (box: Sandbox) => string;
-	/** Where a sandbox's changes have got to, for `onChange` from an answer that may be overtaken. */
+	/** The page's mark as a call is made, for `onChange` from an answer that may be overtaken. */
 	asked: (id: string) => number;
 } & RowCalls) {
 	const [deleting, setDeleting] = useState<readonly Sandbox[]>();

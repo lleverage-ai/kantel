@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	ChangeCounter,
 	forgetRead,
 	keepShown,
 	type LocalChange,
@@ -10,32 +9,35 @@ import {
 	withRead,
 } from "./sandbox-selection.ts";
 
-describe("a slow bulk-stop answer", () => {
-	it("applies when nothing changed the sandbox after it was asked", () => {
-		const changes = new ChangeCounter();
-		const a = changes.ask("a");
-		const b = changes.ask("b");
-		expect(changes.take("a", a)).toBe(true);
-		expect(changes.take("b", b)).toBe(true);
+describe("a change's answer", () => {
+	const box = (state: string) => ({ id: "a", state });
+	type Row = ReturnType<typeof box>;
+	const shown = (local: ReadonlyMap<string, LocalChange<Row>>) => local.get("a")?.box;
+
+	it("shows when nothing that started after its call is known of the sandbox", () => {
+		const local = withRead(new Map<string, LocalChange<Row>>(), "a", box("stopping"), 1, 0);
+		expect(shown(local)).toEqual(box("stopping"));
 	});
 
-	it("doesn't bring back a sandbox deleted while it was waiting", () => {
-		const changes = new ChangeCounter();
-		const asked = changes.ask("a");
-		// A's stop answered, then A was deleted from its row's menu; B's slow stop is the only one still to come.
-		expect(changes.take("a", asked)).toBe(true);
-		expect(changes.take("a")).toBe(true);
-		// Had A's stop been the slow one, its answer now is stale.
-		expect(changes.take("a", asked)).toBe(false);
+	it("loses to a read that started after its call, whichever answers first", () => {
+		// Stop sent at 1; the sandbox read again at 2, finding it stopped.
+		const readFirst = withRead(withRead(new Map(), "a", box("stopped"), 2, 0), "a", box("stopping"), 1, 0);
+		expect(shown(readFirst)).toEqual(box("stopped"));
+		const stopFirst = withRead(withRead(new Map(), "a", box("stopping"), 1, 0), "a", box("stopped"), 2, 0);
+		expect(shown(stopFirst)).toEqual(box("stopped"));
+		// And to a read of the list that started after it.
+		expect(withRead(new Map(), "a", box("stopping"), 1, 2).size).toBe(0);
 	});
 
-	it("loses to a row action that answered first", () => {
-		const changes = new ChangeCounter();
-		const asked = changes.ask("a");
-		expect(changes.take("a")).toBe(true);
-		expect(changes.take("a", asked)).toBe(false);
-		// The row's own changes always apply.
-		expect(changes.take("a")).toBe(true);
+	it("doesn't bring back a sandbox deleted after its call (a create, a fork, a bulk stop)", () => {
+		const deleted = withRead(new Map<string, LocalChange<Row>>(), "a", null, 2, 0);
+		expect(withRead(deleted, "a", box("running"), 1, 0)).toBe(deleted);
+		expect(shown(deleted)).toBeNull();
+	});
+
+	it("loses to a later change of the page's own", () => {
+		const later = withRead(new Map<string, LocalChange<Row>>(), "a", box("running"), 3, 0);
+		expect(shown(withRead(later, "a", box("stopping"), 2, 0))).toEqual(box("running"));
 	});
 });
 

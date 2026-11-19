@@ -1018,6 +1018,11 @@ export interface SandboxProcess {
  */
 export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
 
+/** How a source's read may be called off: its requests abort with `signal`. */
+export interface ReadOptions {
+	readonly signal?: AbortSignal;
+}
+
 export interface SandboxesSource {
 	/**
 	 * What New sandbox's sliders may choose, from the hosts the account may use (with `hostId` that one host, with
@@ -1034,7 +1039,8 @@ export interface SandboxesSource {
 	 * shared ones. Absent, or none: no picker, and Kantel picks.
 	 */
 	hosts?(accountId: string): Promise<readonly HostChoice[]>;
-	list(accountId: string): Promise<readonly Sandbox[]>;
+	/** The account's sandboxes; `read.signal` calls the read off. */
+	list(accountId: string, read?: ReadOptions): Promise<readonly Sandbox[]>;
 	/**
 	 * Follows the account's sandboxes live: `changed` with a sandbox's ID each time one changes state, whoever changed it
 	 * (the CLI, the API, an auto-stop), and `deleted` when it was deleted; with none each time the feed connects or
@@ -1079,8 +1085,8 @@ export interface SandboxesSource {
 	 */
 	sshKey?(id: string, publicKey?: string): Promise<SandboxSshKey>;
 	history(id: string): Promise<readonly SandboxCommand[]>;
-	/** One sandbox, for its page. */
-	get(id: string): Promise<Sandbox>;
+	/** One sandbox, for its page; `read.signal` calls the read off. */
+	get(id: string, read?: ReadOptions): Promise<Sandbox>;
 	/** Its environments, with what each loses to a later one, and attaching and detaching them. Absent: none offered. */
 	readonly environments?: SandboxEnvironmentsSource;
 	/** Minutes until auto-stop stops it, from now; undefined keeps it always on. */

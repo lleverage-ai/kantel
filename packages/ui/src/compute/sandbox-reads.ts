@@ -15,27 +15,32 @@
 //   changed waits. A list read covers them too.
 // - Nothing is read while the tab is hidden; what was asked meanwhile is read once when it's shown again. The page's
 //   first read waits for the tab too, so a page opened in the background reads nothing until it's looked at.
-// - Once a read of the whole list has failed, the next read of any kind is of the whole list, whenever what it reads
-//   was asked, and any word of a change asks for one (a deletion's too), so the page recovers on the next change
-//   rather than only on the next poll; a failure with nothing asked reads nothing more. A failed read of one sandbox
-//   reads the whole list next.
+// - Once a read of the whole list has failed, the next read of any kind is of the whole list, and any word of a change
+//   heard since that read started (a deletion's too, which asks for no read of its own) asks for one, so the page
+//   recovers on the next change rather than only on the next poll; a failure with nothing heard reads nothing more. A
+//   failed read of one sandbox reads the whole list next.
+// - A read that hasn't answered in `READ_DEADLINE_MS` is called off through its signal and counts as failed, so one
+//   stalled request can't hold every read after it. The next read still waits for it to settle.
 
 import { documentVisibility, type Visibility } from "./live-sandboxes.ts";
 
 /** The shortest time between two reads the page makes by itself, in one tab. */
 export const READ_GAP_MS = 5_000;
 
+/** How long a read may take before it's called off. */
+export const READ_DEADLINE_MS = 30_000;
+
 export interface SandboxReadCalls {
-	/** Reads the whole list. Rejects when it couldn't. */
-	list(): Promise<void>;
-	/** Reads one sandbox, by ID. Rejects when it couldn't. */
-	get(id: string): Promise<void>;
+	/** Reads the whole list, called off when `signal` aborts. Rejects when it couldn't. */
+	list(signal: AbortSignal): Promise<void>;
+	/** Reads one sandbox, by ID, called off when `signal` aborts. Rejects when it couldn't. */
+	get(id: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface SandboxReads {
 	/** Read the whole list at the next read; `now` reads as soon as none is under way, without waiting out the gap. */
 	all(now?: boolean): void;
-	/** Read these sandboxes at the next read; with none, only a failed list is read again. */
+	/** Read these sandboxes at the next read. With none (a deletion), only a failed list is read again. */
 	changed(ids: Iterable<string>): void;
 	/** The sandboxes to read in turn, one a read, from now on: none stops. */
 	poll(ids: readonly string[]): void;
@@ -44,6 +49,7 @@ export interface SandboxReads {
 
 export interface SandboxReadsOptions {
 	readonly gapMs?: number;
+	readonly deadlineMs?: number;
 	readonly visibility?: Visibility;
 	/** For tests. */
 	readonly now?: () => number;
@@ -52,6 +58,7 @@ export interface SandboxReadsOptions {
 /** Makes the page's reads through `calls`, starting with a read of the whole list. */
 export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptions = {}): SandboxReads {
 	const gapMs = options.gapMs ?? READ_GAP_MS;
+	const deadlineMs = options.deadlineMs ?? READ_DEADLINE_MS;
 	const visibility = options.visibility ?? documentVisibility;
 	const now = options.now ?? Date.now;
 	// What the next read is to cover. It starts as the page's first read, of everything.
@@ -61,12 +68,15 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 	let nextPoll = 0;
 	let urgent = false;
 	let listFailed = false;
+	// Whether any change was heard since the last read of the list started: after a failed one, that asks for another.
+	let heard = false;
 	let busy = false;
+	let reading: AbortController | undefined;
 	let last: number | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let stopped = false;
 
-	const owed = () => all || ids.size > 0 || polls.length > 0;
+	const owed = () => all || ids.size > 0 || polls.length > 0 || (listFailed && heard);
 
 	const polled = (): string | undefined => {
 		if (polls.length === 0) return undefined;
@@ -83,10 +93,14 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 		const whole = id === undefined;
 		all = false;
 		ids.clear();
+		if (whole) heard = false;
 		urgent = false;
 		busy = true;
 		last = now();
-		const read = whole ? calls.list() : calls.get(id);
+		const controller = new AbortController();
+		reading = controller;
+		const deadline = setTimeout(() => controller.abort(new Error("The read took too long.")), deadlineMs);
+		const read = whole ? calls.list(controller.signal) : calls.get(id, controller.signal);
 		read
 			.then(
 				() => {
@@ -98,6 +112,8 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 				},
 			)
 			.finally(() => {
+				clearTimeout(deadline);
+				reading = undefined;
 				busy = false;
 				pump();
 			});
@@ -130,7 +146,7 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 			pump();
 		},
 		changed(changed) {
-			if (listFailed) all = true;
+			heard = true;
 			for (const id of changed) ids.add(id);
 			pump();
 		},
@@ -142,6 +158,7 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 		stop() {
 			stopped = true;
 			if (timer !== undefined) clearTimeout(timer);
+			reading?.abort();
 			stopListening();
 		},
 	};

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Visibility } from "./live-sandboxes.ts";
-import { READ_GAP_MS, sandboxReads } from "./sandbox-reads.ts";
+import { READ_DEADLINE_MS, READ_GAP_MS, sandboxReads } from "./sandbox-reads.ts";
 
 /** A tab the test hides and shows. */
 function tab(startHidden = false) {
@@ -33,31 +33,46 @@ function calls() {
 		mostRunning = Math.max(mostRunning, running);
 	};
 	const pending: { resolve: () => void; reject: (error: Error) => void }[] = [];
-	const answer = () =>
+	const signals: AbortSignal[] = [];
+	// A read answers when the test says, or fails as soon as it's called off, as the console's do.
+	const answer = (signal: AbortSignal) =>
 		new Promise<void>((resolve, reject) => {
-			pending.push({
+			signals.push(signal);
+			const entry = {
 				resolve: () => {
 					running -= 1;
 					resolve();
 				},
-				reject: (error) => {
+				reject: (error: Error) => {
 					running -= 1;
 					reject(error);
 				},
-			});
+			};
+			pending.push(entry);
+			signal.addEventListener(
+				"abort",
+				() => {
+					const waiting = pending.indexOf(entry);
+					if (waiting < 0) return;
+					pending.splice(waiting, 1);
+					entry.reject(new Error("aborted"));
+				},
+				{ once: true },
+			);
 		});
 	return {
 		made,
 		at,
+		signals,
 		mostRunning: () => mostRunning,
 		calls: {
-			list: () => {
+			list: (signal: AbortSignal) => {
 				started("list");
-				return answer();
+				return answer(signal);
 			},
-			get: (id: string) => {
+			get: (id: string, signal: AbortSignal) => {
 				started(id);
-				return answer();
+				return answer(signal);
 			},
 		},
 		/** Answers the oldest read still waiting, and lets its settling run. */
@@ -295,6 +310,44 @@ describe("sandboxReads", () => {
 		await vi.advanceTimersByTimeAsync(READ_GAP_MS * 4);
 		expect(made).toHaveLength(2);
 		reads.stop();
+	});
+
+	it("reads the list again after a failed one on word of a deletion heard while it was under way", async () => {
+		const { made, calls: read, settle } = calls();
+		const reads = sandboxReads(read);
+		reads.changed([]);
+		await settle(false);
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+		expect(made).toEqual(["list", "list"]);
+
+		// Heard while a list that then answers is under way: nothing more.
+		reads.changed([]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS * 4);
+		expect(made).toHaveLength(2);
+		reads.stop();
+	});
+
+	it("calls off a read that takes too long, as failed, and reads the list next without two at once", async () => {
+		const { made, mostRunning, calls: read, settle } = calls();
+		const reads = sandboxReads(read);
+		await settle();
+		reads.changed(["sbx_1"]);
+		await vi.advanceTimersByTimeAsync(READ_GAP_MS);
+		expect(made).toEqual(["list", "sbx_1"]);
+		await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS - 1);
+		expect(made).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(made).toEqual(["list", "sbx_1", "list"]);
+		expect(mostRunning()).toBe(1);
+		reads.stop();
+	});
+
+	it("calls off the read under way when stopped", async () => {
+		const { signals, calls: read } = calls();
+		const reads = sandboxReads(read);
+		reads.stop();
+		expect(signals[0]?.aborted).toBe(true);
 	});
 
 	it("reads nothing once stopped", async () => {

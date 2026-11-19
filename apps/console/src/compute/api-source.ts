@@ -37,6 +37,7 @@ import {
 	type TemplateSpec as ApiTemplateSpec,
 	type EnvironmentVariable as ApiVariable,
 	type Caller,
+	type CallOptions,
 	type Command,
 	type CreatedBy,
 	createKantelClient,
@@ -85,6 +86,7 @@ import type {
 	HostsSource,
 	PersonalTokensSource,
 	ProxySource,
+	ReadOptions,
 	SandboxesSource,
 	SnapshotsSource,
 	TelemetrySource,
@@ -292,6 +294,10 @@ async function firstPages<T>(
 	return { items, more: true };
 }
 
+/** A UI read's options as the SDK takes them: its signal, when it has one. */
+const callOf = (read: ReadOptions | undefined): CallOptions =>
+	read?.signal === undefined ? {} : { signal: read.signal };
+
 /** A page query's cursor, when there is one. */
 const after = (cursor: string | undefined): { readonly cursor?: string } => (cursor === undefined ? {} : { cursor });
 
@@ -452,13 +458,14 @@ async function learnEnvironmentNames(
 	context: Context,
 	accountId: string,
 	sandboxes: readonly Sandbox[],
+	call: CallOptions = {},
 ): Promise<void> {
 	const unknown = sandboxes.some((sandbox) =>
 		environmentIdsOf(sandbox).some((id) => !context.environmentNames.has(id)),
 	);
 	if (!unknown) return;
 	try {
-		for (const environment of (await context.api.listEnvironments({ account: accountId })).items) {
+		for (const environment of (await context.api.listEnvironments({ account: accountId }, call)).items) {
 			context.environmentNames.set(environment.id, environment.name);
 		}
 	} catch {
@@ -496,7 +503,12 @@ function baseFieldOf(record: object): { readonly base?: UiSandboxBase } {
  * environment's name, only shown: a caller that can't list them (a key without `account:read`) still gets its sandboxes,
  * their bucket mounts named by ID.
  */
-async function learnBucketSources(context: Context, accountId: string, sandboxes: readonly Sandbox[]): Promise<void> {
+async function learnBucketSources(
+	context: Context,
+	accountId: string,
+	sandboxes: readonly Sandbox[],
+	call: CallOptions = {},
+): Promise<void> {
 	const unknown = sandboxes.some((sandbox) =>
 		(sandbox.mounts ?? []).some(
 			(mount) => mount.source.kind === "bucket" && !context.bucketSources.has(mount.source.bucketSourceId),
@@ -504,7 +516,7 @@ async function learnBucketSources(context: Context, accountId: string, sandboxes
 	);
 	if (!unknown) return;
 	try {
-		for (const source of (await context.api.listBucketSources({ account: accountId })).items) {
+		for (const source of (await context.api.listBucketSources({ account: accountId }, call)).items) {
 			context.bucketSources.set(source.id, { name: source.name, bucket: source.bucket });
 		}
 	} catch {
@@ -742,13 +754,14 @@ function sandboxesSource(context: Context): SandboxesSource {
 	const view = (sandbox: Sandbox) => sandboxOf(sandbox, context);
 	return {
 		watch: (accountId, changed) => context.live.watch(accountId, changed),
-		list: async (accountId) => {
+		list: async (accountId, read) => {
+			const call = callOf(read);
 			const sandboxes = await allPages((cursor) =>
-				api.listSandboxes({ account: accountId, all: true, limit: LIST_PAGE, ...after(cursor) }),
+				api.listSandboxes({ account: accountId, all: true, limit: LIST_PAGE, ...after(cursor) }, call),
 			);
 			await Promise.all([
-				learnEnvironmentNames(context, accountId, sandboxes),
-				learnBucketSources(context, accountId, sandboxes),
+				learnEnvironmentNames(context, accountId, sandboxes, call),
+				learnBucketSources(context, accountId, sandboxes, call),
 			]);
 			return sandboxes.map(view);
 		},
@@ -915,11 +928,12 @@ function sandboxesSource(context: Context): SandboxesSource {
 			detach: async (sandboxId, environmentId) =>
 				sandboxEnvironmentsOf(await api.detachSandboxEnvironment(sandboxId, environmentId), context),
 		},
-		get: async (id) => {
-			const sandbox = await api.getSandbox(id);
+		get: async (id, read) => {
+			const call = callOf(read);
+			const sandbox = await api.getSandbox(id, call);
 			await Promise.all([
-				learnEnvironmentNames(context, sandbox.accountId, [sandbox]),
-				learnBucketSources(context, sandbox.accountId, [sandbox]),
+				learnEnvironmentNames(context, sandbox.accountId, [sandbox], call),
+				learnBucketSources(context, sandbox.accountId, [sandbox], call),
 			]);
 			return view(sandbox);
 		},
