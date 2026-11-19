@@ -572,6 +572,15 @@ describe("New sandbox", () => {
 			expect((await source.sandboxes.shapes?.(LLEVERAGE.id, undefined, "pool_ci"))?.microvm.available).toBe(false);
 			expect((await source.sandboxes.shapes?.(LLEVERAGE.id))?.microvm.available).not.toBe(false);
 		});
+
+		it("is in its host's pool read by ID or changed, as in the list, so a row keeps its pool between list reads", async () => {
+			const { sandboxes: source } = createComputeFixtures();
+			const listed = (await source.list(LLEVERAGE.id)).find((box) => box.poolId !== undefined);
+			expect(listed).toBeDefined();
+			if (listed === undefined) return;
+			expect((await source.get(listed.id)).poolId).toBe(listed.poolId);
+			expect((await source.rename?.(listed.id, `${listed.name}-2`))?.poolId).toBe(listed.poolId);
+		});
 	});
 
 	it("offers the hosts that can take the type now, and keeps a picked one that can't with why", () => {

@@ -58,6 +58,8 @@ export interface SandboxMenuCalls {
 	readonly onChange: (box: Sandbox | null, id: string, asked?: number) => void;
 	/** The list's mark for when a call is made, the later the greater; without it every answer applies. */
 	readonly asked?: (id: string) => number;
+	/** A sandbox a call made (a fork), new to the list; without it, `onChange`. */
+	readonly onMade?: (box: Sandbox) => void;
 	readonly onNotice: (notice: SandboxNotice | undefined) => void;
 }
 
@@ -116,7 +118,7 @@ export function useSandboxMenu(
 	sandbox: Sandbox | undefined,
 	calls: SandboxMenuCalls,
 ): { entries: readonly MenuEntry[]; dialogs: ReactNode; restartOnLatest?: () => void } {
-	const { source, save, onChange, asked, onNotice } = calls;
+	const { source, save, onChange, asked, onMade, onNotice } = calls;
 	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "idle-stop" | "restart" | "upgrade" | "move">();
 	const close = () => setOpen(undefined);
 	const can = sandboxActions(
@@ -140,10 +142,10 @@ export function useSandboxMenu(
 						icon: <ForkIcon size="sm" />,
 						disabled: !can.fork || sandbox.snapshot === undefined,
 						onSelect: () => {
-							const since = asked?.(sandbox.id);
 							source.fork(sandbox.id).then(
 								(fork) => {
-									onChange(fork, fork.id, since);
+									if (onMade === undefined) onChange(fork, fork.id);
+									else onMade(fork);
 									onNotice({ level: "info", text: `Forked ${sandbox.name} as ${fork.name}.` });
 								},
 								(caught: unknown) =>

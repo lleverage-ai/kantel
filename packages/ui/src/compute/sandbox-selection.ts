@@ -1,5 +1,14 @@
 /* The rules the Sandboxes page's selection and bulk actions keep, apart from React so they can be tested alone. */
 
+/**
+ * Whether a read failed because Kantel refused it outright (signed out, or no longer allowed into the account), not
+ * because it couldn't answer: what was read before isn't the person's to see any more.
+ */
+export function isRefusal(error: unknown): boolean {
+	const code = (error as { readonly code?: unknown } | null)?.code;
+	return code === "forbidden" || code === "unauthenticated";
+}
+
 /** A sandbox whose create hasn't answered yet, shown under a temporary ID that no read will ever have. */
 export const isPlaceholder = (id: string): boolean => id.startsWith("pending_");
 
@@ -79,6 +88,21 @@ export function withRead<T>(
 	if (seq <= listSeq) return local;
 	const known = local.get(id);
 	if (known !== undefined && known.seq >= seq) return local;
+	return new Map(local).set(id, { box, seq });
+}
+
+/**
+ * `local` with a sandbox a call made (a create, a fork), as of its answer (`seq`, taken then). Its ID is new, so
+ * whatever is already known of it (a read, a deletion) came after the call and wins. A read of the list that started
+ * before the answer may not have had it yet, so only one that starts after it can take it away (`forgetRead`).
+ */
+export function withMade<T>(
+	local: ReadonlyMap<string, LocalChange<T>>,
+	id: string,
+	box: T,
+	seq: number,
+): ReadonlyMap<string, LocalChange<T>> {
+	if (local.has(id)) return local;
 	return new Map(local).set(id, { box, seq });
 }
 

@@ -102,11 +102,13 @@ import { READ_GAP_MS, type SandboxReads, sandboxReads } from "./sandbox-reads.ts
 import {
 	forgetRead,
 	isPlaceholder,
+	isRefusal,
 	keepShown,
 	type ListRead,
 	type LocalChange,
 	retryTargets,
 	withLocal,
+	withMade,
 	withRead,
 } from "./sandbox-selection.ts";
 import { buildPollMs, TEMPLATE_POLL_MS } from "./template-view.ts";
@@ -253,7 +255,8 @@ export function SandboxesPage({
 	// Every read and every change this page makes takes the next number as it starts (`seq`), so whichever started
 	// last wins whatever order the answers come in; `listSeq` is the number of the list shown. A change's call takes its
 	// number before it's sent (`asked`), so its answer can't undo what a read that started after it found. A read of the
-	// list that fails keeps the last one on screen, and the next change of any sandbox reads the whole list again.
+	// list that fails keeps the last one on screen, saying it may be out of date, unless Kantel refused it outright; the
+	// next change of any sandbox reads the whole list again.
 	const seq = useRef(0);
 	const nextSeq = useCallback(() => {
 		seq.current += 1;
@@ -288,7 +291,15 @@ export function SandboxesPage({
 						setListed({ sandboxes, seq: at });
 						setListError(undefined);
 					} catch (error) {
-						if (live) setListError(error);
+						if (live) {
+							setListError(error);
+							// Refused, the account's sandboxes aren't the person's to see any more: none stays on screen.
+							if (isRefusal(error)) {
+								listSeq.current = Math.max(listSeq.current, at);
+								setListed(undefined);
+								setLocal(new Map());
+							}
+						}
 						throw error;
 					} finally {
 						if (live) {
@@ -396,6 +407,15 @@ export function SandboxesPage({
 		},
 		[nextSeq],
 	);
+	// A sandbox a create or a fork made shows as of its answer, unless something newer is known of it, and is read again.
+	const made = useCallback(
+		(box: Sandbox) => {
+			const at = nextSeq();
+			setLocal((current) => withMade(current, box.id, box, at));
+			reads.current?.changed([box.id]);
+		},
+		[nextSeq],
+	);
 
 	const create = async (input: CreateSandboxInput) => {
 		setNewOpen(false);
@@ -426,16 +446,15 @@ export function SandboxesPage({
 			usage: [],
 		};
 		change(placeholder, pendingId);
-		const asked = nextSeq();
 		try {
-			const made = await source.create(input);
-			// The placeholder goes whatever happens; the new row shows unless something newer is known of it.
+			const box = await source.create(input);
+			// The placeholder goes whatever happens.
 			setLocal((current) => {
 				const next = new Map(current);
 				next.delete(pendingId);
-				return withRead(next, made.id, made, asked, listSeq.current);
+				return next;
 			});
-			reads.current?.changed([made.id]);
+			made(box);
 		} catch (caught) {
 			change(null, pendingId);
 			setNotice({ level: "error", text: messageOf(caught, "Kantel couldn't create the sandbox. Try again.") });
@@ -481,6 +500,18 @@ export function SandboxesPage({
 					}
 				>
 					{notice.text}
+				</Notice>
+			)}
+			{listError !== undefined && sandboxes !== undefined && (
+				<Notice
+					level="warning"
+					action={
+						<Button size="sm" onClick={() => reads.current?.all(true)}>
+							Try again
+						</Button>
+					}
+				>
+					Kantel couldn't refresh the sandboxes, so the list may be out of date.
 				</Notice>
 			)}
 			{listError !== undefined && sandboxes === undefined ? (
@@ -553,6 +584,7 @@ export function SandboxesPage({
 					{...(navigate === undefined ? {} : { navigate })}
 					onChange={change}
 					asked={nextSeq}
+					onMade={made}
 					onNotice={setNotice}
 				/>
 			)}
@@ -764,6 +796,8 @@ type RowCalls = {
 	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
 	/** What to pass `onChange` with a call's answer, taken as the call is made, so a later change or read of it wins. */
 	asked?: (id: string) => number;
+	/** A sandbox a call made (a fork), new to the list. */
+	onMade?: (box: Sandbox) => void;
 	onNotice: (notice: SandboxNotice | undefined) => void;
 	/** Opens a sandbox's metrics dialog. */
 	onMetrics?: (id: string) => void;
@@ -790,6 +824,7 @@ function SandboxList({
 	navigate,
 	onChange,
 	asked,
+	onMade,
 	onNotice,
 }: {
 	/** The search and filters, which the selection's actions share a row with. */
@@ -901,6 +936,7 @@ function SandboxList({
 		...(navigate === undefined ? {} : { navigate }),
 		onChange,
 		asked,
+		...(onMade === undefined ? {} : { onMade }),
 		onNotice,
 	};
 	const list = narrow ? (
@@ -1251,7 +1287,7 @@ type LinkClick = Pick<
 
 /** What a row can do: its buttons, and ⋯ with Stop and the sandbox menu's four. */
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
-	const { source, save, onChange, asked, onNotice } = calls;
+	const { source, save, onChange, asked, onMade, onNotice } = calls;
 	const pending = sandbox.id.startsWith("pending_");
 	const can = sandboxActions(sandbox.state, sandbox.unresponsive !== undefined, sandbox.hostUnreachable === true);
 	const windows = can.connect && sandbox.kind === "microvm";
@@ -1262,6 +1298,7 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 		...(save === undefined ? {} : { save }),
 		onChange,
 		...(asked === undefined ? {} : { asked }),
+		...(onMade === undefined ? {} : { onMade }),
 		onNotice,
 	});
 

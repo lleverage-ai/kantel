@@ -763,6 +763,8 @@ function sandboxesSource(context: Context): SandboxesSource {
 				learnEnvironmentNames(context, accountId, sandboxes, call),
 				learnBucketSources(context, accountId, sandboxes, call),
 			]);
+			// Called off while learning names, which go without them otherwise: it failed, as any read called off does.
+			read?.signal?.throwIfAborted();
 			return sandboxes.map(view);
 		},
 		shapes: async (accountId, hostId, poolId) =>
@@ -935,6 +937,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 				learnEnvironmentNames(context, sandbox.accountId, [sandbox], call),
 				learnBucketSources(context, sandbox.accountId, [sandbox], call),
 			]);
+			read?.signal?.throwIfAborted();
 			return view(sandbox);
 		},
 		// The API's `null` is always on.

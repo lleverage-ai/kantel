@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
 	forgetRead,
+	isRefusal,
 	keepShown,
 	type LocalChange,
 	retryTargets,
 	stillToDo,
 	withLocal,
+	withMade,
 	withRead,
 } from "./sandbox-selection.ts";
 
@@ -38,6 +40,33 @@ describe("a change's answer", () => {
 	it("loses to a later change of the page's own", () => {
 		const later = withRead(new Map<string, LocalChange<Row>>(), "a", box("running"), 3, 0);
 		expect(shown(withRead(later, "a", box("stopping"), 2, 0))).toEqual(box("running"));
+	});
+});
+
+describe("a sandbox a create or a fork made", () => {
+	it("shows as of its answer, so a list read that started before it doesn't hide it", () => {
+		const local = withMade(new Map<string, LocalChange<string>>(), "new", "made", 5);
+		expect(local.get("new")).toEqual({ box: "made", seq: 5 });
+		// A list that started at 4 (before the answer) keeps it; one that started at 6 has the whole truth.
+		expect(forgetRead(local, { seq: 4 }).has("new")).toBe(true);
+		expect(forgetRead(local, { seq: 6 }).has("new")).toBe(false);
+	});
+
+	it("loses to whatever is known of it already, its deletion included, which came after the call", () => {
+		const deleted = new Map<string, LocalChange<string>>([["new", { box: null, seq: 3 }]]);
+		expect(withMade(deleted, "new", "made", 5)).toBe(deleted);
+		const read = new Map<string, LocalChange<string>>([["new", { box: "running", seq: 4 }]]);
+		expect(withMade(read, "new", "made", 5)).toBe(read);
+	});
+});
+
+describe("a refused read", () => {
+	it("is one Kantel refused outright, not one it couldn't answer", () => {
+		expect(isRefusal({ code: "forbidden" })).toBe(true);
+		expect(isRefusal({ code: "unauthenticated" })).toBe(true);
+		expect(isRefusal({ code: "unavailable" })).toBe(false);
+		expect(isRefusal(new Error("offline"))).toBe(false);
+		expect(isRefusal(undefined)).toBe(false);
 	});
 });
 
