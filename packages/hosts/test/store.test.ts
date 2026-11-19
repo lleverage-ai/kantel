@@ -151,6 +151,23 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBeUndefined();
 	});
 
+	it("never admits over a late copy's fence (orphan), capped or not", async () => {
+		const store = await open();
+		await store.insertHost(host("host_a", 1));
+		await store.insertHost(host("host_b", 2));
+		const orphan: PlacementRecord = { ...placement("s1", "host_b", 3), state: "lost", fenced: 3, orphan: true };
+		await store.putPlacement(orphan);
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 4))).toBe("orphan");
+		expect(
+			await store.placeOnTakingHost({ ...placement("s1", "host_a", 5), tier: "microvm", vcpus: 2 }, undefined, 8),
+		).toBe("orphan");
+		expect(await store.getPlacement("s1")).toEqual(orphan);
+		// A lost placement that is no orphan is placed over, as before.
+		await store.putPlacement({ ...placement("s2", "host_b", 6), state: "lost", fenced: 6 });
+		expect(await store.placeOnTakingHost(placement("s2", "host_a", 7))).toEqual({});
+		expect(await store.getPlacement("s2")).toMatchObject({ hostId: "host_a", createdAt: 7 });
+	});
+
 	it("places a capped microVM only while its host's booked vCPUs and its own stay within the cap, in one write", async () => {
 		const store = await open();
 		await store.insertHost({ ...host("host_a", 1), poolId: "pool_a" });

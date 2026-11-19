@@ -129,6 +129,47 @@ describe("a delete that reaches a sandbox's host before the host has made it", (
 		expect(lost).toEqual([]);
 	});
 
+	it("never answers a late copy's fence as a loss's, when its host is fenced as lost", async () => {
+		const { store, service, host, hostId, atCreate, answer, lost } = await setup();
+		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-gone" });
+		await atCreate;
+		await service.sandboxes.delete("sbx-gone");
+		const deletes: (() => void)[] = [];
+		host.hold = (method) =>
+			method === "sandbox.delete" ? new Promise<void>((resolve) => deletes.push(resolve)) : undefined;
+		answer();
+		await expect(creating).rejects.toSatisfy((error) => isKantelError(error, "conflict"));
+		expect(await store.getPlacement("sbx-gone")).toMatchObject({ hostId, orphan: true });
+		// A loss pass (or a loss's fallback, `settleLosing`) fencing its host for it: nothing of the sandbox's is lost there.
+		const fencing = service.sandboxes.fence(hostId, ["sbx-gone"], undefined);
+		await vi.waitFor(() => expect(deletes.length).toBeGreaterThan(0));
+		expect(await store.getPlacement("sbx-gone")).toMatchObject({ hostId, orphan: true });
+		for (const resolve of deletes) resolve();
+		host.hold = undefined;
+		expect(await fencing).toEqual([]);
+		await vi.waitFor(async () => expect(await store.getPlacement("sbx-gone")).toBeUndefined());
+		expect(lost).toEqual([]);
+	});
+
+	it("deletes the late copy on its host where a create of the same ID on another host came first", async () => {
+		const { store, service, host, hostId, atCreate, answer } = await setup();
+		const token = await service.createJoinToken({ name: "other" });
+		const other = await service.register({ token: token.token, facts: facts() });
+		const second = new FakeHost(service, other.hostId);
+		second.connect();
+		await vi.waitFor(() => expect(second.welcomed()).toBe(true));
+		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-twice", hostIds: [hostId] });
+		await atCreate;
+		await service.sandboxes.delete("sbx-twice");
+		// The same ID made again, on the other host, before the first host answers.
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-twice", hostIds: [other.hostId] });
+		answer();
+		await expect(creating).rejects.toSatisfy((error) => isKantelError(error, "conflict"));
+		expect(host.sandboxes.has("sbx-twice")).toBe(false);
+		expect(second.sandboxes.has("sbx-twice")).toBe(true);
+		expect(await store.getPlacement("sbx-twice")).toMatchObject({ hostId: other.hostId, state: "running" });
+	});
+
 	it("asks the host again where its hello found no copy and the create's answer came after the delete read that", async () => {
 		const { store, service, host, atCreate, answer, holdDeleteWrite } = await setup();
 		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-hello" });

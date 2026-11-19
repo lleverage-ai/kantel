@@ -234,12 +234,14 @@ export interface HostStore {
 	 * writing nothing, when it didn't. With `maxVcpus` (its pool's vCPU cap, `Placement.maxVcpus`), a microVM is put only
 	 * while the host's live microVMs' vCPUs (`bookedOn`) and its own are at most that, or the host has none booked, checked
 	 * in the same write: else it answers "vcpus", writing nothing, so creates at once can't both take the last of it.
+	 * Never over a late copy's fence (`PlacementRecord.orphan`), judged in the same write: it answers "orphan", writing
+	 * nothing, until that copy is deleted.
 	 */
 	placeOnTakingHost(
 		placement: PlacementRecord,
 		poolId?: string,
 		maxVcpus?: number,
-	): Promise<{ readonly poolId?: string } | "vcpus" | undefined>;
+	): Promise<{ readonly poolId?: string } | "vcpus" | "orphan" | undefined>;
 	/**
 	 * Everything that has something on `hostId`, in one read: its own placements (a lost one not), and placements on
 	 * other hosts with an upgrade under way whose microVM is (or may be) there, or an upgraded isolate there still to be
@@ -381,6 +383,7 @@ export function createMemoryHostStore(): HostStore {
 		async placeOnTakingHost(placement, poolId, maxVcpus) {
 			const host = hosts.get(placement.hostId);
 			if (!admits(host, poolId)) return undefined;
+			if (placements.get(placement.sandboxId)?.orphan === true) return "orphan";
 			if (maxVcpus !== undefined && placement.tier === "microvm") {
 				const booked = bookedOn([...placements.values()], placement.hostId, placement.sandboxId);
 				if (booked > 0 && booked + placement.vcpus > maxVcpus) return "vcpus";
@@ -502,6 +505,13 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 		);
 	};
 	/**
+	 * An admission's upsert never writes over a late copy's fence (`PlacementRecord.orphan`): the row it would replace.
+	 */
+	const notOrphan =
+		driver.dialect === "postgres"
+			? "(compute_placements.data::jsonb ->> 'orphan') IS NULL"
+			: "json_extract(compute_placements.data, '$.orphan') IS NULL";
+	/**
 	 * A capped microVM's admission (`placeOnTakingHost` with `maxVcpus`): the placement is inserted only while its host
 	 * admits it and the vCPUs its live microVMs book (`bookedOn`, but its own ID's), with its own, are at most `maxVcpus`,
 	 * or it has none booked. On Postgres the host's row is locked first, in the same transaction, so the insert's own read
@@ -512,7 +522,7 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 		placement: PlacementRecord,
 		poolId: string | undefined,
 		maxVcpus: number,
-	): Promise<{ readonly poolId?: string } | "vcpus" | undefined> => {
+	): Promise<{ readonly poolId?: string } | "vcpus" | "orphan" | undefined> => {
 		const postgres = driver.dialect === "postgres";
 		const field = (name: string, table: string) =>
 			postgres ? `(${table}.data::jsonb ->> '${name}')` : `json_extract(${table}.data, '$.${name}')`;
@@ -527,7 +537,8 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				WHERE h.id = ? AND h.data NOT LIKE ? AND h.data NOT LIKE ?${pooled}
 					AND (${booked} = 0 OR ${booked} + ? <= ?)
 				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
-					data = excluded.data`,
+					data = excluded.data
+				WHERE ${notOrphan}`,
 			params: [
 				placement.sandboxId,
 				placement.hostId,
@@ -558,6 +569,7 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 		const host = hostRow === undefined ? undefined : parse<HostRecord>(hostRow);
 		if (row !== undefined && String(row.data) === data)
 			return host?.poolId === undefined ? {} : { poolId: host.poolId };
+		if (row !== undefined && parse<PlacementRecord>(row).orphan === true) return "orphan";
 		return admits(host, poolId) ? "vcpus" : undefined;
 	};
 
@@ -676,6 +688,7 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				SELECT ?, ?, ?, ? FROM taking WHERE true
 				ON CONFLICT (sandbox_id) DO UPDATE SET host_id = excluded.host_id, created_at = excluded.created_at,
 					data = excluded.data
+				WHERE ${notOrphan}
 				RETURNING sandbox_id, (SELECT pool FROM taking) AS pool`,
 				[
 					placement.hostId,
@@ -689,7 +702,12 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				],
 			);
 			const [row] = rows;
-			if (row === undefined) return undefined;
+			if (row === undefined) {
+				const [held] = await driver.query("SELECT data FROM compute_placements WHERE sandbox_id = ?", [
+					placement.sandboxId,
+				]);
+				return held !== undefined && parse<PlacementRecord>(held).orphan === true ? "orphan" : undefined;
+			}
 			return typeof row.pool === "string" ? { poolId: row.pool } : {};
 		},
 		async occupying(hostId) {
