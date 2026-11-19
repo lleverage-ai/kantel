@@ -291,6 +291,20 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		expect((await events("sandbox.recreated"))[0]).toMatchObject({ data: { previousState: "running" } });
 	});
 
+	it("is published running with the stop it owes in the one write, so it is never usable before it", async () => {
+		const { api, root, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, stopFor: HOST_AWAY_STOP_REASON }));
+		const update = vi.spyOn(api.store.sandboxes, "update");
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
+		const written = await Promise.all(update.mock.results.map((result) => result.value));
+		const running = written.filter((record) => record?.id === sandbox.id && record.state === "running");
+		expect(running.length).toBeGreaterThan(0);
+		expect(running.map((record) => record?.stopFor)).toEqual(running.map(() => HOST_AWAY_STOP_REASON));
+	});
+
 	it("is stopped again by the sweep where its gateway went before its stop was carried out", async () => {
 		const { api, root, b, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
 		await save("kept");

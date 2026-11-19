@@ -5689,6 +5689,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
+			// Its machine's exit, reported as it stopped, only until that stop's outcome (`reportExit`).
+			exitedWhileStopping: undefined,
 			...(sandbox.health === "unresponsive" && extra.health === undefined && !stillUnresponsive
 				? { health: "ok" as const }
 				: {}),
@@ -7185,9 +7187,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// is its outcome, `error`, whenever it comes (now, or after its egress is reconciled), and its egress isn't waited
 		// for. A host another attempt was placed on, or this one before it moved, isn't its host and doesn't count.
 		const revokedUnder = (sandbox: StoredSandbox) => sandbox.strandedOn?.includes(placement.hostId) === true;
+		// A stop its publishing owes (a recreation's, `recreatedStop`) is its run's: none in `error`.
 		const publish = (sandbox: StoredSandbox) =>
 			revokedUnder(sandbox)
-				? withState(published(sandbox), "error", { reason: HOST_REVOKED_REASON, ports: [] })
+				? withState(published(sandbox), "error", { reason: HOST_REVOKED_REASON, ports: [], stopFor: sandbox.stopFor })
 				: toRunning(sandbox);
 		const ready = (sandbox: StoredSandbox) => fence(sandbox) && (revokedUnder(sandbox) || upToDate(sandbox));
 		// Its record deleted, or being deleted, while it booted (a delete, or its account's deletion, whose destroy may have
@@ -7750,7 +7753,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						snapshotId: plan.snapshot.id,
 						heartbeatAt: now(),
 						// A stop it owed as it was lost (one asked for while its host was away, say), which the boot's `starting`
-						// clears: owed again once it runs (`finishRecreate`).
+						// clears: owed again in the write that publishes it running (`recreatedStop`).
 						...(rest.stopFor === undefined ? {} : { stopFor: rest.stopFor }),
 					},
 				});
@@ -7831,7 +7834,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					async () => placement,
 					undefined,
 					{ egressRevision: starting.egressRevision },
-					undefined,
+					recreatedStop,
 					unlost,
 				);
 				// Its environments' files now it runs, as a settled create's are; their repositories wait for a start by someone
@@ -7925,9 +7928,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Finishes a sandbox made again on another host, once it is no longer `starting` (it runs, or its new machine ended):
 	 * its `sandbox.recreated` event, under its loss's ID (a retry writes over it), naming the snapshot it was made from;
-	 * then its marker cleared, in the one write that makes it owe a stop (`stopFor`, `RECREATED_STOP_REASON`) where it
-	 * runs and was lost stopped, paused or in error. That stop is the sweep's durable kind (`stopClaimedAt`, handed back
-	 * if its gateway goes), begun here at once. Each step may be done again, by any gateway (the loss pass finds one left).
+	 * then its marker cleared. Where it runs owing a stop (`recreatedStop`, written as it was published), that stop is
+	 * begun here at once, for that run alone: the sweep's durable kind (`stopClaimedAt`, handed back if its gateway goes).
+	 * Each step may be done again, by any gateway (the loss pass finds one left).
 	 */
 	async function finishRecreate(sandbox: StoredSandbox): Promise<void> {
 		const marker = sandbox.recreating;
@@ -7938,21 +7941,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			{ sandbox, snapshotId: marker.snapshotId, data: { previousState: marker.previousState } },
 			marker.eventId,
 		);
-		// The stop it owed as it was lost, else one for having been lost stopped, paused or in error.
-		const stopFor =
-			marker.stopFor ?? (RECREATED_RUNNING.includes(marker.previousState) ? undefined : RECREATED_STOP_REASON);
+		const stopFor = recreationStopFor(marker);
 		const finished = await store.sandboxes.update(sandbox.id, (current) => {
 			if (current.recreating?.eventId !== marker.eventId || current.state === "starting") return undefined;
-			const { recreating: _, ...rest } = current;
-			return stopFor !== undefined && rest.state === "running" && rest.stopFor === undefined
+			const { recreating, ...rest } = current;
+			// Published by a gateway from before its publishing wrote the stop (`recreating.published`): owed from here.
+			return recreating.published !== true &&
+				stopFor !== undefined &&
+				rest.state === "running" &&
+				rest.stopFor === undefined
 				? { ...rest, stopFor }
 				: rest;
 		});
 		if (stopFor === undefined || finished?.state !== "running" || finished.stopFor !== stopFor) return;
 		// Queued behind whatever is at it now (`track`, never awaited here, so a caller inside one doesn't wait on itself).
-		const owed = (current: StoredSandbox) => current.stopFor === stopFor;
+		const lifecycle = finished.lifecycle ?? 0;
+		const owed = (current: StoredSandbox) => current.stopFor === stopFor && (current.lifecycle ?? 0) === lifecycle;
 		const began = await beginStop(finished, false, stopFor, undefined, owed, true).catch(() => undefined);
 		if (began !== undefined) keepGoing(began.work);
+	}
+
+	/**
+	 * The stop a sandbox made again owes once it runs: the one it owed as it was lost, else one for having been lost
+	 * stopped, paused or in error.
+	 */
+	function recreationStopFor(marker: NonNullable<StoredSandbox["recreating"]>): string | undefined {
+		return marker.stopFor ?? (RECREATED_RUNNING.includes(marker.previousState) ? undefined : RECREATED_STOP_REASON);
+	}
+
+	/**
+	 * What a sandbox being made again (`recreating`) is published with (`boot`'s `publishing`): the stop it owes
+	 * (`recreationStopFor`), in the one write that makes it run, so it is never usable before that stop is owed, and its
+	 * marker saying so (`published`), so its finishing never writes that stop again over a later run.
+	 */
+	function recreatedStop(sandbox: StoredSandbox): Partial<StoredSandbox> {
+		const marker = sandbox.recreating;
+		if (marker === undefined) return {};
+		const stopFor = sandbox.stopFor ?? recreationStopFor(marker);
+		return { recreating: { ...marker, published: true }, ...(stopFor === undefined ? {} : { stopFor }) };
 	}
 
 	/** `ComputeService.reportSandboxLost`. */
@@ -8010,8 +8036,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const commands = await store.commands.list({ sandboxId, state: "running" });
 		const result = await transition(
 			sandboxId,
-			"running",
-			(current) => withState(current, "error", { reason, ports: [] }),
+			["running", "stopping"],
+			// One stopping is left to its stop, which this doesn't race: kept (`exitedWhileStopping`) for a stop that never
+			// reached the host, which would otherwise hand the machine back running.
+			(current) =>
+				current.state === "stopping"
+					? { ...current, exitedWhileStopping: reason }
+					: withState(current, "error", { reason, ports: [] }),
 			// Its host's, and this run's machine: both stamps are that host's clock, and a machine's stamps only move on, so
 			// one before the run's machine started is an earlier machine's (a delayed event, or one from before a reconnect).
 			// A run whose machine was stamped is on a host that stamps every exit, so a report without one is stale too;
@@ -8022,7 +8053,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (cause instanceof KantelError && cause.code === "not_found") return undefined;
 			throw cause;
 		});
-		if (result === undefined || !("moved" in result)) return;
+		if (result === undefined || !("moved" in result) || result.moved.state !== "error") return;
 		const next = result.moved;
 		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: "running", reason } });
 		// In the background: each is asked of its host first, which may take a while, and the report (a host's hello) needn't
@@ -8068,8 +8099,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * Puts a running (or paused) sandbox in `stopping` and stops or pauses it in the background; answers once it is
 	 * `stopping`, with the work (wrapped, so awaiting the answer doesn't await the work). The move is conditional on the
 	 * state `sandbox` was read in: when another call (on any gateway) moved it first, it is `conflict` and nothing is
-	 * stopped. `oweStop` says whether an asked stop its host was away for stays owed once handed back (`stopFor`): not a
-	 * restart's, whose caller asked for a boot rather than a stopped sandbox.
+	 * stopped. Nor is a pause of one owed a stop (`stopFor`): it would keep the machine the stop is owed to end, in a state
+	 * the sweep doesn't stop. `standalone` says whether the stop is the caller's whole ask, so one its host was away for
+	 * is handed back running: not a restart's, whose commands are ended for a boot that then never comes.
 	 */
 	async function beginStop(
 		sandbox: StoredSandbox,
@@ -8078,7 +8110,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		actor: Principal | undefined,
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
-		oweStop = true,
+		standalone = true,
 	): Promise<{ readonly work: Promise<void>; readonly stopping: StoredSandbox }> {
 		// The record as the move to stopping found it: what is stopped (its type and machine, for its snapshot) and what a
 		// handed-back stop puts back, never the caller's earlier read, which an upgrade may have changed since.
@@ -8092,10 +8124,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				was = current;
 				return withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() });
 			},
-			(current) => current.moving === undefined && (still?.(current) ?? true),
+			(current) =>
+				current.moving === undefined && !(keepMemory && current.stopFor !== undefined) && (still?.(current) ?? true),
 		);
 		if (!("moved" in began)) {
 			if (began.lost.moving !== undefined) throw movingConflict();
+			if (keepMemory && began.lost.stopFor !== undefined && began.lost.state === sandbox.state) {
+				throw new KantelError("conflict", `The sandbox is being stopped: ${began.lost.stopFor}`);
+			}
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
 		const work = track([sandbox.id], async () => {
@@ -8170,26 +8206,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// settles one whose machine runs on, and the host, which counts every machine it runs, went on refusing
 				// creates until the sandbox was stopped or deleted by hand. So it is handed back running, as the sweep's is
 				// below, and the caller is still told the stop failed. A stop stays owed (`stopFor`), so the sweep stops it
-				// once its host is back and calls that need it running are refused meanwhile. A pause doesn't, as the sweep's
-				// stop would let go of the memory the pause was asked to keep, and nor does a restart's stop (`oweStop`). One
-				// its host may have taken, or refused, is an `error` as before: the machine may have stopped. Its stop time is
-				// the one it had, unless its auto-stop was changed while it was stopping (`updateSandbox` keeps the time of a
-				// sandbox that isn't running): then it counts from now, as that change would have on a running one.
-				if (isStopNotSent(error) && !handBack && was.state === "running") {
-					await transition(sandbox.id, "stopping", (current) => ({
-						...current,
-						state: "running",
-						runs: was.runs,
-						stopsAt:
-							current.autoStopMinutes === was.autoStopMinutes
-								? was.stopsAt
-								: current.autoStopMinutes === null || current.autoStopMinutes === undefined
-									? undefined
-									: now() + current.autoStopMinutes * 60_000,
-						...(keepMemory || !oweStop ? {} : { stopFor: current.stopFor ?? reason ?? HOST_AWAY_STOP_REASON }),
-						reason: current.health === "unresponsive" ? current.reason : undefined,
-					})).catch(() => undefined);
-					throw error;
+				// once its host is back and calls that need it running are refused meanwhile. A pause isn't owed, as the
+				// sweep's stop would let go of the memory the pause was asked to keep. A restart's stop (not `standalone`)
+				// isn't handed back: its commands were ended above for a boot that won't come, so it is an `error` as before.
+				// So is one its host may have taken, or refused (the machine may have stopped), and one whose host reported
+				// its machine's exit while it was stopping (`exitedWhileStopping`), so a start boots it again. Only this
+				// stop's own `stopping` (its lifecycle) is handed back, never a later stop's. Its egress and protected values
+				// are sent again (a later revision and floor, which the sweep delivers once its host is back), as changes to
+				// them skipped it while it was stopping. Its stop time is the one it had, unless its auto-stop was set while it
+				// was stopping (`updateSandbox`, which then writes the time it counts to from that change).
+				let exited: string | undefined;
+				const ours = (current: StoredSandbox) => (current.lifecycle ?? 0) === (began.moved.lifecycle ?? 0);
+				if (isStopNotSent(error) && !handBack && standalone && was.state === "running") {
+					const floor = environmentIdsOf(was).length === 0 ? undefined : await nextFloorOf(was).catch(() => undefined);
+					const handed = await transition(
+						sandbox.id,
+						"stopping",
+						(current) => ({
+							...current,
+							state: "running",
+							runs: was.runs,
+							stopsAt:
+								current.stopsAt ??
+								(current.autoStopMinutes === was.autoStopMinutes
+									? was.stopsAt
+									: current.autoStopMinutes === null || current.autoStopMinutes === undefined
+										? undefined
+										: now() + current.autoStopMinutes * 60_000),
+							...(keepMemory ? {} : { stopFor: current.stopFor ?? reason ?? HOST_AWAY_STOP_REASON }),
+							egressRevision: later(current.egressRevision),
+							...(floor === undefined ? {} : { secretsFloor: Math.max(floor, current.secretsFloor ?? 0) }),
+							reason: current.health === "unresponsive" ? current.reason : undefined,
+						}),
+						(current) => ours(current) && current.exitedWhileStopping === undefined,
+					).catch(() => undefined);
+					if (handed !== undefined && "moved" in handed) pushEgress([handed.moved]);
+					exited =
+						handed !== undefined && "lost" in handed && ours(handed.lost) ? handed.lost.exitedWhileStopping : undefined;
+					if (exited === undefined) throw error;
 				}
 				if (handBack && error instanceof KantelError && error.code === "unavailable") {
 					// The stop wasn't carried out (its host away, its connection lost or replaced on the way, a replica's view of
@@ -8207,7 +8261,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}));
 					return;
 				}
-				await fail(sandbox.id, error, "stopping");
+				await fail(
+					sandbox.id,
+					exited === undefined ? error : new KantelError("unavailable", exited),
+					"stopping",
+					exited === undefined ? undefined : ours,
+				);
 				throw error;
 			}
 		});
@@ -10905,7 +10964,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				const updated = await patchSandbox(current.id, (latest) => {
 					let stopsAt = latest.stopsAt;
-					if (body.autoStopMinutes !== undefined && latest.state === "running") {
+					// Stopping too, which has no stop time otherwise: one handed back running (a stop its host was away for) counts
+					// from this change, as a running one does (`beginStop`).
+					if (body.autoStopMinutes !== undefined && (latest.state === "running" || latest.state === "stopping")) {
 						stopsAt = body.autoStopMinutes === null ? undefined : now() + body.autoStopMinutes * 60_000;
 					}
 					if (body.extendMinutes !== undefined) {
@@ -14144,7 +14205,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					async () => outcome.placement,
 					undefined,
 					{ egressRevision: undefined },
-					undefined,
+					// One being made again owes its stop from the write that publishes it, as a directly answered create does.
+					recreatedStop,
 					attempt,
 				);
 				// Its environments' files now it runs; their repositories wait for a start by someone who may clone them.

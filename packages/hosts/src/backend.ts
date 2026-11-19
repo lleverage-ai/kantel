@@ -1474,7 +1474,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// stop, say) rather than that nothing is there; nothing reaches a stopped machine. They end when it boots again.
 			// As long as a disk copy: a stop's automatic snapshot copies the whole disk. Given up on at 120 s, the stop
 			// failed here while the host went on and stopped it.
-			// Whether any send may have reached the host (`unanswered`): kantel-host carries a stop on past its connection.
+			// Whether any send may have reached the host: every failure but one that never left, its host not there (away and
+			// not `unanswered`). kantel-host carries a stop on past its connection, and one it answered (its own refusal) may
+			// have stopped the machine, though a later send then found the host gone.
 			let sent = false;
 			const send = () =>
 				call<HostSnapshot>(
@@ -1484,7 +1486,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					undefined,
 					DISK_COPY_TIMEOUT_MS,
 				).catch((error: unknown) => {
-					if (!isKantelError(error) || unanswered(error)) sent = true;
+					if (!isKantelError(error) || unanswered(error) || !hostWasAway(error)) sent = true;
 					throw error;
 				});
 			// One that never reached the host, which wasn't there for any send, left its machine as it was (`stopNotSent`).

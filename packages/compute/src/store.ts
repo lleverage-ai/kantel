@@ -272,6 +272,12 @@ export type StoredSandbox = Omit<
 	 */
 	readonly strandedOn?: readonly string[];
 	/**
+	 * Its host's report that the machine it was stopping ended (`ComputeService.reportExit`), as that report would have
+	 * put it in `error`: a stop that never reached the host then leaves it in `error`, not running. Cleared by every change
+	 * of its state.
+	 */
+	readonly exitedWhileStopping?: string;
+	/**
 	 * The host's clock (ms) when it set the guest-agent health last taken (`ComputeService.reportHealth`): a report that
 	 * says an earlier or the same time is older than what is here, and is dropped.
 	 */
@@ -320,6 +326,8 @@ export type StoredSandbox = Omit<
 		readonly heartbeatAt: number;
 		/** The stop it owed (`stopFor`) as it was lost, owed again once its replacement runs. */
 		readonly stopFor?: string;
+		/** Published running with the stop it owes written then; absent from a gateway that wrote it as it finished. */
+		readonly published?: boolean;
 	};
 	/**
 	 * A loss begun and not yet settled (`ComputeServiceOptions.hostLostAfterMs`): the lost host, the create attempt placed

@@ -28,37 +28,50 @@ async function setup() {
 		publicUrl: "https://kantel.test",
 		log: () => undefined,
 	});
-	const api = createComputeApi({
-		backend: createHostBackend({
-			hosts: service,
-			publicUrl: "https://kantel.test",
-			tickets: createTunnelTickets(createMemoryRelayStore()),
-			// The backend's clock only, moved on to pass a stop's wait for its host.
-			now: () => Date.now() + skew,
-		}),
-		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
-		fetch: async () => new Response(null, { status: 204 }),
+	const backend = createHostBackend({
+		hosts: service,
 		publicUrl: "https://kantel.test",
+		tickets: createTunnelTickets(createMemoryRelayStore()),
+		// The backend's clock only, moved on to pass a stop's wait for its host.
+		now: () => Date.now() + skew,
 	});
+	const gateway = (store?: ReturnType<typeof createComputeApi>["store"]) =>
+		createComputeApi({
+			backend,
+			...(store === undefined ? {} : { store }),
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+		});
+	const api = gateway();
 	service.useJoinTokens(joinTokenSpender(api.store));
 	service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
 	closers.push(
 		() => service.close(),
 		() => api.close(),
 	);
-	const root = createKantelClient({
-		baseUrl: "https://kantel.test/v1",
-		token: "root",
-		fetch: (input, init) =>
-			api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
-	});
+	const client = (of: ReturnType<typeof createComputeApi>) =>
+		createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				of.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+	const root = client(api);
+	/** Another gateway on the same store, as a replica: none of this one's work is its own. */
+	const peer = () => {
+		const other = gateway(api.store);
+		closers.push(() => other.close());
+		return client(other);
+	};
 	const token = await root.createHostJoinToken({ name: "box" });
 	const { hostId } = await service.register({ token: token.token });
 	const host = new FakeHost(service, hostId, FEATURES);
 	host.connect();
 	await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 	const sandbox = await root.createSandbox({ type: "microvm", wait: true });
-	return { api, root, service, hostId, host, sandbox, skip: (ms: number) => (skew += ms) };
+	return { api, root, peer, service, hostId, host, sandbox, skip: (ms: number) => (skew += ms) };
 }
 
 /** The host connecting again, holding what it held. */
@@ -148,6 +161,24 @@ describe("a stop while its host is away", () => {
 		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(0);
 	});
 
+	it("hands a pause back with its egress sent again, and its stop time from an auto-stop set while it waited", async () => {
+		const { api, root, peer, host, sandbox, skip } = await setup();
+		await root.updateSandbox(sandbox.id, { autoStopMinutes: 30 });
+		const before = await api.store.sandboxes.get(sandbox.id);
+		host.connection.closed(1006, "gone");
+		await root.stopSandbox(sandbox.id, { keepMemory: true });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		// The same auto-stop, set again to count from now, on another gateway (this one's waits for its stop).
+		await peer().updateSandbox(sandbox.id, { autoStopMinutes: 30 });
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		const handed = await api.store.sandboxes.get(sandbox.id);
+		expect(handed?.state).toBe("running");
+		expect(handed?.stopsAt ?? 0).toBeGreaterThan(before?.stopsAt ?? Number.POSITIVE_INFINITY);
+		// Changes to its egress skipped it while it was stopping: a later revision, for the sweep to send once its host is back.
+		expect(handed?.egressRevision ?? 0).toBeGreaterThan(before?.egressRevision ?? Number.POSITIVE_INFINITY);
+	});
+
 	it("is in error as before when a send may have reached the host and it isn't back in time", async () => {
 		const { api, root, host, sandbox, skip } = await setup();
 		host.hold = (method) => (method === "sandbox.stop" ? never() : undefined);
@@ -162,6 +193,60 @@ describe("a stop while its host is away", () => {
 		const failed = await root.getSandbox(sandbox.id);
 		expect(failed.state).toBe("error");
 		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
+	});
+
+	it("is in error as before when the host refused a send and was away for the next", async () => {
+		const { api, root, service, host, sandbox, skip } = await setup();
+		const connected = service.hub.connected.bind(service.hub);
+		host.refuse = (method) => {
+			if (method !== "sandbox.stop") return undefined;
+			// It answers, and may have stopped the machine, then its connection goes.
+			setTimeout(() => host.connection.closed(1006, "gone"), 0);
+			return { code: "internal", message: "snapshot write failed" };
+		};
+		await root.stopSandbox(sandbox.id);
+		// Past the settle after the refusal, with the host gone: a view that lags then sends again, into a host not there.
+		await new Promise((resolve) => setTimeout(resolve, 3_500));
+		service.hub.connected = () => true;
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		service.hub.connected = connected;
+		expect(await stateOf(root, sandbox.id)).toBe("error");
+		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
+	}, 15_000);
+
+	it("is in error, not handed back, when its host reported the machine's exit while it was stopping", async () => {
+		const { api, root, hostId, host, sandbox, skip } = await setup();
+		host.connection.closed(1006, "gone");
+		await root.stopSandbox(sandbox.id, { keepMemory: true });
+		// A restarted host's hello says the machine ended, before the stop's wait is over.
+		await api.service.reportExit(hostId, sandbox.id, "the host restarted");
+		expect(await stateOf(root, sandbox.id)).toBe("stopping");
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		const failed = await api.store.sandboxes.get(sandbox.id);
+		expect(failed?.state).toBe("error");
+		expect(failed?.reason).toMatch(/the host restarted/i);
+		expect(failed?.exitedWhileStopping).toBeUndefined();
+	});
+
+	it("refuses a pause of a sandbox owed a stop, which the sweep then carries out", async () => {
+		const { api, root, service, hostId, host, sandbox, skip } = await setup();
+		host.connection.closed(1006, "gone");
+		await root.stopSandbox(sandbox.id);
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		// Owed a stop: a pause would keep the machine in a state the sweep doesn't stop.
+		await expect(root.stopSandbox(sandbox.id, { keepMemory: true })).rejects.toMatchObject({ status: 409 });
+		expect(await stateOf(root, sandbox.id)).toBe("running");
+		const back = await reconnect(service, hostId, host);
+		await api.service.sweep();
+		await api.service.idle();
+		const stopped = await root.getSandbox(sandbox.id);
+		expect(stopped.state).toBe("stopped");
+		expect(stopped.reason).toBe(HOST_AWAY_STOP_REASON);
+		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
 	});
 
 	it("doesn't send again what the host itself refused", async () => {
