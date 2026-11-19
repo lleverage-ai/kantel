@@ -2455,21 +2455,28 @@ export function sandboxesPollMs(
 }
 
 /**
+ * How often an organisation's Sandboxes page reads its whole list when nothing else would: a sandbox shared or made
+ * private changes which ones a member sees, and the live feed says nothing of that.
+ */
+export const SHARED_CHECK_POLL_MS = 60_000;
+
+/**
  * How long a page showing `sandboxes` waits before it reads the whole list again, counted from its last read of the
  * list. As `sandboxesPollMs`, except that with the live feed (`followsLive`) being between states doesn't count: the
- * page polls those alone, by ID, and the list keeps its backstop for any that runs or has its host away.
+ * page polls those alone, by ID, and the list keeps its backstop for any that runs or has its host away, and for an
+ * organisation's list (`shared`) every `SHARED_CHECK_POLL_MS` anyway.
  */
 export function sandboxesListPollMs(
 	sandboxes: readonly Pick<Sandbox, "state" | "hostUnreachable">[],
 	movingMs: number,
 	frozen: boolean,
 	followsLive: boolean,
+	shared = false,
 ): number | undefined {
 	if (!followsLive) return sandboxesPollMs(sandboxes, movingMs, frozen);
 	if (frozen) return undefined;
-	return sandboxes.some((box) => box.state === "running" || box.hostUnreachable === true)
-		? HOST_CHECK_POLL_MS
-		: undefined;
+	if (sandboxes.some((box) => box.state === "running" || box.hostUnreachable === true)) return HOST_CHECK_POLL_MS;
+	return shared ? SHARED_CHECK_POLL_MS : undefined;
 }
 
 /** What the sandbox's page says of a sandbox whose host isn't connected. */

@@ -10,6 +10,7 @@ import {
 	type Pool,
 	type Sandbox,
 	type SandboxState,
+	SHARED_CHECK_POLL_MS,
 	sandboxActions,
 	sandboxesListPollMs,
 	sandboxesPollMs,
@@ -223,6 +224,11 @@ describe("a sandbox whose host isn't connected", () => {
 		// Without the live feed the list is all there is to read, at the pace of the quickest.
 		expect(sandboxesListPollMs(moving, 1_000, false, false)).toBe(1_000);
 		expect(sandboxesListPollMs([{ state: "running" }], 1_000, true, true)).toBeUndefined();
+		// An organisation's list is read every minute while nothing runs; a person's own isn't.
+		expect(sandboxesListPollMs([{ state: "stopped" }], 1_000, false, true, true)).toBe(SHARED_CHECK_POLL_MS);
+		expect(sandboxesListPollMs([{ state: "running" }], 1_000, false, true, true)).toBe(HOST_CHECK_POLL_MS);
+		expect(sandboxesListPollMs([{ state: "stopped" }], 1_000, false, true)).toBeUndefined();
+		expect(sandboxesListPollMs([{ state: "stopped" }], 1_000, true, true, true)).toBeUndefined();
 		// A host away still has the backstop while its sandbox is between states.
 		expect(sandboxesListPollMs([{ state: "starting", hostUnreachable: true }], 1_000, false, true)).toBe(
 			HOST_CHECK_POLL_MS,

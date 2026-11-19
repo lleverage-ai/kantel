@@ -356,11 +356,14 @@ export function SandboxesPage({
 	// often, while any runs or has its host away: the backstop to the live feed's word of a host (`sandboxesListPollMs`).
 	// With the live feed, those between states are polled alone, by ID, in turn: a move's progress is no change of
 	// state, so the feed doesn't say it, but the rest of the list has nothing new to read. The list's backstop keeps its
-	// own time, from the last read of the list, so no read by ID puts it off. Every read goes through `reads`, so however
+	// own time, from the last read of the list, so no read by ID puts it off; an organisation's list keeps a slower one
+	// while nothing runs, as sharing a sandbox or making it private changes what a member sees and no event says so. Every read goes through `reads`, so however
 	// short `pollMs` is, it's one every `READ_GAP_MS` at most.
 	const frozen = fixedNow !== undefined;
 	const followsLive = source.watch !== undefined;
-	const wait = sandboxes === undefined ? undefined : sandboxesListPollMs(sandboxes, pollMs, frozen, followsLive);
+	const shared = account.kind === "organisation";
+	const wait =
+		sandboxes === undefined ? undefined : sandboxesListPollMs(sandboxes, pollMs, frozen, followsLive, shared);
 	const movingIds = useMemo(
 		() =>
 			(sandboxes ?? [])
