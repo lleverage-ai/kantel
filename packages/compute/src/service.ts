@@ -3685,7 +3685,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if ((await backend.placedOn(sandbox.id)) === hostId) return true;
 			}
 		}
-		const named = await store.sandboxes.list({ hostId });
+		// Only the states it asks about, so a host's deleted sandboxes (a runner pool's host has thousands) aren't read.
+		const named = await store.sandboxes.list({ hostId }, { state: NOT_DELETED });
 		return named.some((sandbox) => NOT_DELETED.includes(sandbox.state));
 	}
 
@@ -5430,9 +5431,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
-		const placed = (await store.sandboxes.list({ hostId: host.id })).filter(
-			(sandbox) => sandbox.state === "running" || sandbox.state === "starting" || sandbox.state === "paused",
-		);
+		// Read in those states only: GET /v1/hosts views every host, and each has its deleted sandboxes too.
+		const placed = (
+			await store.sandboxes.list({ hostId: host.id }, { state: ["running", "starting", "paused"] })
+		).filter((sandbox) => sandbox.state === "running" || sandbox.state === "starting" || sandbox.state === "paused");
 		const machines = placed.filter((sandbox) => sandbox.type !== "isolate");
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
@@ -7300,7 +7302,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** `ComputeService.reportHostConnection`: its sandboxes, published as they are, for a console to read again. */
 	async function reportHostConnection(hostId: string, _connected: boolean): Promise<void> {
-		for (const sandbox of await store.sandboxes.list({ hostId })) {
+		// Never its deleted sandboxes, which it isn't told of anyway: every host connects again at once after the stack
+		// object restarts, and a runner pool's host has thousands.
+		for (const sandbox of await store.sandboxes.list({ hostId }, { state: LISTED_STATES })) {
 			if (sandbox.state === "deleted") continue;
 			live.publish({
 				sandboxId: sandbox.id,
