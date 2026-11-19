@@ -8095,13 +8095,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return next;
 	}
 
+	/** Whether a running sandbox owes a stop (`stopFor`) the sweep is to carry out. */
+	const owesStop = (sandbox: StoredSandbox): boolean => sandbox.state === "running" && sandbox.stopFor !== undefined;
+
+	/** What a call that would keep or boot a sandbox owed a stop is refused with. */
+	const beingStopped = (sandbox: StoredSandbox): KantelError =>
+		new KantelError("conflict", `The sandbox is being stopped: ${sandbox.stopFor}`);
+
 	/**
 	 * Puts a running (or paused) sandbox in `stopping` and stops or pauses it in the background; answers once it is
 	 * `stopping`, with the work (wrapped, so awaiting the answer doesn't await the work). The move is conditional on the
 	 * state `sandbox` was read in: when another call (on any gateway) moved it first, it is `conflict` and nothing is
 	 * stopped. Nor is a pause of one owed a stop (`stopFor`): it would keep the machine the stop is owed to end, in a state
-	 * the sweep doesn't stop. `standalone` says whether the stop is the caller's whole ask, so one its host was away for
-	 * is handed back running: not a restart's, whose commands are ended for a boot that then never comes.
+	 * the sweep doesn't stop, and nor is a restart's (not `standalone`): it would boot the machine the stop is owed to
+	 * end. `standalone` says whether the stop is the caller's whole ask, so a cold stop its host was away for is handed
+	 * back running: not a restart's, whose commands are ended for a boot that then never comes.
 	 */
 	async function beginStop(
 		sandbox: StoredSandbox,
@@ -8125,12 +8133,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() });
 			},
 			(current) =>
-				current.moving === undefined && !(keepMemory && current.stopFor !== undefined) && (still?.(current) ?? true),
+				current.moving === undefined &&
+				!((keepMemory || !standalone) && owesStop(current)) &&
+				(still?.(current) ?? true),
 		);
 		if (!("moved" in began)) {
 			if (began.lost.moving !== undefined) throw movingConflict();
-			if (keepMemory && began.lost.stopFor !== undefined && began.lost.state === sandbox.state) {
-				throw new KantelError("conflict", `The sandbox is being stopped: ${began.lost.stopFor}`);
+			if ((keepMemory || !standalone) && owesStop(began.lost) && began.lost.state === sandbox.state) {
+				throw beingStopped(began.lost);
 			}
 			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		}
@@ -8187,6 +8197,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						pausedSnapshotId: kept ? snapshot.id : undefined,
 						// Why Kantel stopped it (its auto-stop time, a rule), for a call refused while it is stopped; until it starts.
 						reason,
+						// A stop it owed is carried out: nothing later (an upgrade's publish) may take it as owed still.
+						stopFor: undefined,
+						stopClaimedAt: undefined,
 					}),
 				);
 				if (!("moved" in result)) return;
@@ -8200,24 +8213,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				});
 			} catch (error) {
-				// A stop someone asked for, of a running machine, that never reached its host, which was away past the wait
-				// above (`isStopNotSent`): its machine is running there still, holding its memory and vCPUs. In `error` it
+				// A cold stop someone asked for, of a running machine, that never reached its host, which was away past the
+				// wait above (`isStopNotSent`): its machine is running there still, holding its memory and vCPUs. In `error` it
 				// held them out of sight: the compute plane counts an `error` sandbox as using nothing on its host, nothing
 				// settles one whose machine runs on, and the host, which counts every machine it runs, went on refusing
 				// creates until the sandbox was stopped or deleted by hand. So it is handed back running, as the sweep's is
-				// below, and the caller is still told the stop failed. A stop stays owed (`stopFor`), so the sweep stops it
-				// once its host is back and calls that need it running are refused meanwhile. A pause isn't owed, as the
-				// sweep's stop would let go of the memory the pause was asked to keep. A restart's stop (not `standalone`)
-				// isn't handed back: its commands were ended above for a boot that won't come, so it is an `error` as before.
-				// So is one its host may have taken, or refused (the machine may have stopped), and one whose host reported
-				// its machine's exit while it was stopping (`exitedWhileStopping`), so a start boots it again. Only this
-				// stop's own `stopping` (its lifecycle) is handed back, never a later stop's. Its egress and protected values
-				// are sent again (a later revision and floor, which the sweep delivers once its host is back), as changes to
-				// them skipped it while it was stopping. Its stop time is the one it had, unless its auto-stop was set while it
-				// was stopping (`updateSandbox`, which then writes the time it counts to from that change).
+				// below, and the caller is still told the stop failed. The stop stays owed (`stopFor`), so the sweep stops it
+				// once its host is back and calls that need it running are refused meanwhile. A pause isn't handed back, as
+				// nothing would keep it out of use while its host catches up, nor is a restart's stop (not `standalone`),
+				// whose commands were ended above for a boot that won't come: each is an `error` as before. So is one its host
+				// may have taken, or refused (the machine may have stopped), and one whose host reported its machine's exit
+				// while it was stopping (`exitedWhileStopping`), so a start boots it again. Only this stop's own `stopping`
+				// (its lifecycle) is handed back, never a later stop's. Its egress and protected values are sent again (a later
+				// revision and floor, which the sweep delivers once its host is back), as changes to them skipped it while it
+				// was stopping.
 				let exited: string | undefined;
 				const ours = (current: StoredSandbox) => (current.lifecycle ?? 0) === (began.moved.lifecycle ?? 0);
-				if (isStopNotSent(error) && !handBack && standalone && was.state === "running") {
+				if (isStopNotSent(error) && !handBack && standalone && !keepMemory && was.state === "running") {
 					const floor = environmentIdsOf(was).length === 0 ? undefined : await nextFloorOf(was).catch(() => undefined);
 					const handed = await transition(
 						sandbox.id,
@@ -8226,14 +8238,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							...current,
 							state: "running",
 							runs: was.runs,
-							stopsAt:
-								current.stopsAt ??
-								(current.autoStopMinutes === was.autoStopMinutes
-									? was.stopsAt
-									: current.autoStopMinutes === null || current.autoStopMinutes === undefined
-										? undefined
-										: now() + current.autoStopMinutes * 60_000),
-							...(keepMemory ? {} : { stopFor: current.stopFor ?? reason ?? HOST_AWAY_STOP_REASON }),
+							stopsAt: was.stopsAt,
+							stopFor: current.stopFor ?? reason ?? HOST_AWAY_STOP_REASON,
 							egressRevision: later(current.egressRevision),
 							...(floor === undefined ? {} : { secretsFloor: Math.max(floor, current.secretsFloor ?? 0) }),
 							reason: current.health === "unresponsive" ? current.reason : undefined,
@@ -10964,9 +10970,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				const updated = await patchSandbox(current.id, (latest) => {
 					let stopsAt = latest.stopsAt;
-					// Stopping too, which has no stop time otherwise: one handed back running (a stop its host was away for) counts
-					// from this change, as a running one does (`beginStop`).
-					if (body.autoStopMinutes !== undefined && (latest.state === "running" || latest.state === "stopping")) {
+					if (body.autoStopMinutes !== undefined && latest.state === "running") {
 						stopsAt = body.autoStopMinutes === null ? undefined : now() + body.autoStopMinutes * 60_000;
 					}
 					if (body.extendMinutes !== undefined) {
@@ -11289,6 +11293,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 				}
 				if (current.moving !== undefined) throw movingConflict();
+				// Owed a stop (`stopFor`): its boot would end the obligation before its host carried it out.
+				if (owesStop(current)) throw beingStopped(current);
 				const hosts = await hostsToBoot(principal, current);
 				const fromSnapshot = await latestRef(current);
 				requireSetupScope(principal, role, current);
@@ -11307,10 +11313,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
 							...bootLease(latest),
 						}),
-					(latest) => latest.moving === undefined,
+					(latest) => latest.moving === undefined && !owesStop(latest),
 				);
 				if (!("moved" in began)) {
 					if (began.lost.moving !== undefined) throw movingConflict();
+					if (owesStop(began.lost)) throw beingStopped(began.lost);
 					throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 				}
 				const starting = began.moved;
@@ -11373,6 +11380,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				) {
 					throw new KantelError("conflict", `The sandbox is ${current.state}`);
 				}
+				// Owed a stop (`stopFor`): its boot would end the obligation before its host carried it out.
+				if (owesStop(current)) throw beingStopped(current);
 				// One never placed is made again from its template (`bootAgain`), its setup run: checked before anything moves.
 				requireSetupScope(principal, role, current);
 				// Its lifecycle as checked here: the stop and the boot below are claimed only while nothing else (another restart, a

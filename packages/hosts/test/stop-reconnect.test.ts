@@ -1,6 +1,6 @@
 // A stop that lands while its sandbox's host is away (#737) waits for the host to connect again and is sent then, rather
-// than leaving the sandbox in error. One whose host isn't back in time fails, and the sandbox is running again with the
-// stop owed, since its machine may still be running there (LLE-19732): in `error` it held its host's memory unseen.
+// than leaving the sandbox in error. A cold stop whose host isn't back in time fails, and the sandbox is running again
+// with the stop owed, since its machine is still running there (LLE-19732): in `error` it held its host's memory unseen.
 import { createKantelClient } from "@kantel/api/sdk";
 import { createComputeApi, HOST_AWAY_STOP_REASON, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -28,50 +28,37 @@ async function setup() {
 		publicUrl: "https://kantel.test",
 		log: () => undefined,
 	});
-	const backend = createHostBackend({
-		hosts: service,
-		publicUrl: "https://kantel.test",
-		tickets: createTunnelTickets(createMemoryRelayStore()),
-		// The backend's clock only, moved on to pass a stop's wait for its host.
-		now: () => Date.now() + skew,
-	});
-	const gateway = (store?: ReturnType<typeof createComputeApi>["store"]) =>
-		createComputeApi({
-			backend,
-			...(store === undefined ? {} : { store }),
-			authenticatePerson: async (request) =>
-				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
-			fetch: async () => new Response(null, { status: 204 }),
+	const api = createComputeApi({
+		backend: createHostBackend({
+			hosts: service,
 			publicUrl: "https://kantel.test",
-		});
-	const api = gateway();
+			tickets: createTunnelTickets(createMemoryRelayStore()),
+			// The backend's clock only, moved on to pass a stop's wait for its host.
+			now: () => Date.now() + skew,
+		}),
+		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
+		fetch: async () => new Response(null, { status: 204 }),
+		publicUrl: "https://kantel.test",
+	});
 	service.useJoinTokens(joinTokenSpender(api.store));
 	service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
 	closers.push(
 		() => service.close(),
 		() => api.close(),
 	);
-	const client = (of: ReturnType<typeof createComputeApi>) =>
-		createKantelClient({
-			baseUrl: "https://kantel.test/v1",
-			token: "root",
-			fetch: (input, init) =>
-				of.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
-		});
-	const root = client(api);
-	/** Another gateway on the same store, as a replica: none of this one's work is its own. */
-	const peer = () => {
-		const other = gateway(api.store);
-		closers.push(() => other.close());
-		return client(other);
-	};
+	const root = createKantelClient({
+		baseUrl: "https://kantel.test/v1",
+		token: "root",
+		fetch: (input, init) =>
+			api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+	});
 	const token = await root.createHostJoinToken({ name: "box" });
 	const { hostId } = await service.register({ token: token.token });
 	const host = new FakeHost(service, hostId, FEATURES);
 	host.connect();
 	await vi.waitFor(() => expect(host.welcomed()).toBe(true));
 	const sandbox = await root.createSandbox({ type: "microvm", wait: true });
-	return { api, root, peer, service, hostId, host, sandbox, skip: (ms: number) => (skew += ms) };
+	return { api, root, service, hostId, host, sandbox, skip: (ms: number) => (skew += ms) };
 }
 
 /** The host connecting again, holding what it held. */
@@ -143,38 +130,29 @@ describe("a stop while its host is away", () => {
 		expect(stopped.state).toBe("stopped");
 		expect(stopped.reason).toBe(HOST_AWAY_STOP_REASON);
 		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
+		// Carried out: owed no longer, so nothing later (an upgrade's publish) stops it again.
+		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
 	});
 
-	it("hands a pause back running with no stop owed when the host isn't back in time", async () => {
-		const { api, root, service, hostId, host, sandbox, skip } = await setup();
+	it("leaves a pause in error as before when the host isn't back in time", async () => {
+		const { api, root, host, sandbox, skip } = await setup();
 		host.connection.closed(1006, "gone");
 		await root.stopSandbox(sandbox.id, { keepMemory: true });
 		skip(STOP_RECONNECT_WAIT_MS + 1);
 		await api.service.idle();
-		expect(await stateOf(root, sandbox.id)).toBe("running");
+		expect(await stateOf(root, sandbox.id)).toBe("error");
 		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
-		// The sweep's stop would drop the memory the pause meant to keep: it is left for the caller to pause again.
-		const back = await reconnect(service, hostId, host);
-		await api.service.sweep();
-		await api.service.idle();
-		expect(await stateOf(root, sandbox.id)).toBe("running");
-		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(0);
 	});
 
-	it("hands a pause back with its egress sent again, and its stop time from an auto-stop set while it waited", async () => {
-		const { api, root, peer, host, sandbox, skip } = await setup();
-		await root.updateSandbox(sandbox.id, { autoStopMinutes: 30 });
+	it("hands a cold stop back with its egress and protected values to send again", async () => {
+		const { api, root, host, sandbox, skip } = await setup();
 		const before = await api.store.sandboxes.get(sandbox.id);
 		host.connection.closed(1006, "gone");
-		await root.stopSandbox(sandbox.id, { keepMemory: true });
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		// The same auto-stop, set again to count from now, on another gateway (this one's waits for its stop).
-		await peer().updateSandbox(sandbox.id, { autoStopMinutes: 30 });
+		await root.stopSandbox(sandbox.id);
 		skip(STOP_RECONNECT_WAIT_MS + 1);
 		await api.service.idle();
 		const handed = await api.store.sandboxes.get(sandbox.id);
 		expect(handed?.state).toBe("running");
-		expect(handed?.stopsAt ?? 0).toBeGreaterThan(before?.stopsAt ?? Number.POSITIVE_INFINITY);
 		// Changes to its egress skipped it while it was stopping: a later revision, for the sweep to send once its host is back.
 		expect(handed?.egressRevision ?? 0).toBeGreaterThan(before?.egressRevision ?? Number.POSITIVE_INFINITY);
 	});
@@ -219,7 +197,7 @@ describe("a stop while its host is away", () => {
 	it("is in error, not handed back, when its host reported the machine's exit while it was stopping", async () => {
 		const { api, root, hostId, host, sandbox, skip } = await setup();
 		host.connection.closed(1006, "gone");
-		await root.stopSandbox(sandbox.id, { keepMemory: true });
+		await root.stopSandbox(sandbox.id);
 		// A restarted host's hello says the machine ended, before the stop's wait is over.
 		await api.service.reportExit(hostId, sandbox.id, "the host restarted");
 		expect(await stateOf(root, sandbox.id)).toBe("stopping");
@@ -229,9 +207,10 @@ describe("a stop while its host is away", () => {
 		expect(failed?.state).toBe("error");
 		expect(failed?.reason).toMatch(/the host restarted/i);
 		expect(failed?.exitedWhileStopping).toBeUndefined();
+		expect(failed?.stopFor).toBeUndefined();
 	});
 
-	it("refuses a pause of a sandbox owed a stop, which the sweep then carries out", async () => {
+	it("refuses a pause or recovery of a sandbox owed a stop, which the sweep then carries out", async () => {
 		const { api, root, service, hostId, host, sandbox, skip } = await setup();
 		host.connection.closed(1006, "gone");
 		await root.stopSandbox(sandbox.id);
@@ -239,6 +218,8 @@ describe("a stop while its host is away", () => {
 		await api.service.idle();
 		// Owed a stop: a pause would keep the machine in a state the sweep doesn't stop.
 		await expect(root.stopSandbox(sandbox.id, { keepMemory: true })).rejects.toMatchObject({ status: 409 });
+		// So is a recovery, whose boot would end the obligation before its host carried it out.
+		await expect(root.recoverSandbox(sandbox.id)).rejects.toMatchObject({ status: 409 });
 		expect(await stateOf(root, sandbox.id)).toBe("running");
 		const back = await reconnect(service, hostId, host);
 		await api.service.sweep();
