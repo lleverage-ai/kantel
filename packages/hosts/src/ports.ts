@@ -81,9 +81,9 @@ export interface PortRouterOptions {
 	 */
 	notRunning?(sandboxId: string): Promise<string | undefined>;
 	/**
-	 * Why a running sandbox's ports are refused (`ComputeService.portRefused`): it owes a stop, so nothing reaches it
-	 * until that is carried out, as with its commands and files. Undefined when they aren't. Asked on every request and
-	 * upgrade the gate let in, an answer reused for `REFUSED_CACHE_MS`; one that can't be got refuses. Absent: never.
+	 * Why a sandbox's ports are refused (`ComputeService.portRefused`): it owes a stop, so nothing reaches it until that
+	 * is carried out, as with its commands and files. Undefined when they aren't. Asked afresh on every request and
+	 * upgrade the gate let in, never from an earlier answer; one that can't be got refuses. Absent: never.
 	 */
 	refused?(sandboxId: string): Promise<string | undefined>;
 }
@@ -94,11 +94,8 @@ export interface PortRouterOptions {
  */
 export const PORT_NOT_RUNNING_STATUS = 503;
 
-/** The status of a request to a port of a sandbox that runs but owes a stop (`PortRouterOptions.refused`), as its calls get. */
+/** The status of a request to a port of a sandbox that owes a stop (`PortRouterOptions.refused`), as its calls get. */
 export const PORT_REFUSED_STATUS = 409;
-
-/** How long a port router reuses `refused`'s answer for a sandbox, so a page's burst of requests asks once. */
-export const REFUSED_CACHE_MS = 1000;
 
 /** Where an upgrade on a port's name may go, or why not. */
 export type PortUpgrade =
@@ -208,18 +205,10 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 	const { store } = options;
 	const now = options.now ?? Date.now;
 	const cookieName = portCookieName(scheme);
-	const refusals = new Map<string, { readonly at: number; readonly reason: string | undefined }>();
 
-	/** Why a sandbox's ports are refused now (`refused`), from an answer at most `REFUSED_CACHE_MS` old. */
-	async function refusal(sandboxId: string): Promise<string | undefined> {
-		if (options.refused === undefined) return undefined;
-		const cached = refusals.get(sandboxId);
-		if (cached !== undefined && now() - cached.at < REFUSED_CACHE_MS) return cached.reason;
-		const reason = await options.refused(sandboxId).catch(() => "Kantel couldn't check this port's sandbox; try again");
-		if (refusals.size > 1000) refusals.clear();
-		refusals.set(sandboxId, { at: now(), reason });
-		return reason;
-	}
+	/** Why a sandbox's ports are refused now (`refused`), read for this request alone. */
+	const refusal = async (sandboxId: string): Promise<string | undefined> =>
+		options.refused?.(sandboxId).catch(() => "Kantel couldn't check this port's sandbox; try again");
 
 	/** The exposure a host name is for: undefined when it isn't under the domain, null when it names none. */
 	async function lookup(hostname: string): Promise<ExposureRecord | null | undefined> {

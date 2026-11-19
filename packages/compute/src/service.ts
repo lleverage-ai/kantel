@@ -684,9 +684,9 @@ export interface ComputeService {
 	 */
 	portNotRunning(sandboxId: string): Promise<string | undefined>;
 	/**
-	 * Why a request to a hosted port of a running sandbox is refused: it owes a stop (`stopFor`, its egress as stored
-	 * not what its host enforces, or a stop its host was away for), so nothing reaches it until that stop is carried out,
-	 * as its commands and files are refused. Undefined otherwise.
+	 * Why a request to a hosted port of a sandbox is refused: it owes a stop (`stopFor`, its egress as stored not what
+	 * its host enforces, or a stop its host was away for), running or with that stop under way, so nothing reaches it
+	 * until the stop is carried out, as its commands and files are refused. Undefined otherwise. Read afresh each time.
 	 */
 	portRefused(sandboxId: string): Promise<string | undefined>;
 	/**
@@ -5151,7 +5151,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function provision(sandboxId: string, authorised: readonly StoredEnvironment[]): Promise<void> {
 		const fenced = await patchSandbox(sandboxId, (latest) =>
-			latest.state === "running" && (latest.pendingProvision?.length ?? 0) > 0
+			// Never into a machine that owes a stop (`owesStop`): its set-up stays pending, for its next start.
+			latest.state === "running" && !owesStop(latest) && (latest.pendingProvision?.length ?? 0) > 0
 				? { ...latest, provisionFence: (latest.provisionFence ?? 0) + 1 }
 				: undefined,
 		);
@@ -5875,9 +5876,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						if (sandbox.health === "unresponsive") throw sandboxUnresponsive(sandbox, apiBasePath);
 						// Owed a stop (`enforceStop`: its egress as stored isn't what its host enforces) that didn't reach its host:
 						// running only until the sweep stops it, and never used meanwhile, its host back or not.
-						if (sandbox.stopFor !== undefined) {
-							throw new KantelError("conflict", `The sandbox is being stopped: ${sandbox.stopFor}`);
-						}
+						if (owesStop(sandbox)) throw beingStopped(sandbox);
 						// A call that needs it running (a command, its files, a port, SSH, the desktop) is a use of it.
 						noteActivity(sandbox.id);
 						return sandbox;
@@ -7464,8 +7463,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...(attempt === undefined ? {} : { attempt }),
 					eventId: randomId("evt"),
 					// One being made again is lost in the state its first loss found it in, so a further making again comes
-					// back as that would have.
-					previousState: current.recreating?.previousState ?? current.state,
+					// back as that would have: only while it is that making again's own attempt or the run it published,
+					// never a later run (a start after it ended or was stopped), which is lost as it is.
+					previousState: recreationOwns(current) ? (current.recreating?.previousState ?? current.state) : current.state,
 					at: now(),
 					...(seenAt === undefined ? {} : { seenAt }),
 				},
@@ -7976,6 +7976,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
+	 * Whether a sandbox's record is still its making again's (`recreating`): that attempt, or the run its publishing made.
+	 * A marker from a gateway from before it kept its attempt counts, as it did there.
+	 */
+	function recreationOwns(sandbox: StoredSandbox): boolean {
+		const attempt = sandbox.recreating?.attempt;
+		if (sandbox.recreating === undefined || attempt === undefined) return sandbox.recreating !== undefined;
+		const lifecycle = sandbox.lifecycle ?? 0;
+		return lifecycle === attempt || lifecycle === attempt + 1;
+	}
+
+	/**
 	 * The stop a sandbox made again owes once it runs: the one it owed as it was lost, else one for having been lost
 	 * stopped, paused or in error.
 	 */
@@ -8107,8 +8118,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return next;
 	}
 
-	/** Whether a running sandbox owes a stop (`stopFor`) the sweep is to carry out. */
-	const owesStop = (sandbox: StoredSandbox): boolean => sandbox.state === "running" && sandbox.stopFor !== undefined;
+	/**
+	 * Whether a sandbox owes a stop (`stopFor`) not yet carried out: running until the sweep stops it, or `stopping` with
+	 * it. Its machine may run on meanwhile, but nothing new is let near it: no command, file, port, process list, live
+	 * fork or snapshot, set-up, recovery, restart, pause or upgrade, only the stop it owes.
+	 */
+	const owesStop = (sandbox: StoredSandbox): boolean =>
+		(sandbox.state === "running" || sandbox.state === "stopping") && sandbox.stopFor !== undefined;
 
 	/** What a call that would keep or boot a sandbox owed a stop is refused with. */
 	const beingStopped = (sandbox: StoredSandbox): KantelError =>
@@ -11060,6 +11076,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.snapshotId !== undefined) {
 					snapshot = await store.snapshots.get(body.snapshotId);
 					if (snapshot === undefined || snapshot.sandboxId !== current.id) throw notFound("snapshot of this sandbox");
+				} else if (owesStop(current)) {
+					// Forked live, it would copy a machine that owes a stop, and queue work ahead of that stop.
+					throw beingStopped(current);
 				} else if (current.state !== "running") {
 					snapshot =
 						current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
@@ -11897,6 +11916,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (backend.processes === undefined) {
 				throw new KantelError("not_supported", "This deployment's sandboxes can't list their processes");
 			}
+			if (owesStop(sandbox)) throw beingStopped(sandbox);
 			if (sandbox.state !== "running") throw sandboxNotRunning(sandbox, apiBasePath);
 			await requireHostReachable(sandbox);
 			const { processes, total } = await backend.processes(sandbox.id, query.limit ?? 10);
@@ -12122,6 +12142,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.snapshotId !== undefined && (source === undefined || source.sandboxId !== current.id)) {
 					throw notFound("snapshot of this sandbox");
 				}
+				// Taken from the live machine, which owes a stop: refused, as its other live calls are.
+				if (body.snapshotId === undefined && owesStop(current)) throw beingStopped(current);
 				// What its bytes are of: a copied snapshot's own (an upgraded sandbox's from before are an isolate's), else what
 				// the sandbox is now.
 				const type = source?.sandboxType ?? current.type;
@@ -13767,6 +13789,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<StoredSandbox> {
 		const current = await settledFor(principal, sandboxId);
 		if (current.type === "microvm") return current;
+		if (owesStop(current)) throw beingStopped(current);
 		if (current.state !== "running" && current.state !== "stopped") {
 			throw new KantelError(
 				"conflict",
@@ -13921,7 +13944,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				};
 			},
-			(latest) => latest.type === "isolate" && latest.lifecycle === current.lifecycle,
+			(latest) => latest.type === "isolate" && latest.lifecycle === current.lifecycle && !owesStop(latest),
 		);
 		if (!("moved" in began)) {
 			if (began.lost.type === "microvm") return began.lost;

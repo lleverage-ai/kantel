@@ -330,6 +330,40 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
 	});
 
+	it("is lost as it is, not as an earlier making again found it, where a later run is lost before that one is finished", async () => {
+		const { api, root, sandbox, pass, save, a, b, events } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		const lifecycle = (await api.store.sandboxes.get(sandbox.id))?.lifecycle ?? 0;
+		// Made again after a loss found it stopped; that stop carried out and the sandbox started again since, its making
+		// again not yet finished (its event not written, so its marker stays).
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			recreating: {
+				hostId: "host_gone",
+				eventId: "evt_unfinished",
+				previousState: "stopped",
+				snapshotId: "snap_gone",
+				heartbeatAt: Date.now(),
+				attempt: lifecycle - 3,
+			},
+		}));
+		const put = api.store.eventWrites.put.bind(api.store.eventWrites);
+		vi.spyOn(api.store.eventWrites, "put").mockImplementation((event) =>
+			event.id === "evt_unfinished" ? Promise.reject(new Error("not now")) : put(event),
+		);
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () =>
+			expect((await events("sandbox.recreated")).some((event) => event.id !== "evt_unfinished")).toBe(true),
+		);
+		await pass(1_000);
+		// Lost running with nothing owed: it runs on host b, not stopped again for the earlier loss.
+		const after = await root.getSandbox(sandbox.id);
+		expect(after.state).toBe("running");
+		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
+		expect(b?.host.sandboxes.get(sandbox.id)?.state).toBe("running");
+	});
+
 	it("stops the run its making again published where that run still owes the stop as it is finished", async () => {
 		const { api, root, sandbox, pass } = await setup({ onHostLost: "recreate" });
 		const lifecycle = (await api.store.sandboxes.get(sandbox.id))?.lifecycle ?? 0;
