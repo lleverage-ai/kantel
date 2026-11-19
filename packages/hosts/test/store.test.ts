@@ -107,6 +107,33 @@ function behaves(open: () => Promise<HostStore>) {
 		expect((await store.placementsOn("host_a")).map((p) => p.sandboxId)).toEqual(["s2"]);
 	});
 
+	it("inserts a placement only while its sandbox has none", async () => {
+		const store = await open();
+		expect(await store.insertPlacement(placement("s1", "host_a", 1))).toBe(true);
+		expect(await store.insertPlacement({ ...placement("s1", "host_b", 2), state: "lost" })).toBe(false);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1 });
+		await store.removePlacement("s1");
+		expect(await store.insertPlacement(placement("s1", "host_b", 3))).toBe(true);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_b", createdAt: 3 });
+	});
+
+	it("replaces a placement only over its own: the same host, written at the same time", async () => {
+		const store = await open();
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 1), state: "running" })).toBe(false);
+		expect(await store.getPlacement("s1")).toBeUndefined();
+		await store.putPlacement({ ...placement("s1", "host_a", 1), state: "starting" });
+		expect(await store.replacePlacement({ ...placement("s1", "host_b", 1), state: "running" })).toBe(false);
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 2), state: "running" })).toBe(false);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1, state: "starting" });
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 1), state: "running" })).toBe(true);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1, state: "running" });
+		// Written again on another host at another time (a late copy's fence): judged by that, not by what it was.
+		await store.updatePlacement("s1", (latest) => ({ ...latest, hostId: "host_b", createdAt: 5, state: "lost" }));
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 1), state: "running" })).toBe(false);
+		expect(await store.replacePlacement({ ...placement("s1", "host_b", 5), state: "stopped" })).toBe(true);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_b", createdAt: 5, state: "stopped" });
+	});
+
 	it("places a new sandbox only on a host that is neither draining nor revoked, in one write", async () => {
 		const store = await open();
 		await store.insertHost({ ...host("host_a", 1), labels: { note: '"draining":true' } });
@@ -122,6 +149,23 @@ function behaves(open: () => Promise<HostStore>) {
 		// Drained since it was read: refused.
 		await store.updateHost("host_a", (current) => ({ ...current, draining: true }));
 		expect(await store.placeOnTakingHost(placement("s5", "host_a", 5))).toBeUndefined();
+	});
+
+	it("never admits over a late copy's fence (orphan), capped or not", async () => {
+		const store = await open();
+		await store.insertHost(host("host_a", 1));
+		await store.insertHost(host("host_b", 2));
+		const orphan: PlacementRecord = { ...placement("s1", "host_b", 3), state: "lost", fenced: 3, orphan: true };
+		await store.putPlacement(orphan);
+		expect(await store.placeOnTakingHost(placement("s1", "host_a", 4))).toBe("orphan");
+		expect(
+			await store.placeOnTakingHost({ ...placement("s1", "host_a", 5), tier: "microvm", vcpus: 2 }, undefined, 8),
+		).toBe("orphan");
+		expect(await store.getPlacement("s1")).toEqual(orphan);
+		// A lost placement that is no orphan is placed over, as before.
+		await store.putPlacement({ ...placement("s2", "host_b", 6), state: "lost", fenced: 6 });
+		expect(await store.placeOnTakingHost(placement("s2", "host_a", 7))).toEqual({});
+		expect(await store.getPlacement("s2")).toMatchObject({ hostId: "host_a", createdAt: 7 });
 	});
 
 	it("places a capped microVM only while its host's booked vCPUs and its own stay within the cap, in one write", async () => {

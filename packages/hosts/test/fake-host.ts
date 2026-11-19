@@ -60,6 +60,8 @@ export class FakeHost {
 	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
 	/** For a test: a call of a method it answers a promise for is answered once that settles (a slow host). */
 	hold?: (method: string, params: { readonly [key: string]: unknown }) => Promise<void> | undefined;
+	/** For a test: `sandbox.delete` of one it has none of answers ok, not `not_found` as kantel-host does. */
+	deletesMissing = false;
 	/** Files `sandbox.files.open` streams, by path; a write lands here once all of it has arrived. */
 	readonly files = new Map<string, Uint8Array>();
 	/** How many bytes a read's frames carry each. */
@@ -438,6 +440,8 @@ export class FakeHost {
 				) {
 					return fail("not_found", "not the copy that move exported");
 				}
+				// One it has none of (`deletesMissing` off): `not_found`, as kantel-host answers.
+				if (!this.deletesMissing && !this.sandboxes.has(params.sandboxId)) return fail("not_found", "no such sandbox");
 				this.exportedBy.delete(params.sandboxId);
 				this.sandboxes.delete(params.sandboxId);
 				this.disks.delete(params.sandboxId);
