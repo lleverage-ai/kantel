@@ -1312,7 +1312,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async fencedOn(sandboxId) {
 			const placement = await hosts.sandboxes.placement(sandboxId);
-			if (placement?.fenced === undefined) return undefined;
+			// A late copy of a deleted sandbox, fenced only to be deleted (`orphan`), is no loss's fence.
+			if (placement?.fenced === undefined || placement.orphan === true) return undefined;
 			return {
 				sandboxId,
 				hostId: placement.hostId,

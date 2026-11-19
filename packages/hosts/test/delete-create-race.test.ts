@@ -1,7 +1,8 @@
 // A delete that reaches a sandbox's host before the host has made it (LLE-19700): the host has nothing to delete, then
 // makes it, and its answer to the create comes back. Whichever of that answer and the delete's removal of the placement
 // lands first, the copy the host made is deleted there and no placement is left: the delete asks the host again where
-// the answer was recorded first, and the answer, where the removal was first, is refused and its copy fenced there.
+// the answer was recorded first, and the answer, where the removal was first, is refused and its copy fenced there,
+// only to be deleted (`orphan`): never reported to the compute plane as a loss.
 import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostsService, type HostsService } from "../src/service.ts";
@@ -19,6 +20,15 @@ async function setup() {
 	const store = createMemoryHostStore();
 	const service = createHostsService({ store, publicUrl: "https://kantel.example.com/", log: () => undefined });
 	services.push(service);
+	const lost: string[] = [];
+	service.useCompute({
+		secrets: async () => undefined,
+		recordEgress: async () => undefined,
+		sandboxLost: async (_hostId, sandboxId) => {
+			lost.push(sandboxId);
+			return true;
+		},
+	});
 	const token = await service.createJoinToken({ name: "box" });
 	const { hostId } = await service.register({ token: token.token, facts: facts() });
 	const host = new FakeHost(service, hostId);
@@ -60,7 +70,7 @@ async function setup() {
 		});
 		return { atWrite, release: () => release() };
 	};
-	return { store, service, host, hostId, atCreate, answer: () => answer(), holdDeleteWrite };
+	return { store, service, host, hostId, atCreate, answer: () => answer(), holdDeleteWrite, lost };
 }
 
 describe("a delete that reaches a sandbox's host before the host has made it", () => {
@@ -87,17 +97,85 @@ describe("a delete that reaches a sandbox's host before the host has made it", (
 		expect(await store.getPlacement("sbx-late")).toBeUndefined();
 	});
 
-	it("fences the copy the host makes where the delete's removal lands before the host's answer", async () => {
-		const { store, service, host, atCreate, answer } = await setup();
+	it("fences the copy the host makes where the delete's removal lands before the host's answer, as no loss", async () => {
+		const { store, service, host, hostId, atCreate, answer, lost } = await setup();
 		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-later" });
 		await atCreate;
 		await service.sandboxes.delete("sbx-later");
 		expect(await store.getPlacement("sbx-later")).toBeUndefined();
-		// The host makes it after all, and answers: refused, never placed again, its copy deleted by its fence.
+		// The host makes it after all, and answers: refused, never placed again, its copy fenced there to be deleted (the
+		// fence's delete held a while).
+		let deleteNow: () => void = () => undefined;
+		host.hold = (method) =>
+			method === "sandbox.delete"
+				? new Promise<void>((resolve) => {
+						deleteNow = resolve;
+					})
+				: undefined;
 		answer();
 		await expect(creating).rejects.toSatisfy((error) => isKantelError(error, "conflict"));
+		const orphan = await store.getPlacement("sbx-later");
+		expect(orphan).toMatchObject({ hostId, state: "lost", orphan: true });
+		expect(orphan?.fenced).toBeTypeOf("number");
+		expect(orphan?.attempt).toBeUndefined();
+		// Only to be deleted: no loss for the compute plane's passes, and no new create over it.
+		expect(await service.sandboxes.placedOnHost(hostId)).toEqual([]);
+		await expect(service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-later" })).rejects.toSatisfy((error) =>
+			isKantelError(error, "conflict"),
+		);
+		deleteNow();
 		await vi.waitFor(() => expect(host.sandboxes.has("sbx-later")).toBe(false));
 		await vi.waitFor(async () => expect(await store.getPlacement("sbx-later")).toBeUndefined());
+		expect(lost).toEqual([]);
+	});
+
+	it("asks the host again where its hello found no copy and the create's answer came after the delete read that", async () => {
+		const { store, service, host, atCreate, answer, holdDeleteWrite } = await setup();
+		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-hello" });
+		await atCreate;
+		// As its host's hello marks an admission it doesn't have (it came back before the create reached it).
+		await store.updatePlacement("sbx-hello", (latest) => ({ ...latest, state: "lost" }));
+		const held = holdDeleteWrite("sbx-hello");
+		const deleting = service.sandboxes.delete("sbx-hello");
+		await held.atWrite;
+		answer();
+		await expect(creating).resolves.toMatchObject({ sandbox: { id: "sbx-hello" } });
+		expect((await store.getPlacement("sbx-hello"))?.state).toBe("running");
+		held.release();
+		await deleting;
+		expect(host.sandboxes.has("sbx-hello")).toBe(false);
+		expect(host.calls.filter((call) => call.method === "sandbox.delete")).toHaveLength(2);
+		expect(await store.getPlacement("sbx-hello")).toBeUndefined();
+	});
+
+	it("ends with the host's word that it deleted it, never asking again, where the create settled after the read", async () => {
+		const { store, service, host, atCreate, answer } = await setup();
+		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-acked" });
+		await atCreate;
+		// The delete reads the placement `starting` and asks the host, which takes the delete after the create.
+		let deleteNow: () => void = () => undefined;
+		let asked: () => void = () => undefined;
+		const atDelete = new Promise<void>((resolve) => {
+			asked = resolve;
+		});
+		host.hold = (method) => {
+			if (method !== "sandbox.delete") return undefined;
+			asked();
+			return new Promise<void>((resolve) => {
+				deleteNow = resolve;
+			});
+		};
+		const deleting = service.sandboxes.delete("sbx-acked");
+		await atDelete;
+		answer();
+		await expect(creating).resolves.toMatchObject({ sandbox: { id: "sbx-acked" } });
+		expect((await store.getPlacement("sbx-acked"))?.state).toBe("running");
+		// It deletes the copy it made, and says so: done, with no second call (its link may be gone by then).
+		deleteNow();
+		await deleting;
+		expect(host.sandboxes.has("sbx-acked")).toBe(false);
+		expect(host.calls.filter((call) => call.method === "sandbox.delete")).toHaveLength(1);
+		expect(await store.getPlacement("sbx-acked")).toBeUndefined();
 	});
 
 	it("fences the copy a fork makes where the delete's removal lands before the host's answer", async () => {

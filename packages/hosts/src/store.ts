@@ -191,6 +191,12 @@ export interface PlacementRecord {
 	 * placement goes. Absent: not fenced.
 	 */
 	readonly fenced?: number;
+	/**
+	 * A copy its host made after the sandbox's placement went (a create's or fork's late answer, `fenceOrphan`), fenced
+	 * only so it is deleted there as a lost host's copy is: never a loss of the sandbox, so it is never reported to the
+	 * compute plane (`ComputeHooks.sandboxLost`) nor offered to its loss passes. It names no attempt.
+	 */
+	readonly orphan?: true;
 }
 
 export interface HostStore {
@@ -703,9 +709,10 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 				const read = String(row.data);
 				const next = change(JSON.parse(read) as PlacementRecord);
 				if (next === undefined) return undefined;
+				// Its host and when it was written kept in their columns too (a late copy's fence has its own, `fenceOrphan`).
 				const won = await driver.query(
-					"UPDATE compute_placements SET host_id = ?, data = ? WHERE sandbox_id = ? AND data = ? RETURNING sandbox_id",
-					[next.hostId, JSON.stringify(next), sandboxId, read],
+					"UPDATE compute_placements SET host_id = ?, created_at = ?, data = ? WHERE sandbox_id = ? AND data = ? RETURNING sandbox_id",
+					[next.hostId, next.createdAt, JSON.stringify(next), sandboxId, read],
 				);
 				if (won.length > 0) return next;
 			}

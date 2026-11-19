@@ -127,6 +127,11 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1, state: "starting" });
 		expect(await store.replacePlacement({ ...placement("s1", "host_a", 1), state: "running" })).toBe(true);
 		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_a", createdAt: 1, state: "running" });
+		// Written again on another host at another time (a late copy's fence): judged by that, not by what it was.
+		await store.updatePlacement("s1", (latest) => ({ ...latest, hostId: "host_b", createdAt: 5, state: "lost" }));
+		expect(await store.replacePlacement({ ...placement("s1", "host_a", 1), state: "running" })).toBe(false);
+		expect(await store.replacePlacement({ ...placement("s1", "host_b", 5), state: "stopped" })).toBe(true);
+		expect(await store.getPlacement("s1")).toMatchObject({ hostId: "host_b", createdAt: 5, state: "stopped" });
 	});
 
 	it("places a new sandbox only on a host that is neither draining nor revoked, in one write", async () => {
