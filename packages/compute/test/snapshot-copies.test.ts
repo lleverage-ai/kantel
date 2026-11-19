@@ -144,4 +144,35 @@ describe("saved snapshot copies", () => {
 			copyTarget(snapshot, [holder("a")], hostsOf(host("a"), host("stub", { features: undefined })), "pool_a", AT),
 		).toBe("stub");
 	});
+
+	it("never picks a host that can't have the root image its disk is over", () => {
+		// As on 19 Nov 2026: a snapshot taken over a host image that isn't versioned, which a host can't download, offered
+		// to a host that doesn't have those bytes, which refused it every few minutes.
+		const plain = "firecracker=v1.17.0;kernel=6.1.155+0123456789ab;image=sha256:78ca3a4ec2d4301c;sticky=4";
+		const as = (image: string) => plain.replace("image=sha256:78ca3a4ec2d4301c", `image=${image}`);
+		const unversioned = { ...snapshot, runtime: plain };
+		const hosts = hostsOf(
+			host("a"),
+			host("elsewhere", { freeDiskGb: 900, runtimeFingerprints: [as("host-images-20261114@sha256:f13fd019fde6d11a")] }),
+		);
+		expect(copyTarget(unversioned, [holder("a")], hosts, "pool_a", AT)).toBe(undefined);
+		// One whose own root filesystem is that image, by its runtime, takes it whatever its version.
+		const same = host("same", { runtimeFingerprints: [plain] });
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), same), "pool_a", AT)).toBe("same");
+		// One that has those bytes as a version takes it only where it finds images by their digest.
+		const versioned = [as("host-images-20261114@sha256:78ca3a4ec2d4301c")];
+		const older = host("older", { runtimeFingerprints: versioned });
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), older), "pool_a", AT)).toBe(undefined);
+		const byDigest = host("by-digest", {
+			runtimeFingerprints: versioned,
+			features: ["disk-sync", "snapshot-sync", "snapshot-image-digest"],
+		});
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), byDigest), "pool_a", AT)).toBe(
+			"by-digest",
+		);
+		// A version can be downloaded, so any host may be asked for one, as before.
+		expect(
+			copyTarget({ ...snapshot, runtime: as("old@sha256:0a0a0a0a0a0a0a0a") }, [holder("a")], hosts, "pool_a", AT),
+		).toBe("elsewhere");
+	});
 });

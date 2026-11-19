@@ -268,6 +268,10 @@ type Config struct {
 	// downloaded from its release first when the host hasn't it: a snapshot fetched from a peer is a layer over the
 	// image its sandbox booted (snapshotsync.go).
 	HostImage func(ctx context.Context, version string) (string, error)
+	// HostImages, when set, are the microVMs' root filesystems of the host image versions installed now
+	// (images.Store.SandboxImages), resolved. A snapshot fetched from a peer is over whichever of them, or Rootfs, has
+	// the digest of its host's image, whatever version it is under here (snapshotsync.go's hostImageWithDigest).
+	HostImages func() []string
 	// Discard boots every microVM with discard on its writable disk (fc.BootConfig.Discard), for a Firecracker that
 	// can (fc.DiscardSupported): blocks the guest frees, and those a trim before a save frees (trimDisk), are holes in
 	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. Its sticky drives have it too, and a

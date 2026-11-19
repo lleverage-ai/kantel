@@ -40,6 +40,7 @@ import {
 	hostNotConnected,
 	isDetachedWaitEnded,
 	type Placement,
+	rootImageOn,
 	type SandboxBackend,
 	type SandboxSpec,
 	type SandboxTemplateBoot,
@@ -1140,7 +1141,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		// Only a saved snapshot's ID alone is fetched: an older ref's host-local ID may name another snapshot elsewhere.
 		const fetchers =
 			copies.fetch && from.hostId === undefined
-				? await fetchersAmong(spec.eligibleHosts, holders, copies.architectures)
+				? await fetchersAmong(spec.eligibleHosts, holders, copies.architectures, copies.runtime)
 				: [];
 		if (fetchers.length === 0) {
 			if (refused !== undefined) throw refused;
@@ -1183,13 +1184,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 
 	/**
 	 * The hosts among `eligible` that may fetch a snapshot for a create: those that don't hold it (`holders`), fetch
-	 * saved snapshots from their peers (`HOST_FEATURES.snapshotSync`), and are of an architecture a holder serves
-	 * (`architectures`, where said).
+	 * saved snapshots from their peers (`HOST_FEATURES.snapshotSync`), are of an architecture a holder serves
+	 * (`architectures`, where said), and can have the root image its disk is over (`rootImageOn`, by its `runtime` where
+	 * said): one that can't would refuse the fetch, failing the create after waiting for it.
 	 */
 	async function fetchersAmong(
 		eligible: readonly string[],
 		holders: readonly { readonly hostId: string }[],
 		architectures: SnapshotCopies["architectures"],
+		runtime: SnapshotCopies["runtime"],
 	): Promise<string[]> {
 		const others = eligible.filter((hostId) => !holders.some((holder) => holder.hostId === hostId));
 		if (others.length === 0) return [];
@@ -1199,7 +1202,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					(host) =>
 						host.features.includes(HOST_FEATURES.diskSync) &&
 						host.features.includes(HOST_FEATURES.snapshotSync) &&
-						(architectures === undefined || (host.arch !== undefined && architectures.includes(host.arch))),
+						(architectures === undefined || (host.arch !== undefined && architectures.includes(host.arch))) &&
+						rootImageOn(host, { runtime }),
 				)
 				.map((host) => host.id),
 		);

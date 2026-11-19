@@ -288,6 +288,14 @@ const FeatureTemplateImageCopies = "template-image-copies"
 // memory only after them. It comes with FeatureDiskSync, on the microVM tier.
 const FeatureSnapshotSync = "snapshot-sync"
 
+// FeatureSnapshotImageDigest: a disk.fetch of a saved snapshot's disk finds the host image it is over by the digest its
+// runtime names (`image=<version>@sha256:...`, or `image=sha256:...` for a host image that isn't versioned) among
+// every host image the host has, its root filesystem and each version installed, whatever it is called here; it
+// downloads the snapshot's version from its release only when none has that digest. So a host can take a snapshot
+// whose image is any of those its Runtimes name by digest. A host without it takes one whose image isn't versioned
+// only when its own root filesystem's runtime names exactly that image. It comes with FeatureSnapshotSync.
+const FeatureSnapshotImageDigest = "snapshot-image-digest"
+
 // FeatureSandboxMove: a stopped microVM sandbox moves to another host in its pool (docs/design/disk-store.md, "Moving
 // a sandbox to another host"). Its disk and sticky drives are a disk store object, kind DiskKindSandbox, its ID the
 // sandbox's, one version for each export (the move's operation ID): sandbox.export (SandboxExportParams) on its host

@@ -4015,7 +4015,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * disk (the catalogue's `snapshot` holders of its ref), each with whether its copy restores the snapshot's memory (the
 	 * host it was taken on, or a copy whose memory came too, which a host fetches only where it restores it). It may be
 	 * fetched by another host where snapshots are synced, its pool can be told (a copy is offered only in it), and a
-	 * holder online in it has reported its disk.
+	 * holder online in it has reported its disk; its runtime then says which hosts can have its root image.
 	 */
 	async function snapshotCopiesOf(
 		snapshot: StoredSnapshot,
@@ -4047,7 +4047,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Only a saved snapshot's ID alone: an older ref's host-local ID may name another snapshot on the host fetching it.
 		const fetch =
 			diskHolders.syncsSnapshots && poolId !== undefined && refHost(ref) === undefined && serving.length > 0;
-		return { holders, memory, fetch, ...(fetch && architectures.length > 0 ? { architectures } : {}) };
+		return {
+			holders,
+			memory,
+			fetch,
+			...(fetch && architectures.length > 0 ? { architectures } : {}),
+			...(fetch && snapshot.runtime !== undefined && snapshot.runtime !== "" ? { runtime: snapshot.runtime } : {}),
+		};
 	}
 
 	/**

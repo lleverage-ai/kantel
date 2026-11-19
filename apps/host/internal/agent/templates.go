@@ -54,11 +54,16 @@ func (h *Host) runtimes() []proto.HostRuntime {
 	if !ok {
 		return nil
 	}
-	var versions []string
-	if h.cfg.ImagePatching {
-		versions = imageStore(h.cfg).SandboxImages()
+	return mv.Runtimes(h.sandboxImages())
+}
+
+// sandboxImages are the microVMs' root filesystems of the host image versions installed now (microvm.Config.HostImages,
+// and what Runtimes reports a runtime for): none without image patching, which keeps no versions.
+func (h *Host) sandboxImages() []string {
+	if !h.cfg.ImagePatching {
+		return nil
 	}
-	return mv.Runtimes(versions)
+	return imageStore(h.cfg).SandboxImages()
 }
 
 // canBuildTemplates says whether the host can build templates now: it runs the microVM tier and that can build their

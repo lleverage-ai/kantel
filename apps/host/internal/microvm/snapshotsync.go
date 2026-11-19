@@ -306,9 +306,12 @@ func (m *Manager) PrepareSnapshotFetch(ctx context.Context, id string, record []
 }
 
 // localRootfs is this host's file of the root image a snapshot's disk is over, put in place when it hasn't it: a
-// template's root filesystem (images/templates/<key>.ext4) fetched from a peer (Config.FetchRootfs), or a host image
-// version downloaded (Config.HostImage). A host image that isn't versioned is this host's own image only when the
-// two are the same image, as their portable runtimes say (runtimeImage: the digest recorded when it was downloaded).
+// template's root filesystem (images/templates/<key>.ext4) fetched from a peer (Config.FetchRootfs), or a host image.
+// A host image is the same image on two hosts only when the digest it was downloaded with is the same, as their
+// portable runtimes say (runtimeImage); the version it is under is only where to download it from, and a host image
+// that isn't versioned has none. So the host looks first through every host image it has (hostImageWithDigest) for
+// one with the snapshot's digest, whatever it is called here, and downloads the snapshot's version (Config.HostImage)
+// only when none has it.
 func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, error) {
 	rootfs := snap.Rootfs
 	if key, ok := templateRootfsKey(rootfs); ok {
@@ -331,29 +334,92 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 		}
 		return path, nil
 	}
-	// A host image, by its portable identity: a version's name and the digest it was downloaded with. A version's name
-	// alone isn't one: an image from before versions is named on its own host alone (images.Store's migration).
+	// A host image, by its portable identity: the digest it was downloaded with. A version's name alone isn't one: an
+	// image from before versions is named on its own host alone (images.Store's migration), and one host's "initial" may
+	// be another's anything. The version is the one its path names, else its runtime's: a sandbox whose root filesystem
+	// link is the default path (made before its host pinned versions) is on the version that path resolved to.
 	want := runtimePart(snap.Runtime, "image")
-	if version := images.VersionOf(rootfs); version != "" {
-		if want == "" {
+	version, digest := imageVersion(want), imageDigest(want)
+	if v := images.VersionOf(rootfs); v != "" {
+		version = v
+	}
+	if digest == "" {
+		if version != "" {
 			return "", fmt.Errorf("%w: its host image %s has no recorded digest, so it can't be told to be this host's", ErrNoSnapshotImage, version)
 		}
-		if m.cfg.HostImage == nil {
-			return "", fmt.Errorf("%w: it is host image %s, and this host doesn't keep its images by version", ErrNoSnapshotImage, version)
-		}
-		path, err := m.cfg.HostImage(ctx, version)
-		if err != nil {
-			return "", fmt.Errorf("%w: host image %s: %w", ErrNoSnapshotImage, version, err)
-		}
-		if have, ok := m.runtimeImage(path); !ok || have != want {
-			return "", fmt.Errorf("%w: this host's %s is another image (%q, not %q)", ErrNoSnapshotImage, version, have, want)
-		}
+		return "", fmt.Errorf("%w: its host's image (%q) can't be told to be this host's", ErrNoSnapshotImage, want)
+	}
+	if path, ok := m.hostImageWithDigest(version, digest); ok {
 		return path, nil
 	}
-	if have, ok := m.runtimeImage(m.cfg.Rootfs); ok && want != "" && have == want {
-		return m.cfg.Rootfs, nil
+	if version == "" {
+		// Its host's image wasn't versioned, so there is nowhere to download it from by name: only a host that has the
+		// same image already can take the snapshot.
+		return "", fmt.Errorf("%w: no host image here is its host's (%s), which isn't versioned, so it can't be downloaded", ErrNoSnapshotImage, digest)
 	}
-	return "", fmt.Errorf("%w: its host's image (%q) can't be told to be this host's", ErrNoSnapshotImage, want)
+	if m.cfg.HostImage == nil {
+		return "", fmt.Errorf("%w: it is host image %s, and this host doesn't keep its images by version", ErrNoSnapshotImage, version)
+	}
+	path, err := m.cfg.HostImage(ctx, version)
+	if err != nil {
+		return "", fmt.Errorf("%w: host image %s: %w", ErrNoSnapshotImage, version, err)
+	}
+	if have, _ := m.runtimeImage(path); imageDigest(have) != digest {
+		return "", fmt.Errorf("%w: this host's %s is another image (%q, not %q)", ErrNoSnapshotImage, version, have, want)
+	}
+	return path, nil
+}
+
+// hostImageWithDigest is a host image file this host has whose recorded digest is digest (as runtimeImage says it,
+// `sha256:` and a prefix): one of the versions installed (Config.HostImages), then Rootfs, resolved to the version it
+// is now where versions are pinned (baseRootfs), so a later update doesn't move the copy's image from under it. The
+// file of version, when it is one of them, is taken first: a sandbox made from the copy then boots that version's
+// kernel, as on its own host. The bytes are all a disk over it needs, so any file with them will do.
+func (m *Manager) hostImageWithDigest(version, digest string) (string, bool) {
+	var installed []string
+	if m.cfg.HostImages != nil {
+		installed = m.cfg.HostImages()
+	}
+	var candidates []string
+	for _, path := range installed {
+		if version != "" && images.VersionOf(path) == version {
+			candidates = append([]string{path}, candidates...)
+		} else {
+			candidates = append(candidates, path)
+		}
+	}
+	candidates = append(candidates, m.baseRootfs(), m.cfg.Rootfs)
+	for _, path := range candidates {
+		if path == "" || !fileExists(path) {
+			continue
+		}
+		if have, ok := m.runtimeImage(path); ok && imageDigest(have) == digest {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// imageDigest is the digest a portable runtime's image names (runtimeImage): `sha256:` and a prefix, from a version's
+// (`<version>@sha256:...`) or from a host image that isn't versioned (`sha256:...`). "" when it names none.
+func imageDigest(image string) string {
+	if _, digest, ok := strings.Cut(image, "@"); ok {
+		image = digest
+	}
+	if !strings.HasPrefix(image, "sha256:") || len(image) == len("sha256:") {
+		return ""
+	}
+	return image
+}
+
+// imageVersion is the host image version a portable runtime's image names (`<version>@sha256:...`): "" for a host
+// image that isn't versioned, or one whose version can't name a directory.
+func imageVersion(image string) string {
+	version, _, ok := strings.Cut(image, "@")
+	if !ok || !images.ValidVersion(version) {
+		return ""
+	}
+	return version
 }
 
 // templateRootfsKey is the key of a template's root filesystem at path on any host (.../images/templates/<key>.ext4).

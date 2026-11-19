@@ -7,7 +7,7 @@ import type { SandboxBackend, SandboxSpec, SnapshotCopies } from "@kantel/comput
 import { isKantelError, placementReasonOf } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
-import { HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
+import { HOST_FEATURES, type HostFacts, type HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { isSavedSnapshotRef, parseSnapshotRef, SAVED_SNAPSHOT_ID, snapshotRef } from "../src/snapshot-refs.ts";
@@ -44,6 +44,8 @@ async function addHost(
 		readonly arch?: string;
 		/** The timings its creates answer, by step; absent, none (a host that says nothing of how it started). */
 		readonly timings?: () => { readonly [step: string]: number } | undefined;
+		/** Facts it reports beyond the usual, such as its runtimes. */
+		readonly facts?: Partial<HostFacts>;
 	} = {},
 ) {
 	await store.insertHost({
@@ -57,6 +59,7 @@ async function addHost(
 	});
 	const host = new FakeHost(service, id, featuresOf(options.sync !== false));
 	if (options.arch !== undefined) host.moreFacts = { arch: options.arch };
+	if (options.facts !== undefined) host.moreFacts = { ...host.moreFacts, ...options.facts };
 	if (options.freeMemoryMiB !== undefined) host.freeMemoryMiB = options.freeMemoryMiB;
 	// A create answers the phases its start took, as a current host does.
 	const answered = host.answer;
@@ -400,6 +403,38 @@ describe("a create from a saved snapshot", () => {
 		);
 		expect(placed.hostId).toBe("host_c");
 		expect(b.calls).toEqual([]);
+	});
+
+	it("is fetched only by a host that can have the root image its disk is over", async () => {
+		// As on 19 Nov 2026: a snapshot over a host image that isn't versioned, which only a host that has those bytes can
+		// take; a host without them refused every fetch, failing the create once it had waited for it.
+		const plain = "firecracker=v1.17.0;kernel=6.1.155+0123456789ab;image=sha256:78ca3a4ec2d4301c;sticky=4";
+		const runtimes = (image: string) => [{ image, runtime: plain.replace("sha256:78ca3a4ec2d4301c", image) }];
+		const { store, service, backend } = await setup();
+		await addHost(store, service, "host_a", { freeMemoryMiB: 100 });
+		// host_b has the most room, but another image; host_c the same bytes as a version, found by their digest.
+		const b = await addHost(store, service, "host_b", {
+			freeMemoryMiB: 30_000,
+			facts: { runtimes: runtimes("host-images-20261114@sha256:f13fd019fde6d11a") },
+		});
+		const c = await addHost(store, service, "host_c", {
+			freeMemoryMiB: 10_000,
+			facts: {
+				runtimes: runtimes("host-images-20261114@sha256:78ca3a4ec2d4301c"),
+				features: [...featuresOf(true), HOST_FEATURES.snapshotImageDigest],
+			},
+		});
+		fetchesThen(c, (host) => reportsHolding(host));
+		const placed = await backend.create(
+			spec(["host_a", "host_b", "host_c"], SNAPSHOT, {
+				holders: [{ hostId: "host_a", memory: false }],
+				memory: false,
+				fetch: true,
+				runtime: plain,
+			}),
+		);
+		expect(placed.hostId).toBe("host_c");
+		expect(b.calls.filter((call) => call.method === "disk.fetch")).toEqual([]);
 	});
 
 	it("gives up on a fetch its host never reports", async () => {
