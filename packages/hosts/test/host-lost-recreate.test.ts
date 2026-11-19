@@ -305,6 +305,52 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		expect(running.map((record) => record?.stopFor)).toEqual(running.map(() => HOST_AWAY_STOP_REASON));
 	});
 
+	it("never gives a later run the stop its making again owed, when it is finished after that run began", async () => {
+		const { api, root, sandbox, pass } = await setup({ onHostLost: "recreate" });
+		const running = await api.store.sandboxes.get(sandbox.id);
+		const lifecycle = running?.lifecycle ?? 0;
+		// Its replacement ended (or was stopped) and a start booted it again before its making again was finished: its
+		// marker names an attempt runs ago.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			recreating: {
+				hostId: "host_gone",
+				eventId: "evt_later_run",
+				previousState: "running",
+				snapshotId: "snap_gone",
+				heartbeatAt: Date.now(),
+				attempt: lifecycle - 3,
+				stopFor: HOST_AWAY_STOP_REASON,
+			},
+		}));
+		await pass(1_000);
+		const finished = await api.store.sandboxes.get(sandbox.id);
+		expect(finished?.recreating).toBeUndefined();
+		expect(finished?.stopFor).toBeUndefined();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+	});
+
+	it("stops the run its making again published where that run still owes the stop as it is finished", async () => {
+		const { api, root, sandbox, pass } = await setup({ onHostLost: "recreate" });
+		const lifecycle = (await api.store.sandboxes.get(sandbox.id))?.lifecycle ?? 0;
+		// Published by its making again (the attempt before this run), the stop not written yet.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			recreating: {
+				hostId: "host_gone",
+				eventId: "evt_own_run",
+				previousState: "running",
+				snapshotId: "snap_gone",
+				heartbeatAt: Date.now(),
+				attempt: lifecycle - 1,
+				stopFor: HOST_AWAY_STOP_REASON,
+			},
+		}));
+		await pass(1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
+		expect((await root.getSandbox(sandbox.id)).reason).toBe(HOST_AWAY_STOP_REASON);
+	});
+
 	it("is stopped again by the sweep where its gateway went before its stop was carried out", async () => {
 		const { api, root, b, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
 		await save("kept");

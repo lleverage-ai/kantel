@@ -452,12 +452,14 @@ export interface GatewayHostsBackend {
 	/** This gateway among its replicas, with a database: it serves their calls for hosts connected here. */
 	readonly cluster?: GatewayCluster;
 	/**
-	 * Points the access check at the compute API, once there is one, and with `notRunning` what a request to a stopped
-	 * sandbox's port is told (`ComputeService.portNotRunning`).
+	 * Points the access check at the compute API, once there is one, with `notRunning` what a request to a stopped
+	 * sandbox's port is told (`ComputeService.portNotRunning`), and with `portRefused` why a running one's is refused
+	 * (`ComputeService.portRefused`).
 	 */
 	bind(
 		stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>,
 		notRunning?: (sandboxId: string) => Promise<string | undefined>,
+		portRefused?: (sandboxId: string) => Promise<string | undefined>,
 	): void;
 }
 
@@ -470,6 +472,7 @@ export function gatewayRelay(
 ): GatewayHostsBackend {
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
 	let stopped: ((sandboxId: string) => Promise<string | undefined>) | undefined;
+	let portRefusal: ((sandboxId: string) => Promise<string | undefined>) | undefined;
 	const access = createRelayAccess({
 		// Nothing is let through before the compute API can answer.
 		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
@@ -486,6 +489,7 @@ export function gatewayRelay(
 					store,
 					stillAllowed: (grantee, sandboxId) => access.allowed(grantee, sandboxId),
 					notRunning: (sandboxId) => stopped?.(sandboxId) ?? Promise.resolve(undefined),
+					refused: (sandboxId) => portRefusal?.(sandboxId) ?? Promise.resolve(undefined),
 					...(options.now === undefined ? {} : { now: options.now }),
 				});
 	return {
@@ -495,9 +499,10 @@ export function gatewayRelay(
 		...(ports === undefined ? {} : { ports }),
 		...(options.cluster === undefined ? {} : { cluster: options.cluster }),
 		access,
-		bind(stillAllowed, notRunning) {
+		bind(stillAllowed, notRunning, portRefused) {
 			check = stillAllowed;
 			stopped = notRunning;
+			portRefusal = portRefused;
 		},
 	};
 }
@@ -748,6 +753,7 @@ export async function gatewayCompute(options: {
 		hosts.bind(
 			(grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId),
 			(sandboxId) => api.service.portNotRunning(sandboxId),
+			(sandboxId) => api.service.portRefused(sandboxId),
 		);
 		hosts.access.start();
 	}

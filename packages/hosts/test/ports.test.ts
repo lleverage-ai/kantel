@@ -47,6 +47,8 @@ describe("an exposed port's name", () => {
 			store?: RelayStore;
 			stillAllowed?: (grantee: string | undefined) => Promise<boolean>;
 			notRunning?: (sandboxId: string) => Promise<string | undefined>;
+			refused?: (sandboxId: string) => Promise<string | undefined>;
+			now?: () => number;
 			openPort?: (sandboxId: string, port: number, sink: PortSink) => Promise<PortStream>;
 		} = {},
 	) => {
@@ -58,6 +60,8 @@ describe("an exposed port's name", () => {
 			store,
 			...(options.stillAllowed === undefined ? {} : { stillAllowed: options.stillAllowed }),
 			...(options.notRunning === undefined ? {} : { notRunning: options.notRunning }),
+			...(options.refused === undefined ? {} : { refused: options.refused }),
+			...(options.now === undefined ? {} : { now: options.now }),
 		});
 		return { router, store, ...port };
 	};
@@ -137,6 +141,52 @@ describe("an exposed port's name", () => {
 		const before = asked.length;
 		expect((await router.fetch(new Request(new URL("/", gated.url))))?.status).toBe(401);
 		expect(asked).toHaveLength(before);
+	});
+
+	it("refuses a request or upgrade to a running sandbox that owes a stop with 409, after the gate, never reaching it", async () => {
+		let owed: string | undefined = "The sandbox is being stopped: Its egress can't be enforced";
+		let clock = 0;
+		const asked: string[] = [];
+		const { router, opened } = setup(undefined, {
+			refused: async (sandboxId) => {
+				asked.push(sandboxId);
+				return owed;
+			},
+			now: () => clock,
+		});
+		const { url } = await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
+		const answer = await router.fetch(new Request(url));
+		expect(answer?.status).toBe(409);
+		expect(await answer?.text()).toBe(`${owed}\n`);
+		expect(await router.upgrade("3000-brave-otter-ab12cd.kantel-ports.test", "/", undefined, {})).toEqual({
+			ok: false,
+			status: 409,
+			reason: owed,
+		});
+		expect(opened).toHaveLength(0);
+		// A page's burst asks once a second, not once a request.
+		expect(asked).toEqual(["sbx_1"]);
+		owed = undefined;
+		clock += 1_000;
+		expect((await router.fetch(new Request(url)))?.status).toBe(200);
+		expect(opened).toHaveLength(1);
+
+		// A gated port says nothing about its sandbox without its token.
+		const gated = await router.expose("sbx_1", 3001, { public: false, subdomain: "brave-otter-ab12cd" });
+		const before = asked.length;
+		expect((await router.fetch(new Request(new URL("/", gated.url))))?.status).toBe(401);
+		expect(asked).toHaveLength(before);
+	});
+
+	it("refuses rather than reaches a sandbox whose refusal can't be read", async () => {
+		const { router, opened } = setup(undefined, {
+			refused: async () => {
+				throw new Error("store unavailable");
+			},
+		});
+		const { url } = await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
+		expect((await router.fetch(new Request(url)))?.status).toBe(409);
+		expect(opened).toHaveLength(0);
 	});
 
 	it("cuts a stopped port's WebSocket refusal to fit a close frame, whatever its sandbox's name", async () => {

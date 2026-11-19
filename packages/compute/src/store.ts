@@ -326,8 +326,12 @@ export type StoredSandbox = Omit<
 		readonly heartbeatAt: number;
 		/** The stop it owed (`stopFor`) as it was lost, owed again once its replacement runs. */
 		readonly stopFor?: string;
-		/** Published running with the stop it owes written then; absent from a gateway that wrote it as it finished. */
-		readonly published?: boolean;
+		/**
+		 * The lifecycle of the `starting` its making again wrote (its create's attempt): the stop it owed (`stopFor`) is
+		 * owed by that attempt alone, until it is published, and by the run its publishing makes (the next lifecycle), never
+		 * a later one. Absent from a gateway from before it was kept, which kept no `stopFor` either.
+		 */
+		readonly attempt?: number;
 	};
 	/**
 	 * A loss begun and not yet settled (`ComputeServiceOptions.hostLostAfterMs`): the lost host, the create attempt placed

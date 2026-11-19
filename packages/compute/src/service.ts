@@ -684,6 +684,12 @@ export interface ComputeService {
 	 */
 	portNotRunning(sandboxId: string): Promise<string | undefined>;
 	/**
+	 * Why a request to a hosted port of a running sandbox is refused: it owes a stop (`stopFor`, its egress as stored
+	 * not what its host enforces, or a stop its host was away for), so nothing reaches it until that stop is carried out,
+	 * as its commands and files are refused. Undefined otherwise.
+	 */
+	portRefused(sandboxId: string): Promise<string | undefined>;
+	/**
 	 * Makes `digest` a template base channel's current one (the image patching pipeline's call, as the super-admin's
 	 * `POST /v1/template-bases` is), and rebuilds the templates following it in the background. `not_supported` while
 	 * templates are off.
@@ -7504,10 +7510,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			LOSABLE,
 			(current) => {
 				// One being made again (`recreating`) whose new host is lost too: that making again is over with it.
-				// A stop its first loss found it owing stays owed (`recreating.stopFor`), for a further making again.
+				// A stop its first loss found it owing stays owed (`recreating.stopFor`), for a further making again: only
+				// while it is that making again's own attempt, not yet published (whose run owes it as `stopFor` itself),
+				// never a later run's.
 				const { losing: _, recreating, ...rest } = current;
+				const carried =
+					rest.stopFor === undefined &&
+					recreating?.stopFor !== undefined &&
+					recreating.attempt !== undefined &&
+					(current.lifecycle ?? 0) === recreating.attempt;
 				return withState(rest, "lost", {
-					...(rest.stopFor === undefined && recreating?.stopFor !== undefined ? { stopFor: recreating.stopFor } : {}),
+					...(carried ? { stopFor: recreating.stopFor } : {}),
 					reason: HOST_LOST_REASON,
 					ports: [],
 					hostId: intent.hostId,
@@ -7752,6 +7765,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						previousState: due.previousState,
 						snapshotId: plan.snapshot.id,
 						heartbeatAt: now(),
+						// The lifecycle this `starting` gets (`withState`).
+						attempt: (rest.lifecycle ?? 0) + 1,
 						// A stop it owed as it was lost (one asked for while its host was away, say), which the boot's `starting`
 						// clears: owed again in the write that publishes it running (`recreatedStop`).
 						...(rest.stopFor === undefined ? {} : { stopFor: rest.stopFor }),
@@ -7928,9 +7943,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/**
 	 * Finishes a sandbox made again on another host, once it is no longer `starting` (it runs, or its new machine ended):
 	 * its `sandbox.recreated` event, under its loss's ID (a retry writes over it), naming the snapshot it was made from;
-	 * then its marker cleared. Where it runs owing a stop (`recreatedStop`, written as it was published), that stop is
-	 * begun here at once, for that run alone: the sweep's durable kind (`stopClaimedAt`, handed back if its gateway goes).
-	 * Each step may be done again, by any gateway (the loss pass finds one left).
+	 * then its marker cleared. Where the run its publishing made (`ownRun`) still runs owing a stop (`recreatedStop`,
+	 * written as it was published), that stop is begun here at once, for that run alone: the sweep's durable kind
+	 * (`stopClaimedAt`, handed back if its gateway goes). A later run (a start after its replacement ended or was
+	 * stopped) is never given or stopped for it. Each step may be done again, by any gateway (the loss pass finds one
+	 * left).
 	 */
 	async function finishRecreate(sandbox: StoredSandbox): Promise<void> {
 		const marker = sandbox.recreating;
@@ -7942,18 +7959,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			marker.eventId,
 		);
 		const stopFor = recreationStopFor(marker);
+		const ownRun = (current: StoredSandbox) =>
+			current.state === "running" && (marker.attempt === undefined || (current.lifecycle ?? 0) === marker.attempt + 1);
 		const finished = await store.sandboxes.update(sandbox.id, (current) => {
 			if (current.recreating?.eventId !== marker.eventId || current.state === "starting") return undefined;
-			const { recreating, ...rest } = current;
-			// Published by a gateway from before its publishing wrote the stop (`recreating.published`): owed from here.
-			return recreating.published !== true &&
-				stopFor !== undefined &&
-				rest.state === "running" &&
-				rest.stopFor === undefined
-				? { ...rest, stopFor }
-				: rest;
+			const { recreating: _, ...rest } = current;
+			// Its own run, published by a gateway from before its publishing wrote the stop: owed from here.
+			return stopFor !== undefined && ownRun(rest) && rest.stopFor === undefined ? { ...rest, stopFor } : rest;
 		});
-		if (stopFor === undefined || finished?.state !== "running" || finished.stopFor !== stopFor) return;
+		if (stopFor === undefined || finished === undefined || !ownRun(finished) || finished.stopFor !== stopFor) return;
 		// Queued behind whatever is at it now (`track`, never awaited here, so a caller inside one doesn't wait on itself).
 		const lifecycle = finished.lifecycle ?? 0;
 		const owed = (current: StoredSandbox) => current.stopFor === stopFor && (current.lifecycle ?? 0) === lifecycle;
@@ -7971,14 +7985,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * What a sandbox being made again (`recreating`) is published with (`boot`'s `publishing`): the stop it owes
-	 * (`recreationStopFor`), in the one write that makes it run, so it is never usable before that stop is owed, and its
-	 * marker saying so (`published`), so its finishing never writes that stop again over a later run.
+	 * (`recreationStopFor`), in the one write that makes it run, so it is never usable before that stop is owed.
 	 */
 	function recreatedStop(sandbox: StoredSandbox): Partial<StoredSandbox> {
 		const marker = sandbox.recreating;
-		if (marker === undefined) return {};
-		const stopFor = sandbox.stopFor ?? recreationStopFor(marker);
-		return { recreating: { ...marker, published: true }, ...(stopFor === undefined ? {} : { stopFor }) };
+		const stopFor = sandbox.stopFor ?? (marker === undefined ? undefined : recreationStopFor(marker));
+		return stopFor === undefined ? {} : { stopFor };
 	}
 
 	/** `ComputeService.reportSandboxLost`. */
@@ -8256,16 +8268,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					// it stale, no answer in time), so the machine may still be running there: it is running again as it was
 					// (its stop time and run unchanged), for a later sweep to stop. What the host refused outright (`conflict`,
 					// `not_found`, ...) is an error as before. It is decided by the failure, not by whether the host is connected
-					// by now, which a reconnection or a stale view could answer either way.
-					await transition(sandbox.id, "stopping", (current) => ({
-						...current,
-						state: "running",
-						runs: was.runs,
-						stopsAt: was.stopsAt,
-						// The same machine: its guest agent's health (and why) as the stop found it.
-						reason: current.health === "unresponsive" ? current.reason : undefined,
-					}));
-					return;
+					// by now, which a reconnection or a stale view could answer either way. Only this stop's own `stopping`, and
+					// never one whose host reported its machine's exit meanwhile (`exitedWhileStopping`): that is an `error`, so
+					// a start boots it again.
+					const handed = await transition(
+						sandbox.id,
+						"stopping",
+						(current) => ({
+							...current,
+							state: "running",
+							runs: was.runs,
+							stopsAt: was.stopsAt,
+							// The same machine: its guest agent's health (and why) as the stop found it.
+							reason: current.health === "unresponsive" ? current.reason : undefined,
+						}),
+						(current) => ours(current) && current.exitedWhileStopping === undefined,
+					);
+					exited = "lost" in handed && ours(handed.lost) ? handed.lost.exitedWhileStopping : undefined;
+					if (exited === undefined) return;
 				}
 				await fail(
 					sandbox.id,
@@ -15704,6 +15724,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return portNotRunningText(sandbox, apiBasePath);
 		},
 
+		async portRefused(sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			return sandbox !== undefined && owesStop(sandbox) ? beingStopped(sandbox).message : undefined;
+		},
+
 		async carryOnDeletions() {
 			for (const deletion of await store.deletions.list({ stage: "running" })) {
 				if (deletion.dueAt <= now()) await carryOnDeletion(deletion.id).catch(() => undefined);
@@ -15779,6 +15804,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						(current.strandedOn ?? []).length === 0 &&
 						current.stopFor === sandbox.stopFor &&
 						(state === "stopping" ? current.stopClaimedAt : current.stopsAt) === since;
+					// One whose host reported its machine's exit while it was stopping (`exitedWhileStopping`) is an `error`,
+					// as that report would have made it running, so a start boots it again.
+					const exited = sandbox.exitedWhileStopping;
+					if (exited !== undefined) {
+						await fail(sandbox.id, new KantelError("unavailable", exited), state, (current) => {
+							return marker(current) && current.exitedWhileStopping === exited;
+						});
+						continue;
+					}
 					await transition(
 						sandbox.id,
 						state,
@@ -15792,7 +15826,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							// The same machine: its guest agent's health (and why) as the stop found it.
 							reason: current.health === "unresponsive" ? current.reason : undefined,
 						}),
-						marker,
+						(current) => marker(current) && current.exitedWhileStopping === undefined,
 					).catch(() => undefined);
 				}
 			}

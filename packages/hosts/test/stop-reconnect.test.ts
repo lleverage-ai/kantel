@@ -230,6 +230,70 @@ describe("a stop while its host is away", () => {
 		expect(back.calls.filter((call) => call.method === "sandbox.stop")).toHaveLength(1);
 	});
 
+	it("leaves the sweep's retry of an owed stop in error when its host reported the machine's exit meanwhile", async () => {
+		const { api, root, service, hostId, host, sandbox, skip } = await setup();
+		host.connection.closed(1006, "gone");
+		await root.stopSandbox(sandbox.id);
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		const back = await reconnect(service, hostId, host);
+		back.hold = (method) => (method === "sandbox.stop" ? never() : undefined);
+		await api.service.sweep();
+		await vi.waitFor(() => expect(back.calls.some((call) => call.method === "sandbox.stop")).toBe(true));
+		// Its hello, after a restart, says the machine ended; then its connection goes before the stop is answered.
+		await api.service.reportExit(hostId, sandbox.id, "the host restarted");
+		back.connection.closed(1006, "gone");
+		await api.service.idle();
+		const failed = await api.store.sandboxes.get(sandbox.id);
+		expect(failed?.state).toBe("error");
+		expect(failed?.reason).toMatch(/the host restarted/i);
+	});
+
+	it("leaves an owed stop whose gateway went in error, not running, when its host reported the machine's exit", async () => {
+		const { api, root, hostId, sandbox } = await setup();
+		// Taken on by a gateway that went before sending it, its lease long past; the machine's exit reported since.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "stopping",
+			stopFor: HOST_AWAY_STOP_REASON,
+			stopClaimedAt: Date.now() - 60 * 60_000,
+		}));
+		await api.service.reportExit(hostId, sandbox.id, "the host restarted");
+		await api.service.sweep();
+		await api.service.idle();
+		const failed = await root.getSandbox(sandbox.id);
+		expect(failed.state).toBe("error");
+		expect(failed.reason).toMatch(/the host restarted/i);
+	});
+
+	it("refuses an owed stop's sandbox's ports, whichever stop it owes, until it is carried out", async () => {
+		const { api, root, service, hostId, host, sandbox, skip } = await setup();
+		expect(await api.service.portRefused(sandbox.id)).toBeUndefined();
+		// An egress stop (its egress as stored not what its host enforces) owed as it runs.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			stopFor: "Its egress can't be enforced",
+		}));
+		expect(await api.service.portRefused(sandbox.id)).toBe(
+			"The sandbox is being stopped: Its egress can't be enforced",
+		);
+		await api.store.sandboxes.update(sandbox.id, (current) => {
+			const { stopFor: _, ...rest } = current;
+			return rest;
+		});
+		// A stop its host was away for.
+		host.connection.closed(1006, "gone");
+		await root.stopSandbox(sandbox.id);
+		skip(STOP_RECONNECT_WAIT_MS + 1);
+		await api.service.idle();
+		expect(await api.service.portRefused(sandbox.id)).toBe(`The sandbox is being stopped: ${HOST_AWAY_STOP_REASON}`);
+		await reconnect(service, hostId, host);
+		await api.service.sweep();
+		await api.service.idle();
+		expect(await stateOf(root, sandbox.id)).toBe("stopped");
+		expect(await api.service.portRefused(sandbox.id)).toBeUndefined();
+	});
+
 	it("doesn't send again what the host itself refused", async () => {
 		const { api, root, host, sandbox } = await setup();
 		host.refuse = (method) =>

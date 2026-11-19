@@ -644,6 +644,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	own?.bind(
 		(grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId),
 		(sandboxId) => api.service.portNotRunning(sandboxId),
+		(sandboxId) => api.service.portRefused(sandboxId),
 	);
 	const timers = whileBusy(api, now);
 	// The dispatcher runs only while compute requests come (`whileBusy`), so the sweep sends what it queued itself: a
@@ -719,6 +720,7 @@ async function accountHostsSide(
 	bind(
 		stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>,
 		notRunning?: (sandboxId: string) => Promise<string | undefined>,
+		portRefused?: (sandboxId: string) => Promise<string | undefined>,
 	): void;
 	/** The sandboxes placed on a host of the registry as microVMs, now. */
 	microvms(): Promise<string[]>;
@@ -749,6 +751,7 @@ async function accountHostsSide(
 	const tickets = sweptAsUsed(createTunnelTickets(relay, now), now);
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
 	let stopped: ((sandboxId: string) => Promise<string | undefined>) | undefined;
+	let portRefusal: ((sandboxId: string) => Promise<string | undefined>) | undefined;
 	// Its timer runs only while a session is held, so it never keeps the object awake on its own.
 	const access = createRelayAccess({
 		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
@@ -764,6 +767,8 @@ async function accountHostsSide(
 		stillAllowed: (grantee, sandboxId) => access.allowed(grantee, sandboxId),
 		// A stopped sandbox's port says so, and how it is resumed.
 		notRunning: (sandboxId) => stopped?.(sandboxId) ?? Promise.resolve(undefined),
+		// A running sandbox that owes a stop: nothing reaches it until that is carried out.
+		refused: (sandboxId) => portRefusal?.(sandboxId) ?? Promise.resolve(undefined),
 		now,
 	});
 	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, ports, now });
@@ -810,9 +815,10 @@ async function accountHostsSide(
 		backend,
 		access,
 		publicUrl: config.publicUrl,
-		bind(stillAllowed, notRunning) {
+		bind(stillAllowed, notRunning, portRefused) {
 			check = stillAllowed;
 			stopped = notRunning;
+			portRefusal = portRefused;
 		},
 		async microvms() {
 			const placed = await Promise.all((await hostStore.listHosts()).map((host) => hostStore.placementsOn(host.id)));

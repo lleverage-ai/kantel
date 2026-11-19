@@ -80,6 +80,12 @@ export interface PortRouterOptions {
 	 * request, when its port didn't answer; for an upgrade, first. Absent: a stopped sandbox's port answers 502.
 	 */
 	notRunning?(sandboxId: string): Promise<string | undefined>;
+	/**
+	 * Why a running sandbox's ports are refused (`ComputeService.portRefused`): it owes a stop, so nothing reaches it
+	 * until that is carried out, as with its commands and files. Undefined when they aren't. Asked on every request and
+	 * upgrade the gate let in, an answer reused for `REFUSED_CACHE_MS`; one that can't be got refuses. Absent: never.
+	 */
+	refused?(sandboxId: string): Promise<string | undefined>;
 }
 
 /**
@@ -87,6 +93,12 @@ export interface PortRouterOptions {
  * owner resumes it, as for a command (see `@kantel/compute`'s not-running.ts).
  */
 export const PORT_NOT_RUNNING_STATUS = 503;
+
+/** The status of a request to a port of a sandbox that runs but owes a stop (`PortRouterOptions.refused`), as its calls get. */
+export const PORT_REFUSED_STATUS = 409;
+
+/** How long a port router reuses `refused`'s answer for a sandbox, so a page's burst of requests asks once. */
+export const REFUSED_CACHE_MS = 1000;
 
 /** Where an upgrade on a port's name may go, or why not. */
 export type PortUpgrade =
@@ -196,6 +208,18 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 	const { store } = options;
 	const now = options.now ?? Date.now;
 	const cookieName = portCookieName(scheme);
+	const refusals = new Map<string, { readonly at: number; readonly reason: string | undefined }>();
+
+	/** Why a sandbox's ports are refused now (`refused`), from an answer at most `REFUSED_CACHE_MS` old. */
+	async function refusal(sandboxId: string): Promise<string | undefined> {
+		if (options.refused === undefined) return undefined;
+		const cached = refusals.get(sandboxId);
+		if (cached !== undefined && now() - cached.at < REFUSED_CACHE_MS) return cached.reason;
+		const reason = await options.refused(sandboxId).catch(() => "Kantel couldn't check this port's sandbox; try again");
+		if (refusals.size > 1000) refusals.clear();
+		refusals.set(sandboxId, { at: now(), reason });
+		return reason;
+	}
 
 	/** The exposure a host name is for: undefined when it isn't under the domain, null when it names none. */
 	async function lookup(hostname: string): Promise<ExposureRecord | null | undefined> {
@@ -310,6 +334,8 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 			if (options.stillAllowed !== undefined && !(await options.stillAllowed(exposure.grantee, exposure.sandboxId))) {
 				return text(403, "Whoever exposed this port no longer has access to its sandbox.");
 			}
+			const refused = await refusal(exposure.sandboxId);
+			if (refused !== undefined) return text(PORT_REFUSED_STATUS, refused);
 			if (query !== null) {
 				url.searchParams.delete(PORT_TOKEN_PARAM);
 				if (
@@ -372,6 +398,8 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 			if (options.stillAllowed !== undefined && !(await options.stillAllowed(exposure.grantee, exposure.sandboxId))) {
 				return { ok: false, status: 403, reason: "Whoever exposed this port no longer has access" };
 			}
+			const refused = await refusal(exposure.sandboxId);
+			if (refused !== undefined) return { ok: false, status: PORT_REFUSED_STATUS, reason: closeReason(refused) };
 			const stopped = await options.notRunning?.(exposure.sandboxId).catch(() => undefined);
 			// A close frame's reason holds 123 bytes of UTF-8: the page's first sentence (that it's stopped, and why), cut to
 			// fit. An HTTP request gets the whole page.
