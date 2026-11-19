@@ -180,6 +180,22 @@ describe("saved snapshot copies", () => {
 		expect(copyTarget(versionedSnapshot, [holder("a")], hostsOf(...hosts.values(), patching), "pool_a", AT)).toBe(
 			"patching",
 		);
+		// Never by one that has that version installed already with other bytes: it keeps the one it has, and refuses it.
+		const conflicting = host("conflicting", {
+			runtimeFingerprints: [as("old@sha256:0c0c0c0c0c0c0c0c")],
+			features: ["disk-sync", "snapshot-sync", "image-patching", "snapshot-image-digest"],
+		});
+		expect(copyTarget(versionedSnapshot, [holder("a")], hostsOf(...hosts.values(), conflicting), "pool_a", AT)).toBe(
+			undefined,
+		);
+		// Unless it has the bytes under another version, and finds images by their digest.
+		const aliased = host("aliased", {
+			runtimeFingerprints: [as("old@sha256:0c0c0c0c0c0c0c0c"), as("new@sha256:0a0a0a0a0a0a0a0a")],
+			features: ["disk-sync", "snapshot-sync", "image-patching", "snapshot-image-digest"],
+		});
+		expect(copyTarget(versionedSnapshot, [holder("a")], hostsOf(...hosts.values(), aliased), "pool_a", AT)).toBe(
+			"aliased",
+		);
 		// A host that doesn't say its runtimes is left to refuse it itself, as before.
 		const silent = host("silent", { freeDiskGb: 1000 });
 		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), silent), "pool_a", AT)).toBe("silent");

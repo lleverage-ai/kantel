@@ -234,6 +234,9 @@ func (m *Manager) OpenSnapshot(id, version string, withMap bool) (*os.File, []by
 // ReadSnapshotFile reads one of a saved snapshot's small files for a peer: its disk's record (SnapshotRecordFile), or
 // its memory's machine state (SnapshotStateFile). A record over a template's root filesystem says which build of it
 // this host has (RootfsDigest, its map's digest): two hosts may each have built one under the key, with other bytes.
+// A copy's record over a host image names the root filesystem its holder's did (SourceRootfs), never this host's file
+// of it, which may be another version with the same bytes: a peer that tells the image by its path takes the same one
+// wherever the copy is held.
 func (m *Manager) ReadSnapshotFile(id, version, name string) ([]byte, error) {
 	if !m.HoldsSnapshot(id, version) {
 		return nil, fs.ErrNotExist
@@ -252,6 +255,10 @@ func (m *Manager) ReadSnapshotFile(id, version, name string) ([]byte, error) {
 			if snap.RootfsDigest = m.rootfsMapDigest(key); snap.RootfsDigest != "" {
 				raw, _ = json.MarshalIndent(snap, "", "  ")
 			}
+		}
+		if snap.SourceRootfs != "" {
+			snap.Rootfs, snap.Base, snap.SourceRootfs = snap.SourceRootfs, images.VersionOf(snap.SourceRootfs), ""
+			raw, _ = json.MarshalIndent(snap, "", "  ")
 		}
 		return raw, nil
 	case version == SnapshotMemory && name == SnapshotStateFile:
@@ -284,6 +291,11 @@ func (m *Manager) PrepareSnapshotFetch(ctx context.Context, id string, record []
 	}
 	staged := snap
 	staged.Rootfs, staged.Base = rootfs, images.VersionOf(rootfs)
+	if _, template := templateRootfsKey(snap.Rootfs); !template {
+		// What it is over, as its holder said it: served on from here (ReadSnapshotFile), whatever this host's file is.
+		staged.SourceRootfs = snap.Rootfs
+		staged.RootfsImage, _ = snapshotImage(snap)
+	}
 	// Its memory isn't here: a sandbox made from it boots on its disk until it is (WantsSnapshotMemory).
 	staged.ColdBoot = snap.Memory || snap.ColdBoot
 	staged.Memory, staged.Fetched = false, true
@@ -334,14 +346,10 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 		}
 		return path, nil
 	}
-	// A host image, by its portable identity: the digest it was downloaded with. A version's name alone isn't one: an
-	// image from before versions is named on its own host alone (images.Store's migration), and one host's "initial" may
-	// be another's anything. Where to download it is the version its runtime names, never the one its path names: a
-	// copy's record has its own host's path, which may be another version with the same bytes (hostImageWithDigest), and
-	// a copy of a snapshot over an image that isn't versioned has no release to download, wherever it is held. A sandbox
-	// whose root filesystem link is the default path (made before its host pinned versions) names no version by its
-	// path either, while its runtime names the one that path resolved to.
-	want := runtimePart(snap.Runtime, "image")
+	want, err := snapshotImage(snap)
+	if err != nil {
+		return "", err
+	}
 	version, digest := imageVersion(want), imageDigest(want)
 	if digest == "" {
 		if v := images.VersionOf(rootfs); v != "" {
@@ -349,7 +357,7 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 		}
 		return "", fmt.Errorf("%w: its host's image (%q) can't be told to be this host's", ErrNoSnapshotImage, want)
 	}
-	if path, ok := m.hostImageWithDigest(version, digest); ok {
+	if path, ok := m.hostImageWithDigest(version, digest, snap.Runtime); ok {
 		return path, nil
 	}
 	if version == "" {
@@ -370,14 +378,48 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 	return path, nil
 }
 
+// snapshotImage is the host image a snapshot's disk is over, by its portable identity (runtimeImage's, the digest it
+// was downloaded with, and its version where it has one): the one its files were recorded over (RootfsImage), else
+// the one its runtime names. A version's name alone isn't one: an image from before versions is named on its own host
+// alone (images.Store's migration), and one host's "initial" may be another's anything. Nor is the version its path
+// names, in a record that says RootfsImage: a copy's file may be another version with the same bytes
+// (hostImageWithDigest), and an image that isn't versioned has no release to download, wherever it is held. A record
+// from before RootfsImage was kept (an older host's) names the version its files are over by its path, where that is
+// a version's own file, and its runtime only that of its machine's last boot: a rebase whose boot failed leaves that
+// naming the image before, so where the two differ the snapshot is refused, as a host that tells the image by its
+// path refuses it. A sandbox whose root filesystem link is the default path (made before its host pinned versions)
+// names no version by its path, and its runtime names the one that path resolved to.
+func snapshotImage(snap snapshotMeta) (string, error) {
+	if snap.RootfsImage != "" {
+		return snap.RootfsImage, nil
+	}
+	want := runtimePart(snap.Runtime, "image")
+	if v := images.VersionOf(snap.Rootfs); v != "" && imageDigest(want) != "" && imageVersion(want) != v {
+		return "", fmt.Errorf("%w: its root filesystem is host image %s, and its runtime names another (%q)", ErrNoSnapshotImage, v, want)
+	}
+	return want, nil
+}
+
+// pathImage is the host image rootfs is, as its files say it (runtimeImage), where rootfs is a version's own file,
+// which no activation repoints: "" for any other path (the default path, a plain file, a template's root filesystem),
+// whose image the runtime of a machine's boot over it says instead (snapshotImage).
+func (m *Manager) pathImage(rootfs string) string {
+	if images.VersionOf(rootfs) == "" {
+		return ""
+	}
+	image, _ := m.runtimeImage(rootfs)
+	return image
+}
+
 // hostImageWithDigest is a host image file this host has whose recorded digest is digest (as runtimeImage says it,
 // `sha256:` and a prefix): one of the versions installed (Config.HostImages), then Rootfs. Rootfs is taken as the file
 // it resolves to when that is a version's (with versioned images it is a link to current/, which an activation
 // repoints), so what is checked is what is staged, and a later update doesn't move the copy's image from under it; a
-// plain file, an image that isn't versioned, is taken as Rootfs, as runtimeImage tells it only by that path. The file
-// of version, when it is one of them, is taken first: a sandbox made from the copy then boots that version's kernel,
-// as on its own host. The bytes are all a disk over it needs, so any file with them will do.
-func (m *Manager) hostImageWithDigest(version, digest string) (string, bool) {
+// plain file, an image that isn't versioned, is taken as Rootfs, as runtimeImage tells it only by that path. A file
+// whose portable runtime is the snapshot's (runtime) is taken first, so its memory restores over it
+// (restoresMemoryOf); then the file of version, when it is one of them, so a sandbox made from the copy boots that
+// version's kernel, as on its own host. The bytes are all a disk over it needs, so any file with them will do.
+func (m *Manager) hostImageWithDigest(version, digest, runtime string) (string, bool) {
 	var installed []string
 	if m.cfg.HostImages != nil {
 		installed = m.cfg.HostImages()
@@ -391,15 +433,22 @@ func (m *Manager) hostImageWithDigest(version, digest string) (string, bool) {
 		}
 	}
 	candidates = append(candidates, versionFileOf(m.cfg.Rootfs))
+	var found string
 	for _, path := range candidates {
 		if path == "" || !fileExists(path) {
 			continue
 		}
-		if have, ok := m.runtimeImage(path); ok && imageDigest(have) == digest {
+		if have, ok := m.runtimeImage(path); !ok || imageDigest(have) != digest {
+			continue
+		}
+		if runtime != "" && m.portableRuntime(path) == runtime {
 			return path, true
 		}
+		if found == "" {
+			found = path
+		}
 	}
-	return "", false
+	return found, found != ""
 }
 
 // versionFileOf is the version's file path resolves to (absolute), when it resolves to one; else path as it is.

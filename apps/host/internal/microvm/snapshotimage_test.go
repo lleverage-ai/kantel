@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // stagedRootfs is the root filesystem and base the record a fetch staged names.
@@ -99,13 +102,14 @@ func TestSnapshotOverAnUnversionedImageFindsItByDigest(t *testing.T) {
 	}
 	b.DiscardSnapshotPartial("snap1", SnapshotDisk)
 
-	// A copy of it, held over a version on the host it came from, names that version by its path: still no release to
-	// download, so a host without the bytes refuses it at once.
+	// A record that names a version by its path and this image by its runtime, without saying which its files are over
+	// (RootfsImage, which an older host doesn't write): the two disagree, so it is refused at once, as a host that tells
+	// the image by its path refuses it.
 	c, asked := snapshotSyncHost(t)
-	copied := plain
-	copied.Rootfs = versionFile(b, "new")
-	if err := c.PrepareSnapshotFetch(ctx, "snap1", recordOf(copied)); !errors.Is(err, ErrNoSnapshotImage) || len(*asked) != 0 {
-		t.Fatalf("a copy of an unversioned image's snapshot: %v, asked %v", err, *asked)
+	older := plain
+	older.Rootfs = versionFile(b, "new")
+	if err := c.PrepareSnapshotFetch(ctx, "snap1", recordOf(older)); !errors.Is(err, ErrNoSnapshotImage) || len(*asked) != 0 {
+		t.Fatalf("an older host's record naming another image by its path: %v, asked %v", err, *asked)
 	}
 }
 
@@ -156,20 +160,129 @@ func TestSnapshotOverAVersionFindsItByDigest(t *testing.T) {
 	}
 }
 
-// A copy held over another version with the same bytes names that version by its path, but its runtime still names
-// its own: a host without the bytes downloads the snapshot's own version, not the copy's host's name for it.
-func TestACopysRecordDownloadsItsSnapshotsOwnVersion(t *testing.T) {
+// A copy held over another version with the same bytes keeps that file, but serves the record its holder had: a peer
+// that tells the image by its path (without FeatureSnapshotImageDigest) reads the snapshot's own version, and one
+// without the bytes downloads that version, not the copy's host's name for it.
+func TestACopyServesItsSnapshotsOwnRootfs(t *testing.T) {
 	ctx := context.Background()
 	a, _ := snapshotSyncHost(t)
+	b, _ := snapshotSyncHost(t)
 	c, asked := snapshotSyncHost(t)
 	snap := saveTestSnapshot(t, a, "snap1", "old", false)
-	copied := snap
-	copied.Rootfs = versionFile(a, "new")
-	if err := c.PrepareSnapshotFetch(ctx, "snap1", recordOf(copied)); err != nil {
+	if snap.RootfsImage = a.pathImage(snap.Rootfs); snap.RootfsImage != "old@sha256:0a0a0a0a0a0a0a0a" {
+		t.Fatalf("a save over old records %q", snap.RootfsImage)
+	}
+	if err := a.mapSnapshot(ctx, "snap1"); err != nil {
+		t.Fatal(err)
+	}
+	b.cfg.HostImages = func() []string { return []string{versionFile(b, "new")} }
+	setDigest(t, versionFile(b, "old"), strings.Repeat("cd", 32))
+	setDigest(t, versionFile(b, "new"), strings.Repeat("0a", 32))
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", recordOf(snap)); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchTestVersion(t, a, b, "snap1", SnapshotDisk); err != nil {
+		t.Fatal(err)
+	}
+	held, ok := b.savedSnapshot("snap1")
+	if !ok || held.Rootfs != versionFile(b, "new") || held.Base != "new" {
+		t.Fatalf("the copy is held over %s (base %q), want new's file, which a prune then keeps", held.Rootfs, held.Base)
+	}
+	raw, err := b.ReadSnapshotFile("snap1", SnapshotDisk, SnapshotRecordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var served snapshotMeta
+	if err := json.Unmarshal(raw, &served); err != nil {
+		t.Fatal(err)
+	}
+	if served.Rootfs != snap.Rootfs || served.Base != "old" || served.SourceRootfs != "" ||
+		served.RootfsImage != snap.RootfsImage || served.Runtime != snap.Runtime {
+		t.Fatalf("served %s (base %q, source %q, image %q, runtime %q)", served.Rootfs, served.Base, served.SourceRootfs, served.RootfsImage, served.Runtime)
+	}
+	if err := c.PrepareSnapshotFetch(ctx, "snap1", raw); err != nil {
 		t.Fatal(err)
 	}
 	if rootfs, _ := stagedRootfs(t, c, "snap1"); rootfs != versionFile(c, "old") || !slices.Equal(*asked, []string{"old"}) {
 		t.Fatalf("staged over %s, asked %v", rootfs, *asked)
+	}
+}
+
+// A rebase relinks a sandbox onto new before it boots, and a boot that fails leaves its runtime naming old: a snapshot
+// of it then is over new, as its files say (RootfsImage), and a fetch takes it over new, never old. An older host's
+// record of it, which doesn't say, is refused rather than taken over the image its runtime names.
+func TestASnapshotAfterAFailedRebaseIsOverItsNewImage(t *testing.T) {
+	ctx := context.Background()
+	a, _ := snapshotSyncHost(t)
+	b, asked := snapshotSyncHost(t)
+	withInstalledVersions(b)
+	dir := filepath.Join(a.cfg.Root, "sandboxes", "sbx_1")
+	linkVM(t, filepath.Join(dir, "vm"), versionFile(a, "new"))
+	s := &sandbox{dir: dir, meta: meta{ID: "sbx_1", State: proto.StateError, Runtime: a.portableRuntime(versionFile(a, "old"))}}
+	if err := os.MkdirAll(a.snapshotDir("snap1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info := proto.SnapshotInfo{ID: "snap1", SandboxID: "sbx_1", Kind: "saved", Tier: Tier}
+	if err := a.writeSnapshotMeta(s, &info); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := a.readSnapshot("snap1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.RootfsImage != "new@sha256:0b0b0b0b0b0b0b0b" || !strings.Contains(snap.Runtime, ";image=old@") {
+		t.Fatalf("recorded image %q, runtime %q", snap.RootfsImage, snap.Runtime)
+	}
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", recordOf(snap)); err != nil {
+		t.Fatal(err)
+	}
+	if rootfs, _ := stagedRootfs(t, b, "snap1"); rootfs != versionFile(b, "new") || len(*asked) != 0 {
+		t.Fatalf("staged over %s, asked %v", rootfs, *asked)
+	}
+	b.DiscardSnapshotPartial("snap1", SnapshotDisk)
+
+	older := snap
+	older.RootfsImage = ""
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", recordOf(older)); !errors.Is(err, ErrNoSnapshotImage) || len(*asked) != 0 {
+		t.Fatalf("an older host's record of it: %v, asked %v", err, *asked)
+	}
+}
+
+// A host whose root filesystem is a plain file with an unversioned snapshot's bytes, and a version installed with the
+// same bytes, takes the snapshot over the file its runtime is the snapshot's: the version's runtime names the version,
+// so its memory would never restore over it.
+func TestAnAliasDoesNotDisplaceTheImageMemoryRestoresOver(t *testing.T) {
+	ctx := context.Background()
+	b, _ := snapshotSyncHost(t)
+	withInstalledVersions(b)
+	plain := filepath.Join(t.TempDir(), "sandbox.ext4")
+	if err := os.WriteFile(plain, []byte("plain image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b.cfg.Rootfs = plain
+	setDigest(t, plain, strings.Repeat("0a", 32))
+	snap := snapshotMeta{Size: "default", Rootfs: "/var/lib/kantel-host/images/sandbox.ext4"}
+	snap.ID, snap.SandboxID, snap.Kind, snap.Tier, snap.Memory = "snap1", "sb1", "saved", Tier, true
+	snap.CPU, snap.Runtime = b.CPU(), b.portableRuntime(plain)
+	if !strings.Contains(snap.Runtime, ";image=sha256:0a0a0a0a0a0a0a0a;") {
+		t.Fatalf("runtime %q", snap.Runtime)
+	}
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", recordOf(snap)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(b.stagedSnapshotPath("snap1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staged snapshotMeta
+	if err := json.Unmarshal(raw, &staged); err != nil {
+		t.Fatal(err)
+	}
+	if staged.Rootfs != plain {
+		t.Fatalf("staged over %s, want the plain file", staged.Rootfs)
+	}
+	if err := b.restoresMemoryOf(staged); err != nil {
+		t.Fatalf("its memory: %v", err)
 	}
 }
 

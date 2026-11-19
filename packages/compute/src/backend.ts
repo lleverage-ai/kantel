@@ -701,8 +701,10 @@ export const IMAGE_PATCHING_FEATURE = "image-patching";
  * snapshot's runtime names (`image=<version>@sha256:...`). A host has it when one of its runtimes names that image
  * exactly, or names its digest under any version where the host finds images by their digest
  * (`SNAPSHOT_IMAGE_DIGEST_FEATURE`). Else a versioned image can still be downloaded from its release, by a host that
- * keeps images by version (`IMAGE_PATCHING_FEATURE`); a host image that isn't versioned (`image=sha256:...`, a host
- * whose root filesystem is a plain file) can't be, by any host. A snapshot whose runtime names no image (one over a
+ * keeps images by version (`IMAGE_PATCHING_FEATURE`) and hasn't that version installed already with other bytes (a
+ * runtime naming it with another digest: it keeps the one it has, and refuses the snapshot); a host image that isn't
+ * versioned (`image=sha256:...`, a host whose root filesystem is a plain file) can't be, by any host. Only a version
+ * in the host's image store has a version in its runtime, so a root filesystem of its own never counts as one. A snapshot whose runtime names no image (one over a
  * template's root filesystem, or that doesn't say), or a host that doesn't say its runtimes or features (the stub), is
  * left to the host, which refuses one it can't have.
  */
@@ -719,7 +721,19 @@ export function rootImageOn(
 		const own = runtimePart(runtime, "image");
 		return own !== undefined && (own === image || (byDigest && imageDigest(own) === digest));
 	});
-	return has || (image.includes("@") && host.features.includes(IMAGE_PATCHING_FEATURE));
+	if (has) return true;
+	const version = imageVersion(image);
+	if (version === undefined || !host.features.includes(IMAGE_PATCHING_FEATURE)) return false;
+	return !host.runtimeFingerprints.some((runtime) => {
+		const own = runtimePart(runtime, "image");
+		return own !== undefined && imageVersion(own) === version;
+	});
+}
+
+/** The host image version a runtime's image names (`<version>@sha256:...`): absent for one that isn't versioned. */
+function imageVersion(image: string): string | undefined {
+	const at = image.indexOf("@");
+	return at > 0 ? image.slice(0, at) : undefined;
 }
 
 /** A template snapshot built: its opaque reference, the host holding it, its size, and what it was made on. */
