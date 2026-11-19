@@ -983,6 +983,38 @@ describe("disk holders", () => {
 		).toEqual(["host_g"]);
 	});
 
+	it("won't have a host fetch a saved snapshot whose root image it can't have", async () => {
+		// As on 19 Nov 2026: a snapshot over a host image that isn't versioned, asked of a host with other images, which
+		// refused it on every ask.
+		const plain = "firecracker=v1.17.0;kernel=6.1.155+0123456789ab;image=sha256:78ca3a4ec2d4301c;sticky=4";
+		const as = (image: string) => [plain.replace("sha256:78ca3a4ec2d4301c", image)];
+		const fetches: string[] = [];
+		const syncing = ["disk-sync", "snapshot-sync", "snapshot-image-digest"];
+		const tom = setUp({
+			fetchDisk: async (hostId) => {
+				fetches.push(hostId);
+			},
+			facts: {
+				host_b: { features: syncing, runtimeFingerprints: as("host-images-20261114@sha256:f13fd019fde6d11a") },
+				host_g: { features: syncing, runtimeFingerprints: as("host-images-20261114@sha256:78ca3a4ec2d4301c") },
+			},
+		});
+		await tom.pool();
+		const snap = await tom.saved("hs1");
+		await tom.api.store.snapshots.update(snap.id, (current) => ({ ...current, runtime: plain }));
+		await tom.api.service.recordHoldings(STUB_HOST_ID, tom.clock.now, {
+			objects: { snapshot: [{ objectId: "hs1", versions: [{ version: "disk", mapDigest: DIGEST }] }] },
+		});
+		await expect(tom.fetchHostSnapshot("host_b", { snapshotId: snap.id })).rejects.toMatchObject({
+			code: "conflict",
+			message: expect.stringContaining("root image"),
+		});
+		expect(await tom.api.store.diskHolders.get("snapshot:hs1:disk:host_b")).toBeUndefined();
+		// One with those bytes as a version, which it finds by their digest, is asked.
+		await tom.fetchHostSnapshot("host_g", { snapshotId: snap.id });
+		expect(fetches).toEqual(["host_g"]);
+	});
+
 	it("keeps a host's fetching holder of a saved snapshot while it reports the fetch prepared, past the grace, and failed", async () => {
 		const tom = setUp({ fetchDisk: async () => undefined });
 		await tom.pool();

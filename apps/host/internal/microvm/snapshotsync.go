@@ -336,16 +336,16 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 	}
 	// A host image, by its portable identity: the digest it was downloaded with. A version's name alone isn't one: an
 	// image from before versions is named on its own host alone (images.Store's migration), and one host's "initial" may
-	// be another's anything. The version is the one its path names, else its runtime's: a sandbox whose root filesystem
-	// link is the default path (made before its host pinned versions) is on the version that path resolved to.
+	// be another's anything. Where to download it is the version its runtime names, never the one its path names: a
+	// copy's record has its own host's path, which may be another version with the same bytes (hostImageWithDigest), and
+	// a copy of a snapshot over an image that isn't versioned has no release to download, wherever it is held. A sandbox
+	// whose root filesystem link is the default path (made before its host pinned versions) names no version by its
+	// path either, while its runtime names the one that path resolved to.
 	want := runtimePart(snap.Runtime, "image")
 	version, digest := imageVersion(want), imageDigest(want)
-	if v := images.VersionOf(rootfs); v != "" {
-		version = v
-	}
 	if digest == "" {
-		if version != "" {
-			return "", fmt.Errorf("%w: its host image %s has no recorded digest, so it can't be told to be this host's", ErrNoSnapshotImage, version)
+		if v := images.VersionOf(rootfs); v != "" {
+			return "", fmt.Errorf("%w: its host image %s has no recorded digest, so it can't be told to be this host's", ErrNoSnapshotImage, v)
 		}
 		return "", fmt.Errorf("%w: its host's image (%q) can't be told to be this host's", ErrNoSnapshotImage, want)
 	}
@@ -371,10 +371,12 @@ func (m *Manager) localRootfs(ctx context.Context, snap snapshotMeta) (string, e
 }
 
 // hostImageWithDigest is a host image file this host has whose recorded digest is digest (as runtimeImage says it,
-// `sha256:` and a prefix): one of the versions installed (Config.HostImages), then Rootfs, resolved to the version it
-// is now where versions are pinned (baseRootfs), so a later update doesn't move the copy's image from under it. The
-// file of version, when it is one of them, is taken first: a sandbox made from the copy then boots that version's
-// kernel, as on its own host. The bytes are all a disk over it needs, so any file with them will do.
+// `sha256:` and a prefix): one of the versions installed (Config.HostImages), then Rootfs. Rootfs is taken as the file
+// it resolves to when that is a version's (with versioned images it is a link to current/, which an activation
+// repoints), so what is checked is what is staged, and a later update doesn't move the copy's image from under it; a
+// plain file, an image that isn't versioned, is taken as Rootfs, as runtimeImage tells it only by that path. The file
+// of version, when it is one of them, is taken first: a sandbox made from the copy then boots that version's kernel,
+// as on its own host. The bytes are all a disk over it needs, so any file with them will do.
 func (m *Manager) hostImageWithDigest(version, digest string) (string, bool) {
 	var installed []string
 	if m.cfg.HostImages != nil {
@@ -388,7 +390,7 @@ func (m *Manager) hostImageWithDigest(version, digest string) (string, bool) {
 			candidates = append(candidates, path)
 		}
 	}
-	candidates = append(candidates, m.baseRootfs(), m.cfg.Rootfs)
+	candidates = append(candidates, versionFileOf(m.cfg.Rootfs))
 	for _, path := range candidates {
 		if path == "" || !fileExists(path) {
 			continue
@@ -398,6 +400,18 @@ func (m *Manager) hostImageWithDigest(version, digest string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// versionFileOf is the version's file path resolves to (absolute), when it resolves to one; else path as it is.
+func versionFileOf(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || images.VersionOf(resolved) == "" {
+		return path
+	}
+	if abs, err := filepath.Abs(resolved); err == nil {
+		return abs
+	}
+	return resolved
 }
 
 // imageDigest is the digest a portable runtime's image names (runtimeImage): `sha256:` and a prefix, from a version's

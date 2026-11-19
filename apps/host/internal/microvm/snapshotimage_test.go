@@ -88,6 +88,25 @@ func TestSnapshotOverAnUnversionedImageFindsItByDigest(t *testing.T) {
 	if rootfs, base := stagedRootfs(t, b, "snap1"); rootfs != versionFile(b, "new") || base != "new" {
 		t.Fatalf("staged over %s (base %q), want the current version's file", rootfs, base)
 	}
+	b.DiscardSnapshotPartial("snap1", SnapshotDisk)
+	// Without pinned versions too: the file checked is the file staged, never the link an activation repoints.
+	b.cfg.PinBase = false
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", recordOf(plain)); err != nil {
+		t.Fatal(err)
+	}
+	if rootfs, _ := stagedRootfs(t, b, "snap1"); rootfs != versionFile(b, "new") {
+		t.Fatalf("staged over %s, want the current version's file, not the link to it", rootfs)
+	}
+	b.DiscardSnapshotPartial("snap1", SnapshotDisk)
+
+	// A copy of it, held over a version on the host it came from, names that version by its path: still no release to
+	// download, so a host without the bytes refuses it at once.
+	c, asked := snapshotSyncHost(t)
+	copied := plain
+	copied.Rootfs = versionFile(b, "new")
+	if err := c.PrepareSnapshotFetch(ctx, "snap1", recordOf(copied)); !errors.Is(err, ErrNoSnapshotImage) || len(*asked) != 0 {
+		t.Fatalf("a copy of an unversioned image's snapshot: %v, asked %v", err, *asked)
+	}
 }
 
 // A snapshot over a version is taken over whichever file here has its digest: its own version's first, then any
@@ -134,6 +153,23 @@ func TestSnapshotOverAVersionFindsItByDigest(t *testing.T) {
 	}
 	if rootfs, _ := stagedRootfs(t, b, "snap1"); rootfs != versionFile(b, "old") {
 		t.Fatalf("staged over %s, want its own version's file", rootfs)
+	}
+}
+
+// A copy held over another version with the same bytes names that version by its path, but its runtime still names
+// its own: a host without the bytes downloads the snapshot's own version, not the copy's host's name for it.
+func TestACopysRecordDownloadsItsSnapshotsOwnVersion(t *testing.T) {
+	ctx := context.Background()
+	a, _ := snapshotSyncHost(t)
+	c, asked := snapshotSyncHost(t)
+	snap := saveTestSnapshot(t, a, "snap1", "old", false)
+	copied := snap
+	copied.Rootfs = versionFile(a, "new")
+	if err := c.PrepareSnapshotFetch(ctx, "snap1", recordOf(copied)); err != nil {
+		t.Fatal(err)
+	}
+	if rootfs, _ := stagedRootfs(t, c, "snap1"); rootfs != versionFile(c, "old") || !slices.Equal(*asked, []string{"old"}) {
+		t.Fatalf("staged over %s, asked %v", rootfs, *asked)
 	}
 }
 

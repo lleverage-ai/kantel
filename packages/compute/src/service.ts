@@ -84,6 +84,7 @@ import {
 	type MoveOutcome,
 	type Placement,
 	refusedBeforeTheMachine,
+	rootImageOn,
 	type SandboxBackend,
 	type SandboxSpec,
 	type SandboxTemplateBoot,
@@ -13282,6 +13283,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const held = (await diskHolders.holdersOf("snapshot", objectId)).get("disk") ?? [];
 			if (!held.some((holder) => holder.ref === ref && holder.state === "held" && holder.hostId !== host.id)) {
 				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
+			}
+			// Nor where the host would refuse it every time, as automatic copies never ask it (`copyTarget`).
+			const target = (await copyHosts()).get(host.id);
+			if (target !== undefined && !rootImageOn(target, snapshot)) {
+				throw new KantelError(
+					"conflict",
+					"The host can't have the root image the snapshot's disk is over: it has no host image with its digest, and can't download it",
+				);
 			}
 			await sendSnapshotFetch(host.id, ref);
 			return undefined;

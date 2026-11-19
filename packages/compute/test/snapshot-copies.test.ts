@@ -170,9 +170,18 @@ describe("saved snapshot copies", () => {
 		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), byDigest), "pool_a", AT)).toBe(
 			"by-digest",
 		);
-		// A version can be downloaded, so any host may be asked for one, as before.
-		expect(
-			copyTarget({ ...snapshot, runtime: as("old@sha256:0a0a0a0a0a0a0a0a") }, [holder("a")], hosts, "pool_a", AT),
-		).toBe("elsewhere");
+		// A version can be downloaded from its release, by a host that keeps images by version.
+		const versionedSnapshot = { ...snapshot, runtime: as("old@sha256:0a0a0a0a0a0a0a0a") };
+		expect(copyTarget(versionedSnapshot, [holder("a")], hosts, "pool_a", AT)).toBe(undefined);
+		const patching = host("patching", {
+			runtimeFingerprints: versioned,
+			features: ["disk-sync", "snapshot-sync", "image-patching"],
+		});
+		expect(copyTarget(versionedSnapshot, [holder("a")], hostsOf(...hosts.values(), patching), "pool_a", AT)).toBe(
+			"patching",
+		);
+		// A host that doesn't say its runtimes is left to refuse it itself, as before.
+		const silent = host("silent", { freeDiskGb: 1000 });
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), silent), "pool_a", AT)).toBe("silent");
 	});
 });
