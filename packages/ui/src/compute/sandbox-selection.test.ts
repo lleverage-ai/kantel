@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { ChangeCounter, keepShown, retryTargets, stillToDo } from "./sandbox-selection.ts";
+import {
+	ChangeCounter,
+	forgetRead,
+	keepShown,
+	type LocalChange,
+	retryTargets,
+	stillToDo,
+	withLocal,
+	withRead,
+} from "./sandbox-selection.ts";
 
 describe("a slow bulk-stop answer", () => {
 	it("applies when nothing changed the sandbox after it was asked", () => {
@@ -76,5 +85,62 @@ describe("a bulk delete that partly failed", () => {
 		// The same names in a new confirmation are still a new confirmation.
 		const again = ["a", "b"];
 		expect(retryTargets(again, ["a", "b"], partly)).toBe(again);
+	});
+});
+
+describe("the page's changes over the list", () => {
+	type Box = { readonly id: string; readonly createdAt: number; readonly state: string };
+	const box = (id: string, state = "running", createdAt = 1): Box => ({ id, createdAt, state });
+	const local = (...each: [string, Box | null, number][]): ReadonlyMap<string, LocalChange<Box>> =>
+		new Map(each.map(([id, changed, seq]) => [id, { box: changed, seq }]));
+
+	it("shows each change over the list, a deletion as no row, newest first", () => {
+		const shown = withLocal(
+			[box("a", "running", 1), box("b", "running", 2)],
+			local(["a", box("a", "stopping", 1), 1], ["b", null, 1], ["c", box("c", "starting", 3), 1]),
+		);
+		expect(shown).toEqual([box("c", "starting", 3), box("a", "stopping", 1)]);
+	});
+
+	it("lets a newer list have the last word, by listing a sandbox or by leaving it out", () => {
+		const changes = local(["a", box("a", "stopped"), 1], ["b", null, 2], ["c", box("c"), 3]);
+		// The list started after all three: `c` it leaves out was deleted while the feed was away.
+		const after = forgetRead(changes, { seq: 4 });
+		expect(after.size).toBe(0);
+		expect(withLocal([box("a", "stopped"), box("b")], after)).toEqual([box("a", "stopped"), box("b")]);
+	});
+
+	it("keeps what it learnt after a list started, whatever that list answers", () => {
+		// The feed said `a` stopped while the list was being read: the list may still say it runs.
+		const changes = local(["a", box("a", "stopped"), 5], ["b", null, 5]);
+		expect(forgetRead(changes, { seq: 4 })).toBe(changes);
+		expect(withLocal([box("a", "running"), box("b")], changes)).toEqual([box("a", "stopped")]);
+	});
+
+	it("keeps a new sandbox's placeholder until its create answers", () => {
+		const changes = local(["pending_x", box("pending_x"), 1]);
+		expect(forgetRead(changes, { seq: 9 })).toBe(changes);
+	});
+
+	it("takes a read of one sandbox only when nothing newer is known of it", () => {
+		const none: ReadonlyMap<string, LocalChange<Box>> = new Map();
+		// Newer than the list: taken.
+		const read = withRead(none, "a", box("a", "stopped"), 5, 4);
+		expect(read.get("a")).toEqual({ box: box("a", "stopped"), seq: 5 });
+		// Started before the list shown: the list knows better.
+		expect(withRead(none, "a", box("a", "running"), 3, 4)).toBe(none);
+		// Answers in the other order: the later read wins, the earlier is dropped.
+		expect(withRead(read, "a", box("a", "running"), 4.5, 4)).toBe(read);
+		const later = withRead(read, "a", box("a", "running"), 6, 4);
+		expect(later.get("a")?.seq).toBe(6);
+		// A change this page made after the read started wins over it.
+		const deleted = local(["a", null, 7]);
+		expect(withRead(deleted, "a", box("a"), 6, 4)).toBe(deleted);
+	});
+
+	it("drops a row a read of it says was deleted", () => {
+		const none: ReadonlyMap<string, LocalChange<Box>> = new Map();
+		const read = withRead(none, "a", null, 5, 4);
+		expect(withLocal([box("a"), box("b")], read)).toEqual([box("b")]);
 	});
 });
