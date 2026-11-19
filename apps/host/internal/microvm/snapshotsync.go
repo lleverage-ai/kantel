@@ -256,6 +256,12 @@ func (m *Manager) ReadSnapshotFile(id, version, name string) ([]byte, error) {
 				raw, _ = json.MarshalIndent(snap, "", "  ")
 			}
 		}
+		// A record from before RootfsImage was kept (or a pin's, which names a version for a snapshot made over the
+		// default path): its file here says it, which a peer can't check from the record alone.
+		if image := m.rootfsImage(snap.Rootfs, snap.Runtime); snap.RootfsImage == "" && image != "" {
+			snap.RootfsImage = image
+			raw, _ = json.MarshalIndent(snap, "", "  ")
+		}
 		if snap.SourceRootfs != "" {
 			snap.Rootfs, snap.Base, snap.SourceRootfs = snap.SourceRootfs, images.VersionOf(snap.SourceRootfs), ""
 			raw, _ = json.MarshalIndent(snap, "", "  ")
@@ -400,14 +406,19 @@ func snapshotImage(snap snapshotMeta) (string, error) {
 	return want, nil
 }
 
-// pathImage is the host image rootfs is, as its files say it (runtimeImage), where rootfs is a version's own file,
-// which no activation repoints: "" for any other path (the default path, a plain file, a template's root filesystem),
-// whose image the runtime of a machine's boot over it says instead (snapshotImage).
-func (m *Manager) pathImage(rootfs string) string {
+// rootfsImage is the host image a disk over rootfs is a layer over, as its files say it (runtimeImage), where rootfs is
+// a version's own file, which no activation repoints: "" for any other path (the default path, a plain file, a
+// template's root filesystem), whose image the runtime of a machine's boot over it says instead (snapshotImage). Where
+// that runtime names the same bytes as an image that isn't versioned (one over a plain image that a pin or a migration
+// has since put under a version), it is that image: a version named on one host alone is never to be downloaded.
+func (m *Manager) rootfsImage(rootfs, runtime string) string {
 	if images.VersionOf(rootfs) == "" {
 		return ""
 	}
 	image, _ := m.runtimeImage(rootfs)
+	if booted := runtimePart(runtime, "image"); image != "" && imageVersion(booted) == "" && imageDigest(booted) == imageDigest(image) {
+		return booted
+	}
 	return image
 }
 
@@ -425,14 +436,13 @@ func (m *Manager) hostImageWithDigest(version, digest, runtime string) (string, 
 		installed = m.cfg.HostImages()
 	}
 	var candidates []string
-	for _, path := range installed {
+	for _, path := range append(slices.Clone(installed), versionFileOf(m.cfg.Rootfs)) {
 		if version != "" && images.VersionOf(path) == version {
 			candidates = append([]string{path}, candidates...)
 		} else {
 			candidates = append(candidates, path)
 		}
 	}
-	candidates = append(candidates, versionFileOf(m.cfg.Rootfs))
 	var found string
 	for _, path := range candidates {
 		if path == "" || !fileExists(path) {

@@ -251,7 +251,7 @@ func (m *Manager) cloneForExport(s *sandbox, dir string, p proto.SandboxExportPa
 	if rootfs == "" {
 		return fmt.Errorf("sandbox %s has no root filesystem", s.meta.ID)
 	}
-	rec := sandboxRecord{Meta: s.meta, Rootfs: rootfs, RootfsImage: m.pathImage(rootfs)}
+	rec := sandboxRecord{Meta: s.meta, Rootfs: rootfs, RootfsImage: m.rootfsImage(rootfs, s.meta.Runtime)}
 	// What its image has, as this host knows it: its template's report, or its image version's, which the target may
 	// not have (it hasn't booted that version), so it keeps it as the sandbox's own. Nil where none is known.
 	rec.Meta.Guest = m.sandboxGuest(s)

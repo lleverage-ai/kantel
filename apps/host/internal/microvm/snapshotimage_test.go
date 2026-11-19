@@ -113,6 +113,59 @@ func TestSnapshotOverAnUnversionedImageFindsItByDigest(t *testing.T) {
 	}
 }
 
+// A snapshot made over a plain image whose record a pin has since moved onto a version (the same bytes, put under a
+// version by a migration) names that version by its path and the plain image by its runtime. Its holder says which its
+// files are over when it serves the record, so a host with the bytes takes it, without asking for the version.
+func TestAPinnedPlainSnapshotIsServedWithItsImage(t *testing.T) {
+	ctx := context.Background()
+	a, _ := snapshotSyncHost(t)
+	b, asked := snapshotSyncHost(t)
+	withInstalledVersions(b)
+	snap := saveTestSnapshot(t, a, "snap1", "old", false)
+	snap.Runtime = strings.Replace(snap.Runtime, ";image=old@sha256:0a0a0a0a0a0a0a0a;", ";image=sha256:0a0a0a0a0a0a0a0a;", 1)
+	if err := os.WriteFile(filepath.Join(a.snapshotDir("snap1"), "meta.json"), recordOf(snap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", recordOf(snap)); !errors.Is(err, ErrNoSnapshotImage) {
+		t.Fatalf("the record as it is on disk, which doesn't say: %v", err)
+	}
+	raw, err := a.ReadSnapshotFile("snap1", SnapshotDisk, SnapshotRecordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var served snapshotMeta
+	if err := json.Unmarshal(raw, &served); err != nil {
+		t.Fatal(err)
+	}
+	if served.RootfsImage != "sha256:0a0a0a0a0a0a0a0a" {
+		t.Fatalf("served image %q", served.RootfsImage)
+	}
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", raw); err != nil {
+		t.Fatal(err)
+	}
+	if rootfs, _ := stagedRootfs(t, b, "snap1"); rootfs != versionFile(b, "old") || len(*asked) != 0 {
+		t.Fatalf("staged over %s, asked %v", rootfs, *asked)
+	}
+}
+
+// A snapshot's own version is taken first wherever it is here, its root filesystem included, when no file's runtime
+// is the snapshot's whole runtime.
+func TestASnapshotsOwnVersionThroughRootfsComesFirst(t *testing.T) {
+	ctx := context.Background()
+	a, _ := snapshotSyncHost(t)
+	b, _ := snapshotSyncHost(t)
+	snap := saveTestSnapshot(t, a, "snap1", "new", false)
+	snap.Runtime = strings.Replace(snap.Runtime, "firecracker=v1.17.0;", "firecracker=v1.18.0;", 1)
+	b.cfg.HostImages = func() []string { return []string{versionFile(b, "old")} }
+	setDigest(t, versionFile(b, "old"), strings.Repeat("0b", 32))
+	if err := b.PrepareSnapshotFetch(ctx, "snap1", recordOf(snap)); err != nil {
+		t.Fatal(err)
+	}
+	if rootfs, _ := stagedRootfs(t, b, "snap1"); rootfs != versionFile(b, "new") {
+		t.Fatalf("staged over %s, want its own version's file, through Rootfs", rootfs)
+	}
+}
+
 // A snapshot over a version is taken over whichever file here has its digest: its own version's first, then any
 // other, before its version is downloaded; one whose name here is another image and whose bytes are nowhere is still
 // refused once its download says so.
@@ -169,7 +222,7 @@ func TestACopyServesItsSnapshotsOwnRootfs(t *testing.T) {
 	b, _ := snapshotSyncHost(t)
 	c, asked := snapshotSyncHost(t)
 	snap := saveTestSnapshot(t, a, "snap1", "old", false)
-	if snap.RootfsImage = a.pathImage(snap.Rootfs); snap.RootfsImage != "old@sha256:0a0a0a0a0a0a0a0a" {
+	if snap.RootfsImage = a.rootfsImage(snap.Rootfs, snap.Runtime); snap.RootfsImage != "old@sha256:0a0a0a0a0a0a0a0a" {
 		t.Fatalf("a save over old records %q", snap.RootfsImage)
 	}
 	if err := a.mapSnapshot(ctx, "snap1"); err != nil {

@@ -3617,7 +3617,7 @@ type snapshotMeta struct {
 	// Rootfs is the root filesystem its disk is a layer over (base.go: a host image version's, or a template's pulled
 	// base's); empty in snapshots from before it was kept.
 	Rootfs string `json:"rootfs,omitempty"`
-	// RootfsImage is the host image its disk is a layer over, as the files say it (pathImage), where Rootfs is a
+	// RootfsImage is the host image its disk is a layer over, as the files say it (rootfsImage), where Rootfs is a
 	// version's own file: the runtime of its machine's last boot may name another, since a rebase relinks the machine
 	// before it boots and a boot that fails leaves the runtime as it was. A copy keeps its snapshot's. Empty over a
 	// template's root filesystem, the default path or a plain file, and in records from before it was kept, where the
@@ -3668,7 +3668,7 @@ func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, tran
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
 	snap.CPU, snap.Runtime = m.CPU(), s.meta.Runtime
-	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, RootfsImage: m.pathImage(rootfs), Guest: s.meta.Guest, Transient: transient}
+	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, RootfsImage: m.rootfsImage(rootfs, s.meta.Runtime), Guest: s.meta.Guest, Transient: transient}
 	if snap.Memory {
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
 		sm.StickyDrives = s.meta.StickyDrives
