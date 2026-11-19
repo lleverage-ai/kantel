@@ -259,8 +259,9 @@ export function SandboxesPage({
 	const listSeq = useRef(0);
 	const [listed, setListed] = useState<ListRead<Sandbox>>();
 	const [listError, setListError] = useState<unknown>();
-	// How many reads of the list have answered, either way: the list backstop below counts from the last of them.
+	// How many reads of the list have answered, either way, and when the last did: the list backstop counts from it.
 	const [listReads, setListReads] = useState(0);
+	const listReadAt = useRef<number | undefined>(undefined);
 	// Sandboxes made, changed or read alone here, ahead of the next read of the list: a new one shows the moment New
 	// is pressed.
 	const [local, setLocal] = useState<ReadonlyMap<string, LocalChange<Sandbox>>>(new Map());
@@ -288,7 +289,10 @@ export function SandboxesPage({
 						if (live) setListError(error);
 						throw error;
 					} finally {
-						if (live) setListReads((count) => count + 1);
+						if (live) {
+							listReadAt.current = Date.now();
+							setListReads((count) => count + 1);
+						}
 					}
 				},
 				get: async (id) => {
@@ -336,7 +340,7 @@ export function SandboxesPage({
 
 	// Read again while anything is between states, then forget what this page changed: the list has it now. And, less
 	// often, while any runs or has its host away: the backstop to the live feed's word of a host (`sandboxesListPollMs`).
-	// With the live feed, those between states are read alone, by ID, every `pollMs`: a move's progress is no change of
+	// With the live feed, those between states are polled alone, by ID, in turn: a move's progress is no change of
 	// state, so the feed doesn't say it, but the rest of the list has nothing new to read. The list's backstop keeps its
 	// own time, from the last read of the list, so no read by ID puts it off. Every read goes through `reads`, so however
 	// short `pollMs` is, it's one every `READ_GAP_MS` at most.
@@ -354,15 +358,13 @@ export function SandboxesPage({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: each read of the list, answered or failed, schedules the next.
 	useEffect(() => {
 		if (wait === undefined) return;
-		const timer = setTimeout(() => reads.current?.all(), wait);
+		const due = listReadAt.current === undefined ? wait : listReadAt.current + wait - Date.now();
+		const timer = setTimeout(() => reads.current?.all(), Math.max(0, due));
 		return () => clearTimeout(timer);
 	}, [wait, listReads]);
 	useEffect(() => {
-		if (!followsLive || movingIds === "") return;
-		const ids = movingIds.split(" ");
-		const timer = setInterval(() => reads.current?.changed(ids), pollMs);
-		return () => clearInterval(timer);
-	}, [followsLive, movingIds, pollMs]);
+		reads.current?.poll(followsLive && movingIds !== "" ? movingIds.split(" ") : []);
+	}, [followsLive, movingIds]);
 	const changes = useRef(new ChangeCounter()).current;
 	// And soon when one changes elsewhere: the CLI, the API, an auto-stop, its host going or coming back. A deletion
 	// drops its row there and then (and outranks a slow answer of this page's own, as a delete here does); the others

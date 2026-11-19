@@ -1,5 +1,5 @@
 // When the Sandboxes page reads its sandboxes: one scheduler for every read it makes by itself, whether of the whole
-// list or of a few sandboxes by ID, whoever asks (the live feed, the page's backstop poll, its own changes).
+// list or of one sandbox by ID, whoever asks (the live feed, the page's polls, its own changes).
 //
 // Every one of those reads is answered by the same place on the hosted control plane (one Durable Object answers every
 // request), and an account with dozens of sandboxes, GitHub runners among them, changes state every few seconds all
@@ -7,24 +7,23 @@
 // a read, and that alone was enough to have it shed load and drop every host's connection (LLE-19729). So the page
 // makes its reads through this, which keeps to a budget whatever is asked of it:
 //
-// - At most one read at a time, and at most one every `READ_GAP_MS`: the first ask after a quiet gap reads at once, and
-//   everything asked during a gap is gathered into one read at its end.
-// - A read is of one sandbox, by ID, while at most `READ_MAX_IDS` are waiting to be read: each is its own request, so
-//   each takes its own turn, oldest asked first. More waiting, or a (re)connection of the live feed, reads the whole
-//   list, which covers them all.
+// - At most one read at a time, and at most one every `READ_GAP_MS`, each a single request: the first ask after a
+//   quiet gap reads at once, and everything asked during a gap is gathered into the read at its end.
+// - One changed sandbox is read by ID. More than one changed at once, or a (re)connection of the live feed, reads the
+//   whole list, which covers them all in one request rather than one a gap.
+// - The sandboxes the page polls (`poll`, those between states) are read by ID in turn, one a read, while nothing
+//   changed waits. A list read covers them too.
 // - Nothing is read while the tab is hidden; what was asked meanwhile is read once when it's shown again. The page's
 //   first read waits for the tab too, so a page opened in the background reads nothing until it's looked at.
 // - Once a read of the whole list has failed, the next read of any kind is of the whole list, whenever what it reads
-//   was asked, so the page recovers on the next change rather than only on the next poll; a failure with nothing
-//   asked reads nothing more. A failed read of one sandbox reads the whole list next.
+//   was asked, and any word of a change asks for one (a deletion's too), so the page recovers on the next change
+//   rather than only on the next poll; a failure with nothing asked reads nothing more. A failed read of one sandbox
+//   reads the whole list next.
 
 import { documentVisibility, type Visibility } from "./live-sandboxes.ts";
 
 /** The shortest time between two reads the page makes by itself, in one tab. */
 export const READ_GAP_MS = 5_000;
-
-/** The most sandboxes waiting to be read one by one; more is one read of the whole list rather than many. */
-export const READ_MAX_IDS = 5;
 
 export interface SandboxReadCalls {
 	/** Reads the whole list. Rejects when it couldn't. */
@@ -36,14 +35,15 @@ export interface SandboxReadCalls {
 export interface SandboxReads {
 	/** Read the whole list at the next read; `now` reads as soon as none is under way, without waiting out the gap. */
 	all(now?: boolean): void;
-	/** Read these sandboxes at the next read. */
+	/** Read these sandboxes at the next read; with none, only a failed list is read again. */
 	changed(ids: Iterable<string>): void;
+	/** The sandboxes to read in turn, one a read, from now on: none stops. */
+	poll(ids: readonly string[]): void;
 	stop(): void;
 }
 
 export interface SandboxReadsOptions {
 	readonly gapMs?: number;
-	readonly maxIds?: number;
 	readonly visibility?: Visibility;
 	/** For tests. */
 	readonly now?: () => number;
@@ -52,12 +52,13 @@ export interface SandboxReadsOptions {
 /** Makes the page's reads through `calls`, starting with a read of the whole list. */
 export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptions = {}): SandboxReads {
 	const gapMs = options.gapMs ?? READ_GAP_MS;
-	const maxIds = options.maxIds ?? READ_MAX_IDS;
 	const visibility = options.visibility ?? documentVisibility;
 	const now = options.now ?? Date.now;
 	// What the next read is to cover. It starts as the page's first read, of everything.
 	let all = true;
 	const ids = new Set<string>();
+	let polls: readonly string[] = [];
+	let nextPoll = 0;
 	let urgent = false;
 	let listFailed = false;
 	let busy = false;
@@ -65,19 +66,23 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let stopped = false;
 
-	const owed = () => all || ids.size > 0;
+	const owed = () => all || ids.size > 0 || polls.length > 0;
+
+	const polled = (): string | undefined => {
+		if (polls.length === 0) return undefined;
+		const id = polls[nextPoll % polls.length];
+		nextPoll = (nextPoll + 1) % polls.length;
+		return id;
+	};
 
 	const fire = () => {
 		timer = undefined;
 		if (stopped || busy || !owed() || visibility.hidden()) return;
-		// The oldest asked, unless the whole list is to be read; the rest wait their own turns.
-		const [oldest] = ids;
-		const id = all || listFailed || ids.size > maxIds ? undefined : oldest;
+		const [changed] = ids;
+		const id = all || listFailed || ids.size > 1 ? undefined : (changed ?? polled());
 		const whole = id === undefined;
-		if (whole) {
-			all = false;
-			ids.clear();
-		} else ids.delete(id);
+		all = false;
+		ids.clear();
 		urgent = false;
 		busy = true;
 		last = now();
@@ -125,7 +130,13 @@ export function sandboxReads(calls: SandboxReadCalls, options: SandboxReadsOptio
 			pump();
 		},
 		changed(changed) {
+			if (listFailed) all = true;
 			for (const id of changed) ids.add(id);
+			pump();
+		},
+		poll(next) {
+			polls = [...next];
+			nextPoll = polls.length === 0 ? 0 : nextPoll % polls.length;
 			pump();
 		},
 		stop() {

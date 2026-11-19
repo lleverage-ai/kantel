@@ -2450,8 +2450,8 @@ export function sandboxesPollMs(
 
 /**
  * How long a page showing `sandboxes` waits before it reads the whole list again, counted from its last read of the
- * list. As `sandboxesPollMs`, except that with the live feed (`followsLive`) a sandbox between states doesn't count: the
- * page reads those alone, by ID, on their own timer, and the list keeps its backstop for the rest.
+ * list. As `sandboxesPollMs`, except that with the live feed (`followsLive`) being between states doesn't count: the
+ * page polls those alone, by ID, and the list keeps its backstop for any that runs or has its host away.
  */
 export function sandboxesListPollMs(
 	sandboxes: readonly Pick<Sandbox, "state" | "hostUnreachable">[],
@@ -2459,11 +2459,11 @@ export function sandboxesListPollMs(
 	frozen: boolean,
 	followsLive: boolean,
 ): number | undefined {
-	return sandboxesPollMs(
-		followsLive ? sandboxes.filter((box) => !sandboxMoving(box.state)) : sandboxes,
-		movingMs,
-		frozen,
-	);
+	if (!followsLive) return sandboxesPollMs(sandboxes, movingMs, frozen);
+	if (frozen) return undefined;
+	return sandboxes.some((box) => box.state === "running" || box.hostUnreachable === true)
+		? HOST_CHECK_POLL_MS
+		: undefined;
 }
 
 /** What the sandbox's page says of a sandbox whose host isn't connected. */

@@ -223,6 +223,10 @@ describe("a sandbox whose host isn't connected", () => {
 		// Without the live feed the list is all there is to read, at the pace of the quickest.
 		expect(sandboxesListPollMs(moving, 1_000, false, false)).toBe(1_000);
 		expect(sandboxesListPollMs([{ state: "running" }], 1_000, true, true)).toBeUndefined();
+		// A host away still has the backstop while its sandbox is between states.
+		expect(sandboxesListPollMs([{ state: "starting", hostUnreachable: true }], 1_000, false, true)).toBe(
+			HOST_CHECK_POLL_MS,
+		);
 	});
 });
 
