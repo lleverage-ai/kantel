@@ -317,8 +317,14 @@ func TestSnapshotFetchNeedsItsRootImage(t *testing.T) {
 		raw, _ := json.Marshal(s)
 		return raw
 	}
+	// Where to download it is the version its runtime names, so that is the one that can't be had (with bytes no file
+	// here has).
 	missing := snap
 	missing.Rootfs = filepath.Join(filepath.Dir(filepath.Dir(snap.Rootfs)), "gone", "sandbox.ext4")
+	missing.Runtime = strings.Replace(snap.Runtime, ";image=old@sha256:0a0a0a0a0a0a0a0a;", ";image=gone@sha256:0c0c0c0c0c0c0c0c;", 1)
+	if missing.Runtime == snap.Runtime {
+		t.Fatalf("runtime %q", snap.Runtime)
+	}
 	if err := b.PrepareSnapshotFetch(ctx, "snap1", record(missing)); !errors.Is(err, ErrNoSnapshotImage) {
 		t.Fatalf("a version that can't be had: %v", err)
 	}

@@ -84,6 +84,7 @@ import {
 	type MoveOutcome,
 	type Placement,
 	refusedBeforeTheMachine,
+	rootImageOn,
 	type SandboxBackend,
 	type SandboxSpec,
 	type SandboxTemplateBoot,
@@ -3141,7 +3142,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * snapshot the catalogue no longer has gets it deleted (`DiskHolders.recordHoldings`), and the host asks before it
 	 * publishes one. `conflict` when no other host there holds it.
 	 */
-	async function sendSnapshotFetch(hostId: string, ref: string): Promise<void> {
+	async function sendSnapshotFetch(hostId: string, ref: string, admit?: () => Promise<void>): Promise<void> {
 		if (backend.fetchDisk === undefined) {
 			throw new KantelError("not_supported", "This deployment's hosts don't fetch disks from each other");
 		}
@@ -3151,6 +3152,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (location.holders.length === 0) {
 			throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 		}
+		// The caller's own check (`admit`), once the catalogue has said the host may hold it at all (its pool and account).
+		await admit?.();
 		await diskHolders.recordSnapshotFetch(objectId, "disk", hostId, ref);
 		await backend.fetchDisk(hostId, { ...request, ...location });
 	}
@@ -4015,7 +4018,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * disk (the catalogue's `snapshot` holders of its ref), each with whether its copy restores the snapshot's memory (the
 	 * host it was taken on, or a copy whose memory came too, which a host fetches only where it restores it). It may be
 	 * fetched by another host where snapshots are synced, its pool can be told (a copy is offered only in it), and a
-	 * holder online in it has reported its disk.
+	 * holder online in it has reported its disk; its runtime then says which hosts can have its root image.
 	 */
 	async function snapshotCopiesOf(
 		snapshot: StoredSnapshot,
@@ -4047,7 +4050,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Only a saved snapshot's ID alone: an older ref's host-local ID may name another snapshot on the host fetching it.
 		const fetch =
 			diskHolders.syncsSnapshots && poolId !== undefined && refHost(ref) === undefined && serving.length > 0;
-		return { holders, memory, fetch, ...(fetch && architectures.length > 0 ? { architectures } : {}) };
+		return {
+			holders,
+			memory,
+			fetch,
+			...(fetch && architectures.length > 0 ? { architectures } : {}),
+			...(fetch && snapshot.runtime !== undefined && snapshot.runtime !== "" ? { runtime: snapshot.runtime } : {}),
+		};
 	}
 
 	/**
@@ -13277,7 +13286,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!held.some((holder) => holder.ref === ref && holder.state === "held" && holder.hostId !== host.id)) {
 				throw new KantelError("conflict", "No other host in the host's pool holds that snapshot where it can fetch it");
 			}
-			await sendSnapshotFetch(host.id, ref);
+			// Nor where the host would refuse it every time, as automatic copies never ask it (`copyTarget`): checked once
+			// the host may hold it, so a host of another pool or account is told that instead.
+			await sendSnapshotFetch(host.id, ref, async () => {
+				const target = (await copyHosts()).get(host.id);
+				if (target !== undefined && !rootImageOn(target, snapshot)) {
+					throw new KantelError(
+						"conflict",
+						"The host can't have the root image the snapshot's disk is over: it has no host image with its digest, and can't download it",
+					);
+				}
+			});
 			return undefined;
 		},
 

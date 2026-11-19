@@ -268,6 +268,10 @@ type Config struct {
 	// downloaded from its release first when the host hasn't it: a snapshot fetched from a peer is a layer over the
 	// image its sandbox booted (snapshotsync.go).
 	HostImage func(ctx context.Context, version string) (string, error)
+	// HostImages, when set, are the microVMs' root filesystems of the host image versions installed now
+	// (images.Store.SandboxImages), resolved. A snapshot fetched from a peer is over whichever of them, or Rootfs, has
+	// the digest of its host's image, whatever version it is under here (snapshotsync.go's hostImageWithDigest).
+	HostImages func() []string
 	// Discard boots every microVM with discard on its writable disk (fc.BootConfig.Discard), for a Firecracker that
 	// can (fc.DiscardSupported): blocks the guest frees, and those a trim before a save frees (trimDisk), are holes in
 	// disk.ext4 again, so a snapshot's copy doesn't keep deleted files' bytes. Its sticky drives have it too, and a
@@ -3613,6 +3617,16 @@ type snapshotMeta struct {
 	// Rootfs is the root filesystem its disk is a layer over (base.go: a host image version's, or a template's pulled
 	// base's); empty in snapshots from before it was kept.
 	Rootfs string `json:"rootfs,omitempty"`
+	// RootfsImage is the host image its disk is a layer over, as the files say it (rootfsImage), where Rootfs is a
+	// version's own file: the runtime of its machine's last boot may name another, since a rebase relinks the machine
+	// before it boots and a boot that fails leaves the runtime as it was. A copy keeps its snapshot's. Empty over a
+	// template's root filesystem, the default path or a plain file, and in records from before it was kept, where the
+	// runtime says it (localRootfs).
+	RootfsImage string `json:"rootfsImage,omitempty"`
+	// SourceRootfs, for a copy (Fetched) over a host image, is the root filesystem its holder's record named, which
+	// ReadSnapshotFile serves in place of Rootfs: this host's file may be another version with the same bytes
+	// (hostImageWithDigest), and a host without FeatureSnapshotImageDigest tells the image by that path.
+	SourceRootfs string `json:"sourceRootfs,omitempty"`
 	// Guest is what its sandbox's template image has (meta's), which a sandbox made from it reports too.
 	Guest *proto.GuestCapabilities `json:"guest,omitempty"`
 	// BundleDrives and BundleSlots are the sandbox's bundle drives when its memory was taken (bundles.go): a sandbox
@@ -3654,7 +3668,7 @@ func (m *Manager) writeSnapshotMetaAs(s *sandbox, snap *proto.SnapshotInfo, tran
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
 	snap.CPU, snap.Runtime = m.CPU(), s.meta.Runtime
-	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest, Transient: transient}
+	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, RootfsImage: m.rootfsImage(rootfs, s.meta.Runtime), Guest: s.meta.Guest, Transient: transient}
 	if snap.Memory {
 		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
 		sm.StickyDrives = s.meta.StickyDrives
