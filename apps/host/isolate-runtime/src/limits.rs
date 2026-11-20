@@ -188,6 +188,10 @@ impl Budget {
         self.suspect.store(false, Ordering::SeqCst);
         self.refused_at.store(NO_REFUSAL, Ordering::SeqCst);
     }
+    /// Whether the budget is armed (a command, or an embedder's [`enforce`](crate::memory::enforce), is running).
+    pub fn armed(&self) -> bool {
+        self.armed.load(Ordering::SeqCst)
+    }
     /// Let the GC epilogue terminate this isolate for memory (while a command runs), or not.
     pub fn arm(&self, on: bool) {
         self.armed.store(on, Ordering::SeqCst);

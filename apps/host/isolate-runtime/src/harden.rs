@@ -77,28 +77,29 @@ pub fn harden(cfg: &Config, hardening: &HardeningPolicy) -> Result<()> {
         crate::hardening::landlock::Transport::Unix { socket_dir } => Some(socket_dir.clone()),
         crate::hardening::landlock::Transport::Tcp { .. } => None,
     };
-    for exec in &hardening.execute {
-        for writable in hardening
-            .read_write
-            .iter()
-            .chain([&temp])
-            .chain(socket_dir.iter())
-        {
-            if writable.starts_with(exec) {
-                bail!(
-                    "the hardening policy's executable path {} contains the writable {}",
-                    exec.display(),
-                    writable.display()
-                );
-            }
-        }
-    }
+    let writable: Vec<PathBuf> = hardening
+        .read_write
+        .iter()
+        .chain([&temp])
+        .chain(socket_dir.iter())
+        .map(resolved)
+        .collect::<Result<_>>()?;
+    let execute: Vec<PathBuf> = hardening
+        .execute
+        .iter()
+        .map(resolved)
+        .collect::<Result<_>>()?;
+    check_execute(&execute, &writable)?;
     let policy = crate::hardening::landlock::Policy {
         assets: cfg.assets.clone(),
         temp,
         extra_read: hardening.read.clone(),
-        read_write: hardening.read_write.clone(),
-        execute: hardening.execute.clone(),
+        read_write: hardening
+            .read_write
+            .iter()
+            .map(resolved)
+            .collect::<Result<_>>()?,
+        execute,
         transport,
     };
     let report = crate::hardening::landlock::restrict(&policy)?;
@@ -149,6 +150,29 @@ pub fn harden(cfg: &Config, hardening: &HardeningPolicy) -> Result<()> {
     Ok(())
 }
 
+/// A policy path as Landlock will see it: absolute, with symlinks and `..` resolved.
+fn resolved(path: &PathBuf) -> Result<PathBuf> {
+    std::fs::canonicalize(path)
+        .map_err(|e| anyhow::anyhow!("hardening policy path {}: {e}", path.display()))
+}
+
+/// No executable path may overlap a writable one (inside it, or containing it): Landlock's rights add up down the
+/// tree, so either way something writable would be executable. Paths are resolved ([`resolved`]).
+fn check_execute(execute: &[PathBuf], writable: &[PathBuf]) -> Result<()> {
+    for exec in execute {
+        for place in writable {
+            if place.starts_with(exec) || exec.starts_with(place) {
+                bail!(
+                    "the hardening policy's executable path {} overlaps the writable {}",
+                    exec.display(),
+                    place.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The Landlock transport: Unix (no TCP) when `--listen`, `--store` and `--egress` are all Unix sockets, else TCP
 /// with the ports the runtime binds and connects to.
 pub fn transport_of(cfg: &Config) -> hardening::landlock::Transport {
@@ -181,4 +205,33 @@ pub fn transport_of(cfg: &Config) -> hardening::landlock::Transport {
         .flatten()
         .collect();
     hardening::landlock::Transport::Tcp { listen, connect }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_executable_path_may_not_overlap_a_writable_one() {
+        let root = std::env::temp_dir().join(format!("kt-harden-{}", std::process::id()));
+        let (tools, scratch, bin) = (
+            root.join("tools"),
+            root.join("scratch"),
+            root.join("scratch/bin"),
+        );
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        // An alias: a writable path that is a symlink into an executable one.
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&tools, &alias).unwrap();
+        let r = |p: &PathBuf| resolved(p).unwrap();
+        // Executable inside writable, writable inside executable, the same path, and through the alias.
+        assert!(check_execute(&[r(&bin)], &[r(&scratch)]).is_err());
+        assert!(check_execute(&[r(&root)], &[r(&scratch)]).is_err());
+        assert!(check_execute(&[r(&scratch)], &[r(&scratch)]).is_err());
+        assert!(check_execute(&[r(&tools)], &[r(&alias)]).is_err());
+        // Apart, they're fine.
+        assert!(check_execute(&[r(&tools)], &[r(&scratch)]).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
