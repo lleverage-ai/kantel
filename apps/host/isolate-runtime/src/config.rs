@@ -36,7 +36,10 @@ pub struct Config {
 impl Config {
     /// The defaults `kantel-isolate serve` has, with the assets directory `assets` (made by build-assets.sh: the
     /// Pyodide distribution and its memory snapshot). The store and egress bridges are on loopback ports 7001 and 7002.
+    /// `assets` is resolved to its canonical absolute path when it exists, as `--assets` is: Pyodide's modules are
+    /// loaded by `file://` URL from it, and a read is allowed only inside its canonical path.
     pub fn new(assets: PathBuf) -> Config {
+        let assets = std::fs::canonicalize(&assets).unwrap_or(assets);
         let cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(2);

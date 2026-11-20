@@ -92,13 +92,28 @@ call (Kantel's builds a fresh just-bash and filesystem for each `exec`).
 
 The simplest way to a working bundle is Kantel's own guest pieces, composed with your shell: see `guest/main.js`.
 
+#### The guards a bundle must install
+
+Part of the memory limit is enforced in JavaScript, by the guest bundle, not by the runtime: WebAssembly memory and
+resizable or growable ArrayBuffers are allocated outside both the V8 heap and the ArrayBuffer allocator the runtime
+counts. Kantel's `init` installs, before any guest code runs and in this order:
+
+1. `fixBuffers(globalThis)` (`guest/common/buffer-guard.js`): refuses resizable and growable buffers;
+2. `captureShared(globalThis)` (`guest/common/primordials.js`), then deletes `SharedArrayBuffer` and `Atomics`;
+3. `installWasmGuard(ops, mode)` (`guest/common/wasm-guard.js`): reserves every wasm memory against the isolate's
+   budget through `op_kt_wasm_reserve` (`"strict"` for shell and node, `"boot"` then its lockdown for python).
+
+A bundle that lets untrusted code run without these has no limit on wasm memory beyond V8's process-wide one (512 MiB
+per memory), whatever the isolate's memory limit. Install them as Kantel's `guest/main.js` does.
+
 ### The embedder's ops
 
 An embedder's op runs on the isolate's thread, with that isolate's `OpState`. It must:
 
 - **Check who is asking.** `Ctx::of(state)` is the running command's context (`kind`, `sandbox_id`, `command` with its
-  CPU budget and deadline, `budget` for memory), or `None` outside a command. An op meant for one kind of isolate
-  refuses the others, as the runtime's own do (`"not available here"`).
+  CPU budget and deadline, `budget` for memory), or `None` outside a command (the runtime unbinds it when a shell
+  command ends). An op meant for one kind of isolate refuses the others, as the runtime's own do
+  (`"not available here"`).
 - **Never panic on guest input.** A panic in an op takes the whole process down, every sandbox with it. No
   `unwrap`/`expect` on anything the guest controls.
 - **Charge what it hands the guest.** Bytes returned to the guest are charged to the isolate's memory budget before
@@ -108,9 +123,10 @@ An embedder's op runs on the isolate's thread, with that isolate's `OpState`. It
 
 ## The limits
 
-What the runtime enforces for every isolate, whatever the guest and ops: see the table in [README.md](README.md#limits-and-what-enforces-each).
-They hold for an embedder's guest as for Kantel's (`tests/embedding.rs` checks a command past its wall clock is
-stopped and the isolate kept).
+The limits are in the table in [README.md](README.md#limits-and-what-enforces-each). The runtime enforces CPU, wall
+clock, the V8 heap and ArrayBuffers for every isolate, whatever the guest (`tests/embedding.rs` checks a command past
+its wall clock is stopped and the isolate kept). WebAssembly memory and resizable buffers count against the same limit
+only when the bundle installs the guards above.
 
 ## What may change
 

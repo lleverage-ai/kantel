@@ -52,6 +52,9 @@ serde_v8 = { path = "vendor/serde_v8-0.321.0" }
 PATCH
 fi
 echo "check.sh: consumer ($mode) against $url at $rev" >&2
+# A build directory per V8: rusty_v8 keeps its static library in the target's gn_out and doesn't fetch it again when
+# the V8 chosen changes, so a stock build after a sandboxed one in the same target would link the sandboxed V8.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$out/target}/consumer-$mode"
 cd "$out"
 # shellcheck disable=SC2086 # features is empty or one flag.
 cargo run --release ${features:+--features v8-sandbox}

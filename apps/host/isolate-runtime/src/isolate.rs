@@ -417,6 +417,10 @@ fn bind(rt: &mut JsRuntime, ctx: Ctx) {
     rt.op_state().borrow_mut().put(ctx);
 }
 
+fn unbind(rt: &mut JsRuntime) {
+    rt.op_state().borrow_mut().try_take::<Ctx>();
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Shell isolates: one thread each, kept while the sandbox is used
 
@@ -492,6 +496,7 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                 let guard = watch(live.handle.clone(), command, live.budget.clone(), Scope::Command);
                 let _ = rt.block_on(call(&mut live.rt, "exec", &[r#"{"command":"true","manifest":{}}"#]));
                 drop(guard);
+                unbind(&mut live.rt);
             }
             // One block_on per step rather than one around the loop, so a stuck command's isolate can be dropped
             // between them, outside any poll (dropping it inside one aborts V8).
@@ -538,6 +543,9 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             });
                             let term = guard.watched().term();
                             drop(guard);
+                            // Between commands the isolate has no context: an op that still runs answers "no isolate
+                            // context" (and Ctx::of None) rather than acting for the command that ended.
+                            unbind(&mut live.rt);
                             let Some(result) = result else {
                                 let t = term.unwrap_or(Term::Wall);
                                 tracing::warn!(term = t.name(), "shell command stuck after termination; replacing its isolate");
