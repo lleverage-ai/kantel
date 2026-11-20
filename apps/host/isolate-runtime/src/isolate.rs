@@ -109,8 +109,10 @@ impl Ctx {
 pub struct CommitSlot {
     /// None before a commit; Some(None) while one runs; Some(Some(outcome)) after.
     state: Mutex<Option<Option<Result<CommitReply, String>>>>,
-    /// The paths the last commit removed, which a stopped command's reply drops as the guest would.
+    /// The running commit's removals, then (once it is committed) added to `committed`.
     removes: Mutex<Vec<String>>,
+    /// Every removal the command's committed commits made, which a stopped command's reply drops as the guest would.
+    committed: Mutex<Vec<String>>,
     done: std::sync::Condvar,
 }
 
@@ -128,8 +130,16 @@ impl CommitSlot {
     }
     /// It ended, with this outcome.
     pub fn finish(&self, outcome: Result<CommitReply, String>) {
+        if let Ok(CommitReply::Committed { .. }) = outcome {
+            let removes = std::mem::take(&mut *self.removes.lock().unwrap());
+            self.committed.lock().unwrap().extend(removes);
+        }
         *self.state.lock().unwrap() = Some(Some(outcome));
         self.done.notify_all();
+    }
+    /// The removals of every commit of the command that was committed.
+    pub fn committed_removes(&self) -> Vec<String> {
+        self.committed.lock().unwrap().clone()
     }
     /// The outcome of the commit the command started, waiting up to `timeout` for it to end: None if it never
     /// started one, `Err` if it failed or is still running.
@@ -179,11 +189,8 @@ fn stopped_files(
     let Some(outcome) = slot.wait(COMMIT_GRACE) else {
         return (manifest, json!([]), None);
     };
-    // A committed commit's removals are the workspace's too, even of entries its provider never listed.
-    let removes = match &outcome {
-        Ok(CommitReply::Committed { .. }) => slot.removes.lock().unwrap().clone(),
-        _ => Vec::new(),
-    };
+    // Committed commits' removals are the workspace's too, even of entries its provider never listed.
+    let removes = slot.committed_removes();
     let commit = match &outcome {
         Ok(CommitReply::Committed { .. }) => None,
         Ok(CommitReply::Unknown { error, .. }) => {
@@ -1562,5 +1569,38 @@ mod snapshot_sink_helpers {
             .ok_or_else(|| anyhow!("snapshot was not produced"))?;
         std::fs::write(out, &bytes)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::CatchUp;
+
+    fn committed() -> Result<CommitReply, String> {
+        Ok(CommitReply::Committed {
+            catch_up: CatchUp::default(),
+        })
+    }
+
+    #[test]
+    fn a_commit_slot_keeps_every_committed_removal_and_runs_one_commit_at_a_time() {
+        let slot = CommitSlot::default();
+        assert!(slot.wait(Duration::ZERO).is_none(), "no commit started");
+        assert!(slot.start(vec!["a".into()]));
+        assert!(
+            !slot.start(vec!["x".into()]),
+            "a second commit while one runs"
+        );
+        slot.finish(committed());
+        assert!(slot.start(vec!["b".into()]));
+        slot.finish(Err("refused".into()));
+        assert!(slot.start(vec!["c".into()]));
+        assert!(
+            matches!(slot.wait(Duration::ZERO), Some(Err(e)) if e.contains("still running")),
+            "a running commit"
+        );
+        slot.finish(committed());
+        assert_eq!(slot.committed_removes(), vec!["a", "c"]);
     }
 }
