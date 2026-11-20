@@ -183,6 +183,7 @@ export function createShell(ops, log) {
 			dirs: [],
 			removes: [],
 		};
+		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
 		const next = {};
 		const changed = [];
 		for (const full of fs.getAllPaths()) {
@@ -205,7 +206,8 @@ export function createShell(ops, log) {
 				}
 			} else if (stat.isDirectory) {
 				next[path] = { kind: "dir" };
-				if (before?.kind !== "dir") {
+				// A workspace that keeps files only has its directories implied by its files' paths: they aren't changes.
+				if (before?.kind !== "dir" && capabilities.directories) {
 					changed.push(path);
 					commit.dirs.push(path);
 				}
@@ -226,21 +228,26 @@ export function createShell(ops, log) {
 			changed.push(path);
 			commit.removes.push(path);
 		}
-		let saved = { manifest: next, changed };
+		// The files as the workspace holds them after a commit: the command's manifest with the catch-up applied (the
+		// workspace's own file ids, and anything the host changed too), and with the removals sent if they were taken.
+		const holds = (catchUp, removals) => {
+			const files = { ...manifest };
+			for (const path of [...removals, ...catchUp.removed]) delete files[path];
+			for (const [path, node] of Object.entries(catchUp.changed)) files[path] = entryOf(node);
+			const paths = new Set([...Object.keys(catchUp.changed), ...catchUp.removed]);
+			for (const path of removals) if (path in manifest) paths.add(path);
+			return { manifest: files, changed: [...paths] };
+		};
+		let saved = { manifest, changed: [] };
 		let unsaved;
 		if (changed.length > 0) {
 			const reply = JSON.parse(await ops.op_kt_commit(JSON.stringify(commit)));
-			if (reply.status !== "committed") {
+			if (reply.status === "committed") saved = holds(reply.catchUp, commit.removes);
+			else {
 				unsaved = { status: reply.status, error: reply.error };
 				// Unknown: the workspace holds what its catch-up says, which may or may not have the changes. Failed or
 				// fenced: nothing was saved.
-				saved = { manifest, changed: [] };
-				if (reply.status === "unknown") {
-					const known = { ...manifest };
-					for (const path of reply.catchUp.removed) delete known[path];
-					for (const [path, node] of Object.entries(reply.catchUp.changed)) known[path] = entryOf(node);
-					saved = { manifest: known, changed: [...reply.catchUp.removed, ...Object.keys(reply.catchUp.changed)] };
-				}
+				if (reply.status === "unknown") saved = holds(reply.catchUp, []);
 			}
 		}
 		const t3 = performance.now();

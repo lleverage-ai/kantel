@@ -155,9 +155,16 @@ A commit's reply is one of:
 - `fenced`: the workspace takes no more commits (another owner has the record, or the commit named a base the workspace
   never gave).
 
-Every reply but `fenced` carries a catch-up from the commit's base. Kantel's guest shell reports a command whose commit
-wasn't `committed` as failed (exit 1, a line on stderr, and `commit: {status, error}` in its reply), with the files as
-the workspace holds them.
+Every reply but `fenced` carries a catch-up from the commit's base, and `fenced` is for good. Kantel's guest shell
+reports the files as the workspace holds them: its manifest with the catch-up applied, so the reply names the
+provider's own file ids. A command whose commit wasn't `committed` fails (exit 1, a line on stderr, and
+`commit: {status, error}` in its reply). It commits only what the workspace keeps (`op_kt_workspace_capabilities`): in a
+files-only workspace, directories are implied by paths and aren't committed.
+
+The commit runs as a task on the engine's I/O runtime, so a command stopped while it waits for its commit (CPU, wall
+clock, memory) doesn't cut the write off. The stopped command's reply waits for the commit (up to 15 s) and reports the
+files as the workspace then holds them (`sync` from the command's base), with `commit: {status: "unknown"}` when the
+outcome isn't known.
 
 A persistent provider over a durable record fits as follows. File ids are strings, so a provider that numbers its
 files per session formats the number. Read-only and scratch areas (files the session may read but not change, or a

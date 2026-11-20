@@ -100,6 +100,45 @@ pub fn parse_manifest(manifest: &Value) -> BTreeMap<String, Node> {
     entries
 }
 
+/// A node as a manifest entry.
+pub fn entry_of(node: &Node) -> Value {
+    match node {
+        Node::File {
+            file, size, mode, ..
+        } => serde_json::json!({ "kind": "file", "sha": file, "size": size, "mode": mode }),
+        Node::Dir => serde_json::json!({ "kind": "dir" }),
+        Node::Symlink { target } => serde_json::json!({ "kind": "symlink", "target": target }),
+    }
+}
+
+/// A view's entries as a manifest.
+pub fn manifest_of(entries: &BTreeMap<String, Node>) -> Value {
+    Value::Object(
+        entries
+            .iter()
+            .map(|(path, node)| (path.clone(), entry_of(node)))
+            .collect(),
+    )
+}
+
+/// `manifest` with a catch-up applied (removed paths dropped, changed ones replaced), and the paths it changed.
+pub fn apply_catch_up(manifest: &Value, catch_up: &CatchUp) -> (Value, Vec<String>) {
+    let mut files = manifest.as_object().cloned().unwrap_or_default();
+    for path in &catch_up.removed {
+        files.remove(path);
+    }
+    for (path, node) in &catch_up.changed {
+        files.insert(path.clone(), entry_of(node));
+    }
+    let changed = catch_up
+        .changed
+        .keys()
+        .chain(catch_up.removed.iter())
+        .cloned()
+        .collect();
+    (Value::Object(files), changed)
+}
+
 /// The generation of a manifest: a digest of its entries, so the same files are the same version.
 fn generation(entries: &BTreeMap<String, Node>) -> String {
     let canonical = serde_json::to_vec(entries).unwrap_or_default();
@@ -113,6 +152,8 @@ struct State {
     readable: HashSet<String>,
     /// Sizes of blobs staged here.
     staged: HashMap<String, u64>,
+    /// Set for good once a commit named a base this workspace never gave.
+    fenced: Option<String>,
 }
 
 impl State {
@@ -152,6 +193,7 @@ impl ManifestWorkspace {
                 versions: vec![(generation(&entries), entries)],
                 readable,
                 staged: HashMap::new(),
+                fenced: None,
             }),
         }
     }
@@ -233,14 +275,19 @@ impl Workspace for ManifestWorkspace {
     fn commit(&self, commit: Commit) -> BoxFuture<'_, Result<CommitReply>> {
         Box::pin(async move {
             let mut state = self.state.lock().unwrap();
+            if let Some(error) = &state.fenced {
+                return Ok(CommitReply::Fenced {
+                    error: error.clone(),
+                });
+            }
             let (current, entries) = state.current().clone();
             if commit.base != current {
-                return Ok(CommitReply::Fenced {
-                    error: format!(
-                        "the command's changes are from {}, not this sandbox's manifest",
-                        commit.base
-                    ),
-                });
+                let error = format!(
+                    "the command's changes are from {}, not this sandbox's manifest",
+                    commit.base
+                );
+                state.fenced = Some(error.clone());
+                return Ok(CommitReply::Fenced { error });
             }
             let failed = |error: String| CommitReply::Failed {
                 error,

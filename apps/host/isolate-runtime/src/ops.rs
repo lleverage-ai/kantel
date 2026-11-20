@@ -197,18 +197,52 @@ async fn op_kt_stage(
 }
 
 /// The command's changes, as one commit ([`Commit`] in, [`CommitReply`](crate::workspace::CommitReply) out, both
-/// JSON). Outcomes (unknown, failed, fenced) are replies; an error is the provider's own fault.
+/// JSON). Outcomes (unknown, failed, fenced) are replies; an error is the provider's own fault. The commit runs as a
+/// task on the I/O runtime, so a command stopped while it waits doesn't cut the write off: the commit ends, and the
+/// stopped command's reply says what it did ([`CommitSlot`](crate::isolate::CommitSlot)).
 #[op2]
 #[string]
 async fn op_kt_commit(
     state: Rc<RefCell<OpState>>,
     #[string] commit: String,
 ) -> Result<String, JsErrorBox> {
-    let workspace = shell_workspace(&ctx(&state)?)?;
+    let c = ctx(&state)?;
+    let workspace = shell_workspace(&c)?;
     let commit: Commit =
         serde_json::from_str(&commit).map_err(|e| jerr(format!("bad commit: {e}")))?;
-    let reply = workspace.commit(commit).await.map_err(jerr)?;
+    let slot = c.commit.clone();
+    slot.start();
+    let task = engine().io.spawn(async move {
+        let outcome = workspace.commit(commit).await.map_err(|e| format!("{e:#}"));
+        slot.finish(outcome.clone());
+        outcome
+    });
+    let reply = task.await.map_err(jerr)?.map_err(jerr)?;
     serde_json::to_string(&reply).map_err(jerr)
+}
+
+/// What the command's workspace keeps besides files (`{directories, symlinks}`): the shell commits only what it
+/// can keep.
+#[op2]
+#[string]
+fn op_kt_workspace_capabilities(state: &mut OpState) -> Result<String, JsErrorBox> {
+    let c = ctx_sync(state)?;
+    if c.kind != Kind::Shell {
+        return Err(JsErrorBox::generic("not available here"));
+    }
+    // No workspace (the pool's warm-up command): nothing will be committed, so nothing is held back.
+    let caps =
+        c.workspace
+            .as_ref()
+            .map(|w| w.capabilities())
+            .unwrap_or(crate::workspace::Capabilities {
+                directories: true,
+                symlinks: true,
+            });
+    Ok(
+        serde_json::json!({ "directories": caps.directories, "symlinks": caps.symlinks })
+            .to_string(),
+    )
 }
 
 /// The workspace's changes since the version `base` the guest holds ([`CatchUp`](crate::workspace::CatchUp), JSON).
@@ -589,6 +623,7 @@ deno_core::extension!(
         op_kt_stage,
         op_kt_commit,
         op_kt_sync,
+        op_kt_workspace_capabilities,
         op_kt_fetch,
         op_kt_run,
         op_kt_cancel_run,

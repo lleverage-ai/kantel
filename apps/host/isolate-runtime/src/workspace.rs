@@ -316,7 +316,6 @@ pub fn check_paths(commit: &Commit) -> std::result::Result<(), String> {
         .chain(commit.links.iter().map(|l| &l.path))
         .chain(commit.dirs.iter())
         .chain(commit.removes.iter());
-    let mut seen = BTreeSet::new();
     for path in paths {
         if path.is_empty()
             || path.starts_with('/')
@@ -326,8 +325,17 @@ pub fn check_paths(commit: &Commit) -> std::result::Result<(), String> {
         {
             return Err(format!("{path:?} isn't a path in the workspace"));
         }
-        // A path named twice (other than a removal followed by a replacement) is ambiguous.
-        if !commit.removes.contains(path) && !seen.insert(path.clone()) {
+    }
+    // A path given more than one new node (two puts, a put and a link, …) is ambiguous, removed or not.
+    let mut replaced = BTreeSet::new();
+    let replacements = commit
+        .puts
+        .iter()
+        .map(|p| &p.path)
+        .chain(commit.links.iter().map(|l| &l.path))
+        .chain(commit.dirs.iter());
+    for path in replacements {
+        if !replaced.insert(path) {
             return Err(format!("{path:?} is changed twice in one commit"));
         }
     }

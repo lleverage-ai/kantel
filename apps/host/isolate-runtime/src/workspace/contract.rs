@@ -206,6 +206,8 @@ async fn a_commit_from_a_base_never_given_is_fenced(s: &dyn Subject) {
     let (_, ws) = s.sandbox(&[("a.txt", A)]).await;
     let base = ws.view().await.expect("view");
     let p = put(&ws, "x.txt", B).await;
+    // Staged before the fence: a fenced workspace may refuse to stage too.
+    let later = put(&ws, "y.txt", B).await;
     let reply = ws
         .commit(commit("not-a-version", vec![p], &[]))
         .await
@@ -215,6 +217,15 @@ async fn a_commit_from_a_base_never_given_is_fenced(s: &dyn Subject) {
     if let Ok(view) = ws.view().await {
         assert_eq!(view.entries, base.entries, "a fenced commit wrote nothing");
     }
+    // Fenced is for good: a commit from the base it did give is refused too.
+    let reply = ws
+        .commit(commit(&base.generation, vec![later], &[]))
+        .await
+        .expect("commit");
+    assert!(
+        matches!(reply, CommitReply::Fenced { .. }),
+        "a fenced workspace committed: {reply:?}"
+    )
 }
 
 async fn a_bad_commit_writes_nothing(s: &dyn Subject) {
@@ -256,8 +267,13 @@ async fn a_bad_commit_writes_nothing(s: &dyn Subject) {
             }],
             &[],
         ),
-        // One path changed twice.
+        // One path changed twice, removed or not.
         commit(&base.generation, vec![good.clone(), good.clone()], &[]),
+        commit(
+            &base.generation,
+            vec![good.clone(), good.clone()],
+            &["ok.txt"],
+        ),
     ];
     for bad in bad_commits {
         match ws.commit(bad.clone()).await.expect("commit") {
@@ -562,24 +578,7 @@ pub mod subjects {
     }
 
     /// A view as kantel-host's manifest.
-    pub fn manifest_of(entries: &BTreeMap<String, Node>) -> Value {
-        let mut out = serde_json::Map::new();
-        for (path, node) in entries {
-            out.insert(
-                path.clone(),
-                match node {
-                    Node::File {
-                        file, size, mode, ..
-                    } => {
-                        json!({ "kind": "file", "sha": file, "size": size, "mode": mode })
-                    }
-                    Node::Dir => json!({ "kind": "dir" }),
-                    Node::Symlink { target } => json!({ "kind": "symlink", "target": target }),
-                },
-            );
-        }
-        Value::Object(out)
-    }
+    pub use crate::workspace::manifest::manifest_of;
 
     impl Subject for Manifest {
         fn sandbox<'a>(

@@ -9,16 +9,64 @@ use kantel_isolate::isolate::spawn_shell;
 use kantel_isolate::limits::Command;
 use kantel_isolate::workspace::contract::subjects::manifest_of;
 use kantel_isolate::workspace::memory::{Fault, RecordProvider};
-use kantel_isolate::workspace::{FilesystemProvider, Workspace};
+use kantel_isolate::workspace::{
+    BoxFuture, Capabilities, CatchUp, Commit, CommitReply, FilesystemProvider, ReadError, Staged,
+    View, Workspace,
+};
 use kantel_isolate::{Config, Embedding, Engine};
 use serde_json::{Value, json};
 
 const GUEST: &str = include_str!("../guest/dist/guest.js");
 
+/// The reference provider, with a commit that takes `delay` before it writes (a slow store), for a command stopped
+/// while it commits.
+struct Slow {
+    inner: Arc<dyn Workspace>,
+    delay: Duration,
+}
+
+impl Workspace for Slow {
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+    fn view(&self) -> BoxFuture<'_, anyhow::Result<View>> {
+        self.inner.view()
+    }
+    fn read<'a>(
+        &'a self,
+        file: &'a str,
+        cap: usize,
+        charge: Option<&'a mut kantel_isolate::bridges::Charge>,
+    ) -> BoxFuture<'a, Result<Vec<u8>, ReadError>> {
+        self.inner.read(file, cap, charge)
+    }
+    fn stage<'a>(&'a self, path: &'a str, bytes: Vec<u8>) -> BoxFuture<'a, anyhow::Result<Staged>> {
+        self.inner.stage(path, bytes)
+    }
+    fn commit(&self, commit: Commit) -> BoxFuture<'_, anyhow::Result<CommitReply>> {
+        Box::pin(async move {
+            tokio::time::sleep(self.delay).await;
+            self.inner.commit(commit).await
+        })
+    }
+    fn sync<'a>(&'a self, base: &'a str) -> BoxFuture<'a, anyhow::Result<CatchUp>> {
+        self.inner.sync(base)
+    }
+}
+
 async fn run(
     shell: &kantel_isolate::isolate::ShellHandle,
     workspace: Arc<dyn Workspace>,
     command: &str,
+) -> Value {
+    run_for(shell, workspace, command, Duration::from_secs(20)).await
+}
+
+async fn run_for(
+    shell: &kantel_isolate::isolate::ShellHandle,
+    workspace: Arc<dyn Workspace>,
+    command: &str,
+    wall: Duration,
 ) -> Value {
     let view = workspace.view().await.expect("view");
     let manifest = manifest_of(&view.entries);
@@ -28,7 +76,7 @@ async fn run(
             &request,
             manifest,
             workspace,
-            Command::new(Duration::from_secs(20), Duration::from_secs(20)),
+            Command::new(Duration::from_secs(20), wall),
         )
         .await
         .expect("exec")
@@ -39,7 +87,7 @@ fn the_guest_shell_commits_to_a_persistent_workspace_and_reports_unsaved_changes
     kantel_isolate::init_v8();
     let io = tokio::runtime::Runtime::new().unwrap();
     let records = Arc::new(RecordProvider::default());
-    records.seed("s", &[("a.txt", b"alpha\n")]);
+    records.seed("s", &[("a.txt", b"alpha\n"), ("dir/n.txt", b"nested\n")]);
     let cfg = Config {
         pool: 0,
         node_pool: 0,
@@ -58,6 +106,26 @@ fn the_guest_shell_commits_to_a_persistent_workspace_and_reports_unsaved_changes
     assert!(reply.get("commit").is_none(), "{reply}");
     assert_eq!(reply["changed"], json!(["b.txt"]), "{reply}");
     assert_eq!(records.files("s")["b.txt"], b"bravo\n");
+    // The reply names the workspace's own file ids (not content hashes), so a caller can read what it says.
+    let id = reply["manifest"]["b.txt"]["sha"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bytes = io
+        .block_on(async { open().read(&id, usize::MAX, None).await })
+        .unwrap();
+    assert_eq!(bytes, b"bravo\n");
+
+    // A files-only workspace: directories are implied by paths, so reading and writing under one commits only files.
+    let reply = io.block_on(run(
+        &shell,
+        open(),
+        "cat dir/n.txt && mkdir -p dir/sub && echo e > dir/sub/e.txt",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["stdout"], "nested\n", "{reply}");
+    assert_eq!(reply["changed"], json!(["dir/sub/e.txt"]), "{reply}");
+    assert_eq!(records.files("s")["dir/sub/e.txt"], b"e\n");
 
     // Lost reply, not landed: the command fails and says so, and its change isn't in the record or the manifest.
     records.inject("s", Fault::Unknown { landed: false });
@@ -89,4 +157,22 @@ fn the_guest_shell_commits_to_a_persistent_workspace_and_reports_unsaved_changes
     assert_eq!(reply["changed"], json!([]), "{reply}");
     assert!(reply["manifest"].get("a.txt").is_some(), "{reply}");
     assert!(records.files("s").contains_key("a.txt"));
+
+    // Stopped while its commit is in flight: the commit isn't cut off, and the reply says what the workspace holds
+    // (here the commit landed, so the file is in it).
+    let slow: Arc<dyn Workspace> = Arc::new(Slow {
+        inner: open(),
+        delay: Duration::from_millis(600),
+    });
+    let reply = io.block_on(run_for(
+        &shell,
+        slow,
+        "echo late > late.txt",
+        Duration::from_millis(300),
+    ));
+    assert_eq!(reply["terminated"], "wall", "{reply}");
+    assert!(reply["manifest"].get("late.txt").is_some(), "{reply}");
+    assert_eq!(reply["changed"], json!(["late.txt"]), "{reply}");
+    assert!(reply.get("commit").is_none(), "{reply}");
+    assert_eq!(records.files("s")["late.txt"], b"late\n");
 }

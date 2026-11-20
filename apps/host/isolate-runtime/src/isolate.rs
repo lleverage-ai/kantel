@@ -26,7 +26,7 @@ use crate::limits::{
     Budget, Command, GcWatch, MIB, Scope, Term, allocator, gc_watch, near_heap_limit, watch,
 };
 use crate::ops::{SnapshotSink, kt};
-use crate::workspace::{FilesystemProvider, ManifestProvider, Workspace};
+use crate::workspace::{CommitReply, FilesystemProvider, ManifestProvider, Workspace};
 
 /// How long a terminated shell command may take to unwind before it is abandoned (see spawn_shell).
 const STUCK_GRACE: Duration = Duration::from_secs(1);
@@ -62,6 +62,8 @@ pub struct Ctx {
     /// The sandbox's files for this command (the embedder's filesystem provider): what the shell reads, stages
     /// and commits, and what its node/python runs read. None outside a shell command.
     pub workspace: Option<Arc<dyn Workspace>>,
+    /// The command's commit, which runs to its end even if the command is stopped while it waits for it.
+    pub commit: Arc<CommitSlot>,
     /// In-flight egress fetches from this isolate.
     pub fetches: Arc<AtomicUsize>,
     /// node/python runs the shell started, by run id, so the shell can cancel one (just-bash `timeout`).
@@ -88,6 +90,7 @@ impl Ctx {
             command,
             budget,
             workspace,
+            commit: Arc::default(),
             fetches: Arc::new(AtomicUsize::new(0)),
             children: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -97,6 +100,125 @@ impl Ctx {
             control.cancel();
         }
     }
+}
+
+/// A command's commit to its workspace. The op runs it as a task on the engine's I/O runtime, so dropping the op (the
+/// command was stopped, or abandoned with its isolate) doesn't cut a write off part-way; a stopped command's reply
+/// waits for it to end, to say what the workspace holds.
+#[derive(Default)]
+pub struct CommitSlot {
+    state: Mutex<Option<Option<Result<CommitReply, String>>>>,
+    done: std::sync::Condvar,
+}
+
+impl CommitSlot {
+    /// A commit has started.
+    pub fn start(&self) {
+        *self.state.lock().unwrap() = Some(None);
+    }
+    /// It ended, with this outcome.
+    pub fn finish(&self, outcome: Result<CommitReply, String>) {
+        *self.state.lock().unwrap() = Some(Some(outcome));
+        self.done.notify_all();
+    }
+    /// The outcome of the commit the command started, waiting up to `timeout` for it to end: None if it never
+    /// started one, `Err` if it failed or is still running.
+    pub fn wait(&self, timeout: Duration) -> Option<Result<CommitReply, String>> {
+        let state = self.state.lock().unwrap();
+        let (state, _) = self
+            .done
+            .wait_timeout_while(state, timeout, |s| matches!(s, Some(None)))
+            .unwrap();
+        match &*state {
+            None => None,
+            Some(None) => Some(Err(format!(
+                "the commit was still running {}s after the command was stopped",
+                timeout.as_secs()
+            ))),
+            Some(Some(outcome)) => Some(outcome.clone()),
+        }
+    }
+}
+
+/// Run `fut` on the engine's I/O runtime and wait for it from this (non-async) thread, up to `timeout`.
+fn on_io<T: Send + 'static>(
+    fut: impl std::future::Future<Output = T> + Send + 'static,
+    timeout: Duration,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    engine().io.spawn(async move {
+        let _ = tx.send(fut.await);
+    });
+    rx.recv_timeout(timeout).ok()
+}
+
+/// How long a stopped command's reply waits for a commit it started.
+const COMMIT_GRACE: Duration = Duration::from_secs(15);
+
+/// The files a stopped command's reply reports, and its commit's outcome when it wasn't `committed`. A command
+/// stopped before it started committing changed nothing: its own manifest. One stopped while committing (or after)
+/// may have changed the workspace: the manifest with the workspace's changes since the command's base applied, as
+/// the guest does with a catch-up.
+fn stopped_files(
+    manifest: Value,
+    base: &str,
+    workspace: &Arc<dyn Workspace>,
+    slot: &CommitSlot,
+) -> (Value, Value, Option<Value>) {
+    let Some(outcome) = slot.wait(COMMIT_GRACE) else {
+        return (manifest, json!([]), None);
+    };
+    let commit = match &outcome {
+        Ok(CommitReply::Committed { .. }) => None,
+        Ok(CommitReply::Unknown { error, .. }) => {
+            Some(json!({ "status": "unknown", "error": error }))
+        }
+        Ok(CommitReply::Failed { error, .. }) => {
+            Some(json!({ "status": "failed", "error": error }))
+        }
+        Ok(CommitReply::Fenced { error }) => Some(json!({ "status": "fenced", "error": error })),
+        Err(error) => Some(json!({ "status": "unknown", "error": error })),
+    };
+    let (ws, base_owned) = (workspace.clone(), base.to_string());
+    match on_io(async move { ws.sync(&base_owned).await }, COMMIT_GRACE) {
+        Some(Ok(catch_up)) => {
+            let (files, changed) = crate::workspace::manifest::apply_catch_up(&manifest, &catch_up);
+            (files, json!(changed), commit)
+        }
+        // The workspace can't say what it holds: the command's changes may or may not be in it.
+        Some(Err(e)) => (
+            manifest,
+            json!([]),
+            Some(json!({ "status": "unknown", "error": format!("{e:#}") })),
+        ),
+        None => (
+            manifest,
+            json!([]),
+            Some(
+                json!({ "status": "unknown", "error": "the workspace didn't answer after the command was stopped" }),
+            ),
+        ),
+    }
+}
+
+/// A stopped command's reply.
+fn stopped_reply(
+    t: Term,
+    mem: usize,
+    command: &Command,
+    files: (Value, Value, Option<Value>),
+) -> Value {
+    let (manifest, changed, commit) = files;
+    let mut reply = json!({
+        "exitCode": t.exit_code(), "stdout": "",
+        "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
+        "manifest": manifest, "changed": changed, "terminated": t.name(),
+        "timings": {},
+    });
+    if let Some(commit) = commit {
+        reply["commit"] = commit;
+    }
+    reply
 }
 
 /// A node/python run the shell can cancel: it stops the child isolate once the child has registered itself.
@@ -504,15 +626,36 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
         .name("kt-shell".into())
         .stack_size(8 * MIB)
         .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("shell tokio");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("shell tokio");
             let _entered = rt.enter();
             let mut live = new_live(Kind::Shell, mem_mib);
             if warmup {
                 // Run one empty command so just-bash's code is compiled before the sandbox's first real command.
                 let command = Command::new(Duration::from_secs(10), Duration::from_secs(10));
-                bind(&mut live.rt, Ctx::new(Kind::Shell, id.clone(), command.clone(), live.budget.clone(), Default::default()));
-                let guard = watch(live.handle.clone(), command, live.budget.clone(), Scope::Command);
-                let _ = rt.block_on(call(&mut live.rt, "exec", &[r#"{"command":"true","manifest":{}}"#]));
+                bind(
+                    &mut live.rt,
+                    Ctx::new(
+                        Kind::Shell,
+                        id.clone(),
+                        command.clone(),
+                        live.budget.clone(),
+                        Default::default(),
+                    ),
+                );
+                let guard = watch(
+                    live.handle.clone(),
+                    command,
+                    live.budget.clone(),
+                    Scope::Command,
+                );
+                let _ = rt.block_on(call(
+                    &mut live.rt,
+                    "exec",
+                    &[r#"{"command":"true","manifest":{}}"#],
+                ));
                 drop(guard);
                 unbind(&mut live.rt);
             }
@@ -530,13 +673,34 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             }
                             let _ = reply.send(());
                         }
-                        ShellCmd::Exec { sandbox_id, body, manifest, workspace, command, reply } => {
+                        ShellCmd::Exec {
+                            sandbox_id,
+                            body,
+                            manifest,
+                            workspace,
+                            command,
+                            reply,
+                        } => {
                             live.budget.reset_exceeded();
-                            bind(
-                                &mut live.rt,
-                                Ctx::new(Kind::Shell, sandbox_id, command.clone(), live.budget.clone(), Some(workspace)),
+                            let ctx = Ctx::new(
+                                Kind::Shell,
+                                sandbox_id,
+                                command.clone(),
+                                live.budget.clone(),
+                                Some(workspace.clone()),
                             );
-                            let guard = watch(live.handle.clone(), command.clone(), live.budget.clone(), Scope::Command);
+                            let commit_slot = ctx.commit.clone();
+                            let base = serde_json::from_str::<Value>(&body)
+                                .ok()
+                                .and_then(|b| b["base"].as_str().map(String::from))
+                                .unwrap_or_default();
+                            bind(&mut live.rt, ctx);
+                            let guard = watch(
+                                live.handle.clone(),
+                                command.clone(),
+                                live.budget.clone(),
+                                Scope::Command,
+                            );
                             let mem = live.budget.limit() / MIB;
                             // The shell isolate is long-lived and reused, so let the terminated call run to its error
                             // (terminate_execution makes execute_script / the event loop return Err) rather than
@@ -565,23 +729,25 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             unbind(&mut live.rt);
                             let Some(result) = result else {
                                 let t = term.unwrap_or(Term::Wall);
-                                tracing::warn!(term = t.name(), "shell command stuck after termination; replacing its isolate");
+                                tracing::warn!(
+                                    term = t.name(),
+                                    "shell command stuck after termination; replacing its isolate"
+                                );
                                 engine().stats.count_term(t);
                                 engine().stats.rebuilds.fetch_add(1, Ordering::Relaxed);
                                 live.rt.v8_isolate().cancel_terminate_execution();
                                 // Dropped before the new one is made (rusty_v8 isolates go in reverse order).
                                 drop(live);
                                 live = new_live(Kind::Shell, mem);
-                                let _ = reply.send(json!({
-                                    "exitCode": t.exit_code(), "stdout": "",
-                                    "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
-                                    "manifest": manifest, "changed": [], "terminated": t.name(),
-                                    "timings": {},
-                                }));
+                                let files =
+                                    stopped_files(manifest, &base, &workspace, &commit_slot);
+                                let _ = reply.send(stopped_reply(t, mem, &command, files));
                                 continue;
                             };
                             let value = match (result, term) {
-                                (Ok(s), None) => serde_json::from_str(&s).unwrap_or_else(|e| json!({ "error": format!("bad guest reply: {e}") })),
+                                (Ok(s), None) => serde_json::from_str(&s).unwrap_or_else(
+                                    |e| json!({ "error": format!("bad guest reply: {e}") }),
+                                ),
                                 (_, Some(t)) if t != Term::Exit => {
                                     engine().stats.count_term(t);
                                     engine().stats.rebuilds.fetch_add(1, Ordering::Relaxed);
@@ -594,15 +760,16 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                     // over.
                                     live.rt.v8_isolate().cancel_terminate_execution();
                                     live.rt.v8_isolate().low_memory_notification();
-                                    live.rt.add_near_heap_limit_callback(near_heap_limit(&live.budget.clone(), live.handle.clone()));
-                                    json!({
-                                        "exitCode": t.exit_code(), "stdout": "",
-                                        "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
-                                        "manifest": manifest, "changed": [], "terminated": t.name(),
-                                        "timings": {},
-                                    })
+                                    live.rt.add_near_heap_limit_callback(near_heap_limit(
+                                        &live.budget.clone(),
+                                        live.handle.clone(),
+                                    ));
+                                    let files =
+                                        stopped_files(manifest, &base, &workspace, &commit_slot);
+                                    stopped_reply(t, mem, &command, files)
                                 }
-                                (Ok(s), Some(_)) => serde_json::from_str(&s).unwrap_or_else(|_| json!({ "error": "guest stopped" })),
+                                (Ok(s), Some(_)) => serde_json::from_str(&s)
+                                    .unwrap_or_else(|_| json!({ "error": "guest stopped" })),
                                 (Err(e), _) => json!({ "error": format!("{e:#}") }),
                             };
                             let _ = reply.send(value);
