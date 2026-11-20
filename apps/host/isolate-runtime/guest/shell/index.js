@@ -237,8 +237,7 @@ export function createShell(ops, log) {
 				const bytes = await fs.readFileBuffer(full);
 				const sha = sha256(bytes);
 				const mode = stat.mode & 0o777;
-				const same =
-					before?.kind === "file" && before.mode === mode && (await originalDigest(path, before)) === sha;
+				const same = before?.kind === "file" && before.mode === mode && (await originalDigest(path, before)) === sha;
 				if (!same) {
 					const staged = JSON.parse(await ops.op_kt_stage(path, bytes));
 					changed.push(path);
