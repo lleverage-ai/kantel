@@ -242,11 +242,14 @@ fn op_kt_workspace_capabilities(state: &mut OpState) -> Result<String, JsErrorBo
             .unwrap_or(crate::workspace::Capabilities {
                 directories: true,
                 symlinks: true,
+                content_addressed: false,
             });
-    Ok(
-        serde_json::json!({ "directories": caps.directories, "symlinks": caps.symlinks })
-            .to_string(),
-    )
+    Ok(serde_json::json!({
+        "directories": caps.directories,
+        "symlinks": caps.symlinks,
+        "contentAddressed": caps.content_addressed,
+    })
+    .to_string())
 }
 
 /// The workspace's changes since the version `base` the guest holds ([`CatchUp`](crate::workspace::CatchUp), JSON).

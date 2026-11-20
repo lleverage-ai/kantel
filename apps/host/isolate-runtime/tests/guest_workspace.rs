@@ -54,11 +54,13 @@ impl Workspace for Slow {
     }
 }
 
-/// The reference provider, where the host writes `host.txt` (as a host command's outputs would) just before the
-/// command's own commit, which the store then refuses.
+/// The reference provider, where the host writes `path` (as a host command's outputs would) just before the
+/// command's own commit, which the store then refuses if `fail`.
 struct HostFirst {
     inner: Arc<dyn Workspace>,
     records: Arc<RecordProvider>,
+    path: &'static str,
+    fail: bool,
 }
 
 impl Workspace for HostFirst {
@@ -82,19 +84,21 @@ impl Workspace for HostFirst {
     fn commit(&self, commit: Commit) -> BoxFuture<'_, anyhow::Result<CommitReply>> {
         Box::pin(async move {
             let now = self.inner.view().await?;
-            let staged = self.inner.stage("host.txt", b"host\n".to_vec()).await?;
+            let staged = self.inner.stage(self.path, b"host\n".to_vec()).await?;
             let host = Commit {
                 operation_id: "host".into(),
                 base: now.generation,
                 puts: vec![kantel_isolate::workspace::Put {
-                    path: "host.txt".into(),
+                    path: self.path.into(),
                     blob: staged.blob,
                     mode: None,
                 }],
                 ..Commit::default()
             };
             self.inner.commit(host).await?;
-            self.records.inject("s", Fault::Fail);
+            if self.fail {
+                self.records.inject("s", Fault::Fail);
+            }
             self.inner.commit(commit).await
         })
     }
@@ -160,6 +164,7 @@ fn the_guest_shell_commits_to_a_persistent_workspace_and_reports_unsaved_changes
         pool: 0,
         node_pool: 0,
         python_pool: 0,
+        commit_grace: Duration::from_secs(1),
         ..Config::new(std::env::temp_dir())
     };
     let embedding = Embedding::new(GUEST).with_filesystem(records.clone());
@@ -237,6 +242,8 @@ fn the_guest_shell_commits_to_a_persistent_workspace_and_reports_unsaved_changes
     let host_first: Arc<dyn Workspace> = Arc::new(HostFirst {
         inner: open(),
         records: records.clone(),
+        path: "host.txt",
+        fail: true,
     });
     let reply = io.block_on(run(&shell, host_first, "echo mine > mine.txt"));
     assert_eq!(reply["commit"]["status"], "failed", "{reply}");
@@ -248,13 +255,13 @@ fn the_guest_shell_commits_to_a_persistent_workspace_and_reports_unsaved_changes
     // (here the commit landed, so the file is in it).
     let slow: Arc<dyn Workspace> = Arc::new(Slow {
         inner: open(),
-        delay: Duration::from_millis(600),
+        delay: Duration::from_millis(400),
     });
     let reply = io.block_on(run_for(
         &shell,
         slow,
         "rmdir empty && echo late > late.txt",
-        Duration::from_millis(300),
+        Duration::from_millis(150),
         json!({ "empty": { "kind": "dir" } }),
     ));
     assert_eq!(reply["terminated"], "wall", "{reply}");
@@ -265,4 +272,93 @@ fn the_guest_shell_commits_to_a_persistent_workspace_and_reports_unsaved_changes
     assert_eq!(reply["changed"], json!(["late.txt", "empty"]), "{reply}");
     assert!(reply.get("commit").is_none(), "{reply}");
     assert_eq!(records.files("s")["late.txt"], b"late\n");
+
+    // Unchanged files aren't commits, whatever the provider's ids are: written over with the same bytes (unread, and
+    // read first), nothing is committed, so a host write made since the command's base stands.
+    for command in [
+        "printf 'alpha\\n' > a.txt",
+        "cat a.txt > /dev/null && printf 'alpha\\n' > a.txt",
+    ] {
+        let reply = io.block_on(run(&shell, open(), command));
+        assert_eq!(reply["exitCode"], 0, "{command}: {reply}");
+        assert_eq!(reply["changed"], json!([]), "{command}: {reply}");
+    }
+    let host_first: Arc<dyn Workspace> = Arc::new(HostFirst {
+        inner: open(),
+        records: records.clone(),
+        path: "a.txt",
+        fail: false,
+    });
+    let reply = io.block_on(run(
+        &shell,
+        host_first,
+        "printf 'alpha\\n' > a.txt && echo z > z.txt",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(records.files("s")["a.txt"], b"host\n", "{reply}");
+    // A real change, of bytes or of mode, still is one.
+    let reply = io.block_on(run(
+        &shell,
+        open(),
+        "printf 'new\\n' > a.txt && chmod 600 b.txt",
+    ));
+    assert_eq!(reply["changed"], json!(["a.txt", "b.txt"]), "{reply}");
+    assert_eq!(records.files("s")["a.txt"], b"new\n");
+
+    // The shell starts from the provider's files, whatever the request's manifest says: none sent, or a stale one,
+    // a conditional default doesn't overwrite what is there.
+    for manifest in [
+        json!({}),
+        json!({ "a.txt": { "kind": "file", "sha": "stale", "size": 1, "mode": 420 } }),
+    ] {
+        let body =
+            json!({ "command": "test -e a.txt || echo default > a.txt", "manifest": manifest });
+        let prepared = io
+            .block_on(kantel_isolate::server::prepare("s", &body))
+            .unwrap();
+        assert!(
+            prepared.request["manifest"]["a.txt"]["sha"] != "stale",
+            "{}",
+            prepared.request
+        );
+        let reply = io
+            .block_on(shell.exec(
+                &prepared.request,
+                prepared.manifest,
+                prepared.workspace,
+                Command::new(Duration::from_secs(20), Duration::from_secs(20)),
+            ))
+            .unwrap();
+        assert_eq!(reply["changed"], json!([]), "{reply}");
+        assert_eq!(records.files("s")["a.txt"], b"new\n");
+    }
+
+    // A commit still running when the grace ends holds the sandbox's next command back until it ends, so it can't
+    // land over that command's work.
+    let slower: Arc<dyn Workspace> = Arc::new(Slow {
+        inner: open(),
+        delay: Duration::from_millis(5000),
+    });
+    let reply = io.block_on(run_for(
+        &shell,
+        slower,
+        "echo first > order.txt",
+        Duration::from_millis(100),
+        json!({}),
+    ));
+    assert_eq!(reply["commit"]["status"], "unknown", "{reply}");
+    let refused = io.block_on(run(&shell, open(), "echo second > order.txt"));
+    assert_eq!(refused["retryable"], true, "{refused}");
+    // Once it has landed, the next command runs, and its write is the one that stays.
+    let landed = std::time::Instant::now();
+    while !records.files("s").contains_key("order.txt") {
+        assert!(
+            landed.elapsed() < Duration::from_secs(10),
+            "the slow commit never landed"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reply = io.block_on(run(&shell, open(), "echo second > order.txt"));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(records.files("s")["order.txt"], b"second\n");
 }

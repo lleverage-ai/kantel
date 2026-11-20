@@ -135,6 +135,10 @@ impl CommitSlot {
         *self.state.lock().unwrap() = Some(Some(outcome));
         self.done.notify_all();
     }
+    /// A commit is running now.
+    pub fn running(&self) -> bool {
+        matches!(*self.state.lock().unwrap(), Some(None))
+    }
     /// The removals of every commit of the command that was committed.
     pub fn committed_removes(&self) -> Vec<String> {
         self.committed.lock().unwrap().clone()
@@ -150,8 +154,7 @@ impl CommitSlot {
         match &*state {
             None => None,
             Some(None) => Some(Err(format!(
-                "the commit was still running {}s after the command was stopped",
-                timeout.as_secs()
+                "the commit was still running {timeout:?} after the command was stopped"
             ))),
             Some(Some(outcome)) => Some(outcome.clone()),
         }
@@ -170,23 +173,57 @@ fn on_io<T: Send + 'static>(
     rx.recv_timeout(timeout).ok()
 }
 
-/// How long a stopped command's reply waits for a commit it started, and then for the workspace to say what it holds.
-const COMMIT_GRACE: Duration = Duration::from_secs(15);
+/// How long a stopped command's reply waits for the workspace to say what it holds (after waiting for its commit,
+/// `Config::commit_grace`).
 const SYNC_GRACE: Duration = Duration::from_secs(5);
+
+/// Commits still running after their stopped command's reply, by sandbox: the sandbox's next command waits for its
+/// one (and is refused, retryable, if it is still running), so a late write can't land over later work. Kept here,
+/// not with the isolate, so replacing the isolate or the sandbox's session doesn't lose it.
+static PENDING: std::sync::LazyLock<Mutex<HashMap<String, Arc<CommitSlot>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Wait (up to the grace) for a commit of `sandbox_id`'s that outlived its command. An error while it still runs.
+fn pending_commit(sandbox_id: &str) -> std::result::Result<(), String> {
+    let Some(slot) = PENDING.lock().unwrap().get(sandbox_id).cloned() else {
+        return Ok(());
+    };
+    let _ = slot.wait(engine().cfg.commit_grace);
+    if slot.running() {
+        return Err(
+            "the sandbox's last command is still saving its changes; try again shortly".into(),
+        );
+    }
+    let mut pending = PENDING.lock().unwrap();
+    if pending
+        .get(sandbox_id)
+        .is_some_and(|p| Arc::ptr_eq(p, &slot))
+    {
+        pending.remove(sandbox_id);
+    }
+    Ok(())
+}
 
 /// The files a stopped command's reply reports, and its commit's outcome when it wasn't `committed`. A command
 /// stopped before it started committing changed nothing: its own manifest. One stopped while committing (or after)
 /// may have changed the workspace: the manifest with the workspace's changes since the command's base applied, as
 /// the guest does with a catch-up.
 fn stopped_files(
+    sandbox_id: &str,
     manifest: Value,
     base: &str,
     workspace: &Arc<dyn Workspace>,
-    slot: &CommitSlot,
+    slot: &Arc<CommitSlot>,
 ) -> (Value, Value, Option<Value>) {
-    let Some(outcome) = slot.wait(COMMIT_GRACE) else {
+    let Some(outcome) = slot.wait(engine().cfg.commit_grace) else {
         return (manifest, json!([]), None);
     };
+    if slot.running() {
+        PENDING
+            .lock()
+            .unwrap()
+            .insert(sandbox_id.to_string(), slot.clone());
+    }
     // Committed commits' removals are the workspace's too, even of entries its provider never listed.
     let removes = slot.committed_removes();
     let commit = match &outcome {
@@ -702,6 +739,12 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             reply,
                         } => {
                             live.budget.reset_exceeded();
+                            // A commit an earlier command left running goes first.
+                            if let Err(error) = pending_commit(&sandbox_id) {
+                                let _ = reply.send(json!({ "error": error, "retryable": true }));
+                                continue;
+                            }
+                            let sandbox = sandbox_id.to_string();
                             let ctx = Ctx::new(
                                 Kind::Shell,
                                 sandbox_id,
@@ -759,8 +802,13 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                 // Dropped before the new one is made (rusty_v8 isolates go in reverse order).
                                 drop(live);
                                 live = new_live(Kind::Shell, mem);
-                                let files =
-                                    stopped_files(manifest, &base, &workspace, &commit_slot);
+                                let files = stopped_files(
+                                    &sandbox,
+                                    manifest,
+                                    &base,
+                                    &workspace,
+                                    &commit_slot,
+                                );
                                 let _ = reply.send(stopped_reply(t, mem, &command, files));
                                 continue;
                             };
@@ -784,8 +832,13 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                         &live.budget.clone(),
                                         live.handle.clone(),
                                     ));
-                                    let files =
-                                        stopped_files(manifest, &base, &workspace, &commit_slot);
+                                    let files = stopped_files(
+                                        &sandbox,
+                                        manifest,
+                                        &base,
+                                        &workspace,
+                                        &commit_slot,
+                                    );
                                     stopped_reply(t, mem, &command, files)
                                 }
                                 (Ok(s), Some(_)) => serde_json::from_str(&s)

@@ -83,9 +83,14 @@ async fn put(ws: &Arc<dyn Workspace>, path: &str, bytes: &[u8]) -> Put {
     }
 }
 
+/// A commit with an operation id of its own (a provider may tell operations apart by it).
 fn commit(base: &str, puts: Vec<Put>, removes: &[&str]) -> Commit {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     Commit {
-        operation_id: format!("op-{}", puts.len() + removes.len()),
+        operation_id: format!(
+            "contract-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ),
         base: base.into(),
         puts,
         removes: removes.iter().map(|s| s.to_string()).collect(),
@@ -110,6 +115,14 @@ async fn views_list_files_and_reads_get_their_bytes(s: &dyn Subject) {
     }
     assert_eq!(read_all(&ws, &file_of(&view, "a.txt")).await, A);
     assert_eq!(read_all(&ws, &file_of(&view, "dir/b.txt")).await, B);
+    // A content-addressed provider's ids are the bytes' SHA-256, which a guest relies on to tell unchanged files.
+    if ws.capabilities().content_addressed {
+        use sha2::Digest;
+        assert_eq!(
+            file_of(&view, "a.txt"),
+            hex::encode(sha2::Sha256::digest(A))
+        );
+    }
 }
 
 async fn a_read_is_refused_past_the_cap_and_for_files_not_given(s: &dyn Subject) {

@@ -129,6 +129,7 @@ pub fn config(a: &ServeArgs) -> Result<Config> {
             max_sandboxes: a.max_sandboxes.max(1),
             max_runs: a.max_runs.unwrap_or((cpus * 2).clamp(2, 16)).max(1),
             idle: Duration::from_millis(a.idle_ms.max(1000)),
+            commit_grace: Duration::from_secs(15),
         })
     }
 }

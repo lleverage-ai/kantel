@@ -213,6 +213,9 @@ impl CommitReply {
 pub struct Capabilities {
     pub directories: bool,
     pub symlinks: bool,
+    /// File ids are the SHA-256 of the file's bytes (hex), so a guest can tell an unchanged file by its id. Otherwise
+    /// ids are opaque, and a guest compares bytes to tell.
+    pub content_addressed: bool,
 }
 
 /// One sandbox's files for a command (see the module docs for the exchange). Used from the isolate's ops on the
@@ -222,6 +225,14 @@ pub trait Workspace: Send + Sync {
 
     /// The version a command starts from.
     fn view(&self) -> BoxFuture<'_, Result<View>>;
+
+    /// The files the guest starts a command from, as a manifest, for `view` (the one [`view`](Self::view) gave): the
+    /// view's own entries, so the files and the commit's base are the same version. A per-command provider whose
+    /// request carries its own manifest may give that (Kantel's keeps entries it couldn't read, as the guest always
+    /// has).
+    fn manifest(&self, view: &View) -> Value {
+        manifest::manifest_of(&view.entries)
+    }
 
     /// A file's bytes, by the id a view or [`stage`](Self::stage) gave. At most `cap` bytes: a larger file is
     /// [`ReadError::TooLarge`], refused before it is read. `charge`, when given, is charged as the bytes arrive (the
