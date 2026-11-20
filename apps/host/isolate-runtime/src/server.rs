@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use crate::config::{
     Config, DEFAULT_MEMORY_MIB, DEFAULT_WALL, MAX_MEMORY_MIB, MAX_WALL, MIN_MEMORY_MIB,
 };
-use crate::isolate::{PY_READY, ShellCmd, ShellHandle, engine, spawn_shell};
+use crate::isolate::{PY_READY, ShellHandle, engine, spawn_shell};
 use crate::limits::Command;
 
 struct Session {
@@ -276,11 +276,9 @@ async fn load(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         Ok(v) => v,
         Err(r) => return *r,
     };
-    let (reply, rx) = tokio::sync::oneshot::channel();
-    if handle.tx.send(ShellCmd::Load { mem_mib, reply }).is_err() {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "isolate thread stopped");
+    if let Err(e) = handle.load(mem_mib).await {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     }
-    let _ = rx.await;
     if hit == "pool" {
         let a = app.clone();
         tokio::task::spawn_blocking(move || refill_pool(&a));
@@ -314,18 +312,7 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         "manifest": manifest,
     });
     let command = Command::new(engine().cfg.cpu, wall);
-    let (reply, rx) = tokio::sync::oneshot::channel();
-    let send = ShellCmd::Exec {
-        sandbox_id: Arc::from(id.as_str()),
-        body: request.to_string(),
-        manifest,
-        command,
-        reply,
-    };
-    if handle.tx.send(send).is_err() {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "isolate thread stopped");
-    }
-    match rx.await {
+    match handle.exec(&request, manifest, command).await {
         Ok(mut value) => {
             if value.get("error").is_some() {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(value)).into_response();
@@ -334,7 +321,7 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
             value["ms"] = json!(started.elapsed().as_secs_f64() * 1e3);
             Json(value).into_response()
         }
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "isolate thread stopped"),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -374,6 +361,55 @@ async fn unload(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Json<Va
         .and_then(|id| app.sessions.lock().unwrap().remove(&id))
         .is_some();
     Json(json!({ "ok": removed }))
+}
+
+/// Serve kantel-host's isolate protocol on `cfg.listen` until Ctrl-C: start the engine with `embedding`, fill the
+/// pools, then answer requests. After [`init_v8`](crate::init_v8), and after the process has hardened itself.
+pub fn serve(cfg: Config, embedding: crate::Embedding) -> anyhow::Result<()> {
+    let debug = std::env::var("KANTEL_ISOLATE_DEBUG").is_ok();
+    // Hand freed malloc memory back to the OS every few seconds: isolates come and go on many threads, and glibc
+    // otherwise keeps what they freed (jemalloc with background_threads does this itself, but the trim is harmless).
+    if cfg!(not(feature = "jemalloc")) {
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                unsafe { libc::malloc_trim(0) };
+            }
+        });
+    }
+    let io = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(8)
+        .enable_all()
+        .build()?;
+    let handle = io.handle().clone();
+    crate::isolate::Engine::init(cfg.clone(), embedding, handle, debug)?;
+    // Fill the node/python ready pools.
+    crate::isolate::node_refill();
+    crate::isolate::python_refill();
+    io.block_on(async move {
+        let app = App::new(cfg.clone());
+        {
+            // Pre-load the shell pool.
+            let a = app.clone();
+            tokio::task::spawn_blocking(move || warm_pool(&a)).await.ok();
+        }
+        let router = router(app);
+        tracing::info!(listen = %cfg.listen, store = %cfg.store.describe(), egress = %cfg.egress.describe(), "kantel-isolate listening");
+        if let Some(path) = cfg.listen.strip_prefix("unix:") {
+            // Replace a stale socket; kantel-host owns the 0700 directory it lives in.
+            let _ = std::fs::remove_file(path);
+            let listener = tokio::net::UnixListener::bind(path)?;
+            axum::serve(listener, router).with_graceful_shutdown(shutdown()).await?;
+        } else {
+            let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
+            axum::serve(listener, router).with_graceful_shutdown(shutdown()).await?;
+        }
+        Ok(())
+    })
+}
+
+async fn shutdown() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]

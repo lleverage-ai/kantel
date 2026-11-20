@@ -21,12 +21,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::bridges::Store;
 use crate::config::{Config, DEFAULT_MEMORY_MIB};
+use crate::embed::Embedding;
 use crate::limits::{
     Budget, Command, GcWatch, MIB, Scope, Term, allocator, gc_watch, near_heap_limit, watch,
 };
 use crate::ops::{SnapshotSink, kt};
 
-const GUEST: &str = include_str!("../guest/dist/guest.js");
 /// How long a terminated shell command may take to unwind before it is abandoned (see spawn_shell).
 const STUCK_GRACE: Duration = Duration::from_secs(1);
 
@@ -67,6 +67,12 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// The context of the command running in the isolate whose op state this is, for an embedder's op: the isolate's
+    /// kind, sandbox, command (CPU and wall clock) and memory budget. None outside a command.
+    pub fn of(state: &deno_core::OpState) -> Option<Ctx> {
+        state.try_borrow::<Ctx>().cloned()
+    }
+
     fn new(
         kind: Kind,
         sandbox_id: Arc<str>,
@@ -175,6 +181,7 @@ pub struct RunResult(pub Option<Vec<u8>>);
 
 pub struct Engine {
     pub cfg: Config,
+    pub embedding: Embedding,
     pub store: Arc<Store>,
     pub io: tokio::runtime::Handle,
     pub egress: crate::bridges::Target,
@@ -217,13 +224,22 @@ pub fn engine() -> &'static Engine {
 }
 
 impl Engine {
-    pub fn init(cfg: Config, io: tokio::runtime::Handle, debug: bool) -> Result<&'static Engine> {
+    /// Start the process's engine: the runtime's settings, the embedder's parts, the I/O runtime its bridges and
+    /// ops use, and whether guest logs are shown. Once per process, after [`init_v8`](crate::init_v8): it builds
+    /// the startup snapshot every isolate is made from.
+    pub fn init(
+        cfg: Config,
+        embedding: Embedding,
+        io: tokio::runtime::Handle,
+        debug: bool,
+    ) -> Result<&'static Engine> {
         let store = Arc::new(Store::new(cfg.store.clone()));
-        let snapshot = build_snapshot();
+        let snapshot = build_snapshot(&embedding)?;
         let egress = cfg.egress.clone();
         let runs = Arc::new(tokio::sync::Semaphore::new(cfg.max_runs));
         let built = Engine {
             cfg,
+            embedding,
             store,
             io,
             egress,
@@ -337,7 +353,7 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
         .heap_limits(0, limit)
         .array_buffer_allocator(allocator(&budget));
     let mut rt = JsRuntime::new(RuntimeOptions {
-        extensions: vec![kt::init()],
+        extensions: extensions(&engine().embedding),
         startup_snapshot: Some(engine().snapshot()),
         create_params: Some(params),
         module_loader: module_loader(kind),
@@ -401,6 +417,10 @@ fn bind(rt: &mut JsRuntime, ctx: Ctx) {
     rt.op_state().borrow_mut().put(ctx);
 }
 
+fn unbind(rt: &mut JsRuntime) {
+    rt.op_state().borrow_mut().try_take::<Ctx>();
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Shell isolates: one thread each, kept while the sandbox is used
 
@@ -418,11 +438,45 @@ pub enum ShellCmd {
     },
 }
 
+/// A sandbox's shell isolate, on its own thread for as long as the handle is kept (the thread ends when the last
+/// handle is dropped).
 pub struct ShellHandle {
     pub tx: mpsc::UnboundedSender<ShellCmd>,
-    #[allow(dead_code)]
     pub mem_mib: usize,
     pub sandbox_id: Arc<str>,
+}
+
+impl ShellHandle {
+    /// Run one command in the sandbox's shell: `request` is what the guest's `exec` entry gets (as JSON), and the
+    /// answer is its reply, or the runtime's own when it stopped the command (`terminated`). `manifest` is the
+    /// sandbox's files, whose blobs the shell may read. `command` holds the CPU budget and wall-clock deadline.
+    pub async fn exec(
+        &self,
+        request: &Value,
+        manifest: Value,
+        command: Arc<Command>,
+    ) -> Result<Value> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(ShellCmd::Exec {
+                sandbox_id: self.sandbox_id.clone(),
+                body: request.to_string(),
+                manifest,
+                command,
+                reply,
+            })
+            .map_err(|_| anyhow!("isolate thread stopped"))?;
+        rx.await.map_err(|_| anyhow!("isolate thread stopped"))
+    }
+
+    /// Make sure the sandbox's isolate has `mem_mib` of memory (rebuilding it if it has another limit).
+    pub async fn load(&self, mem_mib: usize) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(ShellCmd::Load { mem_mib, reply })
+            .map_err(|_| anyhow!("isolate thread stopped"))?;
+        rx.await.map_err(|_| anyhow!("isolate thread stopped"))
+    }
 }
 
 pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellHandle {
@@ -442,6 +496,7 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                 let guard = watch(live.handle.clone(), command, live.budget.clone(), Scope::Command);
                 let _ = rt.block_on(call(&mut live.rt, "exec", &[r#"{"command":"true","manifest":{}}"#]));
                 drop(guard);
+                unbind(&mut live.rt);
             }
             // One block_on per step rather than one around the loop, so a stuck command's isolate can be dropped
             // between them, outside any poll (dropping it inside one aborts V8).
@@ -488,6 +543,9 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             });
                             let term = guard.watched().term();
                             drop(guard);
+                            // Between commands the isolate has no context: an op that still runs answers "no isolate
+                            // context" (and Ctx::of None) rather than acting for the command that ended.
+                            unbind(&mut live.rt);
                             let Some(result) = result else {
                                 let t = term.unwrap_or(Term::Wall);
                                 tracing::warn!(term = t.name(), "shell command stuck after termination; replacing its isolate");
@@ -1237,20 +1295,26 @@ fn looks_like_esm(source: &str) -> bool {
 // ---------------------------------------------------------------------------------------------------------------
 // Snapshot
 
-fn build_snapshot() -> &'static [u8] {
+/// The runtime's ops, then the embedder's: the same list for the snapshot and every isolate made from it.
+fn extensions(embedding: &Embedding) -> Vec<deno_core::Extension> {
+    let mut all = vec![kt::init()];
+    all.extend((embedding.extensions)());
+    all
+}
+
+fn build_snapshot(embedding: &Embedding) -> Result<&'static [u8]> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("snapshot tokio");
+        .build()?;
     let _entered = rt.enter();
     let mut snap_rt = JsRuntimeForSnapshot::new(RuntimeOptions {
-        extensions: vec![kt::init()],
+        extensions: extensions(embedding),
         ..Default::default()
     });
     snap_rt
-        .execute_script("kt:guest", GUEST)
-        .unwrap_or_else(|e| panic!("guest bundle failed to load: {e}"));
-    Box::leak(snap_rt.snapshot())
+        .execute_script("kt:guest", embedding.guest)
+        .map_err(|e| anyhow!("guest bundle failed to load: {e}"))?;
+    Ok(Box::leak(snap_rt.snapshot()))
 }
 
 // Keep the module private helpers used by other modules.

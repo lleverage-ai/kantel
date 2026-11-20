@@ -162,6 +162,16 @@ jobs:
         if: steps.crate.outputs.present == 'true'
         run: apps/host/guest/isolate-runtime.sh test
 
+      # A program outside this repository embeds the runtime as a library (apps/host/isolate-runtime/EMBEDDING.md):
+      # the minimal consumer in consumer/ builds and runs against the library at this commit, fetched as a pinned git
+      # revision, on the stock V8 and on the sandboxed one (with the patched deno_core given by [patch.crates-io], as
+      # an embedder does). The stock V8 is rusty_v8's own, whatever V8 the job's variables pick.
+      - name: External consumer (stock and sandboxed V8)
+        if: steps.crate.outputs.present == 'true'
+        run: |
+          env -u RUSTY_V8_ARCHIVE -u RUSTY_V8_ARCHIVE_SHA256 KANTEL_V8_SANDBOX=0 apps/host/guest/isolate-runtime.sh consumer
+          env -u RUSTY_V8_ARCHIVE -u RUSTY_V8_ARCHIVE_SHA256 KANTEL_V8_SANDBOX=1 apps/host/guest/isolate-runtime.sh consumer
+
       # Each with its assets (build-assets.sh), as rootfs.sh builds them for the isolate image.
       - name: Release build (amd64 and arm64)
         if: steps.crate.outputs.present == 'true'
