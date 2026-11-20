@@ -206,10 +206,14 @@ export function createShell(ops, log) {
 				}
 			} else if (stat.isDirectory) {
 				next[path] = { kind: "dir" };
-				// A workspace that keeps files only has its directories implied by its files' paths: they aren't changes.
+				// A workspace that keeps files only has its directories implied by its files' paths: a new one isn't a
+				// change, but what it replaced (a file, a link) is removed.
 				if (before?.kind !== "dir" && capabilities.directories) {
 					changed.push(path);
 					commit.dirs.push(path);
+				} else if (before && before.kind !== "dir") {
+					changed.push(path);
+					commit.removes.push(path);
 				}
 			} else {
 				const bytes = await fs.readFileBuffer(full);
@@ -245,9 +249,10 @@ export function createShell(ops, log) {
 			if (reply.status === "committed") saved = holds(reply.catchUp, commit.removes);
 			else {
 				unsaved = { status: reply.status, error: reply.error };
-				// Unknown: the workspace holds what its catch-up says, which may or may not have the changes. Failed or
-				// fenced: nothing was saved.
-				if (reply.status === "unknown") saved = holds(reply.catchUp, []);
+				// Unknown: the workspace holds what its catch-up says, which may or may not have the changes. Failed:
+				// nothing of this command's was saved, but the workspace may have changed since its base (the host's own
+				// writes). Fenced: no catch-up.
+				if (reply.catchUp) saved = holds(reply.catchUp, []);
 			}
 		}
 		const t3 = performance.now();

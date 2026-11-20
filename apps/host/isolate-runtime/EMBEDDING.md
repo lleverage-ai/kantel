@@ -158,8 +158,11 @@ A commit's reply is one of:
 Every reply but `fenced` carries a catch-up from the commit's base, and `fenced` is for good. Kantel's guest shell
 reports the files as the workspace holds them: its manifest with the catch-up applied, so the reply names the
 provider's own file ids. A command whose commit wasn't `committed` fails (exit 1, a line on stderr, and
-`commit: {status, error}` in its reply). It commits only what the workspace keeps (`op_kt_workspace_capabilities`): in a
-files-only workspace, directories are implied by paths and aren't committed.
+`commit: {status, error}` in its reply); after `failed` the reply still has the workspace's own changes since the
+command's base (the host's writes), from the catch-up. It commits only what the workspace keeps
+(`op_kt_workspace_capabilities`): in a files-only workspace, directories are implied by paths and aren't committed, and
+a file or link a directory replaced is removed. A command commits once at a time (a second `op_kt_commit` while one is
+running is refused).
 
 The commit runs as a task on the engine's I/O runtime, so a command stopped while it waits for its commit (CPU, wall
 clock, memory) doesn't cut the write off. The stopped command's reply waits for the commit (up to 15 s) and reports the

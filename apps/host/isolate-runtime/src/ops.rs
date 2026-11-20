@@ -211,7 +211,11 @@ async fn op_kt_commit(
     let commit: Commit =
         serde_json::from_str(&commit).map_err(|e| jerr(format!("bad commit: {e}")))?;
     let slot = c.commit.clone();
-    slot.start();
+    if !slot.start(commit.removes.clone()) {
+        return Err(JsErrorBox::generic(
+            "a commit is already running for this command",
+        ));
+    }
     let task = engine().io.spawn(async move {
         let outcome = workspace.commit(commit).await.map_err(|e| format!("{e:#}"));
         slot.finish(outcome.clone());

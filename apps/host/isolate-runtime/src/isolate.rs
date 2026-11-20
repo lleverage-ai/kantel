@@ -107,14 +107,24 @@ impl Ctx {
 /// waits for it to end, to say what the workspace holds.
 #[derive(Default)]
 pub struct CommitSlot {
+    /// None before a commit; Some(None) while one runs; Some(Some(outcome)) after.
     state: Mutex<Option<Option<Result<CommitReply, String>>>>,
+    /// The paths the last commit removed, which a stopped command's reply drops as the guest would.
+    removes: Mutex<Vec<String>>,
     done: std::sync::Condvar,
 }
 
 impl CommitSlot {
-    /// A commit has started.
-    pub fn start(&self) {
-        *self.state.lock().unwrap() = Some(None);
+    /// A commit, removing `removes`, starts. False while another of the command's commits is still running: one at a
+    /// time, so a stopped command's reply knows which it waited for.
+    pub fn start(&self, removes: Vec<String>) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if matches!(*state, Some(None)) {
+            return false;
+        }
+        *state = Some(None);
+        *self.removes.lock().unwrap() = removes;
+        true
     }
     /// It ended, with this outcome.
     pub fn finish(&self, outcome: Result<CommitReply, String>) {
@@ -152,8 +162,9 @@ fn on_io<T: Send + 'static>(
     rx.recv_timeout(timeout).ok()
 }
 
-/// How long a stopped command's reply waits for a commit it started.
+/// How long a stopped command's reply waits for a commit it started, and then for the workspace to say what it holds.
 const COMMIT_GRACE: Duration = Duration::from_secs(15);
+const SYNC_GRACE: Duration = Duration::from_secs(5);
 
 /// The files a stopped command's reply reports, and its commit's outcome when it wasn't `committed`. A command
 /// stopped before it started committing changed nothing: its own manifest. One stopped while committing (or after)
@@ -168,6 +179,11 @@ fn stopped_files(
     let Some(outcome) = slot.wait(COMMIT_GRACE) else {
         return (manifest, json!([]), None);
     };
+    // A committed commit's removals are the workspace's too, even of entries its provider never listed.
+    let removes = match &outcome {
+        Ok(CommitReply::Committed { .. }) => slot.removes.lock().unwrap().clone(),
+        _ => Vec::new(),
+    };
     let commit = match &outcome {
         Ok(CommitReply::Committed { .. }) => None,
         Ok(CommitReply::Unknown { error, .. }) => {
@@ -180,9 +196,10 @@ fn stopped_files(
         Err(error) => Some(json!({ "status": "unknown", "error": error })),
     };
     let (ws, base_owned) = (workspace.clone(), base.to_string());
-    match on_io(async move { ws.sync(&base_owned).await }, COMMIT_GRACE) {
+    match on_io(async move { ws.sync(&base_owned).await }, SYNC_GRACE) {
         Some(Ok(catch_up)) => {
-            let (files, changed) = crate::workspace::manifest::apply_catch_up(&manifest, &catch_up);
+            let (files, changed) =
+                crate::workspace::manifest::apply_catch_up(&manifest, &catch_up, &removes);
             (files, json!(changed), commit)
         }
         // The workspace can't say what it holds: the command's changes may or may not be in it.

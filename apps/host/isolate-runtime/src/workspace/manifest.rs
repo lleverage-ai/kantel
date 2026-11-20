@@ -121,21 +121,31 @@ pub fn manifest_of(entries: &BTreeMap<String, Node>) -> Value {
     )
 }
 
-/// `manifest` with a catch-up applied (removed paths dropped, changed ones replaced), and the paths it changed.
-pub fn apply_catch_up(manifest: &Value, catch_up: &CatchUp) -> (Value, Vec<String>) {
+/// `manifest` with a commit's `removes` and its catch-up applied (removed paths dropped, changed ones replaced), and
+/// the paths that changed, as the guest shell reports them.
+pub fn apply_catch_up(
+    manifest: &Value,
+    catch_up: &CatchUp,
+    removes: &[String],
+) -> (Value, Vec<String>) {
     let mut files = manifest.as_object().cloned().unwrap_or_default();
-    for path in &catch_up.removed {
-        files.remove(path);
-    }
-    for (path, node) in &catch_up.changed {
-        files.insert(path.clone(), entry_of(node));
-    }
-    let changed = catch_up
+    let mut changed: Vec<String> = catch_up
         .changed
         .keys()
         .chain(catch_up.removed.iter())
         .cloned()
         .collect();
+    for path in removes {
+        if files.contains_key(path) && !changed.contains(path) {
+            changed.push(path.clone());
+        }
+    }
+    for path in removes.iter().chain(catch_up.removed.iter()) {
+        files.remove(path);
+    }
+    for (path, node) in &catch_up.changed {
+        files.insert(path.clone(), entry_of(node));
+    }
     (Value::Object(files), changed)
 }
 
