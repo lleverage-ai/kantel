@@ -140,7 +140,7 @@ makes one; a persistent one gives the sandbox's own). `ShellHandle::exec` takes 
 
 | Step | `Workspace` method | Op (shell only) | What it promises |
 | --- | --- | --- | --- |
-| Start | `view()` | (the host sends it in the request) | Every path and an opaque generation. |
+| Start | `view()`, `manifest(view)` | (in the request) | Every path and an opaque generation, and the files the guest starts from as a manifest: the view's own, so the files and the base are one version (Kantel's gives the request's manifest). |
 | Read | `read(file, cap, charge)` | `op_kt_blob_read(file)` | Only a file a view or `stage` gave this workspace (`NotFound` otherwise). Over `cap` is `TooLarge`, refused before it is read; the bytes are charged to the isolate as they arrive. |
 | Stage | `stage(path, bytes)` | `op_kt_stage(path, bytes)` | A blob id a commit may name. Nothing refers to it until then. |
 | Commit | `commit(commit)` | `op_kt_commit(json)` | The command's changes from its `base`, applied whole or not at all: removals, then directories, links and files. |
@@ -164,10 +164,16 @@ command's base (the host's writes), from the catch-up. It commits only what the 
 a file or link a directory replaced is removed. A command commits once at a time (a second `op_kt_commit` while one is
 running is refused).
 
+A file the command didn't change isn't in its commit, whatever the provider's ids are. Where they are the bytes'
+SHA-256 (`Capabilities::content_addressed`, as Kantel's are) the guest compares ids; otherwise it compares the bytes'
+digest with what the command read (or, for a file written over unread, reads the original to compare).
+
 The commit runs as a task on the engine's I/O runtime, so a command stopped while it waits for its commit (CPU, wall
-clock, memory) doesn't cut the write off. The stopped command's reply waits for the commit (up to 15 s) and reports the
-files as the workspace then holds them (`sync` from the command's base), with `commit: {status: "unknown"}` when the
-outcome isn't known.
+clock, memory) doesn't cut the write off. The stopped command's reply waits for the commit (`Config::commit_grace`,
+15 s) and reports the files as the workspace then holds them (`sync` from the command's base), with
+`commit: {status: "unknown"}` when the outcome isn't known. A commit still running after that holds the sandbox's next
+command back (refused with `retryable: true`, a 503 from `kantel-isolate serve`) until it ends, so it can't land over
+later work.
 
 A persistent provider over a durable record fits as follows. File ids are strings, so a provider that numbers its
 files per session formats the number. Read-only and scratch areas (files the session may read but not change, or a

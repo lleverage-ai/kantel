@@ -66,14 +66,31 @@ export function createShell(ops, log) {
 		const t0 = performance.now();
 		let lazyReads = 0;
 		const manifest = request.manifest ?? {};
+		// What the workspace keeps, and whether its file ids are the bytes' SHA-256 (Kantel's are): otherwise an id
+		// says nothing about the bytes, and an unchanged file is told by the digest of what the command read.
+		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
+		const originals = new Map();
 		const files = {};
 		for (const [path, entry] of Object.entries(manifest)) {
 			if (entry.kind !== "file") continue;
 			files[abs(path)] = async () => {
 				lazyReads++;
-				return await ops.op_kt_blob_read(entry.sha);
+				const bytes = await ops.op_kt_blob_read(entry.sha);
+				if (!capabilities.contentAddressed) originals.set(path, sha256(bytes));
+				return bytes;
 			};
 		}
+		/** The SHA-256 of a manifest file's bytes as the command found them, or undefined if they can't be read. */
+		const originalDigest = async (path, entry) => {
+			if (capabilities.contentAddressed) return entry.sha;
+			if (originals.has(path)) return originals.get(path);
+			// Overwritten without being read: read what it was, to compare.
+			try {
+				return sha256(await ops.op_kt_blob_read(entry.sha));
+			} catch {
+				return undefined;
+			}
+		};
 		const fs = new InMemoryFs(files);
 		await fs.mkdir(ROOT, { recursive: true });
 		for (const [path, entry] of Object.entries(manifest)) {
@@ -104,7 +121,9 @@ export function createShell(ops, log) {
 					if (path === undefined || path === "") continue;
 					const before = manifest[path];
 					if (before?.kind === "file" && !isDirty(full)) {
-						index[path] = { kind: "file", sha: before.sha, size: before.size, mode: before.mode };
+						// `hash` is the bytes' SHA-256 where known, for the run to tell the file unchanged.
+						const hash = capabilities.contentAddressed ? before.sha : originals.get(path);
+						index[path] = { kind: "file", sha: before.sha, size: before.size, mode: before.mode, hash };
 						continue;
 					}
 					const stat = await fs.lstat(full);
@@ -183,7 +202,6 @@ export function createShell(ops, log) {
 			dirs: [],
 			removes: [],
 		};
-		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
 		const next = {};
 		const changed = [];
 		for (const full of fs.getAllPaths()) {
@@ -219,7 +237,9 @@ export function createShell(ops, log) {
 				const bytes = await fs.readFileBuffer(full);
 				const sha = sha256(bytes);
 				const mode = stat.mode & 0o777;
-				if (before?.kind !== "file" || before.sha !== sha || before.mode !== mode) {
+				const same =
+					before?.kind === "file" && before.mode === mode && (await originalDigest(path, before)) === sha;
+				if (!same) {
 					const staged = JSON.parse(await ops.op_kt_stage(path, bytes));
 					changed.push(path);
 					commit.puts.push({ path, blob: staged.blob, mode });

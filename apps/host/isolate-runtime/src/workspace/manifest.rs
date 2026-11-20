@@ -58,10 +58,9 @@ impl ManifestProvider {
 impl FilesystemProvider for ManifestProvider {
     fn open(&self, _sandbox_id: &str, request: &Value) -> Result<Arc<dyn Workspace>> {
         let entries = parse_manifest(request.get("manifest").unwrap_or(&Value::Null));
-        Ok(Arc::new(ManifestWorkspace::new(
-            self.store.clone(),
-            entries,
-        )))
+        let mut workspace = ManifestWorkspace::new(self.store.clone(), entries);
+        workspace.raw = request.get("manifest").cloned().unwrap_or(Value::Null);
+        Ok(Arc::new(workspace))
     }
 }
 
@@ -185,6 +184,8 @@ impl State {
 pub struct ManifestWorkspace {
     store: Arc<dyn BlobStore>,
     state: Mutex<State>,
+    /// The request's manifest as sent, entries it couldn't read included.
+    raw: Value,
 }
 
 fn file_ids(entries: &BTreeMap<String, Node>) -> impl Iterator<Item = (&String, u64)> {
@@ -199,6 +200,7 @@ impl ManifestWorkspace {
         let readable = file_ids(&entries).map(|(f, _)| f.clone()).collect();
         ManifestWorkspace {
             store,
+            raw: Value::Null,
             state: Mutex::new(State {
                 versions: vec![(generation(&entries), entries)],
                 readable,
@@ -227,6 +229,17 @@ impl Workspace for ManifestWorkspace {
         Capabilities {
             directories: true,
             symlinks: true,
+            content_addressed: true,
+        }
+    }
+
+    /// The request's manifest as kantel-host sent it, for the version it is (the first); a later version's entries.
+    fn manifest(&self, view: &View) -> Value {
+        let first = self.state.lock().unwrap().versions[0].0.clone();
+        if view.generation == first && self.raw.is_object() {
+            self.raw.clone()
+        } else {
+            manifest_of(&view.entries)
         }
     }
 

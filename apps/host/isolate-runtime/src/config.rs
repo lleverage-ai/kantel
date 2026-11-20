@@ -31,6 +31,9 @@ pub struct Config {
     pub max_sandboxes: usize,
     pub max_runs: usize,
     pub idle: Duration,
+    /// How long a stopped command's reply waits for a commit the command started. A commit still running after it
+    /// holds the sandbox's next command back (refused, retryable) until it ends, so it can't overwrite later work.
+    pub commit_grace: Duration,
 }
 
 impl Config {
@@ -57,6 +60,7 @@ impl Config {
             max_sandboxes: 64,
             max_runs: (cpus * 2).clamp(2, 16),
             idle: Duration::from_secs(15 * 60),
+            commit_grace: Duration::from_secs(15),
         }
     }
 }

@@ -234,6 +234,7 @@ impl Workspace for RecordWorkspace {
         Capabilities {
             directories: false,
             symlinks: false,
+            content_addressed: false,
         }
     }
 
