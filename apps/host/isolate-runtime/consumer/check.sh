@@ -55,6 +55,12 @@ echo "check.sh: consumer ($mode) against $url at $rev" >&2
 # A build directory per V8: rusty_v8 keeps its static library in the target's gn_out and doesn't fetch it again when
 # the V8 chosen changes, so a stock build after a sandboxed one in the same target would link the sandboxed V8.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$out/target}/consumer-$mode"
+# Its own cargo home for the git checkout, sharing the registry: the build container's cargo home is a volume the CI
+# runners share, and a git database another runner's user made there can't be written to.
+shared_home=${CARGO_HOME:-$HOME/.cargo}
+export CARGO_HOME="$out/cargo-home"
+mkdir -p "$CARGO_HOME" "$shared_home/registry"
+ln -s "$shared_home/registry" "$CARGO_HOME/registry"
 cd "$out"
 # shellcheck disable=SC2086 # features is empty or one flag.
 cargo run --release ${features:+--features v8-sandbox}
