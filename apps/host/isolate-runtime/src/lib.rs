@@ -28,6 +28,7 @@ pub mod hardening;
 pub mod hostbuf;
 pub mod isolate;
 pub mod limits;
+pub mod memory;
 mod ops;
 pub mod server;
 mod transpile;

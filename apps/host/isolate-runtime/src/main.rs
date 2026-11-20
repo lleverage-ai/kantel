@@ -80,7 +80,12 @@ fn main() -> Result<()> {
             setup_logging(args.log_format);
             // Before any thread starts: refuse privileges, then apply Landlock (it binds this thread and the ones it
             // starts afterwards, so it must run before the tokio runtime and the pools).
-            harden::harden(&cfg, args.require_landlock, args.allow_root, &args.seccomp)?;
+            let policy = harden::HardeningPolicy::kantel(
+                args.require_landlock,
+                args.allow_root,
+                &args.seccomp,
+            )?;
+            harden::harden(&cfg, &policy)?;
             // Only now: jemalloc's background threads (purging freed memory) start hardened, like every other thread.
             #[cfg(feature = "jemalloc")]
             if let Err(e) = tikv_jemalloc_ctl::background_thread::write(true) {

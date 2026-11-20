@@ -19,8 +19,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::limits::Budget;
 
-/// The most of one egress response body one fetch may read.
-const MAX_FETCH_BODY: usize = 64 * 1024 * 1024;
 /// Bytes of in-flight response/blob bodies being collected in Rust across the whole process, so many concurrent
 /// fetches can't exhaust host memory regardless of per-isolate budgets.
 const MAX_PROCESS_INFLIGHT: usize = 512 * 1024 * 1024;
@@ -320,6 +318,7 @@ fn origin_of(uri: &hyper::Uri) -> (Option<&str>, Option<String>) {
 /// confuse the proxy's framing. `charge` bounds the response body against the isolate's memory.
 pub async fn egress_fetch(
     egress: &Target,
+    policy: &crate::config::EgressPolicy,
     sandbox: &str,
     req: FetchReq,
     body: Vec<u8>,
@@ -358,6 +357,7 @@ pub async fn egress_fetch(
         for (k, v) in &req.headers {
             let lower = k.to_ascii_lowercase();
             if is_dropped_header(&lower)
+                || lower.eq_ignore_ascii_case(&policy.sandbox_header)
                 || (!credentials_ok && is_credential_header(&lower))
                 || (body_dropped && is_body_header(&lower))
             {
@@ -367,7 +367,7 @@ pub async fn egress_fetch(
         }
         builder = builder
             .header("host", authority.as_str())
-            .header("kantel-isolate-sandbox", sandbox);
+            .header(policy.sandbox_header.as_str(), sandbox);
         let request = builder.body(http_body_util::Full::new(Bytes::from(body.clone())))?;
         let resp = sender
             .send_request(request)
@@ -393,7 +393,7 @@ pub async fn egress_fetch(
                 Value::String(v.to_str().unwrap_or("").to_string()),
             );
         }
-        let data = read_body(resp.into_body(), MAX_FETCH_BODY, charge.as_deref_mut()).await?;
+        let data = read_body(resp.into_body(), policy.max_body, charge.as_deref_mut()).await?;
         let meta = json!({ "status": status.as_u16(), "statusText": status.canonical_reason().unwrap_or(""), "headers": headers, "url": url, "redirected": url != req.url });
         return Ok(pack(&meta, &data));
     }
@@ -428,6 +428,62 @@ fn resolve_redirect(uri: &hyper::Uri, authority: &str, loc: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-request egress proxy stand-in on loopback: answers 200 and hands back the request head it got.
+    async fn proxy() -> (Target, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = Target::Tcp(listener.local_addr().unwrap().to_string());
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                head.extend_from_slice(&buf[..n]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&head).to_lowercase()
+        });
+        (target, task)
+    }
+
+    #[tokio::test]
+    async fn the_policy_names_the_sandbox_header_and_a_guest_cant_set_it() {
+        let (target, head) = proxy().await;
+        let policy = crate::config::EgressPolicy {
+            sandbox_header: "x-embedder-session".into(),
+            ..Default::default()
+        };
+        let req = FetchReq {
+            url: "http://example.test/path".into(),
+            method: "GET".into(),
+            headers: HashMap::from([
+                ("X-Embedder-Session".into(), "someone-else".into()),
+                ("kantel-isolate-sandbox".into(), "spoofed".into()),
+                ("accept".into(), "*/*".into()),
+            ]),
+            follow: false,
+        };
+        let out = egress_fetch(&target, &policy, "sandbox-7", req, Vec::new(), None)
+            .await
+            .unwrap();
+        assert!(out.ends_with(b"ok"));
+        let head = head.await.unwrap();
+        assert!(head.starts_with("get http://example.test/path "), "{head}");
+        assert!(head.contains("x-embedder-session: sandbox-7\r\n"), "{head}");
+        assert!(
+            !head.contains("someone-else") && !head.contains("spoofed"),
+            "{head}"
+        );
+        assert!(head.contains("accept: */*"), "{head}");
+    }
 
     #[test]
     fn redirects_rewrite_the_method_only_as_fetch_does() {

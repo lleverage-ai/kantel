@@ -36,6 +36,11 @@ pub struct Policy {
     pub temp: PathBuf,
     /// More read-only paths, if any (a Pyodide snapshot kept outside `--assets`, in the spike).
     pub extra_read: Vec<PathBuf>,
+    /// More paths it may read and write (an embedder's own scratch or cache directory).
+    pub read_write: Vec<PathBuf>,
+    /// Programs, or directories of them, it may execute (and read): only for an embedder that starts child
+    /// processes, which seccomp must allow too ([`super::seccomp::install`]'s `spawn`). Kantel's runtime has none.
+    pub execute: Vec<PathBuf>,
     /// How it talks to the store and egress, and serves its API.
     pub transport: Transport,
 }
@@ -85,6 +90,11 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
         .create()?
         .add_rules(path_beneath_rules([&policy.assets], read))?
         .add_rules(path_beneath_rules(&policy.extra_read, read))?
+        .add_rules(path_beneath_rules(&policy.read_write, all))?
+        .add_rules(path_beneath_rules(
+            &policy.execute,
+            read | AccessFs::Execute,
+        ))?
         .add_rules(path_beneath_rules(
             SYSTEM_READ.iter().map(Path::new).filter(|p| p.exists()),
             read,

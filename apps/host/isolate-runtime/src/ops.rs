@@ -263,8 +263,6 @@ async fn op_kt_sync(
 
 // --- EGRESS: one request through the host's proxy -----------------------------------------------------------------
 
-const MAX_CONCURRENT_FETCH: usize = 8;
-
 /// Decrements the isolate's in-flight fetch count when the op ends (even if cancelled).
 struct FetchSlot(Arc<std::sync::atomic::AtomicUsize>);
 impl Drop for FetchSlot {
@@ -290,18 +288,21 @@ async fn op_kt_fetch(
 ) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     let req: FetchReq = serde_json::from_str(&req).map_err(jerr)?;
+    let policy = &engine().cfg.egress_policy;
+    if !policy.enabled {
+        return Err(JsErrorBox::generic(
+            "fetch: this sandbox has no network access",
+        ));
+    }
     // Allow-list methods: no CONNECT, no arbitrary verbs.
     let method = req.method.to_ascii_uppercase();
-    if !matches!(
-        method.as_str(),
-        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
-    ) {
+    if method == "CONNECT" || !policy.methods.contains(&method) {
         return Err(JsErrorBox::generic(format!(
             "fetch: method {method} is not allowed"
         )));
     }
     let before = c.fetches.fetch_add(1, Ordering::SeqCst);
-    if before >= MAX_CONCURRENT_FETCH {
+    if before >= policy.max_concurrent {
         c.fetches.fetch_sub(1, Ordering::SeqCst);
         return Err(JsErrorBox::generic(
             "fetch: too many concurrent requests from this sandbox",
@@ -320,7 +321,14 @@ async fn op_kt_fetch(
         let mut charge = crate::bridges::Charge::new(budget);
         let out = tokio::time::timeout(
             remaining,
-            egress_fetch(&engine().egress, &sandbox, req, body, Some(&mut charge)),
+            egress_fetch(
+                &engine().egress,
+                &engine().cfg.egress_policy,
+                &sandbox,
+                req,
+                body,
+                Some(&mut charge),
+            ),
         )
         .await;
         // The body and its charge, still held by the Charge (given back if the op is dropped before taking it).
