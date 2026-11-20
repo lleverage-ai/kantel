@@ -1,6 +1,10 @@
 //! What an embedder plugs into the runtime: its guest bundle and its own ops. See EMBEDDING.md for the contract.
 
+use std::sync::Arc;
+
 use deno_core::Extension;
+
+use crate::workspace::FilesystemProvider;
 
 /// The parts of the runtime an embedder chooses, given to [`Engine::init`](crate::Engine::init) once per process.
 ///
@@ -13,10 +17,13 @@ use deno_core::Extension;
 ///   match its snapshot's). An embedder's op reaches the isolate's context with
 ///   [`Ctx::of`](crate::Ctx::of) and must refuse to act for an isolate kind it isn't meant for, as the runtime's
 ///   own ops do.
-#[derive(Clone, Copy)]
+/// - `filesystem`: where sandboxes' files come from and where commands' changes go (see
+///   [`workspace`](crate::workspace)). None is Kantel's manifest per command, over the blob store bridge.
+#[derive(Clone)]
 pub struct Embedding {
     pub guest: &'static str,
     pub extensions: fn() -> Vec<Extension>,
+    pub filesystem: Option<Arc<dyn FilesystemProvider>>,
 }
 
 impl Embedding {
@@ -25,6 +32,15 @@ impl Embedding {
         Embedding {
             guest,
             extensions: Vec::new,
+            filesystem: None,
+        }
+    }
+
+    /// The embedder's filesystem provider (see the type's docs).
+    pub fn with_filesystem(self, filesystem: Arc<dyn FilesystemProvider>) -> Embedding {
+        Embedding {
+            filesystem: Some(filesystem),
+            ..self
         }
     }
 

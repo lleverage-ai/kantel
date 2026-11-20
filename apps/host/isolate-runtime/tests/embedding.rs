@@ -62,11 +62,17 @@ fn an_embedder_runs_its_own_guest_and_ops() {
     let shell = spawn_shell("sandbox-1".into(), 128, false);
     let command = Command::new(Duration::from_secs(5), Duration::from_secs(5));
     let reply = io
-        .block_on(shell.exec(
-            &json!({ "command": "hello", "manifest": {} }),
-            json!({}),
-            command,
-        ))
+        .block_on(
+            shell.exec(
+                &json!({ "command": "hello", "manifest": {} }),
+                json!({}),
+                kantel_isolate::engine()
+                    .filesystem
+                    .open("sandbox-1", &json!({}))
+                    .unwrap(),
+                command,
+            ),
+        )
         .unwrap();
     assert_eq!(
         reply["stdout"], "shell sandbox-1 hello sealed eval-refused=true",
@@ -77,21 +83,33 @@ fn an_embedder_runs_its_own_guest_and_ops() {
     // sandbox's isolate is kept for its next command.
     let spin = Command::new(Duration::from_secs(5), Duration::from_millis(300));
     let reply = io
-        .block_on(shell.exec(
-            &json!({ "command": "spin", "manifest": {} }),
-            json!({}),
-            spin,
-        ))
+        .block_on(
+            shell.exec(
+                &json!({ "command": "spin", "manifest": {} }),
+                json!({}),
+                kantel_isolate::engine()
+                    .filesystem
+                    .open("sandbox-1", &json!({}))
+                    .unwrap(),
+                spin,
+            ),
+        )
         .unwrap();
     assert_eq!(reply["terminated"], "wall", "{reply}");
     assert_eq!(reply["exitCode"], 152, "{reply}");
     let again = Command::new(Duration::from_secs(5), Duration::from_secs(5));
     let reply = io
-        .block_on(shell.exec(
-            &json!({ "command": "again", "manifest": {} }),
-            json!({}),
-            again,
-        ))
+        .block_on(
+            shell.exec(
+                &json!({ "command": "again", "manifest": {} }),
+                json!({}),
+                kantel_isolate::engine()
+                    .filesystem
+                    .open("sandbox-1", &json!({}))
+                    .unwrap(),
+                again,
+            ),
+        )
         .unwrap();
     assert_eq!(
         reply["stdout"], "shell sandbox-1 again sealed eval-refused=true",

@@ -26,6 +26,7 @@ use crate::limits::{
     Budget, Command, GcWatch, MIB, Scope, Term, allocator, gc_watch, near_heap_limit, watch,
 };
 use crate::ops::{SnapshotSink, kt};
+use crate::workspace::{FilesystemProvider, ManifestProvider, Workspace};
 
 /// How long a terminated shell command may take to unwind before it is abandoned (see spawn_shell).
 const STUCK_GRACE: Duration = Duration::from_secs(1);
@@ -58,8 +59,9 @@ pub struct Ctx {
     pub sandbox_id: Arc<str>,
     pub command: Arc<Command>,
     pub budget: Arc<Budget>,
-    /// SHA-256 digests the shell may read (its manifest's, and ones it wrote).
-    pub allowed: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// The sandbox's files for this command (the embedder's filesystem provider): what the shell reads, stages
+    /// and commits, and what its node/python runs read. None outside a shell command.
+    pub workspace: Option<Arc<dyn Workspace>>,
     /// In-flight egress fetches from this isolate.
     pub fetches: Arc<AtomicUsize>,
     /// node/python runs the shell started, by run id, so the shell can cancel one (just-bash `timeout`).
@@ -78,14 +80,14 @@ impl Ctx {
         sandbox_id: Arc<str>,
         command: Arc<Command>,
         budget: Arc<Budget>,
-        allowed: std::collections::HashSet<String>,
+        workspace: Option<Arc<dyn Workspace>>,
     ) -> Ctx {
         Ctx {
             kind,
             sandbox_id,
             command,
             budget,
-            allowed: Arc::new(Mutex::new(allowed)),
+            workspace,
             fetches: Arc::new(AtomicUsize::new(0)),
             children: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -141,34 +143,39 @@ pub struct RunState {
     pub overlay: Overlay,
     /// node module loader: each built-in's export names, so a `node:fs` import gets named exports.
     pub builtins: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// The shell command's workspace, which the run's untouched files are read from.
+    pub workspace: Option<Arc<dyn Workspace>>,
 }
 
 impl RunState {
     pub fn file(&self, path: &str) -> Result<Vec<u8>> {
-        resolve_file(&self.index, &self.payload, path)
+        resolve_file(&self.index, &self.payload, self.workspace.as_ref(), path)
     }
 }
 
 /// Read one of a run's files synchronously (node's fs and python's FS are synchronous; the run has its own thread).
-fn resolve_file(index: &HashMap<String, FileRef>, payload: &[u8], path: &str) -> Result<Vec<u8>> {
+fn resolve_file(
+    index: &HashMap<String, FileRef>,
+    payload: &[u8],
+    workspace: Option<&Arc<dyn Workspace>>,
+    path: &str,
+) -> Result<Vec<u8>> {
     match index.get(path) {
         None => bail!("ENOENT: {path}"),
         Some(FileRef::Inline(off, len)) => payload
             .get(*off..off + len)
             .map(|s| s.to_vec())
             .ok_or_else(|| anyhow!("bad inline file")),
-        Some(FileRef::Blob(sha)) => {
-            let sha = sha.clone();
+        Some(FileRef::Blob(file)) => {
+            let file = file.clone();
+            let workspace = workspace
+                .cloned()
+                .ok_or_else(|| anyhow!("{path}: the run has no workspace to read it from"))?;
             let (tx, rx) = std::sync::mpsc::channel();
             engine().io.spawn(async move {
-                let _ = tx.send(
-                    engine()
-                        .store
-                        .get(&sha, 256 * crate::limits::MIB, None)
-                        .await,
-                );
+                let _ = tx.send(workspace.read(&file, 256 * crate::limits::MIB, None).await);
             });
-            rx.recv()?.map_err(|e| anyhow!("{e}"))
+            rx.recv()?.map_err(|e| anyhow!("{path}: {e}"))
         }
     }
 }
@@ -182,6 +189,8 @@ pub struct RunResult(pub Option<Vec<u8>>);
 pub struct Engine {
     pub cfg: Config,
     pub embedding: Embedding,
+    /// Where sandboxes' files come from: the embedding's provider, or Kantel's manifest per command over `store`.
+    pub filesystem: Arc<dyn FilesystemProvider>,
     pub store: Arc<Store>,
     pub io: tokio::runtime::Handle,
     pub egress: crate::bridges::Target,
@@ -235,11 +244,16 @@ impl Engine {
     ) -> Result<&'static Engine> {
         let store = Arc::new(Store::new(cfg.store.clone()));
         let snapshot = build_snapshot(&embedding)?;
+        let filesystem = embedding
+            .filesystem
+            .clone()
+            .unwrap_or_else(|| Arc::new(ManifestProvider::new(store.clone())));
         let egress = cfg.egress.clone();
         let runs = Arc::new(tokio::sync::Semaphore::new(cfg.max_runs));
         let built = Engine {
             cfg,
             embedding,
+            filesystem,
             store,
             io,
             egress,
@@ -433,6 +447,7 @@ pub enum ShellCmd {
         sandbox_id: Arc<str>,
         body: String,
         manifest: Value,
+        workspace: Arc<dyn Workspace>,
         command: Arc<Command>,
         reply: oneshot::Sender<Value>,
     },
@@ -448,12 +463,14 @@ pub struct ShellHandle {
 
 impl ShellHandle {
     /// Run one command in the sandbox's shell: `request` is what the guest's `exec` entry gets (as JSON), and the
-    /// answer is its reply, or the runtime's own when it stopped the command (`terminated`). `manifest` is the
-    /// sandbox's files, whose blobs the shell may read. `command` holds the CPU budget and wall-clock deadline.
+    /// answer is its reply, or the runtime's own when it stopped the command (`terminated`, with `manifest` as the
+    /// files, unchanged). `workspace` is the command's files ([`FilesystemProvider::open`]), which the shell's ops
+    /// read, stage and commit. `command` holds the CPU budget and wall-clock deadline.
     pub async fn exec(
         &self,
         request: &Value,
         manifest: Value,
+        workspace: Arc<dyn Workspace>,
         command: Arc<Command>,
     ) -> Result<Value> {
         let (reply, rx) = oneshot::channel();
@@ -462,6 +479,7 @@ impl ShellHandle {
                 sandbox_id: self.sandbox_id.clone(),
                 body: request.to_string(),
                 manifest,
+                workspace,
                 command,
                 reply,
             })
@@ -512,12 +530,11 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             }
                             let _ = reply.send(());
                         }
-                        ShellCmd::Exec { sandbox_id, body, manifest, command, reply } => {
+                        ShellCmd::Exec { sandbox_id, body, manifest, workspace, command, reply } => {
                             live.budget.reset_exceeded();
-                            let shas = crate::ops::manifest_shas(&manifest);
                             bind(
                                 &mut live.rt,
-                                Ctx::new(Kind::Shell, sandbox_id, command.clone(), live.budget.clone(), shas),
+                                Ctx::new(Kind::Shell, sandbox_id, command.clone(), live.budget.clone(), Some(workspace)),
                             );
                             let guard = watch(live.handle.clone(), command.clone(), live.budget.clone(), Scope::Command);
                             let mem = live.budget.limit() / MIB;
@@ -667,6 +684,7 @@ pub async fn run_child(kind: Kind, parent: &Ctx, meta: String, payload: Vec<u8>)
         stdin,
         overlay: Arc::new(Mutex::new(HashMap::new())),
         builtins: Arc::new(Mutex::new(HashMap::new())),
+        workspace: parent.workspace.clone(),
     };
     let control = Arc::new(ChildControl::default());
     parent
@@ -950,6 +968,7 @@ fn run_one(live: &mut Live, kind: Kind, job: Job, rt: &tokio::runtime::Runtime) 
             run.builtins.clone(),
             run.index.clone(),
             run.payload.clone(),
+            run.workspace.clone(),
         );
     }
     {
@@ -1124,6 +1143,7 @@ struct NodeEnv {
     /// The run's manifest files, by manifest-relative path, read lazily (ESM imports only the files it names).
     index: HashMap<String, FileRef>,
     payload: Arc<Vec<u8>>,
+    workspace: Option<Arc<dyn Workspace>>,
 }
 
 impl NodeModuleLoader {
@@ -1138,6 +1158,7 @@ fn set_node_env(
     builtins: Arc<Mutex<HashMap<String, Vec<String>>>>,
     index: HashMap<String, FileRef>,
     payload: Arc<Vec<u8>>,
+    workspace: Option<Arc<dyn Workspace>>,
 ) {
     NODE_ENV.with(|e| {
         *e.borrow_mut() = Some(NodeEnv {
@@ -1145,6 +1166,7 @@ fn set_node_env(
             builtins,
             index,
             payload,
+            workspace,
         })
     });
 }
@@ -1223,7 +1245,7 @@ fn node_load(specifier: &ModuleSpecifier) -> std::result::Result<ModuleSource, J
         }
         // Manifest files live under /workspace; the loader's absolute path maps to a manifest-relative key.
         let rel = path_str.strip_prefix("/workspace/")?;
-        resolve_file(&env.index, &env.payload, rel).ok()
+        resolve_file(&env.index, &env.payload, env.workspace.as_ref(), rel).ok()
     });
     let Some(bytes) = bytes else {
         return Err(JsErrorBox::generic(format!(

@@ -49,10 +49,18 @@ const fromLatin1 = (s) => {
 	return out;
 };
 
+/** A workspace node (the filesystem provider's) as a manifest entry. */
+function entryOf(node) {
+	if (node.kind === "file") return { kind: "file", sha: node.file, size: node.size, mode: node.mode };
+	if (node.kind === "symlink") return { kind: "symlink", target: node.target };
+	return { kind: "dir" };
+}
+
 export function createShell(ops, log) {
 	const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 	const sha256 = (bytes) => hex(ops.op_kt_digest("sha256", bytes));
 	let nextRun = 1;
+	let nextCommit = 1;
 
 	async function exec(request) {
 		const t0 = performance.now();
@@ -165,6 +173,16 @@ export function createShell(ops, log) {
 		const result = await bash.exec(request.command);
 		const t2 = performance.now();
 
+		// The command's changes, committed to the workspace (the filesystem provider) in one commit from the version
+		// the command started from: changed files are staged first, and the commit names them.
+		const commit = {
+			operationId: `exec-${nextCommit++}`,
+			base: request.base ?? "",
+			puts: [],
+			links: [],
+			dirs: [],
+			removes: [],
+		};
 		const next = {};
 		const changed = [];
 		for (const full of fs.getAllPaths()) {
@@ -181,31 +199,65 @@ export function createShell(ops, log) {
 			if (stat.isSymbolicLink) {
 				const target = await fs.readlink(full);
 				next[path] = { kind: "symlink", target };
-				if (before?.kind !== "symlink" || before.target !== target) changed.push(path);
+				if (before?.kind !== "symlink" || before.target !== target) {
+					changed.push(path);
+					commit.links.push({ path, target });
+				}
 			} else if (stat.isDirectory) {
 				next[path] = { kind: "dir" };
-				if (before?.kind !== "dir") changed.push(path);
+				if (before?.kind !== "dir") {
+					changed.push(path);
+					commit.dirs.push(path);
+				}
 			} else {
 				const bytes = await fs.readFileBuffer(full);
 				const sha = sha256(bytes);
 				const mode = stat.mode & 0o777;
 				if (before?.kind !== "file" || before.sha !== sha || before.mode !== mode) {
-					await ops.op_kt_blob_put(bytes);
+					const staged = JSON.parse(await ops.op_kt_stage(path, bytes));
 					changed.push(path);
+					commit.puts.push({ path, blob: staged.blob, mode });
 				}
 				next[path] = { kind: "file", sha, size: bytes.byteLength, mode };
 			}
 		}
-		for (const path of Object.keys(manifest)) if (!(path in next)) changed.push(path);
+		for (const path of Object.keys(manifest)) {
+			if (path in next) continue;
+			changed.push(path);
+			commit.removes.push(path);
+		}
+		let saved = { manifest: next, changed };
+		let unsaved;
+		if (changed.length > 0) {
+			const reply = JSON.parse(await ops.op_kt_commit(JSON.stringify(commit)));
+			if (reply.status !== "committed") {
+				unsaved = { status: reply.status, error: reply.error };
+				// Unknown: the workspace holds what its catch-up says, which may or may not have the changes. Failed or
+				// fenced: nothing was saved.
+				saved = { manifest, changed: [] };
+				if (reply.status === "unknown") {
+					const known = { ...manifest };
+					for (const path of reply.catchUp.removed) delete known[path];
+					for (const [path, node] of Object.entries(reply.catchUp.changed)) known[path] = entryOf(node);
+					saved = { manifest: known, changed: [...reply.catchUp.removed, ...Object.keys(reply.catchUp.changed)] };
+				}
+			}
+		}
 		const t3 = performance.now();
 		const response = {
 			exitCode: result.exitCode,
 			stdout: result.stdout,
 			stderr: result.stderr,
-			manifest: next,
-			changed,
+			manifest: saved.manifest,
+			changed: saved.changed,
 			timings: { fsMs: t1 - t0, execMs: t2 - t1, commitMs: t3 - t2, lazyReads },
 		};
+		// A command whose changes weren't saved didn't succeed, whatever the shell said.
+		if (unsaved) {
+			response.commit = unsaved;
+			response.stderr += `${response.stderr && !response.stderr.endsWith("\n") ? "\n" : ""}kantel: the command's file changes ${unsaved.status === "unknown" ? "may not have been" : "weren't"} saved: ${unsaved.error}\n`;
+			if (response.exitCode === 0) response.exitCode = 1;
+		}
 		// Only when the command failed: one that handled the missing program itself (`git --version || true`) ran.
 		if (needsMicrovm && result.exitCode !== 0) response.needsMicrovm = needsMicrovm;
 		if (terminated) response.terminated = terminated;

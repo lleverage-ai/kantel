@@ -305,14 +305,25 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         .map(|t| Duration::from_millis(t).min(MAX_WALL))
         .unwrap_or(DEFAULT_WALL);
     let manifest = body.get("manifest").cloned().unwrap_or(json!({}));
+    // The command's files: the filesystem provider's workspace for this request (Kantel's: its manifest), and the
+    // version the shell commits its changes from.
+    let workspace = match engine().filesystem.open(&id, &body) {
+        Ok(w) => w,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    };
+    let base = match workspace.view().await {
+        Ok(view) => view.generation,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+    };
     let request = json!({
         "command": body["command"].as_str().unwrap_or(""),
         "cwd": body["cwd"],
         "env": body["env"],
         "manifest": manifest,
+        "base": base,
     });
     let command = Command::new(engine().cfg.cpu, wall);
-    match handle.exec(&request, manifest, command).await {
+    match handle.exec(&request, manifest, workspace, command).await {
         Ok(mut value) => {
             if value.get("error").is_some() {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(value)).into_response();

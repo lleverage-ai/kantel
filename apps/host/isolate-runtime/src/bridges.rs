@@ -38,7 +38,8 @@ impl Charge {
     pub fn new(budget: Arc<Budget>) -> Charge {
         Charge { budget, taken: 0 }
     }
-    fn add(&mut self, n: usize) -> Result<()> {
+    /// Charge `n` more bytes, or refuse (the isolate's memory, or the process-wide in-flight cap).
+    pub fn add(&mut self, n: usize) -> Result<()> {
         let before = PROCESS_INFLIGHT.fetch_add(n, Ordering::SeqCst);
         if before + n > MAX_PROCESS_INFLIGHT {
             PROCESS_INFLIGHT.fetch_sub(n, Ordering::SeqCst);

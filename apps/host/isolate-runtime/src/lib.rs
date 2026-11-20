@@ -32,6 +32,7 @@ mod ops;
 pub mod server;
 mod transpile;
 mod wasm;
+pub mod workspace;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};

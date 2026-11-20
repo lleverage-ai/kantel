@@ -48,18 +48,37 @@ fn main() -> Result<()> {
     Engine::init(cfg, embedding, io.handle().clone(), false)?;
     let shell = kantel_isolate::isolate::spawn_shell("consumer".into(), 128, false);
     let command = Command::new(Duration::from_secs(5), Duration::from_secs(5));
-    let reply = io.block_on(shell.exec(
-        &serde_json::json!({ "command": "hello" }),
-        serde_json::json!({}),
-        command,
-    ))?;
-    println!("{}", serde_json::json!({ "reply": reply, "runtime": kantel_isolate::version_info() }));
-    ensure!(reply["stdout"] == "shell:consumer:hello", "unexpected reply {reply}");
+    let reply = io.block_on(
+        shell.exec(
+            &serde_json::json!({ "command": "hello" }),
+            serde_json::json!({}),
+            kantel_isolate::engine()
+                .filesystem
+                .open("consumer", &serde_json::json!({}))?,
+            command,
+        ),
+    )?;
+    println!(
+        "{}",
+        serde_json::json!({ "reply": reply, "runtime": kantel_isolate::version_info() })
+    );
+    ensure!(
+        reply["stdout"] == "shell:consumer:hello",
+        "unexpected reply {reply}"
+    );
     ensure!(
         kantel_isolate::v8_sandbox_enabled() == cfg!(feature = "v8-sandbox"),
         "V8's heap sandbox is {} in a build {} the v8-sandbox feature",
-        if kantel_isolate::v8_sandbox_enabled() { "on" } else { "off" },
-        if cfg!(feature = "v8-sandbox") { "with" } else { "without" },
+        if kantel_isolate::v8_sandbox_enabled() {
+            "on"
+        } else {
+            "off"
+        },
+        if cfg!(feature = "v8-sandbox") {
+            "with"
+        } else {
+            "without"
+        },
     );
     Ok(())
 }
