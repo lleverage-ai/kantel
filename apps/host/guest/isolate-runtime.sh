@@ -5,9 +5,13 @@
 #
 #   apps/host/guest/isolate-runtime.sh [amd64|arm64]
 #   apps/host/guest/isolate-runtime.sh test
+#   apps/host/guest/isolate-runtime.sh consumer
 #
 # Writes apps/host/dist/kantel-isolate-<arch> and apps/host/dist/isolate-assets-<arch>/. `test` runs the crate's
-# checks instead (cargo fmt, clippy and test, for the build machine's architecture), as CI does.
+# checks instead (cargo fmt, clippy and test, for the build machine's architecture), as CI does. `consumer` builds and
+# runs the minimal external consumer (isolate-runtime/consumer/check.sh) against the library at this checkout's HEAD,
+# fetched as a git revision, with the V8 chosen as below: it needs a git checkout (not a worktree, whose .git is
+# elsewhere) and committed changes.
 #
 # The binary is built in a Rust container (KANTEL_RUST_IMAGE, run on the build machine's architecture, cross-compiling
 # for the other). rusty_v8 publishes its V8 static library for x86_64- and aarch64-unknown-linux-gnu only (no musl), so
@@ -37,7 +41,7 @@ CRATE=${KANTEL_ISOLATE_SOURCE:-$MODULE/isolate-runtime}
 RUST_IMAGE=${KANTEL_RUST_IMAGE:-rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33}
 TARGET_DIR=${KANTEL_ISOLATE_TARGET:-$MODULE/dist/.isolate-target}
 case "$(uname -m)" in x86_64) BUILD_ARCH=amd64 ;; aarch64 | arm64) BUILD_ARCH=arm64 ;; *) BUILD_ARCH=other ;; esac
-[ "$ARCH" = test ] && TEST_ARCH=$BUILD_ARCH || TEST_ARCH=$ARCH
+case "$ARCH" in test | consumer) TEST_ARCH=$BUILD_ARCH ;; *) TEST_ARCH=$ARCH ;; esac
 case "$TEST_ARCH" in
 amd64) TRIPLE=x86_64-unknown-linux-gnu; CROSS_GCC=x86_64-linux-gnu-gcc ;;
 arm64) TRIPLE=aarch64-unknown-linux-gnu; CROSS_GCC=aarch64-linux-gnu-gcc ;;
@@ -80,7 +84,7 @@ v8() {
 # C++, linked by the target's gcc), built once and cached by Docker. As the caller's user, so what it leaves behind is
 # theirs.
 cargo() {
-	if [ ! -f "$BUILD_CRATE/Cargo.toml" ]; then
+	if [ ! -f "$CRATE/Cargo.toml" ]; then
 		echo "no $CRATE/Cargo.toml: the isolate runtime's source isn't here (set KANTEL_ISOLATE_BINARY to use a built one)" >&2
 		exit 1
 	fi
@@ -113,8 +117,18 @@ cargo() {
 	docker volume create kantel-isolate-cargo >/dev/null
 	docker run --rm --user 0 -v kantel-isolate-cargo:/cargo kantel-isolate-builder:local chown "$(id -u):$(id -g)" /cargo
 	docker run --rm --user "$(id -u):$(id -g)" -v kantel-isolate-cargo:/cargo -e CARGO_HOME=/cargo -e HOME=/tmp \
-		-v "$BUILD_CRATE:/src:ro" -v "$TARGET_DIR:/target" -w /src "$@"
+		-v "${SOURCE:-$BUILD_CRATE}:/src:ro" -v "$TARGET_DIR:/target" -w /src "$@"
 }
+
+# The external consumer: the whole checkout is its git repository (read only), its copy and build go in the target.
+if [ "$ARCH" = consumer ]; then
+	mode=stock
+	[ "${KANTEL_V8_SANDBOX:-}" = 1 ] && mode=sandbox
+	SOURCE=$(git -C "$CRATE" rev-parse --show-toplevel)
+	rel=${CRATE#"$SOURCE"/}
+	cargo kantel-isolate-builder:local "$rel/consumer/check.sh" "$mode" "/target/consumer-$mode"
+	exit 0
+fi
 
 # The guest bundle (the shell, node and python guests) is compiled into the binary, so it's built first, here.
 BUILD_CRATE=$CRATE

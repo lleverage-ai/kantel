@@ -5,6 +5,9 @@ account's isolate sandboxes: a shell ([just-bash](https://github.com/vercel-labs
 each in its own V8 isolate on [deno_core](https://crates.io/crates/deno_core), over files kept as a manifest the host
 sends. It replaces the workerd worker in `apps/host/isolate` and `images/isolate-host`.
 
+The runtime is a library, `kantel_isolate`, with a thin binary around it; other programs can embed it with their own
+guest bundle and ops ([EMBEDDING.md](EMBEDDING.md)).
+
 It speaks kantel-host's existing isolate protocol (`GET /healthz`, `POST /warm`, `/load`, `/exec`), so
 `apps/host/internal/isolate/isolate.go` drives it unchanged, plus the new fields and routes in
 [CONTRACT.md](CONTRACT.md) (`terminated`, `needsMicrovm`, `POST /reseed`, Unix-socket transports).
@@ -71,7 +74,8 @@ bridges on 0600/0700 Unix sockets). Other flags (all have defaults, and each rea
 ## Test
 
 ```sh
-cargo test --release                       # Rust unit tests (limits, config, bridges, wasm, transpile)
+cargo test --release                       # Rust unit tests (limits, config, bridges, wasm, transpile) and tests/
+../guest/isolate-runtime.sh consumer       # the external consumer (consumer/) against HEAD as a git dependency
 # integration suite (bun): starts the binary against STORE/egress stand-ins
 KANTEL_ISOLATE_BIN=target/release/kantel-isolate \
 KANTEL_ISOLATE_ASSETS=<assets-dir> \
