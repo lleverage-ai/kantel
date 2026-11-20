@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use landlock::{
-    ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, PathFd,
-    Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, path_beneath_rules,
+    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, NetPort, PathBeneath,
+    PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, path_beneath_rules,
 };
 
 /// How the runtime reaches its store and egress bridges, and serves its own API.
@@ -40,6 +40,8 @@ pub struct Policy {
     pub read_write: Vec<PathBuf>,
     /// Programs, or directories of them, it may execute (and read): only for an embedder that starts child
     /// processes, which seccomp must allow too ([`super::seccomp::install`]'s `spawn`). Kantel's runtime has none.
+    /// Rights add up down the tree, so none may be an ancestor of a writable path (the temporary directory,
+    /// `read_write`, the socket directory), or what is written there could be run.
     pub execute: Vec<PathBuf>,
     /// How it talks to the store and egress, and serves its API.
     pub transport: Transport,
@@ -79,8 +81,12 @@ pub struct Report {
 /// in production `--require-landlock` makes less than full enforcement fatal).
 pub fn restrict(policy: &Policy) -> Result<Report> {
     let abi = ABI::V6;
-    let read = AccessFs::from_read(abi);
     let all = AccessFs::from_all(abi);
+    // Nothing is executable but `execute`: Landlock's read rights include execution, so it is taken out of them (and
+    // out of the writable places, so what the process, or code that took it over, writes can't be run).
+    let exec = BitFlags::from(AccessFs::Execute);
+    let read = AccessFs::from_read(abi) & !exec;
+    let writable = all & !exec;
     let net_supported = ABI::V4;
     let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
@@ -90,11 +96,8 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
         .create()?
         .add_rules(path_beneath_rules([&policy.assets], read))?
         .add_rules(path_beneath_rules(&policy.extra_read, read))?
-        .add_rules(path_beneath_rules(&policy.read_write, all))?
-        .add_rules(path_beneath_rules(
-            &policy.execute,
-            read | AccessFs::Execute,
-        ))?
+        .add_rules(path_beneath_rules(&policy.read_write, writable))?
+        .add_rules(path_beneath_rules(&policy.execute, read | exec))?
         .add_rules(path_beneath_rules(
             SYSTEM_READ.iter().map(Path::new).filter(|p| p.exists()),
             read,
@@ -102,7 +105,7 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
     // A directory gets every right below it; PathFd needs the directory to exist (the caller made it).
     let temp = PathFd::new(&policy.temp)
         .with_context(|| format!("landlock: temp dir {}", policy.temp.display()))?;
-    ruleset = ruleset.add_rule(PathBeneath::new(temp, all))?;
+    ruleset = ruleset.add_rule(PathBeneath::new(temp, writable))?;
     match &policy.transport {
         Transport::Tcp { listen, connect } => {
             // handle_access(Bind|Connect) above with no matching NetPort rule denies every other port.
@@ -116,7 +119,7 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
             // the account's own; the runtime binds its listener and the bridges' sockets live there.
             let dir = PathFd::new(socket_dir)
                 .with_context(|| format!("landlock: socket dir {}", socket_dir.display()))?;
-            ruleset = ruleset.add_rule(PathBeneath::new(dir, all))?;
+            ruleset = ruleset.add_rule(PathBeneath::new(dir, writable))?;
         }
     }
     let status = ruleset.restrict_self().context("landlock: restrict_self")?;
@@ -145,4 +148,77 @@ pub fn kernel_abi() -> i32 {
         )
     };
     if v < 0 { 0 } else { v as i32 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writable_places_are_never_executable_and_execute_paths_are() {
+        let work = std::env::temp_dir().join(format!("kt-landlock-{}", std::process::id()));
+        std::fs::create_dir_all(&work).unwrap();
+        let copy = work.join("true");
+        std::fs::copy("/bin/true", &copy).unwrap();
+        // SAFETY: fork in a test; the child restricts itself and exits without returning to the runner.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
+            let execute = ["/usr", "/bin", "/lib", "/lib64"]
+                .iter()
+                .map(PathBuf::from)
+                .filter(|p| p.exists())
+                .collect();
+            let policy = Policy {
+                assets: work.clone(),
+                temp: work.clone(),
+                extra_read: vec![],
+                read_write: vec![],
+                execute,
+                transport: Transport::Tcp {
+                    listen: 0,
+                    connect: vec![],
+                },
+            };
+            let code = match restrict(&policy) {
+                // No Landlock on this kernel: nothing to check.
+                Ok(report) if report.status.starts_with("not enforced") => 0,
+                Ok(_) => {
+                    let run = |path: &Path| std::process::Command::new(path).status();
+                    match (run(Path::new("/bin/true")), run(&copy)) {
+                        (Ok(ok), Err(e))
+                            if ok.success() && e.raw_os_error() == Some(libc::EACCES) =>
+                        {
+                            0
+                        }
+                        (allowed, written) => {
+                            let _ = std::fs::write(
+                                work.join("debug"),
+                                format!("/bin/true: {allowed:?}; written copy: {written:?}"),
+                            );
+                            1
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("restrict: {e:#}");
+                    2
+                }
+            };
+            unsafe { libc::_exit(code) };
+        }
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        let debug = std::fs::read_to_string(work.join("debug")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&work);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "child status {status}: {debug}"
+        );
+    }
 }

@@ -206,15 +206,19 @@ let mut rt = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
     ..Default::default()
 });
 let mut watch = kantel_isolate::memory::watch(&mut rt, &budget);
-budget.arm(true); // while it runs guest code
+// While guest code runs, on the isolate's thread: over the budget, its CPU or its wall clock, it is stopped.
+let running = kantel_isolate::memory::enforce(&mut rt, &budget, cpu, wall);
 // ...
+drop(running);
 watch.remove(&mut rt); // before the isolate is dropped
 ```
 
 `memory::array_buffer_allocator(&budget)` is the ArrayBuffer allocator for this build's V8: a Rust allocator that
 charges the budget on the stock V8, and Kantel's in-sandbox budget allocator on the sandboxed one. Use it instead of
 `v8::new_rust_allocator`, which the sandboxed V8 doesn't have. WebAssembly memory counts only when the guest reserves it
-(Kantel's wasm guard does). `tests/memory.rs` runs on whichever V8 the crate is built with; CI builds it with both.
+(Kantel's wasm guard does). `memory::enforce` registers the isolate with the runtime's watchdog, which also stops it
+when a GC found the total over the limit and the program then stopped allocating. `tests/memory.rs` runs on the V8 the
+crate is tested with (CI's: the sandboxed one).
 
 ## Egress and hardening
 
@@ -229,7 +233,9 @@ private temporary directory, the policy's `read`, `read_write` and `execute` pat
 directory or ports), then seccomp (`seccomp: None` for no filter). `HardeningPolicy::kantel` is the binary's. With
 `spawn`, the process may start child processes (fork and clone without namespaces, exec, wait, signal) for an
 embedder's own worker or helper: a child inherits Landlock and the filter, so it can execute only what `execute`
-names and must keep to the same allow-list.
+names and must keep to the same allow-list. Writable places (the temporary directory, `read_write`, the socket
+directory) are never executable, and `harden` refuses an `execute` path that contains one. A redirect is checked against
+the egress methods too.
 
 ## The limits
 

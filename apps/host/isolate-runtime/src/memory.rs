@@ -9,6 +9,8 @@
 //!
 //! ```no_run
 //! # fn main() {
+//! use std::time::Duration;
+//!
 //! use kantel_isolate::memory::{self, Budget};
 //!
 //! // Inside a tokio runtime context, as for any deno_core runtime.
@@ -18,9 +20,10 @@
 //!     ..Default::default()
 //! });
 //! let mut watch = memory::watch(&mut rt, &budget);
-//! budget.arm(true); // While the isolate runs guest code: a total over the limit stops it.
-//! // ... run code ...
-//! budget.arm(false);
+//! // While guest code runs, on the isolate's thread: over the budget, its CPU or its wall clock, it is stopped.
+//! let running = memory::enforce(&mut rt, &budget, Duration::from_secs(30), Duration::from_secs(60));
+//! // ... run code; running.watched().term() says why it was stopped, if it was ...
+//! drop(running);
 //! watch.remove(&mut rt); // Before the isolate is dropped.
 //! # }
 //! ```
@@ -29,10 +32,12 @@
 //! it in the budget, as Kantel's wasm guard does (`guest/common/wasm-guard.js`, through `op_kt_wasm_reserve`).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use deno_core::{JsRuntime, v8};
 
-pub use crate::limits::{Budget, Refusal};
+pub use crate::limits::{Budget, Guard, Refusal, Term};
+use crate::limits::{Command, Scope};
 
 /// The ArrayBuffer allocator for an isolate held to `budget`, for this build's V8: a Rust allocator that charges the
 /// budget on the stock V8, Kantel's in-sandbox budget allocator on the sandboxed one. Use it wherever
@@ -60,7 +65,24 @@ impl MemoryWatch {
     }
 }
 
-/// Hold `rt`'s isolate (made with [`create_params`] for the same budget) to `budget`.
+/// Enforce the budget, and `cpu` (this thread's CPU time) and `wall`, on `rt`'s isolate while the returned guard
+/// lives, as the runtime does for its own isolates: a GC that finds the total over the limit stops the isolate (at
+/// the GC after it, or a moment later if the program stops allocating), as do the heap limit and the CPU and wall-clock
+/// limits. Call it on the isolate's own thread just before guest code runs, after [`watch`]; drop the guard when it
+/// ends, before the isolate is dropped. `guard.watched().term()` is why the isolate was stopped, if it was. Call
+/// `budget.reset_exceeded()` before each run after the first, so a refusal in the last doesn't count against it.
+pub fn enforce(rt: &mut JsRuntime, budget: &Arc<Budget>, cpu: Duration, wall: Duration) -> Guard {
+    let handle = rt.v8_isolate().thread_safe_handle();
+    crate::limits::watch(
+        handle,
+        Command::new(cpu, wall),
+        budget.clone(),
+        Scope::Command,
+    )
+}
+
+/// Record `rt`'s isolate's heap in `budget` after every GC, and stop it at its heap limit. `rt` is made with
+/// [`create_params`] for the same budget. The budget is enforced only while [`enforce`]'s guard lives.
 pub fn watch(rt: &mut JsRuntime, budget: &Arc<Budget>) -> MemoryWatch {
     let handle = rt.v8_isolate().thread_safe_handle();
     budget.set_handle(handle.clone());

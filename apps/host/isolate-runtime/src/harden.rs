@@ -71,6 +71,28 @@ pub fn harden(cfg: &Config, hardening: &HardeningPolicy) -> Result<()> {
         let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o700));
     }
     let transport = transport_of(cfg);
+    // Landlock's rights add up down the tree: an executable path above a writable one would make what is written
+    // there executable.
+    let socket_dir = match &transport {
+        crate::hardening::landlock::Transport::Unix { socket_dir } => Some(socket_dir.clone()),
+        crate::hardening::landlock::Transport::Tcp { .. } => None,
+    };
+    for exec in &hardening.execute {
+        for writable in hardening
+            .read_write
+            .iter()
+            .chain([&temp])
+            .chain(socket_dir.iter())
+        {
+            if writable.starts_with(exec) {
+                bail!(
+                    "the hardening policy's executable path {} contains the writable {}",
+                    exec.display(),
+                    writable.display()
+                );
+            }
+        }
+    }
     let policy = crate::hardening::landlock::Policy {
         assets: cfg.assets.clone(),
         temp,

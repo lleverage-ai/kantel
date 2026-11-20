@@ -332,6 +332,10 @@ pub async fn egress_fetch(
     // Set once a redirect has turned the request into a GET: its body's headers go with the body.
     let mut body_dropped = false;
     for _ in 0..10 {
+        // Every request the policy allows, the ones a redirect makes included (a 303 turns a POST into a GET).
+        if method == "CONNECT" || !policy.methods.contains(&method) {
+            bail!("method {method} is not allowed");
+        }
         let uri: hyper::Uri = url.parse().map_err(|e| anyhow!("bad URL {url}: {e}"))?;
         match uri.scheme_str() {
             Some("http") | Some("https") => {}
@@ -431,6 +435,11 @@ mod tests {
 
     /// A one-request egress proxy stand-in on loopback: answers 200 and hands back the request head it got.
     async fn proxy() -> (Target, tokio::task::JoinHandle<String>) {
+        proxy_answering("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok").await
+    }
+
+    /// The stand-in, answering `response` to the one request it takes.
+    async fn proxy_answering(response: &'static str) -> (Target, tokio::task::JoinHandle<String>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = Target::Tcp(listener.local_addr().unwrap().to_string());
@@ -445,13 +454,38 @@ mod tests {
                 }
                 head.extend_from_slice(&buf[..n]);
             }
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
-                .await
-                .unwrap();
+            socket.write_all(response.as_bytes()).await.unwrap();
             String::from_utf8_lossy(&head).to_lowercase()
         });
         (target, task)
+    }
+
+    #[tokio::test]
+    async fn a_redirect_cant_send_a_method_the_policy_refuses() {
+        let (target, head) = proxy_answering(
+            "HTTP/1.1 303 See Other\r\nlocation: /next\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        )
+        .await;
+        let policy = crate::config::EgressPolicy {
+            methods: vec!["POST".into()],
+            ..Default::default()
+        };
+        let req = FetchReq {
+            url: "http://example.test/form".into(),
+            method: "POST".into(),
+            headers: HashMap::new(),
+            follow: true,
+        };
+        // The 303 would turn the POST into a GET, which this policy doesn't allow: refused before it is sent (the
+        // stand-in takes one request, so a second would fail differently).
+        let err = egress_fetch(&target, &policy, "s", req, b"x".to_vec(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("method GET is not allowed"),
+            "{err:#}"
+        );
+        assert!(head.await.unwrap().starts_with("post "));
     }
 
     #[tokio::test]

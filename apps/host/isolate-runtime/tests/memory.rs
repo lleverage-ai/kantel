@@ -2,6 +2,8 @@
 //! stock V8 (a Rust allocator) and the sandboxed one (Kantel's in-sandbox allocator), where v8::new_rust_allocator
 //! doesn't exist.
 
+use std::time::Duration;
+
 use deno_core::{JsRuntime, RuntimeOptions, v8};
 use kantel_isolate::memory::{self, Budget};
 
@@ -29,7 +31,12 @@ fn an_embedders_isolate_is_held_to_its_budget() {
         ..Default::default()
     });
     let mut watch = memory::watch(&mut rt, &budget);
-    budget.arm(true);
+    let running = memory::enforce(
+        &mut rt,
+        &budget,
+        Duration::from_secs(10),
+        Duration::from_secs(10),
+    );
 
     // A buffer within the budget is allocated and counted against it.
     assert_eq!(
@@ -56,7 +63,24 @@ fn an_embedders_isolate_is_held_to_its_budget() {
         "{over:?}"
     );
 
-    budget.arm(false);
+    drop(running);
+    rt.v8_isolate().cancel_terminate_execution();
+
+    // The isolate is enforced as the runtime's are: a loop past its wall clock is stopped, with the reason. (A new
+    // run starts with the last one's refusal cleared, as each of the runtime's commands does.)
+    budget.reset_exceeded();
+    let running = memory::enforce(
+        &mut rt,
+        &budget,
+        Duration::from_secs(10),
+        Duration::from_millis(200),
+    );
+    assert!(
+        run(&mut rt, "for (;;) {}").is_err(),
+        "the loop wasn't stopped"
+    );
+    assert_eq!(running.watched().term(), Some(memory::Term::Wall));
+    drop(running);
     rt.v8_isolate().cancel_terminate_execution();
     watch.remove(&mut rt);
 }
