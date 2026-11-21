@@ -21,23 +21,13 @@ export function normalise(base, path) {
 	return `/${out.join("/")}`;
 }
 
-/** Wrap a just-bash filesystem so writes over existing paths are recorded (as sandbox.ts does). */
-function track(fs, dirty) {
-	const mark = (path) => dirty.add(normalise("/", path));
-	const wrap = (name, pick) => {
-		const original = fs[name].bind(fs);
-		fs[name] = (...args) => {
-			for (const path of pick(args)) mark(path);
-			return original(...args);
-		};
-	};
-	const first = (args) => [String(args[0])];
-	const second = (args) => [String(args[1])];
-	// rm too: a file removed and made again as a directory (by the shell, or replayed from a node/python run) is
-	// then looked at afresh instead of keeping its old file entry.
-	for (const name of ["writeFile", "appendFile", "chmod", "utimes", "rm"]) wrap(name, first);
-	for (const name of ["cp", "mv", "symlink", "link"]) wrap(name, second);
-	return fs;
+/** The entry just-bash's in-memory filesystem holds at a path, as it is (a lazy file not loaded). */
+function entries(fs) {
+	// just-bash 3.6 keeps its entries in `data`: a lazy file as `{ lazy }`, the function it was given, replaced on its
+	// first read by `{ content }`, the bytes that function returned, and by a new entry on any write.
+	if (!(fs.data instanceof Map))
+		throw new Error("this just-bash's in-memory filesystem doesn't keep its entries in `data`");
+	return (full) => fs.data.get(full);
 }
 
 /** A workspace node (the filesystem provider's) as a manifest entry. */
@@ -56,24 +46,39 @@ export function manifestFilesystem(ops) {
 	async function open(request) {
 		let lazyReads = 0;
 		const manifest = request.manifest ?? {};
+		const base = request.base ?? "";
 		// What the workspace keeps, and whether its file ids are the bytes' SHA-256 (Kantel's are): otherwise an id
 		// says nothing about the bytes, and an unchanged file is told by the digest of what the command read.
 		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
 		const originals = new Map();
-		const files = {};
-		for (const [path, entry] of Object.entries(manifest)) {
-			if (entry.kind !== "file") continue;
-			files[abs(path)] = async () => {
+		/** Where a file's body came from, by the lazy function or the bytes it gave (a file's entry holds one or the other
+		 * until something replaces its body): a manifest file the command started with (`{ path }`), or a host
+		 * command's staged output (`{ staged }`). A file whose entry still holds one has exactly those bytes, however it
+		 * was reached, moved or copied. */
+		const origins = new WeakMap();
+		/** A file's body, read from the workspace when the command first reads it. A manifest file's records its digest,
+		 * which tells an unchanged file from a changed one at the end. */
+		const lazy = (file, origin) => {
+			const load = async () => {
 				lazyReads++;
 				let bytes;
 				try {
-					bytes = await ops.op_kt_blob_read(entry.sha);
+					bytes = await ops.op_kt_blob_read(file);
 				} catch (error) {
 					throw readError(error);
 				}
-				if (!capabilities.contentAddressed) originals.set(path, sha256(bytes));
+				if (origin.path !== undefined && !capabilities.contentAddressed && !originals.has(origin.path)) {
+					originals.set(origin.path, sha256(bytes));
+				}
+				origins.set(bytes, origin);
 				return bytes;
 			};
+			origins.set(load, origin);
+			return load;
+		};
+		const files = {};
+		for (const [path, entry] of Object.entries(manifest)) {
+			if (entry.kind === "file") files[abs(path)] = lazy(entry.sha, { path });
 		}
 		/** The SHA-256 of a manifest file's bytes as the command found them, or undefined if they can't be read. */
 		const originalDigest = async (path, entry) => {
@@ -87,28 +92,45 @@ export function manifestFilesystem(ops) {
 			}
 		};
 		const fs = new InMemoryFs(files);
+		const entryAt = entries(fs);
 		await fs.mkdir(ROOT, { recursive: true });
 		for (const [path, entry] of Object.entries(manifest)) {
 			if (entry.kind === "dir") await fs.mkdir(abs(path), { recursive: true });
 			else if (entry.kind === "symlink") await fs.symlink(entry.target, abs(path));
 			else if (entry.mode !== 0o644) await fs.chmod(abs(path), entry.mode);
 		}
-		const dirty = new Set();
-		track(fs, dirty);
-		const isDirty = (path) => {
-			for (const mark of dirty) if (path === mark || path.startsWith(`${mark}/`)) return true;
-			return false;
+
+		/** Where the file at `full` came from, and its mode, if its entry still holds a body this command was given (see
+		 * `origins`). Never loads a lazy file. */
+		const originOf = (full) => {
+			const entry = entryAt(full);
+			if (entry?.type !== "file") return undefined;
+			const origin = origins.get("lazy" in entry ? entry.lazy : entry.content);
+			// Its mode as the manifest has it (special bits too): an untouched setuid or sticky file is still untouched.
+			return origin && { ...origin, mode: entry.mode & 0o7777 };
+		};
+		/** The manifest entry of the file at `path`, if it is still that file with its bytes and mode. */
+		const untouched = (path, full) => {
+			const before = manifest[path];
+			const origin = originOf(full);
+			return before?.kind === "file" && origin?.path === path && origin.mode === before.mode ? before : undefined;
 		};
 
-		/** The workspace as a node/python run sees it: untouched files by id (read only if the run reads them), files
-		 * this command changed inline in `chunks`. */
+		/** The workspace as a node/python run sees it: untouched files and staged outputs by id (read only if the run
+		 * reads them), files this command changed inline in `chunks`. */
 		async function childIndex(chunks) {
 			const index = {};
 			for (const full of fs.getAllPaths()) {
 				const path = rel(full);
 				if (path === undefined || path === "") continue;
-				const before = manifest[path];
-				if (before?.kind === "file" && !isDirty(full)) {
+				const origin = originOf(full);
+				if (origin?.staged) {
+					const { blob: sha, size, hash } = origin.staged;
+					index[path] = { kind: "file", sha, size, mode: origin.mode, hash };
+					continue;
+				}
+				const before = untouched(path, full);
+				if (before) {
 					// `hash` is the bytes' SHA-256 where known, for the run to tell the file unchanged.
 					const hash = capabilities.contentAddressed ? before.sha : originals.get(path);
 					index[path] = { kind: "file", sha: before.sha, size: before.size, mode: before.mode, hash };
@@ -125,6 +147,16 @@ export function manifestFilesystem(ops) {
 			return index;
 		}
 
+		/** A host command's staged output (a blob it uploaded): kept as a lazy file, never read unless the command reads
+		 * it, and named by the commit by its blob wherever it then is. Anything that replaces its body makes it an
+		 * ordinary file again. */
+		function adoptStaged(path, staged, mode) {
+			// Its SHA-256, to tell it from the file it replaces: on a content-addressed workspace, its blob id.
+			const hash = staged.hash ?? (capabilities.contentAddressed ? staged.blob : undefined);
+			const origin = { staged: { blob: staged.blob, size: staged.size, hash } };
+			fs.writeFileLazy(abs(path), lazy(staged.blob, origin), { mode: mode ?? 0o644 });
+		}
+
 		/** The reply's files when nothing ran. */
 		const unchanged = () => ({ manifest, changed: [], lazyReads });
 
@@ -133,7 +165,7 @@ export function manifestFilesystem(ops) {
 		async function finish() {
 			const commit = {
 				operationId: `exec-${nextCommit++}`,
-				base: request.base ?? "",
+				base,
 				puts: [],
 				links: [],
 				dirs: [],
@@ -145,9 +177,27 @@ export function manifestFilesystem(ops) {
 				const path = rel(full);
 				if (path === undefined || path === "") continue;
 				const before = manifest[path];
-				// An untouched file keeps its entry without a stat: stat on a lazy file loads its body, which would
-				// read the whole workspace on every commit.
-				if (before?.kind === "file" && !isDirty(full)) {
+				// A host command's staged output: committed by its blob, without reading it, unless it is what the file
+				// was (its bytes and mode), which is no change.
+				const origin = originOf(full);
+				if (origin?.staged) {
+					const { blob, size, hash } = origin.staged;
+					const mode = origin.mode;
+					const same =
+						before?.kind === "file" &&
+						before.mode === mode &&
+						hash !== undefined &&
+						(await originalDigest(path, before)) === hash;
+					next[path] = same ? before : { kind: "file", sha: blob, size, mode };
+					if (!same) {
+						changed.push(path);
+						commit.puts.push({ path, blob, mode });
+					}
+					continue;
+				}
+				// An untouched file keeps its entry without a stat: stat on a lazy file loads its body, which would read
+				// the whole workspace on every commit.
+				if (untouched(path, full)) {
 					next[path] = before;
 					continue;
 				}
@@ -215,7 +265,7 @@ export function manifestFilesystem(ops) {
 			return { ...saved, commit: unsaved, lazyReads };
 		}
 
-		return { fs, childIndex, unchanged, finish };
+		return { fs, childIndex, unchanged, finish, adoptStaged };
 	}
 
 	return { open };

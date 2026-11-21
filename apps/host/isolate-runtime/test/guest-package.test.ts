@@ -3,16 +3,19 @@
 
 import { describe, expect, it } from "bun:test";
 
-// The guest reads the runtime's ops from Deno.core when it loads, as in an isolate. Only randomness is reached here
-// (from the host's crypto: the guest replaces the global one with its own, which calls this op).
+// The guest reads the runtime's ops from Deno.core when it loads, as in an isolate. Only randomness (from the host's
+// crypto: the guest replaces the global one with its own, which calls this op) and the host commands' names (none)
+// are reached here.
 const random = crypto.getRandomValues.bind(crypto);
 const ops = new Proxy({} as Record<string, unknown>, {
 	get: (_, name) =>
 		name === "op_kt_random"
 			? (buf: Uint8Array) => random(buf)
-			: () => {
-					throw new Error(`no op ${String(name)} in this test`);
-				},
+			: name === "op_kt_host_commands"
+				? () => "[]"
+				: () => {
+						throw new Error(`no op ${String(name)} in this test`);
+					},
 });
 (globalThis as { Deno?: unknown }).Deno = { core: { ops } };
 const { InMemoryFs } = await import("just-bash/browser");
