@@ -21,7 +21,8 @@ A shell filesystem is `{ open(request) }`, where `open` gives, for one command:
 - `unchanged()`: the reply's `{ manifest, changed }` when the command didn't run (refused before running);
 - `finish()`: save the command's changes; `{ manifest, changed, commit? }`, where `commit` (`{ status, error }`) says
   when they weren't saved;
-- `sync()` (optional): catch the files up after a host command committed through the workspace itself.
+- `adoptStaged(path, staged, mode)` (optional): keep a host command's staged output as a file it doesn't read, and
+  commit it by its blob.
 
 The embedder's host commands (EMBEDDING.md, "Host commands") are commands of the same name in the shell.
 

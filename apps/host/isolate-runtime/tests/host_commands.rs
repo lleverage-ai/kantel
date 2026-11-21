@@ -1,17 +1,17 @@
 //! The embedder's host commands, run by Kantel's own guest shell: they read the shell's files as they are (one the
-//! command just wrote included), hand back small outputs inline or commit large ones through the workspace
-//! themselves, and a name the isolate otherwise lacks is served, not refused. Needs the guest bundle
-//! (`bun run guest/build.ts`), as the binary does.
+//! command just wrote included), hand back small outputs inline and large ones staged (which the shell commits by
+//! their blob, without reading them), stop when the shell's `timeout` cancels them, and a name the isolate otherwise
+//! lacks is served, not refused. Needs the guest bundle (`bun run guest/build.ts`), as the binary does.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use kantel_isolate::host_commands::{HostCommand, HostReply, HostRequest};
+use kantel_isolate::host_commands::{HostCommand, HostReply, HostRequest, HostWrite};
 use kantel_isolate::isolate::spawn_shell;
 use kantel_isolate::limits::Command;
 use kantel_isolate::workspace::contract::subjects::MemoryBlobs;
-use kantel_isolate::workspace::{BoxFuture, Commit, CommitReply, ManifestProvider, Put};
+use kantel_isolate::workspace::{BoxFuture, ManifestProvider};
 use kantel_isolate::{Config, Embedding, Engine};
 use serde_json::{Value, json};
 
@@ -30,39 +30,43 @@ impl HostCommand for Upper {
                 .to_ascii_uppercase();
             Ok(HostReply {
                 stdout: bytes.clone(),
-                writes: vec![(format!("{name}.upper"), bytes, None)],
+                writes: vec![HostWrite::Bytes {
+                    path: format!("{name}.upper"),
+                    bytes,
+                    mode: None,
+                }],
                 ..Default::default()
             })
         })
     }
 }
 
-/// `stash TEXT`: commits stash.txt through the workspace itself (a large output's way), saying so.
+/// `stash TEXT`: stages stash.txt through the workspace and answers it staged (a large output's way).
 struct Stash;
 impl HostCommand for Stash {
     fn run<'a>(&'a self, request: HostRequest) -> BoxFuture<'a, Result<HostReply>> {
         Box::pin(async move {
-            let workspace = request.files.workspace().expect("a workspace").clone();
             let text = format!("{}\n", request.args.join(" "));
-            let staged = workspace.stage("stash.txt", text.into_bytes()).await?;
-            let now = workspace.view().await?;
-            let reply = workspace
-                .commit(Commit {
-                    operation_id: "stash".into(),
-                    base: now.generation,
-                    puts: vec![Put {
-                        path: "stash.txt".into(),
-                        blob: staged.blob,
-                        mode: None,
-                    }],
-                    ..Commit::default()
-                })
-                .await?;
-            assert!(matches!(reply, CommitReply::Committed { .. }), "{reply:?}");
+            let staged = request.files.stage("stash.txt", text.into_bytes()).await?;
             Ok(HostReply {
-                workspace_changed: true,
+                writes: vec![HostWrite::Staged {
+                    path: "stash.txt".into(),
+                    staged,
+                    mode: None,
+                }],
                 ..Default::default()
             })
+        })
+    }
+}
+
+/// `slow`: takes ten seconds, unless it is cancelled.
+struct Slow;
+impl HostCommand for Slow {
+    fn run<'a>(&'a self, _request: HostRequest) -> BoxFuture<'a, Result<HostReply>> {
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok(HostReply::default())
         })
     }
 }
@@ -116,6 +120,7 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
         ))))
         .with_host_command("upper", Arc::new(Upper))
         .with_host_command("stash", Arc::new(Stash))
+        .with_host_command("slow", Arc::new(Slow))
         .with_host_command("unzip", Arc::new(Served));
     Engine::init(cfg, embedding, io.handle().clone(), false).unwrap();
     let shell = spawn_shell("h".into(), 256, false);
@@ -134,15 +139,14 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
         "{reply}"
     );
 
-    // Committed by the host command itself: the shell catches up, reads it, and commits its own change after.
+    // A staged output the command doesn't read: committed by its blob, never read into the isolate.
     let reply = io.block_on(run(
         &shell,
         manifest,
-        "stash hello there && cat stash.txt && echo more > b.txt",
+        "stash hello there && echo more > b.txt",
     ));
     assert_eq!(reply["exitCode"], 0, "{reply}");
-    assert_eq!(reply["stdout"], "hello there\n", "{reply}");
-    assert!(reply.get("commit").is_none(), "{reply}");
+    assert_eq!(reply["timings"]["lazyReads"], 0, "{reply}");
     let changed: Vec<&str> = reply["changed"]
         .as_array()
         .unwrap()
@@ -153,7 +157,17 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
         changed.contains(&"stash.txt") && changed.contains(&"b.txt"),
         "{reply}"
     );
-    assert!(reply["manifest"].get("stash.txt").is_some(), "{reply}");
+    let manifest = reply["manifest"].clone();
+    assert_eq!(manifest["stash.txt"]["size"], 12, "{reply}");
+    // The next command reads it like any other file.
+    let reply = io.block_on(run(&shell, manifest, "cat stash.txt"));
+    assert_eq!(reply["stdout"], "hello there\n", "{reply}");
+
+    // The shell's `timeout` cancels a host command on the host too.
+    let started = Instant::now();
+    let reply = io.block_on(run(&shell, json!({}), "timeout 0.2 slow; echo after"));
+    assert_eq!(reply["stdout"], "after\n", "{reply}");
+    assert!(started.elapsed() < Duration::from_secs(5), "{reply}");
 
     // A name the isolate lacks is served by the host command, neither refused nor reported as needing a microVM.
     let reply = io.block_on(run(&shell, json!({}), "unzip x.zip"));

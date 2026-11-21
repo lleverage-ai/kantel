@@ -21,9 +21,13 @@ export function normalise(base, path) {
 	return `/${out.join("/")}`;
 }
 
-/** Wrap a just-bash filesystem so writes over existing paths are recorded (as sandbox.ts does). */
-function track(fs, dirty) {
-	const mark = (path) => dirty.add(normalise("/", path));
+/** Wrap a just-bash filesystem so writes over existing paths are recorded (as sandbox.ts does), and tell `written`. */
+function track(fs, dirty, written = () => {}) {
+	const mark = (path) => {
+		const full = normalise("/", path);
+		dirty.add(full);
+		written(full);
+	};
 	const wrap = (name, pick) => {
 		const original = fs[name].bind(fs);
 		fs[name] = (...args) => {
@@ -55,11 +59,10 @@ export function manifestFilesystem(ops) {
 
 	async function open(request) {
 		let lazyReads = 0;
-		// The command's own copy: a host command that commits through the workspace moves it on (sync).
-		const manifest = { ...(request.manifest ?? {}) };
-		let base = request.base ?? "";
-		/** Paths a host command changed through the workspace, which the reply reports changed too. */
-		const hostChanged = new Set();
+		const manifest = request.manifest ?? {};
+		const base = request.base ?? "";
+		/** Host commands' staged outputs still at their paths, by path (see adoptStaged). */
+		const stagedOutputs = new Map();
 		// What the workspace keeps, and whether its file ids are the bytes' SHA-256 (Kantel's are): otherwise an id
 		// says nothing about the bytes, and an unchanged file is told by the digest of what the command read.
 		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
@@ -99,7 +102,10 @@ export function manifestFilesystem(ops) {
 			else if (entry.mode !== 0o644) await fs.chmod(abs(path), entry.mode);
 		}
 		const dirty = new Set();
-		track(fs, dirty);
+		track(fs, dirty, (path) => {
+			const r = rel(path);
+			if (r !== undefined) stagedOutputs.delete(r);
+		});
 		const isDirty = (path) => {
 			for (const mark of dirty) if (path === mark || path.startsWith(`${mark}/`)) return true;
 			return false;
@@ -113,6 +119,11 @@ export function manifestFilesystem(ops) {
 				const path = rel(full);
 				if (path === undefined || path === "") continue;
 				const before = manifest[path];
+				const staged = stagedOutputs.get(path);
+				if (staged) {
+					index[path] = { kind: "file", sha: staged.blob, size: staged.size, mode: staged.mode };
+					continue;
+				}
 				if (before?.kind === "file" && !isDirty(full)) {
 					// `hash` is the bytes' SHA-256 where known, for the run to tell the file unchanged.
 					const hash = capabilities.contentAddressed ? before.sha : originals.get(path);
@@ -130,31 +141,12 @@ export function manifestFilesystem(ops) {
 			return index;
 		}
 
-		/** Catch the command's files up with the workspace after a host command committed through it: its changes since
-		 * the command's base, the new files lazy (read only if the command reads them). */
-		async function sync() {
-			const catchUp = JSON.parse(await ops.op_kt_sync(base));
-			for (const path of catchUp.removed) {
-				await fs.rm(abs(path), { recursive: true, force: true });
-				delete manifest[path];
-				hostChanged.add(path);
-			}
-			for (const [path, node] of Object.entries(catchUp.changed)) {
-				const full = abs(path);
-				hostChanged.add(path);
-				manifest[path] = entryOf(node);
-				await fs.mkdir(full.slice(0, full.lastIndexOf("/")) || "/", { recursive: true });
-				if (node.kind === "dir") {
-					await fs.mkdir(full, { recursive: true });
-				} else if (node.kind === "symlink") {
-					await fs.rm(full, { force: true });
-					await fs.symlink(node.target, full);
-				} else {
-					originals.delete(path);
-					fs.writeFileLazy(full, lazy(path, node.file), { mode: node.mode });
-				}
-			}
-			base = catchUp.generation;
+		/** A host command's staged output (a blob it uploaded): kept as a lazy file, never read unless the command reads
+		 * it, and named by the commit as it is. A later write to the path makes it an ordinary change again. */
+		function adoptStaged(path, staged, mode) {
+			const full = abs(path);
+			fs.writeFileLazy(full, lazy(path, staged.blob), { mode: mode ?? 0o644 });
+			stagedOutputs.set(path, { blob: staged.blob, size: staged.size, mode: mode ?? 0o644 });
 		}
 
 		/** The reply's files when nothing ran. */
@@ -177,6 +169,14 @@ export function manifestFilesystem(ops) {
 				const path = rel(full);
 				if (path === undefined || path === "") continue;
 				const before = manifest[path];
+				// A host command's staged output, still there: committed by its blob, without reading it.
+				const staged = stagedOutputs.get(path);
+				if (staged) {
+					next[path] = { kind: "file", sha: staged.blob, size: staged.size, mode: staged.mode };
+					changed.push(path);
+					commit.puts.push({ path, blob: staged.blob, mode: staged.mode });
+					continue;
+				}
 				// An untouched file keeps its entry without a stat: stat on a lazy file loads its body, which would
 				// read the whole workspace on every commit.
 				if (before?.kind === "file" && !isDirty(full)) {
@@ -244,15 +244,10 @@ export function manifestFilesystem(ops) {
 					if (reply.catchUp) saved = holds(reply.catchUp, []);
 				}
 			}
-			return {
-				...saved,
-				changed: [...new Set([...hostChanged, ...saved.changed])],
-				commit: unsaved,
-				lazyReads,
-			};
+			return { ...saved, commit: unsaved, lazyReads };
 		}
 
-		return { fs, childIndex, unchanged, finish, sync };
+		return { fs, childIndex, unchanged, finish, adoptStaged };
 	}
 
 	return { open };

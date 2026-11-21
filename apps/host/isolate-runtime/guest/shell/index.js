@@ -11,7 +11,8 @@
 //     unchanged(),         // the reply's { manifest, changed, lazyReads? } when the command didn't run
 //     finish(),            // save the command's changes: { manifest, changed, commit?, lazyReads? }, where `commit`
 //                          // ({ status, error }) says when they weren't saved
-//     sync(),              // optional: catch the files up after a host command committed through the workspace
+//     adoptStaged(path, staged, mode),  // optional: keep a host command's staged output (its blob) as a file the
+//                          // shell doesn't read, which finish() commits by its blob
 //   }
 //
 // The embedder's host commands (src/host_commands.rs) are commands of the same name here, run on the host
@@ -74,6 +75,12 @@ export function createShell(ops, options = {}) {
 			for (const w of result.writes ?? []) {
 				const full = abs(w.path);
 				await fs.mkdir(full.slice(0, full.lastIndexOf("/")) || "/", { recursive: true });
+				if (w.staged) {
+					if (!files.adoptStaged) throw new Error(`${w.path}: this shell's filesystem can't keep a staged output`);
+					await fs.rm(full, { recursive: true, force: true });
+					files.adoptStaged(w.path, w.staged, w.mode);
+					continue;
+				}
 				await fs.writeFile(full, slice(w.data).slice());
 				if (w.mode !== undefined && w.mode !== 0o644) await fs.chmod(full, w.mode);
 			}
@@ -123,12 +130,20 @@ export function createShell(ops, options = {}) {
 				const index = await files.childIndex(chunks);
 				const stdin = chunks.add(fromLatin1(String(ctx.stdin ?? "")));
 				const env = ctx.exportedEnv ?? Object.fromEntries(ctx.env ?? []);
-				const meta = { name, args, cwd: ctx.cwd, env, index, stdin };
-				const raw = await ops.op_kt_host_command(JSON.stringify(meta), chunks.bytes());
+				const runId = nextRun++;
+				const meta = { name, args, cwd: ctx.cwd, env, index, stdin, runId };
+				// The shell's `timeout` cancels it on the host too.
+				const onAbort = () => ops.op_kt_host_cancel(runId);
+				ctx.signal?.addEventListener?.("abort", onAbort, { once: true });
+				let raw;
+				try {
+					raw = await ops.op_kt_host_command(JSON.stringify(meta), chunks.bytes());
+				} finally {
+					ctx.signal?.removeEventListener?.("abort", onAbort);
+				}
 				const { meta: result, data } = unpack(raw);
 				const slice = (at) => data.subarray(at[0], at[0] + at[1]);
 				await apply(result, slice);
-				if (result.workspaceChanged) await files.sync?.();
 				return {
 					stdout: latin1(slice(result.stdout)),
 					stdoutKind: "bytes",

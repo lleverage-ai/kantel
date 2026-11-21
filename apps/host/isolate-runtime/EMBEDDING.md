@@ -212,18 +212,20 @@ archive or document reader, whose bytes then never enter the isolate. The guest 
 running nor reported as `needsMicrovm`.
 
 `HostCommand::run(request)` runs on the engine's I/O runtime, ended at the shell command's deadline (exit 124) and
-dropped if the command is stopped. The `HostRequest` has the arguments, working directory, environment and stdin, and
-`files`: the shell's files as they are at that moment (`read(path, cap)` reads one through the workspace, or inline if
-the command changed it). The `HostReply` has the exit code, stdout and stderr, and the files it changes:
+cancelled if the shell cancels it (`timeout`) or the command is stopped. The `HostRequest` has the arguments, working
+directory, environment and stdin, and `files`: the shell's files as they are at that moment (`read(path, cap)` reads
+one, a path absolute or relative to the working directory and inside `/workspace`, through the workspace or inline
+if the command changed it). The `HostReply` has the exit code, stdout and stderr, and the files it writes and
+removes. A host command never commits: its changes become the shell command's own and are saved by its one commit,
+so a stopped or cancelled command, an unknown outcome and the next command are handled once for everything.
 
-- small outputs inline (`writes`, `removes`): the shell applies them, and they are committed with the command's other
-  changes;
-- large outputs committed through the workspace by the host command itself (`files.workspace()`: stage, then commit
-  from the workspace's current version), with `workspace_changed`: the shell then catches its files up (`op_kt_sync`;
-  the new files lazily), so the bytes never pass through the isolate.
+- Small outputs come back inline (`HostWrite::Bytes`; at most 64 MiB inline per reply, stdout and stderr included).
+- A large output is staged first (`files.stage(path, bytes)`) and answered as `HostWrite::Staged`: the shell keeps
+  it as a file it reads only if the command does (`adoptStaged` in the shell filesystem), and its commit names the
+  staged blob, so the bytes never pass through the isolate.
 
-An error from `run` is the command's failure (exit 1, the error on stderr). `tests/host_commands.rs` runs all three
-kinds through Kantel's guest shell.
+An error from `run` is the command's failure (exit 1, the error on stderr). `tests/host_commands.rs` runs these
+through Kantel's guest shell.
 
 ## Memory for an embedder's own isolates
 

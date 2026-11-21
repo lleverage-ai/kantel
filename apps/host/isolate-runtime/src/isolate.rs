@@ -66,6 +66,8 @@ pub struct Ctx {
     pub fetches: Arc<AtomicUsize>,
     /// node/python runs the shell started, by run id, so the shell can cancel one (just-bash `timeout`).
     pub children: Arc<Mutex<HashMap<u32, Arc<ChildControl>>>>,
+    /// Host commands the shell is running, by run id, so the shell can cancel one (just-bash `timeout`).
+    pub host_runs: Arc<Mutex<HashMap<u32, tokio::task::AbortHandle>>>,
 }
 
 impl Ctx {
@@ -91,6 +93,7 @@ impl Ctx {
             commit: Arc::default(),
             fetches: Arc::new(AtomicUsize::new(0)),
             children: Arc::new(Mutex::new(HashMap::new())),
+            host_runs: Arc::default(),
         }
     }
     pub fn cancel_child(&self, run_id: u32) {
