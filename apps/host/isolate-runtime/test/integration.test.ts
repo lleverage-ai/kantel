@@ -92,6 +92,22 @@ d("shell parity with sandbox.ts", () => {
 		expect(r.exitCode).toBe(127);
 		expect(r.needsMicrovm).toBeDefined();
 	});
+	it("refuses a command whose unavailable program would fail it before any of it runs (effects none)", async () => {
+		const r = await c.exec("sh-effects", "echo a > before.txt && git push");
+		expect(r.exitCode).toBe(127);
+		expect(r.effects).toBe("none");
+		expect((r.needsMicrovm as { command: string }).command).toBe("git");
+		expect(r.stderr).toContain("Nothing in this command ran");
+		expect(r.changed).toEqual([]);
+		expect((r.manifest as Record<string, unknown>)["before.txt"]).toBeUndefined();
+	});
+	it("says what ran may have had effects when the program is only reached at run time (effects possible)", async () => {
+		const r = await c.exec("sh-effects", "echo a > before.txt; bash -c 'git status'");
+		expect(r.exitCode).toBe(127);
+		expect(r.effects).toBe("possible");
+		expect((r.needsMicrovm as { command: string }).command).toBe("git");
+		expect(r.changed).toContain("before.txt");
+	});
 });
 
 d("node", () => {
