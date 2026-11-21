@@ -10,8 +10,9 @@ use anyhow::Result;
 use kantel_isolate::host_commands::{HostCommand, HostReply, HostRequest, HostWrite};
 use kantel_isolate::isolate::spawn_shell;
 use kantel_isolate::limits::Command;
-use kantel_isolate::workspace::contract::subjects::MemoryBlobs;
-use kantel_isolate::workspace::{BoxFuture, ManifestProvider};
+use kantel_isolate::workspace::contract::subjects::{MemoryBlobs, manifest_of};
+use kantel_isolate::workspace::memory::RecordProvider;
+use kantel_isolate::workspace::{BoxFuture, FilesystemProvider, ManifestProvider, Workspace};
 use kantel_isolate::{Config, Embedding, Engine};
 use serde_json::{Value, json};
 
@@ -104,6 +105,26 @@ async fn run(
         .expect("exec")
 }
 
+/// A command over a persistent workspace (the reference provider, whose file ids aren't content hashes).
+async fn run_on(
+    shell: &kantel_isolate::isolate::ShellHandle,
+    workspace: Arc<dyn Workspace>,
+    command: &str,
+) -> Value {
+    let view = workspace.view().await.expect("view");
+    let manifest = manifest_of(&view.entries);
+    let request = json!({ "command": command, "manifest": manifest, "base": view.generation });
+    shell
+        .exec(
+            &request,
+            manifest,
+            workspace,
+            Command::new(Duration::from_secs(20), Duration::from_secs(20)),
+        )
+        .await
+        .expect("exec")
+}
+
 #[test]
 fn an_embedders_host_commands_run_for_the_guest_shell() {
     kantel_isolate::init_v8();
@@ -162,6 +183,29 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
     // The next command reads it like any other file.
     let reply = io.block_on(run(&shell, manifest, "cat stash.txt"));
     assert_eq!(reply["stdout"], "hello there\n", "{reply}");
+
+    // A staged output moved away is no longer kept at its old path: what is made there next is its own.
+    let reply = io.block_on(run(
+        &shell,
+        json!({}),
+        "stash hello && mv stash.txt moved.txt && mkdir stash.txt",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["manifest"]["stash.txt"]["kind"], "dir", "{reply}");
+    assert_eq!(reply["manifest"]["moved.txt"]["size"], 6, "{reply}");
+    let reply = io.block_on(run(&shell, reply["manifest"].clone(), "cat moved.txt"));
+    assert_eq!(reply["stdout"], "hello\n", "{reply}");
+
+    // Over a workspace whose ids aren't content hashes, a staged output over an existing file, then touched again
+    // (its mode as it was), is told from the file the command started with by its bytes.
+    let records = Arc::new(RecordProvider::default());
+    records.seed("r", &[("stash.txt", b"old\n")]);
+    let open = || records.open("r", &Value::Null).expect("open");
+    let reply = io.block_on(run_on(&shell, open(), "stash hello && chmod 644 stash.txt"));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["changed"], json!(["stash.txt"]), "{reply}");
+    assert_eq!(reply["manifest"]["stash.txt"]["mode"], 0o644, "{reply}");
+    assert_eq!(records.files("r")["stash.txt"], b"hello\n");
 
     // The shell's `timeout` cancels a host command on the host too.
     let started = Instant::now();

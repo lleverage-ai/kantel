@@ -21,13 +21,23 @@ export function normalise(base, path) {
 	return `/${out.join("/")}`;
 }
 
-/** Wrap a just-bash filesystem so writes over existing paths are recorded (as sandbox.ts does), and tell `written`. */
-function track(fs, dirty, written = () => {}) {
+/** Wrap a just-bash filesystem so writes over existing paths are recorded (as sandbox.ts does), and tell `touched`
+ * of every path a call changes or moves away (a move's source too). */
+function track(fs, dirty, touched = () => {}) {
 	const mark = (path) => {
 		const full = normalise("/", path);
 		dirty.add(full);
-		written(full);
+		touched(full);
 	};
+	// A move takes its source away: not a write there, but whatever was kept for that path no longer is.
+	for (const name of ["mv", "rename"]) {
+		if (typeof fs[name] !== "function") continue;
+		const original = fs[name].bind(fs);
+		fs[name] = (...args) => {
+			touched(normalise("/", String(args[0])));
+			return original(...args);
+		};
+	}
 	const wrap = (name, pick) => {
 		const original = fs[name].bind(fs);
 		fs[name] = (...args) => {
@@ -67,18 +77,21 @@ export function manifestFilesystem(ops) {
 		// says nothing about the bytes, and an unchanged file is told by the digest of what the command read.
 		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
 		const originals = new Map();
-		/** A file's body, read from the workspace when the command first reads it. */
-		const lazy = (path, file) => async () => {
-			lazyReads++;
-			let bytes;
-			try {
-				bytes = await ops.op_kt_blob_read(file);
-			} catch (error) {
-				throw readError(error);
-			}
-			if (!capabilities.contentAddressed) originals.set(path, sha256(bytes));
-			return bytes;
-		};
+		/** A file's body, read from the workspace when the command first reads it. Only a file the command started with
+		 * (`original`) records its digest, which tells an unchanged file from a changed one at the end. */
+		const lazy =
+			(path, file, original = true) =>
+			async () => {
+				lazyReads++;
+				let bytes;
+				try {
+					bytes = await ops.op_kt_blob_read(file);
+				} catch (error) {
+					throw readError(error);
+				}
+				if (original && !capabilities.contentAddressed && !originals.has(path)) originals.set(path, sha256(bytes));
+				return bytes;
+			};
 		const files = {};
 		for (const [path, entry] of Object.entries(manifest)) {
 			if (entry.kind === "file") files[abs(path)] = lazy(path, entry.sha);
@@ -102,9 +115,13 @@ export function manifestFilesystem(ops) {
 			else if (entry.mode !== 0o644) await fs.chmod(abs(path), entry.mode);
 		}
 		const dirty = new Set();
+		// A staged output at a path, or under one, that is changed, removed or moved away is kept no longer.
 		track(fs, dirty, (path) => {
 			const r = rel(path);
-			if (r !== undefined) stagedOutputs.delete(r);
+			if (r === undefined) return;
+			for (const kept of stagedOutputs.keys()) {
+				if (r === "" || kept === r || kept.startsWith(`${r}/`)) stagedOutputs.delete(kept);
+			}
 		});
 		const isDirty = (path) => {
 			for (const mark of dirty) if (path === mark || path.startsWith(`${mark}/`)) return true;
@@ -145,7 +162,7 @@ export function manifestFilesystem(ops) {
 		 * it, and named by the commit as it is. A later write to the path makes it an ordinary change again. */
 		function adoptStaged(path, staged, mode) {
 			const full = abs(path);
-			fs.writeFileLazy(full, lazy(path, staged.blob), { mode: mode ?? 0o644 });
+			fs.writeFileLazy(full, lazy(path, staged.blob, false), { mode: mode ?? 0o644 });
 			stagedOutputs.set(path, { blob: staged.blob, size: staged.size, mode: mode ?? 0o644 });
 		}
 

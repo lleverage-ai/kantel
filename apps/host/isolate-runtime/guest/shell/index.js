@@ -126,17 +126,19 @@ export function createShell(ops, options = {}) {
 		// The embedder's: run on the host, with the files as they are now; their changes come back like a run's.
 		const host = (name) =>
 			defineCommand(name, async (args, ctx) => {
-				const chunks = new Chunks();
-				const index = await files.childIndex(chunks);
-				const stdin = chunks.add(fromLatin1(String(ctx.stdin ?? "")));
-				const env = ctx.exportedEnv ?? Object.fromEntries(ctx.env ?? []);
 				const runId = nextRun++;
-				const meta = { name, args, cwd: ctx.cwd, env, index, stdin, runId };
-				// The shell's `timeout` cancels it on the host too.
+				// The shell's `timeout` cancels it on the host too, from before it is prepared: a cancellation while the
+				// files are indexed stops it before it starts.
 				const onAbort = () => ops.op_kt_host_cancel(runId);
 				ctx.signal?.addEventListener?.("abort", onAbort, { once: true });
 				let raw;
 				try {
+					const chunks = new Chunks();
+					const index = await files.childIndex(chunks);
+					const stdin = chunks.add(fromLatin1(String(ctx.stdin ?? "")));
+					const env = ctx.exportedEnv ?? Object.fromEntries(ctx.env ?? []);
+					if (ctx.signal?.aborted) return { stdout: "", stderr: `${name}: cancelled\n`, exitCode: 130 };
+					const meta = { name, args, cwd: ctx.cwd, env, index, stdin, runId };
 					raw = await ops.op_kt_host_command(JSON.stringify(meta), chunks.bytes());
 				} finally {
 					ctx.signal?.removeEventListener?.("abort", onAbort);
