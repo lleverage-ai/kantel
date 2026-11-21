@@ -5,7 +5,7 @@ with the runtime):
 
 | Import | What it is |
 | --- | --- |
-| `@kantel/isolate-guest` | `createGuest(options)`: a guest bundle's `__kantel` (`init(kind)` installs the guards, builds the kind's entry point, and removes every route to the ops), and every piece below |
+| `@kantel/isolate-guest` | `createGuest(options)`: a guest bundle's `__kantel` (`init(kind)` installs the guards, builds the kind's entry point, and removes every route to the ops), plus `createShell`, `manifestFilesystem`, `prescan`, `createNode`, `createPython` and the guards (`fixBuffers`, `captureShared`, `installWasmGuard`) |
 | `@kantel/isolate-guest/shell` | `createShell(ops, { filesystem, log })`: just-bash over any `ShellFilesystem`, with `node`/`python` runs, stubs for what an isolate lacks, and the parse-before-run check (`needsMicrovm`, `effects`) |
 | `@kantel/isolate-guest/shell/manifest-fs` | `manifestFilesystem(ops)`: Kantel's filesystem, a lazy in-memory one per command over the runtime's workspace ops |
 | `@kantel/isolate-guest/shell/prescan` | `prescan(ast, lookup)`: the parse-before-run check alone, over just-bash's parse |
