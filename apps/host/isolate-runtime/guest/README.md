@@ -20,7 +20,10 @@ A shell filesystem is `{ open(request) }`, where `open` gives, for one command:
 - `childIndex(chunks)`: the files as a `node`/`python` run sees them (`shell/manifest-fs.js` has the format);
 - `unchanged()`: the reply's `{ manifest, changed }` when the command didn't run (refused before running);
 - `finish()`: save the command's changes; `{ manifest, changed, commit? }`, where `commit` (`{ status, error }`) says
-  when they weren't saved.
+  when they weren't saved;
+- `sync()` (optional): catch the files up after a host command committed through the workspace itself.
+
+The embedder's host commands (EMBEDDING.md, "Host commands") are commands of the same name in the shell.
 
 ## Using it
 

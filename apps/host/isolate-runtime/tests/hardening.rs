@@ -268,15 +268,8 @@ fn writable_places_are_never_executable_and_execute_paths_are() {
         eprintln!("skipped: {} can't be executed here", copy.display());
         return;
     }
-    // SAFETY: fork in a test; the child restricts itself and exits without returning to the runner.
-    let pid = unsafe { libc::fork() };
-    assert!(pid >= 0, "fork failed");
-    if pid == 0 {
-        let none = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
+    // In a child, with in_child's time limit: the ruleset can't be undone.
+    let (signalled, code) = in_child(|| {
         let execute = ["/usr", "/bin", "/lib", "/lib64"]
             .iter()
             .map(PathBuf::from)
@@ -293,7 +286,7 @@ fn writable_places_are_never_executable_and_execute_paths_are() {
                 connect: vec![],
             },
         };
-        let code = match restrict(&policy) {
+        match restrict(&policy) {
             // No Landlock on this kernel: nothing to check.
             Ok(report) if report.status.starts_with("not enforced") => 0,
             Ok(_) => {
@@ -313,16 +306,13 @@ fn writable_places_are_never_executable_and_execute_paths_are() {
                 eprintln!("restrict: {e:#}");
                 2
             }
-        };
-        unsafe { libc::_exit(code) };
-    }
-    let mut status = 0;
-    unsafe { libc::waitpid(pid, &mut status, 0) };
+        }
+    });
     let debug = std::fs::read_to_string(work.join("debug")).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&work);
     assert!(
-        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-        "child status {status}: {debug}"
+        !signalled && code == 0,
+        "child exited with {code} (signalled: {signalled}): {debug}"
     );
 }
 

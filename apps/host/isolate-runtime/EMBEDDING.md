@@ -63,7 +63,7 @@ embedder that wants it as it is.
 
 ## The embedding
 
-`Embedding { guest, extensions, filesystem }` (`filesystem` is [below](#the-filesystem-provider)):
+`Embedding { guest, extensions, filesystem, host_commands }` (`filesystem` and `host_commands` are below):
 
 - **`guest`**: the guest bundle, one classic script, evaluated once into the startup snapshot. It is the embedder's
   JavaScript: Kantel's is `guest/main.js` bundled to `guest/dist/guest.js`.
@@ -202,6 +202,28 @@ async fn our_provider_keeps_the_contract() {
     kantel_isolate::workspace::contract::persistent(&subject).await;
 }
 ```
+
+## Host commands
+
+`Embedding::with_host_command(name, command)` registers a program the embedder runs natively on the host for the
+guest's shell ([`src/host_commands.rs`](src/host_commands.rs)): an SQL engine over a large file, a search tool, an
+archive or document reader, whose bytes then never enter the isolate. The guest shell defines a command of that name
+(`op_kt_host_commands`); a name the isolate otherwise lacks (`unzip`, `duckdb`) is served, never refused before
+running nor reported as `needsMicrovm`.
+
+`HostCommand::run(request)` runs on the engine's I/O runtime, ended at the shell command's deadline (exit 124) and
+dropped if the command is stopped. The `HostRequest` has the arguments, working directory, environment and stdin, and
+`files`: the shell's files as they are at that moment (`read(path, cap)` reads one through the workspace, or inline if
+the command changed it). The `HostReply` has the exit code, stdout and stderr, and the files it changes:
+
+- small outputs inline (`writes`, `removes`): the shell applies them, and they are committed with the command's other
+  changes;
+- large outputs committed through the workspace by the host command itself (`files.workspace()`: stage, then commit
+  from the workspace's current version), with `workspace_changed`: the shell then catches its files up (`op_kt_sync`;
+  the new files lazily), so the bytes never pass through the isolate.
+
+An error from `run` is the command's failure (exit 1, the error on stderr). `tests/host_commands.rs` runs all three
+kinds through Kantel's guest shell.
 
 ## Memory for an embedder's own isolates
 

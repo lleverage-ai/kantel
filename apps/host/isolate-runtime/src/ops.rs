@@ -264,6 +264,71 @@ async fn op_kt_sync(
     serde_json::to_string(&catch_up).map_err(jerr)
 }
 
+// --- host commands: the embedder's programs, run natively on the host -----------------------------------------
+
+/// The host commands' names, as JSON, for the shell to define.
+#[op2]
+#[string]
+fn op_kt_host_commands() -> String {
+    let names: Vec<&String> = engine().embedding.host_commands.keys().collect();
+    serde_json::to_string(&names).unwrap_or_else(|_| "[]".into())
+}
+
+/// Run one host command (crate::host_commands): `meta` is its request (name, args, cwd, env, the shell's file index
+/// and stdin as slices of `payload`); the answer is its packed reply. Runs on the engine's I/O runtime until the
+/// command's deadline, and is dropped (cancelled) if the op is.
+#[op2]
+async fn op_kt_host_command(
+    state: Rc<RefCell<OpState>>,
+    #[string] meta: String,
+    #[buffer] payload: JsBuffer,
+) -> Result<HostBytes, JsErrorBox> {
+    let c = ctx(&state)?;
+    if c.kind != Kind::Shell {
+        return Err(JsErrorBox::generic("not available here"));
+    }
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta).map_err(|e| jerr(format!("bad host command request: {e}")))?;
+    let name = meta["name"].as_str().unwrap_or_default().to_string();
+    let command = engine()
+        .embedding
+        .host_commands
+        .get(&name)
+        .cloned()
+        .ok_or_else(|| jerr(format!("{name}: no such host command")))?;
+    let request = crate::host_commands::request(
+        c.sandbox_id.clone(),
+        c.command.deadline,
+        c.workspace.clone(),
+        &meta,
+        payload.to_vec(),
+    )
+    .map_err(jerr)?;
+    let remaining = c
+        .command
+        .deadline
+        .saturating_duration_since(std::time::Instant::now());
+    let task = engine()
+        .io
+        .spawn(async move { tokio::time::timeout(remaining, command.run(request)).await });
+    let _abort = AbortOnDrop(task.abort_handle());
+    let reply = match task.await.map_err(jerr)? {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(e)) => crate::host_commands::HostReply {
+            exit_code: 1,
+            stderr: format!("{name}: {e:#}\n").into_bytes(),
+            ..Default::default()
+        },
+        Err(_) => crate::host_commands::HostReply {
+            exit_code: 124,
+            stderr: format!("{name}: timed out\n").into_bytes(),
+            ..Default::default()
+        },
+    };
+    let out = crate::host_commands::pack_reply(&reply);
+    HostBytes::adopt(budget_of(&state.borrow()), out, 0)
+}
+
 // --- EGRESS: one request through the host's proxy -----------------------------------------------------------------
 
 /// Decrements the isolate's in-flight fetch count when the op ends (even if cancelled).
@@ -639,6 +704,8 @@ deno_core::extension!(
         op_kt_commit,
         op_kt_sync,
         op_kt_workspace_capabilities,
+        op_kt_host_commands,
+        op_kt_host_command,
         op_kt_fetch,
         op_kt_run,
         op_kt_cancel_run,

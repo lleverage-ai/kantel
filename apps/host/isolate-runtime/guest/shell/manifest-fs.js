@@ -55,25 +55,30 @@ export function manifestFilesystem(ops) {
 
 	async function open(request) {
 		let lazyReads = 0;
-		const manifest = request.manifest ?? {};
+		// The command's own copy: a host command that commits through the workspace moves it on (sync).
+		const manifest = { ...(request.manifest ?? {}) };
+		let base = request.base ?? "";
+		/** Paths a host command changed through the workspace, which the reply reports changed too. */
+		const hostChanged = new Set();
 		// What the workspace keeps, and whether its file ids are the bytes' SHA-256 (Kantel's are): otherwise an id
 		// says nothing about the bytes, and an unchanged file is told by the digest of what the command read.
 		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
 		const originals = new Map();
+		/** A file's body, read from the workspace when the command first reads it. */
+		const lazy = (path, file) => async () => {
+			lazyReads++;
+			let bytes;
+			try {
+				bytes = await ops.op_kt_blob_read(file);
+			} catch (error) {
+				throw readError(error);
+			}
+			if (!capabilities.contentAddressed) originals.set(path, sha256(bytes));
+			return bytes;
+		};
 		const files = {};
 		for (const [path, entry] of Object.entries(manifest)) {
-			if (entry.kind !== "file") continue;
-			files[abs(path)] = async () => {
-				lazyReads++;
-				let bytes;
-				try {
-					bytes = await ops.op_kt_blob_read(entry.sha);
-				} catch (error) {
-					throw readError(error);
-				}
-				if (!capabilities.contentAddressed) originals.set(path, sha256(bytes));
-				return bytes;
-			};
+			if (entry.kind === "file") files[abs(path)] = lazy(path, entry.sha);
 		}
 		/** The SHA-256 of a manifest file's bytes as the command found them, or undefined if they can't be read. */
 		const originalDigest = async (path, entry) => {
@@ -125,6 +130,33 @@ export function manifestFilesystem(ops) {
 			return index;
 		}
 
+		/** Catch the command's files up with the workspace after a host command committed through it: its changes since
+		 * the command's base, the new files lazy (read only if the command reads them). */
+		async function sync() {
+			const catchUp = JSON.parse(await ops.op_kt_sync(base));
+			for (const path of catchUp.removed) {
+				await fs.rm(abs(path), { recursive: true, force: true });
+				delete manifest[path];
+				hostChanged.add(path);
+			}
+			for (const [path, node] of Object.entries(catchUp.changed)) {
+				const full = abs(path);
+				hostChanged.add(path);
+				manifest[path] = entryOf(node);
+				await fs.mkdir(full.slice(0, full.lastIndexOf("/")) || "/", { recursive: true });
+				if (node.kind === "dir") {
+					await fs.mkdir(full, { recursive: true });
+				} else if (node.kind === "symlink") {
+					await fs.rm(full, { force: true });
+					await fs.symlink(node.target, full);
+				} else {
+					originals.delete(path);
+					fs.writeFileLazy(full, lazy(path, node.file), { mode: node.mode });
+				}
+			}
+			base = catchUp.generation;
+		}
+
 		/** The reply's files when nothing ran. */
 		const unchanged = () => ({ manifest, changed: [], lazyReads });
 
@@ -133,7 +165,7 @@ export function manifestFilesystem(ops) {
 		async function finish() {
 			const commit = {
 				operationId: `exec-${nextCommit++}`,
-				base: request.base ?? "",
+				base,
 				puts: [],
 				links: [],
 				dirs: [],
@@ -212,10 +244,15 @@ export function manifestFilesystem(ops) {
 					if (reply.catchUp) saved = holds(reply.catchUp, []);
 				}
 			}
-			return { ...saved, commit: unsaved, lazyReads };
+			return {
+				...saved,
+				changed: [...new Set([...hostChanged, ...saved.changed])],
+				commit: unsaved,
+				lazyReads,
+			};
 		}
 
-		return { fs, childIndex, unchanged, finish };
+		return { fs, childIndex, unchanged, finish, sync };
 	}
 
 	return { open };
