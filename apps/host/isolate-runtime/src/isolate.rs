@@ -22,9 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::bridges::Store;
 use crate::config::{Config, DEFAULT_MEMORY_MIB};
 use crate::embed::Embedding;
-use crate::limits::{
-    Budget, Command, GcWatch, MIB, Scope, Term, allocator, gc_watch, near_heap_limit, watch,
-};
+use crate::limits::{Budget, Command, GcWatch, MIB, Scope, Term, gc_watch, near_heap_limit, watch};
 use crate::ops::{SnapshotSink, kt};
 use crate::workspace::{CommitReply, FilesystemProvider, ManifestProvider, Workspace};
 
@@ -546,9 +544,7 @@ fn module_loader(kind: Kind) -> Option<Rc<dyn ModuleLoader>> {
 pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
     let limit = mem_mib * MIB;
     let budget = Budget::new(limit);
-    let params = v8::CreateParams::default()
-        .heap_limits(0, limit)
-        .array_buffer_allocator(allocator(&budget));
+    let params = crate::memory::create_params(&budget);
     let mut rt = JsRuntime::new(RuntimeOptions {
         extensions: extensions(&engine().embedding),
         startup_snapshot: Some(engine().snapshot()),

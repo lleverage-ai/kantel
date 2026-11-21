@@ -200,6 +200,50 @@ async fn our_provider_keeps_the_contract() {
 }
 ```
 
+## Memory for an embedder's own isolates
+
+An isolate the embedder makes itself (a program isolate, say) can be held to the same one budget as the runtime's
+([`src/memory.rs`](src/memory.rs)):
+
+```rust
+let budget = kantel_isolate::memory::Budget::new(256 << 20);
+let mut rt = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+    create_params: Some(kantel_isolate::memory::create_params(&budget)),
+    ..Default::default()
+});
+let mut watch = kantel_isolate::memory::watch(&mut rt, &budget);
+// While guest code runs, on the isolate's thread: over the budget, its CPU or its wall clock, it is stopped.
+let running = kantel_isolate::memory::enforce(&mut rt, &budget, cpu, wall)?; // one run at a time
+// ...
+drop(running);
+watch.remove(&mut rt); // before the isolate is dropped
+```
+
+`memory::array_buffer_allocator(&budget)` is the ArrayBuffer allocator for this build's V8: a Rust allocator that
+charges the budget on the stock V8, and Kantel's in-sandbox budget allocator on the sandboxed one. Use it instead of
+`v8::new_rust_allocator`, which the sandboxed V8 doesn't have. WebAssembly memory counts only when the guest reserves it
+(Kantel's wasm guard does). `memory::enforce` registers the isolate with the runtime's watchdog, which also stops it
+when a GC found the total over the limit and the program then stopped allocating. `tests/memory.rs` runs on the V8 the
+crate is tested with (CI's: the sandboxed one).
+
+## Egress and hardening
+
+What guest code may send out is `Config::egress_policy` ([`EgressPolicy`](src/config.rs)): whether it may at all, the
+header that carries the sandbox id to the egress proxy (a guest's own header of that name is dropped), the methods
+allowed (never CONNECT), the largest response body, and the requests one isolate may have in flight. The default is
+Kantel's. Every request goes to `Config::egress`, in proxy style.
+
+What the process does to itself is a [`HardeningPolicy`](src/harden.rs), applied by `harden::harden(config, policy)`
+before the first thread starts: no root or capabilities and not dumpable, then Landlock (the assets read-only, a
+private temporary directory, the policy's `read`, `read_write` and `execute` paths, and the transport's socket
+directory or ports), then seccomp (`seccomp: None` for no filter). `HardeningPolicy::kantel` is the binary's. With
+`spawn`, the process may start child processes (fork and clone without namespaces, exec, wait, signal) for an
+embedder's own worker or helper: a child inherits Landlock and the filter, so it can execute only what `execute`
+names and must keep to the same allow-list. Writable places (the temporary directory, `read_write`, the socket
+directory) are never executable, and `harden` refuses an `execute` path that overlaps one (inside it or containing
+it, symlinks resolved). A redirect is checked against
+the egress methods too.
+
 ## The limits
 
 The limits are in the table in [README.md](README.md#limits-and-what-enforces-each). The runtime enforces CPU, wall

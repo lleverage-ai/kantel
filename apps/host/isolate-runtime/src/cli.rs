@@ -118,6 +118,7 @@ pub fn config(a: &ServeArgs) -> Result<Config> {
             listen: a.listen.clone(),
             store: Target::parse(&a.store)?,
             egress: Target::parse(&a.egress)?,
+            egress_policy: Default::default(),
             pyodide: assets.join("pyodide"),
             python_snapshot: assets.join("python.snapshot"),
             assets,
