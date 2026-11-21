@@ -267,6 +267,12 @@ export const HOST_FEATURES = {
 	 * after the call, or fails saying why. A host without it can't promise that, so a refresh isn't asked of it.
 	 */
 	mountsSync: "mounts-sync",
+	/**
+	 * Manifest mounts (`HostMount` of kind `manifest`): the host reads the manifest object from the bucket source, checks
+	 * it against `digest`, and mounts exactly its files; and it reads bucket sources whose credentials are an
+	 * `accessToken` or carry `expiresAt`. A host without it is sent neither.
+	 */
+	mountsManifest: "mounts-manifest",
 	/** `sandbox.files.open`: a file's bytes streamed both ways on a port stream (signed file URLs, archives). */
 	fileStreams: "file-streams",
 	/**
@@ -777,6 +783,13 @@ export type HostMount =
 			readonly bucketSourceId: string;
 			readonly prefix: string;
 			readonly refreshTtlSeconds?: number;
+	  }
+	| {
+			readonly path: string;
+			readonly kind: "manifest";
+			readonly bucketSourceId: string;
+			readonly manifestKey: string;
+			readonly digest: string;
 	  };
 
 /** A mount's status as the host reports it, by path. */
@@ -810,8 +823,14 @@ export interface HostBucketSource {
 	readonly endpoint?: string;
 	readonly region?: string;
 	readonly credentials?:
-		| { readonly accessKeyId: string; readonly secretAccessKey: string; readonly sessionToken?: string }
-		| { readonly serviceAccountKey: string };
+		| {
+				readonly accessKeyId: string;
+				readonly secretAccessKey: string;
+				readonly sessionToken?: string;
+				readonly expiresAt?: number;
+		  }
+		| { readonly serviceAccountKey: string }
+		| { readonly accessToken: string; readonly expiresAt: number };
 }
 
 /**

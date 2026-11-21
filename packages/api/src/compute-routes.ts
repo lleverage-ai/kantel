@@ -140,6 +140,7 @@ import {
 	SandboxShapesQuery,
 	SandboxUsage,
 	SaveSnapshotBody,
+	SetBucketSourceCredentialsBody,
 	SetEnvironmentFileBody,
 	SetEnvironmentVariableBody,
 	SetPublicUrlBody,
@@ -2973,7 +2974,8 @@ export const createBucketSource = defineRoute({
 	tag: "mounts",
 	summary: "Create a bucket source",
 	description: describe(
-		"A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it.",
+		"A bucket the account's sandboxes may mount prefixes or manifests of (`mounts` on create), with the credentials",
+		"that read it.",
 		"The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is",
 		"given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one).",
 		scope("account:admin"),
@@ -3009,6 +3011,27 @@ export const getBucketSource = defineRoute({
 	errors: [...readErrors, "not_supported"],
 });
 
+export const setBucketSourceCredentials = defineRoute({
+	operationId: "setBucketSourceCredentials",
+	method: "PUT",
+	path: "/bucket-sources/{bucketSourceId}/credentials",
+	tag: "mounts",
+	summary: "Replace a bucket source's credentials",
+	description: describe(
+		"Replaces the credentials that read the bucket, such as a short-lived token before it expires: hosts take the",
+		"new ones the next time they ask for the source, which is within ten minutes, and from a minute before the old",
+		"ones' `expiresAt`. Files already read stay in the host's cache. Credentials already past their `expiresAt` are",
+		"`invalid`, and an access token is for a `gcs` source only. Needs the deployment's secrets key (`not_supported`",
+		"without one).",
+		scope("account:admin"),
+		MOUNTS,
+	),
+	params: BucketSourcePath,
+	body: SetBucketSourceCredentialsBody,
+	answer: { status: 200, description: "The bucket source.", schema: BucketSource },
+	errors: [...changeErrors, "not_supported"],
+});
+
 export const deleteBucketSource = defineRoute({
 	operationId: "deleteBucketSource",
 	method: "DELETE",
@@ -3038,8 +3061,8 @@ export const refreshSandboxMounts = defineRoute({
 		"deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill,",
 		"before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the",
 		"listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the",
-		"mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another",
-		"digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped",
+		"mount carries on with what it showed before. A bundle or manifest mount at `path` is `invalid` (it never changes:",
+		"mount another digest or manifest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped",
 		"or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items.",
 		scope("sandboxes:write"),
 		MOUNTS,
@@ -3059,6 +3082,7 @@ export const mountRoutes = {
 	createBucketSource,
 	listBucketSources,
 	getBucketSource,
+	setBucketSourceCredentials,
 	deleteBucketSource,
 } as const;
 

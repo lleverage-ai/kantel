@@ -476,6 +476,15 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 export function hostMount(mount: BackendMount): HostMount {
 	const { source } = mount;
 	if (source.kind === "bundle") return { path: mount.path, kind: "bundle", digest: source.digest };
+	if (source.kind === "manifest") {
+		return {
+			path: mount.path,
+			kind: "manifest",
+			bucketSourceId: source.bucketSourceId,
+			manifestKey: source.manifestKey,
+			digest: source.manifestDigest,
+		};
+	}
 	return {
 		path: mount.path,
 		kind: "bucket",

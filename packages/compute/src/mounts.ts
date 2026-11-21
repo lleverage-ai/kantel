@@ -6,8 +6,9 @@
  *
  * - a bundle's tar by digest, from the `BundleBlobStore` (`ComputeService.bundleForHost`; over HTTP at
  *   `GET /v1/hosts/bundles/{digest}?sandboxId=…` with the host's credential);
- * - a bucket source's settings and opened credentials by ID (`ComputeService.bucketSourceForHost`; `bucket.fetch`
- *   over the host's link).
+ * - a bucket source's settings and opened credentials by ID, for a bucket or manifest mount
+ *   (`ComputeService.bucketSourceForHost`; `bucket.fetch` over the host's link). A manifest itself is an object in
+ *   the bucket source, which the host reads with those credentials.
  *
  * Both answer only the host the sandbox is on (or is being placed on, while it starts), and only for a source the
  * sandbox mounts, so a host learns nothing of another host's sandboxes.
@@ -85,8 +86,14 @@ export interface ResolvedBucketSource {
 	readonly endpoint?: string;
 	readonly region?: string;
 	readonly credentials?:
-		| { readonly accessKeyId: string; readonly secretAccessKey: string; readonly sessionToken?: string }
-		| { readonly serviceAccountKey: string };
+		| {
+				readonly accessKeyId: string;
+				readonly secretAccessKey: string;
+				readonly sessionToken?: string;
+				readonly expiresAt?: number;
+		  }
+		| { readonly serviceAccountKey: string }
+		| { readonly accessToken: string; readonly expiresAt: number };
 }
 
 /** The path of a signed file URL, under the API's base path: `/v1/file-urls/{token}`. */

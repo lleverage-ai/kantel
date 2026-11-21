@@ -630,6 +630,24 @@ describe("the backend's mounts", () => {
 		]);
 	});
 
+	it("sends a manifest mount, by name, only to a host that says it mounts manifests", async () => {
+		const manifest: BackendMount = {
+			path: "/workspace/files",
+			source: { kind: "manifest", bucketSourceId: "bks_1", manifestKey: "m/1.json", manifestDigest: DIGEST },
+		};
+		const old = await setup([HOST_FEATURES.mountsBucket]);
+		await old.connect();
+		expect((await old.backend.create(spec("sbx_old", old.hostId, [manifest]))).mounts).toEqual([
+			{ path: "/workspace/files", status: "failed", error: "This host can't mount manifests yet", unsent: true },
+		]);
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.mountsBucket, HOST_FEATURES.mountsManifest]);
+		await connect();
+		await backend.create(spec("sbx_new", hostId, [manifest]));
+		expect(host.calls.find((call) => call.method === "sandbox.create")?.params.mounts).toEqual([
+			{ path: "/workspace/files", kind: "manifest", bucketSourceId: "bks_1", manifestKey: "m/1.json", digest: DIGEST },
+		]);
+	});
+
 	it("takes the statuses a host answers, on create, start and fork alike", async () => {
 		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.mountsBundle, HOST_FEATURES.mountsBucket]);
 		await connect();

@@ -230,19 +230,29 @@ One build of a base image.
 
 ### BucketAccessKey
 
-An S3 access key, or a GCS HMAC key.
+An S3 access key (temporary ones with `sessionToken` and `expiresAt`), or a GCS HMAC key.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `accessKeyId` | string | yes |  (at most 256 characters) |
 | `secretAccessKey` | string | yes |  (at most 1024 characters) |
 | `sessionToken` | string | no |  (at most 8192 characters) |
+| `expiresAt` | integer | no | When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. |
+
+### BucketAccessToken
+
+A Cloud Storage OAuth access token, such as a down-scoped one for the objects the sandboxes may read (`gcs` only). Short-lived: replace it before `expiresAt`. Experimental, as mounts are.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accessToken` | string | yes |  (at most 8192 characters) |
+| `expiresAt` | integer | yes | When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. |
 
 ### BucketCredentials
 
 Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered.
 
-One of: [BucketAccessKey](/api/reference/types/#bucketaccesskey) or [BucketServiceAccountKey](/api/reference/types/#bucketserviceaccountkey).
+One of: [BucketAccessKey](/api/reference/types/#bucketaccesskey) or [BucketAccessToken](/api/reference/types/#bucketaccesstoken) or [BucketServiceAccountKey](/api/reference/types/#bucketserviceaccountkey).
 
 ### BucketMountSource
 
@@ -269,7 +279,7 @@ One of: `"s3"` or `"gcs"`.
 
 ### BucketSource
 
-A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only.
+A bucket an account's sandboxes may mount prefixes or manifests of, with the credentials that read it. The credentials are write-only.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1455,6 +1465,17 @@ A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, 
 | `previousState` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 
+### ManifestMountSource
+
+Exactly the files a manifest lists, from objects anywhere in a bucket source: for a set of files chosen per sandbox, which a prefix can't express. The manifest is a JSON object the account writes to the bucket, `{"version":1,"entries":[...]}`, one entry per file: `path` (relative to the mount), `key` (the object with its bytes), `size`, and the object's `generation` (Cloud Storage) or `etag`, or both, so a file never reads another version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never changes: mount another one for other files.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"manifest"` | yes |  |
+| `bucketSourceId` | string | yes | A bucket source of the sandbox's account: it holds the manifest and every file's bytes. |
+| `manifestKey` | string | yes | The object holding the manifest, such as `manifests/session-42.json`. (at most 1024 characters) |
+| `manifestDigest` | string | yes | The manifest object's SHA-256, `sha256:` and 64 hex digits: a manifest that doesn't match isn't mounted. |
+
 ### Member
 
 | Field | Type | Required | Description |
@@ -1501,7 +1522,7 @@ Files from outside the sandbox, read-only inside it: nothing in the sandbox can 
 
 ### MountSource
 
-One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketMountSource](/api/reference/types/#bucketmountsource).
+One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketMountSource](/api/reference/types/#bucketmountsource) or [ManifestMountSource](/api/reference/types/#manifestmountsource).
 
 ### MountStatus
 
@@ -2193,6 +2214,12 @@ One of: `"private"` or `"organisation"`.
 ### ScanSeverity
 
 One of: `"critical"` or `"high"` or `"medium"` or `"low"` or `"unknown"`.
+
+### SetBucketSourceCredentialsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `credentials` | [BucketCredentials](/api/reference/types/#bucketcredentials) | yes |  |
 
 ### SetEnvironmentFileBody
 
