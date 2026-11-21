@@ -944,10 +944,10 @@ export function createMounts(deps: MountsDeps) {
 						throw new KantelError("not_found", `No bundle ${mount.source.digest} in the account (upload it first)`);
 					}
 				} else if (mount.source.kind === "manifest") {
-					const source = await store.bucketSources.get(mount.source.bucketSourceId);
-					if (source === undefined || source.accountId !== accountId || claimed(source)) {
-						throw new KantelError("not_found", `No bucket source ${mount.source.bucketSourceId} in the account`);
-					}
+					// Not taken yet: a gateway from before manifest mounts, sharing the deployment's database while it rolls
+					// out, would boot one as a bucket mount of the whole bucket, and delete its source as unmounted. Every
+					// gateway handles them from this release; the next takes them.
+					throw new KantelError("not_supported", "Manifest mounts aren't taken yet on this deployment");
 				} else {
 					const source = await store.bucketSources.get(mount.source.bucketSourceId);
 					if (source === undefined || source.accountId !== accountId || claimed(source)) {

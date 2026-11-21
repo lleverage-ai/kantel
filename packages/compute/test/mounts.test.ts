@@ -512,17 +512,7 @@ describe("bucket sources", () => {
 		expect(JSON.stringify(set)).not.toContain("ya29");
 		const sandbox = await tom.createSandbox({
 			type: "microvm",
-			mounts: [
-				{
-					path: "/mnt/files",
-					source: {
-						kind: "manifest",
-						bucketSourceId: source.id,
-						manifestKey: "m/1.json",
-						manifestDigest: `sha256:${"a".repeat(64)}`,
-					},
-				},
-			],
+			mounts: [{ path: "/mnt/files", source: { kind: "bucket", bucketSourceId: source.id, prefix: "" } }],
 			wait: true,
 		});
 		expect((await api.service.bucketSourceForHost(STUB_HOST_ID, sandbox.id, source.id))?.credentials).toEqual(token);
@@ -664,8 +654,8 @@ describe("a sandbox's mounts", () => {
 		expect((await failure(tom.deleteBucketSource(source.id))).code).toBe("conflict");
 	});
 
-	it("take a manifest from a bucket source of the account's, hand it to the backend by name, and never refresh it", async () => {
-		const { api, tom, ann, specs } = setup({ backend: () => ({ refreshMounts: async () => [] }) });
+	it("handle a manifest mount a later gateway stored like a bucket mount of its source, and take none in a create yet", async () => {
+		const { api, tom, store, specs } = setup({ backend: () => ({ refreshMounts: async () => [] }) });
 		const source = await tom.createBucketSource({
 			name: "org files",
 			provider: "s3",
@@ -683,28 +673,32 @@ describe("a sandbox's mounts", () => {
 			manifestKey: "manifests/session-1.json",
 			manifestDigest: `sha256:${"b".repeat(64)}`,
 		};
+		// Refused until every gateway of a deployment handles them.
+		const refused = await failure(
+			tom.createSandbox({ type: "microvm", mounts: [{ path: "/workspace/files", source: manifest }] }),
+		);
+		expect(refused.code).toBe("not_supported");
+		expect(specs).toHaveLength(0);
+		// As a gateway of the next release stores one.
 		const sandbox = await tom.createSandbox({
 			type: "microvm",
-			mounts: [{ path: "/workspace/files", source: manifest }],
+			mounts: [{ path: "/workspace/files", source: { kind: "bucket", bucketSourceId: source.id, prefix: "" } }],
 			wait: true,
 		});
-		expect(specs.at(-1)?.mounts).toEqual([{ path: "/workspace/files", source: manifest }]);
-		expect(sandbox.mounts).toEqual([
-			{ path: "/workspace/files", source: manifest, status: "failed", error: "This host can't mount manifests yet" },
-		]);
+		await store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			mounts: [{ path: "/workspace/files", source: manifest, status: "pending" }],
+		}));
 		expect((await api.service.bucketSourceForHost(STUB_HOST_ID, sandbox.id, source.id))?.bucket).toBe("org");
 		expect((await tom.getBucketSource(source.id)).mountedBy).toBe(1);
 		expect((await failure(tom.deleteBucketSource(source.id))).code).toBe("conflict");
 		expect((await failure(tom.refreshSandboxMounts(sandbox.id, { path: "/workspace/files" }))).code).toBe("invalid");
-		// Another account's source: not this account's to mount.
-		const theirs = await ann.createBucketSource({ name: "theirs", provider: "s3", bucket: "theirs" });
-		const refused = await failure(
-			tom.createSandbox({
-				type: "microvm",
-				mounts: [{ path: "/mnt/x", source: { ...manifest, bucketSourceId: theirs.id } }],
-			}),
-		);
-		expect(refused.code).toBe("not_found");
+		// A stop and start hands it to the backend as it is.
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		expect((await tom.getSandbox(sandbox.id)).mounts).toEqual([
+			{ path: "/workspace/files", source: manifest, status: "failed", error: "This host can't mount manifests yet" },
+		]);
 	});
 });
 

@@ -935,7 +935,8 @@ export const ManifestMountSource = Type.Object(
 			"version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 " +
 			"files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object " +
 			"changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never " +
-			"changes: mount another one for other files.",
+			"changes: mount another one for other files. Not taken by a create yet (`not_supported`): this release handles " +
+			"them, so every gateway of a deployment does before the next one takes them.",
 	},
 );
 

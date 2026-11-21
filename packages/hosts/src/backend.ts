@@ -485,13 +485,18 @@ export function hostMount(mount: BackendMount): HostMount {
 			digest: source.manifestDigest,
 		};
 	}
-	return {
-		path: mount.path,
-		kind: "bucket",
-		bucketSourceId: source.bucketSourceId,
-		prefix: source.prefix,
-		...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
-	};
+	if (source.kind === "bucket") {
+		return {
+			path: mount.path,
+			kind: "bucket",
+			bucketSourceId: source.bucketSourceId,
+			prefix: source.prefix,
+			...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
+		};
+	}
+	// A kind a later release stored, which this one can't hand on as it is: never as another kind.
+	const unknown: { readonly kind: string } = source;
+	throw new KantelError("not_supported", `This gateway can't mount ${unknown.kind} sources yet`);
 }
 
 /** A spec's or boot's mounts for the hosts service; absent when there are none. */
