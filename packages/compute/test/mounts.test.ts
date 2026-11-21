@@ -654,8 +654,8 @@ describe("a sandbox's mounts", () => {
 		expect((await failure(tom.deleteBucketSource(source.id))).code).toBe("conflict");
 	});
 
-	it("handle a manifest mount a later gateway stored like a bucket mount of its source, and take none in a create yet", async () => {
-		const { api, tom, store, specs } = setup({ backend: () => ({ refreshMounts: async () => [] }) });
+	it("take a manifest mount of a bucket source of the account's, and handle it like a bucket mount of its source", async () => {
+		const { api, tom, ann, specs } = setup({ backend: () => ({ refreshMounts: async () => [] }) });
 		const source = await tom.createBucketSource({
 			name: "org files",
 			provider: "s3",
@@ -673,22 +673,21 @@ describe("a sandbox's mounts", () => {
 			manifestKey: "manifests/session-1.json",
 			manifestDigest: `sha256:${"b".repeat(64)}`,
 		};
-		// Refused until every gateway of a deployment handles them.
-		const refused = await failure(
-			tom.createSandbox({ type: "microvm", mounts: [{ path: "/workspace/files", source: manifest }] }),
-		);
-		expect(refused.code).toBe("not_supported");
-		expect(specs).toHaveLength(0);
-		// As a gateway of the next release stores one.
 		const sandbox = await tom.createSandbox({
 			type: "microvm",
-			mounts: [{ path: "/workspace/files", source: { kind: "bucket", bucketSourceId: source.id, prefix: "" } }],
+			mounts: [{ path: "/workspace/files", source: manifest }],
 			wait: true,
 		});
-		await store.sandboxes.update(sandbox.id, (current) => ({
-			...current,
-			mounts: [{ path: "/workspace/files", source: manifest, status: "pending" }],
-		}));
+		expect(specs.at(-1)?.mounts).toEqual([{ path: "/workspace/files", source: manifest }]);
+		// Another account's source: not this account's to mount.
+		const theirs = await ann.createBucketSource({ name: "theirs", provider: "s3", bucket: "theirs" });
+		const refused = await failure(
+			tom.createSandbox({
+				type: "microvm",
+				mounts: [{ path: "/mnt/x", source: { ...manifest, bucketSourceId: theirs.id } }],
+			}),
+		);
+		expect(refused.code).toBe("not_found");
 		expect((await api.service.bucketSourceForHost(STUB_HOST_ID, sandbox.id, source.id))?.bucket).toBe("org");
 		expect((await tom.getBucketSource(source.id)).mountedBy).toBe(1);
 		expect((await failure(tom.deleteBucketSource(source.id))).code).toBe("conflict");
