@@ -4546,6 +4546,52 @@ func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams)
 	return err
 }
 
+// filePartError is a guest agent's refusal of an upload in parts as the host's error.
+func filePartError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case guest.IsUnknownRoute(err):
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's image predates writing files in parts; make it from a newer image"}
+	case guest.IsRefused(err):
+		return &proto.Error{Code: proto.ErrInvalid, Message: guest.RefusalMessage(err)}
+	case guest.IsConflict(err):
+		return &proto.Error{Code: proto.ErrConflict, Message: guest.RefusalMessage(err)}
+	case guest.IsFull(err):
+		return &proto.Error{Code: proto.ErrCapacity, Message: "the sandbox's disk is full: " + guest.RefusalMessage(err)}
+	}
+	return err
+}
+
+// WriteFilePart writes data at p.Offset into the staged file of upload p.Upload of p.Path (sandbox.files.part).
+func (m *Manager) WriteFilePart(ctx context.Context, p proto.FilePartParams, data []byte) (int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := client.WritePart(ctx, p.Path, p.Upload, p.Offset, data)
+	return n, filePartError(err)
+}
+
+// CompleteFileParts moves upload p.Upload over p.Path once its size and SHA-256 are p's (sandbox.files.complete).
+func (m *Manager) CompleteFileParts(ctx context.Context, p proto.FilePartParams) (int64, uint32, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, 0, err
+	}
+	size, mode, err := client.CompleteUpload(ctx, p.Path, p.Upload, p.Size, p.SHA256, p.Mode)
+	return size, mode, filePartError(err)
+}
+
+// AbortFileParts discards upload p.Upload of p.Path (sandbox.files.abort).
+func (m *Manager) AbortFileParts(ctx context.Context, p proto.FilePartParams) error {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return err
+	}
+	return filePartError(client.AbortUpload(ctx, p.Path, p.Upload))
+}
+
 // GuestFeatures is what a running sandbox's guest agent reports it can do (guest.Health.Features), asked now: after a
 // restore, the agent the snapshot's memory held. An agent too old to say reports none.
 func (m *Manager) GuestFeatures(ctx context.Context, id string) ([]string, error) {

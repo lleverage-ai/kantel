@@ -487,6 +487,11 @@ const FeatureFileStreams = "file-streams"
 // extracts archives (the microVM tier), with its own code: never the sandbox's tar, shell or environment.
 const FeatureFilesExtract = "files-extract"
 
+// FeatureFileParts: the host serves sandbox.files.part, sandbox.files.complete and sandbox.files.abort (FilePartParams)
+// for the sandboxes of a tier that takes files in parts (the microVM tier): a large file written a part at a time at
+// its offsets into a staged file beside it, moved into place only once its size and SHA-256 are checked.
+const FeatureFileParts = "file-parts"
+
 // FeatureCustomShapes: sandbox.create takes vcpus, memoryMiB and diskGiB for a microVM shape off the named sizes,
 // and memoryMiB for an isolate.
 const FeatureCustomShapes = "custom-shapes"
@@ -661,6 +666,10 @@ const FeatureGuestFeatures = "guest-features"
 // FileExtractParams.RealTarget into a real directory only, refusing a link at the target or above it. An agent from
 // before it reports no features, and ignores RealTarget.
 const GuestFeatureRealTarget = "extract-real-target"
+
+// GuestFeatureFileParts, in a guest agent's health, says it takes files in parts (PUT /files/part, POST
+// /files/complete, DELETE /files/part). One from before it answers those 404 or 405.
+const GuestFeatureFileParts = "file-parts"
 
 // FeatureIsolateFreeze (HOST_FEATURES.isolateFreeze): the host takes sandbox.upgrade.freeze and sandbox.upgrade.thaw
 // (UpgradeRef) for its isolates, so Kantel can copy one version of an isolate's files to a microVM on another host
@@ -1836,6 +1845,31 @@ type ProcessList struct {
 	SampleMs  int64     `json:"sampleMs"`
 }
 
+// FilePartParams is sandbox.files.part's, sandbox.files.complete's and sandbox.files.abort's (FeatureFileParts): the
+// upload Upload (8 to 64 of A-Z, a-z, 0-9, - and _, the client's name for it) of the file at Path (absolute).
+//
+// sandbox.files.part writes Data (base64, at most FilePartMaxBytes decoded) at Offset into the upload's staged file,
+// beside Path, making it and Path's directories; answered {"size": n}. Parts may come in any order, at once, and again.
+// sandbox.files.complete checks the staged file is Size bytes with SHA256 (hex), then gives it Mode (permissions,
+// default 0644) and the sandbox's user, and renames it over Path; answered {"size": n, "mode": "644"}. A failed check
+// is invalid and discards the upload; one unknown (none written, discarded, or completed) is conflict unless Path
+// already has that size and SHA-256, so a repeat answers as the first. sandbox.files.abort discards the upload;
+// answered {}.
+type FilePartParams struct {
+	SandboxID string `json:"sandboxId"`
+	Path      string `json:"path"`
+	Upload    string `json:"upload"`
+	Offset    int64  `json:"offset,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Mode      uint32 `json:"mode,omitempty"`
+}
+
+// FilePartMaxBytes is the most one sandbox.files.part carries, decoded: its message stays well inside what a gateway
+// replica relays to another (4 MiB) and keeps the host's link free for its other sandboxes' calls.
+const FilePartMaxBytes = 2 << 20
+
 // FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
 // into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted. With
 // RealTarget, a link at Target or above it is refused rather than followed (an upgrade's), by guest agents that report
@@ -2061,6 +2095,11 @@ const (
 	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
 	// own code (FeatureFilesExtract); the result is {}.
 	MethodFileExtract = "sandbox.files.extract"
+	// MethodFilePart, MethodFileComplete and MethodFileAbort (Kantel → host, FilePartParams; FeatureFileParts) write a
+	// file in parts: see FilePartParams.
+	MethodFilePart     = "sandbox.files.part"
+	MethodFileComplete = "sandbox.files.complete"
+	MethodFileAbort    = "sandbox.files.abort"
 	// MethodTemplateBuild (TemplateBuildParams) answers a TemplateBuildResult.
 	MethodTemplateBuild = "template.build"
 	// MethodTemplateDelete (TemplateDeleteParams) deletes a template snapshot; the result is {"ok": true}.

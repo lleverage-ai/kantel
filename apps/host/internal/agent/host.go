@@ -340,6 +340,12 @@ func (h *Host) makeFacts() proto.Facts {
 			break
 		}
 	}
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(FilePartWriter); ok {
+			features = append(features, proto.FeatureFileParts)
+			break
+		}
+	}
 	if h.listsProcesses() {
 		features = append(features, proto.FeatureProcesses)
 	}
@@ -1100,6 +1106,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return h.fencedWrite(ctx, t, p, data)
 		}
 		return map[string]bool{"ok": true}, t.WriteFile(ctx, p, data)
+	case proto.MethodFilePart, proto.MethodFileComplete, proto.MethodFileAbort:
+		p, err := decode[proto.FilePartParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.fileParts(ctx, method, p)
 	case proto.MethodFileExtract:
 		p, err := decode[proto.FileExtractParams](params)
 		if err != nil {

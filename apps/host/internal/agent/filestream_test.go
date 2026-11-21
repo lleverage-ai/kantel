@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -560,5 +561,70 @@ func TestAnArchiveIsExtractedByTheHost(t *testing.T) {
 	}
 	if err := call(streamHost(t, newStreamTier(nil)), want); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
 		t.Fatalf("a tier that doesn't extract: %v", err)
+	}
+}
+
+// partTier is a streamTier that takes files in parts, recording what it was asked.
+type partTier struct {
+	*streamTier
+	parts chan []byte
+}
+
+func (f partTier) WriteFilePart(_ context.Context, _ proto.FilePartParams, data []byte) (int64, error) {
+	f.parts <- data
+	return int64(len(data)), nil
+}
+
+func (f partTier) CompleteFileParts(_ context.Context, p proto.FilePartParams) (int64, uint32, error) {
+	return p.Size, 0o644, nil
+}
+
+func (f partTier) AbortFileParts(context.Context, proto.FilePartParams) error { return nil }
+
+// sandbox.files.part and .complete reach a tier that takes files in parts, checked first, and are unsupported on one
+// that doesn't; the host reports file-parts only with such a tier.
+func TestFilesInPartsReachTheTier(t *testing.T) {
+	ctx := context.Background()
+	tier := partTier{newStreamTier(map[string][]byte{}), make(chan []byte, 4)}
+	h := streamHost(t, tier)
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureFileParts) {
+		t.Error("a host with a tier taking parts didn't report file-parts")
+	}
+	plain := streamHost(t, newStreamTier(nil))
+	if slices.Contains(plain.makeFacts().Features, proto.FeatureFileParts) {
+		t.Error("a host with no tier taking parts reported file-parts")
+	}
+	call := func(h *Host, method string, p proto.FilePartParams) (any, error) {
+		raw, _ := json.Marshal(p)
+		return h.Call(ctx, method, raw, nil)
+	}
+	part := proto.FilePartParams{SandboxID: "sbx_one", Path: "/home/user/big.bin", Upload: "upload-1", Offset: 4096, Data: base64.StdEncoding.EncodeToString([]byte("part"))}
+	if _, err := call(h, proto.MethodFilePart, part); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-tier.parts; string(got) != "part" {
+		t.Fatalf("the tier got %q", got)
+	}
+	sum := strings.Repeat("ab", 32)
+	if _, err := call(h, proto.MethodFileComplete, proto.FilePartParams{SandboxID: "sbx_one", Path: "/home/user/big.bin", Upload: "upload-1", Size: 4100, SHA256: sum}); err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	for name, bad := range map[string]struct {
+		method string
+		p      proto.FilePartParams
+	}{
+		"a part too large":  {proto.MethodFilePart, proto.FilePartParams{SandboxID: "sbx_one", Path: "/a", Upload: "upload-1", Data: base64.StdEncoding.EncodeToString(make([]byte, proto.FilePartMaxBytes+1))}},
+		"a bad upload ID":   {proto.MethodFilePart, proto.FilePartParams{SandboxID: "sbx_one", Path: "/a", Upload: "../x"}},
+		"a relative path":   {proto.MethodFileAbort, proto.FilePartParams{SandboxID: "sbx_one", Path: "a", Upload: "upload-1"}},
+		"no SHA-256":        {proto.MethodFileComplete, proto.FilePartParams{SandboxID: "sbx_one", Path: "/a", Upload: "upload-1", Size: 1}},
+		"a negative offset": {proto.MethodFilePart, proto.FilePartParams{SandboxID: "sbx_one", Path: "/a", Upload: "upload-1", Offset: -1}},
+	} {
+		if _, err := call(h, bad.method, bad.p); !errors.As(err, &pe) || pe.Code != proto.ErrInvalid {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := call(plain, proto.MethodFilePart, part); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
+		t.Fatalf("a tier without parts: %v", err)
 	}
 }
